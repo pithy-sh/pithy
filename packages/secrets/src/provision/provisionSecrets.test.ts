@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { describe, expect, test, vi } from "vitest";
@@ -196,9 +198,25 @@ describe("managerCfApiTokenName", () => {
 });
 
 describe("deprovisionSecrets", () => {
-  function recordingDeprovisioner(calls: string[]): SecretsDeprovisioner {
+  /** A secrets database's retained rows, as the live seam counts them. */
+  function vaultRows(env: ManagedEnvironment, rows: number): RetainedRows[] {
+    return rows === 0 ? [] : [{ binding: `acme-${env}-secrets`, table: "pithy_secrets_system_secrets", rows }];
+  }
+
+  /**
+   * Records every destructive call. `rows` is what each environment's secrets database holds; `managers` is
+   * which environments still run a manager Worker once the run's own deletions have landed.
+   */
+  function recordingDeprovisioner(
+    calls: string[],
+    state: { rows?: Partial<Record<string, number>>; managers?: string[] } = {},
+  ): SecretsDeprovisioner {
+    const managers = new Set(state.managers ?? []);
     return {
+      countRetained: vi.fn(async (env: ManagedEnvironment) => vaultRows(env, state.rows?.[env] ?? 0)),
+      hasManager: vi.fn(async (env: ManagedEnvironment) => managers.has(env)),
       deleteManager: vi.fn(async (env: ManagedEnvironment) => {
+        managers.delete(env);
         calls.push(`manager:${env}`);
       }),
       deleteMasterKey: vi.fn(async (env: ManagedEnvironment) => {
@@ -213,24 +231,111 @@ describe("deprovisionSecrets", () => {
     };
   }
 
-  test("keeps master keys by default — manager then database per env, then the shared token", async () => {
+  /**
+   * **#591, the whole defect.** One `pithy secrets deprovision`, typed to clean up staging, walked every
+   * declared environment and deleted production's vault with it. The target is now named, never defaulted,
+   * and the refusal says what could have been named — so the old loop, planted back, fails here.
+   */
+  test("with no target refuses, lists the environments it could act on, and deletes nothing", async () => {
     const calls: string[] = [];
-    await deprovisionSecrets(recordingDeprovisioner(calls), DEFAULT_ENVIRONMENTS);
-    expect(calls).toEqual(["manager:staging", "db:staging", "manager:prod", "db:prod", "token"]);
+    const run = deprovisionSecrets(recordingDeprovisioner(calls), {
+      environment: undefined,
+      declared: DEFAULT_ENVIRONMENTS,
+    });
+
+    await expect(run).rejects.toThrow(ValidationError);
+    await expect(run).rejects.toMatchObject({
+      message: "Name the environment to deprovision. Nothing was deleted.",
+      payload: { action: "Pass --env with one of: staging, prod." },
+    });
+    expect(calls).toEqual([]);
   });
 
-  test("deletes master keys only when asked", async () => {
+  test("deletes the named environment and no other — production is not reached by naming staging", async () => {
+    const calls: string[] = [];
+    const deprovisioner = recordingDeprovisioner(calls, { managers: ["staging", "prod"] });
+
+    const result = await deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
+
+    expect(calls).toEqual(["manager:staging", "db:staging"]);
+    expect(result).toEqual({ environment: "staging", managerTokenDeleted: false });
+  });
+
+  test("an environment the project does not declare is refused by name, with nothing deleted", async () => {
+    const calls: string[] = [];
+    await expect(
+      deprovisionSecrets(recordingDeprovisioner(calls), { environment: "live", declared: DEFAULT_ENVIRONMENTS }),
+    ).rejects.toMatchObject({ payload: { action: "Pass --env with one of: staging, prod." } });
+    expect(calls).toEqual([]);
+  });
+
+  test("keeps the shared manager token while any declared environment still runs a manager", async () => {
+    // The token is `global`: prod's manager rotates with it. Deleting it for staging's teardown would break
+    // every rotation in production at once.
+    const calls: string[] = [];
+    await deprovisionSecrets(recordingDeprovisioner(calls, { managers: ["staging", "prod"] }), {
+      environment: "staging",
+      declared: DEFAULT_ENVIRONMENTS,
+    });
+    expect(calls).not.toContain("token");
+  });
+
+  test("removes the shared manager token once the last manager is gone", async () => {
+    const calls: string[] = [];
+    const result = await deprovisionSecrets(recordingDeprovisioner(calls, { managers: ["prod"] }), {
+      environment: "prod",
+      declared: DEFAULT_ENVIRONMENTS,
+    });
+    expect(calls).toEqual(["manager:prod", "db:prod", "token"]);
+    expect(result.managerTokenDeleted).toBe(true);
+  });
+
+  test("keeps the master key by default, and deletes it only when asked", async () => {
     const calls: string[] = [];
     const options: DeprovisionOptions = { deleteKeys: true };
-    await deprovisionSecrets(recordingDeprovisioner(calls), DEFAULT_ENVIRONMENTS, options);
-    expect(calls).toEqual([
-      "manager:staging",
-      "key:staging",
-      "db:staging",
-      "manager:prod",
-      "key:prod",
-      "db:prod",
-      "token",
-    ]);
+    await deprovisionSecrets(
+      recordingDeprovisioner(calls),
+      { environment: "staging", declared: DEFAULT_ENVIRONMENTS },
+      options,
+    );
+    expect(calls).toEqual(["manager:staging", "key:staging", "db:staging", "token"]);
+  });
+
+  test("an environment whose vault holds rows refuses without a count, naming the environment and the count", async () => {
+    const calls: string[] = [];
+    const run = deprovisionSecrets(recordingDeprovisioner(calls, { rows: { prod: 3 } }), {
+      environment: "prod",
+      declared: DEFAULT_ENVIRONMENTS,
+    });
+
+    await expect(run).rejects.toMatchObject({
+      message:
+        "Retained 3 rows would be dropped: pithy_secrets_system_secrets on acme-prod-secrets (3 rows). Refused before anything was deleted.",
+      payload: { action: "They exist nowhere else. Back them up, or pass --destroy-retained 3 to drop them." },
+    });
+    // Refused before the manager went: a refusal after it would leave prod with a vault and nothing to run it.
+    expect(calls).toEqual([]);
+  });
+
+  test("a count that is not the count refuses too", async () => {
+    const calls: string[] = [];
+    await expect(
+      deprovisionSecrets(
+        recordingDeprovisioner(calls, { rows: { prod: 3 } }),
+        { environment: "prod", declared: DEFAULT_ENVIRONMENTS },
+        { destroyRetained: 2 },
+      ),
+    ).rejects.toThrow("--destroy-retained 2 does not match the 3 rows at risk.");
+    expect(calls).toEqual([]);
+  });
+
+  test("the exact count deletes", async () => {
+    const calls: string[] = [];
+    await deprovisionSecrets(
+      recordingDeprovisioner(calls, { rows: { prod: 3 } }),
+      { environment: "prod", declared: DEFAULT_ENVIRONMENTS },
+      { destroyRetained: 3 },
+    );
+    expect(calls).toEqual(["manager:prod", "db:prod", "token"]);
   });
 });

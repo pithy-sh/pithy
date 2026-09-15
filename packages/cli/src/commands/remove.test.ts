@@ -36,7 +36,7 @@ describe("remove command", () => {
   test("meta and args shape — --worker names the worker to unwire", () => {
     const args = remove.args as Record<string, { type: string; default?: unknown; required?: boolean }>;
     expect(remove.meta).toMatchObject({ name: "remove" });
-    expect(Object.keys(args)).toEqual(["capability", "worker", "drop", "env", "json"]);
+    expect(Object.keys(args)).toEqual(["capability", "worker", "drop", "env", "destroy-retained", "json"]);
     expect(args.capability).toMatchObject({ type: "positional", required: true });
     expect(args.worker).toMatchObject({ type: "string" });
   });

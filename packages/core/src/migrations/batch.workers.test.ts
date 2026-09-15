@@ -205,7 +205,7 @@ describe("one round trip per migration", () => {
     await runMigrations(env.DB, provider);
 
     const { db, trips } = counting(env.DB);
-    await dropMigrations(db, provider);
+    await dropMigrations(db, { database: provider, reverse: provider });
 
     expect(trips.batch).toBe(1);
     expect(trips.batched).toBe(6);

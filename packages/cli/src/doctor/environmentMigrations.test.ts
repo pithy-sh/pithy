@@ -15,7 +15,13 @@ import {
   renderDoctorText,
 } from "../commands/doctor";
 import { collectMigrationSets } from "../migrations/registry";
-import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
+import {
+  dropCapabilityTables,
+  NeighborsNotComposed,
+  type ProjectLedger,
+  readProjectLedger,
+  unprovisionedDatabases,
+} from "../migrations/run";
 import { checkedWorker, cleanPlanFor, doctorHarness } from "../test-utils/doctorHarness";
 import { environmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
@@ -440,6 +446,20 @@ describe("a Worker beside one that does not compose for the environment", () => 
           env: "staging",
           account: null,
           workers: [{ name: "a", dir: a, capabilities: [] }],
+          remoteD1: () => d1,
+        }),
+      ).rejects.toBeInstanceOf(NeighborsNotComposed);
+      // `pithy remove --drop` too: a neighbor left out is a retained table left uncounted, and the drop is the
+      // most destructive run of all.
+      await expect(
+        dropCapabilityTables({
+          capability: { name: "a" } as never,
+          composition: [],
+          workerDir: a,
+          persistRoot: harness.dir,
+          account: null,
+          env: "staging",
+          project: "replay",
           remoteD1: () => d1,
         }),
       ).rejects.toBeInstanceOf(NeighborsNotComposed);

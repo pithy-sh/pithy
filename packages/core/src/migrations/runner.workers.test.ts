@@ -5,7 +5,8 @@ import { env } from "cloudflare:test";
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
-import { createMigrationRegistry } from "./registry";
+import { createMigrationRegistry, type NamespacedMigrations } from "./registry";
+import { RetainedBudget } from "./retained";
 import { dropMigrations, readMigrationLedger, rollbackMigration, runMigrations } from "./runner";
 
 /** The provider for a database name, asserting it was registered (narrows the indexed access). */
@@ -289,7 +290,10 @@ describe("dropMigrations", () => {
     const bOnly = createMigrationRegistry([
       { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
     ]);
-    const results = await dropMigrations(env.DB, providerFor(bOnly, "app"));
+    const results = await dropMigrations(env.DB, {
+      database: providerFor(combined, "app"),
+      reverse: providerFor(bOnly, "app"),
+    });
 
     expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["0200_b_0001_widgets", "Down", "Success"],
@@ -299,11 +303,64 @@ describe("dropMigrations", () => {
     expect(await ledgerNames()).toEqual(["0100_a_0001_things"]);
   });
 
+  test("a drop is counted over the whole database: another capability's retained rows refuse it (#588)", async () => {
+    // "a" declares `things` retained; "b" declares nothing and shares the database. Dropping "b" alone used to
+    // count what "b" declared — nothing — and run its `down` beside a table holding rows.
+    // A `down` of its own, so declaring it retained marks nothing another test in this file composes.
+    const keptThings: Migration = { up: createThings.up, down: async (db) => createThings.down?.(db) };
+    const a: NamespacedMigrations = {
+      database: "app",
+      namespace: "a",
+      order: 100,
+      migrations: { "0001_things": keptThings },
+      retained: ["things"],
+    };
+    const b: NamespacedMigrations = {
+      database: "app",
+      namespace: "b",
+      order: 200,
+      migrations: { "0001_widgets": createWidgets },
+    };
+    const combined = providerFor(createMigrationRegistry([a, b]), "app");
+    await runMigrations(env.DB, combined);
+    await env.DB.prepare("insert into things (label) values ('kept')").run();
+    const bOnly = providerFor(createMigrationRegistry([b]), "app");
+
+    await expect(dropMigrations(env.DB, { database: combined, reverse: bOnly })).rejects.toThrow(
+      "Retained 1 row would be dropped: things on this database (1 row).",
+    );
+    expect(await tableNames()).toEqual(["things", "widgets"]);
+    expect(await ledgerNames()).toEqual(["0100_a_0001_things", "0200_b_0001_widgets"]);
+
+    const results = await dropMigrations(env.DB, { database: combined, reverse: bOnly }, undefined, {
+      budget: new RetainedBudget(1),
+    });
+    expect(results.map((r) => r.migrationName)).toEqual(["0200_b_0001_widgets"]);
+    expect(await tableNames()).toEqual(["things"]);
+  });
+
+  test("a drop refuses to reverse a migration the database's set does not carry", async () => {
+    const aOnly = providerFor(
+      createMigrationRegistry([
+        { database: "app", namespace: "a", order: 100, migrations: { "0001_things": createThings } },
+      ]),
+      "app",
+    );
+    const bOnly = providerFor(
+      createMigrationRegistry([
+        { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
+      ]),
+      "app",
+    );
+    await expect(dropMigrations(env.DB, { database: aOnly, reverse: bOnly })).rejects.toThrow(InternalError);
+  });
+
   test("dropping a capability whose migrations were never applied is a no-op", async () => {
     const bOnly = createMigrationRegistry([
       { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
     ]);
-    expect(await dropMigrations(env.DB, providerFor(bOnly, "app"))).toEqual([]);
+    const b = providerFor(bOnly, "app");
+    expect(await dropMigrations(env.DB, { database: b, reverse: b })).toEqual([]);
     expect(await tableNames()).toEqual([]);
   });
 
@@ -322,7 +379,8 @@ describe("dropMigrations", () => {
     ]);
     await runMigrations(env.DB, providerFor(registry, "app"));
 
-    const results = await dropMigrations(env.DB, providerFor(registry, "app"));
+    const provider = providerFor(registry, "app");
+    const results = await dropMigrations(env.DB, { database: provider, reverse: provider });
 
     expect(results).toEqual([]); // nothing dropped — no down to run
     expect(await tableNames()).toEqual(["widgets"]); // table stays

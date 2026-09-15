@@ -8,9 +8,11 @@ import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTok
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { secretsRetainedTables } from "@pithy-sh/secrets/src/data/tables";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import {
   initialMasterKeyConfig,
@@ -32,11 +34,23 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
-/** The secrets migration set, as provisioning runs it against each environment's D1. */
-function secretsMigrationProvider(): MigrationProvider {
+/**
+ * The secrets migration set, as provisioning runs it against each environment's D1 — and as teardown counts
+ * it. It carries the capability's own `retained` declaration, because this process never constructs the
+ * capability: without it the vault's tables are undeclared here, a count finds nothing, and a deletion
+ * goes through (#591).
+ */
+export function secretsMigrationProvider(): MigrationProvider {
   const registry = createMigrationRegistry([
-    { database: "secrets", namespace: "secrets", order: 100, migrations: { "0001_init": secrets_0001_init } },
+    {
+      database: "secrets",
+      namespace: "secrets",
+      order: 100,
+      migrations: { "0001_init": secrets_0001_init },
+      retained: secretsRetainedTables,
+    },
   ]);
   const provider = registry.secrets;
   if (!provider) throw new Error("missing secrets migration provider");
@@ -302,6 +316,12 @@ export interface CloudflareSecretsDeprovisionerOptions {
   account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * How many vault rows this run may destroy — the operator's `--destroy-retained` number, spent as each
+   * database is deleted (#591). Defaults to agreeing to nothing, so a caller that never asked destroys no
+   * stored secret: an empty vault deletes, a full one refuses.
+   */
+  budget?: RetainedBudget;
 }
 
 /**
@@ -316,6 +336,7 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #storeId: string;
   readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
+  readonly #budget: RetainedBudget;
 
   constructor(options: CloudflareSecretsDeprovisionerOptions) {
     this.#cf = options.cf;
@@ -323,6 +344,36 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     this.#storeId = options.storeId;
     this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
+    this.#budget = options.budget ?? new RetainedBudget(undefined);
+  }
+
+  /** The env's secrets D1, when it exists, with the migration set that declares its retained tables. */
+  async #database(env: ManagedEnvironment) {
+    const name = managerWorkerName(this.#project, env);
+    const db = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} database`,
+      find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
+    });
+    return db ? { cf: this.#cf, databaseId: db.uuid, name, provider: secretsMigrationProvider() } : null;
+  }
+
+  /** The vault's retained rows, named by the database — empty when the database is absent. Read-only. */
+  async countRetained(env: ManagedEnvironment): Promise<RetainedRows[]> {
+    const database = await this.#database(env);
+    return database ? countDatabaseRetained(database) : [];
+  }
+
+  /** Whether the env's manager Worker is deployed — settled on a confirmed account, like every lookup here. */
+  async hasManager(env: ManagedEnvironment): Promise<boolean> {
+    const name = managerWorkerName(this.#project, env);
+    return Boolean(
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      }),
+    );
   }
 
   /**
@@ -370,12 +421,13 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     }
   }
 
-  /** Delete the env's secrets D1 if it exists. Project-scoped by name, like the manager above. */
+  /**
+   * Delete the env's secrets D1 if it exists. Project-scoped by name, like the manager above — and refused
+   * while the vault holds more rows than this run's budget agreed to destroy (#591), counted at the delete.
+   */
   async deleteDatabase(env: ManagedEnvironment): Promise<void> {
-    const db = await this.#cf.d1Provisioner().findDatabaseByName(managerWorkerName(this.#project, env));
-    if (db) {
-      await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
-    }
+    const database = await this.#database(env);
+    if (database) await deleteRetainedDatabase(database, this.#budget);
   }
 
   /**

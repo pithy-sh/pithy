@@ -140,15 +140,41 @@ function fakeDeprovisioner(): { deprovisioner: StorageDeprovisioner; calls: stri
 }
 
 describe("deprovisionStorage", () => {
-  test("removes the workers and keeps the files — stored data is never collateral", async () => {
+  const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
+
+  test("removes the named environment's worker and keeps the files — stored data is never collateral", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionStorage(deprovisioner, DEFAULT_ENVIRONMENTS);
-    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
+    await deprovisionStorage(deprovisioner, staging);
+    expect(calls).toEqual(["deleteWorker:staging"]);
   });
 
-  test("deletes the buckets only when asked, and only after the workers that bind them are gone", async () => {
+  test("a staging teardown with --storage deletes staging's bucket, after its worker, and never production's (#591)", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionStorage(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
-    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteBucket:staging", "deleteBucket:prod"]);
+    await deprovisionStorage(deprovisioner, staging, { deleteStorage: true });
+    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+  });
+
+  test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner();
+    await expect(
+      deprovisionStorage(
+        deprovisioner,
+        { environment: undefined, declared: DEFAULT_ENVIRONMENTS },
+        { deleteStorage: true },
+      ),
+    ).rejects.toThrow("Name the environment to deprovision. Nothing was deleted.");
+    expect(calls).toEqual([]);
+  });
+
+  test("naming an environment the project does not declare refuses, and deletes nothing", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner();
+    await expect(
+      deprovisionStorage(
+        deprovisioner,
+        { environment: "live", declared: DEFAULT_ENVIRONMENTS },
+        { deleteStorage: true },
+      ),
+    ).rejects.toThrow('"live" is not an environment this project declares.');
+    expect(calls).toEqual([]);
   });
 });

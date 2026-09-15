@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { narrate, type ProgressEvent } from "../terminal/progress";
 import {
   alreadyProvided,
   declareOnWorker,
@@ -13,6 +15,7 @@ import {
   installArgs,
   installPackage,
   promoteDependencies,
+  runPackageManager,
   uninstallArgs,
   uninstallPackage,
 } from "./packageManager";
@@ -145,6 +148,32 @@ describe("promoteDependencies", () => {
       ran = true;
     });
     expect(ran).toBe(false);
+  });
+});
+
+describe("runPackageManager", () => {
+  /**
+   * #593. A cold install is minutes of collected output and nothing on the terminal, so the step is raised
+   * before the child exists — the marker the child writes is not there yet when the step is heard.
+   */
+  test("names the command line in a step before the child starts", async () => {
+    const marker = join(dir, "ran");
+    const args = ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`];
+    const heard: { event: ProgressEvent; childHadRun: boolean }[] = [];
+
+    await narrate(
+      (event) => heard.push({ event, childHadRun: existsSync(marker) }),
+      () => runPackageManager(process.execPath, args, dir),
+    );
+
+    expect(heard).toEqual([
+      { event: { phase: "start", what: `Running ${[process.execPath, ...args].join(" ")}` }, childHadRun: false },
+    ]);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  test("throws the child's own failure for the caller to word", async () => {
+    await expect(runPackageManager(process.execPath, ["-e", "process.exit(3)"], dir)).rejects.toThrow();
   });
 });
 

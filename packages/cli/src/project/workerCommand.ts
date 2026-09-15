@@ -1,10 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { execFile } from "node:child_process";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { promisify } from "node:util";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
@@ -14,14 +12,12 @@ import { portsRegistryPath, readWorkerAutostart, registryRootFor } from "../feat
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
-import { detectPackageManager } from "./packageManager";
+import { detectPackageManager, runPackageManager } from "./packageManager";
 import { assertWorkerName, ensureScaffoldPath, pathExists, removeScaffoldPath } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
-
-const run = promisify(execFile);
 
 /** Discover-workers seam, defaulted to the real discovery so tests can fix the worker set. */
 type DiscoverWorkers = (projectDir: string) => Promise<WorkerTarget[]>;
@@ -32,7 +28,7 @@ export type WorkspaceInstall = (projectDir: string) => Promise<void>;
 const defaultInstall: WorkspaceInstall = async (projectDir) => {
   const pm = await detectPackageManager(projectDir);
   try {
-    await run(pm, ["install"], { cwd: projectDir });
+    await runPackageManager(pm, ["install"], projectDir);
   } catch (cause) {
     throw new InternalError({
       // The worker is rolled back, so "run the install by hand" would point at a workspace that no

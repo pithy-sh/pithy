@@ -29,6 +29,17 @@ export interface DatabaseSpec<Tables extends SchemaMap = SchemaMap> {
   migrations?: Record<string, Migration>;
   /** Sort order within this database relative to other capabilities (core low, app high). Required with `migrations`. */
   migrationOrder?: number;
+  /**
+   * The tables in this slice whose rows **exist nowhere else** — a vault's sealed credentials, a
+   * suppression list of people who asked not to be mailed. Keys of `tables`, declared beside the
+   * `migrations` that create them (required with them).
+   *
+   * A schema `down` is right to drop a table; for these it destroys the only copy. So while one of them
+   * holds rows, no `down` runs against this database — a rollback, a `seed --redo` reset, a
+   * `remove --drop` — unless the operator passes the exact row count (`--destroy-retained <n>`). The
+   * refusal lives in the migration runner, so a new command that reverses migrations inherits it (#588).
+   */
+  retained?: readonly (keyof Tables & string)[];
 }
 
 /** A capability's databases: database name → {@link DatabaseSpec}. */

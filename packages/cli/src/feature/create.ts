@@ -3,7 +3,7 @@
 
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
-import { detectPackageManager, type InstallRunner } from "../project/packageManager";
+import { detectPackageManager, type InstallRunner, runPackageManager } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
 import { seedProject } from "../seed/run";
 import type { DevConfig } from "./devConfig";
@@ -137,7 +137,7 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
   // Install before discovering workers so a freshly-cut worktree has its dependencies in place.
   if (!options.skipInstall) {
     const pm = await detectPackageManager(worktree.wtPath);
-    const installer = options.install ?? defaultInstall;
+    const installer = options.install ?? runPackageManager;
     await installer(pm, ["install"], worktree.wtPath);
   }
 
@@ -175,10 +175,3 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
     dev,
   };
 }
-
-/** The default install runner — spawn the detected package manager. Lazy import keeps it out of the seam type. */
-const defaultInstall: InstallRunner = async (command, args, cwd) => {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  await promisify(execFile)(command, args, { cwd });
-};

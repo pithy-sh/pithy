@@ -3,6 +3,7 @@
 
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { InternalError } from "../error/pithyError";
+import { declareRetained } from "./retainedDeclaration";
 
 /** Width of the zero-padded `order` prefix in a composed key — the stable anchor. */
 const ORDER_DIGITS = 4;
@@ -29,6 +30,12 @@ export interface NamespacedMigrations {
   order: number;
   /** Stable, per-namespace keys, each `^\d{4}_[a-z0-9_]+$` (e.g. "0001_init"). */
   migrations: Record<string, Migration>;
+  /**
+   * The table keys (camelCase, as the capability's `tables` declares them) this set's capability retains
+   * in this database — rows that exist nowhere else. Recorded on this set's `down`s, and the runner refuses
+   * any `down` against the database while one of them holds rows. See `./retained`.
+   */
+  retained?: readonly string[];
 }
 
 // These guard build-time registry invariants — a capability author wired its migrations wrong.
@@ -85,6 +92,9 @@ function composeDatabase(database: string, sets: NamespacedMigrations[]): Migrat
     }
   }
 
+  // Recorded on each migration's own `down`, so the runner enforces it on this provider and on anything
+  // later built from these same migrations — no caller has to remember to pass it along (#588).
+  for (const set of sets) declareRetained(set.migrations, set.retained ?? []);
   return {
     getMigrations: async (): Promise<Record<string, Migration>> => composed,
   };

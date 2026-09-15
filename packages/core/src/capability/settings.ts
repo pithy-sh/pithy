@@ -112,8 +112,21 @@ export interface SettingsAccountReader {
   d1Databases(): Promise<readonly string[]>;
   /** Whether this account holds a Cloudflare zone covering the hostname — the prerequisite for onboarding it. */
   zone(hostname: string): Promise<boolean>;
-  /** Whether a declared secret has a value in that environment. The name is the registry's, not a binding's. */
-  secret(request: { name: string; environment: string }): Promise<boolean>;
+  /**
+   * Whether that environment's **D1 vault** holds a value under this registry name — asked of its manager
+   * Worker, the only thing that can open it.
+   *
+   * Named for the store it asks, because it used to be `secret()` — "does this secret have a value" — and
+   * that question has two stores behind it (#596). A check asking it about a `cf-secrets-store` secret got a
+   * confident `false` from a vault the secret never lives in. Ask {@link storeEntry} about one of those.
+   */
+  vaultSecret(request: { name: string; environment: string }): Promise<boolean>;
+  /**
+   * Whether the account's **Secrets Store** holds an entry of exactly this name. The name is the entry's, not
+   * the registry's: compose it with `environmentScope(project, env).secretEntry(...)`, the namer provisioning
+   * created it with, so the check looks where the value went.
+   */
+  storeEntry(name: string): Promise<boolean>;
 }
 
 /** What the account tier is told: everything the local tier gets, plus the account it may ask. */

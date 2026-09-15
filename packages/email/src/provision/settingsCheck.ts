@@ -10,8 +10,9 @@ import type {
 } from "@pithy-sh/core/src/capability/settings";
 import { hostEnvFindings } from "@pithy-sh/core/src/capability/settings";
 import { LOCAL_ORIGIN } from "@pithy-sh/core/src/naming/domains";
+import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { checkHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
-import { EMAIL_LINK_SIGNING_KEY } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
 import type { EmailTheme } from "../templates/theme";
 import { emailHostEnv } from "../workflows/hostEnv";
 import { suppressionDatabaseName } from "./provisionEmail";
@@ -35,8 +36,8 @@ import { suppressionDatabaseName } from "./provisionEmail";
  *
  * ## The account tier asks the three things only the account knows
  *
- * Is the sending domain a zone here, does the suppression database exist, does the signing key have a
- * value. Each costs one Cloudflare call, each is skipped whole when the account cannot be reached, and
+ * Is the sending domain a zone here, does the suppression database exist, does the signing key have its
+ * Secrets Store entry — and is it still in the D1 vault it moved out of. Each costs one Cloudflare call, each is skipped whole when the account cannot be reached, and
  * none of them is inferable from a file in the checkout.
  *
  * Nothing here writes. Every finding names the command, the config key, or the one-time dashboard action
@@ -68,6 +69,7 @@ function stubBindings(): Record<string, unknown> {
     EMAIL_SUPPRESSIONS: d1,
     SECRETS: d1,
     SECRETS_ENCRYPTION_KEYS: "checked elsewhere",
+    [EMAIL_LINK_SIGNING_KEY]: "checked elsewhere",
     EMAIL: { send: () => undefined },
     EMAIL_SENDER: { create: () => undefined, get: () => undefined },
     EMAIL_SCHEDULER: { create: () => undefined },
@@ -218,20 +220,54 @@ async function accountFindings(
   }
 
   for (const environment of context.environments) {
-    // `dev` has no manager Worker to ask: a `d1` secret's value is sealed under a master key that never
-    // leaves the environment's manager, and local dev has none. Asking would be answered by a refusal,
-    // which the runner would report as an unchecked capability rather than as this clean pass.
+    // `dev` has no Secrets Store entry and no manager Worker: its key is the generated `.dev.vars` line, and
+    // `pithy doctor`'s dev-secrets block is what reads that.
     if (environment.name === "dev") continue;
-    if (await context.account.secret({ name: EMAIL_LINK_SIGNING_KEY, environment: environment.name })) continue;
+    findings.push(...(await signingKeyFindings(context, environment.name)));
+  }
+
+  return findings;
+}
+
+/**
+ * Where the link-signing key is in one deployed environment, and where it should not be (#596).
+ *
+ * **Two stores, two questions, and neither answers the other.** The key is a Secrets Store entry per
+ * environment: the one `pithy secrets provision` created, at the name `environmentScope(...).secretEntry`
+ * composes from the declaration's own scope. That is the question that says whether a link can be signed.
+ *
+ * The vault question is the migration. A project provisioned before the move holds the key as a D1 row,
+ * which nothing reads now — and which the move cannot carry: the row is sealed under a master key no
+ * command can read, and every link minted from it predates the audience claim the verifier requires. So the
+ * finding says plainly that those links are gone, and names the command that removes the row once the entry
+ * is serving. The path in full is in `docs/commands/secrets.md`.
+ *
+ * **What this sees:** a row under this registry name. A secret some other declaration moved off D1 has its
+ * own check to write, or none; nothing here walks the vault for strays, because the vault cannot be listed.
+ */
+async function signingKeyFindings(context: SettingsAccountContext, environment: string): Promise<SettingsFinding[]> {
+  const findings: SettingsFinding[] = [];
+  const entry = environmentScope(context.project, environment).secretEntry(
+    EMAIL_LINK_SIGNING_KEY,
+    emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
+  );
+  if (!(await context.account.storeEntry(entry))) {
     findings.push({
       setting: EMAIL_LINK_SIGNING_KEY,
-      environment: environment.name,
-      problem: `The link-signing key has no value in ${environment.name}, so no tracking or unsubscribe link can be signed.`,
-      // No `--env`: `pithy secrets provision` spans every declared environment and declares no such flag (#594).
+      environment,
+      problem: `The link-signing key has no Secrets Store entry in ${environment}, so no tracking or unsubscribe link can be signed.`,
+      // No `--env`: the command spans every declared environment, and takes no such flag.
       action: "Run `pithy secrets provision`.",
     });
   }
-
+  if (await context.account.vaultSecret({ name: EMAIL_LINK_SIGNING_KEY, environment })) {
+    findings.push({
+      setting: EMAIL_LINK_SIGNING_KEY,
+      environment,
+      problem: `The link-signing key is still held in ${environment}'s D1 vault, where nothing reads it. Links signed with it before the move no longer verify.`,
+      action: `Once the Secrets Store entry is bound and deployed, run \`pithy secrets rm ${EMAIL_LINK_SIGNING_KEY} --env ${environment} --backend d1\`. See docs/commands/secrets.md#moving-a-secret-off-d1.`,
+    });
+  }
   return findings;
 }
 

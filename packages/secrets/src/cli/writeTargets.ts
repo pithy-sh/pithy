@@ -9,9 +9,10 @@ import { canonicalGlobalEnvironment, type ManagedEnvironment, resolveWriteTarget
 /**
  * **Where a write is allowed to land, decided once, before anything is dispatched.**
  *
- * A `global` secret is *defined* by holding one value in every environment — `email-link-signing-key`
- * exists so a link signed in staging verifies in prod. A split is therefore not a state the product has
- * a meaning for, and it can arrive two ways:
+ * A `global` secret is *defined* by holding one value in every environment — one webhook secret a
+ * partner signs with, whichever environment receives the call. A split is therefore not a state the
+ * product has a meaning for, and it can arrive two ways. (`email-link-signing-key` was the example here
+ * until #596 made it one entry per environment: a link is verified by the environment that minted it.)
  *
  * 1. **An operator asks for one.** `pithy secrets update <global> --env staging` narrows a scope that
  *    cannot be narrowed. This is a category error, not a fault, and it is what this module refuses.

@@ -35,7 +35,10 @@ function subcommand(name: string): CommandDef {
 }
 
 /** Run a subcommand to its first failure and return the `--json` error payload it reported. */
-async function failure(name: string, args: Record<string, unknown>): Promise<{ code: string; message: string }> {
+async function failure(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ code: string; message: string; action?: string }> {
   const lines: string[] = [];
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     lines.push(String(chunk));
@@ -68,5 +71,27 @@ describe("pithy storage", () => {
   test("deprovision refuses a project with no name rather than deleting nothing and exiting 0", async () => {
     const error = await failure("deprovision", { json: true, storage: false });
     expect(error.message).toBe("pithy.config.ts has no `name`.");
+  });
+
+  // #591: a `--storage` teardown walked every declared environment, production's bucket included. Settled
+  // before credentials: none resolve here, so a refusal that came any later would be about credentials.
+  test("deprovision with no --env refuses and lists the environments it could act on, before any credential", async () => {
+    root.config = { name: "acme" };
+    const error = await failure("deprovision", { json: true, storage: true });
+    expect(error.message).toBe("Name the environment to deprovision. Nothing was deleted.");
+    expect(error.action).toBe("Pass --env with one of: staging, prod.");
+  });
+
+  test("deprovision naming an undeclared environment refuses the same way", async () => {
+    root.config = { name: "acme" };
+    const error = await failure("deprovision", { json: true, storage: true, env: "live" });
+    expect(error.message).toBe('"live" is not an environment this project declares. Nothing was deleted.');
+  });
+
+  // The flag goes through the naming rule before the declaration, so a misspelling is answered with the spelling.
+  test("deprovision answers --env production with prod", async () => {
+    root.config = { name: "acme" };
+    const error = await failure("deprovision", { json: true, storage: true, env: "production" });
+    expect(error.action).toBe("Use `prod`.");
   });
 });

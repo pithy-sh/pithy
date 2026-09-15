@@ -14,7 +14,7 @@ pithy secrets rm <name> [--env <env>] [--json]
 pithy secrets ls [--all] [--json]
 pithy secrets edit [--json]
 pithy secrets provision [--json]
-pithy secrets deprovision [--keys] [--json]
+pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
@@ -25,8 +25,11 @@ pithy secrets deprovision [--keys] [--json]
 |---|---|---|
 | `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
 | `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
+| `rm` | `--backend <d1\|cf-secrets-store>` | Remove the value from this store instead of the one the registry names — for a value a secret left behind when its declaration moved. Needs `--env`. See [Moving a secret off D1](#moving-a-secret-off-d1). |
 | `rotate` | `--dry-run` | Resolve the declaration and say what would happen. Calls no issuer, writes nothing, needs no credentials. Default `false`. |
-| `deprovision` | `--keys` | Also delete each environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
+| `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
+| `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
+| `deprovision` | `--destroy-retained <n>` | **Destructive.** Delete a vault that still holds rows. `<n>` must equal the count the refusal printed. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
 `--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are.
@@ -34,7 +37,7 @@ pithy secrets deprovision [--keys] [--json]
 **`--env` on a `global` secret is refused, not ignored.** A global secret is defined by holding one value everywhere, so naming an environment asks for something the scope does not permit. The command says so and stops, with nothing written:
 
 ```
-email-link-signing-key is global. It holds one value across every environment, so --env cannot narrow it.
+payments-provider-credentials is global. It holds one value across every environment, so --env cannot narrow it.
 Run it again without --env to set it in every environment.
 ```
 
@@ -140,10 +143,33 @@ Under `--json` that is `environments` naming every environment that reads it, pl
 **A `global` D1 write is the one fan-out, and it is not a transaction.** Each environment is a separate Workflow in a separate Worker; there is no rollback across them, and a compensating write is itself a Workflow that can fail. So the guarantee the command gives is narrower than "all or nothing", and it is stated rather than implied: **no ordinary command can create a split**, because a narrowed global write is refused before anything is dispatched. A *fault* part-way through the fan-out still can, and when it does the command names the environments it reached before it failed — on stdout, before the error:
 
 ```
-email-link-signing-key written to staging, canary before this failed.
+partner-webhook-secret written to staging, canary before this failed.
 ```
 
 Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and exit code 1. Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
+
+### Moving a secret off D1
+
+A declaration can change its backend between releases, and the value it held does not move with it. `email-link-signing-key` did (#596): it was an encrypted row in each environment's D1 vault, and it is now a Secrets Store entry per environment. The vault is where a rollback, a `seed --redo` or a teardown reaches once an operator agrees to it, and on one project a staging rollback took the key. A Secrets Store entry lives outside every D1, so none of them can.
+
+`pithy doctor` reports a project that still holds it:
+
+```
+email: email-link-signing-key (staging) — The link-signing key is still held in staging's D1 vault, where nothing reads it. Links signed with it before the move no longer verify. Once the Secrets Store entry is bound and deployed, run `pithy secrets rm email-link-signing-key --env staging --backend d1`. See docs/commands/secrets.md#moving-a-secret-off-d1.
+```
+
+**Moving a key that has signed live mail invalidates those links.** Every tracking and unsubscribe link already in an inbox was signed with the D1 value. The only way to keep one verifying would be to carry that value into the new entry as a previous version — and it cannot be carried: it is sealed under a master key that never leaves the environment's manager Worker, so no command reads it back out. Links minted before this release also name no audience, which the verifier now requires, so a carried key would not save them either. **Those links answer `email/invalid_token` from the moment the new entry is deployed.** For elective mail that includes the one-click unsubscribe link; an opt-out that arrives another way still belongs in the suppression list. An environment that has sent no tracked or elective mail loses nothing.
+
+The move, for each environment:
+
+1. `pithy secrets provision` — creates the Secrets Store entry, `<project>-<env>-email-link-signing-key`, with a fresh value, and binds it in the app Worker's `wrangler.jsonc`. An entry that already exists is never replaced.
+2. `pithy email provision` — redeploys the email host bound to the same entry, in every declared environment. The host signs; the app Worker verifies. Both must bind it.
+3. `pithy deploy --env <env>` — ships the app Worker with its new binding. From here, new links sign and verify with the new key.
+4. `pithy secrets rm email-link-signing-key --env <env> --backend d1` — removes the row nothing reads. A plain `rm` routes by the declaration and would delete the live entry instead; `--backend` names the vault, one environment at a time, and is refused for anything but a removal.
+
+`pithy doctor` is clean for that environment once the entry exists and the row is gone.
+
+**What `--backend` does not do.** It removes a value from a store; it never writes one where the declaration does not read it, and it never picks the environments for you. It sees the one name you give it — the vault cannot be listed, so a secret some other declaration moved off D1 is found by its own check or not at all.
 
 ### `rotate` — replacing a value against the declaration that says how
 
@@ -207,7 +233,23 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 `edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write.
 
-`provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op. `deprovision` reverses it, and keeps the master keys unless `--keys` says otherwise.
+`provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op.
+
+**`deprovision` reverses it for one environment, named.** It used to walk every declared environment, so one run typed to clean up staging deleted production's vault with it. Now `--env` is required, and there is no default set for production to be in:
+
+```
+Name the environment to deprovision. Nothing was deleted.
+Pass --env with one of: staging, prod.
+```
+
+**A vault holding rows is counted before anything goes.** The secrets database's tables are declared retained — a sealed credential exists there and at its issuer, nowhere else — so the rows are counted before the manager is deleted, and the command refuses unless `--destroy-retained` names the same number. The same guard `pithy migrate --rollback` spends:
+
+```
+Retained 3 rows would be dropped: pithy_secrets_system_secrets on acme-prod-secrets (3 rows). Refused before anything was deleted.
+They exist nowhere else. Back them up, or pass --destroy-retained 3 to drop them.
+```
+
+A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager Worker, the master key when `--keys` is passed, and the database go, in that order. **The shared manager token goes only with the last manager**: it is one credential every manager binds, so removing it while prod still runs one would fail every rotation there.
 
 **`provision` says where it got to.** Each environment's manager Worker is named as it is about to be uploaded — `▸ acme-staging-secrets...` — the same plain line `pithy deploy`, `pithy provision` and `pithy email provision` print, from the one seam they all share. A manager the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not. `deprovision` deletes over the API and spawns nothing, so it has nothing to narrate.
 
@@ -218,6 +260,8 @@ Credentials for every subcommand above that reaches an account come from `<confi
 One line on stdout. A failure is one `{"error": …}` line on stderr and a non-zero exit.
 
 ### `secrets create` · `secrets update` · `secrets rm`
+
+`rm --backend d1` reports the same line: `environments` names the one vault the row was removed from, and `accountEntry` is absent, because a vault row is not an account entry.
 
 | key | type | meaning |
 |---|---|---|
@@ -291,7 +335,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 
 **`provision` creates every secret the registry says nobody chooses.** A registry entry declares whether its value is *arbitrary* — a session signing key, a link signing key: any random string works, because nothing outside the project validates one. Provisioning creates those rather than printing a `pithy secrets create` line for each. A `cf-secrets-store` secret is written and bound in the same pass (`wired[].created`); for a `d1` secret every environment's manager is **asked first** — it holds the master key and is the only thing that can say whether a value is already there — and only then written to (`generated`). **An existing value is never replaced, on either path.** Replacing a session secret signs everyone out, replacing a link key stops verifying links already in inboxes, and replacing a key-encryption key orphans everything sealed under it — so creating a missing secret and replacing a live one are different acts, and only the first happens here. A secret whose value must match something issued elsewhere — an OAuth client secret, a payment rail's key — declares nothing, and stays a question for the person who can answer it.
 
-**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that a link signed in staging verifies wherever the recipient's click lands, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
+**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that every environment reads one value, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
 
 **A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with exit code 1. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
 
@@ -302,7 +346,9 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets deprovision"`. |
-| `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the master keys were deleted with the rest. |
+| `env` | string | The one environment torn down — the value of `--env`. |
+| `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the environment's master key was deleted with the rest. |
+| `managerTokenDeleted` | boolean | Whether the shared manager token was removed. `true` only when no declared environment still runs a manager. |
 
 ## Errors
 
@@ -317,6 +363,9 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 - **`Secret '<name>' is global. It holds one value across every environment, so --env cannot narrow it.`** Run it again without `--env`. Nothing was dispatched, so nothing was written — the re-run is the confirmation, and there is no flag that skips it. `rm` says *remove it from every environment* instead of *set it in*.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.
 - **`Cloudflare credentials are missing.`** Run `pithy init` to record the pair, or export it. Raised by every subcommand that reaches Cloudflare — not by `ls`.
+- **`Name the environment to deprovision. Nothing was deleted.`** `deprovision` only. Pass `--env` with one of the environments the refusal lists. An undeclared one is refused the same way. `--env dev` is refused as undeclared and pointed at `pithy dev`: there is nothing of `dev` on a Cloudflare account to tear down.
+- **`@pithy-sh/secrets asked for <call> while tearing down <env>. Refused.`** `deprovision` only. The command hands the teardown a deprovisioner that deletes only the named environment's manager and database, its master key only with `--keys`, and the manager token only once no other environment runs a manager. A `@pithy-sh/secrets` older than the CLI that reaches past that is stopped at the reach. Update it to match the CLI.
+- **`Retained <n> rows would be dropped: … Refused before anything was deleted.`** `deprovision` only. The vault holds rows. Back them up, or pass `--destroy-retained <n>` with the number printed.
 - **`The CF Secrets Store id is missing.`** `provision` and `deprovision` only. Run `pithy add secrets` to record `SECRETS_STORE_ID`.
 - **No project name.** Every subcommand that resolves a path or a Workflow requires `name` in the root `pithy.config.ts` and refuses to guess one. A guess would open one checkout's secrets from another's worktree, or dispatch this project's values into another project's manager.
 - **`edit` conflicts.** The file changed while you were editing (nothing is written, merge by hand); the editor exited non-zero on changed text (your text is kept, and named); the text came back invalid twice (same).
@@ -347,17 +396,20 @@ pithy secrets rm OLD_WEBHOOK_SECRET --env staging --json
 
 # Edit this machine's dev values in $EDITOR.
 pithy secrets edit
+
+# Tear staging down. Prod is not touched; its manager keeps the shared token.
+pithy secrets deprovision --env staging --json
 ```
 
 ```json
 {"command":"secrets create","name":"STRIPE_SECRET_KEY","environments":["prod"]}
-{"command":"secrets update","name":"email-link-signing-key","environments":["staging","canary"],"interrupted":true}
+{"command":"secrets update","name":"partner-webhook-secret","environments":["staging","canary"],"interrupted":true}
 {"command":"secrets ls","secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
 {"command":"secrets rotate","name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
 {"command":"secrets rotate","name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
 {"command":"secrets edit","path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
 {"command":"secrets provision","environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
-{"command":"secrets deprovision","keysDeleted":false}
+{"command":"secrets deprovision","environment":"staging","keysDeleted":false,"managerTokenDeleted":false}
 ```
 
 No example above contains a value, and none of these payloads can carry one.

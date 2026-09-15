@@ -805,6 +805,8 @@ describe("a gate is keyed on what it reads", () => {
         "It is the mechanism half of the one-copy gate, and every tree it reads it builds itself under `os.tmpdir()` — this repository holds one copy of everything, so it is the only place the walker can be shown to fire. The population it exists for is swept repo-wide by `kitPeerDeps.test.ts` beside it, which the register already sees.",
       "deployCallSites.test.ts":
         "It sweeps `packages/cli/src` for the modules that hand a `deploy` argv to wrangler, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that spawns wrangler at all. The one producer of this class outside it — the `deploy:*` scripts the scaffolder writes into an adopter's `package.json` — is held by `project/scaffoldParity.test.ts`, which reads the template beside it. Turbo's default inputs are already exactly right for it.",
+      "childProcesses.test.ts":
+        "It is the mechanism half of the narration gate, and every tree it walks is a fixture it builds in memory under a virtual root — it opens no file at all. Keeping each spelling of a child process as a fixture is the point: the real tree has no module to miss a spelling in. The population it exists for is swept by `narration.test.ts` beside it, which the register already sees.",
       "environmentCompositions.test.ts":
         "It sweeps `packages/cli/src` for the modules that compose a Worker's `pithy.config.ts` or stamp `ENVIRONMENT` for one, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that evaluates an adopter's config outside a Worker. Turbo's default inputs are already exactly right for it.",
       "distTypes.test.ts":

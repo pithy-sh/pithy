@@ -13,6 +13,12 @@ import { CloudflareEmailDeprovisioner, CloudflareEmailProvisioner } from "./emai
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
 const PROJECT = "acme";
 
+/**
+ * A D1 with no tables — what a never-migrated database answers. The teardown counts retained rows before it
+ * deletes (#591); these fakes are about names and audits, so there is nothing to count.
+ */
+const EMPTY_D1 = { prepare: () => ({ bind: () => ({ first: async () => null }) }) };
+
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
   const findDatabaseByName = vi.fn();
@@ -25,6 +31,7 @@ function fakeCf() {
     d1Provisioner: () => ({ findDatabaseByName, createDatabase, deleteDatabase }),
     workers: () => ({ getWorker, deleteWorker }),
     emailRouting: () => ({ ensureWorkerRoute }),
+    d1: () => EMPTY_D1,
   } as unknown as CloudflareClients;
   return { cf, findDatabaseByName, createDatabase, deleteDatabase, getWorker, deleteWorker, ensureWorkerRoute };
 }
@@ -146,6 +153,24 @@ describe("CloudflareEmailProvisioner", () => {
 });
 
 describe("CloudflareEmailDeprovisioner", () => {
+  // What a `--suppression` teardown asks of every other environment (#591): the list goes only with the last worker.
+  test("hasWorker asks for this project's worker in that environment, and deletes nothing", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+    });
+
+    getWorker.mockResolvedValue({ id: emailWorkerName(PROJECT, "prod") });
+    expect(await deprovisioner.hasWorker("prod")).toBe(true);
+    expect(getWorker).toHaveBeenCalledWith(emailWorkerName(PROJECT, "prod"));
+
+    getWorker.mockResolvedValue(null);
+    expect(await deprovisioner.hasWorker("staging")).toBe(false);
+    expect(deleteWorker).not.toHaveBeenCalled();
+  });
+
   test("deleteWorker audits a warning-severity removal only when a worker was actually deployed", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const events: CliAuditEvent[] = [];

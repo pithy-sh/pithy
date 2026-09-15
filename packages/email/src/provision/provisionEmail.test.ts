@@ -139,12 +139,29 @@ describe("names", () => {
 });
 
 describe("deprovisionEmail", () => {
-  function fakeDeprovisioner(): { deprovisioner: EmailDeprovisioner; calls: string[] } {
+  /**
+   * Records every destructive call. `suppressed` is the rows the list holds; `workers` is which environments run an
+   * email worker before the run, and a deleted one stops running.
+   */
+  function fakeDeprovisioner(
+    suppressed = 0,
+    workers: readonly string[] = DEFAULT_ENVIRONMENTS,
+  ): { deprovisioner: EmailDeprovisioner; calls: string[] } {
     const calls: string[] = [];
+    const running = new Set(workers);
     return {
       calls,
       deprovisioner: {
+        async countSuppressionRetained() {
+          return suppressed === 0
+            ? []
+            : [{ binding: "acme-global-email-suppressions", table: "pithy_email_suppressions", rows: suppressed }];
+        },
+        async hasWorker(env) {
+          return running.has(env);
+        },
         async deleteWorker(env) {
+          running.delete(env);
           calls.push(`deleteWorker:${env}`);
         },
         async deleteSuppressionDatabase() {
@@ -154,15 +171,75 @@ describe("deprovisionEmail", () => {
     };
   }
 
-  test("deletes every worker and keeps the suppression DB by default", async () => {
-    const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS);
-    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
+  const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
+  const prod = { environment: "prod", declared: DEFAULT_ENVIRONMENTS };
+
+  /**
+   * **#591, in email.** `pithy email deprovision` walked every declared environment: a run meant for staging removed
+   * production's email worker, and with it every send, digest and retry production had scheduled. Planting the old
+   * loop back fails the first two tests.
+   */
+  test("removes the named environment's worker and no other, and keeps the suppression list", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(4);
+    expect(await deprovisionEmail(deprovisioner, staging)).toEqual({ env: "staging" });
+    expect(calls).toEqual(["deleteWorker:staging"]);
   });
 
-  test("deletes the suppression DB only when explicitly asked", async () => {
+  test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteSuppression: true });
-    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteSuppressionDatabase"]);
+    await expect(
+      deprovisionEmail(deprovisioner, { environment: undefined, declared: DEFAULT_ENVIRONMENTS }),
+    ).rejects.toMatchObject({
+      message: "Name the environment to deprovision. Nothing was deleted.",
+      payload: { action: "Pass --env with one of: staging, prod." },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("naming an environment the project does not declare refuses, and deletes nothing", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner();
+    await expect(
+      deprovisionEmail(deprovisioner, { environment: "live", declared: DEFAULT_ENVIRONMENTS }),
+    ).rejects.toThrow('"live" is not an environment this project declares. Nothing was deleted.');
+    expect(calls).toEqual([]);
+  });
+
+  /**
+   * **The list is every environment's.** A staging teardown with `--suppression` deleted production's opt-outs:
+   * the next production send went to addresses that asked not to be mailed. It goes with the last environment.
+   */
+  test("--suppression refuses while another environment still runs a worker, before anything is deleted", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(0);
+    await expect(deprovisionEmail(deprovisioner, staging, { deleteSuppression: true })).rejects.toMatchObject({
+      message: "The suppression list is shared by every environment, and prod still runs. Nothing was deleted.",
+      payload: { action: "Deprovision prod first, or drop --suppression." },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("the last environment's teardown deletes an empty list when explicitly asked", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(0, ["prod"]);
+    await deprovisionEmail(deprovisioner, prod, { deleteSuppression: true });
+    expect(calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
+  });
+
+  /**
+   * **#591's other vault.** `--suppression` deleted every address that asked not to be mailed, with nothing
+   * counted — the same deletion of rows that exist nowhere else as the secrets teardown, one flag instead of
+   * none. #588's guard, spent here: counted before the worker goes, and refused unless the operator counted the
+   * same.
+   */
+  test("a suppression list holding rows refuses without the count, before the worker is deleted", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(4, ["prod"]);
+    await expect(deprovisionEmail(deprovisioner, prod, { deleteSuppression: true })).rejects.toThrow(
+      "Retained 4 rows would be dropped: pithy_email_suppressions on acme-global-email-suppressions (4 rows). Refused before anything was deleted.",
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("the exact count deletes it", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(4, ["prod"]);
+    await deprovisionEmail(deprovisioner, prod, { deleteSuppression: true, destroyRetained: 4 });
+    expect(calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
   });
 });

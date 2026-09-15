@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import seed from "./seed";
+import seed, { renderSeedText } from "./seed";
 
 /** The args are a static object literal on this command — resolve their type for the assertions. */
 type ArgSpec = { type: string; default?: unknown };
@@ -19,6 +19,7 @@ describe("seed command", () => {
       "dry-run",
       "redo",
       "confirm-reset",
+      "destroy-retained",
       "yes",
       "confirm-production",
     ]);
@@ -31,5 +32,29 @@ describe("seed command", () => {
     expect(args["confirm-production"]).toMatchObject({ type: "string" });
     // A reset is gated separately from --yes, so it has its own phrase flag (docs/CLI.md §7.5).
     expect(args["confirm-reset"]).toMatchObject({ type: "string" });
+  });
+});
+
+describe("a --redo that meets retained tables and shared databases (#588)", () => {
+  const reset = [
+    {
+      database: "secrets",
+      binding: "SECRETS",
+      migrations: 1,
+      retained: ["pithy_secrets_rotations", "pithy_secrets_system_secrets"],
+    },
+    { database: "emailSuppressions", binding: "EMAIL_SUPPRESSIONS", migrations: 1, retained: [], boundBy: ["prod"] },
+  ];
+
+  test("a dry run names the retained tables a real reset refuses to drop, and the database it keeps", () => {
+    const text = renderSeedText({ command: "seed", env: "staging", dryRun: true, workers: [], reset });
+    expect(text.split("\n").slice(0, 2)).toEqual([
+      "Would reset secrets (SECRETS): 1 migration. Retained: pithy_secrets_rotations, pithy_secrets_system_secrets.",
+      "Kept emailSuppressions (EMAIL_SUPPRESSIONS): prod binds it too.",
+    ]);
+  });
+
+  test("the destroy-retained flag is a count the operator types", () => {
+    expect(args["destroy-retained"]).toMatchObject({ type: "string" });
   });
 });

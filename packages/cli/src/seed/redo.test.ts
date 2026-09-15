@@ -100,7 +100,7 @@ describe("seedProject", () => {
         env: "dev",
         redo: true,
       });
-      expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
+      expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1, retained: [] }]);
 
       const store = await h.openLocal();
       try {
@@ -190,7 +190,7 @@ describe("seedProject", () => {
         dryRun: true,
       });
       expect(report.dryRun).toBe(true);
-      expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
+      expect(report.reset).toEqual([{ database: "app", binding: "DB", migrations: 1, retained: [] }]);
 
       const store = await h.openLocal();
       try {

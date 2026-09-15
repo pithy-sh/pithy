@@ -129,10 +129,10 @@ describe("a migration run composes for the environment it was asked about", () =
     // run composing for two environments — `pithy add`'s dev migrate beside a staging count — must not
     // answer the second question with the first composition.
     expect(await previewReset({ projectDir: dir, env: "dev", account: null })).toEqual([
-      { database: "app", binding: "DB", migrations: 1 },
+      { database: "app", binding: "DB", migrations: 1, retained: [] },
     ]);
     expect(await previewReset({ projectDir: dir, env: "staging", account: null })).toEqual([
-      { database: "app", binding: "DB", migrations: 2 },
+      { database: "app", binding: "DB", migrations: 2, retained: [] },
     ]);
   });
 

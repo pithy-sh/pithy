@@ -139,6 +139,14 @@ export interface WorkflowHostParams {
    * not depend on `@pithy-sh/secrets`, which owns that naming.
    */
   masterKeySecretName?: string;
+  /**
+   * Secrets Store binding name → the entry it resolves to in this environment, for every store secret the
+   * host reads besides the master key. Filled **only** for the bindings listed, like
+   * {@link databaseNames}; the names come from the capability, which composes them with the same namer
+   * provisioning created the entries with. Core composes none of them itself, for the reason
+   * {@link masterKeySecretName} gives.
+   */
+  secretNames?: Record<string, string>;
   /** Vars merged over the template's, e.g. the capability's config serialized as one JSON blob. */
   vars?: Record<string, string>;
   /**
@@ -241,13 +249,15 @@ export function resolveWorkflowHost(template: WorkflowHostTemplate, params: Work
 
   if (resolved.secrets_store_secrets && params.secretsStoreId !== undefined) {
     const storeId = params.secretsStoreId;
-    const masterKey = params.masterKeySecretName;
+    const names: Record<string, string> = {
+      ...(params.masterKeySecretName !== undefined ? { SECRETS_ENCRYPTION_KEYS: params.masterKeySecretName } : {}),
+      ...params.secretNames,
+    };
     resolved.secrets_store_secrets = resolved.secrets_store_secrets.map((entry) => ({
       ...entry,
       store_id: storeId,
-      // Only the master key is environment-scoped; every other entry keeps its declared name.
-      secret_name:
-        masterKey !== undefined && entry.binding === "SECRETS_ENCRYPTION_KEYS" ? masterKey : entry.secret_name,
+      // A named binding takes the entry its capability composed; an unnamed one keeps its declared name.
+      secret_name: Object.hasOwn(names, entry.binding) ? (names[entry.binding] as string) : entry.secret_name,
     }));
   }
 

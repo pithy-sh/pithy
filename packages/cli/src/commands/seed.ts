@@ -8,6 +8,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
@@ -34,12 +35,18 @@ function describeSet(set: {
   return `${set.name}: ${parts.length > 0 ? parts.join(", ") : "nothing to seed"}.`;
 }
 
-/** One line per reset database: schema dropped and recreated, or (dry run) what would be (docs/CLI.md §3). */
+/**
+ * One line per reset database: schema dropped and recreated, or (dry run) what would be (docs/CLI.md §3).
+ * A database another environment binds is kept, and says so. A dry run names the retained tables a real
+ * reset refuses to drop while they hold rows — the preview reads no backend, so it names them, not their
+ * rows (#588).
+ */
 function describeReset(entry: ResetPreviewEntry, dryRun: boolean): string {
+  if (entry.boundBy) return `Kept ${entry.database} (${entry.binding}): ${entry.boundBy.join(", ")} binds it too.`;
   const migrations = `${entry.migrations} migration${entry.migrations === 1 ? "" : "s"}`;
-  return dryRun
-    ? `Would reset ${entry.database} (${entry.binding}): ${migrations}.`
-    : `Reset ${entry.database} (${entry.binding}): ${migrations} rolled back and reapplied.`;
+  if (!dryRun) return `Reset ${entry.database} (${entry.binding}): ${migrations} rolled back and reapplied.`;
+  const retained = entry.retained.length > 0 ? ` Retained: ${entry.retained.join(", ")}.` : "";
+  return `Would reset ${entry.database} (${entry.binding}): ${migrations}.${retained}`;
 }
 
 /**
@@ -142,12 +149,14 @@ export default defineCommand({
     redo: {
       type: "boolean",
       default: false,
-      description: "DESTRUCTIVE: drop every table and recreate the schema before seeding. All data is lost",
+      description:
+        "DESTRUCTIVE: drop every table and recreate the schema before seeding. All data is lost. Refuses while retained tables hold rows",
     },
     "confirm-reset": {
       type: "string",
       description: 'Unlock a non-dev reset non-interactively: "yes, i really want to reset <env>"',
     },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     yes: { type: "boolean", default: false, description: "Confirm a non-dev environment" },
     "confirm-production": {
       type: "string",
@@ -164,6 +173,7 @@ export default defineCommand({
       // written and whose trail records it (#234).
       const account = loadProjectCloudflare(config) ?? null;
       const dryRun = args["dry-run"];
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 
       // Resolved once: the fan-out seeds these workers, and the audit emitter needs their capabilities
@@ -209,6 +219,7 @@ export default defineCommand({
         json: args.json,
         confirmProduction: args["confirm-production"],
         confirmReset: args["confirm-reset"],
+        ...(destroyRetained !== undefined ? { destroyRetained } : {}),
         productionEnvironments: config.seed?.productionEnvironments,
         prompt: interactive ? productionPrompt() : undefined,
         promptReset: interactive ? resetPrompt(env) : undefined,

@@ -54,7 +54,15 @@ describe("migrate command", () => {
   test("is a non-interactive, agent-drivable command with the documented flags", () => {
     expect(migrate.meta).toMatchObject({ name: "migrate" });
     // Every lifecycle command works headlessly with full flags and a --json surface (docs/CLI.md).
-    expect(Object.keys(args)).toEqual(["env", "worker", "rollback", "json"]);
+    expect(Object.keys(args)).toEqual([
+      "env",
+      "worker",
+      "binding",
+      "rollback",
+      "confirm-rollback",
+      "destroy-retained",
+      "json",
+    ]);
     expect(args.env).toMatchObject({ type: "string", default: "dev" });
     // The fan-out is the default; --worker narrows it to one worker in apps/.
     expect(args.worker).toMatchObject({ type: "string" });
@@ -167,6 +175,59 @@ describe("migrate command", () => {
             ],
           },
         ],
+      });
+    });
+
+    test("a rollback names the database it kept because another environment binds it, once (#588)", () => {
+      const kept = { database: "emailSuppressions", binding: "EMAIL_SUPPRESSIONS", results: [], boundBy: ["prod"] };
+      const report = formatMigrateReport(
+        [
+          {
+            worker: "api",
+            databases: [{ database: "app", binding: "DB", results: [] }, kept],
+          },
+          { worker: "email", databases: [kept] },
+        ],
+        { project: "acme", env: "staging", rollback: true, json: false },
+      );
+      expect(plain(report).split("\n")).toEqual([
+        "api    nothing to roll back.",
+        "email  nothing to roll back.",
+        "EMAIL_SUPPRESSIONS kept. prod binds it too.",
+        "Done.",
+        "",
+      ]);
+    });
+
+    test("--destroy-retained is a whole number or a refusal, never a guess", async () => {
+      const { parseDestroyRetained } = await import("../migrations/confirm");
+      expect(parseDestroyRetained(undefined)).toBeUndefined();
+      expect(parseDestroyRetained("5")).toBe(5);
+      for (const bad of ["yes", "-1", "5.5", ""]) expect(() => parseDestroyRetained(bad)).toThrow(/row count/);
+    });
+
+    test("hands the run the rollback phrase and the retained count it was given", async () => {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        await migrate.run?.({
+          args: {
+            env: "staging",
+            rollback: true,
+            json: true,
+            binding: "DB",
+            "confirm-rollback": "yes, i really want to roll back staging",
+            "destroy-retained": "5",
+          },
+        } as never);
+      } finally {
+        stdout.mockRestore();
+      }
+      const [options] = vi.mocked(migrateProject).mock.calls.at(-1) ?? [];
+      expect(options).toMatchObject({
+        binding: "DB",
+        rollback: true,
+        confirmRollback: "yes, i really want to roll back staging",
+        destroyRetained: 5,
       });
     });
 

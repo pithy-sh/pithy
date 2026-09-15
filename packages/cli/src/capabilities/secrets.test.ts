@@ -45,6 +45,80 @@ const registry = defineSecretRegistry({
   },
 });
 
+/**
+ * **`rm --backend`: removing the value a declaration moved away from (#596).**
+ *
+ * `email-link-signing-key` was a `d1` row and is now a Secrets Store entry, so a project provisioned before
+ * the move holds a row nothing reads. A plain `rm` routes by the declaration — it would delete the *entry*,
+ * the live key. The flag names the other store explicitly, and only for a removal.
+ */
+describe("removing a value from the backend a secret moved off", () => {
+  const moved = defineSecretRegistry({
+    "email-link-signing-key": {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: true,
+      valueType: "text",
+    },
+  });
+
+  test("the removal reaches that environment's vault, not the entry the declaration names", async () => {
+    const dispatcher = new StubDispatcher();
+    const envs = await runSecretWrite(moved, dispatcher, {
+      mode: "delete",
+      name: "email-link-signing-key",
+      env: "staging",
+      environments: DEFAULT_ENVIRONMENTS,
+      backend: "d1",
+    });
+    expect(envs).toEqual(["staging"]);
+    expect(dispatcher.calls).toEqual([
+      expect.objectContaining({ env: "staging", mode: "delete", name: "email-link-signing-key", backend: "d1" }),
+    ]);
+  });
+
+  test("a leftover is removed one named environment at a time, whatever scope the old declaration had", async () => {
+    const dispatcher = new StubDispatcher();
+    await expect(
+      runSecretWrite(moved, dispatcher, {
+        mode: "delete",
+        name: "email-link-signing-key",
+        env: undefined,
+        environments: DEFAULT_ENVIRONMENTS,
+        backend: "d1",
+      }),
+    ).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
+    expect(dispatcher.calls).toEqual([]);
+  });
+
+  test("only a removal may name another backend — a value is never written where nothing reads it", async () => {
+    const dispatcher = new StubDispatcher();
+    await expect(
+      runSecretWrite(moved, dispatcher, {
+        mode: "create",
+        name: "email-link-signing-key",
+        value: "k",
+        env: "staging",
+        environments: DEFAULT_ENVIRONMENTS,
+        backend: "d1",
+      }),
+    ).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
+    expect(dispatcher.calls).toEqual([]);
+  });
+
+  test("naming the declared backend is the ordinary removal", async () => {
+    const dispatcher = new StubDispatcher();
+    await runSecretWrite(moved, dispatcher, {
+      mode: "delete",
+      name: "email-link-signing-key",
+      env: "prod",
+      environments: DEFAULT_ENVIRONMENTS,
+      backend: "cf-secrets-store",
+    });
+    expect(dispatcher.calls).toEqual([expect.objectContaining({ env: "prod", backend: "cf-secrets-store" })]);
+  });
+});
+
 describe("runSecretWrite", () => {
   test("validates and dispatches a create to the requested env", async () => {
     const dispatcher = new StubDispatcher();

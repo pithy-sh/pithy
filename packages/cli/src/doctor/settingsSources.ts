@@ -116,6 +116,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
   let databases: Promise<readonly string[]> | undefined;
   const zones = new Map<string, Promise<boolean>>();
   const secrets = new Map<string, Promise<boolean>>();
+  const storeEntries = new Map<string, Promise<boolean>>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -138,7 +139,26 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
     // `async` so a refusal is a rejected promise rather than a synchronous throw: the runner guards both,
     // but a seam that throws before returning a promise is the shape `commands/doctor.ts` documents as the
     // one `.catch()` never sees, and no caller of this should have to know which it is.
-    secret: async ({ name, environment }) => {
+    // Asked of the store `pithy secrets provision` writes to, by the entry name the check composed. No id
+    // recorded is a refusal rather than `false`: "missing" would be a claim about every entry on a machine
+    // that has simply never run `pithy add secrets`, and the runner turns a refusal into `unchecked`.
+    storeEntry: async (name) => {
+      const storeId = vars.SECRETS_STORE_ID ?? "";
+      if (!storeId) {
+        throw new InternalError({
+          message: "The Secrets Store id is not recorded, so no entry can be asked about.",
+          action: "Run pithy add secrets to record SECRETS_STORE_ID.",
+          detail: `store entry ${name} asked with no SECRETS_STORE_ID`,
+        });
+      }
+      // Memoized like the rest: every environment's composition of email asks for every environment's entry.
+      const existing = storeEntries.get(name);
+      if (existing) return existing;
+      const answer = clients.secrets(storeId).exists(name);
+      storeEntries.set(name, answer);
+      return answer;
+    },
+    vaultSecret: async ({ name, environment }) => {
       // **`dev` is refused rather than answered.** A `d1` secret's value is sealed under a master key that
       // never leaves that environment's manager Worker, and `dev` has no manager — it is local Miniflare.
       // Answering `false` would report a signing key as missing on every developer's machine, which is a

@@ -62,6 +62,28 @@
  * `worker-safety.test.ts` exists to enforce, so the gate now polices the stripper it reads with.
  */
 export function blankComments(source: string): string {
+  return blank(source, false);
+}
+
+/**
+ * `source` with every comment **and every string's contents** blanked — for a gate asking whether a name is
+ * *called*, where {@link blankComments}' own rule points the wrong way.
+ *
+ * `blankComments` keeps strings because its callers look for a forbidden read, and a string that merely contains
+ * one is a false positive, the safe direction. A gate looking for a *required* call inverts that: a validator named
+ * only inside an error message — `"requireEnvironment(args.env)"` — is a call that never runs, and counting it
+ * passes the file. So this blanks the contents too, delimiters kept, character for character.
+ *
+ * **A template literal goes whole, `${}` included.** A call written only inside an interpolation is not seen. For
+ * a presence check that is the safe direction again — the file is flagged, never passed — and a scan for a read
+ * belongs on {@link blankComments}, where the interpolation stays.
+ */
+export function blankCommentsAndStrings(source: string): string {
+  return blank(source, true);
+}
+
+/** The one walk behind both: comments always blanked, a quoted run kept or blanked inside its delimiters. */
+function blank(source: string, strings: boolean): string {
   let out = "";
   let previous = "";
   let index = 0;
@@ -76,7 +98,8 @@ export function blankComments(source: string): string {
     }
     if (char === '"' || char === "'" || char === "`") {
       const stop = endOfQuoted(source, index, char, char !== "`");
-      out += source.slice(index, stop);
+      const run = source.slice(index, stop);
+      out += strings ? blankInside(run, char) : run;
       index = stop;
       previous = char;
       continue;
@@ -93,6 +116,13 @@ export function blankComments(source: string): string {
     index += 1;
   }
   return out;
+}
+
+/** A quoted run with everything between its delimiters blanked, newlines kept. An unterminated run has no closer. */
+function blankInside(run: string, quote: string): string {
+  const closed = run.length > 1 && run.endsWith(quote);
+  const body = run.slice(1, closed ? -1 : undefined).replace(/[^\n]/g, " ");
+  return `${quote}${body}${closed ? quote : ""}`;
 }
 
 /**

@@ -7,6 +7,7 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { fixtureReady } from "@pithy-sh/cloudflare/src/test-utils/fixtures";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -69,12 +70,15 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
     const storeId = vars.SECRETS_STORE_ID ?? "";
     const cf = new CloudflareClients({ accountId, apiToken });
     const workflows = new CloudflareWorkflowsClient({ accountId, apiToken });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({
-      account: { accountId: "acct-1", confirmation: "pinned" },
-      cf,
-      project,
-      storeId,
-    });
+    /** A teardown agreeing to destroy exactly `rows` vault rows — this suite's own throwaway rotation history. */
+    const deprovisioner = (rows?: number) =>
+      new CloudflareSecretsDeprovisioner({
+        account: { accountId: "acct-1", confirmation: "pinned" },
+        cf,
+        project,
+        storeId,
+        budget: new RetainedBudget(rows),
+      });
 
     const env: ManagedEnvironment = "staging";
     const secretName = "pithy-itest-secret";
@@ -135,8 +139,16 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       await workflows.dispatchAndPoll(writeWorkflow(env), { mode: "delete", name: secretName });
       expect(await storedKeyVersion(databaseId)).toBeUndefined();
     } finally {
-      // 5. Full teardown, including the throwaway master keys — this is a round-trip test.
-      await deprovisionSecrets(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteKeys: true });
+      // 5. Full teardown, including the throwaway master keys — this is a round-trip test. One environment at a
+      // time, because teardown takes no default set (#591), each counting the rows this run itself wrote.
+      for (const e of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
+        const rows = (await deprovisioner().countRetained(e)).reduce((sum, entry) => sum + entry.rows, 0);
+        await deprovisionSecrets(
+          deprovisioner(rows),
+          { environment: e, declared: DEFAULT_ENVIRONMENTS },
+          { deleteKeys: true, destroyRetained: rows },
+        );
+      }
     }
 
     // Teardown removed every manager Worker and database.

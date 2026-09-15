@@ -27,6 +27,7 @@ import {
   resolveWorkerScopes,
   type WorkerScope,
 } from "../migrations/run";
+import { startStep } from "../terminal/progress";
 import {
   type ImagesFactory,
   openSeedDriver,
@@ -111,6 +112,13 @@ export interface SeedProjectOptions {
    * destroys every row, so the flag that authorizes an additive seed must not also authorize a drop.
    */
   confirmReset?: string;
+  /**
+   * The `--destroy-retained` count: the exact rows in retained tables a `--redo` reset agrees to destroy. A
+   * reset refuses while a retained table — the secrets vault, the email suppression list — holds rows,
+   * unless this equals them (#588). Never implied by `--confirm-reset`: that phrase agrees to a reset, not
+   * to losing credentials that exist nowhere else.
+   */
+  destroyRetained?: number;
   /** Interactive confirm seam for the reset phrase (an `@clack/prompts` text prompt). */
   promptReset?: () => Promise<string>;
   /** Audit emitter, so a schema reset is always recorded. Defaults to recording nothing. */
@@ -316,6 +324,7 @@ function tableSchema(items: Record<string, ZodType>, database: string, table: st
 
 /** Write a media item's optional D1 asset row, injecting the minted UUID as the row's `id` when unset. */
 async function writeMediaRecord(
+  worker: string,
   driver: SeedDriver,
   databases: MergedDatabases,
   record: NonNullable<MediaSeedItem["record"]>,
@@ -323,6 +332,7 @@ async function writeMediaRecord(
 ): Promise<void> {
   const group = databaseGroup(databases, record.database);
   const schema = tableSchema(group.items, record.database, record.table);
+  startStep(`Seeding ${record.table} on ${group.binding} for ${worker}`);
   const db = createDatabase(driver.d1(group.binding), group.items);
   // Asset tables key on the media UUID: fill in `id` when the fixture row leaves it out.
   const row =
@@ -513,6 +523,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     env: options.env,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     ...(options.workers !== undefined ? { workers: options.workers } : {}),
+    ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
 
@@ -707,6 +718,8 @@ async function writeWorker(
     const namespaces = composeKv(entry.worker.capabilities);
     const uploader = options.mediaUploader ?? driverUploader(driver, { project: options.project, env: options.env });
     const reportSets: SeedPlanSet[] = [];
+    // Named in every step: a set deduped across Workers is written through this one, and the report says so.
+    const worker = entry.worker.name;
 
     for (const resolved of entry.sets) {
       // Safety layer 1, re-asserted at the write site: a set can never land in a disallowed env.
@@ -736,6 +749,7 @@ async function writeWorker(
         const dbGroup = databaseGroup(databases, group.database);
         const schema = tableSchema(dbGroup.items, group.database, group.table);
         const db = createDatabase(driver.d1(dbGroup.binding), dbGroup.items);
+        startStep(`Seeding ${group.table} on ${dbGroup.binding} for ${worker}`);
         const result = await seedD1Group(db, group, schema);
         setReport.d1.push({ database: group.database, table: result.table, rows: result.rows });
       }
@@ -758,11 +772,13 @@ async function writeWorker(
         const target = driver.kv(nsGroup.binding);
         const namespace = target.kind === "local" ? target.namespace : kvNamespaceFromManager(target.manager);
         const store = new TypedKv(namespace, spec);
+        startStep(`Seeding ${group.store} on ${nsGroup.binding} for ${worker}`);
         const result = await seedKvGroup(store, group, spec);
         setReport.kv.push({ namespace: group.namespace, store: result.store, entries: result.entries });
       }
 
       for (const item of resolved.set.r2 ?? []) {
+        startStep(`Seeding ${item.key} on ${item.binding} for ${worker}`);
         await writeR2Object(driver.r2(item.binding), item);
         setReport.r2.push({ binding: item.binding, key: item.key });
       }
@@ -770,13 +786,15 @@ async function writeWorker(
       // Relative media paths resolve against the set's own module dir; the project root is the fallback.
       const mediaBaseDir = resolved.set.baseDir ?? options.projectDir;
       for (const item of resolved.set.media ?? []) {
+        startStep(`Seeding ${item.file} on ${item.store} for ${worker}`);
         const result = await seedMediaItem(item, {
           env: options.env,
           baseDir: mediaBaseDir,
           uploader,
           fs: options.mediaFs,
         });
-        if (item.record && result.id !== undefined) await writeMediaRecord(driver, databases, item.record, result.id);
+        if (item.record && result.id !== undefined)
+          await writeMediaRecord(worker, driver, databases, item.record, result.id);
         setReport.media.push(mediaEntry(result));
       }
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type DeclaredEnvironments, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
 import type { SecretBackend, SecretScope } from "./registry";
@@ -67,6 +68,99 @@ export type ManagedEnvironment = z.output<typeof ManagedEnvironment>;
  */
 export function managedEnvironments(declared: DeclaredEnvironments | readonly string[]): ManagedEnvironment[] {
   return [...declared];
+}
+
+/** What a teardown was asked to act on: the environment the operator named, if any, and the project's set. */
+export interface DeprovisionTarget {
+  /** The environment named on the command line. Absent is a refusal, never a default. */
+  environment: string | undefined;
+  /** Every environment the root `pithy.config.ts` declares — what a refusal lists. */
+  declared: DeclaredEnvironments | readonly string[];
+}
+
+/**
+ * **The environment a teardown acts on is one the operator named (#591).**
+ *
+ * `secrets deprovision` used to walk every declared environment: one run, typed to clean up staging, deleted
+ * production's vault. `storage deprovision --storage` and `media deprovision --storage` walked them the same
+ * way, emptying and deleting production's buckets with staging's. There is no default here — not all, not the
+ * first, not "everything but prod" — because any default is a set somebody did not type, and the only
+ * environment worth defaulting away from is the one a default would eventually reach. So production is never
+ * in a default set by there being no default set.
+ *
+ * Absent, or naming an environment the project does not declare, it refuses and lists what could be named.
+ * Every capability teardown that deletes a per-environment resource resolves its one environment here, so the
+ * refusal reads the same wherever it is met.
+ */
+export function deprovisionTarget(target: DeprovisionTarget): ManagedEnvironment {
+  const environments = managedEnvironments(target.declared);
+  const named = target.environment;
+  if (named !== undefined && environments.includes(named)) return named;
+  throw new ValidationError({
+    message:
+      named === undefined
+        ? "Name the environment to deprovision. Nothing was deleted."
+        : `${JSON.stringify(named)} is not an environment this project declares. Nothing was deleted.`,
+    action: `Pass --env with one of: ${environments.join(", ")}.`,
+  });
+}
+
+/**
+ * The declared environments **other than `target`** whose capability Worker is still deployed, in declared
+ * order. `runs` is the capability's own question — the secrets manager, the email worker, the classification
+ * worker — asked once per other environment. The target is never asked about: its Worker is the one going.
+ */
+export async function otherEnvironmentsRunning(
+  target: ManagedEnvironment,
+  declared: DeclaredEnvironments | readonly string[],
+  runs: (env: ManagedEnvironment) => Promise<boolean>,
+): Promise<ManagedEnvironment[]> {
+  const others: ManagedEnvironment[] = [];
+  for (const env of managedEnvironments(declared)) {
+    if (env !== target && (await runs(env))) others.push(env);
+  }
+  return others;
+}
+
+/** One project-wide part of a capability a teardown was asked to delete, and the flag that asked. */
+export interface SharedPart {
+  /** What it is, lowercase, as a refusal names it — `the suppression list`. */
+  what: string;
+  /** The flag that asked for it — what the refusal says to drop. */
+  flag: string;
+}
+
+/**
+ * **A part every environment shares leaves with the last environment, never before it (#591).**
+ *
+ * {@link deprovisionTarget} makes a teardown name one environment. Some of what a capability provisions has no
+ * environment to name: email's suppression list, support's bucket and inbound rule are one per project, bound by
+ * every environment. Deleting one of those from a staging teardown takes production's with it — the same defect,
+ * one level up. So it refuses, before anything is deleted, while any other declared environment still runs the
+ * capability's Worker. The operator tears those down first, and the last teardown takes the shared part.
+ *
+ * It does not replace a count. A shared part holding retained rows is still refused by `assertRetainedAgreed`
+ * after this passes — this says *when* it may go, the count says the operator knows *what* goes.
+ *
+ * **What "still runs" does not see.** A deployed capability Worker is the proxy for "still uses it". An app
+ * Worker whose stanza still binds the shared part after its environment's capability Worker is gone is not
+ * asked about, and neither is a feature environment, which binds its own copies and is not declared.
+ */
+export async function assertSharedLeavesLast(
+  target: ManagedEnvironment,
+  declared: DeclaredEnvironments | readonly string[],
+  runs: (env: ManagedEnvironment) => Promise<boolean>,
+  shared: readonly SharedPart[],
+): Promise<void> {
+  if (shared.length === 0) return;
+  const still = await otherEnvironmentsRunning(target, declared, runs);
+  if (still.length === 0) return;
+  const parts = shared.map((part) => part.what).join(" and ");
+  const named = still.join(", ");
+  throw new ValidationError({
+    message: `${parts.charAt(0).toUpperCase()}${parts.slice(1)} ${shared.length === 1 ? "is" : "are"} shared by every environment, and ${named} still ${still.length === 1 ? "runs" : "run"}. Nothing was deleted.`,
+    action: `Deprovision ${named} first, or drop ${shared.map((part) => part.flag).join(" and ")}.`,
+  });
 }
 
 /**

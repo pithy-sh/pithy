@@ -29,9 +29,11 @@ import { secretsStoreBindings } from "./secretBindings";
  * {@link isMintableSecret}, which is `devValue !== undefined`. Every `cf-secrets-store` secret the kit
  * declares is one no random string can satisfy: `SECRETS_ENCRYPTION_KEYS` is an `EncryptionConfig` the
  * master-key provisioner writes, `CLOUDFLARE_API_TOKEN` is issued by Cloudflare. Every secret that
- * declares a `devValue` is `d1`. The two predicates had an empty intersection, so no project could
+ * declares a `devValue` was `d1`. The two predicates had an empty intersection, so no project could
  * supply an input, and the feature's own tests passed because each of them built a registry out of
- * literals rather than reading one the kit ships.
+ * literals rather than reading one the kit ships. (Since #596 `email-link-signing-key` is the first secret
+ * in that intersection — a `cf-secrets-store` entry minted from random bytes — so the store minter has a
+ * real input, and the sweep below runs it.)
  *
  * So this test does not build a registry. It reads the ones the kit actually ships, and it does not
  * restate which backend which creator covers — restating the rule is how the rule stops being checked.

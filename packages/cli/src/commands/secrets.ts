@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import {
@@ -13,7 +14,7 @@ import {
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
-import type { SecretBackend, SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
@@ -41,6 +42,7 @@ import {
   secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
+  secretWriteRouting,
   unresolvedNote,
 } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
@@ -57,8 +59,10 @@ import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudfl
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
-import { requireManagedEnvironment } from "../project/environment";
+import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
+import { confineTeardown } from "../project/teardown";
 import { resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
@@ -347,6 +351,7 @@ function checkWriteIsCoherent(
   name: string,
   requested: ManagedEnvironment | undefined,
   declared: DeclaredEnvironments,
+  backend: SecretBackend | undefined,
 ): void {
   // Before the value is asked for, and through the one owner of the rule. `runSecretWrite` raises it too;
   // this is what keeps an operator from being prompted, masked, for a value the command was never going
@@ -354,7 +359,19 @@ function checkWriteIsCoherent(
   assertNotTheMasterKey(mode, name);
   const entry = registry[name];
   if (!entry || entry.keyed) return;
-  secretWriteTargets({ name, backend: entry.backend, scope: entry.scope, mode, requested, declared });
+  // The same routing `runSecretWrite` dispatches with — a `--backend` removal included (#596).
+  const routing = secretWriteRouting(entry, { mode, name, backend });
+  secretWriteTargets({ name, backend: routing.backend, scope: routing.scope, mode, requested, declared });
+}
+
+/** `--backend` as typed, or the refusal naming the two it can be. */
+function requireBackend(value: string): SecretBackend {
+  const parsed = SecretBackend.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new ValidationError({
+    message: `${JSON.stringify(value)} is not a secrets backend.`,
+    action: `Pass --backend with one of: ${SecretBackend.options.join(", ")}.`,
+  });
 }
 
 /**
@@ -373,7 +390,7 @@ function auditOrigin(requested: ManagedEnvironment | undefined, declared: Declar
 /** Shared body for create/update/rm: discover the registry, dispatch, and report the envs written. */
 async function write(
   mode: "create" | "update" | "delete",
-  args: { name: string; env?: string; json: boolean },
+  args: { name: string; env?: string; json: boolean; backend?: string },
 ): Promise<void> {
   const projectDir = process.cwd();
   const { registry, branches } = await projectSecrets(projectDir);
@@ -381,7 +398,8 @@ async function write(
   // `--env` as the operator gave it, or nothing. Not resolved to a default: the absence is the whole
   // difference between *narrow this write* and *say nothing*, and it is what the rule turns on.
   const env = args.env ? requireManagedEnvironment(args.env, environments) : undefined;
-  checkWriteIsCoherent(registry, mode, args.name, env, environments);
+  const backend = args.backend === undefined ? undefined : requireBackend(args.backend);
+  checkWriteIsCoherent(registry, mode, args.name, env, environments, backend);
   const value =
     mode === "delete"
       ? undefined
@@ -391,7 +409,12 @@ async function write(
 
   let targets: ManagedEnvironment[];
   try {
-    targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env, environments }, audit);
+    targets = await runSecretWrite(
+      registry,
+      dispatcher,
+      { mode, name: args.name, value, env, environments, ...(backend ? { backend } : {}) },
+      audit,
+    );
   } catch (error) {
     // **A fan-out has no rollback, so what it wrote is said before the error is.** Three environments and
     // the third throws leaves the first two holding the new value; without this the operator reads a
@@ -413,7 +436,13 @@ async function write(
   // account-level entry every environment binds, so a write that reached the canonical environment's
   // manager changed the value all of them read — and reporting the dispatch target alone understated it
   // by every environment but one. `secretWriteEffect` owns the widening; both streams read it.
-  const effect = secretWriteEffect(registry[args.name], targets, environments);
+  // Read off the routing the write was dispatched with, not the bare declaration: a `--backend d1` removal
+  // reached a vault, and describing it as the declared Secrets Store entry would be a report of another act.
+  const declaredEntry = registry[args.name];
+  const routed = declaredEntry
+    ? { ...declaredEntry, ...secretWriteRouting(declaredEntry, { mode, name: args.name, backend }) }
+    : undefined;
+  const effect = secretWriteEffect(routed, targets, environments);
   if (args.json) {
     process.stdout.write(
       `${formatJsonLine({
@@ -433,8 +462,7 @@ async function write(
   // `applySecretBindings` only ever adds — so nothing in the kit will take that line out and the next
   // deploy of that Worker fails on it. A `global` secret is bound by every stanza, an `environment` one
   // by the stanza this write reached — which is what the effect above already resolved.
-  const removed = registry[args.name];
-  if (mode === "delete" && removed?.backend === "cf-secrets-store") {
+  if (mode === "delete" && routed?.backend === "cf-secrets-store") {
     process.stdout.write(`${removedStoreEntryNote(args.name, effect.environments)}\n`);
   }
   process.stdout.write(`${formatDone()}\n`);
@@ -465,9 +493,24 @@ const update = defineCommand({
   run: ({ args }) => withErrorReporting(args.json, () => write("update", args)),
 });
 
+/**
+ * `pithy secrets rm` — remove a secret from where its registry entry says it lives.
+ *
+ * `--backend` names the other store, for the one case that needs it: a secret whose declaration moved, and
+ * whose old value is still sitting where nothing reads it (#596). See `secretWriteRouting` for what holds it
+ * to that purpose.
+ */
 const rm = defineCommand({
   meta: { name: "rm", description: "Remove a secret" },
-  args: { ...nameArg, ...sharedArgs },
+  args: {
+    ...nameArg,
+    ...sharedArgs,
+    backend: {
+      type: "string",
+      description:
+        "Remove it from this store instead of the declared one (d1 | cf-secrets-store) — for a value a secret left behind when its declaration moved. Needs --env",
+    },
+  },
   run: ({ args }) => withErrorReporting(args.json, () => write("delete", args)),
 });
 
@@ -740,9 +783,9 @@ const provision = defineCommand({
       }
 
       // **The other half of #321, and the half its own commit message describes.** The loop above creates
-      // the `cf-secrets-store` secrets a Worker binds; every secret the *kit* declares arbitrary — the
-      // auth session secret, the email link-signing key — is `d1`, and until now provisioning finished by
-      // telling an operator to go and generate random bytes for each. This is the point where it can stop
+      // the `cf-secrets-store` secrets a Worker binds — the email link-signing key among them since #596.
+      // Every `d1` secret the *kit* declares arbitrary — the auth session secret — used to end provisioning
+      // with an operator told to go and generate random bytes for each. This is the point where it can stop
       // doing that: `provisionSecrets` above has deployed each environment's manager, and the manager is
       // the only thing that can decide whether one of these already exists, because its value is sealed
       // under a master key the CLI never holds. So the managers are **asked** first, across every
@@ -812,14 +855,22 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the secrets manager workers and databases" },
+  meta: { name: "deprovision", description: "Remove one environment's secrets manager Worker and database" },
   args: {
-    keys: { type: "boolean", default: false, description: "Also delete the master keys (irreversible)" },
+    // No default (#591): a bare `deprovision` deleted every declared environment's vault.
+    env: TEARDOWN_ENV_ARG,
+    keys: { type: "boolean", default: false, description: "Also delete the environment's master key (irreversible)" },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      const declared = await projectEnvironments(projectDir);
+      // Settled before any credential is read: naming nothing, or something undeclared, costs nothing and
+      // lists what could be named. `deprovisionSecrets` resolves it again — it is the one that deletes.
+      const environment = requireTeardownEnvironment(args.env, declared);
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),
         {
@@ -833,15 +884,52 @@ const deprovision = defineCommand({
         project: requireProjectName(await loadProject(projectDir)),
         storeId,
         audit: await buildAudit(projectDir, "dev"),
+        // The operator's number, spent at the delete — never the count the preflight is about to make.
+        budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionSecrets(deprovisioner, await projectEnvironments(projectDir), { deleteKeys: args.keys });
+      // Held here as well as in `deprovisionSecrets`: whichever copy runs deletes only what was typed, for this
+      // environment alone, and the shared token only once no other environment runs a manager (#591).
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/secrets",
+        target: environment,
+        declared,
+        runs: (other) => deprovisioner.hasManager(other),
+        deprovisioner,
+        rules: {
+          countRetained: "read",
+          hasManager: "read",
+          deleteManager: "environment",
+          deleteMasterKey: args.keys ? "environment" : "refused",
+          deleteDatabase: "environment",
+          deleteManagerToken: "last",
+        },
+      });
+      const result = await deprovisionSecrets(
+        confined,
+        { environment, declared },
+        { deleteKeys: args.keys, destroyRetained },
+      );
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "secrets deprovision", keysDeleted: args.keys })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({
+            command: "secrets deprovision",
+            env: result.environment,
+            keysDeleted: args.keys,
+            managerTokenDeleted: result.managerTokenDeleted,
+          })}\n`,
+        );
         return;
       }
-      process.stdout.write(`Secrets infrastructure removed${args.keys ? ", including master keys" : ""}.\n`);
+      process.stdout.write(
+        `${result.environment}: manager and database removed${args.keys ? ", and the master key" : ""}.\n`,
+      );
+      process.stdout.write(
+        result.managerTokenDeleted
+          ? "Manager token removed. No environment runs a manager.\n"
+          : "Manager token kept. Another environment still runs a manager.\n",
+      );
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

@@ -104,6 +104,8 @@ Nothing in the plan reaches your account to produce it: the resource set, the Wo
 
 That pairing is also what makes an interrupted run readable. Provisioning is idempotent and safe to re-run, but idempotence only helps if you know where it stopped: the last `▸` line names the resource that was in flight.
 
+The migrations and seeds that close a run narrate the same way, in `pithy migrate`'s and `pithy seed`'s own words: `▸ DB (app) for board...`, `▸ Applying 0300_auth_0001_init to DB...`.
+
 Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command.
 
 ## A manifest it could not read
@@ -149,23 +151,25 @@ Every line but the first says **nothing was left out**, and none of them is nois
 
 ## The secrets it cannot create
 
-A `d1` secret — the auth session secret, the email link-signing key — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
+A `d1` secret — the auth session secret — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
 
 **Who can create them is not the same answer in both modes.**
 
 `--env` names the command:
 
 ```
-auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+auth-session-secret: not created here — they need a deployed manager.
 Run pithy secrets provision to create them.
 ```
 
 `--feature` names none, because there is none:
 
 ```
-auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+auth-session-secret: not created here — they need a deployed manager.
 A branch gets no manager, and no command creates these for one. This environment comes up without them.
 ```
+
+A `cf-secrets-store` secret the registry calls arbitrary — the email link-signing key, since #596 — is not on that line in either mode. The account's Secrets Store answers whether the entry exists, so it is created and bound in the same pass (`secretBindings`), in the branch's own scope for a feature.
 
 `pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared and gets no manager, deliberately: a manager is a Worker with its own D1 and its own rotation cron, and one per open pull request is not a thing anybody wants. Running that command from a feature worktree does nothing for the branch. It used to be printed anyway, which cost an operator a command and taught them nothing.
 
@@ -204,12 +208,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy secrets provision"}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |

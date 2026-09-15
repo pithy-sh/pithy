@@ -1,11 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
-import { type ManagedEnvironment, managedEnvironments } from "../scope";
+import {
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+  otherEnvironmentsRunning,
+} from "../scope";
 
 /**
  * The CF Secrets Store entry name holding an environment's master key — `<project>-<env>-secrets-encryption-keys`.
@@ -153,12 +160,19 @@ export async function provisionSecrets(
 }
 
 /**
- * The teardown seam — the inverse of {@link SecretsProvisioner}, removing each environment's secrets
- * infrastructure. Behind the seam so the orchestration (order, the key-deletion guard, idempotency)
- * is unit-tested without Cloudflare; the live implementation is verified by the integration suite.
- * Every step is idempotent — a missing resource is a no-op, so re-running teardown is safe.
+ * The teardown seam — the inverse of {@link SecretsProvisioner}, removing one environment's secrets
+ * infrastructure. Behind the seam so the orchestration (the target, the retained-row refusal, order, the
+ * key-deletion guard, when the shared token goes) is unit-tested without Cloudflare; the live implementation
+ * is verified by the integration suite. Every deletion is idempotent — a missing resource is a no-op.
  */
 export interface SecretsDeprovisioner {
+  /**
+   * The rows in the retained tables of the env's secrets database — the vault — named by that database.
+   * Read-only, and empty when the database is absent or holds nothing retained.
+   */
+  countRetained(env: ManagedEnvironment): Promise<RetainedRows[]>;
+  /** Whether the env's manager Worker is deployed. What decides if the shared manager token is still in use. */
+  hasManager(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's manager worker. Idempotent (a missing worker is a no-op). */
   deleteManager(env: ManagedEnvironment): Promise<void>;
   /**
@@ -166,41 +180,73 @@ export interface SecretsDeprovisioner {
    * undecryptable — so the orchestration only calls it when explicitly asked. Idempotent.
    */
   deleteMasterKey(env: ManagedEnvironment): Promise<void>;
-  /** Delete the env's secrets D1. Idempotent (a missing database is a no-op). */
+  /**
+   * Delete the env's secrets D1. Idempotent (a missing database is a no-op). A live implementation refuses
+   * while the vault holds more rows than the operator agreed to destroy — the floor under the orchestration's
+   * exact count.
+   */
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
   /**
    * Remove the manager's CF API token entirely: delete the minted account token from Cloudflare
    * **and** its `<project>-global-secrets-manager-cf-api-token` entry from the Secrets Store. Both
    * names are project-scoped, so this never reaches another project's credential. It is `global` —
-   * one token shared by both managers — so it is removed once, after every manager is gone. Safe and
-   * ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
+   * one token every manager binds — so it is removed only once no declared environment runs a manager.
+   * Safe and ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
    * secrets. Idempotent (a missing token or entry is a no-op).
    */
   deleteManagerToken(): Promise<void>;
 }
 
-/** Teardown options. By default the master keys are **kept** — deleting them is irreversible. */
+/** Teardown options. By default the master key is **kept** — deleting it is irreversible. */
 export interface DeprovisionOptions {
-  /** Also delete each environment's master key. Off by default; only a full destroy sets it. */
+  /** Also delete the environment's master key. Off by default. */
   deleteKeys?: boolean;
+  /**
+   * The operator's count of the retained rows to destroy — `--destroy-retained <n>`. Must equal the rows the
+   * vault holds; absent, only an empty vault is deleted.
+   */
+  destroyRetained?: number;
+}
+
+/** What a teardown did. */
+export interface DeprovisionResult {
+  /** The one environment torn down. */
+  environment: ManagedEnvironment;
+  /** Whether the shared manager token went too — only when no declared environment still runs a manager. */
+  managerTokenDeleted: boolean;
 }
 
 /**
- * Tear down every managed environment, reversing {@link provisionSecrets}: delete the manager worker
- * first (it binds the other resources), then — only when `deleteKeys` is set — the master key, then
- * the D1. The master key is preserved unless explicitly requested: losing it orphans every secret,
- * and a re-provision can reuse the existing key. The shared manager CF API token is deleted once at
- * the end, after every manager that binds it is gone. Idempotent end to end.
+ * Tear down **one named environment**, reversing {@link provisionSecrets} for it.
+ *
+ * In order, and the order is the contract:
+ *
+ * 1. Resolve the target ({@link deprovisionTarget}) — refused with nothing read when none was named.
+ * 2. Count the vault and refuse unless the operator counted the same (`@pithy-sh/core`'s
+ *    `assertRetainedAgreed`, #588's guard spent here). Before the manager goes: a refusal after it would leave
+ *    an environment holding a vault and nothing to rotate it.
+ * 3. Delete the manager Worker (it binds the other resources), then — only when `deleteKeys` is set — the
+ *    master key, then the D1.
+ * 4. Delete the shared manager token only when no declared environment still runs a manager: it is `global`,
+ *    and removing it for staging's teardown would fail every rotation in production.
  */
 export async function deprovisionSecrets(
   deprovisioner: SecretsDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: DeprovisionOptions = {},
-): Promise<void> {
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteManager(env);
-    if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
-    await deprovisioner.deleteDatabase(env);
+): Promise<DeprovisionResult> {
+  const env = deprovisionTarget(target);
+  assertRetainedAgreed(await deprovisioner.countRetained(env), options.destroyRetained, "anything was deleted");
+
+  await deprovisioner.deleteManager(env);
+  if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
+  await deprovisioner.deleteDatabase(env);
+
+  // The token is kept, not refused: it is a re-mintable credential, not data, so there is nothing to protect by
+  // stopping the run. The parts that are data refuse instead, through `assertSharedLeavesLast`.
+  if ((await otherEnvironmentsRunning(env, target.declared, (other) => deprovisioner.hasManager(other))).length > 0) {
+    return { environment: env, managerTokenDeleted: false };
   }
   await deprovisioner.deleteManagerToken();
+  return { environment: env, managerTokenDeleted: true };
 }

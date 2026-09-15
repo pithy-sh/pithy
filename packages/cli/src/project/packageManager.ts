@@ -6,6 +6,7 @@ import { access, readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { startStep } from "../terminal/progress";
 import { writeFileAtomic } from "./atomic";
 import { readOptionalFile } from "./readOptionalFile";
 
@@ -142,9 +143,27 @@ export async function alreadyProvided(projectDir: string, pkg: string): Promise<
 /** Spawn a package manager. Injectable so the flow is testable without a real install. */
 export type InstallRunner = (command: string, args: string[], cwd: string) => Promise<void>;
 
+/**
+ * **Run the package manager, captured, under a step naming the command line (#593).**
+ *
+ * The one place the CLI starts `bun add`, `npm uninstall`, `<pm> install`. Its output is collected, never
+ * streamed, which is right for a log and leaves nothing on the terminal while a cold install runs for
+ * minutes — so it says `▸ Running bun add @pithy-sh/auth...` before the child exists. Outside a narrated
+ * span, and under `--json`, that is silent.
+ *
+ * It was three spawns: this module's, `pithy worker add`'s bare install and `pithy feature create`'s. Each
+ * ran silent, and `ci/narration.test.ts` saw none of them because it looked for `runWrangler(` by name.
+ * One primitive raises the step once, so a fourth caller cannot forget it. It throws the child's own error;
+ * what a failure means is the caller's sentence to write.
+ */
+export const runPackageManager: InstallRunner = async (command, args, cwd) => {
+  startStep(`Running ${[command, ...args].join(" ")}`);
+  await run(command, args, { cwd });
+};
+
 const spawnInstall: InstallRunner = async (command, args, cwd) => {
   try {
-    await run(command, args, { cwd });
+    await runPackageManager(command, args, cwd);
   } catch (cause) {
     throw new InternalError({
       message: `${command} ${args.join(" ")} failed.`,

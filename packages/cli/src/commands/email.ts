@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -20,6 +21,7 @@ import {
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import {
   loadProject,
   loadProjectEnvironments,
@@ -28,6 +30,7 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
+import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
   type EnvironmentReadiness,
   environmentOutcomes,
@@ -36,6 +39,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { resolveWorkerAddress } from "../project/workerAddress";
 import {
   composedProjectCapabilities,
@@ -126,7 +130,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   if (!storeId) {
     throw new ValidationError({
       message: "The CF Secrets Store id is missing.",
-      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker decrypts its signing key from it).",
+      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).",
     });
   }
   return { account: { accountId, confirmation }, accountId, apiToken, storeId };
@@ -197,7 +201,8 @@ function buildResolveEnv(
     if (!secretsDb) {
       throw new ValidationError({
         message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
-        action: "Run `pithy secrets provision` first — the email worker reads its signing key from it.",
+        action:
+          "Run `pithy secrets provision` first — the email worker binds it, and that run creates the link-signing key it signs with.",
       });
     }
     return { appDatabaseId, secretsDatabaseId: secretsDb.uuid, baseUrl };
@@ -332,25 +337,36 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the email workers (and optionally the suppression DB)" },
+  meta: {
+    name: "deprovision",
+    description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
+  },
   args: {
+    // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
+    // included.
+    env: TEARDOWN_ENV_ARG,
     suppression: {
       type: "boolean",
       default: false,
-      description: "Also delete this project's suppression DB (irreversible)",
+      description:
+        "Also delete this project's suppression DB (irreversible). Every environment shares it, so only the last environment's teardown may",
     },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
       const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
+      // One named environment, settled before any credential is read (#591): naming nothing, or something
+      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+      // is the one that deletes.
+      const declared = loadProjectEnvironments(config);
+      const env = requireTeardownEnvironment(args.env, declared);
       const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
@@ -358,17 +374,42 @@ const deprovision = defineCommand({
         cf,
         project,
         audit: await buildAudit(projectDir, accountId, apiToken),
+        // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
+        budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionEmail(deprovisioner, environments, { deleteSuppression: args.suppression });
+      // Held here as well as in `deprovisionEmail`, whichever copy of it runs: the list is refused before it is called
+      // while another environment runs, and it may delete only what was typed, for `env` alone (#591).
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/email",
+        target: env,
+        declared,
+        runs: (other) => deprovisioner.hasWorker(other),
+        deprovisioner,
+        rules: {
+          countSuppressionRetained: "read",
+          hasWorker: "read",
+          deleteWorker: "environment",
+          deleteSuppressionDatabase: args.suppression
+            ? { what: "the suppression list", flag: "--suppression" }
+            : "refused",
+        },
+      });
+      await deprovisionEmail(
+        confined,
+        { environment: env, declared },
+        { deleteSuppression: args.suppression, destroyRetained },
+      );
 
       if (args.json) {
         process.stdout.write(
-          `${formatJsonLine({ command: "email deprovision", suppressionDeleted: args.suppression })}\n`,
+          `${formatJsonLine({ command: "email deprovision", env, suppressionDeleted: args.suppression })}\n`,
         );
         return;
       }
-      process.stdout.write(`Email workers removed${args.suppression ? ", including the suppression database" : ""}.\n`);
+      process.stdout.write(
+        `${env}: email worker removed${args.suppression ? ", with the suppression database" : ""}.\n`,
+      );
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
