@@ -536,4 +536,22 @@ describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
       expect(err).toContain("--env staging or --env prod");
     },
   );
+
+  // **What `pithy deploy` and `pithy deploy --env dev` do as typed — no selector — for a project whose
+  // capability wrote a binding.** The page said both "still run" and print their kit line; a review ran
+  // them and got exit 1 and no kit line, because the refusal comes first. The cases above name `--apps`,
+  // and that is not what an adopter types, so the documented form is pinned here on its own.
+  test.each([
+    ["a bare deploy", {}],
+    ["--env dev", { env: "dev" }],
+  ])("%s with no selector refuses too, before the kit half says anything", async (_name, args) => {
+    const kit = ran.kit.length;
+    const { err, exitCode } = await refusal({ json: false, apps: false, ...args });
+    expect(exitCode).toBe(1);
+    expect(ran.apps).toBe(0);
+    expect(ran.kit.length).toBe(kit);
+    expect(err).toContain("board.DB (d1)");
+    expect(err).not.toContain("In dev the kit's Workers run locally");
+    expect(err).not.toContain("No --env, so the kit's Workers were not deployed");
+  });
 });

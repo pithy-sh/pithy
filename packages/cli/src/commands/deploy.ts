@@ -94,16 +94,17 @@ export function deploySelection(args: { apps: boolean; kit: boolean }): { apps: 
  *
  * **`--kit`, or `--force`, with no `--env`.** A kit Worker is deployed per environment, always: its
  * configuration is stamped into its vars, so `<project>-staging-email` and `<project>-prod-email` are
- * genuinely separate Workers and there is no top-level stanza to fall back on. A bare `pithy deploy`
- * still runs — it ships `apps/` and says the kit half needed an environment — because that is the
- * command's old behavior and it must keep working. Asking for the kit half by name and getting silence
- * is the thing that must not.
+ * genuinely separate Workers and there is no top-level stanza to fall back on. A bare `pithy deploy` is
+ * not refused *here* — its kit half says it needed an environment — because asking for both halves and
+ * getting one is a different fact from asking for the kit half by name and getting silence, which is the
+ * thing that must not happen. It is refused elsewhere, by `assertEnvironmentProvisioned`, whenever the
+ * top-level stanza has a D1 or KV binding with no id (#589) — the shape `pithy add` writes one in.
  *
  * **`--kit`, or `--force`, with `--env dev`.** There is no deployed kit Worker in `dev`: it runs
  * locally under `pithy dev`, and `pithy <capability> provision` fans out over the managed environments
  * only. So a run narrowed to the kit half in `dev` has nothing whatever to do, and `--force` has no
- * deploy to force. `pithy deploy --env dev` itself still runs — it ships `apps/` and says the kit's
- * Workers are local, the same trade the bare deploy makes.
+ * deploy to force. `pithy deploy --env dev` is not refused here — its kit half says the Workers are local,
+ * the same trade the bare deploy makes — and meets the same id-less binding refusal the bare deploy does.
  *
  * **Every one of these is asked of {@link deploySelection}, not of the raw flags.** `--apps --kit` is
  * the same selection as naming neither, and it was the one combination that disagreed with its own
