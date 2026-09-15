@@ -188,7 +188,7 @@ describe("the account tier", () => {
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: "No D1 database named acme-global-email-suppressions exists on this account.",
-      action: "Run `pithy email provision --env prod`. Nothing is suppressed until it exists.",
+      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
     });
   });
 
@@ -202,7 +202,7 @@ describe("the account tier", () => {
         setting: "email-link-signing-key",
         environment: "prod",
         problem: "The link-signing key has no value in prod, so no tracking or unsubscribe link can be signed.",
-        action: "Run `pithy secrets provision --env prod`.",
+        action: "Run `pithy secrets provision`.",
       },
     ]);
   });

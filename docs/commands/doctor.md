@@ -78,7 +78,7 @@ healthy Worker collapses to one line, and the whole block is omitted when every 
 exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
 required binding is missing before deploy does.
 
-The **`migrations`** check answers **every environment**, one line each: `dev`, then every environment the root `pithy.config.ts` declares, in the order it declares them. Each is composed for that environment — its `pithy.config.ts` evaluated under that environment's `ENVIRONMENT` — and read from that environment's databases, and every command on its line names that environment. There is no `--env`, because the answer is the whole project: `pithy doctor --env prod` used to be accepted silently and print `dev`'s count under a prod heading, on a project whose prod had no database to have anything pending against.
+The **`migrations`** check answers **every environment**, one line each: `dev`, then every environment the root `pithy.config.ts` declares, in the order it declares them. Each is composed for that environment — its `pithy.config.ts` evaluated under that environment's `ENVIRONMENT` — and read from that environment's databases, and every command on its line names that environment. There is no `--env`, because the answer is the whole project: `pithy doctor --env prod` used to be accepted silently and print `dev`'s count under a prod heading, on a project whose prod had no database to have anything pending against. It is refused now, as every flag a command does not declare is (docs/CLI.md §1.2).
 
 A deployed environment's line is one of four things, and none of them is ever another environment's number:
 
@@ -738,10 +738,11 @@ Three rules hold across the payload. **Paths are absolute here, never tilde-abbr
 
 ## Errors
 
-Nothing here refuses except a contradiction between two flags: `pithy doctor` is a report, and what it finds is carried in the exit code rather than in a throw. A diagnostic has to work in the environment it diagnoses, so every read failure it meets is discarded into a line — including the write to its own notifier cache.
+Nothing here refuses except a flag doctor does not take and a contradiction between two flags: `pithy doctor` is a report, and what it finds is carried in the exit code rather than in a throw. A diagnostic has to work in the environment it diagnoses, so every read failure it meets is discarded into a line — including the write to its own notifier cache.
 
 | Condition | Effect |
 |---|---|
+| A flag doctor does not declare — `--env`, `--bogus-flag` | Refused before anything is read, exit 1: *Unknown flag: --bogus-flag.* then the flags doctor takes. Under `--json`, the one `{ "error": … }` line, `validation/invalid_input` (docs/CLI.md §1.2) |
 | `--disable-notifier` and `--enable-notifier` together | Refused before anything is read: *Pass either --disable-notifier or --enable-notifier, not both.* |
 | A `pithy.config.ts` that will not load | Exit 1. |
 | A Worker failing a config, binding, `dev` migration, or entitlement check, or a manifest nothing can read | Exit 1. |

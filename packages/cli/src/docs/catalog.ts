@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
-import type { ArgsDef, CommandDef } from "citty";
+import type { CommandDef } from "citty";
 import { CATALOG } from "../capabilities/catalog";
-import { HIDDEN_ROOT_FLAGS } from "../commands/alias";
+import { flagsOf, GLOBAL_FLAGS } from "../declaredFlags";
 import { main } from "../main";
-import { ROOT_FLAGS } from "../rootFlags";
 
 /**
  * What the kit contains, as one file another repository can read.
@@ -91,75 +90,6 @@ export interface DocsCatalog {
   /** Flags that work on any command, declared by no command — `bin.ts` answers them before citty parses. */
   globalFlags: string[];
   errorCodes: CatalogErrorCode[];
-}
-
-/**
- * Every flag the CLI parses outside a command's `args`, in every spelling.
- *
- * A walk of the command tree cannot find one of these: `bin.ts` answers all six before citty is handed
- * the arguments. So `pithy add --help` and `pithy --pithiest` both cite something real, and a check
- * reading only the parsers would call each a typo — on a page that is correct.
- *
- * **Composed from the modules that decide, never restated.** The two hidden flags were missed on the
- * first pass, and a literal list here would go stale the same way the moment a seventh landed: hidden
- * from `--help` is not hidden from a docs check, and nothing would have said so. `ROOT_FLAGS` and
- * `HIDDEN_ROOT_FLAGS` are exported for this, so a new out-of-band flag reaches the export with nothing
- * to remember.
- */
-const GLOBAL_FLAGS: readonly string[] = [...ROOT_FLAGS, ...HIDDEN_ROOT_FLAGS];
-
-/** One arg's declared aliases, in the spelling a caller types: a single letter takes one dash, a word takes two. */
-function aliasFlags(alias: unknown): string[] {
-  const names = typeof alias === "string" ? [alias] : Array.isArray(alias) ? alias : [];
-  return names
-    .filter((name): name is string => typeof name === "string")
-    .map((name) => (name.length === 1 ? `-${name}` : `--${name}`));
-}
-
-/**
- * The camelCase spelling of a kebab-case arg name, or the name unchanged when it has no dash.
- *
- * citty registers `camelCase(name)` and `kebabCase(name)` as aliases of **every** arg it parses, so
- * `--withPrerequisites` reaches the same value as `--with-prerequisites`. This transform is narrow on
- * purpose — it handles lowercase kebab and nothing else — and `catalog.test.ts` holds every arg name in
- * the CLI to that shape, so the narrow version is complete rather than merely convenient. The kebab
- * direction is a no-op over that domain, which is why only this one exists.
- */
-function camelSpelling(name: string): string {
-  return name.replace(/-([a-z0-9])/g, (_, char: string) => char.toUpperCase());
-}
-
-/**
- * Every flag one command's parser answers to.
- *
- * Three spellings beyond the declared name, each of them citty's rather than ours, and each one a false
- * failure for a docs check that does not know about it:
- *
- * - **Declared aliases**, long and short.
- * - **The camelCase form.** citty aliases every arg to its camel and kebab spellings, so
- *   `--withPrerequisites` works. The `flagsOf` doc used to claim citty does no case mapping. It does.
- * - **`--no-<name>` on a boolean.** citty strips a `--no-` prefix from any argument before parsing, and
- *   this CLI documents the result: `ui.ts`'s own description offers `--no-auth for the bare SPA`, and
- *   `docs/commands/ui.md` puts `[--auth | --no-auth]` in its synopsis. An export without it makes a
- *   deliberately-documented page read as citing a flag that does not exist — the cries-wolf failure this
- *   whole shape was chosen to avoid. Emitted for booleans only: citty would also answer `--no-env`, but
- *   naming that would be claiming a flag rather than reporting one.
- *
- * A **positional** is not a flag and is left out: it carries no `--`, so a check looking for one would
- * never ask about it.
- */
-export function flagsOf(args: ArgsDef | undefined): string[] {
-  const flags: string[] = [];
-  for (const [name, def] of Object.entries(args ?? {})) {
-    const arg = def as { type?: string; alias?: unknown };
-    if (arg.type === "positional") continue;
-    flags.push(`--${name}`);
-    const camel = camelSpelling(name);
-    if (camel !== name) flags.push(`--${camel}`);
-    flags.push(...aliasFlags(arg.alias));
-    if (arg.type === "boolean") flags.push(`--no-${name}`);
-  }
-  return flags;
 }
 
 /**

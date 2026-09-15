@@ -387,7 +387,9 @@ async function deployOneKitWorker(input: {
 }): Promise<KitWorkerDeploy> {
   const { host, options } = input;
   const capability = host.capability;
-  const provision = `Run pithy ${capability} provision --env ${options.env}.`;
+  // No `--env`. A capability's provision spans every declared environment and none of the ones that host a
+  // kit Worker declares the flag, which the CLI refuses (#594) — a skip naming it names a fix that fails.
+  const provision = `Run pithy ${capability} provision.`;
 
   if (!input.source) return skipped(capability, `No Worker in apps/ composes ${capability} any more.`);
   const baseUrl = await baseUrlFor(input.source, options.env, input.stanza);
