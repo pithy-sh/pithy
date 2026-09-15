@@ -20,6 +20,7 @@ import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { chooseActing } from "../acting/acting";
+import { organization } from "../capability";
 import { OrganizationConfig } from "../config/config";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
@@ -294,6 +295,13 @@ async function json<T>(response: Response): Promise<T> {
 
 function actionsRecorded(): string[] {
   return events.map((event) => event.action);
+}
+
+/** The facts on the last event recorded — where a route's own account of what it did ends up. */
+function factsRecorded(): Record<string, unknown> {
+  const last = events.at(-1);
+  if (!last) throw new Error("expected an event to have been recorded");
+  return (last.metadata ?? {}) as Record<string, unknown>;
 }
 
 beforeEach(async () => {
@@ -1364,6 +1372,105 @@ describe("founding an account", () => {
     await seedUser("user_founder");
     const response = await call("POST", BASE, { as: "user_founder", body: { name: "Copy", slug: "acme" } });
     expect(response.status).toBe(409);
+  });
+
+  test("with no short name in the body, the server derives one", async () => {
+    await seedUser("user_founder");
+    const response = await call("POST", BASE, { as: "user_founder", body: { name: "New Studio" } });
+    expect(response.status).toBe(201);
+    const body = await json<{ organization: { slug: string } }>(response);
+    expect(body.organization.slug).toBe("new-studio");
+    // And the audit trail says who picked it. A chosen short name is a string a caller put into
+    // somebody's account facts; a derived one is ours, and the row should not read the same either way.
+    expect(factsRecorded()).toMatchObject({ slug: "new-studio", derived: true });
+  });
+
+  test("two accounts founded under one name both land", async () => {
+    await seedUser("user_founder");
+    await seedUser("user_second");
+    const first = await call("POST", BASE, { as: "user_founder", body: { name: "New Studio" } });
+    const second = await call("POST", BASE, { as: "user_second", body: { name: "New Studio" } });
+    expect([first.status, second.status]).toEqual([201, 201]);
+    const slugs = [
+      (await json<{ organization: { slug: string } }>(first)).organization.slug,
+      (await json<{ organization: { slug: string } }>(second)).organization.slug,
+    ];
+    expect(new Set(slugs).size).toBe(2);
+  });
+
+  test("a name in a script with no Latin letters still founds an account", async () => {
+    await seedUser("user_founder");
+    const response = await call("POST", BASE, { as: "user_founder", body: { name: "株式会社ヤマダ" } });
+    expect(response.status).toBe(201);
+    const body = await json<{ organization: { slug: string } }>(response);
+    expect(Organization.shape.slug.safeParse(body.organization.slug).success).toBe(true);
+  });
+
+  test("a supplied short name is still honored, and still held to the column's rule", async () => {
+    await seedUser("user_founder");
+    const chosen = await call("POST", BASE, { as: "user_founder", body: { name: "New Studio", slug: "picked" } });
+    expect(chosen.status).toBe(201);
+    expect((await json<{ organization: { slug: string } }>(chosen)).organization.slug).toBe("picked");
+    expect(factsRecorded()).toMatchObject({ slug: "picked", derived: false });
+
+    const malformed = await call("POST", BASE, { as: "user_founder", body: { name: "Other", slug: "Not A Slug" } });
+    expect(malformed.status).toBe(400);
+  });
+
+  test("a project that derives its short names refuses a supplied one, naming the field", async () => {
+    // The seam the dashboard needs. Generating the slug in the browser makes derivation a convention,
+    // and this route is reachable by anybody signed in — so any client can still post any slug, take
+    // short names, and put a string it chose into another account's audit facts.
+    const derived = buildApp({ config: { slugs: "derived" } });
+    await seedUser("user_founder");
+    const refused = await call("POST", BASE, {
+      as: "user_founder",
+      body: { name: "New Studio", slug: "picked" },
+      app: derived,
+    });
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("slug");
+    expect(await db().selectFrom(ORGANIZATIONS_TABLE).select("id").where("slug", "=", "picked").execute()).toEqual([]);
+
+    const accepted = await call("POST", BASE, {
+      as: "user_founder",
+      body: { name: "New Studio" },
+      app: derived,
+    });
+    expect(accepted.status).toBe(201);
+    expect((await json<{ organization: { slug: string } }>(accepted)).organization.slug).toBe("new-studio");
+  });
+
+  test("the setting reaches the route through the factory an adopter actually calls", async () => {
+    // Everything above builds the routes directly. This one goes the way a project does — `organization({
+    // … })`, the same call `pithy add organization` writes into pithy.config.ts — and mounts what that
+    // capability contributes. A setting that worked only when a test parsed the config itself would be a
+    // setting no adopter could turn on.
+    const composed = new Hono<PithyHonoEnv>();
+    composed.onError(pithyErrorHandler);
+    composed.use("*", async (c, next) => {
+      const userId = c.req.header("x-test-user");
+      c.set("auth", userId ? AuthContext.parse({ userId, sessionId: SESSION, scopes: [], locale: null }) : null);
+      c.set("controlPlane", null);
+      c.set("controlPlaneVerifier", null);
+      c.set("sameOrigin", allowAnyOrigin);
+      c.set("emit", emit);
+      c.set("log", noopLogger);
+      await next();
+    });
+    const contributed = organization({ roles: catalog, slugs: "derived", baseUrl: "https://app.example.test" }).routes;
+    if (!contributed) throw new Error("expected the tenancy capability to contribute routes");
+    contributed(composed);
+
+    await seedUser("user_founder");
+    expect(
+      (await call("POST", BASE, { as: "user_founder", body: { name: "Cai's Studio", slug: "x" }, app: composed }))
+        .status,
+    ).toBe(400);
+
+    const founded = await call("POST", BASE, { as: "user_founder", body: { name: "Cai's Studio" }, app: composed });
+    expect(founded.status).toBe(201);
+    expect((await json<{ organization: { slug: string } }>(founded)).organization.slug).toBe("cais-studio");
   });
 
   test("with self-service off the route refuses everybody, including an administrator", async () => {

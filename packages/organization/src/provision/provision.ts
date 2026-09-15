@@ -3,12 +3,13 @@
 
 import type { D1Database, D1PreparedStatement, D1Result } from "@cloudflare/workers-types";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
-import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { StoredImage } from "@pithy-sh/core/src/image/storedImage";
 import type { CompiledQuery } from "kysely";
 import { z } from "zod";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
+import { deriveSlug, suffixSlug } from "../data/slug";
 import {
   ACTING_TABLE,
   INVITATIONS_TABLE,
@@ -109,8 +110,17 @@ export function founderRole<Power extends string, Role extends string>(catalog: 
 export interface CreateOrganizationInput {
   /** The display name, as somebody typed it. Bounded by the column's own schema. */
   readonly name: string;
-  /** The URL-safe short name. Unique across every organization; a collision refuses, never renames. */
-  readonly slug: string;
+  /**
+   * The URL-safe short name, or **absent to derive one from the name**.
+   *
+   * Supplied, it behaves exactly as it always has: unique across every organization, and a collision
+   * refuses rather than renaming. Somebody who picked an address gets to keep it or gets told it is
+   * gone; being handed a different one silently is the worse of the two answers.
+   *
+   * Absent, {@link deriveSlug} reads one off the name and a collision retries with a suffix — see
+   * {@link createOrganization} for why that is a loop around the write rather than a query before it.
+   */
+  readonly slug?: string;
   /**
    * The signed-in person founding it. Becomes {@link founderRole} — there is no second option.
    *
@@ -122,6 +132,41 @@ export interface CreateOrganizationInput {
   readonly now?: Date;
   /** The id source. A seam: production passes nothing and gets `crypto.randomUUID`. */
   readonly newId?: () => string;
+  /**
+   * The suffix source for a derived slug that collided. A seam, so the ladder is walkable in a test.
+   *
+   * Production passes nothing and gets random base-36 of the requested length. Never a counter: `-2`
+   * is read off the database, which is the check-then-write window again, and it also says how many
+   * accounts share a name.
+   */
+  readonly newSuffix?: (length: number) => string;
+}
+
+/** A wider suffix per rung, so a base that is genuinely contested stops being the whole of the name. */
+const SUFFIX_LENGTHS = [4, 5, 6, 7] as const;
+
+/**
+ * How many times a derived slug is attempted: the bare one, then one per rung above.
+ *
+ * **Derived from the ladder rather than written beside it.** A number chosen separately is a number
+ * that outgrows the ladder, and the attempt past the last rung would silently retry the bare slug that
+ * just collided. Exhausting all of these means losing that many races in a row, each against a fresh
+ * random suffix — somebody squatting rather than somebody unlucky, and the honest answer then is a
+ * refusal rather than another try.
+ */
+const DERIVED_SLUG_ATTEMPTS = SUFFIX_LENGTHS.length + 1;
+
+/** Random base-36 of the requested length. The default {@link CreateOrganizationInput.newSuffix}. */
+function randomSuffix(length: number): string {
+  // 32 bits per character, so the modulo's bias toward the first four digits is about one part in a
+  // hundred million. A suffix only has to miss the row that is already there.
+  const values = crypto.getRandomValues(new Uint32Array(length));
+  return Array.from(values, (value) => (value % 36).toString(36)).join("");
+}
+
+/** Is this the refusal a derived slug retries past, rather than one it must report? */
+function isSlugTaken(error: unknown): boolean {
+  return error instanceof PithyError && error.payload.code === "organization/slug_taken";
 }
 
 /** What was founded. Returned decoded, so a caller never re-reads what it just wrote. */
@@ -139,6 +184,19 @@ export interface CreatedOrganization {
  * the write failed rather than by checking first. A check-then-insert has a window between the two, and
  * the window is exactly where two people naming their organization the same thing at the same moment
  * land — one of them would get a 201 for a row that is not there.
+ *
+ * ## A derived slug retries; a supplied one refuses
+ *
+ * With no `slug` in the input, {@link deriveSlug} reads one off the name and the loop below takes the
+ * refusal as an instruction rather than as an answer: try again with a suffix. **The constraint stays
+ * the arbiter** — the same window argument that put the refusal after the write puts the retry there
+ * too. Asking *is `acme-games` free* and then inserting it is a question whose answer expires before
+ * the statement runs, and two people founding *Acme Games* in the same second is the ordinary case for
+ * a name, not an exotic one.
+ *
+ * With a `slug` in the input nothing about this changed: one attempt, and a collision is the caller's
+ * to resolve. Renaming somebody's chosen address because it was taken is the one outcome worse than
+ * refusing.
  */
 export async function createOrganization<Power extends string, Role extends string>(
   d1: D1Database,
@@ -147,24 +205,73 @@ export async function createOrganization<Power extends string, Role extends stri
 ): Promise<CreatedOrganization> {
   const now = input.now ?? new Date();
   const newId = input.newId ?? (() => crypto.randomUUID());
+  const newSuffix = input.newSuffix ?? randomSuffix;
   const role = founderRole(catalog);
 
+  // Minted once, outside the loop. A rolled-back attempt leaves no row to clash with, so a retry that
+  // re-minted would only make the ids a function of how many races it lost.
+  const organizationId = newId();
+  const membershipId = newId();
+
+  const base = input.slug ?? deriveSlug(input.name);
+  const attempts = input.slug === undefined ? DERIVED_SLUG_ATTEMPTS : 1;
+
+  let refusal: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const length = SUFFIX_LENGTHS[attempt - 1];
+    const slug = length === undefined ? base : suffixSlug(base, newSuffix(length));
+    try {
+      return await foundOrganization(d1, { organizationId, membershipId, slug, role, now, input });
+    } catch (error) {
+      if (!isSlugTaken(error)) throw error;
+      refusal = error;
+    }
+  }
+
+  // Every rung taken. A caller who supplied the slug gets the refusal they earned, unchanged; a caller
+  // who supplied only a name gets told about the name, because the short name is not theirs to pick.
+  //
+  // `base` in the `detail` is not this caller's content: reaching here means a row already holds it, so
+  // it is an existing account's public address, and it is the one fact an operator reading the log
+  // needs — which short name is being contested.
+  if (input.slug !== undefined) throw refusal;
+  throw new OrganizationSlugTakenError(
+    {
+      message: "That name is already taken.",
+      detail: `derived slug ${base} and ${attempts - 1} suffixed attempts were all taken`,
+    },
+    { cause: refusal },
+  );
+}
+
+/** One attempt at the pair of rows, at one slug. Throws {@link OrganizationSlugTakenError} on a clash. */
+async function foundOrganization<Role extends string>(
+  d1: D1Database,
+  attempt: {
+    organizationId: string;
+    membershipId: string;
+    slug: string;
+    role: Role;
+    now: Date;
+    input: CreateOrganizationInput;
+  },
+): Promise<CreatedOrganization> {
   // No logo. An account begins without one and a caller draws initials for it, which is an answer
   // rather than a placeholder — there is nothing here to ask a founder for at founding time.
   const organization = {
-    id: newId(),
-    name: input.name,
-    slug: input.slug,
+    id: attempt.organizationId,
+    name: attempt.input.name,
+    slug: attempt.slug,
     logo: null,
-    createdAt: now,
-    updatedAt: now,
+    createdAt: attempt.now,
+    updatedAt: attempt.now,
   };
   const membership = {
-    id: newId(),
+    id: attempt.membershipId,
     organizationId: organization.id,
-    userId: input.founderUserId,
-    role,
-    createdAt: now,
+    userId: attempt.input.founderUserId,
+    role: attempt.role,
+    createdAt: attempt.now,
   };
 
   // Encoded through each table's own codec, which is also where the slug's pattern and the name's
@@ -189,8 +296,8 @@ export async function createOrganization<Power extends string, Role extends stri
     );
   } catch (cause) {
     throw foundingFailure(
-      (await organizationIdWithSlug(d1, input.slug)) !== undefined,
-      input.slug,
+      (await organizationIdWithSlug(d1, attempt.slug)) !== undefined,
+      attempt.slug,
       cause instanceof Error ? cause.name : "unknown",
       cause,
     );
@@ -203,9 +310,9 @@ export async function createOrganization<Power extends string, Role extends stri
   // land; anybody else's means the batch rolled back, and answering success here would hand the caller an
   // id and a slug that are in no row.
   if (written === undefined) {
-    const holder = await organizationIdWithSlug(d1, input.slug);
+    const holder = await organizationIdWithSlug(d1, attempt.slug);
     if (holder !== organization.id) {
-      throw foundingFailure(holder !== undefined, input.slug, "a unique constraint on retry left no row");
+      throw foundingFailure(holder !== undefined, attempt.slug, "a unique constraint on retry left no row");
     }
   }
 

@@ -47,7 +47,14 @@ const RoleName = z
     "A role from this project's `defineRoles` catalog. Bounded text here rather than an enum, because the catalog is the adopter's and is a value at compose time; the store decodes it through `catalog.AssignableRole` and refuses an unassignable or unknown one with a 403.",
   );
 
-/** The body of `POST {base}/` — found an organization. */
+/**
+ * The body of `POST {base}/` — found an organization.
+ *
+ * **The short name is optional, and absent is an instruction rather than an omission.** The server
+ * derives one from the display name and lets the unique constraint settle it, which is the only
+ * arrangement without a window: asking *is this free* and then writing it is a question whose answer
+ * expires before the statement runs. A supplied one still behaves exactly as it always did.
+ */
 export const CreateOrganization = z
   .object({
     name: z
@@ -55,12 +62,30 @@ export const CreateOrganization = z
       .min(1)
       .max(MAX_ORGANIZATION_NAME_LENGTH)
       .describe("The organization's display name, as it will appear on screen and in every invitation sent for it."),
-    slug: Organization.shape.slug.describe(
-      "The URL-safe short name, unique across all organizations. Lowercase alphanumerics and single hyphens, bounded — the column's own rule, read from it rather than restated, so a form and a column can never disagree about what a slug is.",
-    ),
+    slug: Organization.shape.slug
+      .optional()
+      .describe(
+        'The URL-safe short name, unique across all organizations. Lowercase alphanumerics and single hyphens, bounded — the column\'s own rule, read from it rather than restated, so a form and a column can never disagree about what a slug is. Omit it and the server derives one from the name; supply it and a collision refuses rather than renaming, because an address somebody picked is theirs to keep or to be told is gone. A project configured `slugs: "derived"` refuses a supplied one.',
+      ),
   })
   .describe("What founding an organization takes. The founder's role is the catalog's and is not in the request.");
 export type CreateOrganization = z.output<typeof CreateOrganization>;
+
+/**
+ * {@link CreateOrganization}, bound to what this project lets a caller pick.
+ *
+ * **On the route line rather than in the handler**, because *what a caller may send* belongs to the
+ * route's declaration (CLAUDE.md §HTTP) and the setting is a value at compose time. A check inside the
+ * handler would be a second contract, invisible from the route, that a reader has to open a function to
+ * find.
+ */
+export function createOrganizationBody(slugs: "chosen" | "derived"): typeof CreateOrganization {
+  if (slugs === "chosen") return CreateOrganization;
+  return CreateOrganization.refine((body) => body.slug === undefined, {
+    message: "The short name is derived from the name here, so it cannot be sent.",
+    path: ["slug"],
+  });
+}
 
 /**
  * The body of `POST {base}/acting` — which organization this session acts in.

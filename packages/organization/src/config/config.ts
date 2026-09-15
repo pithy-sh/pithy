@@ -51,6 +51,12 @@ export const OrganizationConfig = z
       .describe(
         "How long an offer of ownership stands. Shorter than an invitation, because it is an offer to take responsibility for an account rather than to join one, and an open-ended one is accepted a year later by somebody who has forgotten it was made.",
       ),
+    slugs: z
+      .enum(["chosen", "derived"])
+      .default("chosen")
+      .describe(
+        "Who picks an organization's short name. `chosen` is the original behavior and the default: the create request may carry a `slug`, and one it omits is derived from the name. `derived` refuses a supplied `slug` outright, for a product where no URL contains one and nobody is meant to pick — the create route is reachable by anybody signed in, so generating it in a browser instead makes derivation a convention rather than a rule, and any other client can still take short names and put a string it chose into an account's audit facts. Either way an omitted slug is derived, and either way the response carries the one that was written.",
+      ),
     allowSelfService: z
       .boolean()
       .default(true)

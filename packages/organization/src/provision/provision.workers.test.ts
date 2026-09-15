@@ -10,6 +10,7 @@ import { CamelCasePlugin, Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
 import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, test } from "vitest";
+import { Organization } from "../data/organization";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
 import { defineRoles } from "../roles/roles";
 import { createOrganization, deleteOrganization, founderRole, renameOrganization, setLogo } from "./provision";
@@ -388,6 +389,98 @@ describe("createOrganization", () => {
     await createOrganization(env.DB, NESTING, { name: "One", slug: "one", founderUserId: FOUNDER });
     await createOrganization(env.DB, NESTING, { name: "Two", slug: "two", founderUserId: FOUNDER });
     expect(await count("pithy_organization_memberships")).toBe(2);
+  });
+});
+
+/**
+ * Founding without naming a short name — and the constraint, not a query, deciding who gets it.
+ *
+ * **A check-then-write would be a window, and the migration says so at the column.** So the derived
+ * path writes, reads the failure, and tries again with a suffix. Everything here is against real D1 for
+ * that one reason: the property is the unique index, and a mock would answer whatever it was told to.
+ */
+describe("createOrganization, with no slug supplied", () => {
+  test("the short name comes from the display name", async () => {
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      founderUserId: FOUNDER,
+    });
+    expect(organization.slug).toBe("acme-games");
+    const row = await env.DB.prepare("select slug from pithy_organization_organizations").first<{ slug: string }>();
+    expect(row?.slug).toBe("acme-games");
+  });
+
+  test("a name that reduces to nothing still founds an account", async () => {
+    // The refusal nobody can act on — *that short name is invalid*, to somebody who never typed one.
+    const { organization } = await createOrganization(env.DB, NESTING, {
+      name: "株式会社",
+      founderUserId: FOUNDER,
+    });
+    expect(Organization.shape.slug.safeParse(organization.slug).success).toBe(true);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+  });
+
+  test("two accounts with one name both land, on different short names", async () => {
+    const first = await createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: FOUNDER });
+    const second = await createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: STRANGER });
+
+    expect(first.organization.slug).toBe("acme-games");
+    expect(second.organization.slug).not.toBe(first.organization.slug);
+    expect(second.organization.slug.startsWith("acme-games-")).toBe(true);
+    expect(await count("pithy_organization_organizations")).toBe(2);
+  });
+
+  test("eight foundings of one name at once leave eight accounts, and eight short names", async () => {
+    // The unique constraint as the arbiter, exercised rather than asserted. Every one of these derives
+    // the same base; seven of them lose that race and take a suffix.
+    const founded = await Promise.all(
+      Array.from({ length: 8 }, (_unused, index) =>
+        createOrganization(env.DB, NESTING, { name: "Acme Games", founderUserId: `user_${index}` }),
+      ),
+    );
+    const slugs = founded.map((created) => created.organization.slug);
+    expect(new Set(slugs).size).toBe(8);
+    expect(slugs.every((slug) => Organization.shape.slug.safeParse(slug).success)).toBe(true);
+    expect(await count("pithy_organization_organizations")).toBe(8);
+    expect(await count("pithy_organization_memberships")).toBe(8);
+  });
+
+  test("a derived slug that keeps colliding refuses on the name, not on a short name nobody chose", async () => {
+    // With the suffix pinned, every attempt is predictable — so the whole ladder can be taken first and
+    // the exhausted case actually reached. The refusal must not say "pick another short name" to a
+    // caller who never supplied one.
+    const newSuffix = (length: number) => "z".repeat(length);
+    const taken = ["acme-games", "acme-games-zzzz", "acme-games-zzzzz", "acme-games-zzzzzz", "acme-games-zzzzzzz"];
+    for (const slug of taken) {
+      await createOrganization(env.DB, NESTING, { name: "Acme Games", slug, founderUserId: FOUNDER });
+    }
+
+    const failure = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      founderUserId: STRANGER,
+      newSuffix,
+    }).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/slug_taken");
+    expect((failure as PithyError).payload.message).toBe("That name is already taken.");
+    expect(await count("pithy_organization_organizations")).toBe(taken.length);
+  });
+
+  test("a supplied slug never retries — a collision is still the caller's to resolve", async () => {
+    // The additive half of this. Someone who picked `acme-games` and got a 409 must not silently be
+    // given `acme-games-7f3a` instead; they chose an address, and a rename is not an answer to a
+    // collision.
+    await createOrganization(env.DB, NESTING, { name: "Acme Games", slug: "acme-games", founderUserId: FOUNDER });
+
+    const failure = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      slug: "acme-games",
+      founderUserId: STRANGER,
+      newSuffix: () => "zzzz",
+    }).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/slug_taken");
+    expect(await count("pithy_organization_organizations")).toBe(1);
   });
 });
 
