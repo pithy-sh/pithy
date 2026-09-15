@@ -5,8 +5,10 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
+import { deprovisionTurnstile, provisionTurnstile } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import {
   TURNSTILE_SECRET_NAME,
   type TurnstileSecrets,
@@ -744,5 +746,155 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable on an unconfirmed
 
     listTurnstilesByDomain.mockResolvedValue([]);
     await expect(ours.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * **A run the sitekey writer will refuse creates nothing and writes nothing** (#590 review).
+ *
+ * The writer ran last: after the dev secret, the staging secret, a real production widget and the prod
+ * secret. Its refusals — a key that is not a string literal, a registration it cannot find — read only the
+ * source, and none depends on the sitekey Cloudflare returns. So a refused run had already minted a widget
+ * and stored both secrets, while the docs said "Nothing is written", and the rerun it asked for reused the
+ * widget and warned about a secret that was in fact stored. Teardown had the same order: the widgets and
+ * secrets were deleted before `clearProductionSitekeys` refused, and the stranded vars were never removed.
+ *
+ * Driven through the real orchestrator and the real provisioners, over a stubbed Cloudflare API and a
+ * recording dispatcher, so the order under test is the one a command runs.
+ */
+describe("a refused sitekey write leaves the account and the files as they were", () => {
+  const STRANDED = '{ "env": { "prod": { "vars": { "TURNSTILE_SITEKEY_VISIBLE": "0x4AAAold" } } } }';
+
+  /** A project whose Worker config is `config`, and a real provisioner and deprovisioner over stubs. */
+  async function refusedFixture(config: string) {
+    const fake = fakeCf();
+    fake.getTurnstile.mockResolvedValue(null);
+    fake.addTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal", secret: "0x4AAAsecret" });
+    const recorder = fakeDispatcher();
+    const { projectDir, workerDir } = await project(STRANDED);
+    await writeFile(join(workerDir, "pithy.config.ts"), config);
+    const options = {
+      account: { accountId: "acct-1", confirmation: "pinned" as const },
+      cf: fake.cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher: recorder.dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    };
+    /** Every file this run could touch, as it stands. */
+    const files = async () => ({
+      config: await readFile(join(workerDir, "pithy.config.ts"), "utf8"),
+      wrangler: await readFile(join(workerDir, "wrangler.jsonc"), "utf8"),
+      devSecrets: await devSecrets(projectDir),
+    });
+    return {
+      fake,
+      recorder,
+      files,
+      provisioner: new CloudflareTurnstileProvisioner(options),
+      deprovisioner: new CloudflareTurnstileDeprovisioner(options),
+    };
+  }
+
+  const STAGING_EXPRESSION = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+const STAGING = process.env.STAGING_SITEKEY ?? "";
+
+export default {
+  capabilities: [
+    turnstile({
+      widgets: {
+        visible: {
+          sitekeys: { dev: "", staging: STAGING, prod: "" },
+        },
+      },
+    }),
+  ],
+};
+`;
+
+  const ONE_LINE = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+export default { capabilities: [turnstile({ widgets: { visible: { sitekeys: { dev: "", staging: "", prod: "" } } } })] };
+`;
+
+  const PROD_EXPRESSION = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+const PROD = "0x4AAAreal";
+
+export default {
+  capabilities: [
+    turnstile({
+      widgets: {
+        visible: {
+          sitekeys: { dev: "", staging: "", prod: PROD },
+        },
+      },
+    }),
+  ],
+};
+`;
+
+  for (const [shape, config, refusal] of [
+    ["a staging sitekey that is an expression", STAGING_EXPRESSION, /widgets\.visible\.sitekeys\.staging/],
+    ["a registration on one line", ONE_LINE, /widgets\.visible\.sitekeys\.dev/],
+  ] as const) {
+    test(`provision over ${shape} refuses before a widget or a secret exists`, async () => {
+      const { fake, recorder, files, provisioner } = await refusedFixture(config);
+      const before = await files();
+
+      const error = await provisionTurnstile(provisioner, {
+        modes: ["visible"],
+        productionDomain: "app.example.com",
+      }).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toMatch(refusal);
+      expect(fake.addTurnstile).not.toHaveBeenCalled();
+      expect(recorder.calls).toEqual([]);
+      expect(await files()).toEqual(before);
+    });
+  }
+
+  test("provision over a prod sitekey expression refuses before it creates the widget that expression cannot name", async () => {
+    // A sitekey Cloudflare has not issued yet is one no expression in the config can already resolve to.
+    const { fake, recorder, files, provisioner } = await refusedFixture(PROD_EXPRESSION.replace("0x4AAAreal", "other"));
+    const before = await files();
+
+    await expect(
+      provisionTurnstile(provisioner, { modes: ["visible"], productionDomain: "app.example.com" }),
+    ).rejects.toThrow(/widgets\.visible\.sitekeys\.prod/);
+
+    expect(fake.addTurnstile).not.toHaveBeenCalled();
+    expect(recorder.calls).toEqual([]);
+    expect(await files()).toEqual(before);
+  });
+
+  test("provision over a prod expression that already names the existing widget goes ahead", async () => {
+    // The control: the up-front check must not refuse what the writer would accept. The widget exists, so
+    // its sitekey is known before anything is written, and the expression already resolves to it.
+    const { fake, provisioner } = await refusedFixture(PROD_EXPRESSION);
+    fake.getTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal" });
+
+    const result = await provisionTurnstile(provisioner, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+    });
+
+    expect(fake.addTurnstile).not.toHaveBeenCalled();
+    expect(result.sitekeys.visible?.prod).toBe("0x4AAAreal");
+  });
+
+  test("deprovision over a prod sitekey expression refuses before a widget or a secret is deleted", async () => {
+    const { fake, recorder, files, deprovisioner } = await refusedFixture(PROD_EXPRESSION);
+    fake.getTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal" });
+    const before = await files();
+
+    await expect(deprovisionTurnstile(deprovisioner, ["visible"])).rejects.toThrow(/widgets\.visible\.sitekeys\.prod/);
+
+    expect(fake.deleteTurnstile).not.toHaveBeenCalled();
+    expect(recorder.calls).toEqual([]);
+    expect(await files()).toEqual(before);
   });
 });

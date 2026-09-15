@@ -82,6 +82,15 @@ export function environmentsWithoutSitekeys(environments: readonly string[]): st
 export type ProvisionedSitekeys = Partial<Record<TurnstileMode, TurnstileSitekeys>>;
 
 /**
+ * The sitekeys a run is about to write, per mode and environment — only the ones it means to write.
+ *
+ * `null` is a production widget's sitekey that Cloudflare has not issued yet, because the widget is still to
+ * be created. It is a real state and not a missing value: no expression in a config can already resolve to
+ * a sitekey nobody has, so only a string literal can take it.
+ */
+export type PlannedSitekeys = Partial<Record<TurnstileMode, Partial<Record<keyof TurnstileSitekeys, string | null>>>>;
+
+/**
  * The production widget's name: `<project>-prod-turnstile-<mode>` (docs/NAMING.md).
  *
  * Stable per project and mode, because provisioning is reuse-or-create **by name** — which is exactly
@@ -118,7 +127,10 @@ function buildSecrets(modes: TurnstileMode[], key: string): TurnstileSecrets {
  * written out rather than mapped, so a fourth key added to that schema is a compile error here instead of
  * an environment this quietly leaves blank.
  */
-function sitekeysFor(mode: TurnstileMode, productionSitekey: string): TurnstileSitekeys {
+function sitekeysFor<Production extends string | null>(
+  mode: TurnstileMode,
+  productionSitekey: Production,
+): { dev: string; staging: string; prod: Production } {
   return { dev: testSitekey(mode), staging: testSitekey(mode), [REAL_WIDGET_ENV]: productionSitekey };
 }
 
@@ -143,6 +155,14 @@ export interface TurnstileProvisioner {
    * sitekey. This project's own widgets are the expected steady state and never trip it.
    */
   assertDomainAvailable(domain: string): Promise<void>;
+  /** The production widget for a mode, if it already exists — a lookup by name that creates nothing. */
+  findProductionWidget(mode: TurnstileMode): Promise<{ sitekey: string } | null>;
+  /**
+   * Refuse, **before anything is created or written**, when {@link writeSitekeys} would refuse these values:
+   * a registration it cannot find, a key that is not a string literal and does not already resolve to the
+   * value. Reads only. See {@link PlannedSitekeys} for `null`.
+   */
+  assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void>;
   /** dev: upsert the turnstile secret into the dev secrets file. */
   writeDev(secret: TurnstileSecrets): Promise<void>;
   /** Write the turnstile secret to a deployed environment's managed store (via the manager). */
@@ -161,6 +181,8 @@ export interface TurnstileProvisioner {
 
 /** The inverse steps, for teardown — each guarded so a missing resource is a no-op. */
 export interface TurnstileDeprovisioner {
+  /** Refuse, before anything is deleted, when {@link clearProductionSitekeys} would refuse. Reads only. */
+  assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void>;
   /** Delete the production widget for a mode if it exists. */
   deleteProductionWidget(mode: TurnstileMode): Promise<void>;
   /** Delete the turnstile secret from every deployed environment's managed store. */
@@ -228,17 +250,30 @@ export interface TurnstilePlan {
  *
  * Idempotent: a re-run reuses existing production widgets and skips the production secret write (whose
  * value can't be recovered from Cloudflare), while their sitekeys — which Cloudflare does return — are
- * written again. A *mixed* production state (some widgets new, some pre-existing) can't compose a
- * consistent secret, so it errors with guidance rather than write a half-secret. Before anything is
- * written, a production domain a *foreign* widget already covers is refused (`allowSharedDomain` opts out).
+ * written again. A *mixed* production state (some widgets exist, some do not) can't compose a consistent
+ * secret, so it errors with guidance rather than write a half-secret.
+ *
+ * **Before anything is created or written**, three refusals are decided: a production domain a *foreign*
+ * widget already covers (`allowSharedDomain` opts out), a mixed production state, and a sitekey the writer
+ * would refuse. A refused run leaves the account and every file as it found them.
  */
 export async function provisionTurnstile(
   provisioner: TurnstileProvisioner,
   plan: TurnstilePlan,
 ): Promise<TurnstileProvisionResult> {
-  // First, before a single write: a domain already covered by a foreign widget is refused, so a refusal
-  // leaves no half-wired dev secret, staging secret or config edit behind.
+  // **Everything that can refuse the run is decided before the first write** (#590 review). A domain a
+  // foreign widget covers, a mixed production state, and a sitekey the writer cannot write are all readable
+  // now, and each used to be found after a real widget was minted and its secret stored.
   if (!plan.allowSharedDomain) await provisioner.assertDomainAvailable(plan.productionDomain);
+
+  const existing = new Map<TurnstileMode, { sitekey: string } | null>();
+  for (const mode of plan.modes) existing.set(mode, await provisioner.findProductionWidget(mode));
+  const found = [...existing.values()].filter((widget) => widget !== null).length;
+  if (found > 0 && found < plan.modes.length) throw mixedProductionState();
+
+  const planned: PlannedSitekeys = {};
+  for (const mode of plan.modes) planned[mode] = sitekeysFor(mode, existing.get(mode)?.sitekey ?? null);
+  await provisioner.assertSitekeysWritable(planned);
 
   const testSecret = buildSecrets(plan.modes, TEST_SECRET);
 
@@ -255,13 +290,10 @@ export async function provisionTurnstile(
     if (secret !== null) realSecrets[mode] = { key: secret };
   }
 
+  // Checked again after the lookups above: a widget created or deleted by someone else in between is the
+  // one way a run that read a consistent state can still end in a mixed one.
   const created = widgets.filter((widget) => widget.created).length;
-  if (created > 0 && created < plan.modes.length) {
-    throw new ValidationError({
-      message: "Turnstile production widgets are in a mixed state — some exist, some were just created.",
-      action: "Run `pithy turnstile deprovision`, then provision again to write a consistent production secret.",
-    });
-  }
+  if (created > 0 && created < plan.modes.length) throw mixedProductionState();
   // All new → write the freshly-composed production secret. All reused → Cloudflare won't return the
   // existing widgets' secret, so it can't be recomposed and is left as-is (the caller warns).
   const productionSecretWritten = created === plan.modes.length;
@@ -274,6 +306,14 @@ export async function provisionTurnstile(
   return { modes: plan.modes, widgets, productionSecretWritten, sitekeys, strandedVarsRemoved };
 }
 
+/** The refusal for production widgets some of which exist and some of which do not. */
+function mixedProductionState(): ValidationError {
+  return new ValidationError({
+    message: "Turnstile production widgets are in a mixed state — some exist, some do not.",
+    action: "Run `pithy turnstile deprovision`, then provision again to write a consistent production secret.",
+  });
+}
+
 /**
  * Tear down Turnstile: delete each mode's production widget and the managed secret, clear the dev secret,
  * blank the production sitekeys in `pithy.config.ts`, and remove any stranded sitekey vars.
@@ -282,6 +322,11 @@ export async function deprovisionTurnstile(
   deprovisioner: TurnstileDeprovisioner,
   modes: TurnstileMode[],
 ): Promise<{ modes: TurnstileMode[] }> {
+  // Before the first delete, for the reason provisioning checks first: a refusal after the widgets and
+  // secrets are gone leaves the prod sitekey naming a deleted widget and the stranded vars in place.
+  const blanked: PlannedSitekeys = {};
+  for (const mode of modes) blanked[mode] = { [REAL_WIDGET_ENV]: "" };
+  await deprovisioner.assertSitekeysWritable(blanked);
   for (const mode of modes) {
     await deprovisioner.deleteProductionWidget(mode);
   }

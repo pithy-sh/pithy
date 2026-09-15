@@ -31,6 +31,8 @@ There is no `--mode`. Which widgets exist is declared in the Worker's `pithy.con
 
 Then it does four things. **dev and staging** get Cloudflare's documented test secret, written per environment — dev to the dev secrets file, staging to its managed store. **`prod`** gets a real widget per mode, bound to that hostname, its secret written to the production managed store. **Every environment's public sitekey** is written into the Worker's `pithy.config.ts`, in the `turnstile({ ... })` registration: the always-pass test sitekey for dev and staging, the real widget's for prod. And **any `TURNSTILE_SITEKEY_*` var** an older provisioner left in that Worker's `wrangler.jsonc`, or in `dev.json`, is removed.
 
+**Every refusal is decided before anything is created.** A domain a foreign widget already covers, production widgets of which some exist and some do not, and a sitekey the writer would refuse are all readable from the account's widget list and the Worker's config. So they are checked first, and a refused run leaves the account, the secret stores and every file as it found them. `deprovision` checks its sitekey edit before it deletes anything, for the same reason.
+
 ### The sitekeys are a build input
 
 The front end gets its sitekey from `virtual:pithy/turnstile`, which the `pithy()` Vite plugin inlines **when the bundle is built**, from `widgets.<mode>.sitekeys.<environment>`. So that block is where provisioning writes, and nothing it writes reaches a deployed bundle until the Worker is built and deployed again. **Redeploy staging and prod after provisioning.** The output says so.
@@ -101,11 +103,24 @@ No Turnstile widgets are declared.
 Add a `widgets.visible` or `widgets.invisible` entry to turnstile({ ... }) in pithy.config.ts.
 ```
 
-**A sitekey cannot be written.** The registration has no `widgets.<mode>.sitekeys.<environment>` object literal to write into, or that key is an expression resolving to something else. Nothing is written.
+**A sitekey cannot be written.** The registration has no `widgets.<mode>.sitekeys.<environment>` object literal to write into, or that key is an expression resolving to something else. A production sitekey Cloudflare has not issued yet can only go into a string literal: no expression already resolves to it. Checked before a widget is created or deleted and before a secret or a file is written, so nothing is.
 
 ```
 Could not write widgets.visible.sitekeys.staging in <path>. Each is an expression that resolves to something else.
 Set widgets.visible.sitekeys.staging: "1x00000000000000000000AA" in the turnstile({ ... }) registration by hand, then run the command again. Only string literals are written.
+```
+
+The registration is found only where `turnstile({` opens a line. A config that writes the whole `capabilities` array on one line gets the same refusal, for every key.
+
+```
+Could not write widgets.visible.sitekeys.dev, widgets.visible.sitekeys.staging, widgets.visible.sitekeys.prod in <path>. No `turnstile({ ... })` registration opens a line of it. Put the call on its own line.
+```
+
+**The production widgets are in a mixed state.** One mode's widget exists and another's does not, so no consistent production secret can be composed. Refused before anything is written.
+
+```
+Turnstile production widgets are in a mixed state — some exist, some do not.
+Run `pithy turnstile deprovision`, then provision again to write a consistent production secret.
 ```
 
 **The written sitekeys are not what the capability reads.** The config, loaded back, resolves something other than what was written — the edit landed somewhere the capability does not read. The file is restored.

@@ -7,7 +7,10 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { isTurnstileCapability, type TurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileMode, TurnstileSitekeys } from "@pithy-sh/turnstile/src/config/config";
-import { environmentsWithoutSitekeys } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
+import {
+  environmentsWithoutSitekeys,
+  type PlannedSitekeys,
+} from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { allCapabilities, loadWorkerConfig, type WorkerConfig } from "../project/config";
 import { locateRegistration, type ObjectProperty, objectProperties } from "./reconcile";
 
@@ -37,6 +40,13 @@ import { locateRegistration, type ObjectProperty, objectProperties } from "./rec
  * capability's own parse says whether the producer and the consumer meet. A read-back that disagrees
  * restores the file byte for byte and refuses.
  *
+ * ## How a run refuses before it has done anything
+ *
+ * {@link assertTurnstileSitekeysWritable} asks every question the writer refuses on, and writes nothing. It is
+ * the same planning step the writer runs, so the two cannot disagree, and `pithy turnstile provision` asks it
+ * before a widget or a secret exists (#590 review). A production sitekey Cloudflare has not issued yet is
+ * planned as `null`: only a string literal can take it.
+ *
  * ## What it does not see
  *
  * The read-back composes the config once, under whatever `ENVIRONMENT` this process has. A config that
@@ -63,6 +73,16 @@ export function environmentsBuiltWithoutSitekeys(declared: readonly string[]): s
 /** Every environment's sitekey per widget mode — only the ones a caller means to write. */
 export type SitekeyWrites = Partial<Record<TurnstileMode, Partial<TurnstileSitekeys>>>;
 
+/** Options for {@link assertTurnstileSitekeysWritable}. */
+export interface AssertTurnstileSitekeysWritableOptions {
+  /** The Worker whose `pithy.config.ts` composes turnstile — the `--worker` target, and no other. */
+  workerDir: string;
+  /** The values a run is about to write. `null` is a production sitekey not issued yet. */
+  sitekeys: PlannedSitekeys;
+  /** How the config is read. Defaults to a fresh `loadWorkerConfig`. */
+  loadConfig?: (workerDir: string) => Promise<WorkerConfig>;
+}
+
 /** Options for {@link writeTurnstileSitekeys}. */
 export interface WriteTurnstileSitekeysOptions {
   /** The Worker whose `pithy.config.ts` composes turnstile — the `--worker` target, and no other. */
@@ -88,7 +108,8 @@ export interface WrittenSitekeys {
 interface SitekeyEdit {
   mode: TurnstileMode;
   environment: keyof TurnstileSitekeys;
-  value: string;
+  /** The value, or `null` for a production sitekey Cloudflare has not issued yet. */
+  value: string | null;
 }
 
 /** The dotted path of an edit, for a sentence. */
@@ -97,10 +118,11 @@ function keyPath(edit: SitekeyEdit): string {
 }
 
 /** Flatten the nested request into one edit per mode and environment. */
-function editsOf(sitekeys: SitekeyWrites): SitekeyEdit[] {
+function editsOf(sitekeys: PlannedSitekeys): SitekeyEdit[] {
   const edits: SitekeyEdit[] = [];
-  for (const [mode, byEnvironment] of Object.entries(sitekeys) as [TurnstileMode, Partial<TurnstileSitekeys>][]) {
-    for (const [environment, value] of Object.entries(byEnvironment) as [keyof TurnstileSitekeys, string][]) {
+  const byMode = Object.entries(sitekeys) as [TurnstileMode, Partial<Record<keyof TurnstileSitekeys, string | null>>][];
+  for (const [mode, byEnvironment] of byMode) {
+    for (const [environment, value] of Object.entries(byEnvironment) as [keyof TurnstileSitekeys, string | null][]) {
       edits.push({ mode, environment, value });
     }
   }
@@ -154,27 +176,42 @@ function isStringLiteral(text: string): boolean {
 
 /** The refusal for keys this cannot write — named, with the value each one needs. */
 function unwritable(path: string, edits: readonly SitekeyEdit[], why: string): ValidationError {
-  const lines = edits.map((edit) => `${keyPath(edit)}: ${JSON.stringify(edit.value)}`);
+  const lines = edits.map(
+    (edit) => `${keyPath(edit)}: ${edit.value === null ? "a string literal" : JSON.stringify(edit.value)}`,
+  );
   return new ValidationError({
     message: `Could not write ${edits.map(keyPath).join(", ")} in ${path}. ${why}`,
     action: `Set ${lines.join(", ")} in the turnstile({ ... }) registration by hand, then run the command again. Only string literals are written.`,
   });
 }
 
+/** What the planning step settled: the file as read, and the literal spans to replace. */
+interface SitekeyPlan {
+  path: string;
+  original: string;
+  spans: { edit: SitekeyEdit; span: ObjectProperty }[];
+}
+
 /**
- * Write each requested sitekey into the Worker's `turnstile(...)` registration, and prove the capability
- * now resolves exactly those values. All or nothing: a key it cannot write refuses the run before the file
- * is touched, and a read-back that disagrees puts the file back.
+ * **Every refusal the writer can make, decided from the source and the loaded config, with nothing written.**
+ * The one planning step both {@link assertTurnstileSitekeysWritable} and {@link writeTurnstileSitekeys} run, so
+ * a check that passes is a write that will not refuse on these grounds.
+ *
+ * An edit is pending unless the config already resolves to its value; a `null` value is always pending,
+ * because nothing can already resolve to a sitekey nobody has.
  */
-export async function writeTurnstileSitekeys(options: WriteTurnstileSitekeysOptions): Promise<WrittenSitekeys> {
-  const load = options.loadConfig ?? ((dir: string) => loadWorkerConfig(dir, { fresh: true }));
-  const path = join(options.workerDir, "pithy.config.ts");
+async function planSitekeys(
+  workerDir: string,
+  sitekeys: PlannedSitekeys,
+  load: (workerDir: string) => Promise<WorkerConfig>,
+): Promise<SitekeyPlan> {
+  const path = join(workerDir, "pithy.config.ts");
   const original = await readFile(path, "utf8");
-  const edits = editsOf(options.sitekeys);
+  const edits = editsOf(sitekeys);
 
   // What the config says before anything is touched — so an expression that already says the right thing
   // is left alone, and a re-run over this writer's own output is a no-op.
-  const before = turnstileOf(await load(options.workerDir));
+  const before = turnstileOf(await load(workerDir));
   if (before === undefined) {
     throw new ValidationError({
       message: `${path} does not compose turnstile.`,
@@ -182,9 +219,17 @@ export async function writeTurnstileSitekeys(options: WriteTurnstileSitekeysOpti
         "Add `turnstile({ ... })` to this Worker's pithy.config.ts (run `pithy add turnstile`), or pass --worker.",
     });
   }
-  const pending = edits.filter((edit) => resolvedValue(before, edit) !== edit.value);
-  if (pending.length === 0) return { path, changed: false };
+  const pending = edits.filter((edit) => edit.value === null || resolvedValue(before, edit) !== edit.value);
+  if (pending.length === 0) return { path, original, spans: [] };
 
+  const registration = locateRegistration(original, "turnstile");
+  if (registration === null || registration.form !== "block") {
+    throw unwritable(
+      path,
+      pending,
+      "No `turnstile({ ... })` registration opens a line of it. Put the call on its own line.",
+    );
+  }
   const spans: { edit: SitekeyEdit; span: ObjectProperty }[] = [];
   const missing: SitekeyEdit[] = [];
   const expressions: SitekeyEdit[] = [];
@@ -200,6 +245,32 @@ export async function writeTurnstileSitekeys(options: WriteTurnstileSitekeysOpti
   if (expressions.length > 0) {
     throw unwritable(path, expressions, "Each is an expression that resolves to something else.");
   }
+  return { path, original, spans };
+}
+
+/**
+ * Refuse exactly when {@link writeTurnstileSitekeys} would refuse on the source, and write nothing — so a
+ * command can ask before it creates a widget or stores a secret the refusal would strand.
+ */
+export async function assertTurnstileSitekeysWritable(options: AssertTurnstileSitekeysWritableOptions): Promise<void> {
+  await planSitekeys(options.workerDir, options.sitekeys, options.loadConfig ?? freshLoad);
+}
+
+/** The default config read: fresh, because the module cache would hand back the file as it was. */
+function freshLoad(workerDir: string): Promise<WorkerConfig> {
+  return loadWorkerConfig(workerDir, { fresh: true });
+}
+
+/**
+ * Write each requested sitekey into the Worker's `turnstile(...)` registration, and prove the capability
+ * now resolves exactly those values. All or nothing: a key it cannot write refuses the run before the file
+ * is touched, and a read-back that disagrees puts the file back.
+ */
+export async function writeTurnstileSitekeys(options: WriteTurnstileSitekeysOptions): Promise<WrittenSitekeys> {
+  const load = options.loadConfig ?? freshLoad;
+  const { path, original, spans } = await planSitekeys(options.workerDir, options.sitekeys, load);
+  if (spans.length === 0) return { path, changed: false };
+  const edits = editsOf(options.sitekeys);
 
   // Last span first, so an earlier replacement never shifts the offsets of one still to come.
   let source = original;

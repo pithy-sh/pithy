@@ -13,6 +13,7 @@ import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
   isStrandedSitekeyVar,
   type ManagedTurnstileEnv,
+  type PlannedSitekeys,
   type ProvisionedSitekeys,
   productionWidgetName,
   type StrandedSitekeyVar,
@@ -33,7 +34,7 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import { renderDevVarsNotes } from "../devSecrets/report";
 import { envStanzas, type WranglerStanza } from "../project/bindingEntries";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
-import { writeTurnstileSitekeys } from "./turnstileSitekeys";
+import { assertTurnstileSitekeysWritable, writeTurnstileSitekeys } from "./turnstileSitekeys";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
 function errorMessage(error: unknown): string {
@@ -305,6 +306,20 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     return removeStranded(this.#projectDir, this.#workerDir, this.#notes);
   }
 
+  /**
+   * The questions {@link writeSitekeys} refuses on, asked of the target Worker's config with nothing written —
+   * through {@link assertTurnstileSitekeysWritable}, the writer's own planning step.
+   */
+  async assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void> {
+    await assertTurnstileSitekeysWritable({ workerDir: this.#workerDir, sitekeys });
+  }
+
+  /** This project's production widget for a mode, by name, or `null`. A lookup: it creates nothing. */
+  async findProductionWidget(mode: TurnstileMode): Promise<{ sitekey: string } | null> {
+    const existing = await this.#cf.turnstile().getTurnstile(productionWidgetName(this.#project, mode));
+    return existing ? { sitekey: existing.sitekey } : null;
+  }
+
   async ensureProductionWidget(
     mode: TurnstileMode,
     domain: string,
@@ -353,6 +368,11 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     this.#environments = options.environments;
     this.#audit = options.audit ?? (async () => {});
     this.#notes = options.notes ?? stderrNotes;
+  }
+
+  /** See {@link CloudflareTurnstileProvisioner.assertSitekeysWritable}. */
+  async assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void> {
+    await assertTurnstileSitekeysWritable({ workerDir: this.#workerDir, sitekeys });
   }
 
   async deleteProductionWidget(mode: TurnstileMode): Promise<void> {

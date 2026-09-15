@@ -65,6 +65,8 @@ describe("environmentsWithoutSitekeys", () => {
 function fakeProvisioner(overrides: Partial<TurnstileProvisioner> = {}) {
   return {
     assertDomainAvailable: vi.fn().mockResolvedValue(undefined),
+    findProductionWidget: vi.fn().mockResolvedValue(null),
+    assertSitekeysWritable: vi.fn().mockResolvedValue(undefined),
     writeDev: vi.fn().mockResolvedValue(undefined),
     writeManagedSecret: vi.fn().mockResolvedValue(undefined),
     writeSitekeys: vi.fn().mockResolvedValue(undefined),
@@ -86,6 +88,8 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
   await provisionTurnstile(
     {
       assertDomainAvailable: async () => {},
+      findProductionWidget: async () => null,
+      assertSitekeysWritable: async () => {},
       writeDev: async (secret) => void written.set("dev", secret),
       writeManagedSecret: async (environment, secret) => void written.set(environment, secret),
       writeSitekeys: async () => {},
@@ -148,7 +152,10 @@ describe("provisionTurnstile", () => {
   });
 
   test("skips the production secret write when all widgets already exist (idempotent reuse)", async () => {
-    const p = fakeProvisioner({ ensureProductionWidget: vi.fn(async () => ({ sitekey: "existing", secret: null })) });
+    const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async () => ({ sitekey: "existing" })),
+      ensureProductionWidget: vi.fn(async () => ({ sitekey: "existing", secret: null })),
+    });
     const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
 
     // staging is still written (test value), but production secret is left as-is and flagged so the caller warns.
@@ -206,6 +213,7 @@ describe("provisionTurnstile", () => {
 
   test("errors on a mixed production state rather than writing a half-secret", async () => {
     const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async (mode: string) => (mode === "visible" ? null : { sitekey: "i" })),
       ensureProductionWidget: vi.fn(async (mode: string) =>
         mode === "visible" ? { sitekey: "v", secret: "new-v" } : { sitekey: "i", secret: null },
       ),
@@ -244,6 +252,7 @@ describe("the value provisioning hands each store", () => {
 describe("deprovisionTurnstile", () => {
   test("deletes each widget and the managed secret, blanks the production sitekeys, and strips stranded vars", async () => {
     const d = {
+      assertSitekeysWritable: vi.fn().mockResolvedValue(undefined),
       deleteProductionWidget: vi.fn().mockResolvedValue(undefined),
       deleteManagedSecret: vi.fn().mockResolvedValue(undefined),
       clearDev: vi.fn().mockResolvedValue(undefined),
@@ -259,5 +268,111 @@ describe("deprovisionTurnstile", () => {
     expect(d.clearDev).toHaveBeenCalledWith(["visible", "invisible"]);
     expect(d.clearProductionSitekeys).toHaveBeenCalledWith(["visible", "invisible"]);
     expect(d.removeStrandedSitekeyVars).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * **Before the sitekey check, a run only reads** (#590 review).
+ *
+ * The sitekey writer's refusals read the config source alone, so they can be decided before anything is
+ * created. A run that checks them last has minted a production widget and stored its secret by the time it
+ * refuses. Stated positively, over every step the seam has: each recorded call before
+ * `assertSitekeysWritable` returns is one of the named reads, and a refused check is followed by nothing.
+ *
+ * The recorder is a Proxy over the whole seam, so a step added to it later is recorded without anyone
+ * listing it here — and is not a read unless someone says so below.
+ *
+ * What it does not see: a side effect the orchestrator makes other than through the seam (it makes none
+ * today), and whether a seam method named a read really only reads — `turnstileProvisioner.test.ts` holds the
+ * live provisioner to that, over a stubbed Cloudflare API. Nor can any check made before the write catch the
+ * writer's read-back refusal, which needs the written file by construction.
+ */
+describe("a refused sitekey check leaves nothing written", () => {
+  /** The steps that change nothing: the domain listing, the widget lookup, and the check itself. */
+  const PROVISION_READS: ReadonlySet<string> = new Set([
+    "assertDomainAvailable",
+    "findProductionWidget",
+    "assertSitekeysWritable",
+  ]);
+  const DEPROVISION_READS: ReadonlySet<string> = new Set(["assertSitekeysWritable"]);
+
+  /** Wrap a seam so every method call is recorded by name, in order. */
+  function recorded<T extends object>(seam: T): { seam: T; calls: string[] } {
+    const calls: string[] = [];
+    const proxy = new Proxy(seam, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          calls.push(String(property));
+          return value.apply(target, args);
+        };
+      },
+    });
+    return { seam: proxy, calls };
+  }
+
+  const refusal = () => Promise.reject(new Error("sitekeys refused"));
+
+  test("provision: a refused check follows only reads, and nothing runs after it", async () => {
+    const { seam, calls } = recorded(fakeProvisioner({ assertSitekeysWritable: vi.fn(refusal) }));
+
+    await expect(
+      provisionTurnstile(seam, { modes: ["visible", "invisible"], productionDomain: "app.example.com" }),
+    ).rejects.toThrow("sitekeys refused");
+
+    expect(calls).toContain("assertSitekeysWritable");
+    expect(calls.filter((name) => !PROVISION_READS.has(name))).toEqual([]);
+  });
+
+  test("provision: the check is asked for the sitekeys the write will carry, an unissued prod as null", async () => {
+    const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async () => ({ sitekey: "existing-v" })),
+      ensureProductionWidget: vi.fn(async () => ({ sitekey: "existing-v", secret: null })),
+    });
+    // An existing widget's sitekey is known before anything is written; a widget still to be created has none.
+    await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+    const q = fakeProvisioner();
+    await provisionTurnstile(q, { modes: ["invisible"], productionDomain: "app.example.com" });
+
+    expect(p.assertSitekeysWritable).toHaveBeenCalledWith({
+      visible: { dev: "1x00000000000000000000AA", staging: "1x00000000000000000000AA", prod: "existing-v" },
+    });
+    expect(q.assertSitekeysWritable).toHaveBeenCalledWith({
+      invisible: { dev: "1x00000000000000000000BB", staging: "1x00000000000000000000BB", prod: null },
+    });
+  });
+
+  test("provision: a mixed production state is refused before anything is written", async () => {
+    const { seam, calls } = recorded(
+      fakeProvisioner({
+        findProductionWidget: vi.fn(async (mode: string) => (mode === "visible" ? { sitekey: "v" } : null)),
+      }),
+    );
+
+    await expect(
+      provisionTurnstile(seam, { modes: ["visible", "invisible"], productionDomain: "app.example.com" }),
+    ).rejects.toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+    );
+    expect(calls.filter((name) => !PROVISION_READS.has(name))).toEqual([]);
+  });
+
+  test("deprovision: a refused check follows only reads, and nothing is deleted", async () => {
+    const d = {
+      assertSitekeysWritable: vi.fn(refusal),
+      deleteProductionWidget: vi.fn().mockResolvedValue(undefined),
+      deleteManagedSecret: vi.fn().mockResolvedValue(undefined),
+      clearDev: vi.fn().mockResolvedValue(undefined),
+      clearProductionSitekeys: vi.fn().mockResolvedValue(undefined),
+      removeStrandedSitekeyVars: vi.fn().mockResolvedValue([]),
+    } satisfies TurnstileDeprovisioner;
+    const { seam, calls } = recorded(d);
+
+    await expect(deprovisionTurnstile(seam, ["visible"])).rejects.toThrow("sitekeys refused");
+
+    expect(calls).toContain("assertSitekeysWritable");
+    expect(calls.filter((name) => !DEPROVISION_READS.has(name))).toEqual([]);
+    expect(d.assertSitekeysWritable).toHaveBeenCalledWith({ visible: { prod: "" } });
   });
 });
