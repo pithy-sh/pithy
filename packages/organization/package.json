@@ -41,7 +41,7 @@
   "peerDependencies": {
     "@pithy-sh/auth": "^0.6.2",
     "@pithy-sh/core": "^0.7.0",
-    "@pithy-sh/email": "^0.3.4",
+    "@pithy-sh/email": "^0.3.5",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"
