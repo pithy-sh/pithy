@@ -13,6 +13,7 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import { reactStub } from "../ui/react";
+import { NO_PROVISION_ARG } from "./effectiveConfig";
 import { environmentWorkerName, kitRange, scaffoldProject } from "./scaffold";
 import { hasVersionMetadata } from "./versionMetadata";
 import { renameWorker } from "./workerCommand";
@@ -236,6 +237,11 @@ describe("both package.json producers", () => {
         // pass an empty string to the flag". So each script says what it means and the shell cannot
         // change it: `--env=` for the top level, `--env staging`, `--env prod`.
         expect(command, `${producer}: ${name} states no stanza`).toMatch(/--env[= ]/);
+        // **And none of them creates a resource (#589).** wrangler provisions every binding it cannot
+        // resolve unless told not to — a D1 named and not yet created, a bucket that does not exist — and
+        // an adopter running `bun run deploy:staging` before `pithy provision` got databases nobody
+        // reviewed. The kit's own argv carries the same switch; a script the kit writes is held to it too.
+        expect(command, `${producer}: ${name} can create resources`).toContain(NO_PROVISION_ARG);
       }
     }
   });

@@ -50,18 +50,19 @@ const LOCAL = "local";
  * The half `local` does not cover, said once per stanza rather than once per binding.
  *
  * **The top-level stanza is the local environment and the stanza a bare `pithy deploy` ships.** `wrangler
- * deploy` with no `--env` takes it to Cloudflare, and it is the one deploy path with no
- * `assertEnvironmentProvisioned` in front of it — every `--env` deploy is refused before a binding with
- * no id reaches wrangler (#240), and this one is not. So `local` is a true statement about Miniflare and
- * an incomplete one about the file: an operator reading `pithy env` before a deploy read it as *nothing
- * to provision here* (#320 gave the word, this gives back what it took).
+ * deploy` with no `--env` takes it to Cloudflare. It used to be the one deploy path with no
+ * `assertEnvironmentProvisioned` in front of it, and under wrangler's default provisioning that path
+ * *created* a database for each id-less binding (#589). It is refused now, like every other — so `local`
+ * is a true statement about Miniflare and this line is the other half: the stanza `pithy dev` runs is not
+ * one a deploy will ship. An operator reading `pithy env` before a deploy read `local` as *nothing to
+ * provision here* (#320 gave the word, this gives back what it took).
  *
  * A property of the stanza, so it is printed under the stanza, and only where it is a fact — a local
- * environment whose bindings all carry ids has nothing ungated about it, and a deployed one already says
+ * environment whose bindings all carry ids is deployable, and a deployed one already says
  * `not provisioned`, which is the action item. A line under every environment would be the wallpaper the
  * word was introduced to remove.
  */
-const UNGATED = "Miniflare needs no id. A bare pithy deploy ships this stanza, and nothing gates it on one.";
+const UNGATED = "Miniflare needs no id. A bare pithy deploy refuses this stanza for having none.";
 
 /**
  * Render an id-carrying value: the resource's state when it has no id, a clickable link when

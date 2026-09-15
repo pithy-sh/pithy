@@ -239,7 +239,7 @@ describe("renderEnvInventory — per worker", () => {
       // be one — Miniflare serves this binding from its own declaration (#320).
       "    SESSIONS (kv)  local",
       // And the half `local` does not cover, once, under the stanza it is a property of.
-      "    Miniflare needs no id. A bare pithy deploy ships this stanza, and nothing gates it on one.",
+      "    Miniflare needs no id. A bare pithy deploy refuses this stanza for having none.",
       "  staging  https://staging.example.com",
       "    worker  pithy-app-staging",
       // The same binding, absent in both. Only the deployed one is an action item.
@@ -282,8 +282,8 @@ describe("renderEnvInventory — per worker", () => {
  * **`local` is a true word about Miniflare and a misleading one about deployment.**
  *
  * The top-level stanza is the local environment *and* the stanza a bare `pithy deploy` ships:
- * `wrangler deploy` with no `--env`, and the one deploy path with no `assertEnvironmentProvisioned`
- * in front of it. #320 was right that an id-less binding there is not a deficiency for `pithy dev`; the
+ * `wrangler deploy` with no `--env`, which refuses it for its id-less bindings since #589 — before that,
+ * wrangler's default provisioning created them. #320 was right that an id-less binding there is not a deficiency for `pithy dev`; the
  * word it chose then stood as the whole answer, and an operator reading `pithy env` before a deploy
  * concluded there was nothing to provision.
  *
@@ -292,7 +292,7 @@ describe("renderEnvInventory — per worker", () => {
  * ungated about it, and a deployed environment already reads `not provisioned`, which is the action
  * item. A note printed under every environment would be the wallpaper this whole family avoids.
  */
-const UNGATED = "A bare pithy deploy ships this stanza, and nothing gates it on one.";
+const UNGATED = "A bare pithy deploy refuses this stanza for having none.";
 
 /** One worker, one environment, built to order. */
 function oneEnvironment(local: boolean, resources: WorkerEnvironments["environments"][number]["resources"]) {

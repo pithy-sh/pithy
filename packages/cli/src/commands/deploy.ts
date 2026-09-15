@@ -185,9 +185,15 @@ export default defineCommand({
       // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
       // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
       // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
-      // and with no hint that provisioning was a step they had missed (#240). Only for a named `--env`:
-      // a bare deploy ships the top-level stanza, whose ids `pithy dev` resolves from Miniflare.
-      if (gateApps && env) await assertEnvironmentProvisioned(projectDir, env);
+      // and with no hint that provisioning was a step they had missed (#240).
+      //
+      // **For every deploy of `apps/`, a bare one included (#589).** This read `gateApps && env`, on the
+      // reasoning that a bare deploy ships the top-level stanza "whose ids `pithy dev` resolves from
+      // Miniflare". That is exactly why it must be read: those are `database_name`s with no id, the shape
+      // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
+      // looked for an `env.dev` no project may declare. The deploy's argv now creates nothing either way;
+      // this is what says so in a sentence instead of in wrangler's stderr.
+      if (selection.apps) await assertEnvironmentProvisioned(projectDir, env);
       // And the other half of "is this environment ready to be real": does its config name every origin
       // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
       // the environment and the config, and this is the last moment before a staging Worker starts

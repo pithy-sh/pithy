@@ -54,7 +54,7 @@
  */
 
 import { dirname, isAbsolute, join, parse as parsePath, resolve } from "node:path";
-import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { parse } from "comment-json";
 import { wranglerConfigPath } from "../provision/featureConfig";
@@ -90,6 +90,74 @@ export const CLOUDFLARE_ENV_VAR = "CLOUDFLARE_ENV";
  * find, and something {@link assertPublishesDeclaredWorker} can name in a refusal.
  */
 export const TOP_LEVEL_STANZA_ARG = "--env=";
+
+/**
+ * **wrangler's own switch for "create nothing", and the only one that works (#589).**
+ *
+ * `experimental-provision` is `default: true, hidden: true, alias: ["x-provision"]` on every `wrangler
+ * deploy` that is not a dry run, read out of `wrangler-dist/cli.js` at 4.125.0 and re-checked at 4.131.2.
+ * Under it a binding wrangler cannot resolve is inherited from the live script's settings, then connected
+ * by name, and *created* when both fail — which is how a `pithy deploy --env staging` left
+ * `dash-dev-secrets` and `dash-dev-db` on an account seven seconds before the upload.
+ *
+ * **Why the argv and not the config.** It covers eight binding kinds — KV, D1, R2, queues, AI Search,
+ * agent memory, dispatch namespaces, Flagship — and for R2, queues and the namespace kinds the name *is*
+ * the id, so a named bucket looks fully specified to any read of a file while wrangler creates it. No
+ * reading covers a kind wrangler adds later. wrangler's own switch covers all of them, now and next.
+ * `--experimental-auto-create=false` does not: it leaves named resources to be created regardless.
+ *
+ * **Why it fails loudly if wrangler ever drops it.** wrangler rejects unknown arguments, so an argv carrying
+ * a flag it no longer knows exits 1 before uploading anything. The failure mode is a refused deploy, never
+ * a resource.
+ */
+export const NO_PROVISION_ARG = "--experimental-provision=false";
+
+/** wrangler's end-of-options marker: every token after it is a positional, whatever it looks like. */
+const END_OF_OPTIONS = "--";
+
+/**
+ * The option name one flag-shaped token sets, lowercased with its dashes, `no-` prefix and value dropped —
+ * or `null` for a token that is not an option. `--experimentalProvision=true` and `--x-provision` both
+ * come back naming provisioning, which is the point: yargs camel-cases and aliases, and this gate must not
+ * have to know which spellings it accepts this release.
+ */
+function optionName(token: string): string | null {
+  if (!token.startsWith("-") || token === "-") return null;
+  const name = (token.split("=", 1)[0] as string).replace(/^-+/, "").replace(/^no-/i, "");
+  return name.toLowerCase().replace(/-/g, "");
+}
+
+/**
+ * **Refuse unless this argv makes wrangler create nothing.**
+ *
+ * What must be true is that wrangler's provisioning is off for this spawn, and the argv is the whole of
+ * how that is decided — there is no config key or variable for it. So it is stated as: the argv carries
+ * {@link NO_PROVISION_ARG} as an option, and **it is the only statement about provisioning the argv
+ * makes.** Any other token naming it — `--x-provision`, `--experimental-provision`, a camel-cased
+ * `--experimentalProvision=true` — is refused rather than reasoned about, because which of two statements
+ * yargs honors is a thing this gate should not be modeling. Anything whose option name mentions
+ * provisioning counts, so an alias wrangler adds later is refused too. Only tokens before `--` are options;
+ * the switch written after one does nothing, and is refused.
+ *
+ * **What it does not see.** It holds the argv it is handed, and nothing else. A spawn site that asks it
+ * about one argv and spawns another is invisible here — so each site asks it twice: before anything is
+ * written or narrated, and again as the statement straight before `runWrangler`, on the identifier spawned.
+ * `ci/deployCallSites.test.ts` holds that second call's shape, and each site's argv literal to the switch.
+ * It does not model yargs beyond "the one option naming provisioning is this one": a wrangler that read
+ * provisioning from somewhere other than the argv would pass it, and 4.125.0 reads no config key or
+ * variable for it.
+ */
+export function assertCreatesNoResources(args: readonly string[]): void {
+  const end = args.indexOf(END_OF_OPTIONS);
+  const options = end === -1 ? args : args.slice(0, end);
+  const statements = options.filter((token) => optionName(token)?.includes("provision") ?? false);
+  if (statements.length === 1 && statements[0] === NO_PROVISION_ARG) return;
+  throw new InternalError({
+    message: "This deploy could create Cloudflare resources, so nothing was deployed.",
+    action: `Deploy with ${NO_PROVISION_ARG} and nothing else about provisioning. Creating resources is pithy provision's job.`,
+    detail: `wrangler creates any binding's resource it cannot find unless provisioning is off. The argv was: ${args.join(" ")}.`,
+  });
+}
 
 /** The slice of a wrangler config this module reads. Everything else in the file is wrangler's business. */
 export interface WranglerShape {
@@ -150,6 +218,26 @@ export function wranglerEnvironment(env: string | undefined): string | undefined
 }
 
 /**
+ * **The stanza wrangler reads for one environment: that `env.<name>`, or the top level.**
+ *
+ * The top level for no environment, and — wrangler's one special case — for an environment the file has
+ * no stanza for: it warns and reuses the top level as the stanza, so a Worker with no `env.staging` ships
+ * dev's bindings as staging. An environment that *is* found is that stanza alone: bindings are not
+ * inherited, so a stanza declaring no `d1_databases` deploys with none rather than with the top level's.
+ *
+ * One function, because {@link identityOf} and `provision/unprovisioned.ts` ask it about the same deploy
+ * and a second answer is how they come to disagree.
+ */
+export function stanzaOf<Shape extends { env?: Record<string, unknown> }>(
+  config: Shape,
+  env: string | undefined,
+): Shape {
+  if (env === undefined) return config;
+  const stanza = config.env?.[env];
+  return stanza !== null && typeof stanza === "object" ? (stanza as Shape) : config;
+}
+
+/**
  * Who this configuration deploys as, under wrangler's rules, for a given wrangler environment.
  *
  * `redirected` is not decoration: a redirected (build-output) config has no environments and wrangler
@@ -172,7 +260,7 @@ export function identityOf(
   const name = text(stanza?.name) ?? (top === null ? null : `${top}-${env}`);
   // `vars` is not inherited by environments, so the stanza's block replaces the top level's outright —
   // except in wrangler's one special case, where a missing stanza reuses the top level as the stanza.
-  const vars = (stanza ?? config).vars;
+  const { vars } = stanzaOf(config, env);
   return { path, name, environment: text(vars?.[ENVIRONMENT_VAR]) };
 }
 
@@ -357,7 +445,8 @@ export async function assertDeploysRequestedEnvironment(
   const declarationPath = wranglerConfigPath(workerDir, env ?? LOCAL_ENVIRONMENT);
   const declaration = await readConfig(declarationPath);
   // Nothing declared, nothing to hold a deploy to. `discoverWorkers` only yields Workers with a config,
-  // and a feature environment that was never provisioned is `assertEnvironmentProvisioned`'s sentence.
+  // and a feature environment that was never provisioned has no generated config for wrangler to read —
+  // it refuses a `--config` naming a missing file, and a front end's build fails before it on the same path.
   if (declaration === null) return;
 
   const effective = await effectiveDeployConfig(workerDir, args);

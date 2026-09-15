@@ -5,7 +5,12 @@ import { unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { assertPublishesDeclaredWorker, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
+import {
+  assertCreatesNoResources,
+  assertPublishesDeclaredWorker,
+  NO_PROVISION_ARG,
+  TOP_LEVEL_STANZA_ARG,
+} from "../project/effectiveConfig";
 import { kitImport } from "../project/kitResolve";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
@@ -129,9 +134,14 @@ export interface HostDeployOptions {
  * branch only *warns* when the config has no `env` section, and `appendEnvName` runs regardless — so the
  * argv that omitted this published `acme-prod-email-prod` for every operator with `CLOUDFLARE_ENV=prod`
  * exported, and `acme-prod-email` for everyone else. A Worker under a name nothing references.
+ *
+ * **And {@link NO_PROVISION_ARG}, because a deploy is not a provision (#589).** Media and storage derive
+ * their bucket from the project and nothing checks it exists, so without the switch wrangler created the
+ * bucket on a `pithy deploy --kit` into an environment nobody had provisioned. With it, a missing bucket
+ * fails that Worker's row instead.
  */
 export function hostDeployArgs(configPath: string): string[] {
-  return ["deploy", "--config", configPath, TOP_LEVEL_STANZA_ARG];
+  return ["deploy", "--config", configPath, TOP_LEVEL_STANZA_ARG, NO_PROVISION_ARG];
 }
 
 /**
@@ -185,6 +195,8 @@ async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: s
  */
 function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
   return async (args, dir) => {
+    // At the spawn itself, as well as before it in `deployHostWorker` — see `project/deploy.ts`'s runner.
+    assertCreatesNoResources(args);
     await runWrangler([...args], { account, cwd: dir });
   };
 }
@@ -232,6 +244,9 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
     args,
     processEnv: options.processEnv ?? process.env,
   });
+  // And the same argv creates nothing. Every provisioner reaches this, and a provisioner's resources are
+  // created by its own API calls before it gets here — never by the upload.
+  assertCreatesNoResources(args);
   // **The one place a kit Worker's upload is announced, so every command that ships one inherits it
   // (#578).** `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` —
   // through two packages that carry no progress parameter and should not grow one. Raised after the

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -473,4 +473,67 @@ describe("what the command says while it works", () => {
     expect(JSON.parse(out).command).toBe("deploy");
     expect(out).not.toContain("▸");
   });
+});
+
+/**
+ * **A bare `pithy deploy` was the one deploy of `apps/` nothing checked for id-less bindings (#589).**
+ *
+ * The gate ran `if (gateApps && env)`, and `--env dev` asked it about an `env.dev` no project may declare.
+ * Both ship the top-level stanza — `database_name`s Miniflare resolves and no ids — which is the shape
+ * wrangler's default provisioning created databases from. Asked of the command, not of the reader, because
+ * the reader was never the part that skipped it.
+ */
+describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
+  async function refusal(args: Record<string, unknown>): Promise<{ err: string; exitCode: unknown }> {
+    const cwd = process.cwd();
+    const project = await mkdtemp(join(tmpdir(), "pithy-deploy-unprovisioned-"));
+    const worker = join(project, "apps", "board");
+    await mkdir(worker, { recursive: true });
+    await writeFile(
+      join(worker, "wrangler.jsonc"),
+      JSON.stringify({ name: "acme-board", d1_databases: [{ binding: "DB", database_name: "acme-dev-db" }] }),
+    );
+    await writeFile(join(worker, "pithy.worker.jsonc"), '{ "dev": {} }\n');
+    ran.apps = 0;
+    let exitCode: unknown;
+    const written: string[] = [];
+    const capture = ((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as never;
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    // A refusal ends the command through `process.exit`, which would end this suite with it.
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error("exited");
+    }) as never);
+    process.chdir(project);
+    try {
+      await deploy
+        .run?.({ args: { json: true, apps: true, kit: false, force: false, ...args }, rawArgs: [] } as never)
+        ?.catch(() => {});
+    } finally {
+      process.chdir(cwd);
+      stdout.mockRestore();
+      stderr.mockRestore();
+      exit.mockRestore();
+      await rm(project, { recursive: true, force: true });
+    }
+    return { err: written.join(""), exitCode };
+  }
+
+  test.each([
+    ["a bare deploy", {}],
+    ["--env dev", { env: "dev" }],
+  ])(
+    "%s refuses before anything is built, naming the binding and the environments that have resources",
+    async (_name, args) => {
+      const { err, exitCode } = await refusal(args);
+      expect(exitCode).toBe(1);
+      expect(ran.apps).toBe(0);
+      expect(err).toContain("board.DB (d1)");
+      expect(err).toContain("--env staging or --env prod");
+    },
+  );
 });
