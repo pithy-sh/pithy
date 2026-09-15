@@ -2,9 +2,36 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { DatabaseSpec } from "@pithy-sh/core/src/data/databases";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import type { MigrationProvider } from "kysely/migration";
+
+/**
+ * A retained declaration must name a table this slice declares, beside the migrations that create it.
+ *
+ * A misspelled key would count a table that does not exist, find no rows, and let the `down` through —
+ * the refusal quietly off for the one table it was written for. And retention on a slice with no
+ * migrations has no `down` to be recorded on, so nothing would ever enforce it. Both are an author's mistake,
+ * caught where the declaration is read rather than discovered when a vault is empty (#588).
+ */
+function assertRetainedDeclared(capability: string, database: string, spec: DatabaseSpec): void {
+  const retained = spec.retained ?? [];
+  if (retained.length === 0) return;
+  const unknown = retained.filter((table) => !(table in spec.tables));
+  if (unknown.length > 0) {
+    throw new InternalError({
+      message: `Capability "${capability}" retains ${unknown.map((table) => `"${table}"`).join(", ")} in database "${database}", which its tables do not declare.`,
+      action: "Name tables from that database spec's tables in retained.",
+    });
+  }
+  if (!spec.migrations || Object.keys(spec.migrations).length === 0) {
+    throw new InternalError({
+      message: `Capability "${capability}" retains tables in database "${database}" but ships no migrations for it.`,
+      action: "Declare retained beside the migrations that create those tables.",
+    });
+  }
+}
 
 /**
  * Every capability's per-database migration set (`DatabaseSpec.migrations`, namespaced by capability
@@ -18,6 +45,7 @@ export function collectMigrationSets(capabilities: Capability[]): NamespacedMigr
   const sets: NamespacedMigrations[] = [];
   for (const capability of capabilities) {
     for (const [database, spec] of Object.entries(capability.databases ?? {})) {
+      assertRetainedDeclared(capability.name, database, spec);
       if (!spec.migrations) continue;
       if (spec.migrationOrder === undefined) {
         throw new InternalError({
@@ -30,6 +58,7 @@ export function collectMigrationSets(capabilities: Capability[]): NamespacedMigr
         namespace: capability.name,
         order: spec.migrationOrder,
         migrations: spec.migrations,
+        ...(spec.retained && spec.retained.length > 0 ? { retained: spec.retained } : {}),
       });
     }
   }

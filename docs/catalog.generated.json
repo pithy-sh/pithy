@@ -358,8 +358,13 @@
       "flags": [
         "--env",
         "--worker",
+        "--binding",
         "--rollback",
         "--no-rollback",
+        "--confirm-rollback",
+        "--confirmRollback",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -411,6 +416,8 @@
         "--drop",
         "--no-drop",
         "--env",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -500,6 +507,8 @@
         "--no-redo",
         "--confirm-reset",
         "--confirmReset",
+        "--destroy-retained",
+        "--destroyRetained",
         "--yes",
         "--no-yes",
         "--confirm-production",

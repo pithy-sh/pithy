@@ -361,6 +361,12 @@ export interface DefaultRemoveStepsOptions {
    * them in whichever account `<config>/cloudflare.json` happened to hold credentials for.
    */
   account: CloudflareAccountSelection | null;
+  /**
+   * `--destroy-retained <n>`: the exact rows in retained tables a `--drop` agrees to destroy. Dropping the
+   * secrets or email capability's tables refuses while they hold rows, unless this equals them (#588). The
+   * typed `drop <cap> from <env>` phrase agrees to the drop; it does not agree to losing the vault.
+   */
+  destroyRetained?: number;
 }
 
 /**
@@ -381,6 +387,7 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
         env,
         project: options.project,
         account: options.account,
+        ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
       }),
     uninstall: (pkg) => uninstallPackage({ projectDir, pkg }),
     // Gated (#158). This is `apps/<worker>/capabilities/<cap>` — four segments Pithy composed out of

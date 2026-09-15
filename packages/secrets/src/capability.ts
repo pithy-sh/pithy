@@ -184,6 +184,11 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         tables: secretsTables,
         migrationOrder: SECRETS_MIGRATION_ORDER,
         migrations: { "0001_init": secrets_0001_init },
+        // The vault. A sealed credential Google or Paddle issued exists here and in their console, nowhere
+        // else, and rotation history is the only record of when a key last moved. `0001_init` is this
+        // database's whole history, so its `down` is a rollback's first casualty: declared retained, no
+        // `down` runs here while either table holds rows unless the operator counts them (#588).
+        retained: ["pithySecretsSystemSecrets", "pithySecretsRotations"],
       },
     },
     routes: registerSecretsRoutes({ registry: () => reported.current, basePath: mountPath }),

@@ -111,6 +111,13 @@ export interface SeedProjectOptions {
    * destroys every row, so the flag that authorizes an additive seed must not also authorize a drop.
    */
   confirmReset?: string;
+  /**
+   * The `--destroy-retained` count: the exact rows in retained tables a `--redo` reset agrees to destroy. A
+   * reset refuses while a retained table — the secrets vault, the email suppression list — holds rows,
+   * unless this equals them (#588). Never implied by `--confirm-reset`: that phrase agrees to a reset, not
+   * to losing credentials that exist nowhere else.
+   */
+  destroyRetained?: number;
   /** Interactive confirm seam for the reset phrase (an `@clack/prompts` text prompt). */
   promptReset?: () => Promise<string>;
   /** Audit emitter, so a schema reset is always recorded. Defaults to recording nothing. */
@@ -512,6 +519,7 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
     env: options.env,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     ...(options.workers !== undefined ? { workers: options.workers } : {}),
+    ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
 

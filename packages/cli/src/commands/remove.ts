@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
+import { parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { formatDone, withErrorReporting } from "../terminal/output";
@@ -52,6 +53,11 @@ export default defineCommand({
       description: "Also roll back the capability's migrations (drops its tables)",
     },
     env: envArg("With --drop, the environment whose tables to drop"),
+    "destroy-retained": {
+      type: "string",
+      description:
+        "With --drop. DESTRUCTIVE: drop rows in retained tables (the secrets vault, email suppressions). Must equal the count the refusal printed",
+    },
     json: { type: "boolean", default: false, description: "Not supported — remove is manual-only" },
   },
   // Errors always render as terminal problem/action lines: `remove` has no machine-readable surface.
@@ -76,6 +82,7 @@ export default defineCommand({
       // either refuse this project's own database or claim another's. Resolved here, at the command edge,
       // before anything is read or unwired — a nameless project is told to fix its config, not half-removed.
       const project = requireProjectName(await loadProject(projectDir));
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       // Resolved once, at the command edge, and used for both the drop and the audit. A `--drop --env
       // staging` reverses migrations against a live database; the account is what says whose (#234).
       const account = await projectCloudflareAccount(projectDir);
@@ -90,6 +97,7 @@ export default defineCommand({
           loadCapabilities: async () => capabilities,
           project,
           account,
+          ...(destroyRetained !== undefined ? { destroyRetained } : {}),
         }),
         // `--drop`'s env is the natural audit target when given; otherwise "dev", which is inert — a
         // plain unwiring has no live environment, and the audit database is resolved from the project

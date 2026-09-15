@@ -16,6 +16,7 @@ import {
   multiplayerCapability,
   pendingFrom,
 } from "../test-utils/migrateHarness";
+import { rollbackConfirmPhrase } from "./confirm";
 import { dropCapabilityTables, migrateProject, previewReset, readProjectLedger, resetProject } from "./run";
 
 describe("migrateProject", () => {
@@ -270,13 +271,13 @@ describe("migrateProject", () => {
         workers: [h.api([appCapability()])],
         env: "dev",
       });
-      expect(preview).toEqual([{ database: "app", binding: "DB", migrations: 1 }]);
+      expect(preview).toEqual([{ database: "app", binding: "DB", migrations: 1, retained: [] }]);
     });
 
     test("previews a database two workers share once, with their merged count", async () => {
       const workers = [h.api([appCapability()]), await h.worker("collab", [multiplayerCapability("DB")])];
       expect(await previewReset({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toEqual([
-        { database: "app", binding: "DB", migrations: 2 },
+        { database: "app", binding: "DB", migrations: 2, retained: [] },
       ]);
     });
 
@@ -420,7 +421,12 @@ describe("migrateProject", () => {
         const second = await migrateProject(opts);
         expect(second[0]?.databases[0]?.results).toEqual([]);
 
-        const rolledBack = await migrateProject({ ...opts, rollback: true });
+        // Outside dev a rollback states its phrase (#588).
+        const rolledBack = await migrateProject({
+          ...opts,
+          rollback: true,
+          confirmRollback: rollbackConfirmPhrase("staging"),
+        });
         expect(rolledBack[0]?.databases[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
           ["1000_app_0001_things", "Down", "Success"],
         ]);

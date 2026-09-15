@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained, rollbackConfirmPhrase } from "../migrations/confirm";
 import {
   type MigrationProgress,
   migratedBeforeFailure,
@@ -40,7 +42,20 @@ export function formatMigrateReport(
 
   const width = Math.max(...workers.map((worker) => worker.worker.length));
   const lines = workers.map((worker) => `${worker.worker.padEnd(width)}  ${describe(worker, options.rollback)}`);
+  lines.push(...keptLines(workers));
   return `${lines.join("\n")}\n${formatDone()}\n`;
+}
+
+/**
+ * One line per database a rollback left alone because another environment binds it (#588). Once per
+ * database, not per Worker: two Workers sharing it would otherwise say the same thing twice.
+ */
+function keptLines(workers: WorkerMigrationRun[]): string[] {
+  const seen = new Map<string, string[]>();
+  for (const database of workers.flatMap((worker) => worker.databases)) {
+    if (database.boundBy && !seen.has(database.binding)) seen.set(database.binding, database.boundBy);
+  }
+  return [...seen].map(([binding, boundBy]) => `${binding} kept. ${boundBy.join(", ")} binds it too.`);
 }
 
 /**
@@ -74,6 +89,7 @@ export function formatMigrateProgress(
   const lines = progress.migrated
     .filter((worker) => worker.databases.length > 0)
     .map((worker) => `${worker.worker}  ${describe(worker, options.rollback)}`);
+  lines.push(...keptLines(progress.migrated));
   lines.push(
     `${progress.failed.binding} (${progress.failed.database}) failed. Its schema is where the failure left it.`,
   );
@@ -84,12 +100,37 @@ export function formatMigrateProgress(
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * Ask a terminal for the rollback phrase — never under `--json`, never without a TTY, and never for `dev`,
+ * which needs none. The prompt says what the command does before asking anyone to agree to it.
+ */
+async function promptRollback(env: string, json: boolean): Promise<string | undefined> {
+  const interactive = !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  if (!interactive || env === LOCAL_ENVIRONMENT) return undefined;
+  const { isCancel, text } = await import("@clack/prompts");
+  const answer = await text({
+    message: `This steps back every database ${env} binds. Type "${rollbackConfirmPhrase(env)}" to confirm:`,
+  });
+  return isCancel(answer) ? "" : answer;
+}
+
 export default defineCommand({
   meta: { name: "migrate", description: "Run migrations for an environment" },
   args: {
     env: ENV_ARG,
     worker: { type: "string", description: "Migrate one worker instead of every worker in apps/" },
-    rollback: { type: "boolean", default: false, description: "Step the latest migration back" },
+    binding: { type: "string", description: "Migrate only the database behind this D1 binding" },
+    rollback: {
+      type: "boolean",
+      default: false,
+      description:
+        "Step EVERY database back one migration (narrow with --worker and --binding). Refuses to drop rows in retained tables",
+    },
+    "confirm-rollback": {
+      type: "string",
+      description: 'Unlock a non-dev rollback non-interactively: "yes, i really want to roll back <env>"',
+    },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -106,6 +147,13 @@ export default defineCommand({
       // the one that has to supply the answer, and for a long while it did not.
       const account = await projectCloudflareAccount(projectDir);
       const render = { project, env, rollback: args.rollback, json: args.json };
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+      // A rollback outside dev is asked for in words (#588). The flag wins wherever it is present; a
+      // terminal without it is asked; a script without it is refused by `migrateProject`, which checks.
+      const confirmRollback =
+        args.rollback && args["confirm-rollback"] === undefined
+          ? await promptRollback(env, args.json)
+          : args["confirm-rollback"];
       let workers: WorkerMigrationRun[];
       try {
         workers = await migrateProject({
@@ -114,7 +162,10 @@ export default defineCommand({
           account,
           env,
           ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          ...(args.binding !== undefined ? { binding: args.binding } : {}),
           rollback: args.rollback,
+          ...(confirmRollback !== undefined ? { confirmRollback } : {}),
+          ...(destroyRetained !== undefined ? { destroyRetained } : {}),
         });
       } catch (error) {
         // A run that failed on the third database has already moved the first two, and until #380 the

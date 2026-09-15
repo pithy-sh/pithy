@@ -7,7 +7,7 @@ Unwire a capability from one Worker and uninstall its package — the manual, in
 ## Synopsis
 
 ```
-pithy remove <capability> [--worker <name>] [--drop [--env <env>]]
+pithy remove <capability> [--worker <name>] [--drop [--env <env>] [--destroy-retained <n>]]
 ```
 
 ## Flags
@@ -18,6 +18,7 @@ pithy remove <capability> [--worker <name>] [--drop [--env <env>]]
 | `--worker <name>` | string | — | Which Worker to unwire it from (`apps/<name>`). Optional in a single-Worker project |
 | `--drop` | boolean | `false` | Also roll back the capability's migrations, dropping its tables |
 | `--env <env>` | string | `dev` | With `--drop`, the environment whose tables to drop. `dev`, `staging`, `prod`, or a custom name |
+| `--destroy-retained <n>` | string | — | With `--drop`. **DESTRUCTIVE.** Let the drop destroy rows in retained tables. Must equal the row count the refusal printed |
 | `--json` | boolean | `false` | **Not supported.** Passing it fails before anything is read or changed |
 
 ## What it does
@@ -37,6 +38,10 @@ The package is the one project-wide part of a removal, so it is uninstalled only
 Idempotent, and never destructive by default. An absent capability is a no-op. Without `--drop`, your data is untouched — a later `pithy add <capability>` reuses the same tables. When the tables are left in place and no sibling Worker needs them, `remove` names the `pithy_<capability>_*` prefix to drop by hand, because the `down` code is gone and no later `pithy` command can reverse them for you.
 
 Audited like `add`, when Cloudflare credentials resolve and the Worker composes `audit`. Two actions: `capability/removed` at `info` severity, and `capability/tables_dropped` at `warning` for a `--drop`. With `--drop` the audit record carries the environment being destroyed; without it, `dev`, which makes the emitter inert.
+
+### Retained tables
+
+Some tables hold rows that exist nowhere else — the secrets vault and the email suppression list — and their capability declares them retained. `remove secrets --drop` or `remove email --drop` refuses while one holds rows, names each table and the count, and drops nothing. The typed phrase below agrees to the drop; it does not agree to losing credentials. Back the rows up, or pass `--destroy-retained <n>` with the printed count. A database another environment binds is never dropped from one environment. See [`migrate.md`](migrate.md#rolling-back).
 
 ### The `--drop` confirmations
 

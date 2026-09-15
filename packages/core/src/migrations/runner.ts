@@ -8,6 +8,7 @@ import { causeMessage } from "../error/cause";
 import { InternalError } from "../error/pithyError";
 import { batchedProvider } from "./batch";
 import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookkeeping";
+import { guardRetained, isDownRefusal, RetainedBudget } from "./retained";
 
 /**
  * The per-database migration runner. The registry yields one `MigrationProvider` per database
@@ -49,12 +50,18 @@ import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookke
  * capability arrives with its whole set. Refusing the add with an actionable error was the
  * alternative; it explains the corner instead of removing it.
  */
-function migrator(database: D1Database, provider: MigrationProvider): Migrator {
+function migrator(
+  database: D1Database,
+  provider: MigrationProvider,
+  target: MigrationTarget | undefined,
+  consent: RetainedConsent | undefined,
+): Migrator {
   return new Migrator({
     db: migrationKysely(database),
     // Each migration body applies in one `d1.batch()`; the ledger row stays on the ordinary path,
-    // so nothing batches across a migration boundary. See `./batch`.
-    provider: batchedProvider(provider, database),
+    // so nothing batches across a migration boundary. See `./batch`. Every `down` is guarded before it
+    // is batched: no reversal runs while a retained table in this database holds rows (#588).
+    provider: batchedProvider(guardRetained(provider, database, guardOptions(target, consent)), database),
     migrationTableName: MIGRATION_TABLE,
     migrationLockTableName: MIGRATION_LOCK_TABLE,
     allowUnorderedMigrations: true,
@@ -76,13 +83,35 @@ export interface MigrationTarget {
   database: string;
 }
 
+/**
+ * What a caller that reverses migrations says about retained rows (#588) — see `./retained`.
+ *
+ * Optional, and absent is the safe answer: a caller that says nothing has counted nothing, so any `down`
+ * against a database holding retained rows is refused.
+ */
+export interface RetainedConsent {
+  /**
+   * The retained rows the caller agreed to destroy. Pass one budget to every database in a run, so one
+   * agreement is spent once; a caller reversing a single database builds its own. Absent means none.
+   */
+  budget?: RetainedBudget;
+}
+
+/** The guard's options: the binding its refusal names, and the budget the caller agreed to. */
+function guardOptions(
+  target: MigrationTarget | undefined,
+  consent: RetainedConsent | undefined,
+): { binding: string; budget: RetainedBudget } {
+  return { binding: target?.binding ?? "this database", budget: consent?.budget ?? new RetainedBudget(undefined) };
+}
+
 /** Run every pending migration to latest. An empty provider resolves to `[]`. */
 export async function runMigrations(
   database: D1Database,
   provider: MigrationProvider,
   target?: MigrationTarget,
 ): Promise<MigrationResult[]> {
-  const { error, results } = await migrator(database, provider).migrateToLatest();
+  const { error, results } = await migrator(database, provider, target, undefined).migrateToLatest();
   return settle("run", error, results, target);
 }
 
@@ -123,13 +152,18 @@ export async function readMigrationLedger(database: D1Database, provider: Migrat
   };
 }
 
-/** Step the latest applied migration back — one step, the `pithy migrate --rollback` seam. */
+/**
+ * Step this database's latest applied migration back — one step, per database. `pithy migrate --rollback`
+ * calls it once for **every** database in its fan-out. Refused while a retained table here holds rows the
+ * caller has not counted in `consent` (#588).
+ */
 export async function rollbackMigration(
   database: D1Database,
   provider: MigrationProvider,
   target?: MigrationTarget,
+  consent?: RetainedConsent,
 ): Promise<MigrationResult[]> {
-  const { error, results } = await migrator(database, provider).migrateDown();
+  const { error, results } = await migrator(database, provider, target, consent).migrateDown();
   return settle("rollback", error, results, target);
 }
 
@@ -139,14 +173,16 @@ export async function rollbackMigration(
  * `up` reapplies from empty. The seam behind `pithy seed --redo`'s destructive rebuild: because the
  * schema comes back empty, the ordinary non-destructive seed writes (`INSERT OR IGNORE`, KV
  * skip-if-exists) simply work afterward — there is no per-row identity problem to solve. An empty
- * ledger rolls back nothing; an empty provider reapplies nothing.
+ * ledger rolls back nothing; an empty provider reapplies nothing. Refused, before the first `down`, while a
+ * retained table here holds rows the caller has not counted in `consent` (#588).
  */
 export async function resetMigrations(
   database: D1Database,
   provider: MigrationProvider,
   target?: MigrationTarget,
+  consent?: RetainedConsent,
 ): Promise<MigrationResult[]> {
-  const runner = migrator(database, provider);
+  const runner = migrator(database, provider, target, consent);
   const down = await runner.migrateTo(NO_MIGRATIONS);
   const downResults = settle("resetDown", down.error, down.results, target);
   const up = await runner.migrateToLatest();
@@ -174,16 +210,20 @@ async function appliedMigrationNames(db: Kysely<unknown>): Promise<Set<string>> 
  * bookkeeping untouched. The seam behind `pithy remove --drop`. Kysely's stepwise `Migrator` refuses a
  * provider that doesn't span the whole ledger (it reads a foreign row as corrupt state), so a
  * per-capability drop can't go through it — this reverses the capability's own migrations directly.
- * Only migrations recorded in the ledger are reversed; an absent ledger drops nothing.
+ * Only migrations recorded in the ledger are reversed; an absent ledger drops nothing. Refused, before the
+ * first `down`, while a retained table here holds rows the caller has not counted in `consent` (#588).
  */
 export async function dropMigrations(
   database: D1Database,
   provider: MigrationProvider,
   target?: MigrationTarget,
+  consent?: RetainedConsent,
 ): Promise<MigrationResult[]> {
   const db = migrationKysely(database);
-  // Batched here too: `down` pays the same per-statement cost `up` does, and a drop is all DDL.
-  const migrations = await batchedProvider(provider, database).getMigrations();
+  // Batched here too: `down` pays the same per-statement cost `up` does, and a drop is all DDL. Guarded
+  // first, exactly as the `Migrator` path is (#588).
+  const guarded = guardRetained(provider, database, guardOptions(target, consent));
+  const migrations = await batchedProvider(guarded, database).getMigrations();
   const applied = await appliedMigrationNames(db);
 
   const results: MigrationResult[] = [];
@@ -199,6 +239,8 @@ export async function dropMigrations(
       await sql`delete from ${sql.table(MIGRATION_TABLE)} where name = ${name}`.execute(db);
       results.push({ migrationName: name, direction: "Down", status: "Success" });
     } catch (error) {
+      // A refusal is not a failed drop: nothing is broken, and "fix the migration's down" would be a lie.
+      if (isDownRefusal(error)) throw error;
       const dropped = results.map((result) => `"${result.migrationName}"`);
       throw new InternalError(
         {
@@ -223,7 +265,9 @@ const VOICE = {
   rollback: {
     failed: (key: string) => `Couldn't roll back "${key}"`,
     fallback: "The rollback failed",
-    action: "Fix the migration. Run pithy migrate --rollback again.",
+    // Never "run --rollback again": a rollback steps back every database, so a second one after a partial
+    // failure reverses a second migration in each database that already moved (#588).
+    action: "Fix the migration's down. Run pithy doctor to see where each database stands.",
   },
   resetDown: {
     failed: (key: string) => `Couldn't roll back "${key}" during reset`,
@@ -273,6 +317,9 @@ function settle(
   target?: MigrationTarget,
 ): MigrationResult[] {
   if (error !== undefined) {
+    // A guard refused before a `down` ran. It already names what it protected and the way past it, and
+    // nothing about it is a migration to fix — so it reaches the operator as itself (#588).
+    if (isDownRefusal(error)) throw error;
     const voice = VOICE[verb];
     const failed = results?.find((result) => result.status === "Error");
     const applied = results?.filter((result) => result.status === "Success").map((result) => result.migrationName);

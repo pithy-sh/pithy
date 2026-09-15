@@ -177,7 +177,7 @@ function media(): Capability {
 }
 
 /** The one database every transcript's `--redo` resets: `app`, on `DB`, carrying one migration. */
-const APP_RESET: ResetPreviewEntry = { database: "app", binding: "DB", migrations: 1 };
+const APP_RESET: ResetPreviewEntry = { database: "app", binding: "DB", migrations: 1, retained: [] };
 
 /**
  * The report one Worker's run produces, composed through the real registry.
@@ -268,8 +268,8 @@ describe("docs/commands/seed.md — `--json`", () => {
 });
 
 describe("docs/commands/seed.md — Resetting data", () => {
-  test("pastes exactly the two transcripts pinned below", () => {
-    expect(REDO_BLOCKS).toHaveLength(2);
+  test("pastes exactly the three transcripts pinned below", () => {
+    expect(REDO_BLOCKS).toHaveLength(3);
   });
 
   /** A real reset: the banner, the per-database line, then the ordinary seed report. */
@@ -286,5 +286,35 @@ describe("docs/commands/seed.md — Resetting data", () => {
       report({ env: "staging", capabilities: [leaderboard()], dryRun: true, reset: [APP_RESET] }),
     );
     expect(transcript(REDO_BLOCKS, "Resetting data", 1, "$ pithy seed --env staging --redo --dry-run")).toBe(rendered);
+  });
+
+  /**
+   * A preview over the two databases a reset does not simply drop (#588): the vault, whose retained tables
+   * it names, and the suppression list another environment binds, which it keeps.
+   */
+  test("the retained-and-kept preview is what the renderer prints", () => {
+    const rendered = renderSeedText(
+      report({
+        env: "staging",
+        capabilities: [],
+        dryRun: true,
+        reset: [
+          {
+            database: "secrets",
+            binding: "SECRETS",
+            migrations: 1,
+            retained: ["pithy_secrets_rotations", "pithy_secrets_system_secrets"],
+          },
+          {
+            database: "emailSuppressions",
+            binding: "EMAIL_SUPPRESSIONS",
+            migrations: 1,
+            retained: [],
+            boundBy: ["prod"],
+          },
+        ],
+      }),
+    );
+    expect(transcript(REDO_BLOCKS, "Resetting data", 2, "$ pithy seed --env staging --redo --dry-run")).toBe(rendered);
   });
 });

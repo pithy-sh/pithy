@@ -8,7 +8,7 @@ Load seed and test data into an environment from the same Zod schemas and codecs
 
 ```bash
 pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
-           [--confirm-production <phrase>] [--confirm-reset <phrase>] [--json]
+           [--confirm-production <phrase>] [--confirm-reset <phrase>] [--destroy-retained <n>] [--json]
 ```
 
 ## Flags
@@ -21,6 +21,7 @@ pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
 | `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
 | `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See Resetting data, below |
 | `--confirm-reset` | — | Unlock a non-`dev` `--redo`: the exact phrase `yes, i really want to reset <env>` |
+| `--destroy-retained` | — | **DESTRUCTIVE.** Let `--redo` drop rows in retained tables. Must equal the row count the refusal printed |
 | `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `prod`; `dev` never needs it |
 | `--confirm-production <phrase>` | — | The non-interactive unlock for `prod` — see The production exception, below |
 
@@ -106,6 +107,17 @@ Done.
 
 The phrase **names its environment**, so a phrase authorizing a `staging` reset cannot be pasted into a command targeting another one. Pass it as `--confirm-reset "yes, i really want to reset staging"`; interactively, the prompt states plainly that all data will be lost before asking. Automation is preserved — CI passes the flag explicitly — a reset simply cannot happen by accident.
 
+**Two things `--redo` does not reset.** A **retained** table — the secrets vault, the email suppression list — holds rows that exist nowhere else, so a reset refuses while one holds rows, naming each table and the count, before any database moves. `--confirm-reset` agrees to a reset; it does not agree to losing credentials. Pass `--destroy-retained <n>` with the printed count to drop them anyway. And a database **another environment binds** — `EMAIL_SUPPRESSIONS`, one database in every stanza — is kept, because resetting it from `staging` resets production's. The dry run names both:
+
+```
+$ pithy seed --env staging --redo --dry-run
+Would reset secrets (SECRETS): 1 migration. Retained: pithy_secrets_rotations, pithy_secrets_system_secrets.
+Kept emailSuppressions (EMAIL_SUPPRESSIONS): prod binds it too.
+Nothing to seed for staging.
+Dry run. Nothing written.
+Done.
+```
+
 A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `critical` severity naming the environment and the databases involved. The outcome is always truthful: recorded as `success` once the reset actually completes, or as `failure` — and the command still fails — if it dies partway. A `dev` reset records nothing — auditing covers actions that reach a **remote** system (from a developer's machine, from CI, or in production); a `dev` run only touches the local Miniflare store and changes nothing shared. Auditing is also a no-op when the project does not compose `@pithy-sh/audit`.
 
 ## `--json`
@@ -128,6 +140,8 @@ $ pithy seed --env dev --dry-run --json
 | `workers[].skippedByEnv` | string[] | The sets the registry carries that this environment disallows — surfaced, never silently dropped. |
 | `workers[].shared` | string[] | The sets an earlier Worker in the fan-out already wrote to the same store. Two Workers sharing a binding share one store, so the fixture runs once and the second says so rather than double-counting. |
 | `reset` | object[] | Present only with `--redo`: one entry per physical database whose schema was, or would be, reset. |
+| `reset[].retained` | string[] | The retained tables that database carries. A reset refuses while one holds rows. Empty when there are none. |
+| `reset[].boundBy` | string[], optional | The other environments binding that database. Present only when the reset keeps it. |
 | `devSecrets` | object \| null | What the dev-secrets pass wrote and which Workers' `.dev.vars` it refused. `null` on a dry run and outside `dev`, where nothing is written. |
 
 ## Errors
@@ -140,6 +154,7 @@ Every refusal here is a gate rather than a fault, and each one names the flag th
 | A non-`dev` environment without `--yes` | Refused before anything opens. |
 | `prod` without the confirmation phrase, non-interactively | Refused before anything opens — see the production exception above. |
 | A non-`dev` `--redo` without `--confirm-reset "yes, i really want to reset <env>"` | Refused. The phrase names its environment, so one authorizing `staging` cannot be pasted into a command targeting another. |
+| A `--redo` over a retained table that holds rows, without `--destroy-retained <n>` equal to them | Refused before any database moves. The refusal names each table and the count to pass. |
 | A Worker that was supposed to get a generated `.dev.vars` and did not | The fixtures still run — they are the rest of the run and they are worth doing — and the exit code is 1. The refusal names the file and offers `.dev.vars.local`. |
 
 ## Examples
