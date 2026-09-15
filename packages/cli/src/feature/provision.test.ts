@@ -737,7 +737,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
       // `devValue` and the #321 minter never touches it. `provisionFeature` writes it itself, above.
       expect(report.secretBindings).toEqual([
-        { binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
+        { secret: "SECRETS_ENCRYPTION_KEYS", binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
       ]);
 
       const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
@@ -745,6 +745,57 @@ describe("provisionFeature / deprovisionFeature", () => {
       };
       expect(wrangler.env.feature?.secrets_store_secrets).toEqual([
         { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: entry },
+      ]);
+    });
+
+    /**
+     * **The stanza a run writes binds a kebab-case key by its derived name (#603).** The cases above use keys
+     * already in the binding shape, where the key and the binding cannot be told apart — the state the kit
+     * was in when it wrote `"binding": "email-link-signing-key"`.
+     */
+    test("a kebab-case store secret is written into the stanza under its SCREAMING_SNAKE_CASE binding", async () => {
+      const { provisioners } = fakeProvisioners();
+      const { entries, store } = fakeStore();
+      const kebab = [
+        secrets({
+          registry: {
+            "link-signing-key": {
+              backend: "cf-secrets-store",
+              scope: "environment",
+              rotatable: true,
+              valueType: "text",
+              devValue: "random",
+            },
+          },
+        }),
+      ];
+
+      const report = await provisionFeature({
+        projectDir: dir,
+        capabilities: kebab,
+        identity,
+        provisioners,
+        store,
+        resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: kebab }],
+        migrate: async () => {},
+        seed: async () => {},
+      });
+
+      // The entry keeps the key's name; the binding is the key in SCREAMING_SNAKE_CASE.
+      expect(entries.has("acme-f69-demo-link-signing-key")).toBe(true);
+      expect(report.secretBindings.find((secret) => secret.secret === "link-signing-key")).toEqual({
+        secret: "link-signing-key",
+        binding: "LINK_SIGNING_KEY",
+        entry: "acme-f69-demo-link-signing-key",
+        bound: true,
+        minted: true,
+      });
+      const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
+        env: Record<string, { secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[] }>;
+      };
+      expect(wrangler.env.feature?.secrets_store_secrets?.map((entry) => entry.binding).sort()).toEqual([
+        "LINK_SIGNING_KEY",
+        "SECRETS_ENCRYPTION_KEYS",
       ]);
     });
 
@@ -844,6 +895,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
         const ingest = report.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET");
         expect(ingest).toEqual({
+          secret: "RELEASE_INGEST_SECRET",
           binding: "RELEASE_INGEST_SECRET",
           entry: "acme-f69-demo-release-ingest-secret",
           bound: true,

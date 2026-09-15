@@ -136,7 +136,7 @@ Under `--json` that is `environments` naming every environment that reads it, pl
 
 **`create` writes the entry; it does not write the stanza.** Follow it with `pithy secrets provision`, which binds on existence — an entry you supplied a moment ago is bound exactly like one it minted itself. `pithy doctor` and `pithy provision` both print that pair for a secret whose entry is missing.
 
-**`rm` on a store-backed secret deletes the entry, and says what it leaves behind.** The entry is the value the Worker reads, so deleting it is the revocation; the Worker's `wrangler.jsonc` still carries a `secrets_store_secrets` line naming it, and nothing in the kit removes one. Wrangler refuses a config naming an absent entry, so the next deploy of that Worker fails until you delete the binding or supply the value again — which the command tells you on the line under the removal.
+**`rm` on a store-backed secret deletes the entry, and says what it leaves behind.** The entry is the value the Worker reads, so deleting it is the revocation; the Worker's `wrangler.jsonc` still carries a `secrets_store_secrets` line binding it — under the secret's name in SCREAMING_SNAKE_CASE, `EMAIL_LINK_SIGNING_KEY` for `email-link-signing-key` — and nothing in the kit removes one. Wrangler refuses a config naming an absent entry, so the next deploy of that Worker fails until you delete the binding or supply the value again — which the command tells you on the line under the removal.
 
 **`SECRETS_ENCRYPTION_KEYS` is refused in all three.** It is the master key every other secret in that environment is sealed under: replacing it orphans each of them and removing it loses them. `pithy secrets provision` creates it when it is absent, and that is the only thing that writes it.
 

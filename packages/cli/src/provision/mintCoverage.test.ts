@@ -146,8 +146,8 @@ async function everythingTheCliCreates(registry: SecretRegistry): Promise<string
     scope: environmentScope("kit", "staging"),
     storeId: "store-id",
     exists: async () => false,
-    mint: async ({ binding }) => {
-      created.add(binding);
+    mint: async ({ secret }) => {
+      created.add(secret);
     },
   });
   for (const name of store.minted) created.add(name);

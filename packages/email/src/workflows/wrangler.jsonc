@@ -53,7 +53,7 @@
       "secret_name": "<filled-at-provision>"
     },
     {
-      "binding": "email-link-signing-key",
+      "binding": "EMAIL_LINK_SIGNING_KEY",
       "store_id": "<filled-at-provision>",
       "secret_name": "<filled-at-provision>"
     }

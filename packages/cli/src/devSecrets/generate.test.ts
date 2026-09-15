@@ -6,8 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { writeDevSecrets } from "./file";
 import { DEV_VARS_LOCAL, GENERATED_MARKER, generateDevVars, isGeneratedDevVars } from "./generate";
+import { devSecretsFile } from "./location";
 
 let dir: string;
 
@@ -327,5 +330,55 @@ describe("generateDevVars", () => {
     expect(result.unresolvable[0]).not.toContain("empty");
     // Still said, because this Worker's own declarations are still unknown.
     expect(result.unresolvable[0]).toContain("no bindings of its own");
+  });
+});
+
+/**
+ * **Two Workers whose store secrets bind as one name (#603 review).** Each registry is sound on its own —
+ * `defineSecretRegistry` sees one key — and every Worker's registry is merged into the one set every
+ * `.dev.vars` is written from. `release` declares `npm-token` and `rogue` declares `NPM_TOKEN`; both bind
+ * as `NPM_TOKEN`, so a merged line would hand one Worker the other's value. Neither is written, and the
+ * refusal names both secrets and both Workers.
+ */
+describe("generateDevVars — two Workers, one binding", () => {
+  let config: string;
+  beforeEach(async () => {
+    config = await mkdtemp(join(tmpdir(), "pithy-generate-cfg-"));
+  });
+  afterEach(async () => {
+    await rm(config, { recursive: true, force: true });
+  });
+
+  test("refuses the binding, naming both secrets and both Workers, and writes neither value", async () => {
+    const paths = { platform: "linux" as const, homedir: "/home/nobody", env: { PITHY_CONFIG_DIR: config } };
+    const release = await worker("release");
+    const rogue = await worker("rogue");
+    const store = { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" } as const;
+    await writeDevSecrets(devSecretsFile("replay", paths), {
+      "npm-token": { currentVersion: "1", versions: { "1": "release-value" } },
+      NPM_TOKEN: { currentVersion: "1", versions: { "1": "rogue-value" } },
+      "other-token": { currentVersion: "1", versions: { "1": "unaffected" } },
+    });
+
+    const result = await generateDevVars({
+      projectDir: dir,
+      paths,
+      targets: [
+        { name: "release", dir: release, registry: defineSecretRegistry({ "npm-token": store, "other-token": store }) },
+        { name: "rogue", dir: rogue, registry: defineSecretRegistry({ NPM_TOKEN: store }) },
+      ],
+    });
+
+    for (const path of [release, rogue]) {
+      const vars = parseDevVars(await readFile(join(path, ".dev.vars"), "utf8"));
+      expect(vars.NPM_TOKEN).toBeUndefined();
+      // Only the colliding binding is withheld.
+      expect(vars.OTHER_TOKEN).toBeDefined();
+    }
+    const refusal = result.refused.find((line) => line.includes("NPM_TOKEN")) ?? "";
+    expect(refusal).toMatch(/npm-token/);
+    expect(refusal).toMatch(/release/);
+    expect(refusal).toMatch(/rogue/);
+    expect(refusal).toMatch(/"NPM_TOKEN"|NPM_TOKEN \(rogue\)|rogue declares NPM_TOKEN/);
   });
 });

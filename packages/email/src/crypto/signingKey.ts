@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { VersionedSecret } from "@pithy-sh/secrets/src/secretsStore";
@@ -12,6 +13,13 @@ import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
  * whichever registry names it, so email never needs the project-wide registry to sign or verify a link.
  */
 export const EMAIL_LINK_SIGNING_KEY = "email-link-signing-key";
+
+/**
+ * The binding a Worker reads the link-signing key through: `EMAIL_LINK_SIGNING_KEY` (#603). Derived, never
+ * spelled — the stanza `pithy secrets provision` writes and the reader in `@pithy-sh/secrets` both call
+ * `secretBindingName`, and so does this.
+ */
+export const EMAIL_LINK_SIGNING_KEY_BINDING = secretBindingName(EMAIL_LINK_SIGNING_KEY);
 
 /** The minimal registry email uses to resolve its signing key. Rotatable so old links verify after rotation. */
 export const emailSigningRegistry = defineSecretRegistry({

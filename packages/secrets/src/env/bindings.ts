@@ -41,11 +41,21 @@ export interface SecretsStoreEnv {
  * a CF Secrets Store binding is read via `.get()`. Throws `secrets/not_found` when neither is
  * present, so a missing binding fails loudly instead of surfacing as a silently-absent secret.
  */
-export async function resolveBinding(value: SecretBinding | string | undefined, name: string): Promise<string> {
+export async function resolveBinding(
+  value: SecretBinding | string | undefined,
+  name: string,
+  secret?: string,
+): Promise<string> {
   if (typeof value === "string") return value;
   if (value && typeof value.get === "function") return value.get();
+  // A secret read through a binding of another spelling names both (#603): the secret is what an operator
+  // searches the registry and the dev secrets file for, and the binding is what is missing from the stanza.
+  const read =
+    secret !== undefined && secret !== name
+      ? `Secret '${secret}' reads binding '${name}', which`
+      : `Secret binding '${name}'`;
   throw new SecretNotFoundError({
-    message: `Secret binding '${name}' is not configured.`,
+    message: `${read} is not configured.`,
     detail: `binding '${name}' is neither a CF Secrets Store binding nor a .dev.vars string`,
   });
 }

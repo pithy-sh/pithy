@@ -352,9 +352,18 @@ describe("devVarsForRegistry", () => {
   test("an ordinary cf-secrets-store secret carries the whole envelope, so its versions survive", () => {
     // The same shape provisioning writes into the Secrets Store. Collapsing it to the current value
     // would drop version 1 and break anything still verifying against it.
-    expect(devVarsForRegistry(file, registry)["connection-key"]).toBe(
+    expect(devVarsForRegistry(file, registry).CONNECTION_KEY).toBe(
       encodeVersionedValue({ currentVersion: "2", versions: { "1": "old", "2": "current" } }),
     );
+  });
+
+  test("a store secret's line is keyed by its binding, which is what a Worker reads (#603)", () => {
+    // `.dev.vars` is the dev Worker's env. `connection-key` is bound as `CONNECTION_KEY`, so a line under the
+    // registry key is a value the reader in `secretsStore` never looks at.
+    expect(Object.keys(devVarsForRegistry(file, registry)).sort()).toEqual([
+      "CONNECTION_KEY",
+      "SECRETS_ENCRYPTION_KEYS",
+    ]);
   });
 
   test("a bootstrap secret carries its current value, because its reader has no decoder yet", () => {

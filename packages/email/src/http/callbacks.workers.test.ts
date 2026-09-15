@@ -9,7 +9,7 @@ import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/sr
 import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
+import { emailSigningRegistry } from "../crypto/signingKey";
 import { mintToken, type TokenClaims } from "../crypto/token";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
@@ -211,7 +211,9 @@ function callbackApp(
     app.request(path, init, {
       DB: env.DB,
       EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS,
-      [EMAIL_LINK_SIGNING_KEY]: entry ? encodeVersionedValue(entry) : storeEntryText({}, KEY),
+      // The binding `pithy secrets provision` writes (#603) — spelled out rather than derived, so this states
+      // what a deployed Worker is handed instead of agreeing with whatever the derivation says.
+      EMAIL_LINK_SIGNING_KEY: entry ? encodeVersionedValue(entry) : storeEntryText({}, KEY),
     });
 }
 

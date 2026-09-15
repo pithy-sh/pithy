@@ -28,8 +28,8 @@ import type { SecretScope } from "@pithy-sh/secrets/src/registry";
  * than something a caller renders around.
  */
 export interface MissingStoreEntry {
-  /** The binding name, which is the registry key and the name the command takes. */
-  binding: string;
+  /** The secret's registry key — the name the command takes. Its binding is another spelling (#603). */
+  secret: string;
   /** The declared scope — the whole of what decides whether the command carries `--env`. */
   scope: SecretScope;
   /** The declared environment whose stanza is short of it. Plural across a group. */
@@ -91,7 +91,7 @@ const PROVISION_REMEDY = "Run pithy secrets provision — it creates the store e
  */
 export function supplyStoreEntryCommand(entry: MissingStoreEntry): string {
   const env = entry.scope === "global" ? "" : ` --env ${entry.env}`;
-  return `pithy secrets create ${entry.binding}${env}`;
+  return `pithy secrets create ${entry.secret}${env}`;
 }
 
 /**

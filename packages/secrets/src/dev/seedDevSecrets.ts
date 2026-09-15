@@ -9,6 +9,7 @@ import {
   initialVersionedValue,
   type VersionedValue,
 } from "../crypto/versionedValue";
+import { secretBindingName } from "../env/bindingName";
 import { mintSecretValue } from "../mintValue";
 import type { SecretRegistry, SecretRegistryEntry, SecretValueType } from "../registry";
 import {
@@ -71,7 +72,7 @@ export interface DevSecretsSeedResult {
   seeded: readonly string[];
   /** `d1` secrets already stored with the value the file states. Left untouched. */
   unchanged: readonly string[];
-  /** `cf-secrets-store` secrets, as the `.dev.vars` lines the CLI should write. Never a file write here. */
+  /** `cf-secrets-store` secrets, as the `.dev.vars` lines the CLI should write, keyed by binding. Never a file write here. */
   devVars: Readonly<Record<string, string>>;
   /** Values minted this run, for the CLI to write back into the dev secrets file as version-1 envelopes. */
   minted: DevSecretsFile;
@@ -117,7 +118,8 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
     const secret = devSecretPayload(entry, name, envelope, path);
 
     if (entry.backend === "cf-secrets-store") {
-      devVars[name] = secret.text;
+      // Under the binding a Worker reads it through, never the registry key (#603).
+      devVars[secretBindingName(name)] = secret.text;
       continue;
     }
 
@@ -179,7 +181,7 @@ export function devVarsForRegistry(
     if (!entry || entry.keyed || entry.backend !== "cf-secrets-store") continue;
     const stated = file[name];
     if (!stated) continue;
-    devVars[name] = devSecretPayload(entry, name, stated, path).text;
+    devVars[secretBindingName(name)] = devSecretPayload(entry, name, stated, path).text;
   }
   return devVars;
 }

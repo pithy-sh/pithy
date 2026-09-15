@@ -145,7 +145,8 @@ describe("secretsStore — d1 backend routes to the store, in every environment"
 describe("secretsStore — a failure belongs to its secret, not to the store (#170)", () => {
   // The bug, in the shape that produced it: `auth` declares a session secret and a social-provider
   // credential the registry documents as read only when that provider is enabled. Nothing configures
-  // the provider, so its binding is absent — and that used to make every capability's read fail.
+  // the provider, so its binding is absent — and that used to make every capability's read fail. Each is
+  // bound as its key in SCREAMING_SNAKE_CASE (#603).
   const auth = defineSecretRegistry({
     "auth-session-secret": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
     "auth-google-credentials": {
@@ -159,19 +160,17 @@ describe("secretsStore — a failure belongs to its secret, not to the store (#1
   });
 
   test("an unset secret does not stop the accessor being built", async () => {
-    await expect(secretsStore(envWith({ "auth-session-secret": "sess" }), auth)).resolves.toBeInstanceOf(
-      SecretsAccessor,
-    );
+    await expect(secretsStore(envWith({ AUTH_SESSION_SECRET: "sess" }), auth)).resolves.toBeInstanceOf(SecretsAccessor);
   });
 
   test("a sibling secret still reads, synchronously", async () => {
-    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    const store = await secretsStore(envWith({ AUTH_SESSION_SECRET: "sess" }), auth);
     expect(store.get("auth-session-secret")).toBe("sess");
     expect(store.getVersions("auth-session-secret")).toEqual({ currentVersion: "1", versions: { "1": "sess" } });
   });
 
   test("the unset secret still fails when read, and names itself and not its neighbor", async () => {
-    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    const store = await secretsStore(envWith({ AUTH_SESSION_SECRET: "sess" }), auth);
     const error = throwsFrom(() => store.get("auth-google-credentials"));
     expect(error).toBeInstanceOf(SecretNotFoundError);
     const serialized = JSON.stringify((error as SecretNotFoundError).payload);
@@ -192,7 +191,7 @@ describe("secretsStore — a failure belongs to its secret, not to the store (#1
   });
 
   test("a held failure survives subset, and stays with its own name", async () => {
-    const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
+    const store = await secretsStore(envWith({ AUTH_SESSION_SECRET: "sess" }), auth);
     const session = defineSecretRegistry({
       "auth-session-secret": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
     });

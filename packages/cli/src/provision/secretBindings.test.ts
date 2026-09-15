@@ -50,6 +50,30 @@ describe("secretsStoreBindings", () => {
     ]);
   });
 
+  test("a kebab-case key binds in SCREAMING_SNAKE_CASE, and its entry keeps the key's name (#603)", async () => {
+    const result = await secretsStoreBindings({
+      registry: {
+        "email-link-signing-key": {
+          backend: "cf-secrets-store",
+          scope: "environment",
+          rotatable: true,
+          valueType: "text",
+          devValue: "random",
+        },
+      },
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: async () => false,
+      mint: async () => {},
+    });
+
+    expect(result.bound).toEqual([
+      { binding: "EMAIL_LINK_SIGNING_KEY", store_id: "store-1", secret_name: "replay-staging-email-link-signing-key" },
+    ]);
+    // What was created is the secret, so it is named as one.
+    expect(result.minted).toEqual(["email-link-signing-key"]);
+  });
+
   /** The binding is the join key and never moves; only the entry behind it is scoped. */
   test("a feature binds its own entries under the same binding names", async () => {
     const { bound } = await secretsStoreBindings({
@@ -81,7 +105,11 @@ describe("secretsStoreBindings", () => {
 
     expect(bound.map((entry) => entry.binding)).toEqual(["RELEASE_INGEST_SECRET"]);
     expect(missing).toEqual([
-      { binding: "CONNECTION_KEY_ENCRYPTION_KEY", entry: "replay-staging-connection-key-encryption-key" },
+      {
+        secret: "CONNECTION_KEY_ENCRYPTION_KEY",
+        binding: "CONNECTION_KEY_ENCRYPTION_KEY",
+        entry: "replay-staging-connection-key-encryption-key",
+      },
     ]);
   });
 
@@ -104,8 +132,16 @@ describe("secretsStoreBindings", () => {
     });
 
     expect(missing).toEqual([
-      { binding: "CONNECTION_KEY_ENCRYPTION_KEY", entry: "replay-staging-connection-key-encryption-key" },
-      { binding: "RELEASE_INGEST_SECRET", entry: "replay-global-release-ingest-secret" },
+      {
+        secret: "CONNECTION_KEY_ENCRYPTION_KEY",
+        binding: "CONNECTION_KEY_ENCRYPTION_KEY",
+        entry: "replay-staging-connection-key-encryption-key",
+      },
+      {
+        secret: "RELEASE_INGEST_SECRET",
+        binding: "RELEASE_INGEST_SECRET",
+        entry: "replay-global-release-ingest-secret",
+      },
     ]);
   });
 

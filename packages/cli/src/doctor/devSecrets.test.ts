@@ -141,6 +141,37 @@ describe("checkDevSecrets", () => {
     expect((await check())?.misplaced).toEqual([{ name: "CONNECTION_KEY_ENCRYPTION_KEY", state: "unmoved" }]);
   });
 
+  /**
+   * **A line under a store secret's binding is the same stray line (#603 review).** A store secret is read
+   * through `secretBindingName(key)`, so the root `.dev.vars` line an adopter actually has is
+   * `EMAIL_LINK_SIGNING_KEY`, not `email-link-signing-key`. The `.dev.vars:` block counts that binding as
+   * declared and leaves it to this one — so this one has to find it under that spelling, or neither says
+   * anything about a line nothing reads.
+   */
+  test("a store secret's line under its binding is misplaced, and says which line to delete", async () => {
+    const kebab = defineSecretRegistry({
+      "email-link-signing-key": {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: true,
+        valueType: "text",
+        devValue: "random",
+      },
+    });
+    const targets = [{ name: "board", dir: join(dir, "apps", "board"), registry: kebab }];
+    await writeFile(join(dir, ".dev.vars"), "EMAIL_LINK_SIGNING_KEY=stale\n");
+
+    const result = await checkDevSecrets({ projectDir: dir, targets, paths: paths() });
+
+    expect(result?.misplaced).toEqual([
+      { name: "email-link-signing-key", line: "EMAIL_LINK_SIGNING_KEY", state: "unmoved" },
+    ]);
+    const lines = describeDevSecrets(result as DevSecretsCheck);
+    expect(
+      lines.some((line) => line.startsWith("EMAIL_LINK_SIGNING_KEY") && line.includes("email-link-signing-key")),
+    ).toBe(true);
+  });
+
   test("every backend the registry can declare is reported, so a third one cannot arrive unchecked", async () => {
     // The gate, stated as the invariant rather than as a list of backends this file happens to know:
     // a registry secret in the root `.dev.vars` is misplaced, whatever `backend` says. Add a backend to

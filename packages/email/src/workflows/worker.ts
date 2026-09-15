@@ -8,7 +8,7 @@ import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { requireHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretBinding, SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY_BINDING, emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
@@ -56,7 +56,7 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
   /** The app database the per-environment jobs/events tables live in. */
   DB: D1Database;
   /** The link-signing key: this environment's Secrets Store entry, or its `.dev.vars` string locally (#596). */
-  [EMAIL_LINK_SIGNING_KEY]: SecretBinding | string;
+  [EMAIL_LINK_SIGNING_KEY_BINDING]: SecretBinding | string;
   /** The shared, durable suppression database. */
   EMAIL_SUPPRESSIONS: D1Database;
   /** The Cloudflare Email Service send binding. */

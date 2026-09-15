@@ -4,6 +4,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { isBindingName, secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
 
@@ -174,8 +175,9 @@ function keyOf(
 /**
  * Every registry key declared `backend: "cf-secrets-store"`.
  *
- * For a store-backed secret the registry key **is** the Worker binding name (`secretsStore` resolves
- * it as `resolveBinding(bindings[name], name)`), which is what makes the comparison below meaningful.
+ * Keys, not bindings. A store-backed secret is read through `secretBindingName(key)` — `secretsStore`
+ * resolves it as `resolveBinding(bindings[secretBindingName(name)], …)` — so the comparison below derives
+ * each binding through the same function rather than treating the key as one (#603).
  *
  * Driven off a plain text count of the declaration rather than off one regex that has to match both the
  * declaration and its key. A regex that fails to match reports nothing; a count that finds a declaration
@@ -197,19 +199,48 @@ function declaredStoreBackedKeys(): string[] {
 
 /** The bindings one wrangler template declares, split by the two blocks this test cares about. */
 function templateBindings(path: string): { store: string[]; d1: string[] } {
-  // The shared walk (#439). JSONC has the same two holes as TypeScript: a `//` inside a string value
-  // is not a comment, and a whole-line rule saw no trailing one at all.
-  const source = blankComments(readSource(path) ?? "");
-  const blockOf = (key: string): string =>
-    source.match(new RegExp(`"${key}"\\s*:\\s*\\[(.*?)\\n\\s*\\]`, "s"))?.[1] ?? "";
-  const bindingsIn = (block: string): string[] =>
-    [...block.matchAll(/"binding"\s*:\s*"([^"]+)"/g)].map((m) => m[1] as string);
-  return { store: bindingsIn(blockOf("secrets_store_secrets")), d1: bindingsIn(blockOf("d1_databases")) };
+  return templateBindingsIn(readSource(path) ?? "");
 }
 
-/** Every committed wrangler template, with its bindings. */
+/** {@link templateBindings}, over a template's text — so the reader itself can be run against fixtures. */
+function templateBindingsIn(text: string): { store: string[]; d1: string[] } {
+  // The shared walk (#439). JSONC has the same two holes as TypeScript: a `//` inside a string value
+  // is not a comment, and a whole-line rule saw no trailing one at all.
+  const source = blankComments(text);
+  // Every array under the key, wherever it is and however it is laid out: each `"<key>": [` found, read to
+  // its own closing bracket. Brackets inside a string value do not count, so a quoted `]` ends nothing.
+  const blocksOf = (key: string): string => {
+    const blocks: string[] = [];
+    for (const match of source.matchAll(new RegExp(`"${key}"\\s*:\\s*\\[`, "g"))) {
+      const open = (match.index ?? 0) + match[0].length;
+      let depth = 1;
+      let quoted = false;
+      let at = open;
+      for (; at < source.length && depth > 0; at += 1) {
+        const char = source[at];
+        if (quoted) {
+          if (char === "\\") at += 1;
+          else if (char === '"') quoted = false;
+        } else if (char === '"') quoted = true;
+        else if (char === "[") depth += 1;
+        else if (char === "]") depth -= 1;
+      }
+      blocks.push(source.slice(open, at - 1));
+    }
+    return blocks.join("\n");
+  };
+  const bindingsIn = (block: string): string[] =>
+    [...block.matchAll(/"binding"\s*:\s*"([^"]+)"/g)].map((m) => m[1] as string);
+  return { store: bindingsIn(blocksOf("secrets_store_secrets")), d1: bindingsIn(blocksOf("d1_databases")) };
+}
+
+/**
+ * Every committed wrangler template, with its bindings: each package's own, and the scaffold `pithy init`
+ * copies, which is the one an adopter's project starts from.
+ */
 function templates(): { path: string; store: string[]; d1: string[] }[] {
-  return sourceFiles(isWranglerTemplate).map((path) => ({ path, ...templateBindings(path) }));
+  const scaffold = sourcePaths(join(REPO_ROOT, "templates"), { keep: isWranglerTemplate });
+  return [...sourceFiles(isWranglerTemplate), ...scaffold].map((path) => ({ path, ...templateBindings(path) }));
 }
 
 /** Every `secrets_store_secrets[].binding` across every committed wrangler template. */
@@ -241,12 +272,34 @@ describe("a secret's declared backend is where the value actually goes", () => {
     expect(boundStoreBindings().length).toBeGreaterThan(0);
   });
 
-  test("every `cf-secrets-store` secret is bound by some wrangler template", () => {
+  test("every `cf-secrets-store` secret's binding is bound by some wrangler template", () => {
     const bound = new Set(boundStoreBindings());
-    const unbound = declaredStoreBackedKeys().filter((key) => !bound.has(key));
+    const unbound = declaredStoreBackedKeys()
+      .map((key) => secretBindingName(key))
+      .filter((binding) => !bound.has(binding));
     // An unbound store-backed secret resolves to a binding that does not exist at runtime. Either add
-    // the `secrets_store_secrets` entry, or declare the secret `d1` — whichever is actually true.
+    // the `secrets_store_secrets` entry — under the derived binding, never the registry key — or declare
+    // the secret `d1`, whichever is actually true.
     expect(unbound).toEqual([]);
+  });
+
+  /**
+   * **The invariant, not the list (#603).** A binding is an environment name, and every one a template
+   * declares is SCREAMING_SNAKE_CASE. `"binding": "email-link-signing-key"` shipped in the email host's
+   * template and in every stanza `pithy secrets provision` wrote, and the test above passed on it, because it
+   * compared registry keys to template bindings and both were the raw key. This one asks what a binding
+   * must look like, so a raw key reaching a template fails whatever it is compared against.
+   */
+  test("every Secrets Store binding a template declares is SCREAMING_SNAKE_CASE", () => {
+    const misspelled = templates().flatMap((t) =>
+      t.store
+        .filter((binding) => !isBindingName(binding))
+        .map((binding) => `${t.path.slice(REPO_ROOT.length + 1)}: ${binding}`),
+    );
+    expect(misspelled).toEqual([]);
+    // And the derivation agrees with every template binding a declared key reaches, so the two cannot
+    // come apart by the template being right and the code reading another name.
+    for (const key of declaredStoreBackedKeys()) expect(isBindingName(secretBindingName(key))).toBe(true);
   });
 
   test("the extractor names every declaration shape, and refuses the ones it cannot", () => {
@@ -290,6 +343,42 @@ describe("a secret's declared backend is where the value actually goes", () => {
  * Worth pinning explicitly because five neighboring credential secrets were just corrected from
  * `cf-secrets-store` to `d1`: the master key must never be swept along with them.
  */
+/**
+ * **The gate's reader reaches every block (#603 review).** It read the first `secrets_store_secrets` array
+ * in a file, and only one whose `]` sat on a line of its own — so a kebab binding in `env.staging`, or in a
+ * one-line array, was a binding the casing gate never saw. Proven on fixtures, because no committed
+ * template happens to have either shape today, which is exactly when a reader's hole goes unnoticed.
+ */
+describe("the template reader", () => {
+  test("reads every secrets_store_secrets block — top level and each env — not only the first", () => {
+    const text = `{
+  "secrets_store_secrets": [
+    { "binding": "SECRETS_ENCRYPTION_KEYS", "store_id": "x", "secret_name": "y" }
+  ],
+  "env": {
+    "staging": {
+      // a comment with a ] in it, and a "binding": "COMMENTED_OUT" nobody binds
+      "secrets_store_secrets": [
+        { "binding": "email-link-signing-key", "store_id": "x", "secret_name": "y" }
+      ]
+    },
+    "prod": { "secrets_store_secrets": [{ "binding": "ONE_LINE", "store_id": "x", "secret_name": "y" }] }
+  }
+}`;
+    expect(templateBindingsIn(text).store).toEqual(["SECRETS_ENCRYPTION_KEYS", "email-link-signing-key", "ONE_LINE"]);
+  });
+
+  test("reads a one-line array with nothing after it", () => {
+    const text = `{ "name": "x", "secrets_store_secrets": [{ "binding": "email-link-signing-key", "store_id": "x", "secret_name": "y" }] }`;
+    expect(templateBindingsIn(text).store).toEqual(["email-link-signing-key"]);
+  });
+
+  test("keeps the two kinds apart: a d1 binding is never read as a store one", () => {
+    const text = `{ "d1_databases": [{ "binding": "DB" }], "secrets_store_secrets": [{ "binding": "KEY" }] }`;
+    expect(templateBindingsIn(text)).toEqual({ store: ["KEY"], d1: ["DB"] });
+  });
+});
+
 describe("the at-rest encryption key stays in the Cloudflare Secrets Store", () => {
   test("it is store-backed, and never declared as a D1 row", () => {
     expect(boundStoreBindings()).toContain(MASTER_KEY_BINDING);

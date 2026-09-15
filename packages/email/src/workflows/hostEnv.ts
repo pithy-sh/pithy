@@ -5,7 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { defineHostEnv, type HostEnvProvider } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretBinding } from "@pithy-sh/secrets/src/env/bindings";
 import { z } from "zod";
-import { EMAIL_LINK_SIGNING_KEY } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING } from "../crypto/signingKey";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
 import type { SendWorkflowInstances } from "./instances";
@@ -105,10 +105,10 @@ export const EmailHostEnv = z
       .describe(
         "The master key that decrypts the secrets database — a Cloudflare Secrets Store binding in a deployed environment, and the same name as a plain string in `.dev.vars` locally. The one secret read outside the `secretsStore` accessor, because it is what makes the accessor work.",
       ),
-    [EMAIL_LINK_SIGNING_KEY]: z
+    [EMAIL_LINK_SIGNING_KEY_BINDING]: z
       .union([z.string().min(1), callable<SecretBinding>("get", "The link-signing key binding")])
       .describe(
-        "The key every tracking and unsubscribe link is signed with — a Cloudflare Secrets Store entry for this environment, bound under the registry name, and the same entry the app Worker verifies those links against. Locally it is the same name in `.dev.vars`. Without it no link can be signed, and a marketing send cannot render.",
+        "The key every tracking and unsubscribe link is signed with — a Cloudflare Secrets Store entry for this environment, bound as `EMAIL_LINK_SIGNING_KEY`, and the same entry the app Worker verifies those links against. Locally it is the same name in `.dev.vars`. Without it no link can be signed, and a marketing send cannot render.",
       ),
     EMAIL: callable<EmailSender>("send", "The Cloudflare Email Service send binding").describe(
       "The Cloudflare Email Service `send_email` binding — the only thing in the kit that puts a message on the wire. `wrangler dev` simulates it locally; `remote: true` (the default under `pithy dev`) sends for real from the developer's machine.",
@@ -212,7 +212,7 @@ export const emailHostEnv = defineHostEnv({
       name: "SECRETS_ENCRYPTION_KEYS",
       command: SECRETS_PROVISION,
     },
-    [EMAIL_LINK_SIGNING_KEY]: {
+    [EMAIL_LINK_SIGNING_KEY_BINDING]: {
       kind: "secret",
       name: EMAIL_LINK_SIGNING_KEY,
       command: SECRETS_PROVISION,

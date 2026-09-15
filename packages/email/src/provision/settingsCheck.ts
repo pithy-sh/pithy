@@ -12,7 +12,7 @@ import { hostEnvFindings } from "@pithy-sh/core/src/capability/settings";
 import { LOCAL_ORIGIN } from "@pithy-sh/core/src/naming/domains";
 import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { checkHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
-import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING, emailSigningRegistry } from "../crypto/signingKey";
 import type { EmailTheme } from "../templates/theme";
 import { emailHostEnv } from "../workflows/hostEnv";
 import { suppressionDatabaseName } from "./provisionEmail";
@@ -69,7 +69,7 @@ function stubBindings(): Record<string, unknown> {
     EMAIL_SUPPRESSIONS: d1,
     SECRETS: d1,
     SECRETS_ENCRYPTION_KEYS: "checked elsewhere",
-    [EMAIL_LINK_SIGNING_KEY]: "checked elsewhere",
+    [EMAIL_LINK_SIGNING_KEY_BINDING]: "checked elsewhere",
     EMAIL: { send: () => undefined },
     EMAIL_SENDER: { create: () => undefined, get: () => undefined },
     EMAIL_SCHEDULER: { create: () => undefined },

@@ -13,6 +13,7 @@ import {
   type SecretRotationRecorder,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -463,7 +464,8 @@ async function write(
   // deploy of that Worker fails on it. A `global` secret is bound by every stanza, an `environment` one
   // by the stanza this write reached — which is what the effect above already resolved.
   if (mode === "delete" && routed?.backend === "cf-secrets-store") {
-    process.stdout.write(`${removedStoreEntryNote(args.name, effect.environments)}\n`);
+    // The stanza names the binding, not the key (#603), and that is the line an operator goes looking for.
+    process.stdout.write(`${removedStoreEntryNote(secretBindingName(args.name), effect.environments)}\n`);
   }
   process.stdout.write(`${formatDone()}\n`);
 }

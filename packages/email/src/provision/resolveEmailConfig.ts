@@ -16,7 +16,7 @@ import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
-import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING, emailSigningRegistry } from "../crypto/signingKey";
 import { emailCatalogVarName } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { EmailScheduleParams, EmailSendParams } from "../workflows/params";
@@ -213,8 +213,9 @@ export function resolveEmailConfig(
     // The link-signing key, at the entry `pithy secrets provision` created and bound the app Worker to —
     // composed by the same `environmentScope(...).secretEntry` call, from the declaration's own scope, so
     // the Worker that signs a link and the Worker that verifies it cannot be handed two different keys.
+    // Keyed by the binding the template declares; the entry keeps the registry key's name (#603).
     secretNames: {
-      [EMAIL_LINK_SIGNING_KEY]: environmentScope(project, env).secretEntry(
+      [EMAIL_LINK_SIGNING_KEY_BINDING]: environmentScope(project, env).secretEntry(
         EMAIL_LINK_SIGNING_KEY,
         emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
       ),

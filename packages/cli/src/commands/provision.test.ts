@@ -262,7 +262,15 @@ describe("pithy provision narrates the run it is doing", () => {
     resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "d1-1", created: true }],
     workers: [{ worker: "board", name: "board-staging" }],
     services: [{ binding: "COLLAB", service: "collab-staging" }],
-    secretBindings: [{ binding: "SESSION_KEY", entry: "replay-staging-session-key", bound: true, minted: false }],
+    secretBindings: [
+      {
+        secret: "session-key",
+        binding: "SESSION_KEY",
+        entry: "replay-staging-session-key",
+        bound: true,
+        minted: false,
+      },
+    ],
     declined: [],
     // In `provisionEnvironment`'s own key order, so the `--json` literal below is the real line and not a
     // reordering of it.
@@ -299,7 +307,7 @@ describe("pithy provision narrates the run it is doing", () => {
     '"resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"d1-1","created":true}]',
     '"workers":[{"worker":"board","name":"board-staging"}]',
     '"services":[{"binding":"COLLAB","service":"collab-staging"}]',
-    '"secretBindings":[{"binding":"SESSION_KEY","entry":"replay-staging-session-key","bound":true,"minted":false}]',
+    '"secretBindings":[{"secret":"session-key","binding":"SESSION_KEY","entry":"replay-staging-session-key","bound":true,"minted":false}]',
     '"declined":[]',
     '"manifestFaults":[]',
     '"configs":[{"worker":"board","path":"apps/board/wrangler.jsonc","ids":1}]',

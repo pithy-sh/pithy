@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { isProvisionableSecret, type SecretRegistryEntry, type SecretScope } from "@pithy-sh/secrets/src/registry";
 import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { resolveDevSecretsTargets } from "../devSecrets/targets";
@@ -75,7 +76,9 @@ export interface MissingSecretBinding {
   worker: string;
   /** The declared environment whose stanza lacks it. */
   env: string;
-  /** The binding name — the registry key, which is also the name every read site uses. */
+  /** The secret's registry key — what `pithy secrets create` takes. */
+  secret: string;
+  /** The binding name — the registry key through `secretBindingName`, the name every read site uses. */
   binding: string;
   /**
    * **May `pithy secrets provision` create this entry?** {@link isProvisionableSecret} answers it, here as
@@ -257,19 +260,22 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
       );
       const nameFor = entryNames.get(env);
       if (!nameFor) continue;
-      for (const binding of declared) {
+      for (const secret of declared) {
+        // The binding the writer derives (#603), so a stanza is judged by what the reader looks for.
+        const binding = secretBindingName(secret);
         if (bound.has(binding)) continue;
-        const entry = (target.registry as Record<string, SecretRegistryEntry>)[binding] as SecretRegistryEntry;
+        const entry = (target.registry as Record<string, SecretRegistryEntry>)[secret] as SecretRegistryEntry;
         // Nothing reads it, so nothing is short of it. `isProvisionableSecret` is the same guard the
         // `Dev secrets:` block uses, and here it is what keeps the master key's stanza reported.
-        if (inapplicable.has(binding) && !isProvisionableSecret(binding, entry)) continue;
+        if (inapplicable.has(secret) && !isProvisionableSecret(secret, entry)) continue;
         missing.push({
           worker: target.name,
           env,
+          secret,
           binding,
-          provisionable: isProvisionableSecret(binding, entry),
+          provisionable: isProvisionableSecret(secret, entry),
           scope: entry.scope,
-          entry: nameFor(binding, entry.scope),
+          entry: nameFor(secret, entry.scope),
         });
       }
     }
