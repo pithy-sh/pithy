@@ -47,7 +47,36 @@ describe("emptyManifest", () => {
       slug: "media-cli",
       env: "dev",
       resources: [],
+      scripts: [],
     });
+  });
+});
+
+/**
+ * A manifest records the Worker scripts a feature deploys (#592), and a manifest written before it could
+ * is still one `destroy` has to read: the feature it names is live, and its scripts are still deployed.
+ */
+describe("a manifest's scripts", () => {
+  test("round-trip with the two names each was composed from", async () => {
+    const path = manifestPath(dir);
+    const manifest: FeatureManifest = {
+      ...emptyManifest({ project: "acme", issue: "69", slug: "media-cli", env: "feature" }),
+      scripts: [{ app: "api", script: "acme-api", name: "acme-f69-media-cli-api" }],
+    };
+
+    await writeManifest(path, manifest);
+
+    expect(await readManifest(path)).toEqual(manifest);
+  });
+
+  test("a manifest written before scripts were recorded reads as recording none, rather than as corrupt", async () => {
+    const path = manifestPath(dir);
+    await writeFile(
+      path,
+      JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "media-cli", env: "feature", resources: [] }),
+    );
+
+    expect((await readManifest(path))?.scripts).toEqual([]);
   });
 });
 

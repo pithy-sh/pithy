@@ -6,7 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
-import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { featureScope, featureWorkerScriptNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -19,8 +19,15 @@ import {
   type ProvisionReport,
   type ProvisionWorker,
   provisionEnvironment,
+  provisionWorkerNames,
 } from "../provision/environment";
-import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "../provision/resources";
+import {
+  AUDIT_RESOURCE_TYPE,
+  ProvisionAuditActions,
+  type ResourceProvisioners,
+  type TeardownKind,
+  type WorkerScripts,
+} from "../provision/resources";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import type { SecretsStore } from "../provision/store";
 import { provisionableBindings } from "./bindings";
@@ -28,6 +35,7 @@ import {
   emptyManifest,
   type FeatureManifest,
   type FeatureResource,
+  type FeatureScript,
   manifestPath,
   readManifest,
   writeManifest,
@@ -41,8 +49,10 @@ import {
  * branch-derived naming ({@link featureScope}, with no environment segment because a feature *is* an
  * environment), and the manifest that lets `destroy` delete exactly what was created and nothing else.
  *
- * `destroy` reverses it: delete the manifest's resources, then reconcile by recomputing each expected
- * name, so a partial-failed provision still cleans up fully.
+ * `destroy` reverses it: delete the manifest's Worker scripts and resources, then reconcile by recomputing
+ * each expected name, so a partial-failed provision — or a feature provisioned before scripts were
+ * recorded (#592) — still loses everything named for it. Not a `<script>-feature` Worker such a feature may
+ * also have deployed: that name carries no feature identity, and every branch shared it.
  */
 
 /**
@@ -60,6 +70,15 @@ import {
  */
 function isOwnedByFeature(identity: FeatureIdentity, resource: FeatureResource): boolean {
   return resource.name === featureResourceName(identity, resource.binding, resource.kind);
+}
+
+/**
+ * The same rule for a recorded Worker script (#592): honored only when its name is one this feature could
+ * have deployed that Worker under, recomputed from the entry's own two names. An entry naming
+ * `acme-prod-api` beside `app: "api"` is a crafted instruction to delete production, and is ignored.
+ */
+function isScriptOwnedByFeature(identity: FeatureIdentity, script: FeatureScript): boolean {
+  return featureWorkerScriptNames(identity, script).includes(script.name);
 }
 
 /**
@@ -161,12 +180,16 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
         // Carry forward only entries this feature could have created. Keeping a foreign one would
         // re-persist it under a freshly-written, legitimate-looking header — laundering it into what
         // `destroy` later deletes.
-        return (existing?.resources ?? []).filter((resource) => isOwnedByFeature(options.identity, resource));
+        return {
+          resources: (existing?.resources ?? []).filter((resource) => isOwnedByFeature(options.identity, resource)),
+          scripts: (existing?.scripts ?? []).filter((script) => isScriptOwnedByFeature(options.identity, script)),
+        };
       },
-      save: async (resources) => {
+      save: async ({ resources, scripts }) => {
         const manifest: FeatureManifest = {
           ...emptyManifest({ ...options.identity, env: FEATURE_ENVIRONMENT }),
           resources,
+          scripts,
         };
         await writeManifest(path, manifest);
       },
@@ -205,13 +228,13 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   return report;
 }
 
-/** One deleted resource in the teardown report. */
+/** One deleted resource in the teardown report — a Cloudflare resource, or a Worker script. */
 export interface DeprovisionedResource {
-  /** The resource kind. */
-  kind: FeatureResourceKind;
+  /** The resource kind. `worker` for a Worker script (#592). */
+  kind: TeardownKind;
   /** The resource name. */
   name: string;
-  /** The resource id that was deleted. */
+  /** The resource id that was deleted. A Worker script's is its name, which is all Cloudflare addresses it by. */
   id: string;
 }
 
@@ -263,6 +286,17 @@ export interface DeprovisionFeatureOptions {
   /** The provisioners to delete through. */
   provisioners: ResourceProvisioners;
   /**
+   * The account's Worker scripts (#592). Required beside `provisioners` rather than optional: a teardown
+   * that could run without it is the teardown that left every feature's Workers deployed.
+   */
+  scripts: WorkerScripts;
+  /**
+   * The project's Workers, as the branch has them now — each one's two names are what the scripts a
+   * feature deployed before scripts were recorded are recomputed from. Empty when they cannot be known;
+   * the manifest's own record still runs.
+   */
+  workers: readonly Pick<ProvisionWorker, "name" | "dir">[];
+  /**
    * The account's Secrets Store, when one is reachable. Teardown removes every entry this feature could
    * have created — and only those. An entry left behind is a live credential in a flat, account-wide
    * namespace with nothing pointing at it.
@@ -273,7 +307,17 @@ export interface DeprovisionFeatureOptions {
 }
 
 /**
- * Delete a feature's Cloudflare resources: first the exact ids recorded in the manifest, then reconcile —
+ * Delete a feature's Worker scripts, then its Cloudflare resources.
+ *
+ * **Scripts first (#592).** A script deployed against a database that is already gone answers on
+ * workers.dev and fails on its first binding read; deleting it before its resources means there is never
+ * a moment a reachable Worker is bound to nothing. Each script is the manifest's record, then every name
+ * the current Workers could have deployed under — both shapes, see `featureWorkerScriptNames` — and each
+ * is deleted only once the account confirms it is there, because a named script may never have deployed.
+ * Each delete is forced, because a feature's Workers bind each other and Cloudflare refuses to delete a
+ * callee its caller still binds: `web` calling `api` sorts the callee first, and teardown never finished.
+ *
+ * Resources: first the exact ids recorded in the manifest, then reconcile —
  * for every binding the enabled capabilities declare, recompute the exact resource name (the same function
  * `provision` named it with) and delete it if it still exists. This catches a partial-failed `provision`
  * (a resource created in the tiny window before the manifest recorded it) without a prefix scan — an exact
@@ -292,11 +336,7 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   const seen = new Set<string>(); // `${kind}:${id}` — never delete the same resource twice.
 
   const audit = options.audit ?? (async () => {});
-  const remove = async (kind: FeatureResourceKind, name: string, id: string): Promise<void> => {
-    const key = `${kind}:${id}`;
-    if (seen.has(key)) return;
-    await options.provisioners[kind].delete(id);
-    seen.add(key);
+  const record = async (kind: TeardownKind, name: string, id: string): Promise<void> => {
     deleted.push({ kind, name, id });
     // `warning`, not `info`: this destroys real infrastructure, and in CI no human saw it happen.
     await audit({
@@ -309,6 +349,22 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       metadata: { name, feature: options.identity.slug, issue: options.identity.issue },
     });
   };
+  const remove = async (kind: FeatureResourceKind, name: string, id: string): Promise<void> => {
+    const key = `${kind}:${id}`;
+    if (seen.has(key)) return;
+    await options.provisioners[kind].delete(id);
+    seen.add(key);
+    await record(kind, name, id);
+  };
+  const removeScript = async (name: string): Promise<void> => {
+    const key = `worker:${name}`;
+    if (seen.has(key)) return;
+    // Seen once asked, deployed or not: a name the account just said is absent is not asked about twice.
+    seen.add(key);
+    if (!(await options.scripts.exists(name))) return;
+    await options.scripts.delete(name);
+    await record("worker", name, name);
+  };
 
   // Everything from here destroys infrastructure, and `deleted` grows one resource at a time. A throw
   // anywhere inside used to take the whole list with it — the resources were gone and the record of
@@ -318,6 +374,17 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   // project holds — is not a reason to keep deleting.
   try {
     assertManifestBelongs(options.identity, manifest);
+    for (const script of manifest?.scripts ?? []) {
+      if (isScriptOwnedByFeature(options.identity, script)) await removeScript(script.name);
+    }
+    // A feature provisioned before scripts were recorded has none in its manifest, and one deployed
+    // before #587 runs under the doubled shape. Both are found by recomputing from the Workers.
+    for (const worker of options.workers) {
+      for (const name of featureWorkerScriptNames(options.identity, provisionWorkerNames(worker))) {
+        await removeScript(name);
+      }
+    }
+
     for (const resource of manifest?.resources ?? []) {
       // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
       // remove — the reconcile pass below re-derives every real name from the identity anyway, so nothing

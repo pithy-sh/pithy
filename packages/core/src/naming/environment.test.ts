@@ -9,7 +9,9 @@ import {
   DeclaredEnvironments,
   ENVIRONMENTS,
   FEATURE_ENVIRONMENT,
+  featureMarker,
   GLOBAL_SCOPE,
+  isFeatureMarker,
   isValidEnvironment,
   MAX_ENVIRONMENT_NAME,
 } from "./environment";
@@ -70,6 +72,49 @@ describe("isValidEnvironment", () => {
     for (const env of ["Prod", "PROD", "my env", "dev_1", "-dev", "dev-", "a--b", "1dev", "", "dev.1"]) {
       expect(isValidEnvironment(env)).toBe(false);
     }
+  });
+});
+
+/**
+ * **An environment never starts where a feature's name does (#587).**
+ *
+ * A feature takes the environment's slot with `f<issue>`, and its Worker is `<project>-f<issue>-<slug>-<app>`
+ * with no suffix. A declared `f1-demo` composes `<project>-f1-demo-<worker>`, which is feature 1-demo's Worker
+ * character for character, and `pithy feature destroy` on `feature/1-demo` deletes it. So does `f1`, with a
+ * Worker called `demo-api`. The rule is exact: a declared name can only equal a feature's when its first
+ * segment is a marker, and that is the one thing refused.
+ */
+describe("an environment and a feature's marker", () => {
+  it("composes the marker a feature name carries from the issue, and recognizes every one it composes", () => {
+    for (const issue of ["0", "1", "01", "69", "123456"]) {
+      expect(featureMarker(issue)).toBe(`f${issue}`);
+      expect(isFeatureMarker(featureMarker(issue))).toBe(true);
+    }
+  });
+
+  it("recognizes a marker as a whole segment, never a prefix of one", () => {
+    for (const segment of ["f", "fa", "f1a", "feature", "af1", "F1", ""]) expect(isFeatureMarker(segment)).toBe(false);
+  });
+
+  it("refuses an environment whose first segment is a feature's marker", () => {
+    for (const env of ["f1", "f12", "f01", "f1-demo", "f12-ab", "f123-x", "f0-a"]) {
+      expect(isValidEnvironment(env), env).toBe(false);
+    }
+  });
+
+  it("keeps every environment that merely starts with an f", () => {
+    for (const env of ["feature", "fr", "fr-1", "f-1", "fa1", "f1a", "fix-f1"]) {
+      expect(isValidEnvironment(env), env).toBe(true);
+    }
+  });
+
+  it("says why, in the refusal a declaration carries", () => {
+    const error = thrown(() => assertValidEnvironment("f1-demo"));
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as PithyError).payload.message).toContain("f1-demo");
+    const parsed = DeclaredEnvironments.safeParse(["f1-demo", "prod"]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message).join(" ")).toContain("feature");
   });
 });
 
