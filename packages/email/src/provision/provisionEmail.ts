@@ -1,12 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import {
+  assertSharedLeavesLast,
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+} from "@pithy-sh/secrets/src/scope";
 
 /**
  * The provisioning orchestration for the email capability — the live counterpart to `pithy add email`'s
@@ -27,7 +34,7 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
  *
  * **Operator prerequisites (out of band, like the secrets store):** the sending domain must be onboarded
  * onto Cloudflare Email Service, one Email Routing rule must point bounce/complaint mail at the production
- * app worker, and the link-signing key must exist (`pithy secrets create email-link-signing-key`). These
+ * app worker, and the link-signing key must exist (`pithy secrets provision` creates each environment's Secrets Store entry). These
  * are one-time account/DNS actions provisioning does not own.
  */
 
@@ -175,12 +182,23 @@ export async function provisionEmail(
 
 /** The teardown seam — the inverse of {@link EmailProvisioner}. Every step idempotent (a missing resource is a no-op). */
 export interface EmailDeprovisioner {
+  /**
+   * The rows the suppression list holds, named by its database — empty when the database is absent. Read-only.
+   * What a teardown counts before it deletes the list (#591).
+   */
+  countSuppressionRetained(): Promise<RetainedRows[]>;
+  /**
+   * Whether the env's email worker is deployed. Read-only. What a teardown asks of every *other* environment
+   * before it deletes the list they share (#591).
+   */
+  hasWorker(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's email worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
    * Delete the shared suppression D1. **Destructive** — the global suppression list is lost, so every
    * environment forgets who unsubscribed or hard-bounced — so the orchestration only calls it when
-   * explicitly asked. Idempotent.
+   * explicitly asked. Idempotent. A live implementation refuses while the list holds more rows than the
+   * operator agreed to destroy.
    */
   deleteSuppressionDatabase(): Promise<void>;
 }
@@ -189,24 +207,46 @@ export interface EmailDeprovisioner {
 export interface EmailDeprovisionOptions {
   /** Also delete the shared suppression database. Off by default; only a full destroy sets it. */
   deleteSuppression?: boolean;
+  /**
+   * The operator's count of suppressed addresses to destroy — `--destroy-retained <n>`. With
+   * `deleteSuppression`, it must equal the rows the list holds; absent, only an empty list is deleted.
+   */
+  destroyRetained?: number;
 }
 
 /**
- * Tear down the email infrastructure, reversing {@link provisionEmail}: delete every environment's worker
- * first (they bind the suppression DB), then — only when `deleteSuppression` is set — the shared
- * suppression DB. The suppression list is preserved unless explicitly requested. Idempotent end to end.
+ * Tear down **one named environment's** email infrastructure, reversing {@link provisionEmail} for it.
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * In order, and the order is the contract:
+ *
+ * 1. Resolve the target (`@pithy-sh/secrets`' `deprovisionTarget`) — refused with nothing read when none was
+ *    named, or one the project does not declare. This used to walk every declared environment, so a run meant
+ *    for staging removed production's email worker with it (#591).
+ * 2. With `deleteSuppression` only: refuse while any other declared environment still runs an email worker
+ *    (`assertSharedLeavesLast`). The list is one per project, and a staging teardown must not take production's.
+ * 3. Count the list, and refuse unless the operator counted the same (`assertRetainedAgreed`, #588's guard).
+ * 4. Delete the environment's worker (it binds the list), then — only when asked — the list.
+ *
+ * Idempotent end to end: a missing worker or database is a no-op.
  */
 export async function deprovisionEmail(
   deprovisioner: EmailDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: EmailDeprovisionOptions = {},
-): Promise<void> {
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteWorker(env);
+): Promise<{ env: ManagedEnvironment }> {
+  const env = deprovisionTarget(target);
+  // Both checks run before the worker goes, so a refusal leaves the project exactly as it was.
+  if (options.deleteSuppression) {
+    await assertSharedLeavesLast(env, target.declared, (other) => deprovisioner.hasWorker(other), [
+      { what: "the suppression list", flag: "--suppression" },
+    ]);
+    assertRetainedAgreed(
+      await deprovisioner.countSuppressionRetained(),
+      options.destroyRetained,
+      "anything was deleted",
+    );
   }
+  await deprovisioner.deleteWorker(env);
   if (options.deleteSuppression) await deprovisioner.deleteSuppressionDatabase();
+  return { env };
 }

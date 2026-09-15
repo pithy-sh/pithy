@@ -45,6 +45,23 @@ export const FeatureResource = z
   .describe("One provisioned Cloudflare resource recorded for teardown.");
 export type FeatureResource = z.output<typeof FeatureResource>;
 
+/**
+ * One Worker script a feature deploys, recorded for teardown (#592).
+ *
+ * Provisioning does not upload the script — `pithy deploy` does — but provisioning is what names it, in the
+ * generated config the deploy reads. So the name is recorded here when it is written there, and `destroy`
+ * deletes whatever of it is actually deployed. Both of the Worker's own names are kept beside it, because
+ * the manifest is repository content and the name is honored only when it recomputes from them.
+ */
+export const FeatureScript = z
+  .object({
+    app: z.string().describe("The Worker's apps/<app> directory basename, e.g. api."),
+    script: z.string().describe("The Worker's deploy name, the top-level name in its wrangler.jsonc, e.g. acme-api."),
+    name: z.string().describe("The script name the feature deploys it under, e.g. acme-f69-media-cli-api."),
+  })
+  .describe("One Worker script a feature deploys, recorded for teardown.");
+export type FeatureScript = z.output<typeof FeatureScript>;
+
 /** The per-feature record of provisioned Cloudflare resources (git-ignored, in the worktree). */
 export const FeatureManifest = z
   .object({
@@ -54,6 +71,12 @@ export const FeatureManifest = z
     slug: z.string().describe('The kebab-case feature slug (e.g. "media-cli").'),
     env: z.string().describe("The environment these resources belong to."),
     resources: z.array(FeatureResource).describe("Every provisioned resource, for exact-id teardown."),
+    // Defaulted rather than a version bump: a manifest written before #592 names a live feature whose
+    // scripts are still deployed, and refusing it as corrupt would make its teardown the one that fails.
+    scripts: z
+      .array(FeatureScript)
+      .default([])
+      .describe("Every Worker script the feature deploys, for teardown. Absent in a manifest written before #592."),
   })
   .describe("The per-feature record of provisioned Cloudflare resources (git-ignored, in the worktree).");
 export type FeatureManifest = z.output<typeof FeatureManifest>;
@@ -128,5 +151,5 @@ export function upsertResource(manifest: FeatureManifest, resource: FeatureResou
 
 /** Build an empty manifest for an identity + environment. */
 export function emptyManifest(args: { project: string; issue: string; slug: string; env: string }): FeatureManifest {
-  return { version: 1, ...args, resources: [] };
+  return { version: 1, ...args, resources: [], scripts: [] };
 }

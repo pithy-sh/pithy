@@ -11,6 +11,14 @@ import { EmailInvalidTokenError } from "../error/errors";
  * acts. The signing secret is a **rotatable** key from `@pithy-sh/secrets`; every token records the
  * key version (`kid`) it was signed with, so a link in a months-old email still verifies against the
  * retained version set after a rotation — and is rejected once that version is pruned.
+ *
+ * **A token also names the origin it was minted for (`aud`), and only that origin may act on it (#596).**
+ * A link points at the environment that minted it, so nothing about the product needs a staging token to
+ * verify on production. The key is per environment, and that alone would keep them apart — for exactly as
+ * long as nobody misconfigures one as shared. The claim is what makes that misconfiguration harmless rather
+ * than a staging token that 302s through production's domain, records a staging job into production's
+ * events, and writes a staging unsubscribe into the suppression list both environments bind, stamped as
+ * production's. The key authorizes; the audience says where.
  */
 
 const encoder = new TextEncoder();
@@ -21,11 +29,20 @@ export const TokenKind = z
   .describe("Which callback a token authorizes: a tracked link `click`, an open-pixel `open`, or an `unsubscribe`.");
 export type TokenKind = z.output<typeof TokenKind>;
 
-/** The signed claims a callback token carries. `kid`/`exp`/`v` are set by `mintToken`; the rest are caller claims. */
+/** The signed claims a callback token carries. `kid`/`exp`/`v`/`aud` are set by `mintToken`; the rest are caller claims. */
 export const CallbackToken = z
   .object({
-    v: z.literal(1).describe("Token format version, so the scheme can evolve without ambiguity."),
+    v: z
+      .literal(2)
+      .describe(
+        "Token format version, so the scheme can evolve without ambiguity. `2` added `aud`; a `1` token names no audience and is refused.",
+      ),
     kid: z.string().describe("The signing-key version this token was signed with; selects the key to verify against."),
+    aud: z
+      .string()
+      .describe(
+        "The origin this token was minted for — the scheme, host and port its links point at. It verifies at that origin and nowhere else.",
+      ),
     kind: TokenKind.describe("Which callback this token authorizes."),
     jobId: z.string().describe("The `pithy_email_jobs.id` this token is bound to."),
     recipient: z.string().describe("The recipient address the callback is recorded against."),
@@ -44,7 +61,23 @@ export const CallbackToken = z
 export type CallbackToken = z.output<typeof CallbackToken>;
 
 /** The caller-supplied claims for a token — everything except the fields `mintToken` fills in. */
-export type TokenClaims = Omit<CallbackToken, "v" | "kid" | "exp">;
+export type TokenClaims = Omit<CallbackToken, "v" | "kid" | "exp" | "aud">;
+
+/**
+ * The audience a URL names: its origin, and nothing else.
+ *
+ * One function for both sides, so a minting side that kept a path or a trailing slash and a verifying side
+ * that did not cannot come to two strings for one place. A URL that will not parse is refused as an invalid
+ * token rather than thrown as a `TypeError`: on the verifying side it is the request's own URL, and on the
+ * minting side it is `BASE_URL`, which the host has already validated as a URL.
+ */
+export function tokenAudience(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch (cause) {
+    throw new EmailInvalidTokenError({ detail: "token audience is not a URL" }, { cause });
+  }
+}
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
@@ -74,13 +107,21 @@ async function importKey(secret: string): Promise<CryptoKey> {
  */
 export async function mintToken(
   claims: TokenClaims,
-  options: { key: string; kid: string; expiresAt: Date },
+  options: {
+    key: string;
+    kid: string;
+    expiresAt: Date;
+    /** Any URL on the origin the links point at — `BASE_URL`. Reduced to its origin by {@link tokenAudience}. */
+    audience: string;
+  },
 ): Promise<string> {
   const payload: CallbackToken = {
-    v: 1,
-    kid: options.kid,
-    exp: Math.floor(options.expiresAt.getTime() / 1000),
     ...claims,
+    // After the caller's claims, so nothing spread in can overwrite what this function is the authority on.
+    v: 2,
+    kid: options.kid,
+    aud: tokenAudience(options.audience),
+    exp: Math.floor(options.expiresAt.getTime() / 1000),
   };
   const payloadB64 = base64UrlEncode(encoder.encode(JSON.stringify(payload)));
   const key = await importKey(options.key);
@@ -91,14 +132,23 @@ export async function mintToken(
 /**
  * Verify a token against the valid signing-key version set (`@pithy-sh/secrets`' `getVersions` shape)
  * and return its claims. Rejects — as `email/invalid_token` — a malformed token, an unknown/pruned
- * `kid`, a bad signature (constant-time via `crypto.subtle.verify`), or an expired token. The order
- * is deliberate: structure, then signature, then expiry, so a forged token never reaches the expiry
- * check.
+ * `kid`, a bad signature (constant-time via `crypto.subtle.verify`), a token minted for another origin,
+ * or an expired token. The order is deliberate: structure, then signature, then audience, then expiry,
+ * so a forged token never reaches a claim check.
+ *
+ * `audience` is **required**, and is the URL the token arrived on — the request's own. A verifier that
+ * could omit it would be a verifier that accepts every origin, which is the hole the claim closes.
+ *
+ * **What the check cannot see:** where the caller got the URL. It compares against the string it is handed,
+ * so a caller that passed a value read out of the token, or a header a client controls, would pass every
+ * token. `http/callbacks.ts` hands it the request's own URL, and its route test plants a staging token on
+ * each route to hold that; a new verifying caller needs the same.
  */
 export async function verifyToken(
   token: string,
   keys: { versions: Record<string, string> },
   now: Date,
+  audience: string,
 ): Promise<CallbackToken> {
   const parts = token.split(".");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
@@ -138,6 +188,13 @@ export async function verifyToken(
   }
   if (!valid) {
     throw new EmailInvalidTokenError({ detail: "token signature did not verify" });
+  }
+
+  const expected = tokenAudience(audience);
+  if (parsed.data.aud !== expected) {
+    throw new EmailInvalidTokenError({
+      detail: `token was minted for '${parsed.data.aud}' and presented at '${expected}'`,
+    });
   }
 
   if (parsed.data.exp * 1000 <= now.getTime()) {

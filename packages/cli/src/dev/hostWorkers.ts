@@ -17,7 +17,8 @@ import {
   readHostTemplate as readHostTemplateDefault,
 } from "../capabilities/hostRegistry";
 import { writeFileAtomic } from "../project/atomic";
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { allCapabilities } from "../project/config";
 import { DEFAULT_READY_SIGNAL } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
 
@@ -163,7 +164,8 @@ function hostDev(): WorkerTarget["dev"] {
  */
 export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): Promise<HostWorkerDiscovery> {
   const capabilitiesFor =
-    options.capabilitiesFor ?? (async (dir: string) => allCapabilities(await loadWorkerConfig(dir)));
+    options.capabilitiesFor ??
+    ((dir: string) => composeFor(LOCAL_ENVIRONMENT, async (load) => allCapabilities(await load(dir))));
 
   const notes: string[] = [];
   const composed = new Map<string, { capability: Capability; dir: string }>();

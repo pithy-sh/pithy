@@ -21,6 +21,7 @@ import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudfl
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
   type EnvironmentReadiness,
   environmentOutcomes,
@@ -29,6 +30,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -267,12 +269,15 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the sweep workers (and optionally the buckets)" },
+  meta: { name: "deprovision", description: "Remove one environment's sweep worker (and optionally its bucket)" },
   args: {
+    // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
+    // included.
+    env: TEARDOWN_ENV_ARG,
     storage: {
       type: "boolean",
       default: false,
-      description: "Also delete the R2 buckets and every file in them (irreversible)",
+      description: "Also delete the environment's R2 bucket and every file in it (irreversible)",
     },
     "r2-access-key-id": {
       type: "string",
@@ -293,9 +298,12 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
       const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
+      // One named environment, settled before any credential is read (#591): naming nothing, or something
+      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+      // is the one that deletes.
+      const declared = loadProjectEnvironments(config);
+      const env = requireTeardownEnvironment(args.env, declared);
+      const target = { environment: env, declared };
       const { deprovisionStorage } = await loadStorage(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -314,13 +322,26 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionStorage(deprovisioner, environments, { deleteStorage: args.storage });
+      // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
+      // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/storage",
+        target: env,
+        declared,
+        deprovisioner,
+        rules: { deleteWorker: "environment", deleteBucket: args.storage ? "environment" : "refused" },
+      });
+      await deprovisionStorage(confined, target, { deleteStorage: args.storage });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "storage deprovision", storageDeleted: args.storage })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "storage deprovision", env, storageDeleted: args.storage })}\n`,
+        );
         return;
       }
-      process.stdout.write(`Sweep workers removed${args.storage ? ", including the buckets and their files" : ""}.\n`);
+      process.stdout.write(
+        `${env}: sweep worker removed${args.storage ? ", with its bucket and every file in it" : ""}.\n`,
+      );
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

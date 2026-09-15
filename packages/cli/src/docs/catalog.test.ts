@@ -10,56 +10,12 @@ import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import { HIDDEN_ROOT_FLAGS } from "../commands/alias";
 import { ROOT_FLAGS } from "../rootFlags";
-import { buildDocsCatalog, CATALOG_PATH, flagsOf, renderDocsCatalog, walkCommands } from "./catalog";
+import { buildDocsCatalog, CATALOG_PATH, renderDocsCatalog, walkCommands } from "./catalog";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
-describe("flagsOf", () => {
-  test("names every flag a parser accepts, long form first", () => {
-    expect(flagsOf({ json: { type: "boolean" }, worker: { type: "string" } })).toEqual([
-      "--json",
-      "--no-json",
-      "--worker",
-    ]);
-  });
-
-  test("carries an alias in the spelling a caller types", () => {
-    expect(flagsOf({ force: { type: "boolean", alias: "f" } })).toEqual(["--force", "-f", "--no-force"]);
-    expect(flagsOf({ force: { type: "boolean", alias: ["f", "yes"] } })).toEqual([
-      "--force",
-      "-f",
-      "--yes",
-      "--no-force",
-    ]);
-  });
-
-  test("a positional is not a flag", () => {
-    expect(flagsOf({ capability: { type: "positional" }, list: { type: "boolean" } })).toEqual(["--list", "--no-list"]);
-  });
-
-  /**
-   * citty aliases every arg to its camel **and** kebab spelling (`parseArgs`, `citty/dist/index.mjs`),
-   * so `--withPrerequisites` reaches the same value. This file used to claim citty does no case mapping.
-   */
-  test("a kebab-case arg also answers to its camelCase spelling", () => {
-    expect(flagsOf({ "with-prerequisites": { type: "boolean" } })).toEqual([
-      "--with-prerequisites",
-      "--withPrerequisites",
-      "--no-with-prerequisites",
-    ]);
-  });
-
-  /**
-   * The false failure this closed. citty strips `--no-` from any argument before parsing, and the CLI
-   * documents the result — `ui.ts`'s own description offers `--no-auth`, and `docs/commands/ui.md` puts
-   * `[--auth | --no-auth]` in its synopsis. An export without it makes that page read as citing a flag
-   * that does not exist, which is the cries-wolf failure the export exists to avoid.
-   */
-  test("a boolean also answers to its `--no-` form, and a string does not", () => {
-    expect(flagsOf({ auth: { type: "boolean" } })).toEqual(["--auth", "--no-auth"]);
-    expect(flagsOf({ worker: { type: "string" } })).toEqual(["--worker"]);
-  });
-
+/** `flagsOf` and its own cases live in `../declaredFlags`; what it is complete over is a fact about this tree. */
+describe("the arg names flagsOf reads", () => {
   /**
    * The narrow `camelSpelling` transform is only complete because every arg name in the CLI is lowercase
    * kebab. That is a property of the command tree, not of the transform, so it is asserted rather than
@@ -74,10 +30,6 @@ describe("flagsOf", () => {
     expect([...names].filter((name) => !/^[a-z][a-z0-9-]*$/.test(name) && !/^[a-z][a-zA-Z0-9]*$/.test(name))).toEqual(
       [],
     );
-  });
-
-  test("a command with no args accepts no flags", () => {
-    expect(flagsOf(undefined)).toEqual([]);
   });
 });
 

@@ -156,7 +156,7 @@ describe("the probe itself could not run", () => {
     // it after a config that would not import would conclude this project has no settings questions.
     const built = await buildDoctorReport(
       harness.healthyOptions({
-        resolveWorkers: async () => {
+        resolveWorkersFor: async () => {
           throw new ConflictError({ message: "apps/api/pithy.config.ts would not import." });
         },
       }),
@@ -180,7 +180,7 @@ describe("--json", () => {
             setting: "BASE_URL",
             environment: "prod",
             problem: "Not a URL.",
-            action: "Run pithy email provision --env prod.",
+            action: "Run pithy email provision.",
           },
         ],
       }),
@@ -197,8 +197,8 @@ describe("--json", () => {
           setting: "BASE_URL",
           environment: "prod",
           problem: "Not a URL.",
-          action: "Run pithy email provision --env prod.",
-          detail: "email: BASE_URL (prod) — Not a URL. Run pithy email provision --env prod.",
+          action: "Run pithy email provision.",
+          detail: "email: BASE_URL (prod) — Not a URL. Run pithy email provision.",
         },
       ],
       unchecked: [{ worker: "collab", capability: "email", tier: "account" }],

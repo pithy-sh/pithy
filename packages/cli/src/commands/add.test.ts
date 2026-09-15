@@ -103,7 +103,7 @@ describe("buildAudit", () => {
 
 describe("targetWorker", () => {
   test("a single-worker project needs no --worker", async () => {
-    const target = await targetWorker({
+    const target = await targetWorker("dev", {
       projectDir: "/project",
       interactive: false,
       discoverWorkers: discovery("api"),
@@ -114,7 +114,7 @@ describe("targetWorker", () => {
   });
 
   test("--worker picks one out of several", async () => {
-    const target = await targetWorker({
+    const target = await targetWorker("dev", {
       projectDir: "/project",
       worker: "edge",
       interactive: false,
@@ -126,7 +126,7 @@ describe("targetWorker", () => {
 
   test("several workers and no --worker fails non-interactively, naming them", async () => {
     // The `--json` / no-TTY path: an agent gets told exactly what to pass, never a prompt it can't answer.
-    const failure = await targetWorker({
+    const failure = await targetWorker("dev", {
       projectDir: "/project",
       interactive: false,
       discoverWorkers: discovery("api", "edge"),
@@ -139,7 +139,7 @@ describe("targetWorker", () => {
   });
 
   test("an unknown --worker fails, naming the known ones", async () => {
-    const failure = await targetWorker({
+    const failure = await targetWorker("dev", {
       projectDir: "/project",
       worker: "ghost",
       interactive: false,
@@ -156,7 +156,7 @@ describe("targetWorker", () => {
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-add-noworkers-"));
     await writeFile(join(projectDir, "pithy.config.ts"), 'export default { name: "acme" };\n');
     try {
-      const failure = await targetWorker({
+      const failure = await targetWorker("dev", {
         projectDir,
         interactive: false,
         discoverWorkers: discovery(),
@@ -172,7 +172,7 @@ describe("targetWorker", () => {
 
   test("outside a project entirely, it points at pithy init instead", async () => {
     // Being in the wrong directory is a different problem from having no workers — don't conflate them.
-    const failure = await targetWorker({
+    const failure = await targetWorker("dev", {
       projectDir: join(tmpdir(), "pithy-not-a-project-at-all"),
       interactive: false,
       discoverWorkers: discovery(),

@@ -108,6 +108,42 @@ describe("checkTurnstileSitekeys", () => {
     ]);
   });
 
+  test("each environment is judged from the composition for it, not from one composed for none (#595)", async () => {
+    // A config is code, and this one asks which environment it is composed for: prod's widget is set only
+    // when composed for prod, and staging's key is blanked only when composed for staging. Composed for no
+    // environment it reads the other way round — prod blank, staging set — so a check that asks once, unstamped,
+    // names prod, which renders, and misses staging, where nobody can sign in.
+    const { projectDir } = await project({
+      registration: [
+        "turnstile({ widgets: { visible: { sitekeys: {",
+        '  dev: "1x00000000000000000000AA",',
+        '  staging: process.env.ENVIRONMENT === "staging" ? "" : "1x00000000000000000000AA",',
+        '  prod: process.env.ENVIRONMENT === "prod" ? "0x4AAAA" : "",',
+        "} } } })",
+      ].join("\n"),
+    });
+
+    const check = await checkTurnstileSitekeys(projectDir);
+
+    expect(check.unrendered).toEqual([{ worker: "board", environment: "staging", slot: true }]);
+    expect(process.env.ENVIRONMENT).toBeUndefined();
+  });
+
+  test("a composition handed in is the one read, once per environment", async () => {
+    const { projectDir, workerDir } = await project({ sitekeys: PROVISIONED });
+    const asked: string[] = [];
+
+    const check = await checkTurnstileSitekeys(projectDir, {
+      composeWorker: async (worker, environment) => {
+        asked.push(`${worker.dir === workerDir ? "board" : worker.dir}:${environment}`);
+        return { capabilities: [] };
+      },
+    });
+
+    expect(asked).toEqual(["board:dev", "board:staging", "board:prod"]);
+    expect(check).toEqual({ state: "ok", stranded: [], unrendered: [] });
+  });
+
   test("a Worker that gates no login is not reported, whatever its sitekeys say", async () => {
     const { projectDir } = await project({
       registration: 'turnstile({ protect: { contact: "invisible" }, widgets: {} })',

@@ -222,17 +222,22 @@ const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
 
 describe("a secret's declared backend is where the value actually goes", () => {
   test("the scan finds every declaration there is, named", () => {
-    // Exact, not `> 0`. The kit declares two store-backed secrets: the at-rest master key and the
-    // manager's Cloudflare token. `> 0` was satisfied by finding one of the two — and it *was* finding
-    // one of the two, because `masterKeyRegistryEntry` is a standalone const rather than an inline key
-    // and the old regex could not see it. A guard a broken scan still passes is not a guard.
-    expect(declaredStoreBackedKeys()).toEqual(["CLOUDFLARE_API_TOKEN", "SECRETS_ENCRYPTION_KEYS"]);
-    // And the text count agrees with the naming, so a third declaration cannot be found and dropped.
+    // Exact, not `> 0`. The kit declares three store-backed secrets: the at-rest master key, the
+    // manager's Cloudflare token, and — since #596 — email's link-signing key, which the email host and
+    // the app Worker both bind. `> 0` was satisfied by finding one of two — and it *was* finding one of
+    // two, because `masterKeyRegistryEntry` is a standalone const rather than an inline key and the old
+    // regex could not see it. A guard a broken scan still passes is not a guard.
+    expect(declaredStoreBackedKeys()).toEqual([
+      "CLOUDFLARE_API_TOKEN",
+      "SECRETS_ENCRYPTION_KEYS",
+      "email-link-signing-key",
+    ]);
+    // And the text count agrees with the naming, so a fourth declaration cannot be found and dropped.
     const occurrences = shippedSources().reduce(
       (total, { source }) => total + source.split(STORE_BACKED).length - 1,
       0,
     );
-    expect(occurrences).toBe(2);
+    expect(occurrences).toBe(3);
     expect(boundStoreBindings().length).toBeGreaterThan(0);
   });
 

@@ -6,7 +6,8 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import type { ResourceProvisioners } from "../provision/resources";
+import type { ProvisionWorker } from "../provision/environment";
+import type { ResourceProvisioners, WorkerScripts } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
@@ -15,8 +16,9 @@ import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
  * `pithy feature destroy` — the teardown half, run from within the worktree. It reverses both remote and
- * local, in order: delete the manifest's Cloudflare resources then reconcile by prefix-scan, free the
- * feature's port block, and finally prune the worktree the Linux-safe way. Every step is idempotent, so a
+ * local, in order: delete the feature's Worker scripts and Cloudflare resources (the manifest's record,
+ * then every name recomputed from the identity), free the feature's port block, and finally prune the
+ * worktree the Linux-safe way. Every step is idempotent, so a
  * partial-failed provision or a half-torn-down feature still tears down to zero, exiting 0. It is exactly
  * what the merge-to-main CI job runs headlessly.
  */
@@ -25,7 +27,10 @@ import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 export interface DestroyReport {
   /** The command that produced the report. */
   command: "feature.destroy";
-  /** Every Cloudflare resource deleted (manifest + reconcile). Empty when nothing remained or remote was skipped. */
+  /**
+   * Every Worker script and Cloudflare resource deleted (manifest + reconcile). Empty when nothing remained
+   * or remote was skipped.
+   */
   deleted: DeprovisionedResource[];
   /** Whether the remote teardown ran (false when no provisioners were available, e.g. no CF credentials). */
   remote: boolean;
@@ -60,8 +65,32 @@ export function destroyedBeforeFailure(error: unknown): DestroyReport | undefine
   return deprovisionReport.read(error);
 }
 
+/**
+ * The account seams remote teardown deletes through — both, or neither (#592).
+ *
+ * One pair rather than two optional fields, because the failure this issue was is a teardown that ran
+ * against the account and skipped a kind. Neither is "remote teardown skipped", which the report says;
+ * one without the other is not expressible.
+ */
+export type RemoteTeardown =
+  | {
+      /** The provisioners to delete Cloudflare resources through. */
+      provisioners: ResourceProvisioners;
+      /** The account's Worker scripts, confirmed then deleted by name. */
+      scripts: WorkerScripts;
+    }
+  | {
+      /** Absent: remote teardown is skipped (e.g. `--local-only`, or no CF credentials). */
+      provisioners?: undefined;
+      /** Absent with `provisioners`. */
+      scripts?: undefined;
+    };
+
 /** Options for {@link destroyFeature}. */
-export interface DestroyFeatureOptions {
+export type DestroyFeatureOptions = DestroyFeatureBaseOptions & RemoteTeardown;
+
+/** Everything {@link destroyFeature} takes beside the account seams. */
+export interface DestroyFeatureBaseOptions {
   /** The worktree root — where the manifest lives and the branch is checked out. */
   projectDir: string;
   /** The feature identity — project/issue/slug — for recomputing resource names and the branch name. */
@@ -71,10 +100,13 @@ export interface DestroyFeatureOptions {
    * derived resource names from. The remote reconcile recomputes those exact names from it.
    */
   capabilities: Capability[];
+  /**
+   * The project's Workers as the branch has them — what the scripts of a feature deployed before scripts
+   * were recorded are recomputed from. Empty when they cannot be known.
+   */
+  workers: readonly Pick<ProvisionWorker, "name" | "dir">[];
   /** The environment being torn down. Recorded on each audit event. */
   env: string;
-  /** The provisioners to delete through, or undefined to skip remote teardown (e.g. no CF credentials). */
-  provisioners?: ResourceProvisioners;
   /**
    * The account's Secrets Store, when one is reachable. Teardown removes the entries this feature
    * created; a store entry left behind is a live credential in a flat namespace with nothing pointing
@@ -92,8 +124,9 @@ export interface DestroyFeatureOptions {
 }
 
 /**
- * Tear a feature down. Delete its Cloudflare resources (manifest ids, then prefix-scan reconcile) when
- * provisioners are available, free its port block, and prune its worktree + branch — in that order.
+ * Tear a feature down. Delete its Worker scripts and Cloudflare resources (manifest record, then
+ * exact-name reconcile) when the account seams are available, free its port block, and prune its
+ * worktree + branch — in that order.
  * Idempotent end to end: already-gone resources, an unallocated port block, and an absent worktree are all
  * clean no-ops, so re-running (or running on a never-provisioned feature) exits without error.
  */
@@ -110,6 +143,8 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
         capabilities: options.capabilities,
         env: options.env,
         provisioners: options.provisioners,
+        scripts: options.scripts,
+        workers: options.workers,
         ...(options.store !== undefined ? { store: options.store } : {}),
         ...(options.audit !== undefined ? { audit: options.audit } : {}),
       });

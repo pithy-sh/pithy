@@ -4,11 +4,13 @@
 import { basename, join } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import type { ProposedName } from "../project/bindingEntries";
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { allCapabilities } from "../project/config";
 import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
@@ -224,10 +226,12 @@ const defaultMigrate: MigrateStep = async ({ projectDir, workerDir, worker, proj
   // before it wires anything. Taking the cache here returned the module from *before* the write, so the
   // registry was built without the capability just added and its migrations were never applied. `add`
   // reported a clean run and `pithy dev` served 500s off tables nothing had created (#273).
-  const config = await loadWorkerConfig(workerDir, { fresh: true });
+  //
+  // And composed for `dev`, the environment it migrates (#595).
+  const config = await composeFor(LOCAL_ENVIRONMENT, (load) => load(workerDir, { fresh: true }));
   const runs = await migrateProject({
     projectDir,
-    env: "dev",
+    env: LOCAL_ENVIRONMENT,
     project,
     account,
     workers: [{ name: worker, dir: workerDir, capabilities: allCapabilities(config) }],

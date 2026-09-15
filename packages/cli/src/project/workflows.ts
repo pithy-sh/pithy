@@ -12,7 +12,8 @@ import {
   type WorkflowConfig,
   type WorkflowStanza,
 } from "./appWorkflows";
-import { loadProject, loadProjectEnvironments, loadWorkerConfig, requireProjectName } from "./config";
+import { composeFor } from "./composeFor";
+import { loadProject, loadProjectEnvironments, requireProjectName } from "./config";
 import { discoverWorkers } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -137,10 +138,14 @@ function boundBy(stanza: WorkflowStanza | undefined): AppWorkflowPlan {
  * The two cases collapse deliberately. A config that will not import declares nothing *knowable*, and a
  * Worker with no `app` block declares nothing *at all* — and in both, the honest output is silence
  * rather than a fault naming a command that would report, correctly and uselessly, that it wrote nothing.
+ *
+ * **Composed for the environment it is compared in (#586).** An app may declare a job or a schedule for one
+ * environment alone, so each stanza is compared with its own environment's declaration. The loader without
+ * the primitive took the module cache, which holds whichever environment this process composed last.
  */
-async function workerApp(workerDir: string): Promise<Capability | undefined> {
+async function workerApp(workerDir: string, environment: string): Promise<Capability | undefined> {
   try {
-    return (await loadWorkerConfig(workerDir)).app;
+    return await composeFor(environment, async (load) => (await load(workerDir)).app);
   } catch {
     return undefined;
   }
@@ -164,10 +169,10 @@ export async function workflowDrift(
     if (target.hasWrangler === false) continue;
     const config = (await readOptionalWranglerConfig(target.dir).catch(() => null)) as WorkflowConfig | null;
     if (!config) continue;
-    const app = await workerApp(target.dir);
-    if (!app) continue;
     const worker = basename(target.dir);
     for (const env of environments) {
+      const app = await workerApp(target.dir, env);
+      if (!app) continue;
       let declared: AppWorkflowPlan;
       try {
         declared = planAppWorkflows(app, { project, env });

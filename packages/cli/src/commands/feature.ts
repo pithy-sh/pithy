@@ -9,15 +9,15 @@ import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
-import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
-import { branchIdentityWithoutWorkers, deriveIdentityFromBranch } from "../feature/identity";
+import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
+import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
-import { type CapabilitySet, isUnknown, projectCapabilitySet } from "../project/workerScope";
-import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
+import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
+import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -31,16 +31,27 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  */
 const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
 
-/** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-async function buildProvisioners(account: CloudflareAccountSelection | null): Promise<ResourceProvisioners | null> {
+/**
+ * Build the account seams teardown deletes through — the resource provisioners and the Worker scripts —
+ * from the environment's credentials, or null when they are absent.
+ *
+ * One builder for both, over one set of clients and one confirmed account, so the two halves of a
+ * teardown cannot be addressed to two different accounts, and neither can be built without the other
+ * (#592).
+ */
+async function buildTeardown(account: CloudflareAccountSelection | null): Promise<Required<RemoteTeardown> | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
   // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
   // listing from an account nothing claims is not the absence the second half reads it as.
-  const confirmation = cloudflareAccountConfirmation({ account });
-  return cloudflareProvisioners(await cloudflareClients({ accountId, apiToken }), { accountId, confirmation });
+  const confirmed = { accountId, confirmation: cloudflareAccountConfirmation({ account }) };
+  const clients = await cloudflareClients({ accountId, apiToken });
+  return {
+    provisioners: cloudflareProvisioners(clients, confirmed),
+    scripts: cloudflareWorkerScripts(clients, confirmed),
+  };
 }
 
 /**
@@ -245,7 +256,10 @@ const sync = defineCommand({
 
 /** `pithy feature destroy` — teardown. Run from within the worktree. */
 const destroy = defineCommand({
-  meta: { name: "destroy", description: "Tear down the feature: delete CF resources, free ports, prune the worktree" },
+  meta: {
+    name: "destroy",
+    description: "Tear down the feature: delete its Workers and CF resources, free ports, prune the worktree",
+  },
   args: {
     env: { type: "string", description: `Environment to tear down (default: "${DEFAULT_FEATURE_ENV}")` },
     "local-only": {
@@ -271,7 +285,12 @@ const destroy = defineCommand({
         `--local-only` says the remote half is not wanted.
       */
       const identity = await branchIdentityWithoutWorkers(projectDir);
-      const capabilities = await projectCapabilitySet(projectDir);
+      // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
+      // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
+      // resolutions could disagree, and an unstamped one misses a capability a config composes only
+      // for deployed environments, leaving its resources and credentials in the account.
+      const workerSet = await featureWorkerSet(projectDir);
+      const capabilities = capabilitySetOf(workerSet);
       if (isUnknown(capabilities) && !args["local-only"]) {
         throw new ValidationError({
           // The set's own diagnosis, which names the worker and says whether the config is broken or
@@ -284,13 +303,13 @@ const destroy = defineCommand({
         });
       }
       const account = await projectCloudflareAccount(projectDir);
-      const provisioners = await buildProvisioners(account);
+      const teardown = await buildTeardown(account);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
-      // D1/KV/R2 leaks while the run reports success, and teardown then deletes the branch the resource
-      // names are derived from — so a later attempt can no longer work out what to delete. A CI job whose
-      // credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
-      if (!provisioners && !args["local-only"]) {
+      // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the
+      // branch the names are derived from — so a later attempt can no longer work out what to delete. A CI
+      // job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+      if (!teardown && !args["local-only"]) {
         throw new ValidationError({
           message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
           action:
@@ -300,15 +319,18 @@ const destroy = defineCommand({
       }
 
       const store = await buildStore(account);
+      // Both seams or neither, whichever way the remote half is skipped (#592).
+      const remote: RemoteTeardown = teardown && !args["local-only"] ? teardown : {};
       let report: DestroyReport;
       try {
         report = await destroyFeature({
           projectDir,
           identity,
           capabilities: isUnknown(capabilities) ? [] : [...capabilities],
+          workers: isUnknown(workerSet) ? [] : workerSet,
           ...(store && !args["local-only"] ? { store } : {}),
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
-          ...(provisioners && !args["local-only"] ? { provisioners } : {}),
+          ...remote,
           // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
           // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
           // as *this project composed no trail* — that is the conflation this whole change undoes (#455).

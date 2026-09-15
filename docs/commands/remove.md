@@ -7,7 +7,7 @@ Unwire a capability from one Worker and uninstall its package — the manual, in
 ## Synopsis
 
 ```
-pithy remove <capability> [--worker <name>] [--drop [--env <env>]]
+pithy remove <capability> [--worker <name>] [--drop [--env <env>] [--destroy-retained <n>]]
 ```
 
 ## Flags
@@ -17,7 +17,8 @@ pithy remove <capability> [--worker <name>] [--drop [--env <env>]]
 | `<capability>` | positional | — | The capability name, e.g. `auth`. Required |
 | `--worker <name>` | string | — | Which Worker to unwire it from (`apps/<name>`). Optional in a single-Worker project |
 | `--drop` | boolean | `false` | Also roll back the capability's migrations, dropping its tables |
-| `--env <env>` | string | `dev` | With `--drop`, the environment whose tables to drop. `dev`, `staging`, `prod`, or a custom name |
+| `--env <env>` | string | `dev` | With `--drop`, the environment whose tables to drop, and the environment the Worker's `pithy.config.ts` is composed for — so the migrations reversed are the ones that environment declares. `dev`, `staging`, `prod`, or a custom name |
+| `--destroy-retained <n>` | string | — | With `--drop`. **DESTRUCTIVE.** Let the drop destroy rows in retained tables. Must equal the row count the refusal printed |
 | `--json` | boolean | `false` | **Not supported.** Passing it fails before anything is read or changed |
 
 ## What it does
@@ -26,17 +27,21 @@ The precise inverse of `add` — and of `add --eject` — for one Worker, in thi
 
 **Refuse if something depends on it.** Another capability wired into the same Worker that requires this one stops the removal, naming the dependents and the order to remove them in.
 
-**Drop the tables, if asked.** First, while the capability's `down` code is still present — after the uninstall there would be nothing left to reverse them with. Gated on a confirmation, and refused outright when a sibling Worker still wires the capability: Workers sharing a binding name share one physical D1, so reversing migrations for one would delete data the other is serving.
+**Drop the tables, if asked.** First, while the capability's `down` code is still present — after the uninstall there would be nothing left to reverse them with. Gated on a confirmation, and refused outright when a sibling Worker still wires the capability: Workers sharing a binding name share one physical D1, so reversing migrations for one would delete data the other is serving. Each migration it reverses is named as it starts: `▸ Rolling back 0300_auth_0001_init on DB...`.
 
 **Unwire the Worker.** The import and the registration call come out of `apps/<name>/pithy.config.ts`; the capability's bindings come out of every environment stanza in its `wrangler.jsonc`; and its Durable Object exports come out of the module `main` names — the package is about to be uninstalled, or the fork deleted, so a re-export left behind is a Worker that no longer builds. A binding another capability in that Worker still needs stays, and so does an export of the same class from a module of your own.
 
-**Remove the code.** An ejected capability's local source at `apps/<name>/capabilities/<cap>/` is deleted — through a gate that refuses a symlink at any segment of that path and refuses a path resolving outside the project. A package-served capability is uninstalled with the project's package manager instead.
+**Remove the code.** An ejected capability's local source at `apps/<name>/capabilities/<cap>/` is deleted — through a gate that refuses a symlink at any segment of that path and refuses a path resolving outside the project. A package-served capability is uninstalled with the project's package manager instead, named as it starts: `▸ Running bun remove @pithy-sh/auth...`.
 
 The package is the one project-wide part of a removal, so it is uninstalled only when **no other Worker still imports it**. Four ways it can stay, and each says so plainly rather than leaving a surprise in `node_modules`: another Worker still wires it; nothing declared it because a linked checkout provides it (and npm, asked anyway, would prune every linked sibling with it); the capability was ejected, so there was a directory to delete and no dependency to remove; or the package is shared — `controlplane` lives inside `@pithy-sh/core`, which is every capability's dependency and the runtime the app is built on, so removing the seam unwires it and uninstalls nothing.
 
 Idempotent, and never destructive by default. An absent capability is a no-op. Without `--drop`, your data is untouched — a later `pithy add <capability>` reuses the same tables. When the tables are left in place and no sibling Worker needs them, `remove` names the `pithy_<capability>_*` prefix to drop by hand, because the `down` code is gone and no later `pithy` command can reverse them for you.
 
 Audited like `add`, when Cloudflare credentials resolve and the Worker composes `audit`. Two actions: `capability/removed` at `info` severity, and `capability/tables_dropped` at `warning` for a `--drop`. With `--drop` the audit record carries the environment being destroyed; without it, `dev`, which makes the emitter inert.
+
+### Retained tables
+
+Some tables hold rows that exist nowhere else — the secrets vault and the email suppression list — and their capability declares them retained. `remove secrets --drop` or `remove email --drop` refuses while one holds rows, names each table and the count, and drops nothing. So does a drop of **any** capability whose tables live in the same database: the count is taken over every capability the Worker composes and every Worker beside it, because a `down` cannot be read for which tables it drops without running it. Dropping a capability from another database is not counted against the vault. The typed phrase below agrees to the drop; it does not agree to losing credentials. Back the rows up, or pass `--destroy-retained <n>` with the printed count. A database another environment binds is never dropped from one environment. See [`migrate.md`](migrate.md#rolling-back).
 
 ### The `--drop` confirmations
 

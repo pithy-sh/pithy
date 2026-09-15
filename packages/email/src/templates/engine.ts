@@ -359,7 +359,8 @@ export async function renderEmail(
     const mint = (kind: "click" | "open" | "unsubscribe", extra: { destination?: string; linkLabel?: string }) =>
       mintToken(
         { kind, jobId: tracking.jobId, recipient: tracking.recipient, campaignId: tracking.campaignId, ...extra },
-        { key: tracking.key, kid: tracking.kid, expiresAt: tracking.expiresAt },
+        // The links point at `baseUrl`, so that origin is the one the token is minted for.
+        { key: tracking.key, kid: tracking.kid, expiresAt: tracking.expiresAt, audience: tracking.baseUrl },
       );
 
     if (tracking.clickTracking) {

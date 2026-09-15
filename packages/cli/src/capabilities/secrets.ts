@@ -13,7 +13,7 @@ import {
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { parseKeyedSecretName } from "@pithy-sh/secrets/src/keyspace";
-import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import type { SecretBackend, SecretRegistry, SecretRegistryEntry, SecretScope } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -93,6 +93,52 @@ export interface SecretWriteCommand {
    * nothing would say so.
    */
   environments: DeclaredEnvironments | readonly string[];
+  /**
+   * `pithy secrets rm --backend`: remove the value from this store rather than the one the registry names.
+   * Only a removal takes it — see {@link secretWriteRouting}.
+   */
+  backend?: SecretBackend;
+}
+
+/** Where one write goes: the store, how many environments it spans, and what the value is wrapped in. */
+export interface SecretWriteRouting {
+  backend: SecretBackend;
+  scope: SecretScope;
+  bootstrap: boolean;
+}
+
+/**
+ * **Where a write goes — the declaration's answer, or a removal's explicit other store (#596).**
+ *
+ * Almost always the registry decides: backend, scope and `bootstrap` are read off the entry and forwarded,
+ * never re-derived. The exception is a secret whose declaration **moved**. `email-link-signing-key` was a
+ * `d1` row and is a Secrets Store entry now, so every project provisioned before the move holds a row
+ * nothing reads — and a plain `rm` routes by the declaration, to the entry, which is the live key.
+ *
+ * So a removal may name the store it removes from. Three things hold it to that purpose:
+ *
+ * - **Only `delete`.** A value written to a store the declaration does not name is a value nothing reads,
+ *   which is the leftover this exists to clean up; `create` and `update` are refused.
+ * - **One named environment.** The leftover is per environment whatever the old declaration's scope was —
+ *   a `global` D1 secret was a copy in each vault — so the override is `environment` scope, and
+ *   `secretWriteTargets` refuses it with no `--env`. Nothing is removed from a set nobody typed.
+ * - **Never the value itself.** `bootstrap` is false: a removal carries no value to wrap.
+ *
+ * Naming the declared backend is the ordinary removal, unchanged.
+ */
+export function secretWriteRouting(
+  entry: SecretRegistryEntry,
+  command: Pick<SecretWriteCommand, "mode" | "name" | "backend">,
+): SecretWriteRouting {
+  const declared = { backend: entry.backend, scope: entry.scope, bootstrap: entry.bootstrap === true };
+  if (command.backend === undefined || command.backend === entry.backend) return declared;
+  if (command.mode !== "delete") {
+    throw new ValidationError({
+      message: `Only a removal may name a backend. '${command.name}' is declared ${entry.backend}.`,
+      action: `Drop --backend to ${command.mode} it where it is read.`,
+    });
+  }
+  return { backend: command.backend, scope: "environment", bootstrap: false };
 }
 
 /**
@@ -168,18 +214,20 @@ export async function runSecretWrite(
   }
 
   const action = SECRET_WRITE_ACTION[command.mode];
+  // Resolved before the `try`: a refused override has dispatched nothing, and is not a failed write.
+  const routing = secretWriteRouting(entry, command);
   try {
     const targets = await dispatchSecretWrite(
       dispatcher,
       {
         mode: command.mode,
         name: command.name,
-        backend: entry.backend,
-        scope: entry.scope,
+        backend: routing.backend,
+        scope: routing.scope,
         // The third routing fact, and the only one that decides what the value is wrapped in: a
         // `bootstrap` secret's destination holds the value, because its reader runs before the decoder
         // exists. Read off the same entry as the other two, never re-derived downstream (#517).
-        bootstrap: entry.bootstrap === true,
+        bootstrap: routing.bootstrap,
         rotatable: entry.rotatable,
         valueType: entry.valueType,
         value,
@@ -196,7 +244,7 @@ export async function runSecretWrite(
       // The backend, because a value's destination is the fact this trail could not answer (#517). Two
       // secrets with the same name in the same environment land in different stores, and "written to
       // staging" said the same thing about both — including about the writes that landed in the wrong one.
-      metadata: { name: command.name, backend: entry.backend, environments: targets },
+      metadata: { name: command.name, backend: routing.backend, environments: targets },
     });
     return targets;
   } catch (error) {
@@ -210,7 +258,7 @@ export async function runSecretWrite(
       severity: "warning",
       resourceType: "secret",
       resourceId: command.name,
-      metadata: { name: command.name, backend: entry.backend, environments: environmentsWrittenBeforeFailure(error) },
+      metadata: { name: command.name, backend: routing.backend, environments: environmentsWrittenBeforeFailure(error) },
     });
     throw error;
   }

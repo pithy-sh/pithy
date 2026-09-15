@@ -33,9 +33,10 @@ import type { MintStoreSecret } from "../provision/secretBindings";
  *   key that never leaves the manager Worker. So it asks each manager (`probe`) and then writes with
  *   `create`, which refuses a name already there. See `management/writeSecret.ts`.
  *
- * #321 shipped only the first, and the kit declares no `cf-secrets-store` secret that a random string
- * could satisfy, so nothing the kit ships could reach it. `provision/mintCoverage.test.ts` is the gate
- * that now says so, against the registries the kit actually ships rather than one a test made up.
+ * #321 shipped only the first, and the kit then declared no `cf-secrets-store` secret that a random string
+ * could satisfy, so nothing the kit shipped could reach it — until #596 moved `email-link-signing-key`
+ * there. `provision/mintCoverage.test.ts` is the gate that says so, against the registries the kit
+ * actually ships rather than one a test made up.
  *
  * **The value exists in one local and nowhere else.** It is never returned, never logged, never put in an
  * audit event, and never printed by the command that called this. What a run reports is that the secret

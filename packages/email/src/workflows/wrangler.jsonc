@@ -20,7 +20,8 @@
   "workers_dev": false,
 
   // The app database — the email tables (pithy_email_jobs/events/suppressions) live here, alongside the
-  // app's own data. Plus the secrets database, read for the link-signing key.
+  // app's own data. Plus the secrets database, bound as on every prebuilt host that reads through
+  // `@pithy-sh/secrets`; email's own key is no longer in it (see the Secrets Store block below).
   "d1_databases": [
     { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
     // The durable suppression database — one per PROJECT, shared across that project's environments,
@@ -42,10 +43,17 @@
   // selects the local simulator instead; a deployed worker ignores the flag either way.
   "send_email": [{ "name": "EMAIL" }],
 
-  // The master key for decrypting the link-signing secret, read through the secretsStore accessor.
+  // The link-signing key, and the master key every prebuilt host binds. The link key is a Secrets Store
+  // entry per environment (pithy-sh/pithy#596) — this host signs the links and the app Worker verifies them,
+  // so both bind the one entry `pithy secrets provision` created, named by the same function.
   "secrets_store_secrets": [
     {
       "binding": "SECRETS_ENCRYPTION_KEYS",
+      "store_id": "<filled-at-provision>",
+      "secret_name": "<filled-at-provision>"
+    },
+    {
+      "binding": "email-link-signing-key",
       "store_id": "<filled-at-provision>",
       "secret_name": "<filled-at-provision>"
     }

@@ -4,7 +4,12 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames, type ScopedNames } from "@pithy-sh/core/src/naming/resourceNames";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import {
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+} from "@pithy-sh/secrets/src/scope";
 import { MEDIA_CAPABILITY } from "../workflows/specs";
 
 /**
@@ -211,26 +216,26 @@ export interface MediaDeprovisionOptions {
 }
 
 /**
- * Tear down the media infrastructure, reversing {@link provisionMedia}: delete every environment's worker
- * first (they bind the bucket and namespace), then — only when `deleteStorage` is set — the storage
- * itself, objects and all. Stored media is preserved unless explicitly requested. Idempotent end to end.
+ * Tear down **one named environment's** media infrastructure, reversing {@link provisionMedia} for it: its
+ * worker first (it binds the bucket and namespace), then — only when `deleteStorage` is set — its bucket,
+ * objects and all, and its `MEDIA` namespace. Stored media is preserved unless explicitly requested.
+ * Idempotent end to end.
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * The environment is resolved by `@pithy-sh/secrets`' {@link deprovisionTarget}, before anything is deleted:
+ * absent, or undeclared, it refuses and lists the project's set. This used to walk every declared environment,
+ * so `pithy media deprovision --storage`, run to clear staging's media, deleted production's bucket and
+ * namespace with it (#591).
  */
 export async function deprovisionMedia(
   deprovisioner: MediaDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: MediaDeprovisionOptions = {},
-): Promise<void> {
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteWorker(env);
-  }
+): Promise<{ env: ManagedEnvironment }> {
+  const env = deprovisionTarget(target);
+  await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) {
-    for (const env of managedEnvironments(environments)) {
-      await deprovisioner.deleteBucket(env);
-      await deprovisioner.deleteKvNamespace(env);
-    }
+    await deprovisioner.deleteBucket(env);
+    await deprovisioner.deleteKvNamespace(env);
   }
+  return { env };
 }

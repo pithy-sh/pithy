@@ -17,6 +17,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
   type EnvironmentReadiness,
   environmentOutcomes,
@@ -25,6 +26,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -249,10 +251,13 @@ const provision = defineCommand({
 const deprovision = defineCommand({
   meta: {
     name: "deprovision",
-    description: "Remove the routing rule and the classification workers (optionally the bucket)",
+    description: "Remove one environment's classification worker (and, with the last, the routing rule or the bucket)",
   },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
+    // No default (#591): a bare `deprovision` removed every declared environment's classification worker,
+    // production's included.
+    env: TEARDOWN_ENV_ARG,
     worker: {
       type: "string",
       description: "The app worker whose wrangler.jsonc names the database the audit trail is written to",
@@ -261,12 +266,12 @@ const deprovision = defineCommand({
       type: "boolean",
       default: false,
       description:
-        "Also delete the R2 bucket with every attachment and raw message in it (irreversible — this is your support history)",
+        "Also delete the R2 bucket with every attachment and raw message in it (irreversible — this is your support history). Every environment shares it, so only the last environment's teardown may",
     },
     "routing-zone": {
       type: "string",
       description:
-        "Cloudflare Zone ID the inbound rule lives on. Without it the rule is left in place and mail keeps arriving, because a rule is addressed through its zone and this command will not sweep your domains looking for one.",
+        "Cloudflare Zone ID the inbound rule lives on. Without it the rule is left in place and mail keeps arriving, because a rule is addressed through its zone and this command will not sweep your domains looking for one. Every environment shares the rule, so only the last environment's teardown may remove it.",
     },
     "r2-access-key-id": {
       type: "string",
@@ -286,9 +291,11 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
       const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
+      // One named environment, settled before any credential is read (#591): naming nothing, or something
+      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+      // is the one that deletes.
+      const declared = loadProjectEnvironments(config);
+      const env = requireTeardownEnvironment(args.env, declared);
       const { deprovisionSupport } = await loadSupport(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -307,12 +314,36 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
       });
 
-      await deprovisionSupport(deprovisioner, environments, { deleteStorage: args.storage });
+      // The limits are held here, not by the orchestrator. It is the project's installed copy, and one from before
+      // #591 removed the routing rule first and asked nothing after. So what every environment shares is refused
+      // now, before that copy is called, and it may delete only what was typed, for `env` alone.
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/support",
+        target: env,
+        declared,
+        runs: (other) => deprovisioner.hasWorker(other),
+        deprovisioner,
+        rules: {
+          hasWorker: "read",
+          deleteWorker: "environment",
+          deleteBucket: args.storage ? { what: "the support bucket", flag: "--storage" } : "refused",
+          removeRoutingRule:
+            args["routing-zone"] !== undefined
+              ? { what: "the inbound routing rule", flag: "--routing-zone" }
+              : "refused",
+        },
+      });
+      await deprovisionSupport(
+        confined,
+        { environment: env, declared },
+        { deleteStorage: args.storage, removeRouting: args["routing-zone"] !== undefined },
+      );
 
       if (args.json) {
         process.stdout.write(
           `${formatJsonLine({
             command: "support deprovision",
+            env,
             storageDeleted: args.storage,
             routingZone: args["routing-zone"] ?? null,
           })}\n`,
@@ -320,7 +351,7 @@ const deprovision = defineCommand({
         return;
       }
       process.stdout.write(
-        `Support workers removed${args.storage ? ", including the bucket and everything in it" : ""}.\n`,
+        `${env}: classification worker removed${args.storage ? ", with the bucket and everything in it" : ""}.\n`,
       );
       if (!args["routing-zone"]) {
         process.stdout.write("The routing rule was left in place. Pass --routing-zone to remove it.\n");

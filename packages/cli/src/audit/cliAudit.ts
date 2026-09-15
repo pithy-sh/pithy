@@ -7,6 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { parse } from "comment-json";
 import { cloudflareClients } from "../cloudflare/clients";
+import { projectCapabilitySetFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { kitImport } from "../project/kitResolve";
 import { type CapabilitySet, isUnknown, projectCapabilitySet, type UnknownSet } from "../project/workerScope";
@@ -404,6 +405,11 @@ export interface ProjectCliAuditOptions {
  *
  * Capabilities come from {@link projectCapabilitySet} — `audit` composed by any Worker means the project
  * has a trail, and an unknowable set reaches {@link createCliAudit} carrying the reason it is unknowable.
+ *
+ * **Composed for the environment acted on, when there is exactly one** (#595). Whether `pithy deploy --env
+ * prod` records a row is whether prod composes `audit`, and a config that composes it for deployed
+ * environments alone answered "no trail" from the composition for none. A command spanning every
+ * environment names none in `actedOn`, and its set is the composition for none, as before.
  */
 export async function createProjectCliAudit(options: ProjectCliAuditOptions): Promise<CliAuditEmit> {
   const { accountId, apiToken } = options;
@@ -414,7 +420,9 @@ export async function createProjectCliAudit(options: ProjectCliAuditOptions): Pr
     projectDir: options.projectDir,
     env: options.env ?? AUDIT_DESTINATION_ENV,
     ...(options.actedOn !== undefined ? { actedOn: options.actedOn } : {}),
-    capabilities: await projectCapabilitySet(options.projectDir),
+    capabilities: await (typeof options.actedOn === "string"
+      ? projectCapabilitySetFor(options.actedOn, options.projectDir)
+      : projectCapabilitySet(options.projectDir)),
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,

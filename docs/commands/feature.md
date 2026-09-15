@@ -16,7 +16,7 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 **The feature's live Cloudflare environment is [`pithy provision --feature`](provision.md).** Provisioning is one job whichever environment it is for, so it is one command and one page. What lives here is the rest of a branch's lifecycle, which is a branch's alone.
 
-**`destroy` needs a Cloudflare account.** It acts on real D1, KV, and R2. `create` and `sync` are entirely local — a git worktree, a port reservation, and a Miniflare-backed `dev` backend. `destroy --local-only` is the deliberate way to tear down the local half without credentials.
+**`destroy` needs a Cloudflare account.** It acts on real Worker scripts, D1, KV, and R2. `create` and `sync` are entirely local — a git worktree, a port reservation, and a Miniflare-backed `dev` backend. `destroy --local-only` is the deliberate way to tear down the local half without credentials.
 
 ## Flags
 
@@ -26,7 +26,7 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 | `--issue <n>` | `create` | required | The issue number this feature tracks. Digits only, at most six of them |
 | `--skip-install` | `create` | `false` | Skip installing dependencies in the new worktree |
 | `--skip-data` | `sync` | `false` | Reconcile ports only, leaving the backend alone |
-| `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recomputed feature name regardless |
+| `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recorded and recomputed feature name regardless |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
 | `--json` | all three | `false` | One line of machine-readable output |
 
@@ -34,9 +34,9 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 **The branch is cut from local `main`.** Not from `origin/main`: a repository holding unpushed work would otherwise start every feature *before* that work, and where the older tree still loads there is no symptom at all — just a branch rooted in the past, found at merge. When local `main` is behind its remote the run says so and carries on, because cutting from a `main` a few commits behind is usually fine and sometimes deliberate; being told is what stops it becoming a surprise. A repository with no local `main` cuts from `HEAD`.
 
-**`create`** validates the issue number and the slug at the boundary — before a branch or a worktree exists, so a refusal leaves nothing behind — then cuts the worktree and its `feature/<issue>-<slug>` branch, installs dependencies, reserves a port block, pins one port per Worker, and migrates and seeds the local `dev` backend. Port allocation is [`dev.md` §Per-feature ports](dev.md#per-feature-ports-run-many-worktrees-at-once) in full: a lock over the machine's `<config>/dev-ports.json`, the lowest free non-overlapping block across every checkout on the machine, and a per-worktree `.dev.config.json` that fixes each Worker's port for the life of the feature. Assignment is sticky and never probed at startup, which is what lets several worktrees run at once.
+**`create`** validates the issue number and the slug at the boundary — before a branch or a worktree exists, so a refusal leaves nothing behind — then cuts the worktree and its `feature/<issue>-<slug>` branch, installs dependencies (named as it starts, `▸ Running bun install...`), reserves a port block, pins one port per Worker, and migrates and seeds the local `dev` backend. Port allocation is [`dev.md` §Per-feature ports](dev.md#per-feature-ports-run-many-worktrees-at-once) in full: a lock over the machine's `<config>/dev-ports.json`, the lowest free non-overlapping block across every checkout on the machine, and a per-worktree `.dev.config.json` that fixes each Worker's port for the life of the feature. Assignment is sticky and never probed at startup, which is what lets several worktrees run at once.
 
-**`sync`** makes the worktree's local environment ready, whatever state it is in, and covers the two everyday cases with one command: you added a Worker, or a colleague pushed the branch and you pulled it. None of that state is in git — the `.dev.config.json` and the port reservation are both machine-local — so a sync creates them on *your* machine, with your own free block. It reconciles ports through the same code `create` uses, then migrates and seeds the local backend. Every step is idempotent, so running it when nothing is missing reports that nothing moved.
+**`sync`** makes the worktree's local environment ready, whatever state it is in, and covers the two everyday cases with one command: you added a Worker, or a colleague pushed the branch and you pulled it. None of that state is in git — the `.dev.config.json` and the port reservation are both machine-local — so a sync creates them on *your* machine, with your own free block. It reconciles ports through the same code `create` uses, then migrates and seeds the local backend. `create` and `sync` both name each database, migration and seeded store as they start, in `pithy migrate`'s and `pithy seed`'s words; `--json` prints none of it. Every step is idempotent, so running it when nothing is missing reports that nothing moved.
 
 **`--skip-data` reconciles ports only.** It leaves the backend entirely alone: no migrate, no seed. It touches no `.dev.vars` either, with or without the flag — each Worker's is generated by `pithy dev` from sources already on your machine, so there is nothing here to reconcile.
 
@@ -48,11 +48,19 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 **A feature has no secrets manager, deliberately.** `ManagedEnvironment` is the set the project declared, and everything iterating it multiplies with it — most of all a manager Worker with its own D1 and rotation cron. One per open pull request is not a cost a branch should carry. So `pithy secrets create` targets a declared environment, never a feature: a secret a feature needs beyond its master key is one the report names as unbound, with the command that creates it.
 
-**`destroy`** deletes the feature's Cloudflare resources — first by the exact ids in the worktree's manifest, then by recomputing every name the enabled capabilities could have produced and deleting what still exists — then frees the port block, prunes the worktree, and deletes the branch if it has been merged. That second pass is what catches a partly-failed `provision`.
+**`destroy`** deletes the feature's Worker scripts, then its Cloudflare resources — each first from the worktree's manifest, then by recomputing every name the branch could have produced and deleting what still exists, with the capabilities composed for `feature`, the environment `provision --feature` composed them for — then frees the port block, prunes the worktree, and deletes the branch if it has been merged. That second pass is what catches a partly-failed `provision`.
+
+**Scripts go first, and only once the account confirms they are there.** Provisioning names each Worker's script in the config `pithy deploy` reads and records the name in the manifest, but it is the deploy that uploads it — so a Worker provisioned and never deployed has nothing to delete, and says nothing. Deleting the scripts before their resources means no reachable Worker is ever left bound to a database that is gone. **Each delete is forced.** Cloudflare refuses to delete a Worker another Worker still binds, and a feature's Workers bind each other — `apps/web` calling `apps/api` puts the callee first, and an unforced teardown failed on it every run. Every script it deletes is the feature's own and goes in the same pass. Forcing also removes the Durable Objects a script hosts, which are the feature's too; a Worker outside the feature that binds one of its Workers breaks, and the kit never writes such a binding. An account nothing vouches for is refused rather than asked: an empty script listing from it is not an absence, and a script found on it is somebody else's.
+
+**A feature provisioned before scripts were recorded is torn down by its own names.** Its manifest names no scripts, so `destroy` recomputes them from the Workers under `apps/`, in the two shapes that carry the feature's identity: `<project>-f<issue>-<slug>-<app>`, and the `<project>-f<issue>-<slug>-<project>-<app>` it carried before the project segment stopped doubling. A feature deployed across that change runs under both, and both go.
+
+**One name it deployed under is not among them.** Before scripts were recorded, a feature with a Secrets Store had its generated config rewritten without the script name, and wrangler deployed it as `<script>-feature` — `acme-api-feature`. That name carries no issue and no slug, and every such branch of the project deployed over the same one, so no single feature's teardown can claim it: deleting it would take down whichever open branch deployed last. `destroy` leaves it and does not report it. Once no feature branch from before that fix is still deployed, delete it by hand with `wrangler delete --name <script>-feature`. Names are matched exactly, never by prefix, so a sibling feature whose slug extends this one's is left alone. A Worker removed from the branch after it deployed is found through the manifest instead, which keeps every script name a provision ever wrote.
+
+**`destroy` does not count retained rows.** A feature has its own copy of every `d1` binding, `SECRETS` and `EMAIL_SUPPRESSIONS` included, and `destroy` deletes them with the rest, rows and all. `pithy migrate --rollback`, `pithy secrets deprovision` and `pithy email deprovision --suppression` refuse over the same tables unless `--destroy-retained <n>` matches the count. `destroy` takes no such flag: the database is the branch's own, and the teardown runs headlessly when a branch merges, where nobody can type a count. Every name it deletes is recomputed from the feature's identity, so it never reaches a declared environment's database.
 
 **`destroy` does not need a Worker config to load.** Its local half — free the port block, prune the worktree — is derived from the branch and the root `pithy.config.ts`, and that is deliberate: the state it is most needed in is a `create` that failed partway, which leaves a worktree whose Worker config throws. A teardown that loaded it first was unavailable in exactly that state, and the port block leaked to a branch that no longer existed. The remote half genuinely cannot run without those configs, so an unloadable one is refused unless `--local-only` says the remote half is not wanted.
 
-Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every Worker script, D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
 
 Both provisioning and `destroy` are audited. The trail lands in the project's own top-level `dev` database rather than the feature's, because the feature's does not exist yet when provisioning starts and is deleted by teardown; each event names the environment it acted on.
 
@@ -107,16 +115,16 @@ The payload for a feature's Cloudflare environment is [`provision.md`](provision
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","deletedResources":[{"kind":"d1","name":"acme-f69-media-cli-db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
+{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli-api","id":"acme-f69-media-cli-api"},{"kind":"d1","name":"acme-f69-media-cli-db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.destroy"` | The subcommand that produced the line |
-| `deletedResources` | `object[]` | Every Cloudflare resource deleted, from the manifest and from the name reconcile. Empty when nothing remained, or when the remote half was skipped |
-| `deletedResources[].kind` | `"d1" \| "kv" \| "r2"` | The resource kind |
+| `deletedResources` | `object[]` | Every Worker script and Cloudflare resource deleted, from the manifest and from the name reconcile, scripts first. Empty when nothing remained, or when the remote half was skipped |
+| `deletedResources[].kind` | `"worker" \| "d1" \| "kv" \| "r2"` | The resource kind. `worker` is a Worker script |
 | `deletedResources[].name` | `string` | The resource name |
-| `deletedResources[].id` | `string` | The id that was deleted |
+| `deletedResources[].id` | `string` | The id that was deleted. A Worker script's is its name, which is all Cloudflare addresses one by |
 | `remote` | `boolean` | Whether the remote teardown ran. `false` under `--local-only` |
 | `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |
@@ -194,6 +202,16 @@ $ pithy feature destroy --json
 ```
 
 Neither leaves anything to commit: a feature's ids are written to a git-ignored file, and the provision line says so.
+
+Tear a feature down from inside its worktree, Workers first.
+
+```
+$ pithy feature destroy
+Deleted acme-f69-media-cli-api.
+Deleted acme-f69-media-cli-db-d1.
+Worktree pruned.
+Done.
+```
 
 Remove the worktree and free its ports on a laptop with no credentials.
 

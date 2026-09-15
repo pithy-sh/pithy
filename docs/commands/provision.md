@@ -78,7 +78,7 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 5. **Writes the `secrets_store_secrets` stanza** for every `cf-secrets-store` secret the Worker's own registry declares, when a Secrets Store id is in hand. `pithy add` deliberately could not write it — the entry needs a `store_id` and a `secret_name` that do not exist until an account has been reached — so a Worker deployed without `SECRETS_ENCRYPTION_KEYS` and failed at its first request. A declared secret whose entry has not been created is reported rather than bound: wrangler refuses a config naming an absent entry, so binding it would turn one missing value into a failed deploy of the whole Worker.
 6. **Creates the secrets that have no decision in them.** A registry entry declares whether its value is *arbitrary* — a signing key, an ingest secret: any random string works, because nothing outside the project has to agree with it. Provisioning mints those and binds them in the same pass. It still stops for a *supplied* secret — an OAuth client secret, a payment rail's key — because a random string there authenticates against nothing. Absence is checked first, always: an existing value is never replaced, and replacing one is rotation, which is a separate and deliberate act. No minted value is printed, logged, or put in an audit event; the run reports that the secret was created and which entry it went to. A supplied secret gets the line that names the two commands that finish it — `SESSION_SIGNING_KEY has no store entry yet. Run pithy secrets create SESSION_SIGNING_KEY --env staging to supply its value, then pithy secrets provision to write the stanza.` — and an entry the kit *can* compose a value for, including `SECRETS_ENCRYPTION_KEYS`, gets the other one: `Run pithy secrets provision — it creates the store entries and writes the stanza.` Which of the two you get is one decision, taken in one place, and `pithy doctor` prints the same answer for the same finding.
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
-8. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest so `pithy feature destroy` deletes exactly what was created — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
+8. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest — the resources it created and the Worker script names it wrote — so `pithy feature destroy` deletes exactly what was created and deployed — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
 
 ## While it runs
 
@@ -103,6 +103,8 @@ dash-staging-db: exists.
 Nothing in the plan reaches your account to produce it: the resource set, the Worker set and the store entries are all resolved from your own repository, and they are the run's own inputs rather than a second calculation of them — so a plan that named something the run then skipped would fail this project's tests rather than mislead you.
 
 That pairing is also what makes an interrupted run readable. Provisioning is idempotent and safe to re-run, but idempotence only helps if you know where it stopped: the last `▸` line names the resource that was in flight.
+
+The migrations and seeds that close a run narrate the same way, in `pithy migrate`'s and `pithy seed`'s own words: `▸ DB (app) for board...`, `▸ Applying 0300_auth_0001_init to DB...`.
 
 Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command.
 
@@ -149,23 +151,25 @@ Every line but the first says **nothing was left out**, and none of them is nois
 
 ## The secrets it cannot create
 
-A `d1` secret — the auth session secret, the email link-signing key — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
+A `d1` secret — the auth session secret — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
 
 **Who can create them is not the same answer in both modes.**
 
 `--env` names the command:
 
 ```
-auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+auth-session-secret: not created here — they need a deployed manager.
 Run pithy secrets provision to create them.
 ```
 
 `--feature` names none, because there is none:
 
 ```
-auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+auth-session-secret: not created here — they need a deployed manager.
 A branch gets no manager, and no command creates these for one. This environment comes up without them.
 ```
+
+A `cf-secrets-store` secret the registry calls arbitrary — the email link-signing key, since #596 — is not on that line in either mode. The account's Secrets Store answers whether the entry exists, so it is created and bound in the same pass (`secretBindings`), in the branch's own scope for a feature.
 
 `pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared and gets no manager, deliberately: a manager is a Worker with its own D1 and its own rotation cron, and one per open pull request is not a thing anybody wants. Running that command from a feature worktree does nothing for the branch. It used to be printed anyway, which cost an operator a command and taught them nothing.
 
@@ -204,12 +208,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy secrets provision"}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |
@@ -224,7 +228,7 @@ $ pithy provision --feature --json
 | `resources[].created` | `boolean` | True when this run created it; false when a resource of that name already existed and was adopted |
 | `workers` | `object[]` | Each Worker and the script name it deploys under in this environment |
 | `workers[].worker` | `string` | The Worker's own deploy name — its `wrangler.jsonc` `name` |
-| `workers[].name` | `string` | The scoped script name written into `env.<name>` |
+| `workers[].name` | `string` | The scoped script name written into `env.<name>`. A declared environment keeps the name its stanza declares, else `<worker>-<env>`; a feature composes `<project>-f<issue>-<slug>-<app>` from the `apps/<app>` directory, so the project appears once |
 | `services` | `object[]` | Each `service` binding and the Worker it now targets in this environment |
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The script the binding was retargeted at |

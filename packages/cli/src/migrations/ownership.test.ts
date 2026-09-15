@@ -198,6 +198,7 @@ describe("project ownership", () => {
     await expect(
       dropCapabilityTables({
         capability: appCapability(),
+        composition: [appCapability()],
         workerDir: join(h.projectDir, "apps", "api"),
         persistRoot: h.projectDir,
         env: "dev",

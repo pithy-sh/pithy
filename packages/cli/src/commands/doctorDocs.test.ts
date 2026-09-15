@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
+import type { ResolvedWorker } from "../project/workerScope";
 import {
   cleanPlanFor,
   doctorHarness,
+  ledgerStubPer,
   planStub,
   planStubPer,
   registryFetch,
@@ -285,11 +288,42 @@ describe("docs/commands/doctor.md", () => {
    * Every optional block is on screen at once, which is what makes it the example worth pasting.
    */
   test("the full report is what the renderer prints for a project in drift", async () => {
+    // `api` migrates one database, provisioned for staging and not for prod — outside `apps/`, so no probe
+    // that walks the project's Workers reads a stanza the transcript is not about.
+    const apiDir = join(harness.dir, "fixture", "api");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(
+      join(apiDir, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "api",
+        d1_databases: [{ binding: "DB" }],
+        env: {
+          staging: { d1_databases: [{ binding: "DB", database_id: "acme-staging-db-id" }] },
+          prod: { d1_databases: [{ binding: "DB" }] },
+        },
+      }),
+    );
+    const noop = { up: async () => {}, down: async () => {} };
+    const app = {
+      name: "app",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: {}, migrationOrder: 1000, migrations: { "0001_init": noop } } },
+    };
+    const [collab] = workerSet("collab");
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
           fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
-          resolveWorkers: async () => workerSet("api", "collab"),
+          resolveWorkersFor: async () => [
+            { name: "api", dir: apiDir, capabilities: [app] } as unknown as ResolvedWorker,
+            collab as ResolvedWorker,
+          ],
+          readLedger: ledgerStubPer({
+            api: {
+              dev: { state: "read", pending: 2, undeclared: [] },
+              staging: { state: "read", pending: 1, undeclared: [] },
+            },
+          }),
           // `collab` is unlisted, so the stub gives it a clean plan — the healthy Worker that collapses to a line.
           buildPlan: planStubPer({
             api: {
@@ -308,7 +342,7 @@ describe("docs/commands/doctor.md", () => {
                   ],
                 },
               ],
-              ledger: { state: "read", pending: 2, undeclared: [] },
+              ledger: { state: "read", pending: 0, undeclared: [] },
               entitlements: { state: "read", gates: [] },
               missingPrerequisites: [],
               declinedBindings: { state: "read", declines: [] },
@@ -353,13 +387,15 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api"),
-          buildPlan: planStub({
-            ...cleanPlanFor("api"),
-            ledger: {
-              state: "read",
-              pending: 0,
-              undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+          readLedger: ledgerStubPer({
+            api: {
+              dev: {
+                state: "read",
+                pending: 0,
+                undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+              },
             },
           }),
         }),
@@ -382,13 +418,15 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api"),
-          buildPlan: planStub({
-            ...cleanPlanFor("api"),
-            ledger: {
-              state: "partial",
-              counted: { pending: 2, undeclared: [] },
-              unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+          readLedger: ledgerStubPer({
+            api: {
+              dev: {
+                state: "partial",
+                counted: { pending: 2, undeclared: [] },
+                unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+              },
             },
           }),
         }),
@@ -412,7 +450,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api"),
+          resolveWorkersFor: async () => workerSet("api"),
           buildPlan: planStub({
             ...cleanPlanFor("api"),
             perCapability: [
@@ -445,7 +483,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("dashboard"),
+          resolveWorkersFor: async () => workerSet("dashboard"),
           buildPlan: planStub({
             ...cleanPlanFor("dashboard"),
             declinedBindings: {
@@ -481,7 +519,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("dashboard"),
+          resolveWorkersFor: async () => workerSet("dashboard"),
           buildPlan: planStub({
             ...cleanPlanFor("dashboard"),
             declinedBindings: {
@@ -510,7 +548,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api"),
+          resolveWorkersFor: async () => workerSet("api"),
           buildPlan: planStub({
             ...cleanPlanFor("api"),
             generatedValues: {
@@ -548,7 +586,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api"),
+          resolveWorkersFor: async () => workerSet("api"),
           buildPlan: planStub({
             ...cleanPlanFor("api"),
             missingPrerequisites: [
@@ -576,7 +614,7 @@ describe("docs/commands/doctor.md", () => {
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
-          resolveWorkers: async () => workerSet("api", "collab"),
+          resolveWorkersFor: async () => workerSet("api", "collab"),
           buildPlan: planStubPer({}),
         }),
       ),
@@ -608,7 +646,10 @@ describe("docs/commands/doctor.md", () => {
   test("the manifests fragment is what the renderer prints for an unreadable manifest", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -639,7 +680,10 @@ describe("docs/commands/doctor.md", () => {
   test("the capabilities fragment is what the renderer prints for a capability the CLI cannot resolve", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -674,7 +718,10 @@ describe("docs/commands/doctor.md", () => {
   test("the version-skew fragment is what the renderer prints for one capability at two versions", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -714,7 +761,10 @@ describe("docs/commands/doctor.md", () => {
   test("the shared fragment is what the renderer prints for a project-global binding bound per environment", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -763,7 +813,10 @@ describe("docs/commands/doctor.md", () => {
   test("the divergent fragment is what the renderer prints for one binding bound to two resources", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -821,7 +874,10 @@ describe("docs/commands/doctor.md", () => {
   test("each carry-over names a URL this page renders at, at an anchor this page has", async () => {
     const report = await buildDoctorReport(
       docOptions(
-        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+        harness.baseOptions({
+          resolveWorkersFor: async () => workerSet("api"),
+          buildPlan: planStub(cleanPlanFor("api")),
+        }),
       ),
     );
     if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
@@ -1495,7 +1551,21 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
   dryRun: ["seed", "upgrade"],
-  env: ["deploy", "migrate", "payments", "provision", "seed", "token", "upgrade", "vector"],
+  env: [
+    "deploy",
+    "email",
+    "media",
+    "migrate",
+    "payments",
+    "provision",
+    "secrets",
+    "seed",
+    "storage",
+    "support",
+    "token",
+    "upgrade",
+    "vector",
+  ],
   environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
   from: ["email", "worker"],
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way

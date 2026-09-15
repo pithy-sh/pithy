@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { NO_PROVISION_ARG } from "./effectiveConfig";
 import { readOptionalWranglerConfig, readWranglerConfig, runWrangler, workerEntryPath } from "./wrangler";
 
 /** Use `node` as the binary so these run without wrangler installed. */
@@ -119,15 +120,36 @@ describe("workerEntryPath", () => {
 });
 
 describe("runWrangler", () => {
+  let scripts: string;
+  beforeEach(async () => {
+    scripts = await mkdtemp(join(tmpdir(), "pithy-wrangler-stand-in-"));
+  });
+  afterEach(async () => {
+    await rm(scripts, { recursive: true, force: true });
+  });
+
+  /**
+   * A node stand-in for wrangler: `code` written to a script, and the argv that runs it.
+   *
+   * A script file rather than `node -e`, because every spawn carries {@link NO_PROVISION_ARG} (#589) and
+   * node reads a flag after `-e <code>` as its own option and exits 9. After a script path, the arguments
+   * are the script's — as they are wrangler's.
+   */
+  async function standIn(code: string): Promise<string[]> {
+    const path = join(scripts, `stand-in-${Math.random().toString(36).slice(2)}.cjs`);
+    await writeFile(path, `${code}\n`);
+    return [path, NO_PROVISION_ARG];
+  }
+
   test("resolves with captured stdout/stderr on a zero exit", async () => {
-    await expect(runWrangler(["-e", "process.exit(0)"], { account: null, bin: NODE })).resolves.toEqual({
+    await expect(runWrangler(await standIn("process.exit(0)"), { account: null, bin: NODE })).resolves.toEqual({
       stdout: "",
       stderr: "",
     });
   });
 
   test("captures stdout so callers can scrape it (deploy reads the version id + url)", async () => {
-    const { stdout } = await runWrangler(["-e", "process.stdout.write('Current Version ID: v1')"], {
+    const { stdout } = await runWrangler(await standIn("process.stdout.write('Current Version ID: v1')"), {
       account: null,
       bin: NODE,
     });
@@ -135,7 +157,7 @@ describe("runWrangler", () => {
   });
 
   test("rejects on a non-zero exit, surfacing the captured output in detail (quiet mode)", async () => {
-    const error = (await runWrangler(["-e", "console.error('boom'); process.exit(1)"], {
+    const error = (await runWrangler(await standIn("console.error('boom'); process.exit(1)"), {
       account: null,
       bin: NODE,
     }).catch((e: unknown) => e)) as PithyError;
@@ -186,32 +208,40 @@ describe("runWrangler", () => {
     async function calledWith(lockfile: string, runner: string): Promise<string[]> {
       await writeFile(join(project, lockfile), "");
       await plant(runner);
-      const { stdout } = await runWrangler(["deploy"], { account: null, cwd: project, env: { PATH: fakeBin } });
+      const { stdout } = await runWrangler(["deploy", NO_PROVISION_ARG], {
+        account: null,
+        cwd: project,
+        env: { PATH: fakeBin },
+      });
       return stdout.split("\n").filter(Boolean);
     }
 
     test("a bun project gets `bun x wrangler`", async () => {
-      expect(await calledWith("bun.lock", "bun")).toEqual(["x", "wrangler", "deploy"]);
+      expect(await calledWith("bun.lock", "bun")).toEqual(["x", "wrangler", "deploy", NO_PROVISION_ARG]);
     });
 
     test("a pnpm project gets `pnpm exec wrangler`", async () => {
-      expect(await calledWith("pnpm-lock.yaml", "pnpm")).toEqual(["exec", "wrangler", "deploy"]);
+      expect(await calledWith("pnpm-lock.yaml", "pnpm")).toEqual(["exec", "wrangler", "deploy", NO_PROVISION_ARG]);
     });
 
     test("a yarn project gets `yarn wrangler`", async () => {
-      expect(await calledWith("yarn.lock", "yarn")).toEqual(["wrangler", "deploy"]);
+      expect(await calledWith("yarn.lock", "yarn")).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
     });
 
     test("an npm project gets `npx wrangler`", async () => {
-      expect(await calledWith("package-lock.json", "npx")).toEqual(["wrangler", "deploy"]);
+      expect(await calledWith("package-lock.json", "npx")).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
     });
 
     // No lockfile is npm, which is the fallback `detectPackageManager` documents: npm is present on
     // every Node install, and a project with no lockfile has not told us anything else.
     test("a project with no lockfile falls back to npx, not to bun", async () => {
       await plant("npx");
-      const { stdout } = await runWrangler(["deploy"], { account: null, cwd: project, env: { PATH: fakeBin } });
-      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "deploy"]);
+      const { stdout } = await runWrangler(["deploy", NO_PROVISION_ARG], {
+        account: null,
+        cwd: project,
+        env: { PATH: fakeBin },
+      });
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
     });
 
     // Detection reads the lockfile beside `cwd`, not beside the CLI. This repository is a bun
@@ -220,16 +250,21 @@ describe("runWrangler", () => {
       await writeFile(join(project, "package-lock.json"), "");
       await plant("npx");
       await plant("bun");
-      const { stdout } = await runWrangler(["whoami"], { account: null, cwd: project, env: { PATH: fakeBin } });
+      const { stdout } = await runWrangler(["whoami", NO_PROVISION_ARG], {
+        account: null,
+        cwd: project,
+        env: { PATH: fakeBin },
+      });
       expect(stdout).not.toContain("x\n");
-      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "whoami"]);
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "whoami", NO_PROVISION_ARG]);
     });
   });
 
   test("rejects with a clear error when the binary is missing", async () => {
-    const error = (await runWrangler(["--version"], { account: null, bin: "pithy-no-such-binary-xyz" }).catch(
-      (e: unknown) => e,
-    )) as PithyError;
+    const error = (await runWrangler(["--version", NO_PROVISION_ARG], {
+      account: null,
+      bin: "pithy-no-such-binary-xyz",
+    }).catch((e: unknown) => e)) as PithyError;
     expect(error).toBeInstanceOf(InternalError);
     expect(error.payload.action).toContain("installed");
   });
@@ -239,7 +274,7 @@ describe("runWrangler", () => {
     const project = await mkdtemp(join(tmpdir(), "pithy-wrangler-missing-"));
     try {
       await writeFile(join(project, "bun.lock"), "");
-      const error = (await runWrangler(["--version"], {
+      const error = (await runWrangler(["--version", NO_PROVISION_ARG], {
         account: null,
         cwd: project,
         // An empty PATH, so the runner cannot be found however the machine is set up.
@@ -257,7 +292,7 @@ describe("runWrangler", () => {
 
   test("passthrough mode resolves on success (nothing captured — output already streamed)", async () => {
     await expect(
-      runWrangler(["-e", "process.exit(0)"], { account: null, bin: NODE, passthrough: true }),
+      runWrangler(await standIn("process.exit(0)"), { account: null, bin: NODE, passthrough: true }),
     ).resolves.toEqual({
       stdout: "",
       stderr: "",
@@ -276,7 +311,7 @@ describe("runWrangler", () => {
       vi.stubEnv("PITHY_CONFIG_DIR", dir);
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "shell-token");
       await expect(
-        runWrangler(["-e", "process.exit(process.env.CLOUDFLARE_API_TOKEN === 'project-token' ? 0 : 1)"], {
+        runWrangler(await standIn("process.exit(process.env.CLOUDFLARE_API_TOKEN === 'project-token' ? 0 : 1)"), {
           account: null,
           bin: NODE,
         }),
@@ -294,7 +329,7 @@ describe("runWrangler", () => {
         mode: 0o600,
       });
       vi.stubEnv("PITHY_CONFIG_DIR", dir);
-      const error = (await runWrangler(["--version"], {
+      const error = (await runWrangler(["--version", NO_PROVISION_ARG], {
         account: { accountId: "pinned-account" },
         bin: NODE,
       }).catch((e: unknown) => e)) as PithyError;
@@ -309,11 +344,80 @@ describe("runWrangler", () => {
   test("passes extra env to the child — how wrangler gets CLOUDFLARE_API_TOKEN from .dev.vars", async () => {
     // The child exits 0 only when the injected env var is visible to it.
     await expect(
-      runWrangler(["-e", "process.exit(process.env.PITHY_WRANGLER_TEST === 'ok' ? 0 : 1)"], {
+      runWrangler(await standIn("process.exit(process.env.PITHY_WRANGLER_TEST === 'ok' ? 0 : 1)"), {
         account: null,
         bin: NODE,
         env: { PITHY_WRANGLER_TEST: "ok" },
       }),
     ).resolves.toEqual({ stdout: "", stderr: "" });
+  });
+});
+
+/**
+ * **A wrangler spawn creates nothing, and the seam is where that is true (#589).**
+ *
+ * The rule was held at the two deploy sites and by a sweep reading `runWrangler(` as text. A review
+ * planted `const ship = runWrangler; await ship(argv)` and `runWrangler.call(undefined, argv, …)` beside a
+ * gated call, on an argv with the switch sliced off, and every half of the sweep stayed green: text cannot
+ * count a call spelled some other way. A call under any name is still a call to this function, so this is
+ * the one place the rule cannot be walked around.
+ *
+ * Every spawn, not every deploy. `--experimental-provision` is one of wrangler's global options — every
+ * command accepts it, and every command's experimental flags default provisioning on — so there is no
+ * list of commands to keep current, and no argv shape to recognize a deploy by.
+ */
+describe("runWrangler creates nothing, whatever name it is reached by", () => {
+  let dir: string;
+  let marker: string;
+  let script: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-wrangler-provision-"));
+    marker = join(dir, "spawned");
+    // A script file rather than `-e`: node reads a flag after `-e <code>` as its own option and exits 9,
+    // where the arguments after a script path are the script's — as they are wrangler's.
+    script = join(dir, "stand-in.cjs");
+    await writeFile(
+      script,
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(" "));\n`,
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A child that leaves a file behind, so "nothing was spawned" is read off disk rather than inferred. */
+  const touch = () => [script, "deploy"];
+
+  async function spawned(): Promise<boolean> {
+    return readFile(marker).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  test("an argv that leaves provisioning on is refused before anything is spawned", async () => {
+    const error = (await runWrangler(touch(), { account: null, bin: NODE }).catch((e: unknown) => e)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.payload.message).toBe("This deploy could create Cloudflare resources, so nothing was deployed.");
+    expect(await spawned()).toBe(false);
+  });
+
+  test("an alias and a .call reach the same refusal — the spellings the call-site sweep could not count", async () => {
+    const ship = runWrangler;
+    await expect(ship(touch(), { account: null, bin: NODE })).rejects.toBeInstanceOf(PithyError);
+    await expect(runWrangler.call(undefined, touch(), { account: null, bin: NODE })).rejects.toBeInstanceOf(PithyError);
+    expect(await spawned()).toBe(false);
+  });
+
+  test("a second statement about provisioning is refused, even beside the switch", async () => {
+    await expect(
+      runWrangler([...touch(), NO_PROVISION_ARG, "--x-provision"], { account: null, bin: NODE }),
+    ).rejects.toBeInstanceOf(PithyError);
+    expect(await spawned()).toBe(false);
+  });
+
+  test("an argv carrying the switch spawns", async () => {
+    await runWrangler([...touch(), NO_PROVISION_ARG], { account: null, bin: NODE });
+    expect(await spawned()).toBe(true);
   });
 });

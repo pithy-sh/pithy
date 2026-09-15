@@ -19,6 +19,7 @@ import type { LocaleContext } from "../i18n/locale";
 import type { Translator } from "../i18n/translator";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
+import { declareRetained } from "../migrations/retainedDeclaration";
 import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
@@ -595,6 +596,11 @@ export function defineCapability<
   const Name extends string = string,
   const Workflows extends WorkflowSpecMap = Record<never, never>,
 >(input: CapabilityInput<Databases, Namespaces, Name, Workflows>): Capability<Databases, Namespaces, Name, Workflows> {
+  // A retained table is declared on the `down`s that could drop it the moment the capability exists, so a
+  // migration the runner is handed carries it however its provider was built (#588).
+  for (const spec of Object.values(input.databases ?? {})) {
+    if (spec.migrations && spec.retained) declareRetained(spec.migrations, spec.retained);
+  }
   return {
     ...input,
     requiredBindings: input.requiredBindings.map((binding) => BindingSpec.parse(binding)),

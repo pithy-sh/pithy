@@ -90,6 +90,55 @@ export function cloudflareProvisioners(clients: CloudflareClients, account: Conf
 }
 
 /**
+ * **The Worker scripts a feature deploys, as teardown needs them (#592).**
+ *
+ * Not a {@link ResourceProvisioner}: provisioning never creates a script. It names one, in the generated
+ * config `pithy deploy` reads, and the deploy uploads it — so a script may have been named and never
+ * deployed, and teardown has to ask before it deletes. The name is the id; Cloudflare addresses a script
+ * by nothing else.
+ */
+export interface WorkerScripts {
+  /**
+   * Whether a script of exactly this name is deployed on the account. Refuses rather than answering where
+   * the account is unconfirmed: an empty listing from an account nothing claims is not an absence, and a
+   * `true` from one is somebody else's deployment.
+   */
+  exists(name: string): Promise<boolean>;
+  /**
+   * Delete the script by name, **whatever still binds it**. Called only for a name {@link WorkerScripts.exists}
+   * just confirmed, and only by feature teardown for a name the feature could have deployed.
+   *
+   * Cloudflare refuses to delete a script another Worker still binds, and a feature's Workers bind each
+   * other: `web` calls `api`, and both are the feature's copies. Deleting callers first would need the graph,
+   * and teardown does not have it — a script recorded in the manifest may belong to a Worker that has left the
+   * branch, a Durable Object binding reaches a sibling too, and two Workers can call each other. Every script
+   * this deletes is the feature's own, going in the same pass, so it is forced (#592).
+   */
+  delete(name: string): Promise<void>;
+}
+
+/**
+ * The default {@link WorkerScripts}, over the account's Workers manager. The account travels with the
+ * clients for the reason it does in {@link cloudflareProvisioners} (#378): what vouches for it is what
+ * makes a listing's answer one a delete may act on.
+ */
+export function cloudflareWorkerScripts(clients: CloudflareClients, account: ConfirmedAccount): WorkerScripts {
+  const workers = clients.workers();
+  return {
+    exists: async (name) =>
+      (await findOnConfirmedAccount({
+        ...account,
+        what: `the ${name} Worker`,
+        find: () => workers.getWorker(name),
+      })) !== null,
+    // Forced: see `WorkerScripts.delete`. A Worker outside the feature that binds one of its Workers breaks,
+    // as it would when the feature's Worker stopped answering; the kit never writes such a binding, because
+    // a feature's service targets are always its own copies.
+    delete: (name) => workers.deleteWorker(name, { force: true }),
+  };
+}
+
+/**
  * Audit actions provisioning records. Creating and — especially — deleting a resource changes real
  * infrastructure, and both run headlessly in CI, so "who deleted this, and what exactly went?" must be
  * answerable after the fact.
@@ -118,9 +167,17 @@ export const ProvisionAuditActions = {
  */
 export const AUDIT_DESTINATION_ENV = "dev";
 
+/**
+ * Everything feature teardown deletes and reports, by kind: the resources provisioning creates, and the
+ * Worker scripts it names for deploy (#592).
+ */
+export type TeardownKind = FeatureResourceKind | "worker";
+
 /** The resource kind recorded on a provisioning audit event. */
-export const AUDIT_RESOURCE_TYPE: Record<FeatureResourceKind, string> = {
+export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   d1: "cf_d1",
   kv: "cf_kv",
   r2: "cf_r2",
+  // The type every capability deprovisioner already records a removed Worker under.
+  worker: "cf_worker",
 };

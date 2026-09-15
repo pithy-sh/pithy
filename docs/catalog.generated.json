@@ -236,8 +236,11 @@
     {
       "path": "email deprovision",
       "flags": [
+        "--env",
         "--suppression",
         "--no-suppression",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -327,6 +330,7 @@
     {
       "path": "media deprovision",
       "flags": [
+        "--env",
         "--storage",
         "--no-storage",
         "--r2-access-key-id",
@@ -358,8 +362,13 @@
       "flags": [
         "--env",
         "--worker",
+        "--binding",
         "--rollback",
         "--no-rollback",
+        "--confirm-rollback",
+        "--confirmRollback",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -411,6 +420,8 @@
         "--drop",
         "--no-drop",
         "--env",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -430,8 +441,11 @@
     {
       "path": "secrets deprovision",
       "flags": [
+        "--env",
         "--keys",
         "--no-keys",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -464,7 +478,8 @@
       "flags": [
         "--env",
         "--json",
-        "--no-json"
+        "--no-json",
+        "--backend"
       ]
     },
     {
@@ -500,6 +515,8 @@
         "--no-redo",
         "--confirm-reset",
         "--confirmReset",
+        "--destroy-retained",
+        "--destroyRetained",
         "--yes",
         "--no-yes",
         "--confirm-production",
@@ -513,6 +530,7 @@
     {
       "path": "storage deprovision",
       "flags": [
+        "--env",
         "--storage",
         "--no-storage",
         "--r2-access-key-id",
@@ -546,6 +564,7 @@
       "flags": [
         "--json",
         "--no-json",
+        "--env",
         "--worker",
         "--storage",
         "--no-storage",

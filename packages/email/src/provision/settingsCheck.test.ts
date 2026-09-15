@@ -30,7 +30,9 @@ const config = { fromAddress: "hello@acme.dev", baseUrl: "https://api.acme.dev" 
 const reader = (overrides: Partial<SettingsAccountReader> = {}): SettingsAccountReader => ({
   d1Databases: async () => ["acme-global-email-suppressions"],
   zone: async () => true,
-  secret: async () => true,
+  // Every entry this project's link-signing key binds is there, and the vault holds none of them (#596).
+  storeEntry: async () => true,
+  vaultSecret: async () => false,
   ...overrides,
 });
 
@@ -188,37 +190,72 @@ describe("the account tier", () => {
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: "No D1 database named acme-global-email-suppressions exists on this account.",
-      action: "Run `pithy email provision --env prod`. Nothing is suppressed until it exists.",
+      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
     });
   });
 
-  test("a signing key that was never created is reported per environment", async () => {
+  test("a signing key with no Secrets Store entry is reported per environment, at the entry provisioning binds", async () => {
+    const asked: string[] = [];
     const findings = await emailSettings(config).account?.({
       ...context(),
-      account: reader({ secret: async ({ environment }) => environment !== "prod" }),
+      account: reader({
+        storeEntry: async (entry) => {
+          asked.push(entry);
+          return entry !== "acme-prod-email-link-signing-key";
+        },
+      }),
     });
+    // One entry per environment, none shared: the declaration's own scope, through provisioning's namer.
+    expect(asked).toEqual(["acme-staging-email-link-signing-key", "acme-prod-email-link-signing-key"]);
     expect(findings).toEqual([
       {
         setting: "email-link-signing-key",
         environment: "prod",
-        problem: "The link-signing key has no value in prod, so no tracking or unsubscribe link can be signed.",
-        action: "Run `pithy secrets provision --env prod`.",
+        problem:
+          "The link-signing key has no Secrets Store entry in prod, so no tracking or unsubscribe link can be signed.",
+        action: "Run `pithy secrets provision`.",
       },
     ]);
   });
 
-  test("dev is never asked of the account — there is no manager Worker to answer", async () => {
-    const asked: string[] = [];
+  test("a key still held in an environment's D1 vault is reported, with the path that moves it", async () => {
+    const findings = await emailSettings(config).account?.({
+      ...context(),
+      account: reader({ vaultSecret: async ({ environment }) => environment === "staging" }),
+    });
+    expect(findings).toEqual([
+      {
+        setting: "email-link-signing-key",
+        environment: "staging",
+        problem:
+          "The link-signing key is still held in staging's D1 vault, where nothing reads it. Links signed with it before the move no longer verify.",
+        action:
+          "Once the Secrets Store entry is bound and deployed, run `pithy secrets rm email-link-signing-key --env staging --backend d1`. See docs/commands/secrets.md#moving-a-secret-off-d1.",
+      },
+    ]);
+  });
+
+  test("the vault is asked by the registry name, and never about dev — there is no manager Worker to answer", async () => {
+    const asked: { name: string; environment: string }[] = [];
+    const entries: string[] = [];
     await emailSettings(config).account?.({
-      ...context({ environments: [{ name: "dev", origin: null }] }),
+      ...context({ environments: [{ name: "dev", origin: null }, ...context().environments] }),
       account: reader({
-        secret: async ({ environment }) => {
-          asked.push(environment);
+        vaultSecret: async (request) => {
+          asked.push(request);
+          return false;
+        },
+        storeEntry: async (entry) => {
+          entries.push(entry);
           return true;
         },
       }),
     });
-    expect(asked).toEqual([]);
+    expect(asked).toEqual([
+      { name: "email-link-signing-key", environment: "staging" },
+      { name: "email-link-signing-key", environment: "prod" },
+    ]);
+    expect(entries).not.toContain("acme-dev-email-link-signing-key");
   });
 });
 

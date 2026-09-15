@@ -5,13 +5,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { cloudflareConfigPath } from "../cloudflare/config";
 import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { isGeneratedDevVars } from "../devSecrets/generate";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
-import { resolveWorkers } from "../project/workerScope";
 import { mintedTokensPath } from "../tokens/mintedTokens";
 import { declaredVars } from "./wranglerVars";
 
@@ -190,7 +191,7 @@ export interface CheckDevVarsOptions {
 export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVarsCheck> {
   const workers =
     options.workers ??
-    (await resolveWorkers({ projectDir: options.projectDir }).catch(() => [])).map((worker) => ({
+    (await resolveWorkersFor(LOCAL_ENVIRONMENT, { projectDir: options.projectDir }).catch(() => [])).map((worker) => ({
       name: worker.name,
       dir: worker.dir,
       capabilities: worker.capabilities,

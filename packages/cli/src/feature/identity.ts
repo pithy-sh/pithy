@@ -3,9 +3,11 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { resolveWorkerSetFor, resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { type CapabilitySet, capabilitySetOf, projectCapabilities, type WorkerSet } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -72,8 +74,36 @@ export async function branchIdentity(
   // to find them again. A fallback that differs between a worktree and a clone would make destroy
   // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
   const project = requireProjectName(config);
-  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
+  // Composed for the feature environment, which is the one these capabilities are provisioned into (#595).
+  const capabilities = projectCapabilities(await resolveWorkersFor(FEATURE_ENVIRONMENT, { projectDir }));
   return { identity: { project, issue, slug }, capabilities };
+}
+
+/**
+ * The capabilities a feature's teardown deletes by — **composed for the environment {@link branchIdentity}
+ * composed them for**, or why that set is unknowable (#455).
+ *
+ * Teardown reconciles resources by recomputed name and removes Secrets Store entries by recomputed name,
+ * both from this set, and the manifest records neither the entries nor a resource created before it was
+ * written. So a capability composed for `feature` alone and not here is one whose resources and live
+ * credentials outlive a `destroy` that exits 0 (#595). The set differs from provision's in one way only,
+ * and on purpose: an unknowable one is reported rather than thrown, so `--local-only` can still run.
+ */
+export async function featureCapabilitySet(projectDir: string): Promise<CapabilitySet> {
+  return capabilitySetOf(await featureWorkerSet(projectDir));
+}
+
+/**
+ * The Workers a feature's teardown works from, composed for `feature` — one resolution for both halves.
+ *
+ * `destroy` needs the Workers themselves as well as their capabilities: the capabilities name the
+ * resources and the Secrets Store entries, and the Workers name the scripts (#592). Resolving them twice
+ * would let the two disagree, and resolving either unstamped would miss a capability a config composes
+ * only for deployed environments (#595). So this is the one resolution, and {@link featureCapabilitySet}
+ * is derived from it rather than beside it.
+ */
+export function featureWorkerSet(projectDir: string): Promise<WorkerSet> {
+  return resolveWorkerSetFor(FEATURE_ENVIRONMENT, { projectDir });
 }
 
 /**

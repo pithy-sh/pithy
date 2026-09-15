@@ -159,15 +159,21 @@ describe("provisionSupport", () => {
   });
 });
 
-/** A deprovisioner that records what was called, in order. */
-function teardown(overrides: Partial<SupportDeprovisioner> = {}) {
+/**
+ * A deprovisioner that records what was called, in order. `workers` is which environments run a classification
+ * worker before the run; a deleted one stops running.
+ */
+function teardown(overrides: Partial<SupportDeprovisioner> = {}, workers: readonly string[] = DEFAULT_ENVIRONMENTS) {
   const calls: string[] = [];
+  const running = new Set(workers);
   const deprovisioner: SupportDeprovisioner = {
     removeRoutingRule: async () => {
       calls.push("routing");
       return { removed: true };
     },
+    hasWorker: async (env) => running.has(env),
     deleteWorker: async (env) => {
+      running.delete(env);
       calls.push(`worker:${env}`);
     },
     deleteBucket: async () => {
@@ -179,24 +185,80 @@ function teardown(overrides: Partial<SupportDeprovisioner> = {}) {
 }
 
 describe("deprovisionSupport", () => {
-  test("removes the routing rule first, so mail stops before its handler does", async () => {
+  const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
+  const prod = { environment: "prod", declared: DEFAULT_ENVIRONMENTS };
+
+  /**
+   * **#591, in support.** `pithy support deprovision` walked every declared environment: a run meant for staging took
+   * production's classification worker with it. Planting the old loop back fails this.
+   */
+  test("removes the named environment's worker and no other, and keeps the rule and the bucket", async () => {
+    const { deprovisioner, calls } = teardown();
+    expect(await deprovisionSupport(deprovisioner, staging)).toEqual({ env: "staging", routingRuleRemoved: false });
+    expect(calls).toEqual(["worker:staging"]);
+  });
+
+  test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
+    const { deprovisioner, calls } = teardown();
+    await expect(
+      deprovisionSupport(
+        deprovisioner,
+        { environment: undefined, declared: DEFAULT_ENVIRONMENTS },
+        { deleteStorage: true },
+      ),
+    ).rejects.toMatchObject({
+      message: "Name the environment to deprovision. Nothing was deleted.",
+      payload: { action: "Pass --env with one of: staging, prod." },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("naming an environment the project does not declare refuses, and deletes nothing", async () => {
+    const { deprovisioner, calls } = teardown();
+    await expect(
+      deprovisionSupport(deprovisioner, { environment: "live", declared: DEFAULT_ENVIRONMENTS }),
+    ).rejects.toThrow('"live" is not an environment this project declares. Nothing was deleted.');
+    expect(calls).toEqual([]);
+  });
+
+  /**
+   * **The bucket and the rule are every environment's.** One `<project>-global-support` bucket holds the whole
+   * project's correspondence, and one rule delivers its inbound mail. A staging teardown with `--storage` deleted
+   * production's support history; with `--routing-zone`, it stopped production's inbound mail.
+   */
+  test("--storage refuses while another environment still runs, before anything is deleted", async () => {
+    const { deprovisioner, calls } = teardown();
+    await expect(deprovisionSupport(deprovisioner, staging, { deleteStorage: true })).rejects.toMatchObject({
+      message: "The support bucket is shared by every environment, and prod still runs. Nothing was deleted.",
+      payload: { action: "Deprovision prod first, or drop --storage." },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("--routing-zone refuses the same way", async () => {
+    const { deprovisioner, calls } = teardown();
+    await expect(deprovisionSupport(deprovisioner, staging, { removeRouting: true })).rejects.toMatchObject({
+      message: "The inbound routing rule is shared by every environment, and prod still runs. Nothing was deleted.",
+      payload: { action: "Deprovision prod first, or drop --routing-zone." },
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("removes the routing rule first on the last teardown, so mail stops before its handler does", async () => {
     // The inverse of provisioning's ordering, for the inverse reason: workers torn down while mail is
     // still arriving means messages land in a Worker with no classification host.
-    const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS);
-    expect(calls[0]).toBe("routing");
+    const { deprovisioner, calls } = teardown({}, ["prod"]);
+    expect(await deprovisionSupport(deprovisioner, prod, { removeRouting: true, deleteStorage: true })).toEqual({
+      env: "prod",
+      routingRuleRemoved: true,
+    });
+    expect(calls).toEqual(["routing", "worker:prod", "bucket"]);
   });
 
   test("keeps the bucket by default — it holds correspondence, not cache", async () => {
-    const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS);
+    const { deprovisioner, calls } = teardown({}, ["prod"]);
+    await deprovisionSupport(deprovisioner, prod);
     expect(calls).not.toContain("bucket");
-  });
-
-  test("deletes the bucket only when explicitly asked", async () => {
-    const { deprovisioner, calls } = teardown();
-    await deprovisionSupport(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
-    expect(calls.at(-1)).toBe("bucket");
   });
 });
 

@@ -9,13 +9,8 @@ import type { SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import {
-  loadProject,
-  loadWorkerConfig,
-  loadWorkerDomains,
-  projectEnvironments,
-  requireProjectName,
-} from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { loadProject, loadWorkerDomains, projectEnvironments, requireProjectName } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { readOptionalWranglerConfig } from "../project/wrangler";
 import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsCheck } from "./settings";
@@ -42,21 +37,27 @@ import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsC
  * A `wrangler.jsonc` or a `pithy.config.ts` that will not read costs the origins and nothing else. The
  * declared set is the root config's, and without it there is no answer at all — which the runner turns
  * into an unchecked capability rather than into a clean pass.
+ *
+ * **Each environment's origin is read from its own composition (#586).** A `pithy.config.ts` may name its
+ * domains from the environment it is composed for, and the loader without the primitive took the module
+ * cache — whichever environment doctor composed last — so every environment was handed that one's host.
  */
 export async function settingsEnvironments(projectDir: string, workerDir: string): Promise<SettingsEnvironment[]> {
   const declared = await projectEnvironments(projectDir);
   const config = (await readOptionalWranglerConfig(workerDir).catch(() => null)) as {
     env?: Record<string, AddressStanza | undefined>;
   } | null;
-  // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
-  // nobody could import is exactly the one that might have declared one.
-  const domains = await loadWorkerConfig(workerDir)
-    .then((worker) => loadWorkerDomains(worker))
-    .catch(() => undefined);
-  return declared.map((name) => {
+  const environments: SettingsEnvironment[] = [];
+  for (const name of declared) {
+    // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
+    // nobody could import, or that throws for this environment, is exactly the one that might have declared one.
+    const domains = await composeFor(name, async (load) => loadWorkerDomains(await load(workerDir))).catch(
+      () => undefined,
+    );
     const address = resolveWorkerAddress({ environment: name, domains, stanza: config?.env?.[name] });
-    return { name, origin: address?.url ?? null };
-  });
+    environments.push({ name, origin: address?.url ?? null });
+  }
+  return environments;
 }
 
 /** What it takes to reach the account, all of it injectable so a unit test never calls out. */
@@ -114,6 +115,8 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
 
   let databases: Promise<readonly string[]> | undefined;
   const zones = new Map<string, Promise<boolean>>();
+  const secrets = new Map<string, Promise<boolean>>();
+  const storeEntries = new Map<string, Promise<boolean>>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -136,7 +139,26 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
     // `async` so a refusal is a rejected promise rather than a synchronous throw: the runner guards both,
     // but a seam that throws before returning a promise is the shape `commands/doctor.ts` documents as the
     // one `.catch()` never sees, and no caller of this should have to know which it is.
-    secret: async ({ name, environment }) => {
+    // Asked of the store `pithy secrets provision` writes to, by the entry name the check composed. No id
+    // recorded is a refusal rather than `false`: "missing" would be a claim about every entry on a machine
+    // that has simply never run `pithy add secrets`, and the runner turns a refusal into `unchecked`.
+    storeEntry: async (name) => {
+      const storeId = vars.SECRETS_STORE_ID ?? "";
+      if (!storeId) {
+        throw new InternalError({
+          message: "The Secrets Store id is not recorded, so no entry can be asked about.",
+          action: "Run pithy add secrets to record SECRETS_STORE_ID.",
+          detail: `store entry ${name} asked with no SECRETS_STORE_ID`,
+        });
+      }
+      // Memoized like the rest: every environment's composition of email asks for every environment's entry.
+      const existing = storeEntries.get(name);
+      if (existing) return existing;
+      const answer = clients.secrets(storeId).exists(name);
+      storeEntries.set(name, answer);
+      return answer;
+    },
+    vaultSecret: async ({ name, environment }) => {
       // **`dev` is refused rather than answered.** A `d1` secret's value is sealed under a master key that
       // never leaves that environment's manager Worker, and `dev` has no manager — it is local Miniflare.
       // Answering `false` would report a signing key as missing on every developer's machine, which is a
@@ -148,7 +170,14 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
           detail: `secret ${name} in dev has no manager Worker to answer`,
         });
       }
-      return probe.probe({ env: environment as "staging" | "prod", name });
+      // Memoized like the two above: doctor judges each environment's composition of a capability, and every
+      // one of them asks the same question of the same manager.
+      const key = `${environment}\u0000${name}`;
+      const existing = secrets.get(key);
+      if (existing) return existing;
+      const answer = probe.probe({ env: environment as "staging" | "prod", name });
+      secrets.set(key, answer);
+      return answer;
     },
   };
   return { state: "reachable", reader };
@@ -164,7 +193,11 @@ export interface SettingsWorkerScope {
 /** What the default settings probe needs, all of it already resolved once by `buildDoctorReport`. */
 export interface DoctorSettingsOptions {
   projectDir: string;
-  /** The Workers in scope — already narrowed by `--worker`, so nothing here re-enumerates `apps/`. */
+  /**
+   * The Workers in scope — already narrowed by `--worker`, so nothing here re-enumerates `apps/` — **once
+   * per environment each composes for**. A capability's options can differ by environment, so every
+   * environment's instance is judged; the runner reports a finding they share once.
+   */
   workers: readonly SettingsWorkerScope[];
   /** The account this project belongs to, as the `Cloudflare:` block of the same report reads it. */
   account: CloudflareAccountSelection | null;
@@ -187,10 +220,20 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
   if (!options.workers.some((worker) => worker.capabilities.some((capability) => capability.settings))) return null;
   const project = requireProjectName(await loadProject(options.projectDir));
   const dirs = new Map(options.workers.map((worker) => [worker.name, worker.dir]));
+  // Once per Worker. The runner asks per capability, doctor hands each Worker over once per environment, and
+  // every answer composes each declared environment again — the same question, asked that many times.
+  const environments = new Map<string, Promise<SettingsEnvironment[]>>();
   return checkCapabilitySettings({
     project,
     workers: options.workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })),
-    environments: (worker) => settingsEnvironments(options.projectDir, dirs.get(worker) ?? options.projectDir),
+    environments: (worker) => {
+      let answer = environments.get(worker);
+      if (answer === undefined) {
+        answer = settingsEnvironments(options.projectDir, dirs.get(worker) ?? options.projectDir);
+        environments.set(worker, answer);
+      }
+      return answer;
+    },
     connect: () =>
       settingsAccountConnection({
         account: options.account,

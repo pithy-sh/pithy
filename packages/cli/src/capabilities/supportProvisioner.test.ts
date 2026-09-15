@@ -39,11 +39,14 @@ function fakeCf() {
   const createBucket = vi.fn();
   const ensureWorkerRoute = vi.fn();
   const removeWorkerRoute = vi.fn();
+  const getWorker = vi.fn();
+  const deleteWorker = vi.fn();
   const cf = {
     r2Provisioner: () => ({ findBucketByName, createBucket }),
     emailRouting: () => ({ ensureWorkerRoute, removeWorkerRoute }),
+    workers: () => ({ getWorker, deleteWorker }),
   } as unknown as CloudflareClients;
-  return { cf, findBucketByName, createBucket, ensureWorkerRoute, removeWorkerRoute };
+  return { cf, findBucketByName, createBucket, ensureWorkerRoute, removeWorkerRoute, getWorker, deleteWorker };
 }
 
 function provisioner(cf: CloudflareClients, events: CliAuditEvent[], overrides?: ProvisionerSlice) {
@@ -181,6 +184,25 @@ describe("the inbound routing rule", () => {
       workerName: routing.appWorkerName,
       ruleName: supportRoutingRuleName(PROJECT),
     });
+  });
+
+  // What a `--storage` or `--routing-zone` teardown asks of every other environment (#591).
+  test("hasWorker asks for this project's classification worker in that environment, and deletes nothing", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+    });
+
+    getWorker.mockResolvedValue({ id: supportWorkerName(PROJECT, "prod") });
+    expect(await deprovisioner.hasWorker("prod")).toBe(true);
+    expect(getWorker).toHaveBeenCalledWith(supportWorkerName(PROJECT, "prod"));
+
+    getWorker.mockResolvedValue(null);
+    expect(await deprovisioner.hasWorker("staging")).toBe(false);
+    expect(deleteWorker).not.toHaveBeenCalled();
   });
 
   test("teardown removes only this project's rule", async () => {

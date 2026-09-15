@@ -3,8 +3,10 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { email } from "@pithy-sh/email/src/capability";
+import { EMAIL_LINK_SIGNING_KEY } from "@pithy-sh/email/src/crypto/signingKey";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import {
   type EmailWorkerWranglerTemplate,
@@ -62,7 +64,7 @@ describe("the committed email worker template", () => {
     }
   });
 
-  test("fills the three database ids, the store id, and the scoped master key", async () => {
+  test("fills the three database ids, the store id, the scoped master key, and the link-signing key", async () => {
     const config = resolveEmailConfig(await readTemplate(), { ...params, env: "staging" });
     expect(config.d1_databases).toEqual([
       { binding: "DB", database_name: "pithy-app", database_id: "app-123" },
@@ -76,6 +78,12 @@ describe("the committed email worker template", () => {
         binding: "SECRETS_ENCRYPTION_KEYS",
         store_id: "store-abc",
         secret_name: masterKeySecretName("acme", "staging"),
+      },
+      {
+        binding: EMAIL_LINK_SIGNING_KEY,
+        store_id: "store-abc",
+        // The entry `pithy secrets provision` created for staging, through the namer that created it (#596).
+        secret_name: environmentScope("acme", "staging").secretEntry(EMAIL_LINK_SIGNING_KEY, "environment"),
       },
     ]);
   });

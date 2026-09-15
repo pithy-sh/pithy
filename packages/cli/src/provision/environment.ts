@@ -1,22 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { relative } from "node:path";
+import { basename, relative } from "node:path";
 import type { BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
-import type { BindingNaming, ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { BindingNaming, ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
-import type { FeatureResource } from "../feature/manifest";
+import type { FeatureResource, FeatureScript } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
-import { resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -86,10 +86,30 @@ const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
  * decision a caller made rather than a path nobody noticed.
  */
 export interface ProvisionRecord {
-  /** Everything a previous run recorded that this scope could legitimately have created. */
-  load(): Promise<FeatureResource[]>;
+  /** Everything a previous run recorded that this scope could legitimately have created or named. */
+  load(): Promise<ProvisionRecorded>;
   /** Persist the running set. Called after each resource, so an interrupted run resumes from here. */
-  save(resources: FeatureResource[]): Promise<void>;
+  save(recorded: ProvisionRecorded): Promise<void>;
+}
+
+/**
+ * What a {@link ProvisionRecord} holds: the resources a run created, and the Worker scripts it named.
+ *
+ * **Scripts beside resources, because teardown deletes what the record lists (#592).** A script was the
+ * one thing a feature put on the account that the record had no field for, so nothing ever deleted one:
+ * every `pithy feature destroy` left its Workers deployed, bound to databases it had just removed.
+ * Provisioning does not upload a script, but it writes the name the deploy uploads under, so the name is
+ * recorded before that write — never after, where an interrupted run could leave a deployable name
+ * unrecorded.
+ */
+export interface ProvisionRecorded {
+  /** Every resource created or adopted, one per binding and kind. */
+  resources: FeatureResource[];
+  /**
+   * Every script named, one per name — including one named by an earlier run for a Worker since removed
+   * from the branch, which may still be deployed.
+   */
+  scripts: FeatureScript[];
 }
 
 /**
@@ -296,9 +316,13 @@ export interface ProvisionedSecret {
 
 /** One Worker as provisioning needs it: where it lives, and what *it* composes. */
 export interface ProvisionWorker {
-  /** The Worker's deploy name — its `wrangler.jsonc` `name` — which the scoped script name derives from. */
+  /** The Worker's deploy name — its `wrangler.jsonc` `name` — which a declared environment's script name falls back to. */
   name: string;
-  /** The Worker's directory — the `wrangler.jsonc` this run writes into, and the `apps/<name>` a sibling's service binding names it by. */
+  /**
+   * The Worker's directory — the `wrangler.jsonc` this run writes into, and the `apps/<name>` a sibling's
+   * service binding names it by. A feature's script name is composed from its basename; see
+   * {@link provisionWorkerNames}.
+   */
   dir: string;
   /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
   capabilities: Capability[];
@@ -371,11 +395,26 @@ export interface ProvisionEnvironmentOptions {
 }
 
 /**
- * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
- * `apps/<name>/pithy.config.ts`.
+ * The two names a scope composes one Worker's script name from — its `apps/<app>` directory and its deploy
+ * name — read off the resolved Worker **once, here, for every writer.**
+ *
+ * Two computations need them: the service targets and report below ({@link scopedWorkerNames}) and the
+ * stanza `name` the deploy reads (`applyProvisionedEnv`). Each used to be handed `worker.name` on its own,
+ * which is how a feature Worker came to carry the project twice (#587) — and a fix at either one alone
+ * would have split the address a sibling calls from the address the Worker deploys under. Both reach the
+ * scope through this function, so they cannot be handed different names.
  */
-const defaultResolveWorkers = async (projectDir: string): Promise<ProvisionWorker[]> =>
-  (await resolveWorkers({ projectDir })).map((worker) => ({
+export function provisionWorkerNames(worker: Pick<ProvisionWorker, "name" | "dir">): ProvisionWorkerNames {
+  return { app: basename(worker.dir), script: worker.name };
+}
+
+/**
+ * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
+ * `apps/<name>/pithy.config.ts` — composed for the environment being provisioned, which is the one whose
+ * resources, bindings and migrations this run writes (#595).
+ */
+const defaultResolveWorkers = async (projectDir: string, environment: string): Promise<ProvisionWorker[]> =>
+  (await resolveWorkersFor(environment, { projectDir })).map((worker) => ({
     name: worker.name,
     dir: worker.dir,
     capabilities: worker.capabilities,
@@ -437,7 +476,7 @@ async function scopedWorkerNames(
     } catch {
       declared = undefined;
     }
-    names.set(worker.name, scope.worker(worker.name, declared));
+    names.set(worker.name, scope.worker(provisionWorkerNames(worker), declared));
   }
   return names;
 }
@@ -454,7 +493,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const { scope } = options;
   // Resolve the Workers first. Their deploy names are what every service binding is retargeted at, so an
   // unresolvable target must fail here — before a single Cloudflare resource is created.
-  const workers = await (options.resolveWorkers ?? defaultResolveWorkers)(options.projectDir);
+  const workers = await (options.resolveWorkers
+    ? options.resolveWorkers(options.projectDir)
+    : defaultResolveWorkers(options.projectDir, scope.stanza));
   const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,
@@ -464,14 +505,33 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // Where each Worker lands in this scope, resolved once. Every `service` binding below and the report's
   // own worker list read it, so the three can never disagree about one Worker's address (#580).
   const scopedNames = await scopedWorkerNames(workers, scope);
-  const scopedName = (worker: string): string => scopedNames.get(worker) ?? scope.worker(worker);
+  const scopedName = (worker: string): string => {
+    const name = scopedNames.get(worker);
+    if (name !== undefined) return name;
+    // Unreachable while every caller passes a name out of `workers`, which is the set the map was built
+    // from. Composing a name here instead would be a third computation of the address — with only one of
+    // the two names a scope needs, which is the shape #587 removed.
+    throw new InternalError({
+      message: "A Worker's scoped name could not be resolved.",
+      detail: `scopedName was asked for "${worker}", which is not one of this run's resolved Workers: ${[...scopedNames.keys()].join(", ")}.`,
+    });
+  };
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
     service: scopedName(resolveServiceTarget(workers, service.target)),
   }));
 
-  const recorded: FeatureResource[] = options.record ? await options.record.load() : [];
-  const byBinding = new Map(recorded.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
+  const recorded: ProvisionRecorded = options.record ? await options.record.load() : { resources: [], scripts: [] };
+  const byBinding = new Map(recorded.resources.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
+  // Every script this run names, over every script an earlier run named: a Worker removed from the branch
+  // since may still be deployed, and the record is the only place teardown can learn its name (#592).
+  const byScript = new Map(recorded.scripts.map((script) => [script.name, script]));
+  for (const worker of workers) {
+    const name = scopedName(worker.name);
+    byScript.set(name, { ...provisionWorkerNames(worker), name });
+  }
+  const persist = async (): Promise<void> =>
+    options.record?.save({ resources: [...byBinding.values()], scripts: [...byScript.values()] });
 
   const resources: ProvisionedResource[] = [];
   for (const { binding, kind, name, global } of bindings) {
@@ -489,7 +549,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     // the other end, so honoring `global` in a feature namer could never quietly become a deletion.
     if (!global) {
       byBinding.set(`${kind}:${binding}`, resource);
-      await options.record?.save([...byBinding.values()]); // persist after each — a crash mid-run resumes from here.
+      await persist(); // after each — a crash mid-run resumes from here.
     }
     const provisioned: ProvisionedResource = { ...resource, created: found === null };
     resources.push(provisioned);
@@ -507,6 +567,10 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       });
     }
   }
+
+  // The script names, recorded before the first config that carries one is written. A run with no
+  // resource to create has saved nothing yet, and a deployable name must never exist unrecorded (#592).
+  await persist();
 
   // Write the ids, the scoped script name, and the service targets into **each Worker's own**
   // `wrangler.jsonc` — the file wrangler actually reads, and the file `migrate`/`seed` resolve binding ids
@@ -546,7 +610,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     const written = resources.filter((resource) => declared.has(resource.binding));
     const destination = await applyProvisionedEnv({
       workerDir: worker.dir,
-      worker: worker.name,
+      worker: provisionWorkerNames(worker),
       scope,
       resources: written,
       secrets: workerSecrets.bound,

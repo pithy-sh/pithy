@@ -4,7 +4,9 @@
 import { access } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
@@ -14,7 +16,8 @@ import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVar
 import { readDevVarsSource } from "../devSecrets/devVars";
 import type { StatePathOptions } from "../notifier/state";
 import { envStanzas, type WranglerStanza } from "../project/bindingEntries";
-import { allCapabilities, loadWorkerConfig, projectEnvironments } from "../project/config";
+import { resolveWorkersFor } from "../project/composeFor";
+import { projectEnvironments } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 import { featureConfigPath } from "../provision/featureConfig";
@@ -49,12 +52,17 @@ import { featureConfigPath } from "../provision/featureConfig";
  *
  * ## What it reads, and what it does not see
  *
- * Files and one config import per Worker, no account call. Stranded vars are looked for in the three files a
- * provisioner wrote them into. A Worker's generated `.dev.vars` is not read: it is rebuilt from `dev.json`,
- * which is. A `.dev.vars.local` is not read either: it is the adopter's override, and no provisioner wrote
- * one. **The projection is asked of the config as this
- * process composes it**, unstamped — a config that computes its sitekeys from `compositionEnvironment()` is
- * answered for whatever that returns here, not per environment. A feature build is reported only once the
+ * Files and one composition per Worker per environment, no account call. Stranded vars are looked for in the
+ * three files a provisioner wrote them into. A Worker's generated `.dev.vars` is not read: it is rebuilt from
+ * `dev.json`, which is. A `.dev.vars.local` is not read either: it is the adopter's override, and no provisioner
+ * wrote one.
+ *
+ * **Each environment's widget is asked of the composition for that environment** (#595), the one its build
+ * inlines. A config that computes a sitekey, or composes turnstile at all, from `compositionEnvironment()` is
+ * answered as that environment's bundle would be; asked once, unstamped, it named a prod that renders and
+ * missed a staging where nobody can sign in. `pithy doctor` hands in the compositions its report already took,
+ * so none is composed twice. Which Workers a provision accepts is read the same way: a Worker composing
+ * turnstile in any environment checked is one. A feature build is reported only once the
  * Worker has a generated feature config (`featureConfigPath`): before that, nothing has built one, and a
  * line every Turnstile project carried forever would be noise rather than a finding.
  *
@@ -137,11 +145,41 @@ async function builtEnvironments(target: WorkerTarget, declared: readonly string
   return built;
 }
 
+/** One Worker composed for one environment — the capabilities a build for it composes. */
+export type ComposeWorkerFor = (
+  worker: { name: string; dir: string },
+  environment: string,
+) => Promise<{ capabilities: readonly Capability[] }>;
+
+/** Options for {@link checkTurnstileSitekeys}. */
+export interface TurnstileSitekeysOptions {
+  /** Where the project's `dev.json` is looked for. */
+  paths?: StatePathOptions;
+  /**
+   * The composition for one Worker in one environment. `pithy doctor` hands in the ones its report already
+   * took; the default composes each through {@link resolveWorkersFor}, narrowed to the Worker by name and
+   * picked by directory.
+   */
+  composeWorker?: ComposeWorkerFor;
+}
+
+/** Compose one Worker for one environment through the primitive, narrowed by name and picked by directory. */
+function composeThroughPrimitive(projectDir: string): ComposeWorkerFor {
+  return async (worker, environment) => {
+    const found = await resolveWorkersFor(environment, { projectDir, worker: worker.name });
+    const match = found.find((candidate) => candidate.dir === worker.dir);
+    if (match === undefined)
+      throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+    return match;
+  };
+}
+
 /** Walk every Worker and the project's `dev.json`. Never throws. */
 export async function checkTurnstileSitekeys(
   projectDir: string,
-  options: { paths?: StatePathOptions } = {},
+  options: TurnstileSitekeysOptions = {},
 ): Promise<TurnstileSitekeysCheck> {
+  const composeWorker = options.composeWorker ?? composeThroughPrimitive(projectDir);
   let workers: WorkerTarget[];
   try {
     workers = await discoverWorkers(projectDir);
@@ -168,25 +206,27 @@ export async function checkTurnstileSitekeys(
       }
     }
 
-    let capabilities: ReturnType<typeof allCapabilities>;
-    try {
-      capabilities = allCapabilities(await loadWorkerConfig(target.dir));
-    } catch {
-      // A Worker with no config, or one that throws: the health block names that. It costs this Worker its
-      // widget verdict and nothing else — its stranded vars above were read off a different file.
-      if (target.hasWrangler === true) unreadable = true;
-      continue;
-    }
-    const turnstile = capabilities.find(isTurnstileCapability);
-    if (turnstile !== undefined) composing.push(worker);
-    // No login gate, no blocked sign-in: a Worker that protects only its own forms renders what it renders.
-    if (turnstile?.turnstileConfig.protect[TURNSTILE_LOGIN_ACTION] === undefined) continue;
     for (const environment of await builtEnvironments(target, declared)) {
+      let capabilities: readonly Capability[];
+      try {
+        capabilities = (await composeWorker(target, environment)).capabilities;
+      } catch {
+        // A Worker with no config, or one that throws for this environment: `Environment configs:` and the
+        // health block name that. It costs this Worker this environment's widget verdict and nothing else —
+        // its stranded vars above were read off a different file.
+        if (target.hasWrangler === true) unreadable = true;
+        continue;
+      }
+      const turnstile = capabilities.find(isTurnstileCapability);
+      if (turnstile !== undefined && !composing.includes(worker)) composing.push(worker);
+      // No login gate, no blocked sign-in: a Worker that protects only its own forms renders what it renders.
+      if (turnstile?.turnstileConfig.protect[TURNSTILE_LOGIN_ACTION] === undefined) continue;
       if (withoutSlot.has(environment)) {
         unrendered.push({ worker, environment, slot: false });
         continue;
       }
-      // The build's own resolver, so this answers what a bundle for this environment would inline.
+      // The build's own resolver, over the build's own composition, so this answers what a bundle for this
+      // environment would inline.
       if (!resolveClientProjection(turnstile, { environment }).enabled) {
         unrendered.push({ worker, environment, slot: true });
       }

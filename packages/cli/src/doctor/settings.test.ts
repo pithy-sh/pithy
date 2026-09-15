@@ -29,7 +29,8 @@ const environments: SettingsEnvironment[] = [
 const reader: SettingsAccountReader = {
   d1Databases: async () => ["acme-global-email-suppressions"],
   zone: async () => true,
-  secret: async () => true,
+  vaultSecret: async () => false,
+  storeEntry: async () => true,
 };
 
 const reachable: SettingsAccountConnection = { state: "reachable", reader };
@@ -43,6 +44,30 @@ function options(overrides: Partial<CapabilitySettingsOptions> = {}): Capability
     ...overrides,
   };
 }
+
+describe("one Worker composed for several environments", () => {
+  test("every environment's instance is judged, and what they share is reported once", async () => {
+    const shared = { setting: "fromAddress", environment: null, problem: "Not an address.", action: "Fix it." };
+    const prodOnly = { setting: "BASE_URL", environment: "prod", problem: "Not prod's origin.", action: "Fix it." };
+    const dev = vi.fn(() => [shared]);
+    const prod = vi.fn(() => [shared, prodOnly]);
+    const check = await checkCapabilitySettings(
+      options({
+        workers: [
+          { name: "api", capabilities: [capability("email", { local: dev })] },
+          { name: "api", capabilities: [capability("email", { local: prod })] },
+        ],
+      }),
+    );
+    expect(dev).toHaveBeenCalledTimes(1);
+    expect(prod).toHaveBeenCalledTimes(1);
+    expect(check?.checked).toEqual([{ worker: "api", capability: "email" }]);
+    expect(check?.findings).toEqual([
+      { ...shared, worker: "api", capability: "email", tier: "local" },
+      { ...prodOnly, worker: "api", capability: "email", tier: "local" },
+    ]);
+  });
+});
 
 describe("discovery", () => {
   test("a capability that declares no check is skipped in silence", async () => {
@@ -170,7 +195,7 @@ describe("the account tier, three outcomes", () => {
           setting: "acme-global-email-suppressions",
           environment: null,
           problem: "No such D1 database in this account.",
-          action: "Run pithy email provision --env dev.",
+          action: "Run pithy email provision.",
         },
       ]),
     );
@@ -262,9 +287,9 @@ describe("rendering", () => {
         setting: "BASE_URL",
         environment: "prod",
         problem: "Not a URL.",
-        action: "Run pithy email provision --env prod.",
+        action: "Run pithy email provision.",
       }),
-    ).toBe("email: BASE_URL (prod) — Not a URL. Run pithy email provision --env prod.");
+    ).toBe("email: BASE_URL (prod) — Not a URL. Run pithy email provision.");
   });
 
   test("a finding about every environment at once names none", () => {
