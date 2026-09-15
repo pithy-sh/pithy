@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { workerIdentity } from "../project/workerIdentity";
@@ -63,7 +64,9 @@ const add = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-      const target = await targetWorker({
+      // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
+      // from. Each environment's route allowlist is composed for that environment by the flow itself.
+      const target = await targetWorker(LOCAL_ENVIRONMENT, {
         projectDir,
         interactive,
         ...(args.worker === undefined ? {} : { worker: args.worker }),
@@ -147,7 +150,9 @@ const sync = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-      const target = await targetWorker({
+      // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
+      // from. Each environment's route allowlist is composed for that environment by the flow itself.
+      const target = await targetWorker(LOCAL_ENVIRONMENT, {
         projectDir,
         interactive,
         ...(args.worker === undefined ? {} : { worker: args.worker }),

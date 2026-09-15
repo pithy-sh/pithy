@@ -3,6 +3,7 @@
 
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
@@ -220,7 +221,10 @@ const sync = defineCommand({
       const env = args.env === undefined ? undefined : requireEnvironment(args.env);
       const projectDir = process.cwd();
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-      const target = await targetWorker({
+      // Composed for `--env` when one is named. Without it every environment is reconciled from the
+      // composition for dev: a `domains` or `app` declaration that differs by environment is written from
+      // dev's value into every stanza. That is this command's limit, not a composition for none.
+      const target = await targetWorker(env ?? LOCAL_ENVIRONMENT, {
         projectDir,
         interactive,
         ...(args.worker === undefined ? {} : { worker: args.worker }),

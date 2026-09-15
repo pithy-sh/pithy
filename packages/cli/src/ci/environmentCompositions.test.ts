@@ -23,6 +23,14 @@ import { sourceFiles } from "./sourceFiles";
  *    ({@link RAW_COMPOSERS}). A module naming a raw loader lands in the table
  *    or fails; a table entry whose module stopped naming one fails too, so the table cannot drift into a
  *    list of reasons nobody re-reads (#211).
+ *
+ *    **A composition carried out of a third module is followed (#595).** Every exported function anywhere
+ *    in the tree that reaches a raw loader — directly, through a helper in its own module, or through another
+ *    such function — is a carrier ({@link carriers}), and each is named in {@link SEALED} or
+ *    {@link CARRYING}. A sealed one hands back an answer, never a composition, so its callers inherit
+ *    nothing. Every other one is a raw loader in its own right, and every module naming it is held to this
+ *    half. `commands/add.ts`'s `targetWorker` handed `pithy remove --drop` a composition for no environment
+ *    through exactly that gap.
  * 3. **Every module that assembles a backend does it inside the primitive.** `createBackend` is where a
  *    capability reads the environment at registration — the dev-login route is mounted there or not — so
  *    assembling one with no environment stamped is the #255 defect.
@@ -40,13 +48,15 @@ import { sourceFiles } from "./sourceFiles";
  *   `loadWorkerConfig(dir)` appended to `project/workflows.ts`. Half 3 likewise
  *   passes a module that assembles one backend inside the primitive and a second outside it. Reading call
  *   sites wants a binding analysis rather than a wider regex.
- * - **A composition carried out of a third module.** The loaders are derived from the two modules that
- *   define them ({@link rawLoaders}); a function another module exports that composes raw inside it is not
- *   followed, so its callers are not held. `commands/add.ts`'s `targetWorker`, reached from
- *   `commands/remove.ts`, is one today. Planted: an `export async function everyWorker(dir) { return
- *   resolveWorkerSet({ projectDir: dir }); }` in `project/domains.ts`, already listed, and a call to it
- *   from `commands/migrate.ts` — green. Following it module by module names nearly fifty modules through
- *   wrappers that compose for no environment on purpose, which is a binding analysis this file does not do.
+ * - **A seal is a sentence, not a proof.** A carrier in {@link SEALED} is believed to hand back an answer. If
+ *   it hands back a composition after all — a field of its result that is a capability instance — its
+ *   callers are not held. The table is where that is checked, by a reviewer.
+ * - **Carriers by name, not by binding.** A carrier's name is matched in every module, so a module declaring
+ *   its own unrelated function of the same name is held as if it called the carrier (a false red, never a
+ *   false green). A carrier passed as a value — stored in an object, handed to a function — and called under
+ *   another name is followed only as far as the module that names it.
+ * - **Functions only.** A carrier is a top-level `function` or a `const` bound at column 0. A class method, or
+ *   an object literal's member exported as a whole, that composes raw is not followed past its module.
  * - **Which environment.** `composeFor("dev", …)` in a command about staging reaches the primitive and
  *   passes. The environments this CLI composes for are held by behavior —
  *   `migrations/environmentComposition.test.ts` — not by source text.
@@ -145,16 +155,91 @@ function rawLoaders(): string[] {
  * by `import()`, so that is what is matched. Nothing in the tree does either today.
  */
 function rawLoaderPattern(): RegExp {
-  return new RegExp(`(?<![.\\w$])(?:${rawLoaders().join("|")})\\b(?!\\s*\\??\\s*:)`);
+  return namesAny(carriers().loaders);
+}
+
+/**
+ * **Every exported function that composes Workers with no environment stamped and hands something back,
+ * anywhere in the tree** — keyed `module#name`, derived to a fixed point.
+ *
+ * A function reaches a raw loader when its text names one, names a helper of its own module that does, or
+ * names a carrier another module exports that is not sealed. A sealed carrier stops the walk in its own module
+ * as well as in others, because what reaches its callers is its answer.
+ */
+function carriers(): { keys: string[]; loaders: string[] } {
+  derived ??= deriveCarriers();
+  return derived;
+}
+
+/** The walk behind {@link carriers}, taken once: the tree does not change under a test run. */
+let derived: { keys: string[]; loaders: string[] } | undefined;
+
+function deriveCarriers(): { keys: string[]; loaders: string[] } {
+  const loaders = new Set(rawLoaders());
+  const found = new Set<string>();
+  const skip = new Set([PRIMITIVE, ...LOADER_MODULES]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const module of MODULES) {
+      if (skip.has(module.key)) continue;
+      const declared = topLevelFunctions(module.code);
+      const reaching = new Set<string>();
+      for (let local = true; local; ) {
+        local = false;
+        const via = [...loaders, ...[...reaching].filter((name) => !(`${module.key}#${name}` in SEALED))];
+        for (const { name, text } of declared) {
+          if (reaching.has(name) || via.length === 0) continue;
+          if (namesAny(via).test(text.slice(text.indexOf(name) + name.length))) {
+            reaching.add(name);
+            local = true;
+          }
+        }
+      }
+      for (const { name, exported } of declared) {
+        const key = `${module.key}#${name}`;
+        if (!exported || !reaching.has(name) || found.has(key)) continue;
+        found.add(key);
+        if (!(key in SEALED)) loaders.add(name);
+        grew = true;
+      }
+    }
+  }
+  return { keys: [...found].sort(), loaders: [...loaders].sort() };
+}
+
+/**
+ * A use of any of `names`: not a member read, not a property key, and not a type query. `typeof resolveWorkers`
+ * names a loader's shape and composes nothing.
+ */
+function namesAny(names: readonly string[]): RegExp {
+  return new RegExp(`(?<![.\\w$])(?<!typeof\\s+)(?:${names.join("|")})\\b(?!\\s*\\??\\s*:)`);
 }
 
 /** A namespace import or an `import()` of a module that defines a raw loader. */
 const LOADER_MODULE_WHOLE =
   /import\s*\*\s*as\s+[\w$]+\s+from\s*["'][^"']*(?:project\/|\.\/)(?:workerScope|config)["']|\bimport\s*\(\s*["'][^"']*(?:project\/|\.\/)(?:workerScope|config)["']\s*\)/;
 
+/**
+ * A namespace import or an `import()` of a module exporting a carrier that is not sealed — the same hole
+ * {@link LOADER_MODULE_WHOLE} closes, one module further out: `import * as add from "./add"` then
+ * `add.targetWorker(…)` is a member read by shape.
+ */
+function carrierModuleWhole(): RegExp {
+  const modules = [
+    ...new Set(
+      carriers()
+        .keys.filter((key) => !(key in SEALED))
+        .map((key) => (key.split("#")[0] ?? "").replace(/\.ts$/, "").split("/").pop() ?? ""),
+    ),
+  ];
+  if (modules.length === 0) return /(?!)/;
+  const specifier = `["'][^"']*\\/(?:${modules.join("|")})["']`;
+  return new RegExp(`import\\s*\\*\\s*as\\s+[\\w$]+\\s+from\\s*${specifier}|\\bimport\\s*\\(\\s*${specifier}\\s*\\)`);
+}
+
 /** Whether a module composes Workers through a raw loader, by any of the spellings above. */
 function composesRaw(code: string): boolean {
-  return rawLoaderPattern().test(code) || LOADER_MODULE_WHOLE.test(code);
+  return rawLoaderPattern().test(code) || LOADER_MODULE_WHOLE.test(code) || carrierModuleWhole().test(code);
 }
 
 /** A module that assembles a backend: a call to `createBackend`, or an import of it under any alias. */
@@ -185,8 +270,6 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Decides whether a command that names no one environment audits from the composition for none; a command that names its environment in actedOn composes for it through projectCapabilitySetFor.",
   "capabilities/secretApplicability.ts":
     "Resolves once, unstamped, only to learn which Worker directories exist; every environment's answer is composed through composeFor.",
-  "commands/add.ts":
-    "Chooses the Worker pithy add and pithy remove write wiring into, for every environment at once; pithy remove --drop reverses the migrations of that composition, which is a limit of this entry.",
   "commands/email.ts":
     "Reads the capability's config and the domains declaration once, for provisioning that spans every declared environment.",
   "commands/media.ts":
@@ -208,11 +291,47 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "devSecrets/targets.ts":
     "Reads the dev secrets registry, which is per project with one value per name, re-importing a config pithy add has just written.",
   "doctor/settingsSources.ts": "Reads the domains declaration, which names every environment's address in one value.",
+  "main.ts":
+    "Imports every command module whole, commands/email.ts among them, to run its default export; each command it runs is held on its own.",
   "project/deploy.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/deployKit.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/domains.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/envInventory.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/workflows.ts": "Compares the app's workflow declaration with every environment's stanza at once.",
+};
+
+/**
+ * Every carrier whose composition never leaves it, and **what it hands back instead**. Its callers inherit no
+ * composition, so they are not held for calling it. One sentence each, checkable against the function.
+ */
+const SEALED: Readonly<Record<string, string>> = {
+  "audit/cliAudit.ts#createProjectCliAudit":
+    "Returns an audit emitter; the composition only decides whether one writes, and is the environment actedOn names when a command names one.",
+  "capabilities/secretApplicability.ts#projectSecretApplicability":
+    "Returns which secrets each environment reaches, each composed through composeFor; the raw resolve only finds the Worker directories.",
+  "devSecrets/targets.ts#resolveDevSecretsTargets":
+    "Returns each Worker's directory and secret registry, which is per project with one value per name.",
+  "doctor/settingsSources.ts#settingsEnvironments":
+    "Returns each declared environment's name and origin, read from the domains declaration that names every environment's address in one value.",
+  "project/deploy.ts#deployProject":
+    "Returns the deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
+  "project/deployKit.ts#deployKitWorkers":
+    "Returns the kit deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
+  "project/domains.ts#originDrift":
+    "Returns origin drift per environment, read from the domains declaration that names every environment's address in one value.",
+  "project/envInventory.ts#buildEnvInventory":
+    "Returns the environment inventory; the composition is read only for the domains declaration, which names every environment's address in one value.",
+  "project/workflows.ts#workflowDrift":
+    "Returns workflow drift per environment, comparing the app's one workflow declaration with every stanza at once.",
+};
+
+/**
+ * Every carrier that hands a composition back, and **why that composition is not for one environment**. Each
+ * is a raw loader for the rest of the tree: a module naming it is held to {@link RAW_COMPOSERS}.
+ */
+const CARRYING: Readonly<Record<string, string>> = {
+  "commands/email.ts#loadEmailCapability":
+    "Returns the email capability instance for pithy email's provisioning, which spans every declared environment; only commands/email.ts calls it.",
 };
 
 /** Every module that imports a computed specifier, and what it imports. */
@@ -272,6 +391,18 @@ describe("a composition for an environment is composed for it, by one primitive"
       "resolveWorkers",
       "resolveWorkersReporting",
     ]);
+  });
+
+  test("every carrier out of a module is named, sealed or carrying, with why", () => {
+    const { keys } = carriers();
+    expect(
+      keys,
+      "This exported function composes Workers with no environment stamped and hands something back. If its command is about one environment, compose through project/composeFor.ts. If it hands back an answer and never a composition, name it in SEALED with what it returns. If it hands back a composition, name it in CARRYING with why that composition is not for one environment: every module calling it is then held to RAW_COMPOSERS.",
+    ).toEqual([...Object.keys(SEALED), ...Object.keys(CARRYING)].sort());
+    for (const key of Object.keys(SEALED)) expect(key in CARRYING, key).toBe(false);
+    for (const [key, reason] of [...Object.entries(SEALED), ...Object.entries(CARRYING)]) {
+      expect(reason, key).toMatch(/^[A-Z].*\.$/);
+    }
   });
 
   test("every module composing Workers without the primitive is named, with why", () => {
@@ -338,6 +469,18 @@ describe("a composition for an environment is composed for it, by one primitive"
       "export viaHelper",
       "export arrow",
     ]);
+    // A type query names a loader's shape and composes nothing.
+    expect(rawLoaderPattern().test("workers: Awaited<ReturnType<typeof resolveWorkers>>,")).toBe(false);
+    expect(namesAny(["resolveWorkers"]).test("typeof   resolveWorkers")).toBe(false);
+    // A carrier is a loader for everyone else: the one carrying today, and the one it replaced.
+    expect(rawLoaderPattern().test("const email = await loadEmailCapability(projectDir);")).toBe(true);
+    expect(rawLoaderPattern().test("const target = await targetWorker(env, options);")).toBe(false);
+    // A sealed carrier is not.
+    expect(rawLoaderPattern().test("const drift = await originDrift(projectDir, environments);")).toBe(false);
+    // A namespace import of a module exporting a carrier, where the call is a member read by shape.
+    expect(composesRaw('import * as email from "./email";')).toBe(true);
+    expect(composesRaw('const { loadEmailCapability: load } = await import("../commands/email");')).toBe(true);
+    expect(composesRaw('import * as domains from "../project/domains";')).toBe(false);
     // The two shapes the skips let through, and what catches them instead.
     expect(rawLoaderPattern().test('const { resolveWorkers: all } = await import("./workerScope");')).toBe(false);
     expect(composesRaw('const { resolveWorkers: all } = await import("./workerScope");')).toBe(true);

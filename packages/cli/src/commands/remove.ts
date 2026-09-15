@@ -3,6 +3,7 @@
 
 import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -63,7 +64,13 @@ export default defineCommand({
       const env = requireEnvironment(args.env);
 
       // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever a TTY is.
-      const target = await targetWorker({
+      //
+      // Composed for the environment the removal is about (#595): `--drop`'s, whose database the reversed
+      // migrations are read off this composition for, and dev otherwise, which is what the audit below names.
+      // What the unwiring keeps for the other capabilities is read off the same composition, so a binding
+      // only another environment's composition needs is not held back by it.
+      const about = args.drop ? env : LOCAL_ENVIRONMENT;
+      const target = await targetWorker(about, {
         projectDir,
         interactive: Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
         ...(args.worker === undefined ? {} : { worker: args.worker }),
@@ -98,7 +105,7 @@ export default defineCommand({
           account,
           projectDir,
           worker: target.name,
-          env: args.drop ? env : "dev",
+          env: about,
           capabilities,
         }),
       });
