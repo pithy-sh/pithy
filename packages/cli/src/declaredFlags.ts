@@ -119,9 +119,9 @@ async function resolve<T>(value: T | Promise<T> | (() => T | Promise<T>)): Promi
   return typeof value === "function" ? await (value as () => T | Promise<T>)() : await value;
 }
 
-/** Where one command's own tokens end, and which of them are flags. */
+/** Which of one command's tokens are flags, and where its subcommand's begin. */
 interface Scan {
-  /** Every flag token, as typed and without any `=value`. */
+  /** Every flag token the command owns, as typed and without any `=value`. */
   flags: string[];
   /** The index in the input of the first positional — a dispatching command's subcommand name — or -1. */
   firstPositional: number;
@@ -138,8 +138,15 @@ interface Scan {
  *
  * **`--no-` tokens are lifted out first, because citty lifts them out first** — before `parseArgs`
  * sees the arguments — so a `--no-` token is never a value and never shifts which token is one.
+ *
+ * **Which flags the command owns turns on whether it dispatches, and on nothing else.** A group's first
+ * positional names the subcommand every later token belongs to, so a group owns the flags before it. A
+ * leaf's positional is its own argument — `secrets rotate API_KEY`, `seed staging` — and citty parses a
+ * leaf's flags on both sides of it, so a leaf owns every flag up to `--`. Cutting a leaf at its positional
+ * too is how `pithy secrets rotate API_KEY --dry-rn` went unchecked and rotated for real: the thing, then
+ * the flags, is the order people type.
  */
-function scan(tokens: readonly string[], args: ArgsDef): Scan {
+function scan(tokens: readonly string[], args: ArgsDef, dispatches: boolean): Scan {
   const options: Record<string, { type: "string" | "boolean"; short?: string }> = {};
   for (const [name, def] of Object.entries(args)) {
     const arg = def as { type?: string; alias?: unknown };
@@ -174,7 +181,7 @@ function scan(tokens: readonly string[], args: ArgsDef): Scan {
     if (token.kind === "option") flags.push({ flag: token.rawName, at });
     else if (token.kind === "positional" && firstPositional === -1) firstPositional = at;
   }
-  const own = flags.filter(({ at }) => firstPositional === -1 || at < firstPositional);
+  const own = dispatches ? flags.filter(({ at }) => firstPositional === -1 || at < firstPositional) : flags;
   return { flags: own.sort((left, right) => left.at - right.at).map(({ flag }) => flag), firstPositional };
 }
 
@@ -183,7 +190,7 @@ function scan(tokens: readonly string[], args: ArgsDef): Scan {
  *
  * Walked the way citty dispatches: a command with subcommands owns the tokens before the first positional
  * and hands the rest to the subcommand that positional names; a command without them owns every token up
- * to `--`. So `pithy token --json mint` is `token` given `--json` — which it does not take, and citty would
+ * to `--`, on either side of its own positionals. So `pithy token --json mint` is `token` given `--json` — which it does not take, and citty would
  * have dropped on the floor — not `mint` given it.
  */
 export async function undeclaredFlags(root: CommandDef, argv: readonly string[]): Promise<UndeclaredFlags | null> {
@@ -196,7 +203,7 @@ export async function undeclaredFlags(root: CommandDef, argv: readonly string[])
     const subCommands =
       cmd.subCommands === undefined ? undefined : ((await resolve(cmd.subCommands)) as Record<string, SubCommand>);
     const dispatches = subCommands !== undefined && Object.keys(subCommands).length > 0;
-    const { flags, firstPositional } = scan(tokens, args);
+    const { flags, firstPositional } = scan(tokens, args, dispatches);
 
     // A dispatching command handed no name runs its `default` with every token, so the flags are the default's.
     if (dispatches && firstPositional === -1 && cmd.default !== undefined) {

@@ -143,6 +143,27 @@ describe("undeclaredFlags", () => {
     expect((await undeclaredFlags(tree, ["add", "--bogus"]))?.undeclared).toEqual(["--bogus"]);
   });
 
+  /**
+   * The order people type: the thing, then the flags. Only a group stops owning its tokens at a positional,
+   * because that positional names the command the rest belong to. A leaf's positional is its own argument,
+   * and every flag on either side of it is the leaf's — so `secrets rotate API_KEY --dry-rn` is refused, not
+   * run for real.
+   */
+  test("a flag after a command's positional is still that command's, and still checked", async () => {
+    expect(await undeclaredFlags(tree, ["add", "auth", "--bogus"])).toEqual({
+      path: ["add"],
+      undeclared: ["--bogus"],
+      declared: ["--set"],
+    });
+    expect((await undeclaredFlags(tree, ["add", "auth", "--set", "a=b", "--dorp"]))?.undeclared).toEqual(["--dorp"]);
+    expect((await undeclaredFlags(tree, ["doctor", "stray", "--dry-rn"]))?.undeclared).toEqual(["--dry-rn"]);
+    expect((await undeclaredFlags(tree, ["token", "mint", "ci", "--env", "prod", "--keep"]))?.undeclared).toEqual([
+      "--keep",
+    ]);
+    expect(await undeclaredFlags(tree, ["add", "auth", "--set", "a=b"])).toBeNull();
+    expect(await undeclaredFlags(tree, ["add", "auth", "--", "--bogus"])).toBeNull();
+  });
+
   test("a flag given to a group is the group's, and a group declares none", async () => {
     expect(await undeclaredFlags(tree, ["token", "--json", "mint"])).toEqual({
       path: ["token"],
@@ -223,17 +244,41 @@ describe("refuseUndeclaredFlags", () => {
   });
 });
 
-/** Every command in the tree, found by walking it, with the path a caller types and its resolved parser. */
-async function everyCommand(root: CommandDef): Promise<{ path: string[]; args: ArgsDef }[]> {
-  const found: { path: string[]; args: ArgsDef }[] = [];
+/** One command in the tree: the path a caller types, its resolved parser, and whether it dispatches. */
+interface FoundCommand {
+  path: string[];
+  args: ArgsDef;
+  /** Whether it has subcommands — a positional handed to it names one, rather than being its argument. */
+  dispatches: boolean;
+}
+
+/** Every command in the tree, found by walking it. */
+async function everyCommand(root: CommandDef): Promise<FoundCommand[]> {
+  const found: FoundCommand[] = [];
   async function walk(cmd: CommandDef, path: string[]): Promise<void> {
-    found.push({ path, args: cmd.args === undefined ? {} : await resolve(cmd.args) });
-    if (cmd.subCommands === undefined) return;
-    const children = (await resolve(cmd.subCommands)) as Record<string, CommandDef | (() => Promise<CommandDef>)>;
+    const children =
+      cmd.subCommands === undefined
+        ? {}
+        : ((await resolve(cmd.subCommands)) as Record<string, CommandDef | (() => Promise<CommandDef>)>);
+    const dispatches = Object.keys(children).length > 0;
+    found.push({ path, args: cmd.args === undefined ? {} : await resolve(cmd.args), dispatches });
     for (const [name, child] of Object.entries(children)) await walk(await resolve(child), [...path, name]);
   }
   await walk(root, []);
   return found;
+}
+
+/**
+ * Where a flag can sit on one command, in the orders a caller types: straight after the command, after a
+ * positional, and after a positional and one of the command's own flags with its value. A group gets the
+ * first alone — a positional handed to a group names its subcommand, which is where its flags go.
+ */
+function placements({ args, dispatches }: FoundCommand): string[][] {
+  if (dispatches) return [[]];
+  const declared = Object.entries(args).find(([, def]) => def.type !== "positional");
+  const own =
+    declared === undefined ? [] : declared[1].type === "boolean" ? [`--${declared[0]}`] : [`--${declared[0]}`, "value"];
+  return [[], ["stray"], ["stray", ...own]];
 }
 
 /**
@@ -243,7 +288,15 @@ async function everyCommand(root: CommandDef): Promise<{ path: string[]; args: A
  * type — and every flag a command *does* declare still passes, read off that command's own `args` rather
  * than off `flagsOf`, so a refusal that grew too eager fails here instead of in somebody's CI.
  *
- * What the sweep does not see: the `bin.ts` wiring. That is held by the spawned cases below.
+ * **Wherever the flag is typed** ({@link placements}): straight after the command, after a positional, and
+ * after a positional and one of the command's own flags. The first shape alone was the sweep's first
+ * version, and it passed a check that dropped every flag typed after a leaf's positional — the order
+ * people type (`secrets rotate API_KEY --dry-rn`). Planted since, and red: that cut, and a cut after a leaf's
+ * first flag with a value.
+ *
+ * What the sweep does not see: the `bin.ts` wiring, which the spawned cases below hold; and a flag placed
+ * anywhere other than those three positions — after a second positional, say, or between a declared
+ * flag and its value.
  */
 describe("the sweep over every registered command", () => {
   const root = ownNamesOnly(main);
@@ -255,37 +308,50 @@ describe("the sweep over every registered command", () => {
     expect(commands.some(({ path }) => path.length === 2)).toBe(true);
   }, 120_000);
 
-  test("an undeclared flag is refused on every command, in every spelling", async () => {
+  test("an undeclared flag is refused on every command, in every spelling, wherever it is typed", async () => {
     const missed: string[] = [];
-    for (const { path } of await everyCommand(root)) {
-      for (const [typed, named] of [
-        [["--bogus-flag", "yes"], "--bogus-flag"],
-        [["--bogus-flag=yes"], "--bogus-flag"],
-        [["--no-bogus-flag"], "--no-bogus-flag"],
-        [["-Z"], "-Z"],
-      ] as const) {
-        const refusal = await undeclaredFlags(root, [...path, ...typed]);
-        if (refusal?.undeclared.includes(named) !== true || refusal.path.join(" ") !== path.join(" ")) {
-          missed.push(`pithy ${[...path, ...typed].join(" ")}`);
+    let afterPositional = 0;
+    for (const command of await everyCommand(root)) {
+      const { path } = command;
+      for (const before of placements(command)) {
+        if (before.length > 0) afterPositional += 1;
+        for (const [typed, named] of [
+          [["--bogus-flag", "yes"], "--bogus-flag"],
+          [["--bogus-flag=yes"], "--bogus-flag"],
+          [["--no-bogus-flag"], "--no-bogus-flag"],
+          [["-Z"], "-Z"],
+        ] as const) {
+          const argv = [...path, ...before, ...typed];
+          const refusal = await undeclaredFlags(root, argv);
+          if (refusal?.undeclared.includes(named) !== true || refusal.path.join(" ") !== path.join(" ")) {
+            missed.push(`pithy ${argv.join(" ")}`);
+          }
         }
       }
     }
     expect(missed).toEqual([]);
+    expect(
+      afterPositional,
+      "no command took a positional, so the placements after one checked nothing",
+    ).toBeGreaterThan(0);
   }, 120_000);
 
-  test("every flag a command declares is still accepted on it", async () => {
+  test("every flag a command declares is still accepted on it, wherever it is typed", async () => {
     const refused: string[] = [];
     let checked = 0;
-    for (const { path, args } of await everyCommand(root)) {
-      for (const [name, def] of Object.entries(args)) {
-        if (def.type === "positional") continue;
-        const spellings =
-          def.type === "boolean" ? [[`--${name}`], [`--no-${name}`]] : [[`--${name}`, "value"], [`--${name}=value`]];
-        for (const typed of spellings) {
-          checked += 1;
-          const refusal = await undeclaredFlags(root, [...path, ...typed]);
-          if (refusal !== null)
-            refused.push(`pithy ${[...path, ...typed].join(" ")}: ${refusal.undeclared.join(", ")}`);
+    for (const command of await everyCommand(root)) {
+      const { path, args } = command;
+      for (const before of placements(command)) {
+        for (const [name, def] of Object.entries(args)) {
+          if (def.type === "positional") continue;
+          const spellings =
+            def.type === "boolean" ? [[`--${name}`], [`--no-${name}`]] : [[`--${name}`, "value"], [`--${name}=value`]];
+          for (const typed of spellings) {
+            checked += 1;
+            const argv = [...path, ...before, ...typed];
+            const refusal = await undeclaredFlags(root, argv);
+            if (refusal !== null) refused.push(`pithy ${argv.join(" ")}: ${refusal.undeclared.join(", ")}`);
+          }
         }
       }
     }
@@ -326,6 +392,13 @@ describe("the real bin", () => {
     const { error } = JSON.parse(lines[0] as string) as { error: { code: string; message: string } };
     expect(error.code).toBe("validation/invalid_input");
     expect(error.message).toBe("Unknown flag: --bogus-flag.");
+  }, 120_000);
+
+  test("a typo after a positional is refused before the command runs", async () => {
+    const { code, stdout, stderr } = await pithy("token", "rotate", "ci-system", "--env", "prod", "--keep-previos");
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("Unknown flag: --keep-previos.");
   }, 120_000);
 
   test("a group given a flag is refused rather than answered with its usage", async () => {
