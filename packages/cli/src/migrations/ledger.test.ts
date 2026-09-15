@@ -101,8 +101,8 @@ describe("a ledger row the project no longer declares", () => {
       environments: [],
       remoteSkip: null,
       // The fixture's composition is in memory, with no config on disk to evaluate for dev.
-      composeWorker: async () => worker.capabilities,
-      workers: [{ name: worker.name, dir: worker.dir, capabilities: worker.capabilities }],
+      composeWorker: async () => ({ capabilities: worker.capabilities }),
+      workers: [{ name: worker.name, dir: worker.dir }],
     });
 
     expect(health.ok).toBe(false);
@@ -129,7 +129,7 @@ describe("a ledger row the project no longer declares", () => {
     const report = await buildDoctorReport(
       doctor.baseOptions({
         projectDir: h.projectDir,
-        resolveWorkers: async () => [worker] as never,
+        resolveWorkersFor: async () => [worker] as never,
         buildPlan: undefined,
       }),
     );

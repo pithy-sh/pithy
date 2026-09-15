@@ -8,7 +8,7 @@ import type { ReadLedger } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
 import { composeFor } from "../project/composeFor";
-import { allCapabilities } from "../project/config";
+import { allCapabilities, type WorkerConfig } from "../project/config";
 
 /**
  * **One environment's migration state, answered for that environment and no other (#586).**
@@ -84,15 +84,30 @@ export interface MigrationWorker {
   dir: string;
 }
 
+/** One Worker as composed for one environment: its capabilities, and the config object they came from. */
+export interface WorkerComposition {
+  /** Every capability the config composes for the environment. */
+  capabilities: Capability[];
+  /**
+   * The config itself, as evaluated for the environment. A plan reads `declinedBindings` and
+   * `pinnedBindings` off it. Optional because the seam is a test's: a double with no config is a Worker
+   * that declines nothing.
+   */
+  config?: WorkerConfig;
+}
+
 /**
- * Compose one Worker for one environment: its capabilities, as its `pithy.config.ts` evaluates under that
- * environment's `ENVIRONMENT`. Throws when the config does.
+ * Compose one Worker for one environment: its capabilities and config, as its `pithy.config.ts` evaluates
+ * under that environment's `ENVIRONMENT`. Throws when the config does.
  */
-export type ComposeWorker = (worker: MigrationWorker, env: string) => Promise<Capability[]>;
+export type ComposeWorker = (worker: MigrationWorker, env: string) => Promise<WorkerComposition>;
 
 /** The default composition: the Worker's own config, loaded through `composeFor` for `env`. */
 export const composeWorkerFor: ComposeWorker = (worker, env) =>
-  composeFor(env, async (load) => allCapabilities(await load(worker.dir)));
+  composeFor(env, async (load) => {
+    const config = await load(worker.dir);
+    return { capabilities: allCapabilities(config), config };
+  });
 
 /** Options for {@link environmentMigrations}. */
 export interface EnvironmentMigrationsOptions {
@@ -136,7 +151,7 @@ export async function environmentMigrations(options: EnvironmentMigrationsOption
   const { env, worker } = options;
   let capabilities: Capability[];
   try {
-    capabilities = await (options.compose ?? composeWorkerFor)(worker, env);
+    ({ capabilities } = await (options.compose ?? composeWorkerFor)(worker, env));
   } catch {
     // What the config threw is the adopter's code talking, and `Environment configs:` prints it. This line's
     // job is only to not print a count.

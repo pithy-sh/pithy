@@ -225,10 +225,24 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
       connection.state === "reachable"
         ? { state: "checked", reason: null }
         : { state: "skipped", reason: connection.reason },
-    checked,
-    findings,
-    unchecked,
+    checked: once(checked),
+    findings: once(findings),
+    unchecked: once(unchecked),
   };
+}
+
+/**
+ * Each entry the first time it appears. Doctor hands one Worker over once per environment it composes for,
+ * so a finding every environment's instance shares would otherwise be printed once per environment.
+ */
+function once<T>(entries: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**

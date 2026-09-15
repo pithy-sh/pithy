@@ -119,7 +119,7 @@ describe("buildDoctorReport — project detection", () => {
   test("a project with no workers is a broken project, not 'outside a project'", async () => {
     const report = await buildDoctorReport(
       baseOptions({
-        resolveWorkers: async () => {
+        resolveWorkersFor: async () => {
           throw new NotFoundError({ message: "No workers here.", action: "Run pithy worker add <name>." });
         },
       }),
@@ -227,7 +227,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
-        resolveWorkers: async () => workerSet("api", "collab"),
+        resolveWorkersFor: async () => workerSet("api", "collab"),
         buildPlan: planStubPer({ api: cleanPlanFor("api"), collab: cleanPlanFor("collab") }),
         readLedger: ledgerStubPer({ collab: { dev: { state: "read", pending: 2, undeclared: [] } } }),
       }),
@@ -268,7 +268,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -312,7 +312,7 @@ describe("renderDoctorText", () => {
       installedVersion: "1.3.0",
       fetch: registryFetch({ cli: "1.3.0" }),
       installedCapabilities: async () => [],
-      resolveWorkers: async () => workerSet("api"),
+      resolveWorkersFor: async () => workerSet("api"),
       buildPlan: planStub(cleanPlanFor("api")),
     } as const;
 
@@ -356,7 +356,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
         readCapabilityReach: async () => ({
           ok: false,
@@ -386,7 +386,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
         readCapabilityReach: async () => ({
           ok: true,
@@ -456,7 +456,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -514,7 +514,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -604,7 +604,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -689,7 +689,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -739,7 +739,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -813,7 +813,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -870,7 +870,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -925,7 +925,7 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0" }),
         installedCapabilities: async () => [],
-        resolveWorkers: async () => workerSet("api"),
+        resolveWorkersFor: async () => workerSet("api"),
         buildPlan: planStub(cleanPlanFor("api")),
       }),
     );
@@ -1200,7 +1200,7 @@ describe("doctorExitCode", () => {
   test("non-zero when any one worker is unhealthy, even with the rest healthy", async () => {
     const report = await buildDoctorReport(
       baseOptions({
-        resolveWorkers: async () => workerSet("api", "collab", "web"),
+        resolveWorkersFor: async () => workerSet("api", "collab", "web"),
         buildPlan: planStubPer({}),
         readLedger: ledgerStubPer({ collab: { dev: { state: "read", pending: 1, undeclared: [] } } }),
       }),
@@ -1217,7 +1217,7 @@ describe("doctorExitCode", () => {
   test("zero when every worker is healthy", async () => {
     const report = await buildDoctorReport(
       baseOptions({
-        resolveWorkers: async () => workerSet("api", "collab"),
+        resolveWorkersFor: async () => workerSet("api", "collab"),
         buildPlan: planStubPer({}),
       }),
     );
@@ -1370,7 +1370,7 @@ describe("doctorExitCode", () => {
     await linkKitPackages(dir, ["auth"]);
     const report = await buildDoctorReport(
       baseOptions({
-        resolveWorkers: async () =>
+        resolveWorkersFor: async () =>
           [
             {
               name: "board",
@@ -1482,33 +1482,39 @@ describe("--worker", () => {
   });
 
   test("threads the name to the resolver, and passes none when the flag is absent", async () => {
-    const seen: { projectDir: string; worker?: string }[] = [];
-    const resolveWorkers = async (options: { projectDir: string; worker?: string }) => {
-      seen.push(options);
+    const seen: { environment: string; projectDir: string; worker?: string }[] = [];
+    const resolveWorkersFor = async (environment: string, options: { projectDir: string; worker?: string }) => {
+      seen.push({ environment, ...options });
       return workerSet("api");
     };
 
-    await buildDoctorReport(baseOptions({ resolveWorkers }));
-    await buildDoctorReport(baseOptions({ worker: "api", resolveWorkers }));
-    // The set resolutions. Every other call composes one Worker for one environment the migration check
-    // answers, narrowed to that Worker by name whether or not the flag was given (#586).
-    const sets = seen.filter((call) => !("loadConfig" in call));
-    expect(sets).toEqual([{ projectDir: dir }, { projectDir: dir, worker: "api" }]);
-    expect(seen.filter((call) => "loadConfig" in call).map((call) => call.worker)).toEqual(Array(6).fill("api"));
+    await buildDoctorReport(baseOptions({ resolveWorkersFor }));
+    await buildDoctorReport(baseOptions({ worker: "api", resolveWorkersFor }));
+    // The set each report lists is `dev`'s composition — never one for no environment (#586). Every other
+    // call composes one Worker for one deployed environment, narrowed to that Worker by name whether or not
+    // the flag was given; `dev`'s is the set already in hand.
+    const sets = seen.filter((call) => call.environment === "dev");
+    expect(sets).toEqual([
+      { environment: "dev", projectDir: dir },
+      { environment: "dev", projectDir: dir, worker: "api" },
+    ]);
+    expect(seen.filter((call) => call.environment !== "dev")).toEqual(
+      [1, 2].flatMap(() => ["staging", "prod"].map((environment) => ({ environment, projectDir: dir, worker: "api" }))),
+    );
   });
 
   test("narrows the exit gate — an unrelated unhealthy worker no longer fails the run", async () => {
     const all = workerSet("api", "collab");
-    const resolveWorkers = async ({ worker }: { projectDir: string; worker?: string }) =>
+    const resolveWorkersFor = async (_environment: string, { worker }: { projectDir: string; worker?: string }) =>
       worker === undefined ? all : all.filter((candidate) => candidate.name === worker);
     const buildPlan = planStubPer({});
     const readLedger = ledgerStubPer({ collab: { dev: { state: "read", pending: 2, undeclared: [] } } });
 
-    const whole = await buildDoctorReport(baseOptions({ resolveWorkers, buildPlan, readLedger }));
+    const whole = await buildDoctorReport(baseOptions({ resolveWorkersFor, buildPlan, readLedger }));
     expect(whole.project?.health.workers.map((worker) => worker.worker)).toEqual(["api", "collab"]);
     expect(doctorExitCode(whole)).toBe(1);
 
-    const narrowed = await buildDoctorReport(baseOptions({ worker: "api", resolveWorkers, buildPlan, readLedger }));
+    const narrowed = await buildDoctorReport(baseOptions({ worker: "api", resolveWorkersFor, buildPlan, readLedger }));
     expect(narrowed.project?.health.workers.map((worker) => worker.worker)).toEqual(["api"]);
     expect(doctorExitCode(narrowed)).toBe(0);
   });
@@ -1534,7 +1540,7 @@ describe("project health — installed is not composed (regression)", () => {
   function realEngine(workers: ResolvedWorker[]): DoctorReportOptions {
     return baseOptions({
       projectDir,
-      resolveWorkers: async () => workers,
+      resolveWorkersFor: async () => workers,
       buildPlan: undefined,
       readLedger: async (): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }),
     });
@@ -2851,7 +2857,7 @@ describe("one unreadable file must not cost the whole report (#210)", () => {
           baseOptions({
             projectDir,
             buildPlan: planStub(cleanPlanFor("board")),
-            resolveWorkers: undefined,
+            resolveWorkersFor: undefined,
             // The real name check too — it reads every `wrangler.jsonc` in the project, and with no
             // credentials resolved (`NO_ACCOUNT`) it never reaches an account. Only the Cloudflare probe
             // stays stubbed, because that one is the network.

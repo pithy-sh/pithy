@@ -169,7 +169,7 @@ export function doctorHarness(): DoctorHarness {
       detectShell: async () => zsh,
       readRc: async () => "# >>> pithy alias >>>\nalias p.='pithy'\n# <<< pithy alias <<<\n",
       loadProject: async () => config,
-      resolveWorkers: async () => workerSet("api"),
+      resolveWorkersFor: async () => workerSet("api"),
       installedCapabilities: async () => [
         { name: "@pithy-sh/core", version: "1.2.0" },
         { name: "@pithy-sh/auth", version: "1.1.8" },

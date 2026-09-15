@@ -114,6 +114,7 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
 
   let databases: Promise<readonly string[]> | undefined;
   const zones = new Map<string, Promise<boolean>>();
+  const secrets = new Map<string, Promise<boolean>>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -148,7 +149,14 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
           detail: `secret ${name} in dev has no manager Worker to answer`,
         });
       }
-      return probe.probe({ env: environment as "staging" | "prod", name });
+      // Memoized like the two above: doctor judges each environment's composition of a capability, and every
+      // one of them asks the same question of the same manager.
+      const key = `${environment}\u0000${name}`;
+      const existing = secrets.get(key);
+      if (existing) return existing;
+      const answer = probe.probe({ env: environment as "staging" | "prod", name });
+      secrets.set(key, answer);
+      return answer;
     },
   };
   return { state: "reachable", reader };
@@ -164,7 +172,11 @@ export interface SettingsWorkerScope {
 /** What the default settings probe needs, all of it already resolved once by `buildDoctorReport`. */
 export interface DoctorSettingsOptions {
   projectDir: string;
-  /** The Workers in scope — already narrowed by `--worker`, so nothing here re-enumerates `apps/`. */
+  /**
+   * The Workers in scope — already narrowed by `--worker`, so nothing here re-enumerates `apps/` — **once
+   * per environment each composes for**. A capability's options can differ by environment, so every
+   * environment's instance is judged; the runner reports a finding they share once.
+   */
   workers: readonly SettingsWorkerScope[];
   /** The account this project belongs to, as the `Cloudflare:` block of the same report reads it. */
   account: CloudflareAccountSelection | null;

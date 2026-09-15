@@ -16,7 +16,7 @@ import {
 } from "../commands/doctor";
 import { collectMigrationSets } from "../migrations/registry";
 import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
-import { checkedWorker, doctorHarness } from "../test-utils/doctorHarness";
+import { checkedWorker, cleanPlanFor, doctorHarness } from "../test-utils/doctorHarness";
 import { environmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
 
@@ -45,9 +45,11 @@ import type { ProjectHealth } from "./health";
  *
  * What it does not see, said plainly:
  *
- * - **Only the migrations check.** Doctor's other per-environment answers — `Secret bindings:`,
- *   `Environment configs:` — come from `capabilities/secretApplicability.ts` and are held by its suites. A
- *   new per-environment check is held by nothing here until it is added here.
+ * - **Only what reaches a seam.** The migrations check end to end, and the compositions every plan, the
+ *   settings probe and the capability-resolution read are handed. `Secret bindings:` and `Environment
+ *   configs:` come from `capabilities/secretApplicability.ts` and are held by its suites. A new check that
+ *   composes on its own is held by nothing here until it is added here, and by
+ *   `ci/environmentCompositions.test.ts` only if it composes without the primitive.
  * - **A module the config imports.** `composeFor` re-evaluates `pithy.config.ts` alone, so an environment
  *   read at the top of a module it imports keeps its first answer. That is the primitive's stated limit, and
  *   every fixture here reads the environment in the config itself.
@@ -154,7 +156,7 @@ function options(reads: Read[], overrides: Partial<DoctorReportOptions> = {}): D
   return harness.baseOptions({
     projectDir: harness.dir,
     loadProject: undefined,
-    resolveWorkers: undefined,
+    resolveWorkersFor: undefined,
     readLedger: recordingLedger(reads),
     // Probes this suite is not about, each of which would compose the fixture again for its own reasons.
     checkDevSecrets: async () => null,
@@ -297,6 +299,61 @@ describe("doctor reports each environment's migrations from that environment", (
     expect(migrationLines(renderDoctorText(report, "/home/u"))[1]).toBe(
       "                 staging: skipped — no Cloudflare credentials, so no database was read",
     );
+  });
+});
+
+/**
+ * **No part of doctor answers from a composition built for another environment, or for none (#586).**
+ *
+ * The migrations check was routed and the rest of doctor was not: it resolved every Worker once, with
+ * nothing stamped, and built each Worker's plan, its settings and its extensions from that. Here every
+ * composition doctor hands to a check is recorded by the environment its config was evaluated under, and
+ * the fixture names every migration after it — so a composition for none reads `none`.
+ */
+describe("every composition doctor reads is for an environment, and for the one it answers", () => {
+  /** The environment a composition was evaluated under, read off the migration names it declares. */
+  function composedFor(capabilities: MigrationScope["capabilities"]): string {
+    const names = collectMigrationSets(capabilities).flatMap((set) => Object.keys(set.migrations));
+    return [...new Set(names.map((name) => name.split(":")[1] ?? "none"))].join(",");
+  }
+
+  test("each plan is its environment's, and the settings and resolution checks read every environment's", async () => {
+    await project(harness.dir);
+    const plans: string[] = [];
+    const settings: string[] = [];
+    const reach: string[] = [];
+    await buildDoctorReport(
+      options([], {
+        buildPlan: async (plan) => {
+          plans.push(`${plan.worker} ${plan.env} ${composedFor(plan.capabilities ?? [])}`);
+          return { ...cleanPlanFor(plan.worker ?? ""), env: plan.env };
+        },
+        checkSettings: async ({ workers }) => {
+          for (const worker of workers) settings.push(`${worker.name} ${composedFor(worker.capabilities)}`);
+          return null;
+        },
+        readCapabilityReach: async (_dir, workers) => {
+          for (const worker of workers)
+            reach.push(`${worker.name} ${composedFor([...(worker.capabilities ?? [])] as never)}`);
+          return { ok: true, reachable: [], unreachable: [], split: [] };
+        },
+      }),
+    );
+    // api's qa does not compose, so it has no plan; nothing else stands in for it.
+    expect(plans).toEqual([
+      "api dev dev",
+      "api staging staging",
+      "api prod prod",
+      "web dev dev",
+      "web staging staging",
+      "web prod prod",
+      "web qa qa",
+    ]);
+    expect(settings).toEqual(["api dev", "web dev", "api staging", "web staging", "api prod", "web prod", "web qa"]);
+    // One entry per Worker, one instance per capability name, the first environment's that composed it —
+    // resolution is by package name. A name only a deployed environment composes is `health.test.ts`'s.
+    expect(reach).toEqual(["api dev", "web dev"]);
+    expect([...plans, ...settings, ...reach].join("\n")).not.toContain("none");
   });
 });
 

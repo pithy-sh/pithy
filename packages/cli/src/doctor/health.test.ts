@@ -46,11 +46,11 @@ function clean(worker: string): ReconcilePlan {
 const declaredNone = {
   environments: [],
   remoteSkip: null,
-  composeWorker: async () => [],
+  composeWorker: async () => ({ capabilities: [] }),
 } satisfies Pick<ProjectHealthOptions, "environments" | "remoteSkip" | "composeWorker">;
 
-const api = { name: "api", dir: "/p/apps/api", capabilities: [] };
-const collab = { name: "collab", dir: "/p/apps/collab", capabilities: [] };
+const api = { name: "api", dir: "/p/apps/api" };
+const collab = { name: "collab", dir: "/p/apps/collab" };
 
 describe("buildProjectHealth", () => {
   test("all checks pass on a clean plan", async () => {
@@ -243,45 +243,213 @@ describe("buildProjectHealth", () => {
     expect(defaultBuildPlan).toBe(buildReconcilePlan);
   });
 
-  test("forwards each worker's directory, name and capabilities, and reads each environment once per worker", async () => {
+  test("forwards each worker's directory, name and composition for each environment, and reads each environment once per worker", async () => {
     const build = planStub({ api: clean("api"), collab: clean("collab") });
     const readLedger = vi.fn(
       async (_scope: MigrationScope): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }),
     );
+    // Each environment's composition is its own, so a plan handed another's is visible in what it was handed.
+    const composeWorker = vi.fn(async (_worker: { name: string }, env: string) => ({
+      capabilities: [{ name: `composed-for-${env}`, requiredBindings: [] }],
+      config: { capabilities: [] },
+    }));
     await buildProjectHealth({
       account: null,
       projectDir: "/p",
       ...declaredNone,
+      composeWorker,
       environments: ["staging"],
       workers: [api, collab],
       readLedger,
       buildPlan: build,
     });
-    // The plan is `upgrade`'s engine and is built for dev. It is handed dev's answer, never the seam, so
-    // the store is read once per environment and not a second time for the plan.
-    expect(build).toHaveBeenNthCalledWith(1, {
+    // The plan is `upgrade`'s engine, built once per environment from that environment's composition. Each
+    // is handed that environment's answer, never the seam, so the store is read once per environment and
+    // not a second time for the plan.
+    const planFor = (worker: string, env: string) => ({
       projectDir: "/p",
-      workerDir: "/p/apps/api",
-      worker: "api",
-      env: "dev",
+      workerDir: `/p/apps/${worker}`,
+      worker,
+      env,
       account: null,
-      capabilities: [],
+      capabilities: [{ name: `composed-for-${env}`, requiredBindings: [] }],
+      workerConfig: { capabilities: [] },
       readLedger: expect.any(Function),
     });
-    expect(build).toHaveBeenNthCalledWith(2, {
-      projectDir: "/p",
-      workerDir: "/p/apps/collab",
-      worker: "collab",
-      env: "dev",
-      account: null,
-      capabilities: [],
-      readLedger: expect.any(Function),
-    });
+    expect(build).toHaveBeenNthCalledWith(1, planFor("api", "dev"));
+    expect(build).toHaveBeenNthCalledWith(2, planFor("api", "staging"));
+    expect(build).toHaveBeenNthCalledWith(3, planFor("collab", "dev"));
+    expect(build).toHaveBeenNthCalledWith(4, planFor("collab", "staging"));
     expect(readLedger.mock.calls.map(([scope]) => [scope.worker, scope.env])).toEqual([
       ["api", "dev"],
       ["api", "staging"],
       ["collab", "dev"],
       ["collab", "staging"],
+    ]);
+    // One composition per Worker per environment: the migration answer and the plan share it.
+    expect(composeWorker.mock.calls.map(([worker, env]) => `${worker.name} ${env}`)).toEqual([
+      "api dev",
+      "api staging",
+      "collab dev",
+      "collab staging",
+    ]);
+  });
+});
+
+/**
+ * **A declared environment's stanza is checked against that environment's composition (#586).**
+ *
+ * The plan reports, for every stanza in `wrangler.jsonc`, the bindings a composed capability needs and the
+ * stanza lacks. It was built once, from a composition for no environment, so which bindings `prod` needed
+ * was decided by a config evaluated for none — a capability a config composes for `prod` alone was never
+ * asked for in `prod`'s stanza.
+ */
+describe("buildProjectHealth — bindings per environment", () => {
+  const needs = (env: string, name: string) => ({ env, name, type: "r2" as const });
+  const planWith = (env: string, missingBindings: ReturnType<typeof needs>[]): ReconcilePlan => ({
+    ...clean("api"),
+    env,
+    perCapability: [{ name: "media", missingConfigKeys: [], missingEntryExports: [], missingBindings }],
+  });
+
+  test("a declared stanza's missing bindings are its own environment's plan's, and nothing another plan says about it", async () => {
+    const build = vi.fn(async (options: BuildReconcilePlanOptions): Promise<ReconcilePlan> => {
+      // dev composes media everywhere, so dev's plan asks every stanza for its bucket.
+      if (options.env === "dev") {
+        return planWith("dev", [
+          needs("dev", "DEV_BUCKET"),
+          needs("staging", "MEDIA_BUCKET"),
+          needs("prod", "MEDIA_BUCKET"),
+          needs("qa", "MEDIA_BUCKET"),
+        ]);
+      }
+      // staging's composition answers about prod's stanza too. That is not staging's to say.
+      if (options.env === "staging") return planWith("staging", [needs("prod", "STAGING_ON_PROD")]);
+      // prod's composition composes something that needs a bucket only in prod.
+      return planWith("prod", [needs("prod", "PROD_ONLY_BUCKET"), needs("staging", "PROD_ON_STAGING")]);
+    });
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      environments: ["staging", "prod"],
+      workers: [api],
+      buildPlan: build,
+    });
+    expect(build.mock.calls.map(([options]) => options.env)).toEqual(["dev", "staging", "prod"]);
+    // `qa` is a stanza nothing declares, so no composition is for it; dev's answer stands and
+    // `Environments:` reports the stanza.
+    expect(checkedWorker(health).bindings.missing).toEqual([
+      { name: "DEV_BUCKET", type: "r2", envs: ["dev"] },
+      { name: "MEDIA_BUCKET", type: "r2", envs: ["qa"] },
+      { name: "PROD_ONLY_BUCKET", type: "r2", envs: ["prod"] },
+    ]);
+  });
+
+  test("an environment that does not compose contributes no plan, and dev's answer does not stand in for it", async () => {
+    const build = vi.fn(async (options: BuildReconcilePlanOptions) =>
+      planWith(options.env, [needs("dev", "DEV_BUCKET"), needs("staging", "MEDIA_BUCKET")]),
+    );
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      composeWorker: async (_worker, env) => {
+        if (env === "staging") throw new Error("staging is not configured.");
+        return { capabilities: [] };
+      },
+      environments: ["staging"],
+      workers: [api],
+      buildPlan: build,
+    });
+    expect(build.mock.calls.map(([options]) => options.env)).toEqual(["dev"]);
+    expect(checkedWorker(health).bindings.missing).toEqual([{ name: "DEV_BUCKET", type: "r2", envs: ["dev"] }]);
+    expect(checkedWorker(health).migrations.environments).toContainEqual({ env: "staging", state: "not-composed" });
+  });
+
+  test("a Durable Object class a deployed environment's composition binds is still an export the entry needs", async () => {
+    const build = vi.fn(
+      async (options: BuildReconcilePlanOptions): Promise<ReconcilePlan> => ({
+        ...clean("api"),
+        perCapability:
+          options.env === "prod"
+            ? [{ name: "multiplayer", missingConfigKeys: [], missingBindings: [], missingEntryExports: ["Session"] }]
+            : [],
+      }),
+    );
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      environments: ["prod"],
+      workers: [api],
+      buildPlan: build,
+    });
+    expect(checkedWorker(health).bindings.missingExports).toEqual(["Session"]);
+    expect(checkedWorker(health).bindings.ok).toBe(false);
+  });
+
+  test("a prerequisite or an option key only a deployed environment's composition lacks is still reported", async () => {
+    const build = vi.fn(
+      async (options: BuildReconcilePlanOptions): Promise<ReconcilePlan> =>
+        options.env === "prod"
+          ? {
+              ...clean("api"),
+              perCapability: [
+                {
+                  name: "auth",
+                  missingBindings: [],
+                  missingEntryExports: [],
+                  missingConfigKeys: [{ key: "basePath", default: "/auth", describe: "x" }],
+                },
+              ],
+              missingPrerequisites: [{ capability: "auth", requires: "email" }],
+            }
+          : clean("api"),
+    );
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      environments: ["staging", "prod"],
+      workers: [api],
+      buildPlan: build,
+    });
+    // The Worker does not start in prod, and dev's composition cannot see why.
+    expect(checkedWorker(health).prerequisites).toEqual({
+      ok: false,
+      missing: [{ capability: "auth", requires: "email" }],
+    });
+    expect(checkedWorker(health).config.drift).toEqual([{ capability: "auth", keys: ["basePath"] }]);
+    expect(health.ok).toBe(false);
+  });
+
+  test("the capability-resolution read is handed what every environment composes, once per capability", async () => {
+    const readCapabilityReach = vi.fn(async () => ({ ok: true, reachable: [], unreachable: [], split: [] }));
+    await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      composeWorker: async (_worker, env) => ({
+        capabilities: [
+          { name: "app", requiredBindings: [] },
+          ...(env === "prod" ? [{ name: "payments", requiredBindings: [] }] : []),
+        ],
+      }),
+      environments: ["staging", "prod"],
+      workers: [api],
+      buildPlan: planStub({ api: clean("api") }),
+      readCapabilityReach,
+    });
+    expect(readCapabilityReach).toHaveBeenCalledWith("/p", [
+      {
+        name: "api",
+        dir: "/p/apps/api",
+        capabilities: [
+          { name: "app", requiredBindings: [] },
+          { name: "payments", requiredBindings: [] },
+        ],
+      },
     ]);
   });
 });
@@ -558,6 +726,10 @@ describe("buildProjectHealth — capability resolution", () => {
       readCapabilityReach: read,
     });
     expect(read).toHaveBeenCalledTimes(1);
-    expect(read).toHaveBeenCalledWith("/p", [api, collab]);
+    // What they compose is each Worker's composition, never a set handed in beside the Workers.
+    expect(read).toHaveBeenCalledWith("/p", [
+      { ...api, capabilities: [] },
+      { ...collab, capabilities: [] },
+    ]);
   });
 });

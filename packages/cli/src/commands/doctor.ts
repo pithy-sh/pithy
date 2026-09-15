@@ -83,17 +83,11 @@ import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from 
 import { classifyBump } from "../notifier/version";
 import { readRcFile } from "../platform/rc";
 import { detectShell, type ShellInfo } from "../platform/shell";
-import { composeFor } from "../project/composeFor";
-import {
-  loadProject,
-  loadProjectEnvironments,
-  type ProjectConfig,
-  projectCloudflareAccount,
-  type WorkerConfig,
-} from "../project/config";
+import { resolveWorkersFor } from "../project/composeFor";
+import { loadProject, loadProjectEnvironments, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
 import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
-import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import type { ResolvedWorker } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck } from "../project/workflows";
 import { describeUnrepeatedKey } from "../project/wranglerInheritance";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -612,15 +606,17 @@ export interface DoctorReportOptions {
   /** Project-config loader seam; defaults to {@link loadProject} (a `NotFoundError` marks "outside a project"). */
   loadProject?: (projectDir: string) => Promise<ProjectConfig>;
   /**
-   * Worker-set resolver seam; defaults to {@link resolveWorkers}. The health block reports one entry per
-   * Worker. It is also how each Worker is composed for each environment the migration check answers: called
-   * inside `composeFor` with that environment's loader, narrowed to the one Worker (#586).
+   * Worker-set resolver seam, **told which environment to compose for**; defaults to
+   * {@link resolveWorkersFor}. There is no resolver here for no environment (#586).
+   *
+   * Called once for `dev`, over the set `--worker` names — the Workers the report lists. Then once per Worker
+   * per environment, narrowed to that Worker by name, so a sibling whose config throws for an environment
+   * costs its own answers and not this Worker's.
    */
-  resolveWorkers?: (options: {
-    projectDir: string;
-    worker?: string;
-    loadConfig?: (workerDir: string) => Promise<WorkerConfig>;
-  }) => Promise<ResolvedWorker[]>;
+  resolveWorkersFor?: (
+    environment: string,
+    options: { projectDir: string; worker?: string },
+  ) => Promise<ResolvedWorker[]>;
   /** Health plan-builder seam, forwarded to {@link buildProjectHealth}. */
   buildPlan?: (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
   /** Migration-ledger seam, called once per Worker per environment the migration check answers. */
@@ -689,6 +685,10 @@ export interface DoctorReportOptions {
    * mode. It takes the resolved Workers rather than a directory, because the checks hang off the composed
    * `Capability` instances this report already holds — nothing here re-enumerates `apps/`, so
    * `--worker <name>` narrows this block exactly as it narrows the health block.
+   *
+   * **Every Worker as composed for every environment**, `dev`'s first: one Worker appears once per
+   * environment it composes for. A capability's options can differ by environment, so each environment's
+   * instance is judged, and never one composition's instance for all of them (#586).
    */
   checkSettings?: (options: {
     projectDir: string;
@@ -942,6 +942,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // step of the project block threw. The settings checks are adopter code reached through a live
   // `import()`, so they are guarded like every other probe rather than run inside the block.
   let resolvedWorkers: readonly ResolvedWorker[] = [];
+  // The same Workers, as composed for every environment the report answers — `dev`'s, then each declared
+  // one's. Filled beside `resolvedWorkers`, for the probes below that judge a composition's values.
+  let everyComposition: readonly ResolvedWorker[] = [];
   // Whether that list is the project's composition or merely the value it was initialized to. An empty
   // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
   // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
@@ -949,7 +952,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // would read as one with no settings questions.
   let workersResolved = false;
   const load = options.loadProject ?? loadProject;
-  const resolve = options.resolveWorkers ?? resolveWorkers;
+  const resolve = options.resolveWorkersFor ?? resolveWorkersFor;
   // Set the moment the root config loads, so a `core/not_found` raised *later* (no workers under apps/)
   // is reported as a broken project rather than mistaken for "outside a project".
   let inProject = false;
@@ -977,13 +980,59 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         state: versionState(cap.version, latest?.version ?? null),
       });
     }
-    const workers = await resolve({
+    // **`dev`'s composition, and never one for no environment (#586).** The Workers this report lists, and
+    // the ones the checks about this machine read: `Local delivery:` is the dev session's.
+    const workers = await resolve(LOCAL_ENVIRONMENT, {
       projectDir: options.projectDir,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     });
     resolvedWorkers = workers;
     workersResolved = true;
-    extensions = checkExtensions(workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })));
+    // Each Worker composed for each environment once, and every per-environment answer below reads that one
+    // composition: the migrations and the plan behind each stanza's bindings, the settings each instance is
+    // judged on, the extensions it plugs in. Narrowed to the Worker by name, so a sibling's throw costs its
+    // own answers; picked by directory, so another Worker's composition is never this one's.
+    const compositions = new Map<string, Promise<ResolvedWorker>>();
+    const composedFor = (worker: { name: string; dir: string }, environment: string): Promise<ResolvedWorker> => {
+      const key = `${environment}\u0000${worker.dir}`;
+      const known = compositions.get(key);
+      if (known !== undefined) return known;
+      const local = environment === LOCAL_ENVIRONMENT ? workers.find((c) => c.dir === worker.dir) : undefined;
+      const composition =
+        local !== undefined
+          ? Promise.resolve(local)
+          : resolve(environment, { projectDir: options.projectDir, worker: worker.name }).then((found) => {
+              const match = found.find((candidate) => candidate.dir === worker.dir);
+              if (match === undefined) throw new ValidationError({ message: `${worker.name} did not resolve.` });
+              return match;
+            });
+      // Held for every later reader; the first one to await it reads the rejection.
+      composition.catch(() => undefined);
+      compositions.set(key, composition);
+      return composition;
+    };
+    // Every composition, in environment order, each Worker once per environment it composed for. Taken
+    // here, ahead of the health block that reads the same ones, so the probes below have them however
+    // that block ends. An environment a Worker did not compose for contributes nothing: `Environment configs:`
+    // names that config and fails the exit, and no other composition stands in for it.
+    const composed: ResolvedWorker[] = [];
+    for (const environment of [LOCAL_ENVIRONMENT, ...declared.filter((env) => env !== LOCAL_ENVIRONMENT)]) {
+      for (const worker of workers) {
+        try {
+          composed.push(await composedFor(worker, environment));
+        } catch {
+          // Reported by `Environment configs:` and by this Worker's migrations line.
+        }
+      }
+    }
+    everyComposition = composed;
+    // Listed once however many environments compose it: a report line, not a count.
+    const listed = checkExtensions(composed).extensions;
+    extensions = {
+      extensions: listed.filter(
+        (entry, index) => listed.findIndex((other) => JSON.stringify(other) === JSON.stringify(entry)) === index,
+      ),
+    };
     const health = await buildProjectHealth({
       projectDir: options.projectDir,
       environments: declared,
@@ -993,25 +1042,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       // line beside it would be two reports in one (#234).
       account,
       // Each Worker composed for each environment through the same resolver the set above came from, so a
-      // test's resolver answers both — narrowed to the one Worker, so this Worker's own migration set is
-      // not lost to a sibling's throw. Its ledger read is not narrowed: a shared database holds the
-      // sibling's rows, so that read refuses and this line says it could not be checked (#586).
-      composeWorker: (worker, environment) =>
-        composeFor(environment, async (loadConfig) => {
-          const found = await resolve({ projectDir: options.projectDir, worker: worker.name, loadConfig });
-          // By directory, never the first one found: another Worker's composition is not this one's.
-          const composed = found.find((candidate) => candidate.dir === worker.dir);
-          if (composed === undefined) throw new ValidationError({ message: `${worker.name} did not resolve.` });
-          return composed.capabilities;
-        }),
-      workers: workers.map((worker) => ({
-        name: worker.name,
-        dir: worker.dir,
-        capabilities: worker.capabilities,
-        // Optional-chained because `resolveWorkers` is a test seam: a double that supplies no config
-        // is a Worker that declines nothing, not a crash in the report it was called to produce.
-        config: worker.config,
-      })),
+      // test's resolver answers both. Its ledger read is not narrowed: a shared database holds the sibling's
+      // rows, so that read refuses and this line says it could not be checked (#586).
+      composeWorker: async (worker, environment) => {
+        const found = await composedFor(worker, environment);
+        // `config` is absent on a test double: a Worker that declines nothing, not a crash in the report.
+        return { capabilities: found.capabilities, ...(found.config ? { config: found.config } : {}) };
+      },
+      workers: workers.map((worker) => ({ name: worker.name, dir: worker.dir })),
       buildPlan: options.buildPlan,
       readLedger: options.readLedger,
       readCapabilityReach: options.readCapabilityReach,
@@ -1145,7 +1183,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     ? null
     : workersResolved
       ? await probed<SettingsCheck | null>(
-          () => probeSettings({ projectDir: options.projectDir, workers: resolvedWorkers }),
+          () => probeSettings({ projectDir: options.projectDir, workers: everyComposition }),
           settingsNotRun(),
         )
       : settingsNotRun();
