@@ -7,11 +7,11 @@ Register a management client's access to one of your environments, rotate its ke
 ## Synopsis
 
 ```
-pithy dashboard connect [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--update] [--public-key <file> --issuer <url> [--key-id <id>]] [--project <name>] [--origin <url>] [--json]
-pithy dashboard rotate [--env <environment>] [--worker <name>] [--origin <url>] [--json]
+pithy dashboard connect [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--update] [--public-key <file> --issuer <url> [--key-id <id>]] [--project <name>] [--origin <url>] [--no-open] [--json]
+pithy dashboard rotate [--env <environment>] [--worker <name>] [--origin <url>] [--no-open] [--json]
 pithy dashboard revoke-key --key-id <id> [--env <environment>] [--worker <name>] [--yes] [--origin <url>] [--json]
-pithy dashboard disconnect [--env <environment>] [--worker <name>] [--yes] [--local] [--origin <url>] [--json]
-pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--origin <url>] [--json]
+pithy dashboard disconnect [--env <environment>] [--worker <name>] [--yes] [--local] [--origin <url>] [--no-open] [--json]
+pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--origin <url>] [--no-open] [--json]
 ```
 
 **You run these, against your own project.** They are the CLI half of the control-plane seam (`docs/CONTROL-PLANE.md`): the commands by which you grant a management client — the hosted dashboard at `app.pithy.sh`, or one you wrote yourself — the right to call your Worker's administrative routes, and by which you take that right back. Every registration is a row in *your* D1. Your Worker is the authority; the management client is a client.
@@ -38,6 +38,7 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--yes` | `revoke-key`, `disconnect` | `false` | Skip the confirmation. How CI runs the same command |
 | `--local` | `disconnect` | `false` | Delete the row without telling the management client |
 | `--verify` | `status` | `false` | Prove the connection with a signed ping |
+| `--no-open` | all five, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
 | `--json` | all five | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown |
 
 Every subcommand writes its machine output to stdout and its diagnostics — the device code, the waiting line — to stderr, so a `--json` consumer parses one clean line.
@@ -79,6 +80,24 @@ Then the device-code flow: a short user code, your browser, your approval. The m
 The client's response is checked, not trusted. A scope it returns that you did not request is a management client trying to widen its own grant, and the connection is refused outright rather than quietly stored narrower.
 
 `--public-key` is the offline path: register a key you generated, with no dashboard involved, and write your own management client against the contract in `@pithy-sh/cli/src/dashboard/contract`. Nothing proves that key — the CLI holds no private half to sign with — so the status is `registered` and the command says so.
+
+### Opening the approval page
+
+`connect`, `rotate`, `disconnect` and `status --verify` all sign in through the device-code flow, and each states a key while it waits:
+
+```
+Open https://app.pithy.sh/cli and enter ABCD-EFGH.
+Press o to open the link in the browser.
+▸ Waiting for approval...
+```
+
+A stated key, not a prompt. The command is already polling and finishes whether or not you touch the keyboard, so there is nothing to answer and nothing that can hang. Press `o` and the page opens in whatever browser the machine already prefers; ignore it and the first line still has the URL and the code, which is what you need when the browser is on another machine.
+
+What opens is the approval page. If your management client sends a `verificationUriComplete` — the same page with the code already filled in — that is what `o` opens, and it is never printed, because it carries the code. Both are `http(s)` or the CLI refuses them.
+
+The offer appears only where a key can be pressed. `--json`, a pipe on stdin or stderr, `--no-open`, and `PITHY_NO_OPEN` at any value each suppress the line as well as the open. An opener that is missing — a headless box with no `xdg-open` — prints one line and the sign-in carries on.
+
+**Windows offers nothing, deliberately.** There is no `o` on Windows: the URL and the code are printed, and you open the page yourself. Every mechanism available is either a command interpreter or drops what this URL needs. `cmd /c start` re-parses its own command line, so `&`, `|`, `^`, `>` and `%VAR%` — all legal in a URL, and this URL arrives over the wire from whatever `--origin` names — stop being an address and become commands. `rundll32 url.dll,FileProtocolHandler` strips the query string, and `explorer.exe` will not open a URL carrying arguments, so both lose the code the page needs. PowerShell works and is still an interpreter reading a string somebody else sent. A missing convenience is a line in this table; a shell injection is an incident.
 
 **`rotate`** appends a successor key and proves it. **It never expires the old one**, and that ordering is the entire safety property (`docs/CONTROL-PLANE.md` §6): append, prove, then expire, with expiry belonging to the management client once *it* has proven the successor from *its* infrastructure. Two live keys is a normal state. A stale key costs nothing; expiring one that turns out to be the only working credential costs the connection, with no authenticated path back.
 
@@ -258,6 +277,7 @@ Connect production, choosing the grant at a terminal.
 $ pithy dashboard connect --env prod
 acme-api → https://api.example.com/control-plane (declared in pithy.config.ts)
 Open <the client's verification uri> and enter WXYZ-1234.
+Press o to open the link in the browser.
 ▸ Waiting for approval...
 Connected prod.
 Connection  b6a1f0c2-…

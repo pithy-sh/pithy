@@ -123,7 +123,7 @@ const WRAP = /\bwithErrorReporting\s*\(/;
 const POLICY: ChildProcessPolicy = {
   boundedExecutables: new Set(["git", "lsof", "ps"]),
   uncapturedModules: new Set(
-    ["platform/editor.ts", "dev/openUrl.ts", "dev/orchestrator.ts"].map((path) => resolve(CLI_SRC, path)),
+    ["platform/browser.ts", "platform/editor.ts", "dev/orchestrator.ts"].map((path) => resolve(CLI_SRC, path)),
   ),
   progressModule: resolve(CLI_SRC, "terminal", "progress.ts"),
 };
@@ -178,11 +178,11 @@ describe("a long command narrates itself", () => {
     // Not `> 0`, which is the shape of a guard rather than an assertion. Every module that starts a child
     // today, found by its primitive. A new one joins the population on the day it is written.
     expect([...report.calls.keys()].map(shown).sort()).toEqual([
-      "packages/cli/src/dev/openUrl.ts",
       "packages/cli/src/dev/orchestrator.ts",
       "packages/cli/src/dev/ports.ts",
       "packages/cli/src/feature/ports.ts",
       "packages/cli/src/feature/worktree.ts",
+      "packages/cli/src/platform/browser.ts",
       "packages/cli/src/platform/editor.ts",
       "packages/cli/src/project/deploy.ts",
       "packages/cli/src/project/packageManager.ts",

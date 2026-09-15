@@ -92,8 +92,15 @@
     "**/.git/objects/**": true,
     "**/.git/subtree-cache/**": true,
     "**/node_modules/*/**": true,
+    "**/.worktrees/**/.smoke-*/**": true,
     "**/.wrangler/*/**": true,
     "**/.turbo/*/**": true
+  },
+  "files.exclude": {
+    "**/.worktrees/**/.smoke-*/**": true
+  },
+  "search.exclude": {
+    "**/.worktrees/**/.smoke-*/**": true
   },
   "css.validate": false,
   "less.validate": false,

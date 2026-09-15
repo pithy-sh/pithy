@@ -2,21 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Single-keypress input for the dev supervisor — the smallest thing that can turn `l` into an action.
+ * Single-keypress input — the smallest thing that can turn a stated key into an action.
  *
  * A key has to be read in **raw mode**, because line mode does not deliver a character until Enter, and
- * the whole point of `l` is that it is one keystroke. Raw mode is also the reason this module is
- * careful: it takes the terminal's own handling away, so Ctrl-C stops generating `SIGINT` and becomes a
- * `\x03` byte like any other. A key reader that forgot that would leave `pithy dev` unstoppable.
+ * the whole point of a stated key is that it is one keystroke. Raw mode is also the reason this module
+ * is careful: it takes the terminal's own handling away, so Ctrl-C stops generating `SIGINT` and becomes
+ * a `\x03` byte like any other. A key reader that forgot that would leave the command unstoppable.
  *
  * **Non-TTY never enters raw mode, and never listens.** CI, a piped `pithy dev`, and `pithy dev --json`
  * consumed by a script all land there. `setRawMode` on a non-TTY throws, and a `data` listener on stdin
  * keeps the process alive after every worker has exited — a supervisor that will not exit is a worse
  * bug than a keypress that is missing. So the reader answers `active: false` and does nothing at all.
  *
- * One binding is registered today. The shape takes a list so a second is one line, and deliberately
- * offers no default set: `r` to restart and `o` to open the app are obvious neighbors and neither is
- * this issue.
+ * **It lives in `terminal/` because raw-mode stdin is the terminal concern**, beside `output.ts`,
+ * `style.ts` and `progress.ts`. It spent its first life under `dev/`, which had had one caller and so
+ * looked like a `pithy dev` detail; that filing is why `pithy dashboard` could not reach it (#607).
+ * `ci/opener.test.ts` holds the reader to being the only one, and its two callers to being argued.
  */
 
 /** The `\x03` byte Ctrl-C becomes once raw mode has taken the terminal's own handling away. */

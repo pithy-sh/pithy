@@ -243,8 +243,40 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
     return parsed.data;
   }
 
+  /**
+   * **A verification URI belongs to the origin that issued it.**
+   *
+   * Both fields arrive over the wire and one of them is offered to the desktop's own opener, so a
+   * management client naming somebody else's host is a client pointing an operator's browser at a page
+   * it does not own — with the CLI's own word behind it, one keypress away. The scheme was narrowed at
+   * the schema (#607); the host is narrowed here, where the origin the CLI was told to call is known.
+   *
+   * Origin, not prefix: `https://app.pithy.sh.evil.example` starts with the origin's text and is a
+   * different host, which is the comparison a `startsWith` gets wrong.
+   */
+  function sameOrigin(field: string, uri: string | undefined): void {
+    if (uri === undefined) return;
+    let named: string;
+    try {
+      named = new URL(uri).origin;
+    } catch {
+      named = uri;
+    }
+    if (named === origin) return;
+    throw unusable(
+      "The management client sent an approval page at another origin.",
+      `Check the origin with --origin (currently ${origin}).`,
+      `${field} is ${uri}, whose origin is ${named}, not ${origin}`,
+    );
+  }
+
   return {
-    startDeviceAuthorization: () => request({ method: "POST", path: "/api/cli/device/start" }, DeviceAuthorization),
+    async startDeviceAuthorization() {
+      const authorization = await request({ method: "POST", path: "/api/cli/device/start" }, DeviceAuthorization);
+      sameOrigin("verificationUri", authorization.verificationUri);
+      sameOrigin("verificationUriComplete", authorization.verificationUriComplete);
+      return authorization;
+    },
 
     async pollForConnectToken(deviceCode) {
       const call: Call = { method: "POST", path: "/api/cli/device/token", body: { deviceCode } };
