@@ -86,7 +86,7 @@ import {
   AdminOrganizationParam,
   ChangeRole,
   ChooseOrganization,
-  CreateOrganization,
+  createOrganizationBody,
   InvitationParam,
   InvitationTokenParam,
   InviteMember,
@@ -645,36 +645,45 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
      * silently move somebody out of the one they were working in; the client chooses the new account with
      * `POST {base}/acting` when that is what the person meant.
      */
-    app.post(base, csrf, requireAuth<Role>(), zValidator("json", CreateOrganization, validationHook), async (c) => {
-      if (!config.allowSelfService) {
-        throw new OrganizationForbiddenError({
-          message: "Organizations are created by the operator here.",
-          action: "Ask for one to be created.",
-          detail: "allowSelfService is false, so this route refuses every caller",
+    app.post(
+      base,
+      csrf,
+      requireAuth<Role>(),
+      zValidator("json", createOrganizationBody(config.slugs), validationHook),
+      async (c) => {
+        if (!config.allowSelfService) {
+          throw new OrganizationForbiddenError({
+            message: "Organizations are created by the operator here.",
+            action: "Ask for one to be created.",
+            detail: "allowSelfService is false, so this route refuses every caller",
+          });
+        }
+        const who = session(c);
+        const body = c.req.valid("json");
+        const created = await createOrganization(d1(c), catalog, {
+          name: body.name,
+          slug: body.slug,
+          founderUserId: who.userId,
+          now: clock(),
+          newId: ids,
         });
-      }
-      const who = session(c);
-      const body = c.req.valid("json");
-      const created = await createOrganization(d1(c), catalog, {
-        name: body.name,
-        slug: body.slug,
-        founderUserId: who.userId,
-        now: clock(),
-        newId: ids,
-      });
-      await record(c, {
-        action: OrganizationAuditActions.created,
-        actor: { organizationId: created.organization.id, userId: who.userId },
-        resource: { type: "organization", id: created.organization.id },
-        facts: { slug: created.organization.slug, role: created.membership.role },
-      });
-      return c.json(
-        {
-          organization: organizationView(created.organization, created.membership.role, base),
-        } satisfies OrganizationResponse,
-        201,
-      );
-    });
+        await record(c, {
+          action: OrganizationAuditActions.created,
+          actor: { organizationId: created.organization.id, userId: who.userId },
+          resource: { type: "organization", id: created.organization.id },
+          // `derived` and not merely the slug: a chosen short name is a string a caller put into an
+          // account's facts, and a derived one is ours. A row that read the same either way could not
+          // answer which.
+          facts: { slug: created.organization.slug, role: created.membership.role, derived: body.slug === undefined },
+        });
+        return c.json(
+          {
+            organization: organizationView(created.organization, created.membership.role, base),
+          } satisfies OrganizationResponse,
+          201,
+        );
+      },
+    );
 
     /**
      * Choose the organization this session acts in.

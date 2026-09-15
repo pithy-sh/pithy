@@ -183,6 +183,16 @@ They are two settings because they are two things: one is where this capability'
 | `GET {base}/admin/organizations` | Every tenant, with how many people are in each | control-plane | `organization:accounts:read` |
 | `GET {base}/admin/organizations/:organizationId/members` | One tenant's roster, with addresses | control-plane | `organization:members:read` |
 
+**`slug` is optional on `POST {base}`, and who may pick one is a setting.** Send one and it behaves as it always has: held to the column's rule, unique across every organization, and a collision refuses rather than renaming — an address somebody picked is theirs to keep or to be told is gone. Omit it and the server derives one from the name.
+
+Derivation is the column's own rule — lowercase alphanumerics joined by single hyphens, bounded at 64 — and **a collision retries with a suffix rather than checking first.** Asking whether `acme-games` is free and then inserting it is a question whose answer expires before the statement runs, and two people founding *Acme Games* in the same second is the ordinary case for a name. The unique index is the arbiter; the migration says so at the column.
+
+A name that reduces to nothing keeps a short name of its own. `Café Ñandú` is `cafe-nandu` and `Ærø` is `aero`, because Unicode and a short table of the Latin letters it does not decompose say so. A name with no Latin letters in it at all — Chinese, Russian, Greek, Arabic, Hebrew, Thai — gets a stable token derived from that name, distinct per name. There is no transliteration table, deliberately: one for two scripts and not the other twenty is a promise half kept, and what matters is that the short name exists, is the caller's alone, and is the same one tomorrow. The alternative is what it replaces — `name.toLowerCase().replace(/[^a-z0-9]+/g, "-")` reduces all of those names to one base, and a shared base can be exhausted.
+
+`deriveSlug` is importable from `@pithy-sh/organization/src/data/slug` for a form that wants to show the short name before it exists. It is a preview and never the decision: the server derives it again, and the constraint settles it.
+
+**`slugs: "derived"` refuses a supplied short name**, naming the field, for a product where no URL contains one. Generating it in the browser instead would make derivation a convention: this route is reachable by anybody signed in, so any other client can still post any slug, take short names, and put a string it chose into an account's audit facts. The default is `"chosen"`, so nothing changes for a project that does not set it.
+
 **`POST {base}` refuses everybody when `allowSelfService` is false**, rather than gating on a power nobody holds. There is no organization in force yet and therefore no role to read, so the only honest shape of that setting is a route that says no to every caller — the operator included, who provisions through their own code with an actor they can name. It also does not move the acting selection: creating a second account from a settings pane must not silently move somebody out of the one they were working in.
 
 **The three ownership routes mount only where a project declares the pair of roles a transfer moves.** A catalog with no two-party transfer has no ownership surface at all, rather than one that answers 404 for reasons a client has to guess.

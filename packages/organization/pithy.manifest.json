@@ -48,6 +48,12 @@
       "describe": "How long an offer of ownership stands. Shorter than an invitation, because it is an offer to take responsibility for an account rather than to join one, and an open-ended one is accepted a year later by somebody who has forgotten it was made."
     },
     {
+      "key": "slugs",
+      "choices": ["chosen", "derived"],
+      "default": "chosen",
+      "describe": "Who picks an organization's short name. `chosen` is the original behavior: a create request may carry a `slug`, and one it omits is derived from the name. `derived` refuses a supplied one outright, for a product where no URL contains a short name and nobody is meant to pick — the create route is reachable by anybody signed in, so generating it in a browser instead makes derivation a convention rather than a rule."
+    },
+    {
       "key": "allowSelfService",
       "default": true,
       "describe": "Whether a signed-in person may create an organization of their own. True for a product anybody can sign up to; false where every tenant is provisioned by the operator, and then the create route refuses for everyone rather than checking a power nobody holds."

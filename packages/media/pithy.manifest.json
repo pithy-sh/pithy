@@ -78,6 +78,7 @@
   "configOptions": [
     {
       "key": "recordStore",
+      "choices": ["d1", "kv"],
       "default": "d1",
       "describe": "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Edit the per-type `images`/`video`/`audio`/`documents` blocks by hand to pick backends and toggle AI enrichment."
     }
