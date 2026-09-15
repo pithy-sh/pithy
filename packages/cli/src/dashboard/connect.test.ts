@@ -196,6 +196,51 @@ describe("authorizeDashboard", () => {
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.message).toContain("expired");
   });
+
+  /**
+   * The announcer may own a terminal now — `commands/dashboard.ts` hands back a live `o` offer, which
+   * has raw mode on. Its lifetime is the flow's, not the command's, which is the only way the terminal
+   * comes back on the expiry throw as well as on the token.
+   */
+  test("stops what the announcer started once a token arrives", async () => {
+    const stop = vi.fn();
+    const token = await authorizeDashboard(fakeClient(), { announce: () => ({ stop }), sleep: async () => {} });
+
+    expect(token).toBe("ct_1");
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("stops it on the expiry too — the throw is the path a terminal is left broken on", async () => {
+    let clock = 0;
+    const stop = vi.fn();
+    const client = fakeClient({
+      pollForConnectToken: async () => "pending",
+      startDeviceAuthorization: async () => ({
+        deviceCode: "dc_1",
+        userCode: "A",
+        verificationUri: "https://app.pithy.sh/cli",
+        expiresInSeconds: 3,
+        intervalSeconds: 1,
+      }),
+    });
+
+    const error = await authorizeDashboard(client, {
+      announce: () => ({ stop }),
+      sleep: async () => {
+        clock += 1000;
+      },
+      now: () => clock,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test("an announcer that returns nothing is still the ordinary case", async () => {
+    await expect(authorizeDashboard(fakeClient(), { announce: () => undefined, sleep: async () => {} })).resolves.toBe(
+      "ct_1",
+    );
+  });
 });
 
 describe("connectDashboard — the dashboard path", () => {

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { CreateConnectionRequest, DEFAULT_DASHBOARD_ORIGIN, IssuedConnection } from "./contract";
+import { CreateConnectionRequest, DEFAULT_DASHBOARD_ORIGIN, DeviceAuthorization, IssuedConnection } from "./contract";
 
 /**
  * The management-client contract.
@@ -196,6 +196,45 @@ describe("CreateConnectionRequest", () => {
   test("a request without it is refused — a client must never have to infer it from the name", () => {
     const { isProduction: _omitted, ...without } = request;
     expect(CreateConnectionRequest.safeParse(without).success).toBe(false);
+  });
+});
+
+describe("DeviceAuthorization", () => {
+  const authorization = {
+    deviceCode: "dev_1",
+    userCode: "ABCD-EFGH",
+    verificationUri: "https://app.pithy.sh/cli",
+    expiresInSeconds: 600,
+    intervalSeconds: 5,
+  };
+
+  test("parses without verificationUriComplete — a dashboard that has not shipped it still works", () => {
+    const parsed = DeviceAuthorization.parse(authorization);
+    expect(parsed.verificationUriComplete).toBeUndefined();
+  });
+
+  test("carries the pre-filled page when the client sends one", () => {
+    const parsed = DeviceAuthorization.parse({
+      ...authorization,
+      verificationUriComplete: "https://app.pithy.sh/cli?code=ABCD-EFGH",
+    });
+    expect(parsed.verificationUriComplete).toBe("https://app.pithy.sh/cli?code=ABCD-EFGH");
+  });
+
+  // The trust boundary: this arrives from whatever origin `--origin` pointed at, and the CLI offers to
+  // hand it to the desktop's own opener. A bare `z.url()` accepts every one of these.
+  test.each(["javascript:alert(1)", "file:///etc/passwd", "vscode://file/etc/passwd"])(
+    "refuses %j as a verification uri",
+    (hostile) => {
+      expect(DeviceAuthorization.safeParse({ ...authorization, verificationUri: hostile }).success).toBe(false);
+      expect(DeviceAuthorization.safeParse({ ...authorization, verificationUriComplete: hostile }).success).toBe(false);
+    },
+  );
+
+  test("http is accepted as well as https — a self-hosted client on a LAN is not a hostile scheme", () => {
+    expect(
+      DeviceAuthorization.safeParse({ ...authorization, verificationUri: "http://localhost:8788/cli" }).success,
+    ).toBe(true);
   });
 });
 

@@ -49,14 +49,85 @@ describe("httpDashboardClient — device authorization", () => {
         },
       },
     ]);
-    const client = httpDashboardClient({ origin: "https://dash.example.com", fetch });
+    const client = httpDashboardClient({ origin: "https://app.pithy.sh", fetch });
 
     const authorization = await client.startDeviceAuthorization();
 
     expect(authorization.userCode).toBe("PITHY-7Q4X");
     expect(authorization.intervalSeconds).toBe(5);
-    expect(calls[0]?.url).toBe("https://dash.example.com/api/cli/device/start");
+    expect(calls[0]?.url).toBe("https://app.pithy.sh/api/cli/device/start");
     expect(calls[0]?.init.method).toBe("POST");
+  });
+
+  /**
+   * **A verification URI belongs to the origin that issued it.** Both fields arrive over the wire, and
+   * the CLI offers to hand one of them to the desktop's opener — so a management client that names
+   * somebody else's host is a client pointing an operator's browser at a page it does not own. The
+   * scheme was already narrowed; the host was not, and an https URL anywhere on the web satisfied it.
+   */
+  test("a verification URI at another origin is refused, naming both", async () => {
+    const { fetch } = stubFetch([
+      {
+        status: 200,
+        body: {
+          deviceCode: "dc_1",
+          userCode: "A",
+          verificationUri: "https://evil.example/cli",
+          expiresInSeconds: 600,
+          intervalSeconds: 5,
+        },
+      },
+    ]);
+    const failure: unknown = await httpDashboardClient({ origin: "https://app.pithy.sh", fetch })
+      .startDeviceAuthorization()
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    if (!(failure instanceof PithyError)) throw new Error("expected a PithyError");
+    const said = `${failure.message} ${failure.payload.action ?? ""} ${failure.payload.detail ?? ""}`;
+    expect(said).toContain("https://evil.example");
+    expect(said).toContain("https://app.pithy.sh");
+  });
+
+  test("the complete URI is held to the same origin", async () => {
+    const { fetch } = stubFetch([
+      {
+        status: 200,
+        body: {
+          deviceCode: "dc_1",
+          userCode: "A",
+          verificationUri: "https://app.pithy.sh/cli",
+          verificationUriComplete: "https://evil.example/cli?userCode=A",
+          expiresInSeconds: 600,
+          intervalSeconds: 5,
+        },
+      },
+    ]);
+    await expect(
+      httpDashboardClient({ origin: "https://app.pithy.sh", fetch }).startDeviceAuthorization(),
+    ).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("a self-hosted client naming its own origin is fine", async () => {
+    const { fetch } = stubFetch([
+      {
+        status: 200,
+        body: {
+          deviceCode: "dc_1",
+          userCode: "A",
+          verificationUri: "https://dash.example.com/cli",
+          verificationUriComplete: "https://dash.example.com/cli?userCode=A",
+          expiresInSeconds: 600,
+          intervalSeconds: 5,
+        },
+      },
+    ]);
+    const authorization = await httpDashboardClient({
+      origin: "https://dash.example.com",
+      fetch,
+    }).startDeviceAuthorization();
+    expect(authorization.verificationUriComplete).toBe("https://dash.example.com/cli?userCode=A");
   });
 
   test("defaults to app.pithy.sh", async () => {

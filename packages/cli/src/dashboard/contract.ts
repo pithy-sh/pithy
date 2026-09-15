@@ -40,6 +40,11 @@ export const DEFAULT_DASHBOARD_ORIGIN = "https://app.pithy.sh";
  * What the CLI shows a human so they can approve the connection in a browser. The device-code flow
  * is the one leg of this design with genuine user delegation, which is why a browser belongs here
  * and nowhere near the machine-to-machine leg (docs/CONTROL-PLANE.md §5).
+ *
+ * **Both URIs are http(s) or nothing.** They arrive over the wire from whatever origin `--origin` named,
+ * and the CLI offers to hand one of them to the desktop's own opener. A bare `z.url()` accepts
+ * `javascript:`, `file:` and `vscode:` alike, so the scheme is narrowed here — at the boundary the value
+ * crosses — rather than at the opener alone (#607).
  */
 export const DeviceAuthorization = z
   .object({
@@ -51,7 +56,15 @@ export const DeviceAuthorization = z
       .string()
       .min(1)
       .describe("The short code the human types into the browser. Short enough to read off a screen and retype."),
-    verificationUri: z.url().describe("Where the human approves — the page the CLI prints and offers to open."),
+    verificationUri: z
+      .url({ protocol: /^https?$/ })
+      .describe("Where the human approves — the page the CLI prints and offers to open."),
+    verificationUriComplete: z
+      .url({ protocol: /^https?$/ })
+      .optional()
+      .describe(
+        "The same page with the user code already in it. Opened when present; never printed, because it carries the code.",
+      ),
     expiresInSeconds: z
       .number()
       .int()

@@ -91,8 +91,14 @@ export type Authorize = (client: DashboardClient) => Promise<string>;
 
 /** Options for {@link authorizeDashboard}. */
 export interface AuthorizeOptions {
-  /** Where to show the user code and verification URI — stderr in the CLI, a spy in a test. */
-  announce?: (authorization: DeviceAuthorization) => void;
+  /**
+   * Where to show the user code and verification URI — stderr in the CLI, a spy in a test.
+   *
+   * It may hand back something to stop. The CLI's announcer offers `o` to open the approval page, which
+   * puts the terminal in raw mode, and **that offer's lifetime is this flow's** — it is stopped in a
+   * `finally`, so the terminal comes back on the expiry throw as well as on the token.
+   */
+  announce?: (authorization: DeviceAuthorization) => { stop: () => void } | undefined;
   /** The wait between polls. Injected so a test does not spend the interval. */
   sleep?: (ms: number) => Promise<void>;
   /** The clock, in milliseconds. */
@@ -112,20 +118,24 @@ export async function authorizeDashboard(client: DashboardClient, options: Autho
   const now = options.now ?? (() => Date.now());
 
   const authorization = await client.startDeviceAuthorization();
-  options.announce?.(authorization);
+  const announced = options.announce?.(authorization);
 
-  const deadline = now() + authorization.expiresInSeconds * 1000;
-  while (now() < deadline) {
-    const result = await client.pollForConnectToken(authorization.deviceCode);
-    if (result !== "pending") return result.connectToken;
-    await sleep(authorization.intervalSeconds * 1000);
+  try {
+    const deadline = now() + authorization.expiresInSeconds * 1000;
+    while (now() < deadline) {
+      const result = await client.pollForConnectToken(authorization.deviceCode);
+      if (result !== "pending") return result.connectToken;
+      await sleep(authorization.intervalSeconds * 1000);
+    }
+
+    throw new ValidationError({
+      message: "That sign-in request expired.",
+      action: "Run the command again and approve it in the browser.",
+      detail: `device authorization ${authorization.deviceCode} was never approved`,
+    });
+  } finally {
+    announced?.stop();
   }
-
-  throw new ValidationError({
-    message: "That sign-in request expired.",
-    action: "Run the command again and approve it in the browser.",
-    detail: `device authorization ${authorization.deviceCode} was never approved`,
-  });
 }
 
 /** Options for {@link connectDashboard}. */

@@ -120,6 +120,8 @@
         "--origin",
         "--json",
         "--no-json",
+        "--open",
+        "--no-open",
         "--worker-url",
         "--workerUrl",
         "--scope",
@@ -141,6 +143,8 @@
         "--origin",
         "--json",
         "--no-json",
+        "--open",
+        "--no-open",
         "--yes",
         "--no-yes",
         "--local",
@@ -155,6 +159,8 @@
         "--origin",
         "--json",
         "--no-json",
+        "--open",
+        "--no-open",
         "--key-id",
         "--keyId",
         "--yes",
@@ -168,7 +174,9 @@
         "--worker",
         "--origin",
         "--json",
-        "--no-json"
+        "--no-json",
+        "--open",
+        "--no-open"
       ]
     },
     {
@@ -179,6 +187,8 @@
         "--origin",
         "--json",
         "--no-json",
+        "--open",
+        "--no-open",
         "--verify",
         "--no-verify"
       ]
