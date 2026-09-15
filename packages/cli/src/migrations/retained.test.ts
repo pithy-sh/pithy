@@ -33,6 +33,7 @@ import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptio
 import type { Migration } from "kysely/migration";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { defaultRemoveSteps } from "../capabilities/remove";
 import { CloudflareSecretsDeprovisioner } from "../capabilities/secretsProvisioner";
 import { seedProjectDevSecrets } from "../devSecrets/seed";
 import { localDevStorePath } from "../devSecrets/store";
@@ -129,6 +130,28 @@ function brokenDown(): Capability {
     requiredBindings: [],
     databases: {
       widgets: { binding: "WIDGETS", tables: {}, migrations: { "0001_widgets": broken }, migrationOrder: 900 },
+    },
+  });
+}
+
+/**
+ * A capability that shares the secrets database — `databases.secrets`, bound to `SECRETS` — and declares
+ * nothing retained. Its `down` drops its own table, and with `dropsVault` the vault's as well: contrived, and
+ * exactly what the database-wide claim exists to refuse without inspecting a `down`.
+ */
+function sharer(options: { dropsVault: boolean }): Capability {
+  const rooms: Migration = {
+    up: createTable("rooms").up,
+    down: async (db) => {
+      await db.schema.dropTable("rooms").execute();
+      if (options.dropsVault) await db.schema.dropTable("pithy_secrets_system_secrets").execute();
+    },
+  };
+  return defineCapability({
+    name: "sharer",
+    requiredBindings: [],
+    databases: {
+      secrets: { binding: "SECRETS", tables: {}, migrations: { "0001_rooms": rooms }, migrationOrder: 500 },
     },
   });
 }
@@ -245,6 +268,7 @@ describe("the reproduction (#588)", () => {
         persistRoot: h.projectDir,
         workerDir: workers[0]?.dir ?? "",
         capability: vault(),
+        composition: workers[0]?.capabilities ?? [],
       }),
     );
     expect(dropped.payload.message).toContain("4");
@@ -255,6 +279,95 @@ describe("the reproduction (#588)", () => {
     await resetProject({ ...base(), workers, destroyRetained: 4 });
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(0),
+    );
+  });
+
+  /**
+   * The review's reproduction. `remove --drop` reversed one capability's migrations with a provider built from
+   * that capability alone, so the preflight and the runner's floor both counted what *it* declared — nothing
+   * — while the vault it shares a database with held rows. Its `down` ran, and here it took the vault.
+   */
+  test("remove --drop of a capability sharing the vault's database is counted database-wide", async () => {
+    const workers = [h.api([vault(), sharer({ dropsVault: true })])];
+    await migrateProject({ ...base(), workers });
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 1));
+
+    const drop = (destroyRetained?: number) =>
+      dropCapabilityTables({
+        ...base(),
+        persistRoot: h.projectDir,
+        workerDir: workers[0]?.dir ?? "",
+        capability: sharer({ dropsVault: true }),
+        composition: workers[0]?.capabilities ?? [],
+        ...(destroyRetained !== undefined ? { destroyRetained } : {}),
+      });
+    const error = await refusal(drop());
+    expect(error.payload.message).toContain("pithy_secrets_system_secrets on SECRETS (1 row)");
+    await withLocal(h.projectDir, "SECRETS", async (db) => {
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(1);
+      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init", "0500_sharer_0001_rooms"]);
+    });
+  });
+
+  test("and through the step `pithy remove` builds, which counts over the Worker's loaded composition", async () => {
+    const workers = [h.api([vault(), sharer({ dropsVault: true })])];
+    await migrateProject({ ...base(), workers });
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
+
+    const steps = defaultRemoveSteps({
+      account: null,
+      projectDir: h.projectDir,
+      workerDir: workers[0]?.dir ?? "",
+      loadCapabilities: async () => workers[0]?.capabilities ?? [],
+      project: "acme",
+    });
+    const error = await refusal(steps.dropTables(sharer({ dropsVault: true }), "dev"));
+    expect(error.payload.action).toContain("--destroy-retained 2");
+    await withLocal(h.projectDir, "SECRETS", async (db) =>
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(2),
+    );
+  });
+
+  test("the drop reverses only its own capability, and a count lets it through", async () => {
+    const workers = [h.api([vault(), sharer({ dropsVault: false })])];
+    await migrateProject({ ...base(), workers });
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
+
+    const runs = await dropCapabilityTables({
+      ...base(),
+      persistRoot: h.projectDir,
+      workerDir: workers[0]?.dir ?? "",
+      capability: sharer({ dropsVault: false }),
+      composition: workers[0]?.capabilities ?? [],
+      destroyRetained: 2,
+    });
+    expect(runs.map((run) => [run.binding, run.results.map((r) => r.migrationName)])).toEqual([
+      ["SECRETS", ["0500_sharer_0001_rooms"]],
+    ]);
+    await withLocal(h.projectDir, "SECRETS", async (db) => {
+      expect(await rowsIn(db, "rooms")).toBeNull();
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(2);
+      expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init"]);
+    });
+  });
+
+  test("dropping a capability on another database is not refused by the vault", async () => {
+    const workers = [h.api([vault(), appCapability()])];
+    await migrateProject({ ...base(), workers });
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 3));
+
+    const runs = await dropCapabilityTables({
+      ...base(),
+      persistRoot: h.projectDir,
+      workerDir: workers[0]?.dir ?? "",
+      capability: appCapability(),
+      composition: workers[0]?.capabilities ?? [],
+    });
+    expect(runs.map((run) => [run.binding, run.results.map((r) => r.migrationName)])).toEqual([
+      ["DB", ["1000_app_0001_things"]],
+    ]);
+    await withLocal(h.projectDir, "SECRETS", async (db) =>
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(3),
     );
   });
 
@@ -282,7 +395,11 @@ describe("the reproduction (#588)", () => {
     const migration = vault().databases?.secrets?.migrations?.["0001_init"];
     if (!migration) throw new Error("the secrets capability ships no 0001_init");
     const handBuilt = { getMigrations: async () => ({ "0100_secrets_0001_init": { ...migration } }) };
-    for (const reverse of [rollbackMigration, dropMigrations]) {
+    const reversals = [
+      rollbackMigration,
+      (db: D1Database) => dropMigrations(db, { database: handBuilt, reverse: handBuilt }),
+    ];
+    for (const reverse of reversals) {
       await withLocal(h.projectDir, "SECRETS", async (db) => {
         await runMigrations(db, handBuilt);
         await storeSecrets(db, 1);

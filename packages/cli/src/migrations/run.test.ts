@@ -170,6 +170,7 @@ describe("migrateProject", () => {
       const runs = await dropCapabilityTables({
         account: null,
         capability: appCapability(),
+        composition: [appCapability()],
         workerDir,
         persistRoot: h.projectDir,
         env: "dev",
@@ -183,6 +184,7 @@ describe("migrateProject", () => {
       const again = await dropCapabilityTables({
         account: null,
         capability: appCapability(),
+        composition: [appCapability()],
         workerDir,
         persistRoot: h.projectDir,
         env: "dev",

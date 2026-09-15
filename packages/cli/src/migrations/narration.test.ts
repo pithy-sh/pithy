@@ -160,6 +160,7 @@ describe("a migration run names the database it is waiting on", () => {
     await probe.run(() =>
       dropCapabilityTables({
         capability: multiplayerCapability("COLLAB_DB"),
+        composition: board.capabilities,
         workerDir: board.dir,
         persistRoot: h.projectDir,
         account: null,

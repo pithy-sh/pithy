@@ -42,10 +42,18 @@ import { declareRetainedDown, retainedTablesOf, retainedTablesOfDown } from "./r
  * - **Every `down` through `runner.ts`** — `rollbackMigration`, `resetMigrations`, `dropMigrations` — whose
  *   function was declared: the registry's providers, the fan-out's merged ones, and a provider written by
  *   hand, so long as it yields the capability's own migration objects (or spreads of them).
- * - **Not seen:** a Kysely `Migrator` constructed outside `runner.ts`; a `down` whose capability was never
- *   constructed in this process and whose set never passed through the registry; a `down` re-wrapped in a
- *   new function by anything but {@link beforeEachDown} or {@link beforeEachMigration}; and a table no capability declares — a capability
- *   removed from the config takes its declaration with it.
+ * - **Counted over the set the runner is handed as the database.** Rollback and reset are handed one
+ *   provider, and Kysely refuses one that does not span the ledger, so it is the database's. A drop reverses a
+ *   part, and is handed the part and the database separately (`DropSelection`): it counts the database's,
+ *   and refuses to reverse a migration the database's set does not carry. The CLI's `remove --drop` builds
+ *   that set from the Worker's whole composition and every Worker discovered beside it — a capability sharing
+ *   `SECRETS` and declaring nothing is refused while the vault holds rows.
+ * - **Not seen:** a drop whose caller hands the part as the database too (`{ database: part, reverse: part }`
+ *   counts only the part); for `remove --drop`, a table declared only by a Worker whose config does not load;
+ *   a Kysely `Migrator` constructed outside `runner.ts`; a `down` whose capability was never constructed in
+ *   this process and whose set never passed through the registry; a `down` re-wrapped in a new function by
+ *   anything but {@link beforeEachDown} or {@link beforeEachMigration}; and a table no capability declares — a
+ *   capability removed from the config takes its declaration with it.
  */
 
 /** The snake_case the `CamelCasePlugin` writes, read from the plugin itself so there is one definition. */

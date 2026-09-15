@@ -41,7 +41,7 @@ Audited like `add`, when Cloudflare credentials resolve and the Worker composes 
 
 ### Retained tables
 
-Some tables hold rows that exist nowhere else — the secrets vault and the email suppression list — and their capability declares them retained. `remove secrets --drop` or `remove email --drop` refuses while one holds rows, names each table and the count, and drops nothing. The typed phrase below agrees to the drop; it does not agree to losing credentials. Back the rows up, or pass `--destroy-retained <n>` with the printed count. A database another environment binds is never dropped from one environment. See [`migrate.md`](migrate.md#rolling-back).
+Some tables hold rows that exist nowhere else — the secrets vault and the email suppression list — and their capability declares them retained. `remove secrets --drop` or `remove email --drop` refuses while one holds rows, names each table and the count, and drops nothing. So does a drop of **any** capability whose tables live in the same database: the count is taken over every capability the Worker composes and every Worker beside it, because a `down` cannot be read for which tables it drops without running it. Dropping a capability from another database is not counted against the vault. The typed phrase below agrees to the drop; it does not agree to losing credentials. Back the rows up, or pass `--destroy-retained <n>` with the printed count. A database another environment binds is never dropped from one environment. See [`migrate.md`](migrate.md#rolling-back).
 
 ### The `--drop` confirmations
 

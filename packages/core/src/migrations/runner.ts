@@ -205,30 +205,57 @@ async function appliedMigrationNames(db: Kysely<unknown>): Promise<Set<string>> 
 }
 
 /**
- * Surgically drop **one capability's** migrations: run each of the provider's `down` functions in
+ * What a drop reverses, and the database it reverses it in.
+ *
+ * Two providers because they answer two questions. `reverse` is the part being removed — one capability's
+ * migrations. `database` is every migration composed into that D1, and it is what the retained guard counts:
+ * a table is retained in a *database*, and the capability being dropped is the one least likely to declare
+ * the vault it shares a database with (#588). Handed only the part, the guard counted what the part declared
+ * — nothing — while the vault beside it held rows.
+ */
+export interface DropSelection {
+  /** Every migration composed into this database — the set whose retained declarations are counted. */
+  database: MigrationProvider;
+  /** The migrations to reverse: a part of `database`, by composed name. */
+  reverse: MigrationProvider;
+}
+
+/**
+ * Surgically drop **one capability's** migrations: run each of `drop.reverse`'s `down` functions in
  * reverse order and delete only those ledger rows, leaving every other capability's tables and
  * bookkeeping untouched. The seam behind `pithy remove --drop`. Kysely's stepwise `Migrator` refuses a
  * provider that doesn't span the whole ledger (it reads a foreign row as corrupt state), so a
  * per-capability drop can't go through it — this reverses the capability's own migrations directly.
  * Only migrations recorded in the ledger are reversed; an absent ledger drops nothing. Refused, before the
- * first `down`, while a retained table here holds rows the caller has not counted in `consent` (#588).
+ * first `down`, while a retained table **anywhere in `drop.database`** holds rows the caller has not counted
+ * in `consent` (#588). A name `drop.reverse` carries that `drop.database` does not is an internal fault: the
+ * guard would not have counted the database the `down` runs in.
  */
 export async function dropMigrations(
   database: D1Database,
-  provider: MigrationProvider,
+  drop: DropSelection,
   target?: MigrationTarget,
   consent?: RetainedConsent,
 ): Promise<MigrationResult[]> {
   const db = migrationKysely(database);
   // Batched here too: `down` pays the same per-statement cost `up` does, and a drop is all DDL. Guarded
-  // first, exactly as the `Migrator` path is (#588).
-  const guarded = guardRetained(provider, database, guardOptions(target, consent));
+  // first, exactly as the `Migrator` path is (#588) — over the whole database's set, so the count is too.
+  const guarded = guardRetained(drop.database, database, guardOptions(target, consent));
   const migrations = await batchedProvider(guarded, database).getMigrations();
+  const reversing = Object.keys(await drop.reverse.getMigrations());
+  const stray = reversing.filter((name) => !(name in migrations));
+  if (stray.length > 0) {
+    throw new InternalError({
+      message: `Couldn't drop ${stray.map((name) => `"${name}"`).join(", ")}${on(target)}. The database's migrations do not carry it.`,
+      detail: `${where(target)} A drop counts retained rows over the database's whole set, so every migration it reverses must be in it.`,
+      action: "Build the drop from the database's composed migrations. Nothing was dropped.",
+    });
+  }
   const applied = await appliedMigrationNames(db);
 
   const results: MigrationResult[] = [];
   // Reverse application order: drop the newest of the capability's migrations first.
-  for (const name of Object.keys(migrations).sort().reverse()) {
+  for (const name of reversing.sort().reverse()) {
     if (!applied.has(name)) continue;
     // No `down` — the migration can't be reversed, so leave both its table and its ledger row in place
     // (deleting the row would desync the ledger from the schema). Every Pithy migration ships a `down`.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
@@ -609,6 +609,12 @@ interface RunContext {
   project?: string;
   /** The one binding the run is narrowed to, when the caller named one. */
   binding?: string;
+  /**
+   * The bindings a capability drop is confined to: its own databases. Set by {@link dropCapabilityTables}
+   * alone, whose in-scope Worker composes more than the capability it drops — so without this every other
+   * database that Worker binds would be visited, counted and claimed, for nothing it reverses.
+   */
+  dropBindings?: ReadonlySet<string>;
   /** The retained rows the caller agreed to destroy — read only by a pass that reverses. */
   destroyRetained?: number;
   /** Test seam for the remote D1 client. */
@@ -693,7 +699,12 @@ function record(
 async function scopedGroups(context: RunContext): Promise<DatabaseGroup[]> {
   const scope = new Set(context.workers.map((worker) => worker.name));
   const groups = await buildGroups(context.groupWorkers, context.env, scope);
-  const inScope = groups.filter((group) => group.entries.some((entry) => scope.has(entry.worker)));
+  const dropBindings = context.dropBindings;
+  const inScope = groups.filter((group) =>
+    group.entries.some(
+      (entry) => scope.has(entry.worker) && (dropBindings === undefined || dropBindings.has(entry.binding)),
+    ),
+  );
   const binding = context.binding;
   if (binding === undefined) return inScope;
   const named = inScope.filter((group) =>
@@ -766,9 +777,9 @@ interface MigrationPass {
    *
    * True for migrate, rollback and reset, which run the whole composed registry — so a ledger row the
    * provider does not carry is a migration this project no longer declares, and the run is refused
-   * before it writes. False for `pithy remove --drop`, whose provider is *deliberately* one capability's
-   * migrations against a database full of other capabilities' rows: to it every other row is
-   * undeclared, and a check here would refuse the command it exists to serve.
+   * before it writes. False for `pithy remove --drop`. Its provider is the merged one too, so its retained
+   * count is database-wide (#588), but it reverses one capability's migrations and has no business refusing
+   * over a row left by a Worker whose config did not load.
    */
   spansLedger: boolean;
 }
@@ -1252,6 +1263,14 @@ export async function readProjectLedger(options: MigrationFanOutOptions): Promis
 export interface DropCapabilityOptions {
   /** The capability being removed, whose migrations to reverse. */
   capability: Capability;
+  /**
+   * Every capability the Worker composes, `capability` included — its loaded `pithy.config.ts`. Required,
+   * because it is what the retained count is taken over (#588): the capability being dropped is the one least
+   * likely to declare the vault it shares a database with, and a count over what it alone declares found
+   * nothing while that vault held rows. The drop merges this with every other Worker discovered under the
+   * project root, exactly as a migrate does, and reverses only `capability`'s own migrations.
+   */
+  composition: Capability[];
   /** The Worker's directory — its `wrangler.jsonc` supplies the D1 bindings and their ids. */
   workerDir: string;
   /** The project root whose `.wrangler/state` holds the local D1 every Worker shares. */
@@ -1280,24 +1299,47 @@ export interface DropCapabilityOptions {
 
 /**
  * Drop a single capability's tables for an environment — the seam behind `pithy remove --drop`. It runs
- * the **same grouping and driver** as {@link migrateProject} but over just the removed capability, in
- * just the Worker it is wired into, so only that capability's migrations are reversed (via
- * {@link dropMigrations}); every other capability's tables and ledger rows are untouched — including
- * those of another Worker sharing the same physical D1. Runs before the capability is
- * unwired/uninstalled, while its `down` code is still present.
+ * the **same grouping and driver** as {@link migrateProject}, over the Worker the capability is wired into
+ * and every Worker it shares a database with, and reverses only that capability's migrations (via core's
+ * `dropMigrations`); every other capability's tables and ledger rows are untouched — including those of
+ * another Worker sharing the same physical D1. Runs before the capability is unwired/uninstalled, while its
+ * `down` code is still present.
+ *
+ * **The retained count is database-wide (#588).** Each database's provider is the merged one a migrate
+ * would run, so the preflight and core's floor both count every table any composed capability declares
+ * retained there — a capability that shares `SECRETS` and declares nothing is still refused while the vault
+ * holds rows. Only the databases the dropped capability declares are visited.
+ *
+ * What it cannot count: a retained table declared only by a Worker whose `pithy.config.ts` does not load
+ * (discovery is best effort, as it is for a migrate), and one declared by no capability at all.
  */
 export async function dropCapabilityTables(options: DropCapabilityOptions): Promise<DatabaseRun[]> {
+  const home = resolve(options.workerDir);
+  const discovered = await resolveWorkerScopes({ projectDir: options.persistRoot }).catch(() => []);
+  const composed = options.composition.some((capability) => capability.name === options.capability.name)
+    ? options.composition
+    : [...options.composition, options.capability];
   const worker: WorkerScope = {
-    name: options.capability.name,
+    name: discovered.find((found) => resolve(found.dir) === home)?.name ?? basename(home),
     dir: options.workerDir,
-    capabilities: [options.capability],
+    capabilities: composed,
   };
+  const neighbors = discovered.filter((found) => resolve(found.dir) !== home);
+
+  const bindings = composeDatabases([options.capability]);
+  // What is reversed on each binding: the capability's own sets, composed through the same registry as the
+  // merged provider, so the keys are core's single definition.
+  const reverse = new Map<string, MigrationProvider>();
+  for (const set of collectMigrationSets([options.capability])) {
+    const binding = bindings[set.database]?.binding;
+    const provider = createMigrationRegistry([set])[set.database];
+    if (binding !== undefined && provider) reverse.set(binding, provider);
+  }
+
   const context: RunContext = {
     workers: [worker],
-    // Deliberately just this capability: `dropMigrations` reverses the provider's own migrations
-    // directly, never through Kysely's stepwise `Migrator`, so a partial registry is the point — every
-    // other capability's tables and ledger rows, on this D1 or a Worker sharing it, stay untouched.
-    groupWorkers: [worker],
+    groupWorkers: [worker, ...neighbors],
+    dropBindings: new Set(reverse.keys()),
     persistRoot: options.persistRoot,
     account: options.account,
     env: options.env,
@@ -1305,8 +1347,18 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };
-  // `spansLedger: false`: this provider is one capability's migrations, and every other capability's row
-  // in the same database is undeclared to it. See {@link MigrationPass}.
-  const [run] = await runGroups(context, { spansLedger: false, reverses: true, execute: dropMigrations });
+  // `spansLedger: false`: discovery is best effort, so a Worker whose config did not load leaves rows this
+  // provider does not carry, and a drop is not the run to refuse over them. See {@link MigrationPass}.
+  const [run] = await runGroups(context, {
+    spansLedger: false,
+    reverses: true,
+    execute: (database, provider, target, consent) =>
+      dropMigrations(
+        database,
+        { database: provider, reverse: reverse.get(target.binding) ?? { getMigrations: async () => ({}) } },
+        target,
+        consent,
+      ),
+  });
   return run?.databases ?? [];
 }

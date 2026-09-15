@@ -379,9 +379,13 @@ export function defaultRemoveSteps(options: DefaultRemoveStepsOptions): RemoveSt
   const { projectDir, workerDir } = options;
   return {
     loadCapabilities: options.loadCapabilities,
-    dropTables: (capability, env) =>
+    // The composition from the same loader the orchestration reads, never from the call site: the retained
+    // count is taken over everything the Worker wires, and a caller handing over the capability alone would
+    // count what it declares — nothing, beside a vault (#588).
+    dropTables: async (capability, env) =>
       dropCapabilityTables({
         capability,
+        composition: await options.loadCapabilities(),
         workerDir,
         persistRoot: projectDir,
         env,
