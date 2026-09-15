@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join, relative } from "node:path";
+import { join, posix, relative } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { sourceFiles } from "./sourceFiles";
@@ -31,6 +31,17 @@ import { sourceFiles } from "./sourceFiles";
  *    nothing. Every other one is a raw loader in its own right, and every module naming it is held to this
  *    half. `commands/add.ts`'s `targetWorker` handed `pithy remove --drop` a composition for no environment
  *    through exactly that gap.
+ *
+ *    **A carrier is whatever a module hands out, however it is spelled (#595).** The walk read only
+ *    `export function` and `export const`, so a helper exported through a list
+ *    (`export { composedConfig as workerComposition }`, the form `commands/token.ts` and `commands/doctor.ts`
+ *    already use) or as a default escaped it, and so did its importers. Every way a name leaves a module is
+ *    now read ({@link moduleShape}): its own `export`, an export list with or without renames, `export default`
+ *    of a declaration, a name or an expression, `export { a as b } from`, `export * from` and
+ *    `export * as ns from`, a `class`, a `let` assigned later, and a flat destructuring. A default export has no
+ *    name its importers must use, so its importers are held by the specifier they import it from. Inside a
+ *    module, a declaration reaches through a carrier renamed at its import, a default or namespace import of a
+ *    module that carries, and an `import()` of one.
  * 3. **Every module that assembles a backend does it inside the primitive.** `createBackend` is where a
  *    capability reads the environment at registration — the dev-login route is mounted there or not — so
  *    assembling one with no environment stamped is the #255 defect.
@@ -40,7 +51,7 @@ import { sourceFiles } from "./sourceFiles";
  *
  * ## What this does not see, said plainly
  *
- * The first four were planted and left this file green; the fifth is a boundary rather than a spelling. A
+ * Each spelling below was planted and left this file green; a bullet naming no spelling is a boundary. A
  * gate believed to cover more than it does is worse than a narrow one somebody plans around.
  *
  * - **Module granularity, not call-site granularity.** A module in {@link RAW_COMPOSERS} may add a second
@@ -52,11 +63,16 @@ import { sourceFiles } from "./sourceFiles";
  *   it hands back a composition after all — a field of its result that is a capability instance — its
  *   callers are not held. The table is where that is checked, by a reviewer.
  * - **Carriers by name, not by binding.** A carrier's name is matched in every module, so a module declaring
- *   its own unrelated function of the same name is held as if it called the carrier (a false red, never a
- *   false green). A carrier passed as a value — stored in an object, handed to a function — and called under
- *   another name is followed only as far as the module that names it.
- * - **Functions only.** A carrier is a top-level `function` or a `const` bound at column 0. A class method, or
- *   an object literal's member exported as a whole, that composes raw is not followed past its module.
+ *   its own unrelated function or variable of the same name is held as if it called the carrier (a false red,
+ *   never a false green). A carrier passed as a value — stored in an object, handed to a function — and called
+ *   under another name is followed only as far as the module that names it.
+ * - **Top-level declarations, by layout.** A carrier is declared at column 0, the way biome formats one. An
+ *   exported `let` assigned inside a top-level block (`{ load = … }`) or an immediately invoked function, and
+ *   a nested destructuring (`export const { a: { b } } = …`), bind no text this reads. A class is followed by
+ *   its name, not by its members: `Loader.load(…)` is held because it names `Loader`.
+ * - **Specifiers this CLI resolves.** A whole or default import is resolved when its specifier is relative or
+ *   `@pithy-sh/cli/src/…`. A path alias would name a module this cannot find, and its importer is held only if
+ *   it also names a carrier.
  * - **Which environment.** `composeFor("dev", …)` in a command about staging reaches the primitive and
  *   passes. The environments this CLI composes for are held by behavior —
  *   `migrations/environmentComposition.test.ts` — not by source text.
@@ -86,27 +102,182 @@ const LOADER_MODULES: readonly string[] = ["project/config.ts", "project/workerS
 /** The loader every other one reaches: the evaluation of one Worker's `pithy.config.ts`. */
 const EVALUATES_A_WORKER_CONFIG = "loadWorkerConfig";
 
+/** One top-level declaration: the local name it binds, and its text. */
+interface Declaration {
+  name: string;
+  text: string;
+}
+
+/** What one module declares at top level, and every name it hands to another module. */
+interface ModuleShape {
+  declarations: Declaration[];
+  /** Each local name, and every name it is exported under — `default` among them. */
+  exports: Map<string, string[]>;
+  /** `export { name as exported } from "…"`: another module's export, handed on under a name of this one's. */
+  reexports: { name: string; exported: string; from: string }[];
+  /** `export * from "…"`, and `export * as name from "…"`. */
+  stars: { from: string; as: string | null }[];
+}
+
 /**
- * Every top-level function a module declares — `function`, or a `const` bound to one — with its text.
+ * The lines of `code` that open inside a template literal, which a column-0 line there does not start a
+ * declaration from. A `${…}` inside the template is code again, to its matching brace. A string or a regex
+ * literal is skipped whole, so a backtick inside one opens nothing; a `/` is a regex where a value may start,
+ * the same rule `blankComments` reads by.
+ */
+function templateLines(code: string): Set<number> {
+  const inside = new Set<number>();
+  const stack: ("template" | number)[] = [];
+  let line = 0;
+  let quote: string | null = null;
+  let previous = "";
+  for (let index = 0; index < code.length; index += 1) {
+    const char = code[index] as string;
+    if (char === "\n") {
+      line += 1;
+      if (stack.at(-1) === "template") inside.add(line);
+      if (quote !== null) quote = null;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === "\\") index += 1;
+      else if (char === "[" && quote === "/") quote = "]";
+      else if (char === quote) quote = quote === "]" ? "/" : null;
+      continue;
+    }
+    if (stack.at(-1) !== "template" && !/\s/.test(char)) {
+      const before = previous;
+      previous = char;
+      if (char === "/" && (before === "" || "(,=:[!&|?{};+-*%^~<>".includes(before))) {
+        quote = "/";
+        continue;
+      }
+    }
+    const top = stack.at(-1);
+    if (top === "template") {
+      if (char === "\\") index += 1;
+      else if (char === "`") stack.pop();
+      else if (char === "$" && code[index + 1] === "{") {
+        stack.push(0);
+        index += 1;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "`") stack.push("template");
+    else if (typeof top === "number" && char === "{") stack[stack.length - 1] = top + 1;
+    else if (typeof top === "number" && char === "}") {
+      if (top === 0) stack.pop();
+      else stack[stack.length - 1] = top - 1;
+    }
+  }
+  return inside;
+}
+
+/** The local names one flat destructuring pattern binds: `a`, `key: a`, `a = fallback`, `...rest`. */
+function bindingNames(pattern: string): string[] {
+  return pattern
+    .split(",")
+    .map((part) => /([\w$]+)\s*(?:=[^,]*)?$/.exec(part.split(":").pop()?.trim() ?? "")?.[1])
+    .filter((name): name is string => name !== undefined);
+}
+
+/** Add `exported` to the names `local` is exported under. */
+function exportAs(exports: Map<string, string[]>, local: string, exported: string): void {
+  exports.set(local, [...(exports.get(local) ?? []), exported]);
+}
+
+/**
+ * Every top-level declaration a module makes, with its text, and every name it exports.
  *
  * Read by layout rather than by parse: biome opens a top-level declaration at column 0 and closes it
  * there, so a declaration runs to the next line that starts with anything but whitespace or a closer.
- * Comments are already blanked, so a docblock never starts one.
+ * Comments are already blanked, so a docblock never starts one, and a line opening inside a template
+ * literal is the template's text, not a declaration.
+ *
+ * A declaration is a `function`, a `class`, a `const`, `let` or `var`, an assignment to a name bound
+ * earlier (`composed = async (dir) => …`), or an `export default` of anything — named `default` when it
+ * binds no name of its own. Exported by its own `export`, by an export list (`export { a as b }`), or
+ * handed on from another module (`export { a as b } from`, `export * from`, `export * as ns from`).
  */
-function topLevelFunctions(code: string): { name: string; exported: boolean; text: string }[] {
-  const found: { name: string; exported: boolean; text: string }[] = [];
-  let current: { name: string; exported: boolean; lines: string[] } | null = null;
-  for (const line of code.split("\n")) {
-    if (/^[^\s})\]]/.test(line)) {
-      if (current !== null)
-        found.push({ name: current.name, exported: current.exported, text: current.lines.join("\n") });
-      const head = /^(export\s+)?(?:async\s+function\s*\*?|function\s*\*?|const)\s+([\w$]+)/.exec(line);
-      current = head === null ? null : { name: head[2] as string, exported: head[1] !== undefined, lines: [] };
+function moduleShape(code: string): ModuleShape {
+  const templates = templateLines(code);
+  const declarations: Declaration[] = [];
+  const exports = new Map<string, string[]>();
+  let current: { names: string[]; lines: string[] } | null = null;
+  const close = () => {
+    for (const name of current?.names ?? []) declarations.push({ name, text: current?.lines.join("\n") ?? "" });
+  };
+  code.split("\n").forEach((line, index) => {
+    if (!templates.has(index) && /^[^\s})\]]/.test(line)) {
+      close();
+      const head =
+        /^(export\s+(default\s+)?)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+function\s*\*?\s*|function\s*\*?\s*|class\s+|const\s+|let\s+|var\s+)([\w$]+)/.exec(
+          line,
+        );
+      const destructured = /^(export\s+)?(?:const|let|var)\s*[{[]([^}\]]*)[}\]]\s*=/.exec(line);
+      const assigned = /^([\w$]+)(?:\.[\w$]+)*\s*=(?![=>])/.exec(line);
+      const names =
+        head !== null
+          ? [head[3] as string]
+          : destructured !== null
+            ? bindingNames(destructured[2] as string)
+            : /^export\s+default\b/.test(line)
+              ? ["default"]
+              : assigned !== null
+                ? [assigned[1] as string]
+                : [];
+      current = names.length === 0 ? null : { names, lines: [] };
+      const exported = head?.[1] ?? destructured?.[1];
+      for (const name of names) {
+        if (exported !== undefined) exportAs(exports, name, head?.[2] === undefined ? name : "default");
+        else if (name === "default") exportAs(exports, name, "default");
+      }
     }
     current?.lines.push(line);
+  });
+  close();
+
+  const lineOf = (offset: number) => code.slice(0, offset).split("\n").length - 1;
+  const reexports: ModuleShape["reexports"] = [];
+  for (const list of code.matchAll(/^export\s*\{([^}]*)\}\s*(?:from\s*["']([^"']+)["'])?/gm)) {
+    if (templates.has(lineOf(list.index))) continue;
+    for (const specifier of (list[1] as string).split(",")) {
+      const parts = /^\s*(type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?\s*$/.exec(specifier);
+      if (parts === null || parts[1] !== undefined) continue;
+      const name = parts[2] as string;
+      const exported = parts[3] ?? name;
+      if (list[2] === undefined) exportAs(exports, name, exported);
+      else reexports.push({ name, exported, from: list[2] });
+    }
   }
-  if (current !== null) found.push({ name: current.name, exported: current.exported, text: current.lines.join("\n") });
-  return found;
+  const stars: ModuleShape["stars"] = [];
+  for (const star of code.matchAll(/^export\s*\*\s*(?:as\s+([\w$]+)\s+)?from\s*["']([^"']+)["']/gm)) {
+    if (!templates.has(lineOf(star.index))) stars.push({ from: star[2] as string, as: star[1] ?? null });
+  }
+  return { declarations, exports, reexports, stars };
+}
+
+/** Each module's shape, read once: the tree does not change under a test run. */
+const shapes = new Map<string, ModuleShape>();
+function shapeOf(key: string): ModuleShape {
+  let shape = shapes.get(key);
+  if (shape === undefined) {
+    shape = moduleShape(MODULES.find((module) => module.key === key)?.code ?? "");
+    shapes.set(key, shape);
+  }
+  return shape;
+}
+
+/** The module a relative specifier in `from` names, as the tables spell it, or `null` for a package. */
+function resolveSpecifier(from: string, specifier: string): string | null {
+  const own = "@pithy-sh/cli/src/";
+  const path = specifier.startsWith(own)
+    ? specifier.slice(own.length)
+    : specifier.startsWith(".")
+      ? posix.join(posix.dirname(from), specifier)
+      : null;
+  return path === null ? null : `${path.replace(/\.[cm]?[jt]s$/, "")}.ts`;
 }
 
 /**
@@ -121,9 +292,17 @@ function topLevelFunctions(code: string): { name: string; exported: boolean; tex
  * written. Only the exported ones are importable, so only they are matched elsewhere.
  */
 function rawLoaders(): string[] {
-  const declared = LOADER_MODULES.flatMap((key) =>
-    topLevelFunctions(MODULES.find((module) => module.key === key)?.code ?? ""),
-  );
+  const declared = LOADER_MODULES.flatMap((key) => shapeOf(key).declarations);
+  const raw = rawLocals(declared);
+  return LOADER_MODULES.flatMap((key) =>
+    [...shapeOf(key).exports].flatMap(([local, names]) => (raw.has(local) ? names : [])),
+  )
+    .filter((name) => name !== "default")
+    .sort();
+}
+
+/** The local names in {@link LOADER_MODULES} that reach the evaluation, to a fixed point. */
+function rawLocals(declared: readonly Declaration[]): Set<string> {
   const raw = new Set([EVALUATES_A_WORKER_CONFIG]);
   for (let grew = true; grew; ) {
     grew = false;
@@ -136,8 +315,15 @@ function rawLoaders(): string[] {
       }
     }
   }
-  const exported = new Set(declared.filter((fn) => fn.exported).map((fn) => fn.name));
-  return [...raw].filter((name) => exported.has(name)).sort();
+  return raw;
+}
+
+/** Whether a loader module's default export reaches the evaluation. */
+function loaderModuleDefaults(): string[] {
+  const raw = rawLocals(LOADER_MODULES.flatMap((key) => shapeOf(key).declarations));
+  return LOADER_MODULES.filter((key) =>
+    [...shapeOf(key).exports].some(([local, names]) => raw.has(local) && names.includes("default")),
+  );
 }
 
 /**
@@ -148,7 +334,7 @@ function rawLoaders(): string[] {
  * (`resolveWorkers?: (…) => …`, a seam's type) and a member read (`options.resolveWorkers`, a seam's
  * value) — both name somebody else's resolver, and the default they fall back to is what gets read.
  *
- * **Skipping those two opened a hole, and {@link LOADER_MODULE_WHOLE} closes it.** Planted:
+ * **Skipping those two opened a hole, and {@link takesWhole} closes it.** Planted:
  * `const { resolveWorkers: all } = await import("./workerScope")` is a key by shape, and
  * `import * as scope from "./workerScope"` then `scope.resolveWorkers(…)` is a member read by shape — both
  * real compositions, both green. What neither can avoid is taking the whole defining module, by namespace or
@@ -159,52 +345,118 @@ function rawLoaderPattern(): RegExp {
 }
 
 /**
- * **Every exported function that composes Workers with no environment stamped and hands something back,
- * anywhere in the tree** — keyed `module#name`, derived to a fixed point.
+ * **Every export that composes Workers with no environment stamped and hands something back, anywhere in the
+ * tree** — keyed `module#exported`, derived to a fixed point.
  *
- * A function reaches a raw loader when its text names one, names a helper of its own module that does, or
- * names a carrier another module exports that is not sealed. A sealed carrier stops the walk in its own module
- * as well as in others, because what reaches its callers is its answer.
+ * A declaration reaches a raw loader when its text names one, names a declaration of its own module that
+ * does, or names a carrier another module exports that is not sealed. Every name it is exported under is a
+ * carrier, and so is every name another module hands it on under. A sealed carrier stops the walk in its own
+ * module as well as in others, because what reaches its callers is its answer.
+ *
+ * `loaders` are the carriers matched by name. A default export has no name its importers must use, so a
+ * module with one that carries is in `defaults`, and its importers are matched by the specifier instead.
+ *
+ * Within a module, a declaration also reaches through what the module imported under a name of its own: a
+ * carrier renamed at its import (`{ resolveWorkers as every }`), a default import of a module whose default
+ * carries, a namespace import of a module that carries, and an `import()` of one in the declaration's text.
  */
-function carriers(): { keys: string[]; loaders: string[] } {
+function carriers(): Carriers {
   derived ??= deriveCarriers();
   return derived;
 }
 
-/** The walk behind {@link carriers}, taken once: the tree does not change under a test run. */
-let derived: { keys: string[]; loaders: string[] } | undefined;
+interface Carriers {
+  keys: string[];
+  loaders: string[];
+  /** Every module with a carrier that is not sealed: a namespace import or `import()` of it composes raw. */
+  modules: string[];
+  /** Every module whose default export carries and is not sealed. */
+  defaults: string[];
+}
 
-function deriveCarriers(): { keys: string[]; loaders: string[] } {
-  const loaders = new Set(rawLoaders());
+/** The walk behind {@link carriers}, taken once: the tree does not change under a test run. */
+let derived: Carriers | undefined;
+
+function deriveCarriers(): Carriers {
+  const raw = rawLoaders();
+  const loaders = new Set(raw);
   const found = new Set<string>();
+  const unsealed = new Set<string>();
   const skip = new Set([PRIMITIVE, ...LOADER_MODULES]);
+  /** Record one carrier, and whether that was news. */
+  const carry = (module: string, exported: string): boolean => {
+    const key = `${module}#${exported}`;
+    if (found.has(key)) return false;
+    found.add(key);
+    if (!(key in SEALED)) {
+      unsealed.add(key);
+      if (exported !== "default") loaders.add(exported);
+    }
+    return true;
+  };
+  /** The unsealed names `module` exports that carry, a loader module's raw loaders among them. */
+  const carriedBy = (module: string): string[] =>
+    LOADER_MODULES.includes(module)
+      ? [...raw, ...(loaderModuleDefaults().includes(module) ? ["default"] : [])]
+      : [...unsealed].filter((key) => key.startsWith(`${module}#`)).map((key) => key.slice(module.length + 1));
+  const moduleOf = (key: string) => key.slice(0, key.indexOf("#"));
+  /** The modules that carry so far, whole and by default. */
+  const carryingNow = (): Carrying => ({
+    modules: [...LOADER_MODULES, ...new Set([...unsealed].map(moduleOf))],
+    defaults: [...loaderModuleDefaults(), ...[...unsealed].filter((key) => key.endsWith("#default")).map(moduleOf)],
+  });
   for (let grew = true; grew; ) {
     grew = false;
     for (const module of MODULES) {
       if (skip.has(module.key)) continue;
-      const declared = topLevelFunctions(module.code);
+      const shape = shapeOf(module.key);
+      const sealed = (local: string) =>
+        (shape.exports.get(local) ?? []).some((exported) => `${module.key}#${exported}` in SEALED);
+      const carrying = carryingNow();
+      const aliases = importedAliases(module.code, module.key, carrying, carriedBy);
       const reaching = new Set<string>();
       for (let local = true; local; ) {
         local = false;
-        const via = [...loaders, ...[...reaching].filter((name) => !(`${module.key}#${name}` in SEALED))];
-        for (const { name, text } of declared) {
-          if (reaching.has(name) || via.length === 0) continue;
-          if (namesAny(via).test(text.slice(text.indexOf(name) + name.length))) {
+        const via = [...loaders, ...aliases, ...[...reaching].filter((name) => name !== "default" && !sealed(name))];
+        for (const { name, text } of shape.declarations) {
+          if (reaching.has(name)) continue;
+          const body = text.slice(text.indexOf(name) + name.length);
+          if ((via.length > 0 && namesAny(via).test(body)) || takesWhole(body, module.key, carrying)) {
             reaching.add(name);
             local = true;
           }
         }
       }
-      for (const { name, exported } of declared) {
-        const key = `${module.key}#${name}`;
-        if (!exported || !reaching.has(name) || found.has(key)) continue;
-        found.add(key);
-        if (!(key in SEALED)) loaders.add(name);
-        grew = true;
+      for (const name of reaching) {
+        for (const exported of shape.exports.get(name) ?? []) if (carry(module.key, exported)) grew = true;
+      }
+      // An export list handing on a name this module imported rather than declared: `export { every as all }`.
+      for (const [local, names] of shape.exports) {
+        if (shape.declarations.some((declaration) => declaration.name === local)) continue;
+        if (!loaders.has(local) && !aliases.includes(local)) continue;
+        for (const exported of names) if (carry(module.key, exported)) grew = true;
+      }
+      for (const { name, exported, from } of shape.reexports) {
+        const target = resolveSpecifier(module.key, from);
+        if (target !== null && carriedBy(target).includes(name) && carry(module.key, exported)) grew = true;
+      }
+      for (const { from, as } of shape.stars) {
+        const target = resolveSpecifier(module.key, from);
+        const handed = target === null ? [] : carriedBy(target).filter((name) => name !== "default");
+        for (const exported of as === null ? handed : handed.length > 0 ? [as] : []) {
+          if (carry(module.key, exported)) grew = true;
+        }
       }
     }
   }
-  return { keys: [...found].sort(), loaders: [...loaders].sort() };
+  return {
+    keys: [...found].sort(),
+    loaders: [...loaders].sort(),
+    modules: [...new Set([...unsealed].map(moduleOf))].sort(),
+    defaults: [
+      ...new Set([...[...unsealed].filter((key) => key.endsWith("#default")).map(moduleOf), ...loaderModuleDefaults()]),
+    ].sort(),
+  };
 }
 
 /**
@@ -215,31 +467,82 @@ function namesAny(names: readonly string[]): RegExp {
   return new RegExp(`(?<![.\\w$])(?<!typeof\\s+)(?:${names.join("|")})\\b(?!\\s*\\??\\s*:)`);
 }
 
-/** A namespace import or an `import()` of a module that defines a raw loader. */
-const LOADER_MODULE_WHOLE =
-  /import\s*\*\s*as\s+[\w$]+\s+from\s*["'][^"']*(?:project\/|\.\/)(?:workerScope|config)["']|\bimport\s*\(\s*["'][^"']*(?:project\/|\.\/)(?:workerScope|config)["']\s*\)/;
-
-/**
- * A namespace import or an `import()` of a module exporting a carrier that is not sealed — the same hole
- * {@link LOADER_MODULE_WHOLE} closes, one module further out: `import * as add from "./add"` then
- * `add.targetWorker(…)` is a member read by shape.
- */
-function carrierModuleWhole(): RegExp {
-  const modules = [
-    ...new Set(
-      carriers()
-        .keys.filter((key) => !(key in SEALED))
-        .map((key) => (key.split("#")[0] ?? "").replace(/\.ts$/, "").split("/").pop() ?? ""),
-    ),
-  ];
-  if (modules.length === 0) return /(?!)/;
-  const specifier = `["'][^"']*\\/(?:${modules.join("|")})["']`;
-  return new RegExp(`import\\s*\\*\\s*as\\s+[\\w$]+\\s+from\\s*${specifier}|\\bimport\\s*\\(\\s*${specifier}\\s*\\)`);
+/** Every module this one takes whole or by its default export, resolved to the tables' spelling. */
+function wholeImports(code: string, key: string): { namespace: string[]; byDefault: string[] } {
+  const resolved = (pattern: RegExp) =>
+    [...code.matchAll(pattern)]
+      .map((match) => resolveSpecifier(key, match[1] as string))
+      .filter((target): target is string => target !== null);
+  return {
+    namespace: [
+      ...resolved(/(?:import|export)\s*\*\s*as\s+[\w$]+\s+from\s*["']([^"']+)["']/g),
+      ...resolved(/(?<!typeof\s*)\bimport\s*\(\s*["']([^"']+)["']\s*\)/g),
+    ],
+    byDefault: [
+      ...resolved(/\bimport\s+(?!type\b)[\w$]+\s*(?:,\s*(?:\{[^}]*\}|\*\s*as\s+[\w$]+)\s*)?from\s*["']([^"']+)["']/g),
+      ...resolved(/\{[^}]*(?<![\w$])default\s+as\s+[\w$]+[^}]*\}\s*from\s*["']([^"']+)["']/g),
+    ],
+  };
 }
 
-/** Whether a module composes Workers through a raw loader, by any of the spellings above. */
-function composesRaw(code: string): boolean {
-  return rawLoaderPattern().test(code) || LOADER_MODULE_WHOLE.test(code) || carrierModuleWhole().test(code);
+/** The modules that carry: whole (a raw loader or an unsealed carrier among their exports), and by default. */
+interface Carrying {
+  modules: readonly string[];
+  defaults: readonly string[];
+}
+
+/**
+ * Whether a module takes a module that composes whole: a namespace import or re-export, or an `import()`, of a
+ * module defining a raw loader or exporting a carrier that is not sealed — where the call that follows is a
+ * member read by shape (`import * as add from "./add"` then `add.targetWorker(…)`). Or a default import, by any
+ * local name, of a module whose default export carries.
+ */
+function takesWhole(code: string, key: string, carrying?: Carrying): boolean {
+  const { modules, defaults } = carrying ?? { ...carriers(), modules: [...LOADER_MODULES, ...carriers().modules] };
+  const { namespace, byDefault } = wholeImports(code, key);
+  return namespace.some((target) => modules.includes(target)) || byDefault.some((target) => defaults.includes(target));
+}
+
+/**
+ * The names a module binds, at its imports, to something that carries under another name: a carrier renamed
+ * (`{ resolveWorkers as every }`), a default import of a module whose default carries, and a namespace import
+ * of a module that carries. A name that is the carrier's own is matched already.
+ */
+function importedAliases(
+  code: string,
+  key: string,
+  carrying: Carrying,
+  carriedBy: (module: string) => string[],
+): string[] {
+  const aliases: string[] = [];
+  const named = (list: string, target: string) => {
+    for (const specifier of list.split(",")) {
+      const parts = /^\s*(type\s+)?([\w$]+)\s+as\s+([\w$]+)\s*$/.exec(specifier);
+      if (parts === null || parts[1] !== undefined) continue;
+      const name = parts[2] as string;
+      if (name === "default" ? carrying.defaults.includes(target) : carriedBy(target).includes(name)) {
+        aliases.push(parts[3] as string);
+      }
+    }
+  };
+  const imports =
+    /\bimport\s+(?!type\b)(?:([\w$]+)\s*,?\s*)?(?:\{([^}]*)\}|\*\s*as\s+([\w$]+))?\s*from\s*["']([^"']+)["']/g;
+  for (const match of code.matchAll(imports)) {
+    const target = resolveSpecifier(key, match[4] as string);
+    if (target === null) continue;
+    if (match[1] !== undefined && carrying.defaults.includes(target)) aliases.push(match[1]);
+    if (match[2] !== undefined) named(match[2], target);
+    if (match[3] !== undefined && carrying.modules.includes(target)) aliases.push(match[3]);
+  }
+  return aliases;
+}
+
+/**
+ * Whether a module composes Workers through a raw loader, by any of the spellings above. `key` is the module's
+ * own path, which its relative specifiers are resolved against.
+ */
+function composesRaw(code: string, key: string): boolean {
+  return rawLoaderPattern().test(code) || takesWhole(code, key);
 }
 
 /** A module that assembles a backend: a call to `createBackend`, or an import of it under any alias. */
@@ -304,10 +607,32 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
 const SEALED: Readonly<Record<string, string>> = {
   "audit/cliAudit.ts#createProjectCliAudit":
     "Returns an audit emitter; the composition only decides whether one writes, and is the environment actedOn names when a command names one.",
+  "commands/email.ts#default":
+    "Returns the pithy email command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/media.ts#default":
+    "Returns the pithy media command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/payments.ts#default":
+    "Returns the pithy payments command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/secrets.ts#default":
+    "Returns the pithy secrets command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/storage.ts#default":
+    "Returns the pithy storage command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/support.ts#default":
+    "Returns the pithy support command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/testers.ts#default":
+    "Returns the pithy testers command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/turnstile.ts#default":
+    "Returns the pithy turnstile command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/vector.ts#default":
+    "Returns the pithy vector command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "capabilities/secretApplicability.ts#projectSecretApplicability":
     "Returns which secrets each environment reaches, each composed through composeFor; the raw resolve only finds the Worker directories.",
   "devSecrets/targets.ts#resolveDevSecretsTargets":
     "Returns each Worker's directory and secret registry, which is per project with one value per name.",
+  "main.ts#COMMAND_REGISTRY":
+    "Returns the table of commands, each loaded by import() when run; each command it loads is held on its own.",
+  "main.ts#main":
+    "Returns the root pithy command, which loads a subcommand by import() when run; each command it loads is held on its own.",
   "project/deploy.ts#deployProject":
     "Returns the deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
   "project/deployKit.ts#deployKitWorkers":
@@ -397,7 +722,7 @@ describe("a composition for an environment is composed for it, by one primitive"
   });
 
   test("every module composing Workers without the primitive is named, with why", () => {
-    const composers = MODULES.filter((module) => module.key !== PRIMITIVE && composesRaw(module.code))
+    const composers = MODULES.filter((module) => module.key !== PRIMITIVE && composesRaw(module.code, module.key))
       .map((module) => module.key)
       .sort();
     expect(
@@ -443,23 +768,91 @@ describe("a composition for an environment is composed for it, by one primitive"
     expect(rawLoaderPattern().test("await projectCapabilitySetFor(env, projectDir)")).toBe(false);
     // A pure fold over Workers already composed is not a loader.
     expect(rawLoaderPattern().test("const union = projectCapabilities(workers);")).toBe(false);
-    // The derivation reads both declaration shapes, exported or not, and follows a private helper.
-    const shapes = topLevelFunctions(
+    // The derivation reads every declaration shape, exported or not, and every way a name leaves a module.
+    const shape = moduleShape(
       [
         "const helper = (dir) => loadWorkerConfig(dir);",
         "export async function viaHelper(dir) {",
+        "  const banner = `",
+        "export default nothing;",
+        "`;",
         "  return helper(dir);",
         "}",
         "export const arrow = async (dir) => {",
         "  return 1;",
         "};",
+        "const TICK = /\\`[\"']/;",
+        "let assigned;",
+        "assigned = async (dir) => loadWorkerConfig(dir);",
+        "class Loader {",
+        "  static load(dir) { return loadWorkerConfig(dir); }",
+        "}",
+        "export default async function (dir) { return helper(dir); }",
+        "export {",
+        "  assigned,",
+        "  Loader as WorkerLoader,",
+        "  type Hidden,",
+        "  helper as default,",
+        "};",
+        'export { resolveWorkers as every, default as composed } from "./workerScope";',
+        'export * from "./config";',
+        'export * as scope from "./workerScope";',
+        "export const { load: loadOne, other = 1, ...rest } = loaders;",
       ].join("\n"),
     );
-    expect(shapes.map(({ name, exported }) => `${exported ? "export " : ""}${name}`)).toEqual([
+    expect(shape.declarations.map(({ name }) => name)).toEqual([
       "helper",
-      "export viaHelper",
-      "export arrow",
+      "viaHelper",
+      "arrow",
+      "TICK",
+      "assigned",
+      "assigned",
+      "Loader",
+      "default",
+      "loadOne",
+      "other",
+      "rest",
     ]);
+    expect(Object.fromEntries(shape.exports)).toEqual({
+      viaHelper: ["viaHelper"],
+      arrow: ["arrow"],
+      default: ["default"],
+      assigned: ["assigned"],
+      Loader: ["WorkerLoader"],
+      helper: ["default"],
+      loadOne: ["loadOne"],
+      other: ["other"],
+      rest: ["rest"],
+    });
+    expect(shape.reexports).toEqual([
+      { name: "resolveWorkers", exported: "every", from: "./workerScope" },
+      { name: "default", exported: "composed", from: "./workerScope" },
+    ]);
+    expect(shape.stars).toEqual([
+      { from: "./config", as: null },
+      { from: "./workerScope", as: "scope" },
+    ]);
+    // Specifiers resolve against the module that wrote them, with or without an extension.
+    expect(resolveSpecifier("commands/migrate.ts", "../project/envInventory.js")).toBe("project/envInventory.ts");
+    expect(resolveSpecifier("commands/migrate.ts", "@pithy-sh/cli/src/commands/email")).toBe("commands/email.ts");
+    expect(resolveSpecifier("commands/migrate.ts", "@pithy-sh/testers/src/config/config")).toBe(null);
+    expect(
+      wholeImports(
+        [
+          'import compose, { other } from "./a";',
+          'import { default as named } from "../b";',
+          'import type Typed from "./c";',
+          'import * as d from "./d";',
+          'export * as e from "./e";',
+          'const f = await import("./f");',
+          'type G = typeof import("./g");',
+        ].join("\n"),
+        "commands/x.ts",
+      ),
+    ).toEqual({
+      namespace: ["commands/d.ts", "commands/e.ts", "commands/f.ts"],
+      byDefault: ["commands/a.ts", "b.ts"],
+    });
     // A type query names a loader's shape and composes nothing.
     expect(rawLoaderPattern().test("workers: Awaited<ReturnType<typeof resolveWorkers>>,")).toBe(false);
     expect(namesAny(["resolveWorkers"]).test("typeof   resolveWorkers")).toBe(false);
@@ -469,15 +862,24 @@ describe("a composition for an environment is composed for it, by one primitive"
     // A sealed carrier is not.
     expect(rawLoaderPattern().test("const inventory = await buildEnvInventory(options);")).toBe(false);
     // A namespace import of a module exporting a carrier, where the call is a member read by shape.
-    expect(composesRaw('import * as email from "./email";')).toBe(true);
-    expect(composesRaw('const { loadEmailCapability: load } = await import("../commands/email");')).toBe(true);
-    expect(composesRaw('import * as domains from "../project/domains";')).toBe(false);
+    expect(composesRaw('import * as email from "./email";', "commands/x.ts")).toBe(true);
+    expect(composesRaw('import * as email from "./email.js";', "commands/x.ts")).toBe(true);
+    expect(
+      composesRaw('const { loadEmailCapability: load } = await import("../commands/email");', "project/x.ts"),
+    ).toBe(true);
+    expect(composesRaw('import * as domains from "../project/domains";', "commands/x.ts")).toBe(false);
     // The two shapes the skips let through, and what catches them instead.
     expect(rawLoaderPattern().test('const { resolveWorkers: all } = await import("./workerScope");')).toBe(false);
-    expect(composesRaw('const { resolveWorkers: all } = await import("./workerScope");')).toBe(true);
-    expect(composesRaw('import * as scope from "../project/workerScope";')).toBe(true);
-    expect(composesRaw('import * as config from "./config";')).toBe(true);
-    expect(composesRaw('const { loadProject } = await import("../project/workerIdentity");')).toBe(false);
+    expect(composesRaw('const { resolveWorkers: all } = await import("./workerScope");', "project/x.ts")).toBe(true);
+    expect(composesRaw('import * as scope from "../project/workerScope";', "commands/x.ts")).toBe(true);
+    expect(composesRaw('export * as scope from "./workerScope";', "project/x.ts")).toBe(true);
+    expect(composesRaw('import * as config from "./config";', "project/x.ts")).toBe(true);
+    // Resolved, not matched by the last segment: a package's own `config` is not this CLI's.
+    expect(composesRaw('type C = typeof import("@pithy-sh/testers/src/config/config");', "project/x.ts")).toBe(false);
+    expect(composesRaw('import * as config from "./config";', "commands/x.ts")).toBe(false);
+    expect(composesRaw('const { loadProject } = await import("../project/workerIdentity");', "commands/x.ts")).toBe(
+      false,
+    );
     // Backends.
     expect(ASSEMBLES_BACKEND.test("const app = createBackend({ capabilities });")).toBe(true);
     expect(
