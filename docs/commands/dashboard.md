@@ -58,6 +58,8 @@ At a terminal `connect` lists every operation your Worker exposes, described in 
 
 **`--scope all` is the `a` key without a terminal.** It grants every scope the Worker composes, writes included, resolved from the same list the prompt renders — so a capability's new scope is in the grant the day it ships, and CI never hardcodes a set that goes stale. `--json` reports what it resolved to, as it reports any grant. It is never the default, and it does not change what the prompt preselects: everything past the reads is still something you ask for.
 
+It works on `--update` too, which is the case it exists for: widening an existing grant after composing a new capability, without naming each scope by hand. Reading what a Worker composes needs no address, so a scope-only update resolves one and re-points nothing — the registered URL is left exactly as it was.
+
 ```
 $ pithy dashboard connect --env prod --scope all --json
 {"command":"dashboard.connect",…,"scopes":["manifest:read","keys:rotate","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
@@ -226,11 +228,11 @@ Pass --worker-url, --scope, or both.
 Pass one or the other.
 ```
 
-**`--scope all` with no Worker to read.** A key-only `--update` resolves no Worker, so there is no composed surface to take everything from.
+**`--scope all` on a Worker that exposes nothing.** The composed surface is read — on an update too, without an address — so this is the one case left: a Worker composing the seam and no capability that declares a scoped admin route.
 
 ```
 --scope all found nothing to grant.
-It reads what the Worker composes, and no Worker was read here. Pass --worker-url, or name each scope.
+It reads what the Worker composes, and this one declares no scoped admin route. Compose a capability with one, deploy, then connect again.
 ```
 
 **A public key that is not an Ed25519 JWK.** A file that is not JSON, a P-256 key, and a private key carrying a `d` component are each refused here rather than written into your authorization row. A key with no id — no `--key-id` and no `kid` — is refused too: every token names its key in the `kid` header, and a key nobody can address is a key nobody can use.

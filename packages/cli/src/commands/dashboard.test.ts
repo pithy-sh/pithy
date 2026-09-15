@@ -349,23 +349,30 @@ describe("the scope prompt", () => {
 });
 
 /**
- * The gate.
+ * The gate, and what it is no longer asked to hold.
  *
- * **The invariant: the prompt and `--scope all` read one list, resolved once.** Two calls to
- * `grantableScopes` is how they come to disagree — one filtered, one not, one taken before a capability
- * was composed and one after — and nothing in a suite of unit tests would notice, because each half
- * would be right about the list it was given.
+ * **The decision itself is tested where it runs** — `decideGrant` in `dashboard/grant.ts`, every branch,
+ * with the prompt as a seam (`grant.test.ts`). This file used to carry the whole invariant as three
+ * substring checks over `dashboard.ts`, and its reach was smaller than its claim: dropping `request.all`
+ * from the narrowed test disconnected `--scope all` from the command, and changing the prompt's
+ * preselection widened every connect, and both stayed green here.
  *
- * Stated over the source because that is where the wiring lives: `connect`'s `run` needs a project, a
- * registry, and a device-code flow to execute, and none of those has anything to say about which list
- * fed which caller.
+ * **What is left for a source scan is the one thing a unit test cannot see: that `connect` still routes
+ * through the decision rather than making its own.** The invariant it used to state — one list, feeding
+ * the prompt and `--scope all` alike — is now structural instead of asserted: `decideGrant` computes
+ * `grantableScopes` once, internally, and hands it to both. There is no second call to keep in step.
+ *
+ * Blind spot, stated: this reads `dashboard.ts` only, and a decision re-inlined in a module it imports
+ * would pass. Nothing else in the tree decides a grant.
  */
-describe("the prompt and --scope all are fed the same list", () => {
+describe("connect decides its grant in one place", () => {
   const SOURCE = blankComments(readSource(resolve(import.meta.dirname, "dashboard.ts")) ?? "");
 
-  test("`grantableScopes` is called once, and both callers take that value", () => {
-    expect(SOURCE.split("grantableScopes(").length - 1).toBe(1);
-    expect(SOURCE).toContain("promptScopes(grantable,");
-    expect(SOURCE).toContain("resolveScopeRequest(scopeRequest, grantable)");
+  test("it calls `decideGrant`, and derives no part of the grant itself", () => {
+    expect(SOURCE).toContain("decideGrant(");
+    // The three the decision owns. `connect` naming any of them is a second decision, by definition.
+    expect(SOURCE).not.toContain("grantableScopes(");
+    expect(SOURCE).not.toContain("defaultGrant(");
+    expect(SOURCE).not.toContain("resolveScopeRequest(");
   });
 });

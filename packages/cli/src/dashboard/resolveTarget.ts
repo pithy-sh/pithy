@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { isControlPlaneCapability } from "@pithy-sh/core/src/controlPlane/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
 import { type AddressStanza, describeAddressSource, resolveWorkerAddress } from "../project/workerAddress";
-import type { ResolvedWorker } from "../project/workerScope";
+import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 
 /**
@@ -56,25 +57,32 @@ function composedBasePath(worker: ResolvedWorker): string | null {
   return seam ? seam.controlPlaneConfig.basePath : null;
 }
 
-/**
- * Resolve the Worker, address, and base path a connect targets.
- *
- * `workerUrl` still overrides everything — an adopter fronting their Worker with a proxy has an address
- * no config knows. It remains the escape hatch, not the requirement.
- */
-export async function resolveConnectTarget(options: {
+/** Which Worker a connect is about, and the seams a test resolves it through. */
+export interface ConnectWorkerOptions {
   projectDir: string;
   environment: string;
   /** `--worker`, when given. Absent in a single-Worker project; required when there are several. */
   worker?: string | undefined;
-  /** `--worker-url`, when given. Overrides the resolver. */
-  workerUrl?: string | undefined;
-}): Promise<ConnectTarget> {
+  /** Discovery seam, forwarded to the resolver. */
+  discoverWorkers?: ResolveSingleOptions["discoverWorkers"];
+  /** Worker-config loader seam, forwarded to the resolver. */
+  loadConfig?: ResolveSingleOptions["loadConfig"];
+}
+
+/**
+ * The Worker this connect is about, composed for the environment, refusing one with no seam.
+ *
+ * Shared by both callers below, so "which Worker, and does it compose the seam" is answered once. The
+ * two differ only in what they go on to need: an address, or the composed set.
+ */
+async function resolveSeamWorker(options: ConnectWorkerOptions): Promise<{ worker: ResolvedWorker; basePath: string }> {
   // Composed for the environment being connected: whether it composes the control-plane seam, and where,
   // is that environment's answer (#595).
   const worker = await resolveSingleWorkerFor(options.environment, {
     projectDir: options.projectDir,
     ...(options.worker === undefined ? {} : { worker: options.worker }),
+    ...(options.discoverWorkers === undefined ? {} : { discoverWorkers: options.discoverWorkers }),
+    ...(options.loadConfig === undefined ? {} : { loadConfig: options.loadConfig }),
   });
 
   const basePath = composedBasePath(worker);
@@ -85,6 +93,41 @@ export async function resolveConnectTarget(options: {
       detail: `no controlplane capability in ${worker.dir}'s composed set`,
     });
   }
+  return { worker, basePath };
+}
+
+/**
+ * What the Worker composes, for a connect that needs a grant and no address.
+ *
+ * **`--scope all` reads the composed surface, and composing needs no address.** Resolving the two
+ * together meant a scope-only `--update` — widening an existing connection after composing a new
+ * capability, which is the case `all` exists for — resolved no Worker at all, so `all` found nothing to
+ * grant and refused on every project, with the `pithy.config.ts` that answers the question sitting
+ * unread beside it. Its two suggested remedies each undid the point: `--worker-url` re-points the
+ * connection's URL as a side effect of a scope change, and naming each scope is the hand-maintained
+ * list `all` exists to replace.
+ *
+ * Separate functions rather than an address that is sometimes absent: a `ConnectTarget` whose
+ * `workerUrl` may be missing is one every caller has to re-check, and the caller that forgets registers
+ * a connection pointing nowhere.
+ */
+export async function resolveConnectScopes(options: ConnectWorkerOptions): Promise<Capability[]> {
+  return (await resolveSeamWorker(options)).worker.capabilities;
+}
+
+/**
+ * Resolve the Worker, address, and base path a connect targets.
+ *
+ * `workerUrl` still overrides everything — an adopter fronting their Worker with a proxy has an address
+ * no config knows. It remains the escape hatch, not the requirement.
+ */
+export async function resolveConnectTarget(
+  options: ConnectWorkerOptions & {
+    /** `--worker-url`, when given. Overrides the resolver. */
+    workerUrl?: string | undefined;
+  },
+): Promise<ConnectTarget> {
+  const { worker, basePath } = await resolveSeamWorker(options);
 
   if (options.workerUrl) {
     return { worker, workerUrl: options.workerUrl, basePath, source: "from --worker-url" };

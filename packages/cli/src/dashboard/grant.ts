@@ -190,10 +190,57 @@ export function resolveScopeRequest(request: ScopeRequest, grantable: readonly G
   if (every.length === 0) {
     throw new ValidationError({
       message: "--scope all found nothing to grant.",
-      action: "It reads what the Worker composes, and no Worker was read here. Pass --worker-url, or name each scope.",
-      detail:
-        "grantable scope list was empty: no worker resolved, or none of its capabilities declares a scoped admin route",
+      action:
+        "It reads what the Worker composes, and this one declares no scoped admin route. Compose a capability with one, deploy, then connect again.",
+      detail: "grantable scope list was empty: no composed capability declares a scoped admin route",
     });
   }
   return every;
+}
+
+/** True when `--scope` narrowed the grant — either to everything, or to the scopes it named. */
+export function isNarrowed(request: ScopeRequest): boolean {
+  return request.all || request.scopes.length > 0;
+}
+
+/** What {@link decideGrant} needs: what was asked for, what the Worker composes, and where it is being asked. */
+export interface GrantDecision {
+  /** What `--scope` asked for. */
+  request: ScopeRequest;
+  /** The Worker's composed capabilities — the one list every part of this answer is derived from. */
+  composed: readonly Capability[];
+  /** True at a real terminal, which is the only place a prompt can be answered. */
+  interactive: boolean;
+  /** True on `--update`, where saying nothing means "leave the grant alone". */
+  update: boolean;
+  /** The prompt, injected: this module decides, and does not own a terminal. */
+  prompt: (grantable: readonly GrantableScope[], preselected: ControlPlaneScope[]) => Promise<ControlPlaneScope[]>;
+}
+
+/**
+ * The grant a `connect` stores, or `undefined` for "leave it alone".
+ *
+ * **One function, because it is one decision.** It lived inline in `connect`'s `run`, where nothing
+ * could execute it: the command needs a project, a registry and a device-code flow to reach the two
+ * lines that matter. What stood in for a test was a source scan counting substrings, and its reach was
+ * smaller than its claim — dropping `request.all` from the narrowed test disconnected `--scope all`
+ * from the command entirely, storing the *default* grant while the operator asked for everything,
+ * silently, exit 0, even under `--json`, with the suite green.
+ *
+ * **`grantableScopes` is called once, here, and feeds both answers.** That the prompt renders the list
+ * `--scope all` resolves to is now structural rather than asserted over source text: there is no second
+ * call to drift from the first.
+ *
+ * `undefined` means "not specified — use the default grant"; `[]` means "deliberately nothing".
+ * Collapsing those two is a real bug rather than a tidy-up: an operator who deselected every scope at
+ * the prompt would be handed the full default set, `keys:rotate` included — the exact opposite of what
+ * they just said (#248).
+ */
+export async function decideGrant(decision: GrantDecision): Promise<ControlPlaneScope[] | undefined> {
+  const grantable = grantableScopes(decision.composed);
+  if (isNarrowed(decision.request)) return resolveScopeRequest(decision.request, grantable);
+  // On an update, no `--scope` means "leave the grant alone", and a prompt that defaulted to everything
+  // would quietly widen it. With no terminal there is nobody to ask.
+  if (decision.update || !decision.interactive) return undefined;
+  return decision.prompt(grantable, defaultGrant(decision.composed));
 }
