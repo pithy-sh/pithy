@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import {
+  deployOutput,
   deployProject,
   deploySeverity,
   deployVerificationFailed,
@@ -887,5 +888,58 @@ describe("pendingWarning", () => {
   test("is silent when nothing is pending or the count is unknown", () => {
     expect(pendingWarning(0, "prod")).toBeUndefined();
     expect(pendingWarning(undefined, "prod")).toBeUndefined();
+  });
+});
+
+/**
+ * The scrape of wrangler's own output — `#612`.
+ *
+ * A deploy reported `https://staging.app.pithy.sh")` as the address a Worker had been deployed to,
+ * because `\S+` runs to the next space and wrangler had wrapped the address in a quote and a bracket.
+ * An address that reaches nothing when copied is worse than no address at all: the line is read as a
+ * fact and the punctuation is invisible at a glance.
+ */
+describe("what a deploy reports, scraped out of wrangler's prose", () => {
+  const parse = deployOutput.parse;
+
+  test("an address wrapped by the sentence around it comes back as an address", () => {
+    // The shape that produced the report, quoted inside a bracket.
+    expect(parse('Deployed dash-board ("https://staging.app.pithy.sh")\nVersion ID: 7908726e').url).toBe(
+      "https://staging.app.pithy.sh",
+    );
+    expect(parse("  https://dash-board.pithy.workers.dev\n").url).toBe("https://dash-board.pithy.workers.dev");
+    expect(parse('Uploaded to "https://acme.example.com"').url).toBe("https://acme.example.com");
+    expect(parse("Deployed to (https://acme.example.com).").url).toBe("https://acme.example.com");
+    expect(parse("Live at https://acme.example.com, version 3.").url).toBe("https://acme.example.com");
+  });
+
+  test("a bracket the address itself opened is part of the address", () => {
+    // Legal, rare, and somebody's real path. The trailing bracket is dropped only when the token
+    // holds no opener to match it.
+    expect(parse("https://example.com/wiki/Thing_(disambiguation)").url).toBe(
+      "https://example.com/wiki/Thing_(disambiguation)",
+    );
+    expect(parse('("https://example.com/wiki/Thing_(disambiguation)")').url).toBe(
+      "https://example.com/wiki/Thing_(disambiguation)",
+    );
+  });
+
+  test("the version id is trimmed the same way, for the same reason", () => {
+    expect(parse("Version ID: 7908726e-a1a8-4111-8e56-4d34d23fab45").versionId).toBe(
+      "7908726e-a1a8-4111-8e56-4d34d23fab45",
+    );
+    expect(parse('Version ID: "7908726e".').versionId).toBe("7908726e");
+  });
+
+  test("finding nothing is an ordinary answer, not a failure", () => {
+    expect(parse("Total Upload: 512 KiB\n")).toEqual({});
+  });
+
+  test("the last address is the deployed one, not an earlier link", () => {
+    const stdout = [
+      "See https://developers.cloudflare.com/workers for help.",
+      "Deployed to https://acme.example.com",
+    ].join("\n");
+    expect(parse(stdout).url).toBe("https://acme.example.com");
   });
 });

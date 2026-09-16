@@ -155,16 +155,75 @@ export interface WorkerDeploy {
   verificationDetail?: string;
 }
 
-/** Scrape the version id and public url from `wrangler deploy` output — best-effort, both optional. */
+/**
+ * What a scraped token cannot end with.
+ *
+ * **This is a scrape of another tool's prose, and the trimming is the half that makes it usable.**
+ * `\S+` runs to the next space, so an address wrangler wrapped in quotes or brackets came back
+ * wearing them — `https://staging.app.pithy.sh")` was printed as the place a Worker had been
+ * deployed, and it is an address that reaches nothing when copied or clicked.
+ *
+ * Closing punctuation only. An opening bracket cannot end a URL either, but it also cannot be what a
+ * greedy match picked up: whatever precedes the address is not inside the match.
+ */
+const TRAILING_PUNCTUATION = /[)\]}>"'.,;:]+$/;
+
+/**
+ * What a scraped token cannot begin with.
+ *
+ * Only the version id can pick one up: the URL pattern starts matching at `https`, so nothing before
+ * the address is inside it. `Version ID: "7908726e".` is the shape — captured by `(\S+)`, quote and
+ * all, which is how the first version of this fix left one behind.
+ */
+const LEADING_PUNCTUATION = /^["'([{<]+/;
+
+/**
+ * One scraped token, without the punctuation the surrounding sentence put on it.
+ *
+ * **Balanced brackets are kept.** A URL may legally end in `)` — a path ending in one, which is rare
+ * and real — so a trailing bracket is dropped only when the token holds no opener to match it. The
+ * unbalanced case is the one wrangler's own formatting creates, and the balanced case is somebody's
+ * actual address.
+ */
+function trimmed(token: string): string {
+  const opened = token.replace(LEADING_PUNCTUATION, "");
+  const cut = opened.replace(TRAILING_PUNCTUATION, "");
+  const dropped = opened.slice(cut.length);
+  if (dropped === "") return opened;
+  // Give back any closer the token itself opened, innermost last, so `…/a(b)` survives and `…/a)`
+  // does not. Only brackets can be balanced; a quote or a full stop is never part of the address.
+  let restored = cut;
+  for (const character of dropped) {
+    const opener = { ")": "(", "]": "[", "}": "{" }[character];
+    if (opener === undefined) break;
+    const opens = restored.split(opener).length - 1;
+    const closes = restored.split(character).length - 1;
+    if (opens <= closes) break;
+    restored += character;
+  }
+  return restored;
+}
+
+/**
+ * Scrape the version id and public url from `wrangler deploy` output — best-effort, both optional.
+ *
+ * **Neither is a contract.** Wrangler is free to reword this output in any release, and these two
+ * patterns are the whole of what reads it. Finding nothing is an ordinary outcome: the summary line
+ * prints without the detail and the deploy is unaffected, which is why nothing here throws.
+ */
 function parseDeployOutput(stdout: string): { versionId?: string; url?: string } {
   const summary: { versionId?: string; url?: string } = {};
   const version = stdout.match(/Version ID:\s*(\S+)/);
-  if (version) summary.versionId = version[1];
+  if (version?.[1]) summary.versionId = trimmed(version[1]);
   // The deployed URL is the last one wrangler prints (after upload), not an earlier docs/dashboard link.
   const urls = stdout.match(/https?:\/\/\S+/g);
-  if (urls) summary.url = urls[urls.length - 1];
+  const last = urls?.[urls.length - 1];
+  if (last) summary.url = trimmed(last);
   return summary;
 }
+
+/** The scrape, for the test that holds it to the shapes wrangler actually prints. */
+export const deployOutput = { parse: parseDeployOutput };
 
 /**
  * The failure reason for a thrown deploy. For a `PithyError` (how `runWrangler` reports a non-zero
