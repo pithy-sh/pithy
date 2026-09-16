@@ -1,5 +1,11 @@
 # @pithy-sh/cli
 
+## 0.9.3
+
+### Patch Changes
+
+- [#613](https://github.com/pithy-sh/pithy/pull/613) [`a55807c`](https://github.com/pithy-sh/pithy/commit/a55807c2508cb9eddba07ad918e6775be0506e6c) Thanks [@kingmesal](https://github.com/kingmesal)! - A deploy reports an address, not an address wearing the sentence's punctuation. The public URL and the version id are scraped out of wrangler's own output, and `\S+` was taking whatever wrangler wrapped them in — `https://staging.app.pithy.sh")` was printed as the place a Worker had been deployed to, and it reaches nothing when copied or clicked. A bracket the address itself opened is kept, so a path ending in one survives.
+
 ## 0.9.2
 
 ### Patch Changes
