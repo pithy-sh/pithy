@@ -100,3 +100,79 @@ describe("every capability reports its package version", () => {
     expect(drifted, "run `bun run stamp-versions`").toEqual([]);
   });
 });
+
+/**
+ * And the package that version belongs to (#626).
+ *
+ * A version joins against a release feed **by package name**, which the manifest reported for two years
+ * without ever sending. A client had to guess `@pithy-sh/${name}` — right for most capabilities, wrong
+ * for the one that matters: `controlplane` ships inside `@pithy-sh/core`, so the guess reaches a package
+ * that has never been published and the join comes back empty, which reads exactly like "up to date".
+ *
+ * **A capability name and a package name are different kinds of thing.** One is what a composition calls
+ * a concept; the other is how that concept is distributed, and one package may ship more than one
+ * capability. So no convention derives the second from the first, and the relationship is a fact only
+ * the producing package can state — which is why the framework must never fill this in from `name`.
+ *
+ * The invariant this holds is: **every capability declares its own package, and what it declares is that
+ * package's `package.json` name.** Three checks, because that is three separable things — the constant
+ * is attached, it is *its own* package's constant, and the constant is the name npm knows. Any one alone
+ * passes while the statement is false.
+ *
+ * Shares {@link capabilityPackages} with the versions above deliberately. Two enumerators would drift,
+ * and a gate that enumerates a hand-written list goes stale the day a capability ships.
+ */
+describe("every capability reports the package that supplies it", () => {
+  const packages = capabilityPackages();
+
+  it("attaches `package: PACKAGE_NAME` on the capability", () => {
+    // Same failure the version gate catches, one field over: a constant that is stamped, correct, and
+    // never read is indistinguishable from one that was never stamped, because the manifest says null
+    // either way — and null is reserved for the adopter's own app capability, which genuinely has none.
+    const unattached = packages
+      .filter((pkg) => !readFileSync(pkg.file, "utf8").includes("package: PACKAGE_NAME"))
+      .map((pkg) => pkg.name);
+    expect(unattached, "add `package: PACKAGE_NAME` to defineCapability").toEqual([]);
+  });
+
+  it("reads that constant from its own generated module, and not from a sibling", () => {
+    // `package: PACKAGE_NAME` is only the *own* package if the constant came from this package's own
+    // stamp. An import of a sibling's would satisfy the check above while reporting somebody else's
+    // package — the exact class of error the field exists to end, arrived at from the other side.
+    const foreign: string[] = [];
+    for (const pkg of packages) {
+      const source = readFileSync(pkg.file, "utf8");
+      const imported = /import\s*\{[^}]*\bPACKAGE_NAME\b[^}]*\}\s*from\s*"([^"]+)"/.exec(source)?.[1];
+      if (imported === undefined || !/^\.{1,2}(\/[\w.-]+)*\/version\.generated$/.test(imported)) {
+        foreign.push(`${pkg.name} (${imported ?? "no import"})`);
+      }
+    }
+    expect(foreign, 'import PACKAGE_NAME from this package\'s own "./version.generated"').toEqual([]);
+  });
+
+  it("stamps a PACKAGE_NAME equal to the name in each package.json", () => {
+    // The other half: the constant is this package's, and the constant is what npm calls it. Without
+    // this the two could drift on a rename and every joined lookup would miss, silently.
+    const drifted: string[] = [];
+    for (const pkg of packages) {
+      const declared = (JSON.parse(readFileSync(join(PACKAGES, pkg.name, "package.json"), "utf8")) as { name: string })
+        .name;
+      const generated = readFileSync(join(PACKAGES, pkg.name, "src/version.generated.ts"), "utf8");
+      if (!generated.includes(`PACKAGE_NAME = ${JSON.stringify(declared)}`)) drifted.push(pkg.name);
+    }
+    expect(drifted, "run `bun run stamp-versions`").toEqual([]);
+  });
+
+  it("puts `controlplane` in `@pithy-sh/core`, which is the case a convention gets wrong", () => {
+    // Spelled out rather than derived, because it is the counterexample the whole field exists for. The
+    // seam's own manifest response asserts the shipped value end to end — see
+    // `core/src/controlPlane/http/routes.workers.test.ts`; this is the source-side statement that the
+    // two names still disagree, so a rename that made the convention true again fails here first.
+    const core = packages.find((pkg) => pkg.name === "core");
+    expect(core, "core contributes the controlplane capability").toBeDefined();
+    expect(readFileSync(core?.file ?? "", "utf8")).toContain('name: "controlplane"');
+    expect((JSON.parse(readFileSync(join(PACKAGES, "core/package.json"), "utf8")) as { name: string }).name).toBe(
+      "@pithy-sh/core",
+    );
+  });
+});

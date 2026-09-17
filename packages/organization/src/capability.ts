@@ -18,7 +18,7 @@ import { type OwnershipRoles, requireTransferableRoles } from "./ownership/owner
 import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
 import type { RoleCatalog } from "./roles/roles";
 import { organizationExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * The tenancy capability: organizations, memberships, the roles a project declares, and the gates that
@@ -214,9 +214,12 @@ export function organization<const Power extends string = never, const Role exte
 
   const capability = defineCapability({
     name: "organization",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     // Auth is the one hard peer. A membership is keyed by a user id from `pithy_auth_users`, the roster
     // resolves people through auth's published `getUsers`, and every route but the public accept screen
     // begins with a session. Email is deliberately **not** here: a project that delivers its invitation

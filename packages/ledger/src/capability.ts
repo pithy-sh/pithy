@@ -10,7 +10,7 @@ import { LEDGER_DEFAULT_BASE_PATH, registerLedgerRoutes } from "./http/routes";
 import { ledgerAdminRoutes } from "./http/scopes";
 import { ledger_0001_accounts } from "./migrations/0001_accounts";
 import { ledgerExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Where ledger's migrations sort in the app database. Unique per database; the registry composes keys like
@@ -68,9 +68,12 @@ export function ledger(options: LedgerOptions = { currencies: [] }): LedgerCapab
 
   const capability = defineCapability({
     name: "ledger",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     requiredBindings,
     config: LedgerConfig,
     databases: {

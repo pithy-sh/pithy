@@ -9,7 +9,7 @@ import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { InternalError } from "../../error/pithyError";
-import { PACKAGE_VERSION } from "../../version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "../data/tables";
@@ -408,6 +408,36 @@ describe("GET /control-plane/manifest", () => {
     // Per capability, never aggregated: a project composes some capabilities and not others, so only
     // the intersection of what it composes and what changed is worth reporting.
     const quietDescriptor = json.capabilities.find((capability) => capability.name === "quiet");
+    expect(quietDescriptor?.version).toBeNull();
+  });
+
+  /**
+   * The join key the version is useless without (#626).
+   *
+   * A version joins against a release feed *by package name*, and a capability name is not one. A client
+   * that guessed `@pithy-sh/${name}` is right for most capabilities and wrong for this one: the seam is
+   * named `controlplane` and ships inside `@pithy-sh/core`, so the guess reaches a package that has
+   * never been published and the join returns empty — which reads exactly like "up to date".
+   *
+   * Asserted by name rather than against a constant derived from the capability, because the literal is
+   * the whole point: a fix that computed the expected value the same way the code does would pass
+   * whatever the code said.
+   */
+  test("names the package each version belongs to, because a version with no join key answers nothing", async () => {
+    await connect([registered(alice)]);
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
+
+    const seam = json.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.package).toBe("@pithy-sh/core");
+    expect(seam?.package).toBe(PACKAGE_NAME);
+
+    // And the two are null together. `quiet` stands in for the adopter's own `app` capability: a name,
+    // no npm package, no npm version. Either one alone would be a lie — a package with no version says
+    // nothing joinable, and a version with no package is the bug this test exists for.
+    const quietDescriptor = json.capabilities.find((capability) => capability.name === "quiet");
+    expect(quietDescriptor?.package).toBeNull();
     expect(quietDescriptor?.version).toBeNull();
   });
 

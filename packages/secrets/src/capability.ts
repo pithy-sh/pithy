@@ -16,7 +16,7 @@ import {
   configureSharedSecrets,
   DEFAULT_SECRETS_CACHE_TTL_SECONDS,
 } from "./sharedSecretsStore";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * The secrets manager's own token profile — the standard default for its least-privilege runtime
@@ -169,9 +169,12 @@ export function secrets(config: SecretsConfig): SecretsCapability {
   const reported = { current: registry };
   const capability = defineCapability({
     name: "secrets",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     secretRegistry: registry,
     tokenProfiles: { secrets: secretsTokenProfile },
     requiredBindings: [

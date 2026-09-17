@@ -303,12 +303,12 @@ A management client composes its navigation **and its calls** from `GET /control
   "connectionId": "b6a1f0c2-3d4e-4f50-8a9b-0c1d2e3f4a5b",
   "version": "8f2a1c94-...",
   "capabilities": [
-    { "name": "controlplane", "version": "1.4.0", "healthKeys": [], "health": null,
+    { "name": "controlplane", "package": "@pithy-sh/core", "version": "1.4.0", "healthKeys": [], "health": null,
       "configKeys": [], "config": {}, "adminRoutes": [
       { "method": "GET",  "path": "/control-plane/ping", "scope": null,
         "summary": "Prove connectivity and which key answered. Always available to a verified caller." }
     ]},
-    { "name": "payments", "version": "1.4.0", "healthKeys": [], "health": null,
+    { "name": "payments", "package": "@pithy-sh/payments", "version": "1.4.0", "healthKeys": [], "health": null,
       "configKeys": [
         { "key": "billingSubject", "choices": ["user", "organization"],
           "summary": "What kind of thing holds a purchase in this project — one person, or one organization." }
@@ -320,7 +320,7 @@ A management client composes its navigation **and its calls** from `GET /control
         { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
           "summary": "Take an entitlement back, effective immediately." }
       ]},
-    { "name": "secrets", "version": "1.4.0",
+    { "name": "secrets", "package": "@pithy-sh/secrets", "version": "1.4.0",
       "healthKeys": [
         { "key": "secretsDueForRotation", "kind": "count", "states": null,
           "scope": "secrets:status:read", "cost": "indexed",
@@ -335,9 +335,9 @@ A management client composes its navigation **and its calls** from `GET /control
         { "method": "POST", "path": "/secrets/admin/status/:name/rotate", "scope": "secrets:rotate",
           "summary": "Replace one declared secret in this environment, against its declared rotator. Reports per environment, never in aggregate." }
       ]},
-    { "name": "leaderboard", "version": "1.2.1", "healthKeys": [], "health": null,
+    { "name": "leaderboard", "package": "@pithy-sh/leaderboard", "version": "1.2.1", "healthKeys": [], "health": null,
       "configKeys": [], "config": {}, "adminRoutes": [] },
-    { "name": "app", "version": null, "healthKeys": [], "health": null,
+    { "name": "app", "package": null, "version": null, "healthKeys": [], "health": null,
       "configKeys": [], "config": {}, "adminRoutes": [] }
   ],
   "grantedScopes": ["manifest:read", "payments:entitlements:grant"]
@@ -347,6 +347,8 @@ A management client composes its navigation **and its calls** from `GET /control
 **Knowing a capability is installed is not enough to call it.** Note the paths above: this adopter mounted payments at `/billing`. `basePath` is configurable on every capability, so a client that hardcoded `/payments` would 404 against exactly the adopters who customized anything. Each capability builds its declaration from its *resolved* config, so the manifest names where things actually are.
 
 Each route also names the scope it needs. Against `grantedScopes`, that is what lets a client gray out `revoke` — not granted here — instead of offering a button that answers 403.
+
+**Each capability names the package it comes from, beside the version.** A version is only actionable joined against a release feed, a feed is keyed by package name, and a capability name is not one — `controlplane` ships inside `@pithy-sh/core`, so a client deriving `@pithy-sh/<name>` asks about a package that has never been published and is told nothing, which reads exactly like *up to date*. `package` and `version` are null together: the adopter's own `app` capability has a name and neither. A Worker deployed before the field sends no `package` at all, and a client reads that as null and falls back to whatever it guessed before.
 
 A capability with no management surface reports an empty list rather than being absent. "Composed, but nothing to administer" and "not installed" are different facts, and a client that cannot tell them apart renders the wrong thing for both. The same holds for `configKeys` and `config`: only payments states a fact above, and every other entry carries `[]` and `{}` rather than omitting them.
 

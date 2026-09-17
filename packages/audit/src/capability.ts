@@ -11,7 +11,7 @@ import { registerAuditRoutes } from "./http/routes";
 import { audit_0001_init } from "./migrations/0001_init";
 import { recordAuditEvent } from "./recorder";
 import { auditExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Sort order of the audit migration within the audit database, relative to other capabilities
@@ -74,9 +74,12 @@ export function audit(config: AuditConfigInput = {}): AuditCapability {
   const resolved = AuditConfig.parse(config);
   const capability = defineCapability({
     name: "audit",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     config: AuditConfig,
     requiredBindings: [{ type: "d1", name: resolved.database }],
     databases: {
