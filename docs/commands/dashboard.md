@@ -26,7 +26,7 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 |---|---|---|---|
 | `--env <environment>` | all five | `dev` | The environment whose registration is being read or written |
 | `--worker <name>` | all five | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
-| `--origin <url>` | all five | `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one |
+| `--origin <url>` | all five | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
 | `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive. `--scope all` grants every scope the Worker composes |
 | `--update` | `connect` | `false` | Re-point an existing connection's URL and scopes instead of creating one |
@@ -105,6 +105,14 @@ The offer appears only where a key can be pressed. `--json`, a pipe on stdin or 
 
 **`disconnect`** deletes the registration. **The row goes first**, and the management client is told afterwards as a courtesy that cannot fail the command — a dashboard that is down must not be able to keep a credential alive. Re-running it is not an error.
 
+### Which dashboard a command talks to
+
+A connection records the origin it was registered against, and `status --verify`, `rotate` and `disconnect` call that one. `--origin` overrides — and re-points the record, because an operator naming a new address is the only signal there is that the dashboard moved.
+
+A connection registered before that column existed records nothing, and falls back to its `issuer`. That is near enough to ask and not the same fact: the issuer is what a management client *signs as*, and nothing says its API answers there. The next `connect` records the real answer.
+
+Nothing registered at all means the hosted dashboard, which is where a first `connect` goes.
+
 **`status`** reports what is registered: the connection, its scopes, and every key with its age and whether it is live. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
 
 ## `--json`
@@ -125,7 +133,7 @@ $ pithy dashboard connect --env prod --json
 | `workerUrl` | `string` | The Worker URL the management client will call |
 | `scopes` | `string[]` | The operations granted, as stored on the row |
 | `keyId` | `string \| null` | The key registered by this run, or `null` when `--update` only re-pointed |
-| `status` | `"connected" \| "needs_reconnect" \| "registered"` | Whether a signed ping proved the connection. `registered` is the `--public-key` path: written, but nothing proved it |
+| `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "registered"` | Whether a signed ping proved the connection. `registered` is the `--public-key` path: written, but nothing proved it; `unreachable` is a management client that never answered |
 | `detail` | `string` | Operator-facing context for a status that is not `connected`. Absent otherwise |
 | `updated` | `boolean` | True when an existing connection was re-pointed rather than a new one created |
 
@@ -208,7 +216,7 @@ $ pithy dashboard status --env prod --json
 | `keys[].validFrom` | `string` | ISO-8601. When the key became valid |
 | `keys[].validUntil` | `string \| null` | ISO-8601, or `null` while open-ended |
 | `keys[].revokedAt` | `string \| null` | ISO-8601, or `null` |
-| `status` | `"connected" \| "needs_reconnect" \| "unverified"` | `unverified` unless `--verify` was passed. Status never claims a round-trip it did not make |
+| `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "unverified"` | `unverified` unless `--verify` was passed. `unreachable` is nothing answering at all, which says nothing about the connection. Status never claims a round-trip it did not make |
 | `detail` | `string` | Operator-facing context from the probe. Absent otherwise |
 
 ## Errors
@@ -265,7 +273,7 @@ Nothing was registered. Re-run the connect, and report this to whoever operates 
 
 **The sign-in request expired.** The device-code flow polls until the authorization's own expiry and then stops rather than running forever.
 
-**The origin could not be reached.** A transport failure names the origin and says which of "it answered nothing" and "it answered wrongly" happened, so `--origin` is only suggested where re-checking it would help.
+**The origin could not be reached.** A transport failure names the origin and says which of "it answered nothing" and "it answered wrongly" happened, so `--origin` is only suggested where re-checking it would help. It is reported as `unreachable` and never as `needs_reconnect`: nothing answered, so nothing was learned about the connection, and sending an operator to re-register one that may be perfectly good costs them a 409 against the environment's unique index.
 
 **An illegal `--env`.** Validated at the flag.
 

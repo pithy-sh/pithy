@@ -50,6 +50,7 @@ beforeAll(async () => {
     issuer: ISSUER,
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
+    managementOrigin: null,
     scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
     keys: [
       {

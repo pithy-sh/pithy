@@ -18,6 +18,7 @@ import { defineManifestConfig, namedConfigValues } from "../discovery/configurat
 import { defineCapabilityHealth } from "../discovery/health";
 import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
+import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
@@ -210,6 +211,7 @@ async function connect(keys: RegisteredKey[], scopes: string[] = [MANIFEST_READ_
     issuer: ISSUER,
     workerUrl: "https://api.acme.example",
     basePath: "/control-plane",
+    managementOrigin: null,
     scopes,
     keys,
     createdAt: now,
@@ -325,6 +327,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_controlplane_replays");
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await controlplane_0001_init.up(db);
+  await controlplane_0002_management_origin.up(db);
   // The replay set is a table now, not a KV namespace, and it is on the verification path for every
   [alice, bob, carol] = await Promise.all([signer("cpk_alice"), signer("cpk_bob"), signer("cpk_carol")]);
   vaultUp = true;

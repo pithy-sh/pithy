@@ -7,6 +7,7 @@ import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { ConflictError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ManagementClientUnreachableError } from "./api";
 import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./contract";
 import { defaultGrant } from "./grant";
 import type { ConnectionRegistry } from "./registry";
@@ -51,8 +52,13 @@ const DEFAULT_CONTROL_PLANE_BASE_PATH = "/control-plane";
  * defensible at all (§7).
  */
 
-/** How a connect run ended. `registered` is the offline path: written, but not proven by a ping. */
-export type ConnectStatus = "connected" | "needs_reconnect" | "registered";
+/**
+ * How a connect run ended. `registered` is the offline path: written, but not proven by a ping.
+ *
+ * `unreachable` is the same distinction `StatusReport` draws (#614): the row was written and nothing
+ * answered the probe, which is not the same as a client that answered and refused.
+ */
+export type ConnectStatus = "connected" | "needs_reconnect" | "unreachable" | "registered";
 
 /** What `pithy dashboard connect` did, in the shape `--json` emits and the human formatter renders. */
 export interface ConnectReport {
@@ -172,6 +178,15 @@ export interface ConnectDashboardOptions {
    */
   basePath?: string;
   /**
+   * Where the management client this connection is being registered with answers — recorded on the row
+   * so every later command calls it rather than the flag's default (#614).
+   *
+   * Absent means nothing is recorded: the offline `--public-key` path registers a client the CLI never
+   * called, so there is no address it has observed, and inventing one would be worse than the null a
+   * reader can fall back from.
+   */
+  managementOrigin?: string;
+  /**
    * The scopes to grant. Left alone on an update; on a create, absent means {@link defaultGrant} over
    * {@link ConnectDashboardOptions.capabilities}.
    *
@@ -261,6 +276,10 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
       // seam to `/admin` and ran `--update` would otherwise keep a stale mount in their own enforcement
       // row — the exact failure this field exists to prevent, and one that exits 0 saying `Done.`
       basePath: options.basePath ?? existing.basePath,
+      // Re-pointed the same way the address is: an `--update` run against a dashboard that has moved is
+      // exactly how an operator says so. Absent, whatever was recorded stands — including the null a row
+      // written before the column carries, which reads as the issuer until a run observes better.
+      managementOrigin: options.managementOrigin ?? existing.managementOrigin,
       scopes: options.scopes ? [...options.scopes] : existing.scopes,
       updatedAt: now,
     };
@@ -323,6 +342,9 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     issuer: issued.issuer,
     workerUrl,
     basePath,
+    // Where this CLI just called, not where the client says it signs from. `issuer` is the `iss` on its
+    // tokens; nothing says a dashboard's API answers there, and the difference is the whole of #614.
+    managementOrigin: options.managementOrigin ?? null,
     // **What the operator asked for, never what the client echoed back.** This row is the adopter's
     // enforcement copy, and it is the only thing their Worker consults — so writing the client's own
     // account of its grant would let the client decide what it may do, which is precisely the property
@@ -362,6 +384,9 @@ async function connectOffline(
       issuer: offline.issuer,
       workerUrl: requireWorkerUrl(options.workerUrl),
       basePath: options.basePath ?? DEFAULT_CONTROL_PLANE_BASE_PATH,
+      // Only what the operator named. Nothing here called a management client — that is the point of
+      // this path — so there is no observed address, and `--origin` is the one way this row learns one.
+      managementOrigin: options.managementOrigin ?? null,
       // The same default as the dashboard path. An operator registering their own key against their own
       // Worker is building their own client against their own data; there is no reason their first run
       // should read less than ours does.
@@ -646,11 +671,27 @@ export interface StatusReport {
   scopes: readonly string[];
   /** Every registered key, live and superseded, newest window first as stored. */
   keys: readonly KeyReport[];
-  /** `unverified` unless a probe was asked for — status never claims a round-trip it did not make. */
-  status: "connected" | "needs_reconnect" | "unverified";
+  /**
+   * `unverified` unless a probe was asked for — status never claims a round-trip it did not make.
+   *
+   * `unreachable` is its own answer and not a flavor of `needs_reconnect` (#614): nothing answered, so
+   * the connection's health is unknown, and reporting it as needing reconnection sends an operator to
+   * rebuild a registration that may be perfectly good. A dashboard that is down, or an `--origin` that
+   * named the wrong one, both land here.
+   */
+  status: "connected" | "needs_reconnect" | "unreachable" | "unverified";
   /** Operator-facing context from the probe. */
   detail?: string;
 }
+
+/**
+ * What a probe found: the client's own health answer, or the fact that nothing answered.
+ *
+ * Two shapes rather than one with a wider `status`, because {@link ConnectionHealth} is the management
+ * client's wire contract and `unreachable` is never something a client says — it is what the CLI
+ * observes when no client said anything.
+ */
+export type ProbeOutcome = ConnectionHealth | { status: "unreachable"; origin: string; detail: string };
 
 /** Options for {@link dashboardStatus}. */
 export interface DashboardStatusOptions {
@@ -724,7 +765,7 @@ async function probe(
   client: DashboardClient,
   token: string,
   connection: ControlPlaneConnection,
-): Promise<ConnectionHealth> {
+): Promise<ProbeOutcome> {
   return settle(() => client.verifyConnection(token, connection.id, connection.workerUrl));
 }
 
@@ -733,15 +774,23 @@ async function probe(
  * registration is real and the report has to say so *and* say the round-trip did not work. Throwing
  * here would lose the first half.
  */
-async function settle(check: () => Promise<ConnectionHealth>): Promise<ConnectionHealth> {
+async function settle(check: () => Promise<ConnectionHealth>): Promise<ProbeOutcome> {
   try {
     return await check();
   } catch (error) {
-    // A non-Pithy throw is a bug in the client implementation, and its message is still the most
-    // useful thing to show — but it is never swallowed silently: it lands in `detail`.
+    // Nothing answered at all. That is a fact about the address, not about the registration, so it is
+    // reported as its own thing rather than folded into `needs_reconnect` (#614) — and it carries the
+    // origin, because "couldn't reach the management client" without one is the error that sent an
+    // operator to check a Worker URL that was never wrong.
+    if (error instanceof ManagementClientUnreachableError) {
+      return { status: "unreachable", origin: error.origin, detail: error.payload.action ?? error.payload.message };
+    }
+    // Something answered and refused, or the client is broken. A non-Pithy throw is a bug in the client
+    // implementation, and its message is still the most useful thing to show — never swallowed
+    // silently: it lands in `detail`.
     return {
       status: "needs_reconnect",
-      // Nothing answered, so no key did.
+      // Nothing proved a key, so none is claimed.
       keyId: null,
       detail: error instanceof PithyError ? error.payload.message : messageOf(error),
     };
@@ -751,7 +800,7 @@ async function settle(check: () => Promise<ConnectionHealth>): Promise<Connectio
 /** Assemble the connect report from a saved connection and what the probe (if any) found. */
 function report(
   connection: ControlPlaneConnection,
-  outcome: { keyId: string | null; updated: boolean; health: ConnectionHealth | null },
+  outcome: { keyId: string | null; updated: boolean; health: ProbeOutcome | null },
 ): ConnectReport {
   const status: ConnectStatus = outcome.health === null ? "registered" : outcome.health.status;
   return {

@@ -86,6 +86,27 @@ function unusable(message: string, action: string, detail: string, cause?: unkno
   return new InternalError({ message, action, detail }, cause === undefined ? undefined : { cause });
 }
 
+/**
+ * **Nothing at that address answered — which is not a fact about the connection (#614).**
+ *
+ * Its own class rather than a message a reader matches on, because one caller has to tell this apart
+ * from every other failure and cannot do it by reading prose. `status --verify` turned any throw into
+ * `needs_reconnect`, so a CLI that asked the wrong dashboard — or the right one while it was down —
+ * reported that the operator's connection needed rebuilding. A connection nothing reached has a health
+ * nobody knows, and saying so is the only honest answer.
+ *
+ * `origin` is carried because the report has to name the address it tried. Jim's own run printed
+ * "Couldn't reach the management client." over a report listing the very origin it should have used.
+ */
+export class ManagementClientUnreachableError extends InternalError {
+  readonly origin: string;
+
+  constructor(origin: string, args: { message: string; action: string; detail: string }, cause?: unknown) {
+    super(args, cause === undefined ? undefined : { cause });
+    this.origin = origin;
+  }
+}
+
 /** Read a property off an unknown throwable without widening anything to `any`. */
 function prop(value: unknown, key: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
@@ -192,10 +213,13 @@ export function httpDashboardClient(options: HttpDashboardClientOptions = {}): D
       });
       return { status: response.status, raw: await response.text() };
     } catch (error) {
-      throw unusable(
-        "Couldn't reach the management client.",
-        transportAction(error, origin, timeoutMs),
-        `${call.method} ${call.path} did not complete`,
+      throw new ManagementClientUnreachableError(
+        origin,
+        {
+          message: `Couldn't reach the management client at ${origin}.`,
+          action: transportAction(error, origin, timeoutMs),
+          detail: `${call.method} ${call.path} did not complete`,
+        },
         error,
       );
     } finally {

@@ -119,6 +119,7 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
+    managementOrigin: null,
     scopes: ["manifest:read"],
     keys: [key("key_1", at)],
     createdAt: at,

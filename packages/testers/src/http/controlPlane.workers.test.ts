@@ -73,6 +73,7 @@ async function connection(scopes: readonly ControlPlaneScope[]): Promise<Control
     issuer: CONTROL_PLANE_ISSUER,
     workerUrl: "https://acme.example",
     basePath: "/control-plane",
+    managementOrigin: null,
     scopes: [...scopes],
     keys: [
       {

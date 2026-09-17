@@ -28,6 +28,7 @@ import {
 } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
+import { type ResolvedOrigin, repointsOrigin, resolveDashboardOrigin } from "../dashboard/origin";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { composedForGrant, describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
@@ -138,6 +139,18 @@ export function formatConnectReport(report: ConnectReport, options: { json: bool
     ...(report.keyId === null ? [] : [{ name: "Key", description: dim(report.keyId) }]),
   ];
 
+  if (report.status === "unreachable") {
+    // The row is written and the client could not be reached. Telling somebody to check their worker
+    // URL here is advice about the wrong address: the call never got as far as their Worker.
+    return [
+      `Registered ${report.environment}, but the management client did not answer.`,
+      report.detail ?? "Nothing answered at that origin.",
+      block(rows).trimEnd(),
+      `Prove it when it is reachable: pithy dashboard status --env ${report.environment} --verify.`,
+      "",
+    ].join("\n");
+  }
+
   if (report.status === "needs_reconnect") {
     // Registered, but the round-trip failed. Never `Done.` — the connection does not work yet.
     return [
@@ -210,7 +223,12 @@ export function formatStatusReport(report: StatusReport, options: { json: boolea
       ? `${report.environment} is connected. Not verified — pass --verify to prove it with a signed ping.`
       : report.status === "connected"
         ? `${report.environment} is connected and answering.`
-        : `${report.environment} needs reconnecting. ${report.detail ?? ""}`.trimEnd();
+        : // Nothing answered, so nothing is claimed about the registration (#614). The old line said
+          // `needs reconnecting` here, which sent an operator to rebuild a connection that was fine
+          // while a management client was merely down — or while the CLI was asking the wrong one.
+          report.status === "unreachable"
+          ? `${report.environment} was not checked: the management client did not answer. ${report.detail ?? ""}`.trimEnd()
+          : `${report.environment} needs reconnecting. ${report.detail ?? ""}`.trimEnd();
 
   const rows: Row[] = [
     { name: "Connection", description: dim(report.connectionId ?? "") },
@@ -377,6 +395,40 @@ async function withRegistry<T>(
   } finally {
     await registry.dispose();
   }
+}
+
+/**
+ * **The one place a `pithy dashboard` command decides which dashboard it is talking to (#614).**
+ *
+ * Every subcommand used to build its own client from `args.origin`, so an omitted flag meant the hosted
+ * dashboard — and `status --verify` asked `app.pithy.sh` about a connection registered against a
+ * self-hosted one, could not reach a host that was never involved, and reported that the *connection*
+ * needed reconnecting.
+ *
+ * So a command asks the connection first. {@link resolveDashboardOrigin} holds the order; this holds the
+ * wiring, and `ci/dashboardOrigin.test.ts` holds every other module to going through it.
+ *
+ * It also re-points the row when `--origin` names somewhere else, because an operator saying where the
+ * dashboard is now is the only signal there will be that it moved.
+ */
+export async function clientFor(
+  registry: ConnectionRegistry,
+  args: { origin?: string | undefined },
+  seams: { build?: (origin: string) => DashboardClient; now?: () => Date } = {},
+): Promise<{ client: DashboardClient; resolved: ResolvedOrigin }> {
+  const build = seams.build ?? ((origin: string) => httpDashboardClient({ origin }));
+  const connection = await registry.read();
+  const resolved = resolveDashboardOrigin({ flag: args.origin, connection });
+  if (repointsOrigin(resolved, connection)) {
+    // Written through `save` like every other change to this row, so it is recorded in the adopter's own
+    // trail (#294) rather than slipped in. The keys are untouched, so the key invariant is not engaged.
+    await registry.save({
+      ...(connection as ControlPlaneConnection),
+      managementOrigin: resolved.origin,
+      updatedAt: seams.now?.() ?? new Date(),
+    });
+  }
+  return { client: build(resolved.origin), resolved };
 }
 
 /** The flags every subcommand shares. */
@@ -606,8 +658,11 @@ const connect = defineCommand({
       const project = args.project ?? requireProjectName(config);
       const isProduction = isProductionEnv(args.env, config.seed?.productionEnvironments);
 
-      const report = await withRegistry(args, (registry) =>
-        connectDashboard({
+      const report = await withRegistry(args, async (registry) => {
+        // Resolved once: the same answer decides which client is called and what the row records, so
+        // the two cannot disagree about which dashboard this connection belongs to (#614).
+        const { client, resolved } = await clientFor(registry, args);
+        return connectDashboard({
           registry,
           project,
           environment: args.env,
@@ -619,14 +674,12 @@ const connect = defineCommand({
           // when `granted` is set, so nothing depends on which branch above ran.
           capabilities: composed,
           update: args.update,
-          ...(publicKey === undefined
-            ? {
-                client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
-                authorize: authorizeFor(args),
-              }
-            : { publicKey }),
-        }),
-      );
+          ...(publicKey === undefined ? { client, authorize: authorizeFor(args) } : { publicKey }),
+          // The offline path called nothing, so it records only an origin the operator named — which is
+          // what `resolved.source === "flag"` means there.
+          ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
+        });
+      });
       process.stdout.write(formatConnectReport(report, { json: args.json }));
     }),
 });
@@ -637,10 +690,10 @@ const rotate = defineCommand({
   args: commonArgs,
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const report = await withRegistry(args, (registry) =>
+      const report = await withRegistry(args, async (registry) =>
         rotateDashboardKey({
           registry,
-          client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
+          client: (await clientFor(registry, args)).client,
           environment: args.env,
           authorize: authorizeFor(args),
         }),
@@ -661,18 +714,13 @@ const disconnect = defineCommand({
     withErrorReporting(args.json, async () => {
       if (isInteractive(args.json) && !args.yes) await confirmDisconnect(args.env);
 
-      const report = await withRegistry(args, (registry) =>
+      const report = await withRegistry(args, async (registry) =>
         disconnectDashboard({
           registry,
           environment: args.env,
           // `--local` skips the courtesy call entirely. The revocation is identical either way; this
           // only avoids a browser sign-in when the dashboard is unreachable or no longer wanted.
-          ...(args.local
-            ? {}
-            : {
-                client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
-                authorize: authorizeFor(args),
-              }),
+          ...(args.local ? {} : { client: (await clientFor(registry, args)).client, authorize: authorizeFor(args) }),
         }),
       );
       process.stdout.write(formatDisconnectReport(report, { json: args.json }));
@@ -717,13 +765,13 @@ const status = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const client = args.verify
-        ? httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin })
-        : undefined;
       const authorize = authorizeFor(args);
 
-      const report = await withRegistry(args, async (registry) =>
-        dashboardStatus({
+      const report = await withRegistry(args, async (registry) => {
+        // Built inside the registry, because which dashboard to ask is a fact of the connection this
+        // registry holds — not of a flag with a default (#614).
+        const client = args.verify ? (await clientFor(registry, args)).client : undefined;
+        return dashboardStatus({
           registry,
           environment: args.env,
           // Looking is free; proving costs a browser sign-in. So the probe is opt-in, and its absence
@@ -736,8 +784,8 @@ const status = defineCommand({
                   return client.verifyConnection(token, connection.id, connection.workerUrl);
                 },
               }),
-        }),
-      );
+        });
+      });
       process.stdout.write(formatStatusReport(report, { json: args.json }));
     }),
 });
