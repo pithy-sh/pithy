@@ -22,8 +22,26 @@ export const AuthAuditActions = {
   magicLinkSent: "auth/magic_link_sent",
   /** An email OTP was requested and enqueued for delivery. */
   otpSent: "auth/otp_sent",
-  /** A social account (Google) was linked to a user. */
+  /**
+   * A social account row was created — from here on that provider can sign in as this user.
+   *
+   * **Emitted from the row, not from `/link-social`, and that is the whole of #627.** Minting the
+   * provider redirect is a request; the account row is created later at `/callback/:id` and may never be
+   * created at all — the person abandons the consent screen, the provider refuses, the linking gate
+   * rejects it. Recorded at the request, every one of those wrote a success row for a link that never
+   * happened, which makes "which providers can sign in as this account today" unanswerable from the
+   * trail that exists to answer it.
+   */
   oauthLinked: "auth/oauth_linked",
+  /**
+   * A social account row was removed — that provider can no longer sign in as this user.
+   *
+   * The other half of the same question, and it emitted nothing at all until #627: a provider was
+   * detached and the trail was silent. Emitted from the row for the same reason its twin is, which also
+   * means it covers every way a link ends — `/unlink-account`, and the cascade when a user is deleted —
+   * rather than the one endpoint somebody remembered to wire.
+   */
+  oauthUnlinked: "auth/oauth_unlinked",
   /** A device was registered or updated from sign-in metadata. */
   deviceRegistered: "auth/device_registered",
   /** A device was revoked (its session(s) signed out). */

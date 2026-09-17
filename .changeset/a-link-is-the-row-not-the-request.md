@@ -1,0 +1,13 @@
+---
+"@pithy-sh/auth": patch
+---
+
+Attaching and detaching a social provider are both recorded, and recorded when they happen. The trail carried `auth/oauth_linked` at `/link-social` — the moment the provider redirect is *minted*, before the person has seen a consent screen — so abandoning that screen, a provider refusing, or the freshness gate rejecting the link all wrote a success row for a link that never existed. Detaching one wrote nothing at all: there was no `auth/oauth_unlinked` code and nothing on `/unlink-account` emitted, so a provider was removed and the trail was silent. Between the two, "which providers can sign in as this account today, and when did that change" was unanswerable from the record that exists to answer it.
+
+Both events now come from the account row rather than from an endpoint. Better Auth reaches that row from four directions — `/callback/:id` on a first social sign-up and on a link, the OAuth linking path, `/unlink-account`, and the cascade that drops every account when a user is deleted — and all of them pass through the `account` database hooks, so one pair of hooks covers what four endpoint wirings would have had to enumerate and keep current. It is the seam the session-revoked hook already used, applied to the other table: a handler wired to one endpoint misses the others, and the row is what the fact is keyed by. An abandoned link now emits nothing, because nothing happened.
+
+Neither row carries a token. The hook payload holds the provider's access, refresh and id tokens beside the three columns the event needs, so the emitter parses it into a named Zod object first — the strip is the guard, not a rule somebody has to remember, and no later edit spreading "the account" into `metadata` can leak one. A row carries the provider slug, the account row id and the user; the provider-asserted email is not stored on that row and does not start being stored now. A `credential` row is not an OAuth link and emits neither event.
+
+The acceptance is against a real instance over real D1 in the workers runtime, and every case asserts `pithy_auth_accounts` alongside the event — a trail that disagrees with the account table is the defect, not a passing test. `/link-social` is driven over HTTP to prove the minted redirect writes no success row.
+
+**Note on the same shape elsewhere, unfixed here.** Better Auth runs the endpoint `after` hook even when the endpoint threw: `api/dispatch.mjs` catches an `APIError` into a result and dispatches the after hooks over it. So a refused `GET /token` answers 401 and still records `auth/token_refresh outcome=success`. That is the same shape this change fixed and a separate fix.

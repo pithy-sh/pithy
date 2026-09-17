@@ -4,7 +4,7 @@
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
+import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
@@ -298,6 +298,38 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
           // and these two are Better Auth's own.
           before: async (user) => {
             refuseUnsafeProfileFields(user);
+          },
+        },
+      },
+      account: {
+        /**
+         * **The provider-link trail, recorded where the account table changes.**
+         *
+         * An account row is what lets a provider sign in as somebody, so its creation and its removal
+         * are the two account-security events — and the row is the only place both are visible. Better
+         * Auth reaches it from several directions: `/callback/:id` on a first social sign-up and on a
+         * link, `linkAccount` from the OAuth linking path, `/unlink-account`, and the cascade that drops
+         * every account when a user is deleted. All of them go through `createWithHooks` /
+         * `deleteWithHooks` on the `account` model (`better-auth/dist/db/internal-adapter.mjs`), so one
+         * pair of hooks covers what four endpoint wirings would have had to enumerate and keep current.
+         *
+         * **This is the seam `session.delete.after` below already argues for**, applied to the other
+         * table: a handler wired to one endpoint misses the others, and the row is what the fact is
+         * keyed by. #627 is what that costs — `/link-social` was wired, so a link recorded the request
+         * rather than the result, and an unlink recorded nothing.
+         *
+         * **After, not before, in both directions.** The write has happened by the time these run, so a
+         * slow or failing audit seam can neither hold up nor refuse a link or an unlink — and
+         * `emitProviderAccountChanged` swallows its own failure for the same reason.
+         */
+        create: {
+          after: async (account, ctx) => {
+            await emitProviderAccountChanged(deps.emit, { change: "link", account, headers: ctx?.headers });
+          },
+        },
+        delete: {
+          after: async (account, ctx) => {
+            await emitProviderAccountChanged(deps.emit, { change: "unlink", account, headers: ctx?.headers });
           },
         },
       },

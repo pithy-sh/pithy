@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
-import { AuthAuditActions } from "./actions";
+import { z } from "zod";
+import { type AuthAuditAction, AuthAuditActions } from "./actions";
 
 /**
  * Audit emission helpers, kept out of the instance so the hook wiring stays legible. Every helper goes
@@ -42,10 +43,10 @@ function pathAction(path: string): string | undefined {
   if (path === "/email-otp/send-verification-otp") return AuthAuditActions.otpSent;
   if (path === "/sign-out") return AuthAuditActions.signout;
   if (path === "/token") return AuthAuditActions.tokenRefresh;
-  // Only an explicit `/link-social` is a linking event. A `/callback/*` is an OAuth *sign-in* (already
-  // recorded as `auth/signin` from the new session) — mapping it here would mislabel every first
-  // sign-up as a link.
-  if (path === "/link-social") return AuthAuditActions.oauthLinked;
+  // **No path maps to `oauth_linked`, and that is the correction #627 made.** `/link-social` mints a
+  // redirect, which is a request rather than an outcome; `/callback/:id` completes a sign-in *or* a
+  // link and cannot be told apart by its path. The event that means "this provider can sign in as this
+  // user" is the account row, so it is emitted from the row — see `emitProviderAccountChanged`.
   return undefined;
 }
 
@@ -207,8 +208,78 @@ export async function emitProviderUnavailable(
   });
 }
 
-/** Which direction of provider change was refused — the two read very differently in a trail. */
+/** Which direction the provider change went — the two read very differently in a trail. */
 export type ProviderChange = "link" | "unlink";
+
+/**
+ * The account-row columns the provider-change events are built from, and **only** those.
+ *
+ * **A Zod object rather than a cast, for the strip rather than for the types.** The row Better Auth
+ * hands a database hook carries `accessToken`, `refreshToken`, `idToken` and `scope` alongside these
+ * three. Parsing it into a named shape means the emitter below is holding a value that never contained
+ * a provider token, so no later edit spreading "the account" into `metadata` can leak one — the guard
+ * is structural instead of a rule somebody has to remember. The provider-asserted email is not here
+ * either, and is not stored on this row to begin with: #627 does not widen what is retained.
+ */
+export const ProviderAccount = z
+  .object({
+    id: z.string().describe("The account row's primary key — which link was made or broken."),
+    userId: z.string().describe("The user this provider can, or could, sign in as."),
+    providerId: z.string().describe("The provider slug (`google`, `apple`, `facebook`, `github`)."),
+  })
+  .describe("The account-row columns `auth/oauth_linked` and `auth/oauth_unlinked` are built from.");
+export type ProviderAccount = z.output<typeof ProviderAccount>;
+
+/**
+ * Better Auth's provider id for a password row. Pithy is passwordless, so one should never exist here —
+ * but `oauth_linked` claims *a provider can now sign this person in*, and a credential row is a
+ * different claim. A plugin that created one must not show up in the trail as an OAuth link.
+ */
+const CREDENTIAL_PROVIDER_ID = "credential";
+
+const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
+  link: AuthAuditActions.oauthLinked,
+  unlink: AuthAuditActions.oauthUnlinked,
+};
+
+/**
+ * Emit `oauth_linked` / `oauth_unlinked` for an account row that was just created or just removed.
+ *
+ * **Called from the `account` database hooks, and the row is the point.** An operator's question is
+ * "which providers can sign in as this account today, and when did that change"; the account table is
+ * the answer to the first half, so the second half has to be recorded where that table changes. Wiring
+ * this to an endpoint instead is what #627 was: `/link-social` recorded an intention as an outcome, and
+ * `/unlink-account` recorded nothing. From the row, an abandoned consent screen emits nothing because
+ * nothing happened, and every path that ends a link — the unlink endpoint, and the cascade when a user
+ * is deleted — is covered without naming any of them.
+ *
+ * One emitter for both directions so the two rows are structurally identical: a timeline that alternates
+ * between them is read by diffing, and a field one carries and the other does not is a field nobody can
+ * filter on.
+ *
+ * Unparseable input is dropped rather than thrown. The write it describes has already happened, and an
+ * audit failure must never break the action it records — the same contract `safeEmit` holds.
+ */
+export async function emitProviderAccountChanged(
+  emit: AuditEmit,
+  context: { change: ProviderChange; account: unknown; headers: Headers | undefined },
+): Promise<void> {
+  const parsed = ProviderAccount.safeParse(context.account);
+  if (!parsed.success) return;
+  const account = parsed.data;
+  if (account.providerId === CREDENTIAL_PROVIDER_ID) return;
+  await safeEmit(emit, {
+    action: PROVIDER_CHANGE_ACTIONS[context.change],
+    outcome: "success",
+    actorType: "user",
+    actorId: account.userId,
+    // First-class columns, so "everything ever done to this link" is a query rather than a JSON scan.
+    resourceType: "account",
+    resourceId: account.id,
+    metadata: { provider: account.providerId },
+    ...correlation(context.headers),
+  });
+}
 
 /**
  * Emit a `session_not_fresh` event — an attempt to change connected accounts on an authentic but stale
