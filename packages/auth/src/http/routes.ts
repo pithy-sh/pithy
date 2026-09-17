@@ -23,6 +23,7 @@ import {
   revokeFamily,
 } from "../token/rotation";
 import { registerAuthAdminRoutes } from "./adminRoutes";
+import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
@@ -191,9 +192,17 @@ async function auditRefusal(c: Ctx, response: Response): Promise<void> {
  */
 async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
+
+  // **The first of the two guards on the refusal redirect (#625).** `errorCallbackURL` is the caller's
+  // string and `redirectOnError` concatenates it without parsing, so the shape handed *in* decides
+  // whether the collapse below is reading a query at all. `./errorCallbackUrl` normalizes it to something
+  // the kit produced, or refuses it — and carries the argument for why guarding the input is not the same
+  // job as reading the output, and why both stay.
+  const request = await guardErrorCallbackURL(c.req.raw, c.req.raw.url);
+
   let response: Response;
   try {
-    response = await instance.handler(c.req.raw);
+    response = await instance.handler(request);
   } catch (error) {
     throw apiErrorToPithy(error);
   }

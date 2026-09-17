@@ -42,6 +42,20 @@
  * Auth response back, both halves survive: the browser gets one code, and {@link CollapsedRefusal}'s
  * `reason` says which refusal it really was, for `handleBetterAuth` to put on the audit trail.
  * Composing `auth` is the whole of what an adopter does to get it, and there is no option to forget.
+ *
+ * ## This module is the second line of defense, not the only one
+ *
+ * It reads the `Location` a refused callback answered with — which is the output of
+ * `redirectOnError`'s raw string concatenation (`callback.mjs:78`), performed on a value the caller
+ * supplied. It was walked around twice that way, and the second bypass was the diagnosis: **every input
+ * shape where that concatenation and this parsing disagree is another one**, so patching the parsing
+ * again only moves the report later. `./errorCallbackUrl` therefore guards the value on the way *in*,
+ * and by the time this module runs the string being parsed is one the kit produced.
+ *
+ * **Both stay.** That module decides what the dependency is handed; this one still checks what it
+ * answered. An input guard that depends on out-guessing a dependency's string handling is exactly what
+ * round 3 exists to stop relying on — so the guess is made once, about a value the kit then owns, and
+ * checked again here against the roster. Neither is asked to carry the whole load.
  */
 
 /**
@@ -297,6 +311,12 @@ export interface CollapsedRefusal {
  *
  * So: a relative target is resolved against the request the way a browser resolves it, and **every**
  * `error` value is put to the roster rather than the first.
+ *
+ * **Both of those shapes are now refused or normalized before the flow starts** (`./errorCallbackUrl`),
+ * and this handling stays anyway — the collapse still has to work on a `Location` whose `errorURL`
+ * came from `defaultErrorURL` rather than from a caller, and on whatever a future dependency writes
+ * there. What it cannot do is be the only guard: the third bypass was a fragment, and a fragment is
+ * precisely the shape a query parser cannot see. That is the whole argument for the other end.
  *
  * @param requestUrl The absolute URL of the request being answered — the callback's own, which a relative
  *   `Location` resolves against. Callers pass `c.req.raw.url`.

@@ -494,6 +494,14 @@ function isAuthorization(value: unknown): value is { url: string } {
  * about what just happened. Pass the sign-in screen's own path and the refusal returns to the control
  * that started it, as `?error=<code>`. That is the transport the whole GitHub rejection copy depends on
  * (pithy-sh/pithy#554); without it the sentence exists and is unreachable.
+ *
+ * **The value has a shape, and the Worker refuses one that does not fit (#625).** An absolute URL on a
+ * trusted origin, or a root-relative path — with **no fragment** and no `error`/`error_description`
+ * parameter already on it. Better Auth appends `?error=<code>` to this string without parsing it, so a
+ * `#` anywhere in it swallows the code the refusal screen is waiting for, and an `error` already there
+ * makes two. A value that cannot be normalized is answered `400 validation/invalid_input` naming the
+ * field, rather than quietly rewritten into a destination nobody asked for. A hash-routed error screen
+ * passes its route as a query parameter instead. See `../http/errorCallbackUrl`.
  */
 export async function startSocialSignIn(
   input: { provider: string; callbackURL: string; errorCallbackURL?: string },

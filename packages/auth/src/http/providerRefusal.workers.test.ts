@@ -348,11 +348,13 @@ const BYPASSES = [
     location: `/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`,
   },
   {
-    label: "an errorCallbackURL that already carries an error",
-    // `redirectOnError` appends. The answer was `?error=access_denied&error=account_not_linked`, and
-    // reading the first value let the caller choose which code the roster was shown.
-    errorCallbackURL: "http://localhost/sign-in?provider=github&error=access_denied",
-    location: `http://localhost/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`,
+    label: "an errorCallbackURL normalized on the way in",
+    // Round 3 (`./errorCallbackUrl`): this value never reaches Better Auth as sent. A trailing `?` is an
+    // empty query the kit does not produce, so the guard hands on `http://localhost/sign-in` and the
+    // refusal is appended to that. Driving it here is what proves the *rebuilt request* — new body, new
+    // headers, same everything else — survives the whole round trip and still refuses correctly.
+    errorCallbackURL: "http://localhost/sign-in?",
+    location: `http://localhost/sign-in?error=${NEUTRAL_PROVIDER_REFUSAL}`,
   },
 ] as const;
 
@@ -375,5 +377,115 @@ describe.each(BYPASSES)("a refused social sign-in through $label", ({ errorCallb
     expect({ status: unmatched.status, body: unmatched.body }).toEqual({ status: matched.status, body: matched.body });
     // The half a header rewrite loses. On the relative path nothing had been recorded at all.
     expect([deniedReason(matched), deniedReason(unmatched)]).toEqual(["account_not_linked", "signup_disabled"]);
+  });
+});
+
+/**
+ * Round 3: the shape that walked past the output-side collapse, and the door that now stops it (#625).
+ *
+ * `errorCallbackURL: http://localhost/sign-in#x` answered
+ * `…/sign-in#x?error=account_not_linked` for a seeded address and `…?error=signup_disabled` for an
+ * unseeded one — the whole oracle, restored by one character. `redirectOnError` concatenates without
+ * parsing, so the appended code landed inside the fragment, `collapseProviderRefusal` read
+ * `searchParams` and found no `error`, and the header went out untouched with no audit row behind it.
+ *
+ * **That is a diagnosis, not a fourth entry for the bypass table.** Every input shape where the
+ * dependency's concatenation and our parsing disagree is another one, and the parser cannot be patched
+ * into knowing which shapes those are. So the value is guarded on the way *in*
+ * (`./errorCallbackUrl`), and what cannot be normalized to a shape the kit would have produced is
+ * refused at the door — before any state is minted, before the provider is contacted, before anything
+ * is looked up.
+ *
+ * The cases are driven against the real instance and real D1, twice each, because "refused identically"
+ * is a claim about what an attacker can observe and not about what a function returns.
+ */
+const DOOR = [
+  {
+    label: "a fragment, which swallowed the appended code whole",
+    errorCallbackURL: "http://localhost/sign-in#x",
+  },
+  {
+    label: "a bare trailing `#`, whose URL.hash reads empty and which does the same thing",
+    errorCallbackURL: "http://localhost/sign-in#",
+  },
+  {
+    label: "a fragment after a query",
+    errorCallbackURL: "http://localhost/sign-in?p=github#x",
+  },
+  {
+    label: "an `error` parameter planted ahead of the appended one",
+    // Round 2 caught this at the other end, by putting every `error` value to the roster. It is closed
+    // here too now: a URL that already answers this question is not one the kit would have produced.
+    errorCallbackURL: "http://localhost/sign-in?error=access_denied",
+  },
+  {
+    label: "a bare-relative path — round 2's own open question, answered end to end",
+    // Unit-covered only until now. `matchesOriginPattern` rules on it at
+    // `trusted-origins.mjs`: it does not start with `/`, so the relative branch is skipped;
+    // `getProtocol` throws and returns null, `getOrigin` likewise, and `pattern === null` is false. So
+    // Better Auth refused it 403 `INVALID_ERROR_CALLBACK_URL` — the right outcome reached by an origin
+    // check that had no origin to check. The door refuses it first now, and says why.
+    errorCallbackURL: "sign-in?provider=github",
+  },
+  {
+    label: "a protocol-relative URL, which is another origin wearing a path's clothes",
+    errorCallbackURL: "//evil.example/x",
+  },
+] as const;
+
+/** Start a social sign-in and report only what the caller can see, plus whether any state was minted. */
+async function startSignIn(errorCallbackURL: string): Promise<{ status: number; body: string; states: number }> {
+  const wiring = buildWiring(() => {}, false);
+  const app = buildApp(wiring, async () => {});
+  const response = await app.request(
+    "/auth/sign-in/social",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://localhost" },
+      body: JSON.stringify({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL }),
+    },
+    appEnv(),
+  );
+  const states = await env.DB.prepare("select count(*) as n from pithy_auth_verifications").first<{ n: number }>();
+  return { status: response.status, body: await response.text(), states: states?.n ?? -1 };
+}
+
+describe.each(DOOR)("an errorCallbackURL carrying $label", ({ errorCallbackURL }) => {
+  test("is refused at the door, identically whether or not the address has an account", async () => {
+    await seedUser();
+    const matched = await startSignIn(errorCallbackURL);
+    await env.DB.prepare("delete from pithy_auth_users").run();
+    await env.DB.prepare("delete from pithy_auth_verifications").run();
+    const unmatched = await startSignIn(errorCallbackURL);
+
+    expect(matched.status).toBe(400);
+    expect(unmatched).toEqual(matched);
+    // Nothing was looked up, so nothing could have been said. The refusal names the field and no code.
+    expect(matched.body).toContain("errorCallbackURL");
+    for (const leaked of PROVIDER_REFUSAL_CODES) {
+      expect(matched.body).not.toContain(leaked);
+    }
+  });
+
+  test("never mints the state the callback would have carried it back in", async () => {
+    // The strongest form of the claim: the flow does not start. There is no round trip to attack,
+    // no provider redirect, and no stored `errorURL` for `redirectOnError` to concatenate onto.
+    expect((await startSignIn(errorCallbackURL)).states).toBe(0);
+  });
+});
+
+describe("the door narrows what reaches Better Auth without widening it", () => {
+  test("an untrusted absolute origin is still refused, normalization or not", async () => {
+    // Normalizing has to leave the origin check something to check. `https://evil.example/x` parses
+    // cleanly and survives the guard unchanged — and Better Auth then refuses it, as it always did.
+    const refused = await startSignIn("https://evil.example/x");
+    expect(refused.status).toBe(403);
+  });
+
+  test("a shape the kit would have produced is passed through untouched and still works", async () => {
+    // The guard must not be a second origin check, and must not cost a working configuration.
+    const started = await startSignIn(ERROR_CALLBACK);
+    expect(started.status).toBe(200);
+    expect(started.states).toBeGreaterThan(0);
   });
 });
