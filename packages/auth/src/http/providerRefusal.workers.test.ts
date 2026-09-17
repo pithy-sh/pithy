@@ -165,7 +165,7 @@ interface Refusal {
  * `redirect: "manual"` is not decoration — the oracle is in the `Location` header, and a followed
  * redirect would leave the case asserting on the adopter's screen instead of on what the Worker said.
  */
-async function refusedCallback(allowSignUp: boolean): Promise<Refusal> {
+async function refusedCallback(allowSignUp: boolean, errorCallbackURL: string = ERROR_CALLBACK): Promise<Refusal> {
   const events: AuditEventInput[] = [];
   let resolved = 0;
   const wiring = buildWiring(() => {
@@ -183,7 +183,7 @@ async function refusedCallback(allowSignUp: boolean): Promise<Refusal> {
       body: JSON.stringify({
         provider: "github",
         callbackURL: "http://localhost/app",
-        errorCallbackURL: ERROR_CALLBACK,
+        errorCallbackURL,
       }),
     },
     appEnv(),
@@ -218,12 +218,15 @@ async function refusedCallback(allowSignUp: boolean): Promise<Refusal> {
 }
 
 /** One run with a matching user row, one without — a fresh database between them. */
-async function bothRefusals(allowSignUp: boolean): Promise<{ matched: Refusal; unmatched: Refusal }> {
+async function bothRefusals(
+  allowSignUp: boolean,
+  errorCallbackURL: string = ERROR_CALLBACK,
+): Promise<{ matched: Refusal; unmatched: Refusal }> {
   await seedUser();
-  const matched = await refusedCallback(allowSignUp);
+  const matched = await refusedCallback(allowSignUp, errorCallbackURL);
   await env.DB.prepare("delete from pithy_auth_users").run();
   await env.DB.prepare("delete from pithy_auth_verifications").run();
-  const unmatched = await refusedCallback(allowSignUp);
+  const unmatched = await refusedCallback(allowSignUp, errorCallbackURL);
   // Both runs reached the decision under test. See `Refusal.resolved`.
   expect({ matched: matched.resolved, unmatched: unmatched.resolved }).toEqual({ matched: 1, unmatched: 1 });
   return { matched, unmatched };
@@ -314,10 +317,63 @@ describe.each(POLICIES)("a refused social sign-in, $label", ({ allowSignUp, reas
     // The trail tells the two apart, which is the half an adopter's own middleware could only throw
     // away: it sees the one code this Worker now sends, and has nothing left to record. Neither code
     // had ever reached `pithy_audit_events` before — a 302 is not a `DENIED_STATUSES` status.
-    const reason = (refusal: Refusal): unknown => {
-      const denial = refusal.events.find((event) => event.action === "auth/signin" && event.outcome === "denied");
-      return (denial?.metadata as { reason?: unknown } | undefined)?.reason;
-    };
-    expect([reason(matched), reason(unmatched)]).toEqual([...reasons]);
+    expect([deniedReason(matched), deniedReason(unmatched)]).toEqual([...reasons]);
+  });
+});
+
+/** The reason the trail recorded for a refusal, or `undefined` if no denial was recorded at all. */
+function deniedReason(refusal: Refusal): unknown {
+  const denial = refusal.events.find((event) => event.action === "auth/signin" && event.outcome === "denied");
+  return (denial?.metadata as { reason?: unknown } | undefined)?.reason;
+}
+
+/**
+ * The two `errorCallbackURL` shapes that walked straight past the first fix.
+ *
+ * Both are the caller's own input — `POST /sign-in/social` takes the value and Better Auth stores it in
+ * the state verbatim — so neither needed anything but a different request body. They are driven here
+ * rather than only against the unit because the claim they refute is about what leaves the Worker: the
+ * first version of this suite drove exactly one shape of `errorCallbackURL` and was green throughout.
+ *
+ * `allowSignUp: false` is #554's recommended configuration and the pair the issue names. One policy is
+ * enough here — the policy axis is already covered above; what varies here is the header's shape.
+ */
+const BYPASSES = [
+  {
+    label: "a relative errorCallbackURL",
+    // Permitted: `origin-check.mjs` passes `allowRelativePaths: true`, and `oauth2/state.mjs` keeps the
+    // value as a plain string. The Location that comes back is relative, and a collapse that only
+    // understood absolute URLs answered `undefined` — no rewrite, and no audit row either.
+    errorCallbackURL: "/sign-in?provider=github",
+    location: `/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`,
+  },
+  {
+    label: "an errorCallbackURL that already carries an error",
+    // `redirectOnError` appends. The answer was `?error=access_denied&error=account_not_linked`, and
+    // reading the first value let the caller choose which code the roster was shown.
+    errorCallbackURL: "http://localhost/sign-in?provider=github&error=access_denied",
+    location: `http://localhost/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`,
+  },
+] as const;
+
+describe.each(BYPASSES)("a refused social sign-in through $label", ({ errorCallbackURL, location }) => {
+  test("still answers identically, still says nothing, and still reaches the trail", async () => {
+    const { matched, unmatched } = await bothRefusals(false, errorCallbackURL);
+
+    for (const [label, refusal] of [
+      ["an address with an account", matched],
+      ["an address with none", unmatched],
+    ] as const) {
+      // The exact header, not a substring: this is the shape the fix has to preserve as well as clean.
+      expect(refusal.location, `${label} answered the wrong Location`).toBe(location);
+      for (const leaked of PROVIDER_REFUSAL_CODES) {
+        expect(`${label}: ${refusal.location}`).not.toContain(leaked);
+      }
+      expect(refusal.location).not.toContain("error_description");
+    }
+
+    expect({ status: unmatched.status, body: unmatched.body }).toEqual({ status: matched.status, body: matched.body });
+    // The half a header rewrite loses. On the relative path nothing had been recorded at all.
+    expect([deniedReason(matched), deniedReason(unmatched)]).toEqual(["account_not_linked", "signup_disabled"]);
   });
 });
