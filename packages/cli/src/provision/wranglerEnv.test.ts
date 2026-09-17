@@ -64,6 +64,7 @@ describe("applyProvisionedEnv", () => {
       resources,
       services: [],
       secrets: [],
+      administersItself: false,
       ...extra,
     });
 
@@ -223,6 +224,59 @@ describe("applyProvisionedEnv", () => {
     ]);
   });
 
+  /**
+   * **A Worker cannot fetch its own hostname** (#616). The subrequest loops back out through the edge
+   * into the Worker it came from and hangs until Cloudflare answers 522, so a project that administers
+   * itself dispatches through the runtime instead — and the binding that does it has to name the script
+   * *this* stanza deploys as.
+   *
+   * Taken from the stanza rather than from a literal, deliberately: the assertion is that the two agree,
+   * and a literal on both sides would pass while the binding pointed at a script nobody deploys.
+   */
+  test("a self-administering project binds SELF to the script its own stanza names", async () => {
+    await apply(feature, { administersItself: true });
+
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
+    expect(stanza?.name).toBe("replay-f69-demo-board");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: stanza?.name }]);
+  });
+
+  /** The same, for a declared environment, where the name is read from the file rather than composed. */
+  test("and in a declared environment it names that stanza's script", async () => {
+    await apply(environmentScope("replay", "staging"), { administersItself: true });
+
+    const stanza = (parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed).env.staging;
+    expect(stanza?.name).toBe("replay-board-staging");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: stanza?.name }]);
+  });
+
+  test("re-running leaves one entry, never two", async () => {
+    await apply(feature, { administersItself: true });
+    await apply(feature, { administersItself: true });
+
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f69-demo-board" }]);
+  });
+
+  /** Declared, never inferred: a project that says nothing gets nothing, and its stanza is untouched. */
+  test("a project that does not declare it gets no services entry at all", async () => {
+    await apply(feature);
+
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
+    expect(stanza?.services).toBeUndefined();
+  });
+
+  /** A capability's own service bindings keep their targets; the self entry joins them. */
+  test("the self entry sits beside the service bindings a capability declares", async () => {
+    await apply(feature, { administersItself: true, services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
+
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
+    expect(stanza?.services).toEqual([
+      { binding: "WEB", service: "replay-f69-demo-web" },
+      { binding: "SELF", service: "replay-f69-demo-board" },
+    ]);
+  });
+
   test("preserves comments sitting inside an existing binding array on re-run", async () => {
     // A pre-existing env.feature stanza with a comment INSIDE the d1_databases array.
     await writeFile(
@@ -281,6 +335,7 @@ describe("applyProvisionedEnv and a declared environment name", () => {
 
   const provision = () =>
     applyProvisionedEnv({
+      administersItself: false,
       workerDir: dir,
       worker: BOARD,
       scope: environmentScope("replay", "staging"),
@@ -356,6 +411,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
 
   test("goes without nothing the top level declares", async () => {
     await applyProvisionedEnv({
+      administersItself: false,
       workerDir: dir,
       worker: BOARD,
       scope: staging,
@@ -370,6 +426,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
 
   test("names its own environment rather than carrying dev's", async () => {
     await applyProvisionedEnv({
+      administersItself: false,
       workerDir: dir,
       worker: BOARD,
       scope: staging,
@@ -388,6 +445,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
     // The reason a new stanza is seeded rather than copied: a `d1_databases` entry carried down verbatim
     // would point staging at the database dev writes to, which is worse than the absent binding it fixes.
     await applyProvisionedEnv({
+      administersItself: false,
       workerDir: dir,
       worker: BOARD,
       scope: staging,
@@ -405,6 +463,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
   test("leaves a feature's generated stanza carrying the vars its Worker reads", async () => {
     const feature = featureScope({ project: "replay", issue: "69", slug: "demo" });
     await applyProvisionedEnv({
+      administersItself: false,
       workerDir: dir,
       worker: BOARD,
       scope: feature,

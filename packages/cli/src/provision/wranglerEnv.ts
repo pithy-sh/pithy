@@ -4,6 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
+import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
@@ -203,6 +204,23 @@ export async function applyProvisionedEnv(options: {
    * partial one does not degrade: wrangler refuses the whole config.
    */
   secrets: readonly SecretStoreBinding[];
+  /**
+   * Whether this project declares that it **administers itself** — the root `pithy.config.ts`'s
+   * `administersItself`, read by the command and never inferred here.
+   *
+   * True writes one more `services` entry: {@link SELF_BINDING}, pointing at the script this very stanza
+   * deploys as. A Worker cannot fetch its own hostname — the subrequest loops back through the edge into
+   * the Worker it came from and hangs until Cloudflare answers 522 — so a deployment that calls its own
+   * control plane dispatches through the runtime instead.
+   *
+   * **Written here, from `stanza.name`, rather than composed by the caller.** The binding has to name the
+   * script the stanza deploys as, and this writer is where that string is decided (one line up). Composing
+   * it anywhere else is a second producer of one address, which is the shape #580 and #587 both closed —
+   * and the shape that fails silently, because a binding pointing at a script nobody deploys provisions
+   * clean and refuses at runtime. A feature environment is covered by construction: its stanza is
+   * regenerated from the tracked file on every run, so a hand-written entry could never have survived one.
+   */
+  administersItself: boolean;
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -222,9 +240,15 @@ export async function applyProvisionedEnv(options: {
       stanza[array] ??= [];
       upsertByBinding(stanza[array], resource.binding, fields(resource));
     }
-    if (options.services.length > 0) {
+    // The self binding last, so it is written from the `name` this edit has already settled and so the
+    // kit's own constant wins over anything else that claimed it. Nothing is written for a project that
+    // does not declare it: no `services` key, no empty array, no change to the stanza at all.
+    const services = options.administersItself
+      ? [...options.services, { binding: SELF_BINDING, service: stanza.name }]
+      : options.services;
+    if (services.length > 0) {
       stanza.services ??= [];
-      for (const entry of options.services) {
+      for (const entry of services) {
         const existing = stanza.services.find((candidate) => candidate.binding === entry.binding);
         if (existing) existing.service = entry.service;
         else stanza.services.push({ ...entry });

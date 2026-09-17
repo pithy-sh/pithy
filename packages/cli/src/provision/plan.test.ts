@@ -76,7 +76,7 @@ describe("the plan pithy provision prints before it provisions", () => {
   let dir: string;
   let workerDir: string;
   const scope = environmentScope("replay", "staging");
-  const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {} };
+  const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {}, administersItself: false };
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-plan-"));

@@ -61,6 +61,7 @@ import {
 } from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
+import { checkSelfBinding, describeSelfBinding, type SelfBindingCheck } from "../doctor/selfBinding";
 import {
   describeSettingsAccount,
   describeSettingsFinding,
@@ -242,6 +243,12 @@ export interface DoctorReport {
    * {@link DoctorReport.projectName}: with no project there are no Workers to name.
    */
   workerNames: WorkerNameCheck | null;
+  /**
+   * Whether a project that declares it **administers itself** has the `SELF` service binding in every
+   * stanza it deploys from (#616). `null` outside a readable project, on the same `loadProject` outcome as
+   * the check above: with no root config there is no declaration to hold a stanza to.
+   */
+  selfBinding: SelfBindingCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares (#241), and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -656,6 +663,8 @@ export interface DoctorReportOptions {
   checkProjectName?: (projectDir: string) => Promise<ProjectNameCheck | null>;
   /** Worker-name agreement seam; defaults to {@link checkWorkerNames}. Reads files only — no account call. */
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
+  /** Self-binding seam; defaults to {@link checkSelfBinding}. Reads files only — no account call. */
+  checkSelfBinding?: (projectDir: string) => Promise<SelfBindingCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -833,6 +842,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     )(options.projectDir);
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
+  const probeSelfBinding = options.checkSelfBinding ?? checkSelfBinding;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1124,6 +1134,15 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         convention: [],
       })
     : null;
+  // The same file, asked what a stanza binds rather than what it is called. Files only, and the whole of
+  // it is one declaration held against the stanzas that declaration decides (#616).
+  const selfBinding = inProject
+    ? await probed<SelfBindingCheck>(() => probeSelfBinding(options.projectDir), {
+        state: "could-not-check",
+        declared: false,
+        missing: [],
+      })
+    : null;
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
   // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
   const environments = inProject
@@ -1268,6 +1287,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     cloudflare,
     projectName,
     workerNames,
+    selfBinding,
     environments,
     environmentInheritance,
     turnstileSitekeys,
@@ -1334,6 +1354,12 @@ export function doctorExitCode(report: DoctorReport): number {
   // The convention note this check also carries is deliberately not here: a Worker's name is the
   // adopter's, so being on wrangler's suffix is a report line, never a reason to exit 1.
   if (report.workerNames?.state === "drifted") return 1;
+  // The same standard, met the same way, and there is no day-one state to spare here either: a project
+  // that declares nothing has nothing to report, and one that declares self-administration while a stanza
+  // it deploys from binds no SELF is a contradiction between its own two files. The consequence is the
+  // reason it gates — a 522 at runtime, which reads as somebody else's outage — and the remedy is the
+  // `pithy provision` that was going to be run anyway. `could-not-check` establishes nothing.
+  if (report.selfBinding?.state === "unbound") return 1;
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc
   // contradict each other about which environments this project has. Nothing about the account is
   // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
@@ -2511,6 +2537,19 @@ function secretBindingsBlock(check: SecretBindingsCheck): string {
   return ["Secret bindings:", ...describeSecretBindings(check).map((line) => `  ${line}`)].join("\n");
 }
 
+/**
+ * The stanzas a self-administering project has left unbound — one line each, then the one command that
+ * writes them. The block is the finding: a project that declares nothing, or has them all, prints nothing.
+ */
+function selfBindingBlock(check: SelfBindingCheck): string {
+  const lines = ["Self binding:"];
+  for (const entry of check.missing) lines.push(healthLine(entry.worker, describeSelfBinding(entry)));
+  lines.push(
+    `${HEALTH_INDENT}Run pithy provision --env <name> — it writes the binding with the stanza's own script name.`,
+  );
+  return lines.join("\n");
+}
+
 function workerNamesBlock(check: WorkerNameCheck): string {
   const lines = ["Worker names:"];
   const workers = [...new Set(check.mismatches.map((mismatch) => mismatch.worker))];
@@ -2590,6 +2629,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // on having something to say rather than on `terse`.
   const workerNamesOk =
     !report.workerNames || (report.workerNames.mismatches.length === 0 && report.workerNames.reserved.length === 0);
+  // Worth the ink and worth a red CI both, for the reason the workflows rule below is: the symptom is a
+  // request that hangs until Cloudflare calls it a 522, so a terse report here would be the toolchain
+  // agreeing that nothing is wrong. `could-not-check` keeps its silence, like the block above.
+  const selfBindingOk = !report.selfBinding || report.selfBinding.missing.length === 0;
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
@@ -2656,6 +2699,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     cloudflareOk &&
     projectNameOk &&
     workerNamesOk &&
+    selfBindingOk &&
     environmentsOk &&
     environmentInheritanceOk &&
     turnstileSitekeysOk &&
@@ -2821,6 +2865,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     report.workerNames.mismatches.length + report.workerNames.reserved.length + report.workerNames.convention.length > 0
   ) {
     blocks.push(workerNamesBlock(report.workerNames));
+  }
+
+  // Straight after the names, because it is the same stanza asked what it binds rather than what it is
+  // called. The block is the finding — see {@link selfBindingBlock}.
+  if (report.selfBinding && report.selfBinding.missing.length > 0) {
+    blocks.push(selfBindingBlock(report.selfBinding));
   }
 
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
@@ -2992,6 +3042,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...note,
             detail: describeWorkerNameConvention(note).join(" "),
           })),
+        }
+      : null,
+    // Same `null` discipline, and each unbound stanza carries its own sentence: `declared` is what tells a
+    // consumer that an empty `missing` is a project with the binding rather than one that never asked.
+    selfBinding: report.selfBinding
+      ? {
+          state: report.selfBinding.state,
+          declared: report.selfBinding.declared,
+          missing: report.selfBinding.missing.map((entry) => ({ ...entry, detail: describeSelfBinding(entry) })),
         }
       : null,
     // Same `null` discipline once more, and each drift carries its own sentence — the remedy for an

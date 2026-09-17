@@ -179,6 +179,7 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
     if (!provisioners) throw new Error("unreachable: suite is credential-gated");
 
     const report = await provisionFeature({
+      administersItself: false,
       projectDir: built.dir,
       capabilities,
       identity: IDENTITY,

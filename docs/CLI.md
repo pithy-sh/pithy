@@ -59,9 +59,11 @@ everything capabilities drive is per-Worker: the composed route tree, the `requi
 that Worker's `wrangler.jsonc`, and Durable Object class migrations, which register a class against a
 specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the leading
 segment of **every** name this project provisions — D1, KV, R2, Vectorize, Worker scripts, Workflows, Secrets
-Store entries, API tokens; see `docs/NAMING.md`), `tokens`, and `seed.productionEnvironments`. `name` stops
-at 26 characters and is effectively permanent; `docs/NAMING.md` derives the number and lists every namespace's
-real limit.
+Store entries, API tokens; see `docs/NAMING.md`), `tokens`, `seed.productionEnvironments`, and
+`administersItself` — one of this project's own Workers is the control plane it calls, so every stanza
+provisioning generates gets a `SELF` service binding, because a Worker cannot fetch its own hostname
+(`docs/commands/provision.md`). `name` stops at 26 characters and is effectively permanent;
+`docs/NAMING.md` derives the number and lists every namespace's real limit.
 
 **One project, or two?** Do these apps share users or data? Then it is one project with more Workers, not two projects. Two apps often should share. Two projects never can — each carries its own migration registry and upgrade cadence, so one project's `pithy migrate` applies schema the other has never heard of, and `pithy migrate` refuses a database another project owns. `pithy worker add` is the answer far more often than a second `pithy init`. Full reasoning in `docs/NAMING.md`.
 
