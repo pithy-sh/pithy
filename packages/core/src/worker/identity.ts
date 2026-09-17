@@ -72,6 +72,21 @@ export const WORKER_VAR = "WORKER";
  */
 export const VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 
+/**
+ * The service binding a Worker reaches **itself** through (#616).
+ *
+ * **A Worker cannot fetch its own hostname.** The subrequest leaves the isolate, loops back through the
+ * edge into the Worker it came from, and hangs until Cloudflare answers 522 — on a deployment where the
+ * same route answers `401` in 1.4s from outside. So a project that administers itself dispatches inside
+ * the runtime instead: `env.SELF.fetch(request)` reaches the same script with no edge hop.
+ *
+ * Like the three vars above, it is a name that has to be agreed rather than derived — the binding
+ * `pithy provision` writes into every stanza it generates for a project that declares
+ * `administersItself`, and the one an app reads off `env`. It lives here so neither side, in this
+ * repository or in a management client built on it, spells it a second way.
+ */
+export const SELF_BINDING = "SELF";
+
 /** Where a Worker is running, as it can state about itself. Every field is `null` when unstamped. */
 export interface WorkerIdentity {
   /** The owning project, or `null` when the Worker carries no `PROJECT` var. */

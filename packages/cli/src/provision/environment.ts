@@ -369,6 +369,16 @@ export interface ProvisionEnvironmentOptions {
    * wrote the default.
    */
   seedData: boolean;
+  /**
+   * Whether this project declares that it **administers itself** — the root `pithy.config.ts`'s
+   * `administersItself`, which every stanza this run generates then carries a `SELF` service binding for.
+   *
+   * **Required, and a word each caller writes down**, for {@link ProvisionEnvironmentOptions.seedData}'s
+   * reason. The declaration is the project's, read from its root config by the command that loaded it;
+   * this module has a `projectDir` and no business re-deciding what that file said. A default here would
+   * be the declaration made by whoever wrote the default.
+   */
+  administersItself: boolean;
   /** Migration runner seam (default: `migrateProject`). */
   migrate?: BackendRunner;
   /** Seed runner seam (default: `seedProject`). */
@@ -630,6 +640,10 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       scope,
       resources: written,
       secrets: workerSecrets.bound,
+      // The project's declaration, carried through untouched. The entry itself is composed by the writer,
+      // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
+      // more thing composed here.
+      administersItself: options.administersItself,
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,

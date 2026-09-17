@@ -10,6 +10,7 @@ import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provis
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { provisionEnvironment } from "./environment";
+import { featureConfigPath } from "./featureConfig";
 import type { ResourceProvisioner, ResourceProvisioners } from "./resources";
 
 /** An in-memory provisioner over a name→id map, mirroring the real find/create/delete semantics. */
@@ -71,7 +72,12 @@ describe("provisionEnvironment, for a declared environment", () => {
   let dir: string;
   let workerDir: string;
   const scope = environmentScope("replay", "staging");
-  const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {} };
+  const noBackend = {
+    seedData: false,
+    migrate: async () => {},
+    seed: async () => {},
+    administersItself: false,
+  };
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-provision-"));
@@ -696,6 +702,7 @@ describe("provisionEnvironment, for a declared environment", () => {
     const { provisioners } = fakeProvisioners();
     const calls: string[] = [];
     await provisionEnvironment({
+      administersItself: false,
       projectDir: dir,
       scope,
       capabilities: [app],
@@ -873,5 +880,100 @@ describe("provisionEnvironment, for a declared environment", () => {
       });
       expect(saved.at(-1)?.map((resource) => resource.name)).toEqual(["replay-staging-db"]);
     });
+  });
+});
+
+/**
+ * **A project that administers itself gets a service binding to itself (#616).**
+ *
+ * A Worker cannot fetch its own hostname: the subrequest loops back out through the edge into the Worker
+ * it came from and hangs until Cloudflare answers 522, while the same route answers in under two seconds
+ * from outside. The remedy is `env.SELF.fetch(request)`, dispatched inside the runtime — and the binding
+ * has to exist in the deployment's configuration before any code can reach for it.
+ *
+ * A feature environment is where the kit's half bites. Its stanza is generated on every run, so an entry
+ * added by hand is gone at the next `pithy provision --feature`; and its script name is composed from the
+ * branch, so the binding's target is a string nobody types.
+ */
+describe("a self-administering project", () => {
+  let dir: string;
+  let workerDir: string;
+  const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {} };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-self-"));
+    workerDir = join(dir, "apps", "board");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(workerDir, "wrangler.jsonc"), '{\n  "name": "replay-board"\n}\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const workers = () => async () => [{ name: "replay-board", dir: workerDir, capabilities: [app] }];
+
+  const provision = async (scope: Parameters<typeof provisionEnvironment>[0]["scope"], administersItself: boolean) =>
+    provisionEnvironment({
+      projectDir: dir,
+      scope,
+      capabilities: [app],
+      provisioners: fakeProvisioners().provisioners,
+      resolveWorkers: workers(),
+      administersItself,
+      ...noBackend,
+    });
+
+  /** The generated feature config, read back the way `wrangler deploy --env feature` reads it. */
+  const featureStanza = async (): Promise<Stanza | undefined> => {
+    const config = parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+      env?: Record<string, Stanza | undefined>;
+    };
+    return config.env?.feature;
+  };
+
+  test("binds SELF to the script the stanza deploys as, in a declared environment", async () => {
+    const report = await provision(environmentScope("replay", "staging"), true);
+
+    const stanza = await readStanza(workerDir, "staging");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-board-staging" }]);
+    // The run's own answer for where this Worker lands, so the binding and the deploy cannot disagree.
+    expect(stanza?.services?.[0]?.service).toBe(report.workers[0]?.name);
+  });
+
+  test("and in a feature environment, where the name is composed rather than typed", async () => {
+    const report = await provision(featureScope({ project: "replay", issue: "616", slug: "self" }), true);
+
+    const stanza = await featureStanza();
+    expect(stanza?.name).toBe("replay-f616-self-board");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f616-self-board" }]);
+    expect(stanza?.services?.[0]?.service).toBe(report.workers[0]?.name);
+  });
+
+  test("re-running writes one entry, never two", async () => {
+    await provision(environmentScope("replay", "staging"), true);
+    await provision(environmentScope("replay", "staging"), true);
+
+    expect((await readStanza(workerDir, "staging"))?.services).toEqual([
+      { binding: "SELF", service: "replay-board-staging" },
+    ]);
+  });
+
+  /** An existing stanza is merged, never replaced: every id this run wrote is still in it. */
+  test("merges into the stanza it finds, ids and all", async () => {
+    await provision(environmentScope("replay", "staging"), true);
+
+    const stanza = await readStanza(workerDir, "staging");
+    expect(stanza?.d1_databases?.[0]?.binding).toBe("DB");
+    expect(stanza?.kv_namespaces?.[0]?.binding).toBe("CACHE");
+    expect(stanza?.r2_buckets?.[0]?.binding).toBe("ASSETS");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-board-staging" }]);
+  });
+
+  test("a project that does not declare it gets no binding, and nothing else changes", async () => {
+    await provision(environmentScope("replay", "staging"), false);
+
+    const stanza = await readStanza(workerDir, "staging");
+    expect(stanza?.services).toBeUndefined();
+    expect(stanza?.d1_databases?.[0]?.binding).toBe("DB");
   });
 });

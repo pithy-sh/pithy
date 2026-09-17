@@ -98,6 +98,26 @@ export interface ProjectConfig {
    * unvalidated `accountName` would reach a `join` as whatever they typed.
    */
   cloudflare?: unknown;
+  /**
+   * **Does one of this project's own Workers administer this project?** (#616)
+   *
+   * A Worker cannot fetch its own hostname: the subrequest loops back through the edge into the Worker it
+   * came from and hangs until Cloudflare answers 522, on a route that answers in a second and a half from
+   * outside. A deployment that points a management client at itself therefore has to dispatch through the
+   * runtime — `env.SELF.fetch(request)` — and the binding that makes that possible has to be in the
+   * configuration before any code can reach for it. Declaring this is what puts it there, in every stanza
+   * `pithy provision` generates, named for that environment's own script.
+   *
+   * **Declared, never inferred.** Nothing about a project's composition says whether it administers
+   * itself: composing the control-plane capability is what makes a Worker *administrable*, by anybody, and
+   * guessing from it would write a binding into every project that ships it.
+   *
+   * Typed `unknown` for the reason {@link ProjectConfig.environments} is: this file is the adopter's own
+   * TypeScript and `loadProject` imports it live, so a truthy `"yes"` would otherwise decide a binding
+   * silently, in whichever direction the reader's coercion happened to fall. {@link administersItself} is
+   * the gate. Absent means no.
+   */
+  administersItself?: unknown;
 }
 
 /**
@@ -183,6 +203,27 @@ export function loadProjectEnvironments(config: ProjectConfig): DeclaredEnvironm
     throw fromZodError(parsed.error, {
       message: `The \`environments\` declaration in pithy.config.ts is not valid. ${parsed.error.issues.map((issue) => issue.message).join(" ")}`,
       action: `Fix \`environments\` in the root pithy.config.ts. It is a list of deployed environment names, least-production first — e.g. ${JSON.stringify([...DEFAULT_ENVIRONMENTS])}. Changing it does not rename anything already provisioned.`,
+    });
+  }
+  return parsed.data;
+}
+
+/**
+ * Read and validate the root config's `administersItself` declaration (#616).
+ *
+ * Absent is no, which is what every project that has never thought about it means. A value that is not a
+ * boolean is refused rather than coerced: `"no"` is truthy, `0` is falsy, and either reading is a binding
+ * decided by the reader's arithmetic instead of by the adopter's sentence. The consequence of getting it
+ * wrong in the quiet direction is a 522 at runtime, which reads as somebody else's outage.
+ */
+export function administersItself(config: ProjectConfig): boolean {
+  if (config.administersItself === undefined || config.administersItself === null) return false;
+  const parsed = z.boolean().safeParse(config.administersItself);
+  if (!parsed.success) {
+    throw fromZodError(parsed.error, {
+      message: "The `administersItself` declaration in pithy.config.ts is not a boolean.",
+      action:
+        "Set `administersItself: true` in the root pithy.config.ts if one of this project's Workers administers this project, or leave it out. True binds SELF to each environment's own script, because a Worker cannot fetch its own hostname.",
     });
   }
   return parsed.data;
@@ -902,6 +943,9 @@ export async function loadProject(projectDir: string): Promise<ProjectConfig> {
   // provisioned project cannot be renamed — so a declaration that would not survive the naming rule
   // refuses the command that read the config, rather than the later call that composed a name from it.
   loadProjectEnvironments(value);
+  // And once more, for the same reason one level smaller: a declaration that decides what goes into every
+  // generated stanza must refuse the command that read it, not the provision that half-wrote a config.
+  administersItself(value);
   return value;
 }
 

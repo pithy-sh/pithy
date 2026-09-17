@@ -515,7 +515,11 @@ describe("renameWorker", () => {
   async function wranglerOf(name: string): Promise<{
     name?: string;
     vars?: Record<string, string>;
-    env?: Record<string, { vars?: Record<string, string> }>;
+    env?: Record<
+      string,
+      { name?: string; vars?: Record<string, string>; services?: { binding: string; service: string }[] }
+    >;
+    services?: { binding: string; service: string }[];
   }> {
     const raw = await readFile(join(dir, "apps", name, "wrangler.jsonc"), "utf8");
     return parse(raw) as unknown as {
@@ -557,6 +561,56 @@ describe("renameWorker", () => {
     expect(wrangler.env?.prod?.vars?.WORKER).toBe("board");
     const pkg = JSON.parse(await readFile(join(dir, "apps", "board", "package.json"), "utf8")) as { name: string };
     expect(pkg.name).toBe("acme-board");
+  });
+
+  /**
+   * **A rename moves every name it invalidates, and the self binding names a script (#616).**
+   *
+   * `services[].service` is the one target in a stanza that is a script name rather than a computed
+   * resource address, so it is the one a rename has to carry. Left behind, it names the orphan the
+   * rename's own `--force` message says stays live and serving: every self-administering request is
+   * dispatched into the previous deployment, silently.
+   */
+  test("moves the self binding with the script it names", async () => {
+    const workerDir = await scaffold("api");
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      `${JSON.stringify(
+        {
+          name: "acme-api",
+          vars: { ENVIRONMENT: "dev", PROJECT: "acme", WORKER: "api" },
+          env: {
+            staging: {
+              name: "acme-staging-api",
+              vars: { ENVIRONMENT: "staging", PROJECT: "acme", WORKER: "api" },
+              services: [
+                // A capability's own binding, naming another Worker: this rename does not move that one.
+                { binding: "WEB", service: "acme-staging-web" },
+                { binding: "SELF", service: "acme-staging-api" },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    await renameWorker({
+      projectDir: dir,
+      from: "api",
+      to: "board",
+      mainRoot: dir,
+      discoverWorkers: discover(dir, ["api"]),
+      probeDeployed: account(),
+    });
+
+    const wrangler = await wranglerOf("board");
+    expect(wrangler.env?.staging?.name).toBe("acme-staging-board");
+    expect(wrangler.env?.staging?.services).toEqual([
+      { binding: "WEB", service: "acme-staging-web" },
+      { binding: "SELF", service: "acme-staging-board" },
+    ]);
   });
 
   test("keeps the comments in wrangler.jsonc", async () => {

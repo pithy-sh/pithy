@@ -99,7 +99,12 @@ function ignored(path: string): boolean {
  * worker set. These cases assert resource creation, the manifest, and audit — the real resolver would
  * read `apps/` and each Worker's `pithy.config.ts`, which these bare fixtures deliberately do not have.
  */
-const noBackend = { migrate: async () => {}, seed: async () => {}, resolveWorkers: async () => [] };
+const noBackend = {
+  migrate: async () => {},
+  seed: async () => {},
+  resolveWorkers: async () => [],
+  administersItself: false,
+};
 
 describe("provisionFeature / deprovisionFeature", () => {
   let dir: string;
@@ -131,6 +136,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const r = runners();
 
     const report = await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities,
       identity,
@@ -248,6 +254,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities: [shared, collabOnly],
       identity,
@@ -293,6 +300,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const report = await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities: [withService],
       identity,
@@ -360,6 +368,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const report = await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities: [callsApi, callsWeb],
       identity,
@@ -410,6 +419,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const failure = await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities: [ghost],
       identity,
@@ -492,6 +502,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     stores.d1.set(featureResourceName(identity, "DB", "d1"), "pre-existing");
 
     await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities,
       identity,
@@ -543,6 +554,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     await writeFile(join(apiDir, "wrangler.jsonc"), '{\n  "name": "api"\n}\n');
 
     await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities,
       identity,
@@ -586,6 +598,7 @@ describe("provisionFeature / deprovisionFeature", () => {
     const before = snapshot(dir);
 
     await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities,
       identity,
@@ -675,6 +688,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name: "looks-legit", id: "prod-d1-uuid" }]);
 
       await provisionFeature({
+        administersItself: false,
         projectDir: dir,
         capabilities,
         identity,
@@ -720,6 +734,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       const { entries, store } = fakeStore();
 
       const report = await provisionFeature({
+        administersItself: false,
         projectDir: dir,
         capabilities: withSecrets,
         identity,
@@ -771,6 +786,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       ];
 
       const report = await provisionFeature({
+        administersItself: false,
         projectDir: dir,
         capabilities: kebab,
         identity,
@@ -811,6 +827,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         resolveWorkers: async () => [],
         migrate: async () => {},
         seed: async () => {},
+        administersItself: false,
       };
 
       await provisionFeature(options);
@@ -827,6 +844,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       entries.set("acme-staging-secrets-encryption-keys", "staging's");
 
       await provisionFeature({
+        administersItself: false,
         projectDir: dir,
         capabilities: withSecrets,
         identity,
@@ -883,6 +901,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         const { entries, store } = fakeStore();
 
         const report = await provisionFeature({
+          administersItself: false,
           projectDir: dir,
           capabilities: withRegistry,
           identity,
@@ -934,6 +953,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
           migrate: async () => {},
           seed: async () => {},
+          administersItself: false,
         };
 
         const first = await provisionFeature(options);
@@ -952,6 +972,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         const events: CliAuditEvent[] = [];
 
         await provisionFeature({
+          administersItself: false,
           projectDir: dir,
           capabilities: withRegistry,
           identity,
@@ -1117,6 +1138,7 @@ describe("a feature's Worker scripts", () => {
 
   const provision = (provisioners: ResourceProvisioners) =>
     provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities,
       identity,
@@ -1448,6 +1470,7 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
     const before = account.contents();
 
     await provisionFeature({
+      administersItself: false,
       projectDir: dir,
       capabilities: [...composed, callsApi],
       identity,

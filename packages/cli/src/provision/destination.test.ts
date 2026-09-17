@@ -118,7 +118,7 @@ describe("a provisioning run says which file it wrote, and whether that file is 
     { name: "replay-board", dir: boardDir, capabilities: [full] },
     { name: "replay-api", dir: apiDir, capabilities: [shared] },
   ];
-  const noBackend = { migrate: async () => {}, seed: async () => {} };
+  const noBackend = { migrate: async () => {}, seed: async () => {}, administersItself: false };
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-destination-"));

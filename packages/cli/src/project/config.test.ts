@@ -10,6 +10,7 @@ import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import {
+  administersItself,
   allCapabilities,
   classifyConfigLoadFailure,
   FreshCopyRefused,
@@ -842,6 +843,45 @@ describe("the project's environments declaration", () => {
       const dirA = await project(`export default { name: "acme", environments: ${declaration} };\n`);
       await expect(loadProject(dirA)).rejects.toBeInstanceOf(PithyError);
     }
+  });
+});
+
+/**
+ * The self-administration declaration (#616) — the project saying that one of its own Workers is the
+ * control plane it calls. Provisioning writes a `SELF` service binding into every stanza it generates for
+ * such a project, because a Worker cannot fetch its own hostname.
+ */
+describe("the project's self-administration declaration", () => {
+  async function project(source: string): Promise<string> {
+    const projectDir = join(dir, `s${Math.random().toString(36).slice(2)}`);
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "pithy.config.ts"), source);
+    return projectDir;
+  }
+
+  test("a project that says nothing administers nothing — the ordinary state of every project", async () => {
+    expect(administersItself(await loadProject(await project('export default { name: "acme" };\n')))).toBe(false);
+  });
+
+  test("a project that declares it reads back true", async () => {
+    const dirA = await project('export default { name: "acme", administersItself: true };\n');
+    expect(administersItself(await loadProject(dirA))).toBe(true);
+  });
+
+  test("declaring it off is a declaration too, and reads back false", async () => {
+    const dirA = await project('export default { name: "acme", administersItself: false };\n');
+    expect(administersItself(await loadProject(dirA))).toBe(false);
+  });
+
+  /**
+   * A truthy string that quietly meant "yes" — or quietly meant nothing — is the failure this validation
+   * exists to refuse. Nothing is inferred from a value that is not a boolean; the load says so instead.
+   */
+  test("a value that is not a boolean is refused on load, naming the field", async () => {
+    const dirA = await project('export default { name: "acme", administersItself: "yes" };\n');
+    const error = await loadProject(dirA).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload.message).toContain("administersItself");
   });
 });
 

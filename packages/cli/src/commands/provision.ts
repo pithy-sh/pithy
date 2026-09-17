@@ -14,6 +14,7 @@ import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
 import {
+  administersItself,
   loadProject,
   loadProjectCloudflare,
   loadProjectEnvironments,
@@ -507,6 +508,10 @@ async function provisionDeclared(
     // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
     // job, with its own gate, and it must not be something provisioning did on the way past.
     seedData: options.seed,
+    // Read from the root config this command already loaded, never from the shape of what it composes:
+    // composing the control plane makes a Worker administrable by anybody, and only the project can say
+    // that the client is itself (#616).
+    administersItself: administersItself(config),
     audit,
   });
   writeReport(report, {
@@ -532,6 +537,9 @@ async function provisionBranch(
   options: ProvisionRunOptions,
 ): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
+  // The same declaration, from the same file, for the environment that needs it most: a feature's stanza
+  // is regenerated on every run, so a hand-written entry never survives to the deploy (#616).
+  const selfAdministering = administersItself(await loadProject(projectDir));
   const scope = featureScope(identity);
   const resolved = workerSetOnce(projectDir, scope.stanza);
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
@@ -557,6 +565,7 @@ async function provisionBranch(
     ...(store ? { store } : {}),
     identity,
     provisioners,
+    administersItself: selfAdministering,
     resolveWorkers: workers,
     ...(progress ? { onProgress: progress } : {}),
     audit: await buildAudit(projectDir, capabilities, account),

@@ -108,6 +108,16 @@ export interface ProvisionFeatureOptions {
   identity: FeatureIdentity;
   /** The provisioners to use (`cloudflareProvisioners` over live CF clients in a real run). */
   provisioners: ResourceProvisioners;
+  /**
+   * Whether the project declares that it administers itself — forwarded verbatim, and required here for
+   * the reason it is required one layer down: it is the root config's sentence, and only the caller that
+   * loaded that file has read it.
+   *
+   * **A feature environment is where this matters most.** Its stanza is generated on every run, so an
+   * entry added by hand does not survive the next `pithy provision --feature`, and its script name is
+   * composed from the branch rather than typed.
+   */
+  administersItself: boolean;
   /** Migration runner seam (default: `migrateProject`). */
   migrate?: BackendRunner;
   /** Seed runner seam (default: `seedProject`). */
@@ -173,6 +183,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     provisioners: options.provisioners,
     // A feature environment is created empty; without fixtures there is nothing in it to check.
     seedData: true,
+    administersItself: options.administersItself,
     record: {
       load: async () => {
         const existing = await readManifest(path);
