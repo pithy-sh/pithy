@@ -8,6 +8,7 @@ import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/sr
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
+import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import {
   ANY_VERIFIED_CALLER,
   KEYS_ROTATE_SCOPE,
@@ -193,6 +194,7 @@ async function registerConnection(publicKey: Ed25519PublicJwk): Promise<void> {
         issuer: ISSUER,
         workerUrl: "https://worker.example.test",
         basePath: "/control-plane",
+        managementOrigin: null,
         scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
         keys: [
           {
@@ -296,6 +298,7 @@ beforeEach(async () => {
       // adds the `base_path` column the connection row carries.
       migrations: {
         "0001_init": controlplane_0001_init,
+        "0002_management_origin": controlplane_0002_management_origin,
       },
     },
   ]).app;

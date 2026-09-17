@@ -93,7 +93,10 @@ describe("controlplane capability", () => {
     const app = controlplane().databases?.app;
     expect(app?.binding).toBe("DB");
     expect(app?.migrationOrder).toBe(CONTROLPLANE_MIGRATION_ORDER);
-    expect(Object.keys(app?.migrations ?? {})).toEqual(["0001_init"]);
+    // Append-only, and the order is the order they run in. `0002` adds the origin a connection was
+    // registered against (#614), which nothing on this side reads — it is the operator's side that
+    // needs it, so their commands stop asking whichever dashboard a flag's default names.
+    expect(Object.keys(app?.migrations ?? {})).toEqual(["0001_init", "0002_management_origin"]);
     expect(Object.keys(app?.tables ?? {})).toEqual([CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE]);
   });
 

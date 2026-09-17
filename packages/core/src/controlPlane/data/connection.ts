@@ -105,6 +105,13 @@ export const ControlPlaneConnection = z
       .describe(
         "Where this Worker mounts the control-plane seam, captured at connect from its resolved config. Stored beside `workerUrl` because the two together fully determine the manifest address — and this is the one part of it a client cannot discover, since it *is* the manifest's own address. Defaulted rather than required so a connection registered before the column existed still parses, reading as the default it was necessarily using.",
       ),
+    managementOrigin: z
+      .url()
+      .nullable()
+      .default(null)
+      .describe(
+        "Where the management client that registered this connection answers — the origin the CLI calls for a verify, a rotation or a disconnect. Stored because it is not derivable: `issuer` is what that client *signs as*, and nothing says a dashboard's API answers at its own `iss`. Null for a connection registered before this column, which reads as the issuer rather than as the hosted dashboard — an older row is still a row about somebody's own deployment. Nothing on the Worker's side reads it; verification cares about `issuer` alone.",
+      ),
     scopes: sqliteJson(z.array(ControlPlaneScope)).describe(
       "The operations this connection was granted, stored and enforced on the adopter's side. Enforced only by the caller, a scope would not be a limit at all.",
     ),

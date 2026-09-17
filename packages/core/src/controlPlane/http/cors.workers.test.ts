@@ -9,6 +9,7 @@ import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { controlplane } from "../capability";
 import { controlplane_0001_init } from "../migrations/0001_init";
+import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
 import { CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { requireControlPlane } from "./guard";
 
@@ -71,6 +72,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_controlplane_connections");
   await env.DB.exec("DROP TABLE IF EXISTS pithy_controlplane_replays");
   await controlplane_0001_init.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
+  await controlplane_0002_management_origin.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
 });
 
 describe("the preflight, on the wire", () => {
