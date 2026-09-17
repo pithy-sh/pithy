@@ -26,8 +26,9 @@ const UNBOUND: SelfBindingCheck = {
   state: "unbound",
   declared: true,
   missing: [
-    { worker: "board", env: "staging" },
-    { worker: "board", env: "prod" },
+    { worker: "board", env: "staging", boundTo: null, deploysAs: "replay-board-staging" },
+    // The other fault the same block carries: an entry that names a script this stanza does not deploy as.
+    { worker: "board", env: "prod", boundTo: "replay-board-prod", deploysAs: "replay-prod-board" },
   ],
 };
 
@@ -40,8 +41,11 @@ describe("a self-administering project with an unbound stanza", () => {
   test("names each stanza, and says what the binding is for", async () => {
     const text = renderDoctorText(await reportWith(UNBOUND), "/home/u");
     expect(text).toContain("staging binds no SELF");
-    expect(text).toContain("prod binds no SELF");
     expect(text).toContain("a Worker cannot fetch its own hostname");
+    // The second fault reads differently on purpose: both script names, so an operator sees which edit
+    // moved one and not the other.
+    expect(text).toContain("prod binds SELF to replay-board-prod");
+    expect(text).toContain("deploys as replay-prod-board");
   });
 
   test("names the command that writes it", async () => {
@@ -56,14 +60,29 @@ describe("a self-administering project with an unbound stanza", () => {
 
   test("carries the finding into --json, sentence and all", async () => {
     const payload = renderDoctorJson(await reportWith(UNBOUND)) as {
-      selfBinding: { state: string; declared: boolean; missing: { worker: string; env: string; detail: string }[] };
+      selfBinding: {
+        state: string;
+        declared: boolean;
+        missing: { worker: string; env: string; boundTo: string | null; deploysAs: string | null; detail: string }[];
+      };
     };
     expect(payload.selfBinding.state).toBe("unbound");
     expect(payload.selfBinding.declared).toBe(true);
     expect(payload.selfBinding.missing[0]).toEqual({
       worker: "board",
       env: "staging",
+      boundTo: null,
+      deploysAs: "replay-board-staging",
       detail: expect.stringContaining("SELF"),
+    });
+    // What it names and what it should name, both on the wire — a client showing the sentence alone is
+    // not the only reader, and the pair is the whole finding.
+    expect(payload.selfBinding.missing[1]).toEqual({
+      worker: "board",
+      env: "prod",
+      boundTo: "replay-board-prod",
+      deploysAs: "replay-prod-board",
+      detail: expect.stringContaining("replay-prod-board"),
     });
   });
 });

@@ -4,6 +4,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
@@ -336,12 +337,19 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
 }
 
 /**
- * The `wrangler.jsonc` keys a rename rewrites: the deployed script name, and the `WORKER` var in every
- * environment stanza. Everything else in the file belongs to the adopter and is left exactly as it is.
+ * The `wrangler.jsonc` keys a rename rewrites: the deployed script name, the `WORKER` var in every
+ * environment stanza, and the self binding's target. Everything else in the file belongs to the adopter
+ * and is left exactly as it is.
+ *
+ * **`services` is here for one entry and no other (#616).** A capability's service binding names another
+ * Worker, which this rename does not move; the self binding names *this* Worker's own script, composed by
+ * provisioning from the very `name` being rewritten two lines below. Leaving it behind points a
+ * self-administering deployment at the orphan this command's own `--force` message says stays live.
  */
 interface RenamableWrangler {
   name?: string;
   vars?: Record<string, string | undefined>;
+  services?: { binding?: string; service?: string }[];
   env?: Record<string, RenamableWrangler | undefined>;
 }
 
@@ -568,6 +576,10 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
     // Set, never added: a stanza that declares no `WORKER` declares nothing this rename can invalidate,
     // and inventing the var would put a binding-shaped opinion into a config that never asked for one.
     if (stanza.vars?.WORKER !== undefined) stanza.vars.WORKER = options.to;
+    // The self binding follows the script it names, by the same rule and through the same helper — a
+    // target that does not carry the worker segment is one this rename has no claim on.
+    const self = stanza.services?.find((entry) => entry.binding === SELF_BINDING);
+    if (self?.service !== undefined) self.service = renamedScript(self.service, from, options.to) ?? self.service;
   }
   await writeWranglerConfig(to, config);
   await renamePackage(to, from, options.to);

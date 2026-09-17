@@ -54,8 +54,8 @@ describe("checkSelfBinding", () => {
 
     expect(check.state).toBe("unbound");
     expect(check.missing).toEqual([
-      { worker: "board", env: "staging" },
-      { worker: "board", env: "prod" },
+      { worker: "board", env: "staging", boundTo: null, deploysAs: "replay-board-staging" },
+      { worker: "board", env: "prod", boundTo: null, deploysAs: "replay-board-prod" },
     ]);
   });
 
@@ -96,7 +96,66 @@ describe("checkSelfBinding", () => {
       }),
     );
 
-    expect(check.missing).toEqual([{ worker: "board", env: "staging" }]);
+    expect(check.missing).toEqual([
+      { worker: "board", env: "staging", boundTo: null, deploysAs: "replay-board-staging" },
+    ]);
+  });
+
+  /**
+   * **The target, not merely the name.** A binding that names a script this stanza does not deploy as is
+   * the fault the writer composes `service` from `stanza.name` to prevent: it provisions clean, reports
+   * success, and dispatches into another Worker — or nothing — at runtime. `pithy worker rename` and a
+   * hand-edited `env.<name>.name` both produce it, so the reader has to establish it rather than assume
+   * the writer was the last thing to touch the file.
+   */
+  test("a binding naming a script this stanza does not deploy as is not a binding", async () => {
+    const check = await checkSelfBinding(
+      await project(", administersItself: true", {
+        // The name the stanza carried before somebody renamed the worker, left behind in `services`.
+        staging: { name: "replay-staging-board", services: [{ binding: "SELF", service: "replay-board-staging" }] },
+      }),
+    );
+
+    expect(check.state).toBe("unbound");
+    expect(check.missing).toEqual([
+      { worker: "board", env: "staging", boundTo: "replay-board-staging", deploysAs: "replay-staging-board" },
+    ]);
+  });
+
+  /** An entry with no target at all binds nothing, however it is named. */
+  test("a SELF entry naming no service is unbound", async () => {
+    const check = await checkSelfBinding(
+      await project(", administersItself: true", {
+        staging: { name: "replay-board-staging", services: [{ binding: "SELF" }] },
+      }),
+    );
+
+    expect(check.state).toBe("unbound");
+    expect(check.missing).toEqual([
+      { worker: "board", env: "staging", boundTo: null, deploysAs: "replay-board-staging" },
+    ]);
+  });
+
+  /**
+   * A stanza naming no script of its own deploys as wrangler's `<top-level>-<env>`, so that — not the
+   * absence of a `name` key — is what the binding has to agree with.
+   */
+  test("a stanza that names no script is held to wrangler's own fallback", async () => {
+    const agrees = await checkSelfBinding(
+      await project(", administersItself: true", {
+        staging: { services: [{ binding: "SELF", service: "replay-board-staging" }] },
+      }),
+    );
+    expect(agrees).toEqual({ state: "ok", declared: true, missing: [] });
+
+    const disagrees = await checkSelfBinding(
+      await project(", administersItself: true", {
+        staging: { services: [{ binding: "SELF", service: "replay-board" }] },
+      }),
+    );
+    expect(disagrees.missing).toEqual([
+      { worker: "board", env: "staging", boundTo: "replay-board", deploysAs: "replay-board-staging" },
+    ]);
   });
 
   /** A diagnostic has to work in the broken project it exists to diagnose. */
@@ -108,8 +167,26 @@ describe("checkSelfBinding", () => {
   });
 
   test("the sentence names the remedy and the reason", () => {
-    const sentence = describeSelfBinding({ worker: "board", env: "staging" });
+    const sentence = describeSelfBinding({
+      worker: "board",
+      env: "staging",
+      boundTo: null,
+      deploysAs: "replay-board-staging",
+    });
     expect(sentence).toContain("SELF");
     expect(sentence).toContain("staging");
+  });
+
+  /** Two faults, two sentences: an absent binding and a misdirected one want different remedies read. */
+  test("a misdirected binding says what it names and what the stanza deploys as", () => {
+    const sentence = describeSelfBinding({
+      worker: "board",
+      env: "staging",
+      boundTo: "replay-board-staging",
+      deploysAs: "replay-staging-board",
+    });
+
+    expect(sentence).toContain("replay-board-staging");
+    expect(sentence).toContain("replay-staging-board");
   });
 });

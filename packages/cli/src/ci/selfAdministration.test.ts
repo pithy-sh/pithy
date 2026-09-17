@@ -102,6 +102,10 @@ function mentionsSelfBinding(source: string): boolean {
 const SELF_BINDING_MODULES = new Map<string, string>([
   ["provision/wranglerEnv.ts", "the writer — it composes the entry from the `name` it writes in the same edit"],
   ["doctor/selfBinding.ts", "the reader — it reports a declared project whose stanza does not carry it"],
+  [
+    "project/workerCommand.ts",
+    "the mover — a rename carries the entry to the renamed script through `renamedScript`, the same helper that moves the `name` it was composed from. It composes nothing: a target that does not carry the worker segment is left alone.",
+  ],
 ]);
 
 describe("a self-administering project's stanza binds SELF to its own script", () => {
@@ -164,6 +168,32 @@ describe("a self-administering project's stanza binds SELF to its own script", (
       };
       expect(written.env[scope.stanza]?.services).toBeUndefined();
     }
+  });
+
+  /**
+   * **The one seam between the declaration and the binding, held to reading it (#616).**
+   *
+   * Everything downstream takes `administersItself` as a parameter, and every test that exercises the
+   * writer passes that parameter itself — so both command-layer reads could be replaced with `false` and
+   * the whole suite stays green while the feature ships inert. Only `pithy doctor` would say anything,
+   * and it would point an adopter at the command that no longer works.
+   *
+   * Source text, not behavior, and that is the honest reach: driving `runProvision` wants a project, an
+   * account and a store. What this establishes is that neither call site is a literal — which is exactly
+   * the edit that made the feature disappear in the reviewer's plant.
+   */
+  test("both provisioning paths read the declaration rather than assuming it", async () => {
+    const source = blankComments(await readFile(join(CLI_SRC, "commands", "provision.ts"), "utf8"));
+    // Calls only: the reader's own name followed by `(`. The import and the option keys it is passed
+    // under are mentions of the same word and say nothing about whether anything reads the file.
+    const reads = [...source.matchAll(/\badministersItself\(/g)].length;
+
+    // One per provisioning path. Fewer means a path stopped asking the project and started assuming.
+    expect(reads, "`pithy provision` must read administersItself for both the --env and --feature paths.").toBe(2);
+    expect(source).toContain("administersItself: administersItself(config)");
+    expect(source).toContain("administersItself(await loadProject(projectDir))");
+    // A literal either way is the plant this exists to catch: the option hard-wired on or off.
+    expect(source).not.toMatch(/administersItself:\s*(true|false)\b/);
   });
 
   test("only these modules name the self binding", () => {
