@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -101,6 +101,61 @@ describe("every capability reports its package version", () => {
   });
 });
 
+/** The specifier a capability module imports `PACKAGE_NAME` from, or `undefined` if it imports none. */
+function importedPackageNameSpecifier(source: string): string | undefined {
+  return /import\s*\{[^}]*\bPACKAGE_NAME\b[^}]*\}\s*from\s*"([^"]+)"/.exec(source)?.[1];
+}
+
+/**
+ * Whether `specifier`, written in `capabilityFile`, is `packageDir`'s own stamped module.
+ *
+ * States what must be true — the import resolves to this package's `src/version.generated` — rather
+ * than matching the spellings of imports that must not be. The first attempt matched shape, and
+ * shape cannot see the difference: `.` is an ordinary character in a directory name, so every `..`
+ * in `../../core/src/version.generated` matched the same "descend one level" group a real
+ * subdirectory does, and a sibling's stamp passed a rule written to exclude exactly it. Resolution
+ * is the question the field is actually asking, so the rule asks it.
+ *
+ * A non-relative specifier is rejected outright rather than resolved: a bare one is another
+ * package's public entry by definition, and an absolute one names a path no other checkout has.
+ */
+function resolvesToOwnStamp(capabilityFile: string, packageDir: string, specifier: string): boolean {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return false;
+  return resolve(dirname(capabilityFile), specifier) === resolve(packageDir, "src/version.generated");
+}
+
+describe("the own-package rule asks where the import lands, not how it is spelled", () => {
+  const audit = { file: join(PACKAGES, "audit/src/capability.ts"), dir: join(PACKAGES, "audit") };
+  const core = { file: join(PACKAGES, "core/src/controlPlane/capability.ts"), dir: join(PACKAGES, "core") };
+
+  it("accepts the stamp each capability actually imports", () => {
+    expect(resolvesToOwnStamp(audit.file, audit.dir, "./version.generated")).toBe(true);
+    expect(resolvesToOwnStamp(core.file, core.dir, "../version.generated")).toBe(true);
+  });
+
+  it("rejects a sibling package's stamp, however many segments it walks", () => {
+    // The defect this rule was written for, and the one the first spelling-based rule let through:
+    // `.` is an ordinary character in a directory name, so a `..` segment is indistinguishable from
+    // a descent by any pattern that matches path *shape*. Resolving is what tells them apart.
+    for (const specifier of [
+      "../../core/src/version.generated",
+      "./../../core/src/version.generated",
+      "../../../packages/core/src/version.generated",
+    ]) {
+      expect(resolvesToOwnStamp(audit.file, audit.dir, specifier), specifier).toBe(false);
+    }
+    expect(resolvesToOwnStamp(core.file, core.dir, "../../../audit/src/version.generated")).toBe(false);
+  });
+
+  it("rejects a path inside the package that is not the stamp, and anything not relative", () => {
+    // `../version.generated` is `packages/version.generated` from audit — outside the package
+    // entirely, and still the shape of a well-behaved relative import.
+    expect(resolvesToOwnStamp(audit.file, audit.dir, "../version.generated")).toBe(false);
+    expect(resolvesToOwnStamp(audit.file, audit.dir, "@pithy-sh/core/src/version.generated")).toBe(false);
+    expect(resolvesToOwnStamp(audit.file, audit.dir, join(PACKAGES, "core/src/version.generated"))).toBe(false);
+  });
+});
+
 /**
  * And the package that version belongs to (#626).
  *
@@ -120,7 +175,10 @@ describe("every capability reports its package version", () => {
  * passes while the statement is false.
  *
  * Shares {@link capabilityPackages} with the versions above deliberately. Two enumerators would drift,
- * and a gate that enumerates a hand-written list goes stale the day a capability ships.
+ * and a gate that enumerates a hand-written list goes stale the day a capability ships. The middle
+ * check reads through {@link resolvesToOwnStamp}, which the block above holds to the spellings that
+ * must and must not pass — a repo-wide gate is only ever green here, so nothing else would show that
+ * its rule can still fail.
  */
 describe("every capability reports the package that supplies it", () => {
   const packages = capabilityPackages();
@@ -142,8 +200,8 @@ describe("every capability reports the package that supplies it", () => {
     const foreign: string[] = [];
     for (const pkg of packages) {
       const source = readFileSync(pkg.file, "utf8");
-      const imported = /import\s*\{[^}]*\bPACKAGE_NAME\b[^}]*\}\s*from\s*"([^"]+)"/.exec(source)?.[1];
-      if (imported === undefined || !/^\.{1,2}(\/[\w.-]+)*\/version\.generated$/.test(imported)) {
+      const imported = importedPackageNameSpecifier(source);
+      if (imported === undefined || !resolvesToOwnStamp(pkg.file, join(PACKAGES, pkg.name), imported)) {
         foreign.push(`${pkg.name} (${imported ?? "no import"})`);
       }
     }
