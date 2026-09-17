@@ -5,6 +5,7 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
+import { claimAccountRemoval, markSessionEnded, removalWasClaimed, sessionEndedDuring } from "../audit/evidence";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
@@ -127,6 +128,34 @@ function refuseUnsafeProfileFields(user: { name?: unknown; image?: unknown }): v
   const refusal = refuseUnsafeProfile(user);
   if (!refusal) return;
   throw new APIError("BAD_REQUEST", { code: "INVALID_PROFILE_FIELD", message: refusal.message });
+}
+
+/** The endpoint context a database hook is handed, narrowed to the two things attribution needs. */
+interface HookContext {
+  headers?: Headers;
+  context?: { session?: { user?: { id?: string } } | null };
+}
+
+/**
+ * Who caused a row change, read from the endpoint context Better Auth hands a database hook.
+ *
+ * **The context is absent as often as it is present, and that absence is information.** A hook reached
+ * from `/unlink-account` gets the full endpoint context with the caller's session on it; one reached
+ * from the user-deletion cascade, or from an admin path calling `internalAdapter` directly, gets `null`.
+ * So `fromRequest` distinguishes *nobody was calling* from *a caller with no session*, which is the
+ * difference between `system` and `anonymous` in the row — and it is what stops a cascade from being
+ * written as the account owner's own action, which is what #627's first cut did.
+ */
+function callerOf(ctx: HookContext | null | undefined): {
+  callerId: string | null;
+  fromRequest: boolean;
+  headers: Headers | undefined;
+} {
+  return {
+    callerId: ctx?.context?.session?.user?.id ?? null,
+    fromRequest: Boolean(ctx),
+    headers: ctx?.headers,
+  };
 }
 
 /**
@@ -324,12 +353,31 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
          */
         create: {
           after: async (account, ctx) => {
-            await emitProviderAccountChanged(deps.emit, { change: "link", account, headers: ctx?.headers });
+            await emitProviderAccountChanged(deps.emit, {
+              change: "link",
+              account,
+              ...callerOf(ctx),
+            });
           },
         },
         delete: {
+          /**
+           * **The claim, not the emit.** `deleteWithHooks` fires `delete.after` on the row it read
+           * rather than on a row it removed, so two concurrent unlinks of the same account both reach
+           * `after` and the trail double-counts one removal. `claimAccountRemoval` issues the delete
+           * itself and only the caller whose statement removed the row goes on to emit — see
+           * `../audit/evidence.ts` for why pre-empting Better Auth's delete is safe at this position.
+           */
+          before: async (account) => {
+            await claimAccountRemoval(deps.db, account);
+          },
           after: async (account, ctx) => {
-            await emitProviderAccountChanged(deps.emit, { change: "unlink", account, headers: ctx?.headers });
+            if (!removalWasClaimed(account)) return;
+            await emitProviderAccountChanged(deps.emit, {
+              change: "unlink",
+              account,
+              ...callerOf(ctx),
+            });
           },
         },
       },
@@ -386,7 +434,11 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
            * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
            * reason the audit emit does: the thing it reports has already happened.
            */
-          after: async (session) => {
+          after: async (session, ctx) => {
+            // **The evidence `/sign-out` has none of.** That endpoint answers 200 whether or not it
+            // found a session to delete, so the path alone cannot say whether anybody was signed out.
+            // A session row disappearing can, and this is where that is visible (#627).
+            markSessionEnded((ctx as { context?: unknown } | null | undefined)?.context, session.userId);
             if (!deps.onSessionRevoked) return;
             try {
               await deps.onSessionRevoked({ id: String(session.id), userId: String(session.userId) });
@@ -422,8 +474,17 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
         await emitProviderUnavailable(deps.emit, { provider, headers: ctx.headers });
         throw providerUnavailable(provider);
       }),
-      // Emit audit events for every completed auth request: sign-in (+device) from the new session,
-      // plus the send/sign-out/token/OAuth events by path. Endpoint-scoped, so a rotation never emits.
+      /**
+       * Emit audit events for an auth request: sign-in (+device) from the new session, plus the
+       * send/sign-out/token event by path. Endpoint-scoped, so a rotation never emits.
+       *
+       * **`returned` is passed because this hook runs on refusals too.** Better Auth catches an
+       * endpoint's `APIError` into a result and dispatches the `after` hooks over it
+       * (`better-auth/dist/api/dispatch.mjs`), so a 401 `/token` reaches here looking exactly like one
+       * that minted a token — and wrote `auth/token_refresh outcome=success` for a request that was
+       * refused. `ctx.context.returned` is the only thing that tells them apart, and the judgment is
+       * `emitAfterRequest`'s so it is made once for every path rather than per wiring.
+       */
       after: createAuthMiddleware(async (ctx) => {
         const newSession = ctx.context.newSession;
         await emitAfterRequest(deps.emit, {
@@ -437,6 +498,8 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               }
             : null,
           currentUserId: ctx.context.session?.user?.id ?? null,
+          returned: ctx.context.returned,
+          endedSession: sessionEndedDuring(ctx.context),
         });
       }),
     },

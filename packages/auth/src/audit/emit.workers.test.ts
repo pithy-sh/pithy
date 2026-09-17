@@ -146,10 +146,32 @@ async function signIn(emit: AuditEmit): Promise<{ token: string; userId: string 
   return { token: signedIn.token, userId: signedIn.user.id };
 }
 
+/**
+ * Every column on the account row that must never reach the trail, each planted with a value nothing
+ * else in the fixture could produce.
+ *
+ * **All five, because four of them were null.** The first cut of the no-token gate planted `accessToken`
+ * alone and asserted the serialized payload against all five — so the four that were never written
+ * passed whatever the emitter did with them. A gate whose subject is absent is not a gate.
+ */
+const SENSITIVE_COLUMNS = {
+  accessToken: "ya29-provider-access-token",
+  refreshToken: "1ff-provider-refresh-token",
+  idToken: "eyJ-provider-id-token",
+  scope: "openid email profile https://www.googleapis.com/auth/drive",
+  password: "argon2-hash-that-should-not-exist-here",
+} as const;
+
 /** Create one account row the way the OAuth callback does — through `internalAdapter`, over real D1. */
 async function createAccountRow(
   emit: AuditEmit,
-  row: { userId: string; providerId: string; accountId: string; issuer: string; accessToken?: string },
+  row: {
+    userId: string;
+    providerId: string;
+    accountId: string;
+    issuer: string;
+    sensitive?: boolean;
+  },
 ): Promise<{ id: string }> {
   const ctx = await instance(emit).auth.$context;
   const created = await ctx.internalAdapter.createAccount({
@@ -157,10 +179,37 @@ async function createAccountRow(
     providerId: row.providerId,
     accountId: row.accountId,
     issuer: row.issuer,
-    ...(row.accessToken ? { accessToken: row.accessToken } : {}),
+    ...(row.sensitive ? SENSITIVE_COLUMNS : {}),
   });
   if (!created) throw new Error("account row not created");
   return { id: String(created.id) };
+}
+
+/** Sign in over HTTP so the response carries a session cookie — the only credential `/sign-out` reads. */
+async function signInForCookie(emit: AuditEmit): Promise<{ cookie: string; userId: string }> {
+  const { auth, mailbox } = instance(emit);
+  await auth.api.sendVerificationOTP({ body: { email: "c@test.com", type: "sign-in" }, headers: new Headers() });
+  const otp = mailbox.find((m) => m.template === "otp");
+  if (!otp?.code) throw new Error("no OTP");
+  const res = await buildApp(emit).request(
+    "/auth/sign-in/email-otp",
+    {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ email: "c@test.com", otp: otp.code }),
+    },
+    appEnv(),
+  );
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie) throw new Error(`no session cookie on sign-in (${res.status})`);
+  const cookie = setCookie
+    .split(/,(?=[^;]+?=)/)
+    .map((c) => c.split(";")[0]?.trim())
+    .filter((c): c is string => Boolean(c))
+    .join("; ");
+  const body = await res.json<{ user?: { id?: string } }>();
+  if (!body.user?.id) throw new Error("no user on sign-in");
+  return { cookie, userId: body.user.id };
 }
 
 async function accountRows(): Promise<{ id: string; provider_id: string }[]> {
@@ -227,11 +276,39 @@ describe("the provider-link trail", () => {
     const linked = events.find((e) => e.action === "auth/oauth_linked");
     expect(linked).toMatchObject({
       outcome: "success",
-      actorType: "user",
-      actorId: userId,
       resourceType: "account",
       resourceId: account.id,
-      metadata: { provider: "google" },
+      // Whose link it is. Not `actorId`: the two answer different questions and are allowed to disagree.
+      metadata: { provider: "google", userId },
+    });
+  });
+
+  test("a first social sign-up is a link, and the trail says so", async () => {
+    // **A decision, pinned rather than left to the reading.** The code #627 replaced refused to map
+    // `/callback/:id` because "mapping it here would mislabel every first sign-up as a link" — true of a
+    // *path*, which cannot tell a sign-up from a link. From the row it stops mattering: `oauth_linked`
+    // claims a provider can now sign in as this user, and a first social sign-up is exactly when that
+    // becomes true. So the first account row a brand-new user ever gets emits it, like any other.
+    const { emit, events } = capturingEmit();
+    const ctx = await instance(emit).auth.$context;
+    const user = await ctx.internalAdapter.createUser(
+      { email: "first@test.com", name: "First", emailVerified: true },
+      { method: "oauth", oauth: { providerId: "google", profile: {} } },
+    );
+    expect(events.map((e) => e.action)).not.toContain("auth/oauth_linked");
+
+    const account = await createAccountRow(emit, {
+      userId: String(user.id),
+      providerId: "google",
+      accountId: "google-sub-first",
+      issuer: "https://accounts.google.com",
+    });
+
+    expect(events.filter((e) => e.action === "auth/oauth_linked")).toHaveLength(1);
+    expect(events.find((e) => e.action === "auth/oauth_linked")).toMatchObject({
+      outcome: "success",
+      resourceId: account.id,
+      metadata: { provider: "google", userId: String(user.id) },
     });
   });
 
@@ -286,9 +363,10 @@ describe("the provider-link trail", () => {
     });
   });
 
-  test("neither event carries a provider token", async () => {
-    // The account row holds the provider's access token; the trail is longer-lived and queryable, and
-    // must not become a second place that token is kept.
+  test("neither event carries anything sensitive off the row", async () => {
+    // The account row holds the provider's access, refresh and id tokens, the granted scopes and Better
+    // Auth's password column. The trail is longer-lived and queryable, and must not become a second
+    // place any of them is kept — so every one of them is on the row when the events are written.
     const { emit, events } = capturingEmit();
     const { token, userId } = await signIn(emit);
     const account = await createAccountRow(emit, {
@@ -296,8 +374,20 @@ describe("the provider-link trail", () => {
       providerId: "google",
       accountId: "google-sub-1",
       issuer: "https://accounts.google.com",
-      accessToken: "ya29-provider-access-token",
+      sensitive: true,
     });
+
+    // The plant is on the row, not only in this test's intention — otherwise four of the five
+    // assertions below pass because the column was never written.
+    const stored = await env.DB.prepare(
+      "select access_token, refresh_token, id_token, scope, password from pithy_auth_accounts where id = ?",
+    )
+      .bind(account.id)
+      .first<Record<string, string | null>>();
+    expect(Object.values(stored ?? {}).filter((v) => typeof v === "string")).toHaveLength(
+      Object.keys(SENSITIVE_COLUMNS).length,
+    );
+
     await buildApp(emit).request(
       "/auth/unlink-account",
       {
@@ -311,8 +401,171 @@ describe("the provider-link trail", () => {
     const provider = events.filter((e) => e.action === "auth/oauth_linked" || e.action === "auth/oauth_unlinked");
     expect(provider).toHaveLength(2);
     const serialized = JSON.stringify(provider);
-    expect(serialized).not.toContain("ya29-provider-access-token");
+    for (const planted of Object.values(SENSITIVE_COLUMNS)) expect(serialized).not.toContain(planted);
     expect(serialized).not.toContain("u@test.com");
     expect(serialized).not.toContain(token);
+  });
+});
+
+describe("who the trail says did it", () => {
+  test("an unlink the account owner drove is theirs, with the request they made it from", async () => {
+    const { emit, events } = capturingEmit();
+    const { token, userId } = await signIn(emit);
+    const account = await createAccountRow(emit, {
+      userId,
+      providerId: "google",
+      accountId: "google-sub-1",
+      issuer: "https://accounts.google.com",
+    });
+
+    const res = await buildApp(emit).request(
+      "/auth/unlink-account",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "cf-connecting-ip": "198.51.100.9",
+          "user-agent": "owners-browser/1",
+        },
+        body: JSON.stringify({ accountId: account.id }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+
+    expect(events.find((e) => e.action === "auth/oauth_unlinked")).toMatchObject({
+      actorType: "user",
+      actorId: userId,
+      ip: "198.51.100.9",
+      userAgent: "owners-browser/1",
+      metadata: { provider: "google", userId },
+    });
+  });
+
+  test("the user-delete cascade is not the account owner's own action", async () => {
+    // **The cascade this change advertises, driven rather than described.** `delete.after` fires on
+    // every removal, and `internalAdapter.deleteUser` drops every account a user holds. Recorded as the
+    // owner's action it says that person detached their own providers — from whatever address the
+    // operator who deleted them was calling from. An audit trail that misattributes an actor is worse
+    // than one that is silent, because it reads as evidence.
+    const { emit, events } = capturingEmit();
+    const { userId } = await signIn(emit);
+    const account = await createAccountRow(emit, {
+      userId,
+      providerId: "google",
+      accountId: "google-sub-1",
+      issuer: "https://accounts.google.com",
+    });
+    events.length = 0;
+
+    const ctx = await instance(emit).auth.$context;
+    await ctx.internalAdapter.deleteUser(userId);
+
+    // The cascade happened…
+    expect(await accountRows()).toHaveLength(0);
+    // …and the trail records it, which it did not before #627.
+    const unlinked = events.filter((e) => e.action === "auth/oauth_unlinked");
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0]).toMatchObject({
+      outcome: "success",
+      actorType: "system",
+      resourceType: "account",
+      resourceId: account.id,
+      metadata: { provider: "google", userId },
+    });
+    // Nobody called, so nobody is named and no request is borrowed to stand in for one.
+    expect(unlinked[0]?.actorId ?? null).toBeNull();
+    expect(unlinked[0]?.ip ?? null).toBeNull();
+    expect(unlinked[0]?.userAgent ?? null).toBeNull();
+  });
+
+  test("two concurrent unlinks of one account emit oauth_unlinked once", async () => {
+    // Better Auth's `deleteWithHooks` reads the row, deletes it, then runs `delete.after` gated on the
+    // row it *read* — so both callers reach the hook and one removal is recorded twice. A trail that
+    // double-counts is one somebody will reconcile against and lose an afternoon to.
+    const { emit, events } = capturingEmit();
+    const { userId } = await signIn(emit);
+    const account = await createAccountRow(emit, {
+      userId,
+      providerId: "google",
+      accountId: "google-sub-1",
+      issuer: "https://accounts.google.com",
+    });
+    events.length = 0;
+
+    const ctx = await instance(emit).auth.$context;
+    await Promise.all([ctx.internalAdapter.deleteAccount(account.id), ctx.internalAdapter.deleteAccount(account.id)]);
+
+    expect(await accountRows()).toHaveLength(0);
+    expect(events.filter((e) => e.action === "auth/oauth_unlinked")).toHaveLength(1);
+  });
+});
+
+describe("a refused request is never recorded as a success", () => {
+  test("GET /token with no credential answers 401 and records a denial", async () => {
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(emit).request("/auth/token", { method: "GET" }, appEnv());
+
+    expect(res.status).toBe(401);
+    const written = events.filter((e) => e.action === "auth/token_refresh");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+  });
+
+  test("an invalid address answers 400 and records the send as denied", async () => {
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(emit).request(
+      "/auth/email-otp/send-verification-otp",
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify({ email: "not-an-email", type: "sign-in" }),
+      },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(400);
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+  });
+
+  test("POST /sign-out with no session signs nobody out and records nothing", async () => {
+    // This one answers 200. The endpoint is not lying — it deleted every session it found, which was
+    // none. `auth/signout success` was the lie, and the evidence against it is a session row going away.
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(emit).request(
+      "/auth/sign-out",
+      { method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" }, body: "{}" },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(events.map((e) => e.action)).not.toContain("auth/signout");
+  });
+
+  test("a real sign-out still records one", async () => {
+    // The other half, and the one that stops "record nothing" from being the fix.
+    const { emit, events } = capturingEmit();
+    const { cookie, userId } = await signInForCookie(emit);
+    const before = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
+    expect(before?.n).toBe(1);
+    events.length = 0;
+
+    const res = await buildApp(emit).request(
+      "/auth/sign-out",
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", cookie, "content-type": "application/json" },
+        body: "{}",
+      },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    const after = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
+    expect(after?.n).toBe(0);
+    expect(events).toContainEqual(
+      expect.objectContaining({ action: "auth/signout", outcome: "success", actorId: userId }),
+    );
   });
 });

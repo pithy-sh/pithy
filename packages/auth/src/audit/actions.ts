@@ -12,7 +12,15 @@
 export const AuthAuditActions = {
   /** A sign-in completed (magic link, OTP, or OAuth). Outcome `denied` for a blocked attempt. */
   signin: "auth/signin",
-  /** A sign-out / session revocation completed. */
+  /**
+   * A sign-out / session revocation completed — and **completed** is the load-bearing word.
+   *
+   * `/sign-out` answers `200 {"success":true}` whether or not it found a session to delete: an expired
+   * cookie, a bearer token (which it does not read) or a bare `curl` all get the same body. Recorded off
+   * the path, every one of them wrote a sign-out that signed nobody out. The evidence is a session row
+   * disappearing, which `../instance/auth.ts`'s `session.delete.after` observes and `../audit/evidence.ts`
+   * carries to the emitter; with no session gone there is no event, because nothing happened.
+   */
   signout: "auth/signout",
   /** A session was exchanged for a fresh access token, rotating the refresh credential. */
   tokenRefresh: "auth/token_refresh",
@@ -31,6 +39,13 @@ export const AuthAuditActions = {
    * rejects it. Recorded at the request, every one of those wrote a success row for a link that never
    * happened, which makes "which providers can sign in as this account today" unanswerable from the
    * trail that exists to answer it.
+   *
+   * **A first social sign-up writes this too, deliberately.** The endpoint wiring this replaced refused
+   * to map `/callback/:id` because doing so "would mislabel every first sign-up as a link" — true of a
+   * *path*, which cannot tell a sign-up from a link. From the row it stops mattering: this event claims a
+   * provider can now sign in as this user, and a first social sign-up is exactly when that becomes true.
+   * Pinned by `emit.workers.test.ts`, so the decision is asserted rather than inferred from the absence
+   * of a branch.
    */
   oauthLinked: "auth/oauth_linked",
   /**
@@ -39,7 +54,13 @@ export const AuthAuditActions = {
    * The other half of the same question, and it emitted nothing at all until #627: a provider was
    * detached and the trail was silent. Emitted from the row for the same reason its twin is, which also
    * means it covers every way a link ends — `/unlink-account`, and the cascade when a user is deleted —
-   * rather than the one endpoint somebody remembered to wire.
+   * rather than the one endpoint somebody remembered to wire. Both are driven in `emit.workers.test.ts`:
+   * a sentence claiming a class is covered is not the same as a test that reddens when it stops being.
+   *
+   * **The actor is whoever caused it, which on a cascade is nobody.** `delete.after` fires for the
+   * cascade as readily as for an unlink, so attributing the row to the account's owner would say that
+   * person detached their own providers when an operator deleted them — from the operator's address. The
+   * owner is the *subject* and rides in `metadata.userId`; `actorId` is the caller or nothing.
    */
   oauthUnlinked: "auth/oauth_unlinked",
   /** A device was registered or updated from sign-in metadata. */

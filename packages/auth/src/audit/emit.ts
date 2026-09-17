@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { APIError } from "better-auth/api";
 import { z } from "zod";
 import { type AuthAuditAction, AuthAuditActions } from "./actions";
+import type { EndedSession } from "./evidence";
 
 /**
  * Audit emission helpers, kept out of the instance so the hook wiring stays legible. Every helper goes
@@ -30,30 +32,97 @@ async function safeEmit(emit: AuditEmit, event: Parameters<AuditEmit>[0]): Promi
   }
 }
 
+/**
+ * What an endpoint must have *done* for its path event to be a success, beyond answering without an
+ * error. `null` means the response is its own evidence: a magic link either went to the queue or the
+ * endpoint refused, and there is no third state.
+ *
+ * **`"session-ended"` exists because `/sign-out` has one.** It answers `200 {"success":true}` whether or
+ * not it found a session to delete, so a caller with no session — an expired cookie, a bearer token
+ * (which `/sign-out` does not read), a bare `curl` — got a success response and a success row for a
+ * sign-out that signed nobody out. The endpoint is not lying; `auth/signout` was. The evidence is the
+ * session row disappearing, which `session.delete.after` observes.
+ */
+export type PathEvidence = "session-ended" | null;
+
+/** One audited endpoint: the action its path means, and what must have happened for that to be true. */
+export interface PathEvent {
+  /** The action code this path writes. */
+  action: AuthAuditAction;
+  /** What must be observably true for the action to have happened; `null` when a completed response says it. */
+  evidence: PathEvidence;
+}
+
+/**
+ * The endpoints whose *path* names an audit action, and what "success" means for each.
+ *
+ * **A table rather than a chain of `if`s so the rule can be asserted over all of it.** #627's second
+ * half was that every entry here wrote `outcome: "success"` for a request the endpoint had refused:
+ * Better Auth catches an endpoint's `APIError` into a result and runs the `after` hooks over it anyway
+ * (`better-auth/dist/api/dispatch.mjs`), so a 401 `/token` and a 400 `/email-otp/send-verification-otp`
+ * both looked, from here, exactly like a request that worked. Naming the two paths somebody happened to
+ * probe would have fixed those two; the exposure was every entry, including ones added later. So the
+ * rule is `emitAfterRequest` reading the outcome, and the gate walks this table.
+ *
+ * **No path maps to `oauth_linked`, and that is the correction #627 made first.** `/link-social` mints
+ * a redirect, which is a request rather than an outcome; `/callback/:id` completes a sign-in *or* a link
+ * and cannot be told apart by its path. The event that means "this provider can sign in as this user" is
+ * the account row, so it is emitted from the row — see `emitProviderAccountChanged`.
+ */
+export const PATH_EVENTS: Readonly<Record<string, PathEvent>> = {
+  "/sign-in/magic-link": { action: AuthAuditActions.magicLinkSent, evidence: null },
+  "/email-otp/send-verification-otp": { action: AuthAuditActions.otpSent, evidence: null },
+  "/sign-out": { action: AuthAuditActions.signout, evidence: "session-ended" },
+  "/token": { action: AuthAuditActions.tokenRefresh, evidence: null },
+};
+
 /** The session just created on a sign-in endpoint, plus the (already-authenticated) caller, if any. */
 export interface AfterRequest {
   path: string;
   headers: Headers | undefined;
   newSession: { userId: string; sessionId: string; deviceId: string | null } | null;
   currentUserId: string | null;
+  /**
+   * What the endpoint handed back — `ctx.context.returned`. An `APIError` here means the request was
+   * refused; the `after` hook runs over it regardless, so this is the only thing that tells the two
+   * apart. Passed raw rather than pre-judged so the judgment is `wasRefused`'s, where it is asserted.
+   */
+  returned: unknown;
+  /**
+   * The session row that actually disappeared during this request — the evidence `/sign-out` needs, and
+   * the only actor it can name, since it declares no session middleware and reads the cookie itself.
+   */
+  endedSession: EndedSession | null;
 }
 
-function pathAction(path: string): string | undefined {
-  if (path === "/sign-in/magic-link") return AuthAuditActions.magicLinkSent;
-  if (path === "/email-otp/send-verification-otp") return AuthAuditActions.otpSent;
-  if (path === "/sign-out") return AuthAuditActions.signout;
-  if (path === "/token") return AuthAuditActions.tokenRefresh;
-  // **No path maps to `oauth_linked`, and that is the correction #627 made.** `/link-social` mints a
-  // redirect, which is a request rather than an outcome; `/callback/:id` completes a sign-in *or* a
-  // link and cannot be told apart by its path. The event that means "this provider can sign in as this
-  // user" is the account row, so it is emitted from the row — see `emitProviderAccountChanged`.
-  return undefined;
+/**
+ * Whether the endpoint refused this request.
+ *
+ * `instanceof` first, then the shape. Better Auth is a single instance in this bundle so the class
+ * identity holds today, but an audit rule that silently degrades to "everything succeeded" when a
+ * duplicated module breaks `instanceof` is the defect this function exists to end — so a numeric
+ * `statusCode` at or above 400 is refusal too, whoever constructed it.
+ */
+export function wasRefused(returned: unknown): boolean {
+  if (returned instanceof APIError) return true;
+  if (typeof returned !== "object" || returned === null) return false;
+  const status = (returned as { statusCode?: unknown }).statusCode;
+  return typeof status === "number" && status >= 400;
 }
 
-/** Emit the audit events for a completed auth request: sign-in (+device) from a new session, then any path event. */
+/**
+ * Emit the audit events for an auth request: sign-in (+device) from a new session, then the path event.
+ *
+ * **Outcome first, because the hook runs either way.** A refused request writes its path event as
+ * `denied` rather than `success` — the attempt is still worth a row (counting refused OTP sends per IP
+ * is how abuse becomes visible), and `denied` is first-class in core's schema for exactly this. It never
+ * writes the sign-in pair: a refusal created no session, and `newSession` being set at all would be a
+ * contradiction rather than something to record.
+ */
 export async function emitAfterRequest(emit: AuditEmit, req: AfterRequest): Promise<void> {
   const corr = correlation(req.headers);
-  if (req.newSession) {
+  const refused = wasRefused(req.returned);
+  if (req.newSession && !refused) {
     await safeEmit(emit, {
       action: AuthAuditActions.signin,
       outcome: "success",
@@ -73,17 +142,18 @@ export async function emitAfterRequest(emit: AuditEmit, req: AfterRequest): Prom
       });
     }
   }
-  const action = pathAction(req.path);
-  if (action) {
-    const actorId = req.newSession?.userId ?? req.currentUserId ?? undefined;
-    await safeEmit(emit, {
-      action,
-      outcome: "success",
-      actorType: actorId ? "user" : "anonymous",
-      actorId,
-      ...corr,
-    });
-  }
+  const event = PATH_EVENTS[req.path];
+  if (!event) return;
+  // Nothing happened and nothing was refused: no row, because there is no event to record.
+  if (!refused && event.evidence === "session-ended" && !req.endedSession) return;
+  const actorId = req.newSession?.userId ?? req.currentUserId ?? req.endedSession?.userId ?? undefined;
+  await safeEmit(emit, {
+    action: event.action,
+    outcome: refused ? "denied" : "success",
+    actorType: actorId ? "user" : "anonymous",
+    actorId,
+    ...corr,
+  });
 }
 
 /** Emit a `token_refresh` event for a session rotation (the custom rotate route). */
@@ -257,27 +327,54 @@ const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
  * between them is read by diffing, and a field one carries and the other does not is a field nobody can
  * filter on.
  *
+ * **The actor is whoever caused the change, never the account it concerns.** The row's `userId` says
+ * *whose* link it was, which is not the same question and is carried in `metadata.userId` instead. The
+ * first cut of #627 conflated them: `delete.after` fires on every removal, the user-deletion cascade
+ * included, so an operator deleting somebody's account wrote rows saying that person had detached their
+ * own providers — from the operator's IP. A trail that misattributes an actor is worse than one that is
+ * silent, because it reads as evidence. Three cases, and only three:
+ *
+ * - An authenticated caller — `/unlink-account`, a link from a signed-in session — is `user`, named.
+ * - A request with no session (a first social sign-up completing at `/callback/:id`) is `anonymous`.
+ * - No request at all (the user-deletion cascade, an admin path calling `internalAdapter` directly) is
+ *   `system`, with no actor id and no ip: there is no caller to name and nothing to borrow one from.
+ *
  * Unparseable input is dropped rather than thrown. The write it describes has already happened, and an
  * audit failure must never break the action it records — the same contract `safeEmit` holds.
  */
 export async function emitProviderAccountChanged(
   emit: AuditEmit,
-  context: { change: ProviderChange; account: unknown; headers: Headers | undefined },
+  context: {
+    change: ProviderChange;
+    account: unknown;
+    /** The authenticated caller's user id, when the change came from a request holding a session. */
+    callerId: string | null;
+    /** Whether a request drove this change at all; false for the cascade and other internal callers. */
+    fromRequest: boolean;
+    headers: Headers | undefined;
+  },
 ): Promise<void> {
   const parsed = ProviderAccount.safeParse(context.account);
   if (!parsed.success) return;
   const account = parsed.data;
   if (account.providerId === CREDENTIAL_PROVIDER_ID) return;
+  const actor = context.callerId
+    ? { actorType: "user" as const, actorId: context.callerId }
+    : context.fromRequest
+      ? { actorType: "anonymous" as const, actorId: undefined }
+      : { actorType: "system" as const, actorId: undefined };
   await safeEmit(emit, {
     action: PROVIDER_CHANGE_ACTIONS[context.change],
     outcome: "success",
-    actorType: "user",
-    actorId: account.userId,
+    ...actor,
     // First-class columns, so "everything ever done to this link" is a query rather than a JSON scan.
     resourceType: "account",
     resourceId: account.id,
-    metadata: { provider: account.providerId },
-    ...correlation(context.headers),
+    // `userId` is whose link changed. It stays out of `actorId` precisely so the two can disagree.
+    metadata: { provider: account.providerId, userId: account.userId },
+    // Only when a request drove it. A cascade has no client, and stamping the deleting operator's
+    // address onto a row about somebody else's account is the misattribution in its second form.
+    ...(context.fromRequest ? correlation(context.headers) : {}),
   });
 }
 
