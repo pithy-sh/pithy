@@ -41,7 +41,7 @@
   },
   "peerDependencies": {
     "@pithy-sh/auth": "^0.6.2",
-    "@pithy-sh/core": "^0.7.0",
+    "@pithy-sh/core": "^0.7.1",
     "@pithy-sh/email": "^0.3.6",
     "@pithy-sh/payments": "^0.3.4",
     "@pithy-sh/secrets": "^0.2.5",
