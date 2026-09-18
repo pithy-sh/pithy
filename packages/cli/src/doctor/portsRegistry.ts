@@ -45,13 +45,13 @@ export interface PortsRegistryEntry {
    */
   onDisk: boolean;
   /**
-   * Whether this is one of the checkout's own blocks that no worktree of its repository would bind — a
-   * feature whose worktree is gone while the branch, and the block, outlived it (#637).
+   * Whether this is one of the checkout's own blocks whose worktree directory is gone from disk and whose
+   * branch no longer exists locally — a feature removed without `destroy`, leaving only its block (#637).
    *
    * **Decided by `findOrphanedFeatureBlocks`, the function `pithy feature prune` frees by**, so every row
    * marked here is a row the command frees and no other. Always `false` for another checkout's block — a
-   * listing speaks only for the repository it walked — and for every row when there is no repository here
-   * to list.
+   * repository speaks only for its own branches — and for every row when there is no repository here to
+   * ask, or prune refuses here (a bare repository's worktree, a submodule, a config that will not parse).
    */
   orphaned: boolean;
 }

@@ -378,22 +378,22 @@ const destroy = defineCommand({
 });
 
 /**
- * `pithy feature prune` — free the port blocks of features whose worktree is gone (#637). Run from any
- * checkout of the repository.
+ * `pithy feature prune` — free the port blocks of features whose worktree directory and branch are both gone
+ * (#637). Run from the project directory of any checkout of the repository, where `pithy dev` runs.
  *
  * `destroy` frees a feature's block, and has to be run from inside the worktree to know which. A worktree
  * removed any other way — `git worktree prune`, an adopter's own teardown, a directory deleted by hand —
  * leaves nothing to run it from, and the block was held until somebody edited the registry by hand.
  *
  * **Not run for you on allocation**, unlike the sweep of dead checkouts. That sweep asks the filesystem one
- * `stat` per root; this asks git for a listing, inside the registry lock, on a machine-wide file shared with
- * projects that may not be repositories at all — and a branch a developer switched away from for an hour
- * would lose the block its `.dev.config.json` pins. A command someone chose to run is the right cost.
+ * `stat` per root; this asks git several questions and walks every worktree, inside the registry lock, on a
+ * machine-wide file shared with projects that may not be repositories at all. A command someone chose to run
+ * is the right cost.
  */
 const prune = defineCommand({
   meta: {
     name: "prune",
-    description: "Free the port blocks of features no worktree has checked out",
+    description: "Free the port blocks of features whose worktree and branch are both gone",
   },
   args: {
     "dry-run": { type: "boolean", default: false, description: "List what would be freed, and write nothing" },

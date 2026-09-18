@@ -64,13 +64,21 @@ pithy feature prune [--dry-run] [--json]
 
 Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every Worker script, D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
 
-**`prune`** frees the port blocks of features whose worktree is gone. `destroy` frees a feature's block, but it has to run from inside the worktree to know which — so a worktree removed any other way, by `git worktree prune`, a teardown script of your own, or a directory deleted by hand, leaves nothing to run it from. The branch outlives the worktree, the block outlives both, and the sweep that frees a deleted checkout's blocks never reaches it, because the checkout it is filed under is still there. `prune` is how you get those ports back.
+**`prune`** frees the port blocks of features whose worktree and branch are both gone. `destroy` frees a feature's block, but it has to run from inside the worktree to know which — so a worktree removed any other way, by `git worktree prune`, a teardown script of your own, or a directory deleted by hand, leaves nothing to run it from. The branch outlives the worktree, the block outlives both, and the sweep that frees a deleted checkout's blocks never reaches it, because the checkout it is filed under is still there. `prune` is how you get those ports back.
 
-**A block is in use when some checkout of the repository would bind it.** That is the branch checked out in each worktree `git worktree list` reports — the main checkout included, whichever branch it is on — plus `local:<path>` for a worktree in detached HEAD, plus the branch each worktree's `.dev.config.json` pins, because `pithy dev` keeps using the pinned branch's block whatever HEAD says now. A branch that exists but is checked out nowhere is not in use; if you check it out again, the next `pithy dev` there allocates it a block. **The checkout `prune` runs from is never freed**, whatever it is on. Only this checkout's blocks are judged — another project's are its own business, and a listing speaks for one repository.
+**A block is freed only when its worktree's directory is gone from disk and its branch no longer exists locally.** Either one surviving keeps it, and so does anything `prune` cannot decide.
 
-It frees under the registry lock, in one read-modify-write, and asks git for the listing inside the lock, so it cannot race a `pithy dev` or `pithy feature create` allocating at the same moment. `--dry-run` reads without the lock and writes nothing — not even the lock file — and the registry is byte-identical afterward. Outside a git repository it refuses: with no listing to ask, every block would look unused. [`pithy doctor`](doctor.md) marks the same blocks with `← no worktree; pithy feature prune`, decided by the same function, so the two cannot disagree.
+- **The branch exists.** Checked out in some worktree or in none — a branch whose worktree you removed is a feature you may come back to, and it keeps its ports until you delete the branch.
+- **A directory on disk holds it.** A worktree still there with the branch checked out, a `.dev.config.json` there pinning it, or `.worktrees/<issue>-<slug>`, where `create` puts it. A directory a teardown left behind counts whether or not git still registers it — `git worktree list` marks a deleted directory `prunable`, and that is not the test; the directory is.
+- **A `local:<path>` key**, which `pithy dev` files a checkout in detached HEAD under, has no branch, so it is freed once `<path>` is gone.
 
-**It is not run for you.** Every allocation already sweeps checkouts that are gone from disk, for the price of one `stat` each. This question costs a `git` spawn, inside a lock held on a file every project on the machine shares, some of which are not repositories — and a branch you switched away from for an hour would lose the block its `.dev.config.json` still pins. A command you chose to run is the right price for that.
+`pithy dev` runs where the project is, so a repository whose project sits in a subdirectory pins `<worktree>/app/.dev.config.json` rather than one at the worktree's root. **Run `prune` from the project directory, as you run `pithy dev`**: it reads each worktree's pin at the worktree's root and at the same place the directory you run it from has in its own checkout. A branch a same-named tag shadows is filed under `heads/<branch>`, the way git spells it, and is read that way too. **The checkout `prune` runs from is never freed** — it is on disk. Only this checkout's blocks are judged: another project's are its own business, and a repository speaks only for its own branches.
+
+It frees under the registry lock, in one read-modify-write, and asks git inside the lock, so it cannot race a `pithy dev` or `pithy feature create` allocating at the same moment. `--dry-run` reads without the lock and writes nothing — not even the lock file — and the registry is byte-identical afterward. Outside a git repository it refuses: with no branches to ask about, every block would look unused. It refuses in a bare repository's worktree and in a submodule too, and when a `.dev.config.json` on disk will not parse — see [Errors](#errors).
+
+**The same rule rebuilds a lost registry.** `pithy dev` without a `.dev.config.json`, `create` and `sync` put back the blocks the `.dev.config.json` files under `.worktrees/` still pin, and they keep exactly the ones `prune` would keep. A block `prune` frees never comes back that way, and a block it keeps is never handed to somebody else. [`pithy doctor`](doctor.md) marks the same blocks with `← no worktree; pithy feature prune`, decided by the same function, so the two cannot disagree.
+
+**It is not run for you.** Every allocation already sweeps checkouts that are gone from disk, for the price of one `stat` each. This question costs several `git` spawns and a walk of every worktree, inside a lock held on a file every project on the machine shares, some of which are not repositories. A command you chose to run is the right price for that.
 
 Both provisioning and `destroy` are audited. The trail lands in the project's own top-level `dev` database rather than the feature's, because the feature's does not exist yet when provisioning starts and is deleted by teardown; each event names the environment it acted on.
 
@@ -151,7 +159,7 @@ $ pithy feature prune --json
 | `command` | `"feature.prune"` | The subcommand that produced the line |
 | `root` | `string` | The main checkout root whose blocks were judged — the registry key they are filed under |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was written when it is `true` |
-| `freedBlocks` | `object[]` | The blocks freed, in port order — or under `--dry-run`, the blocks that would be. Empty when nothing was orphaned |
+| `freedBlocks` | `object[]` | The blocks freed, in port order — or under `--dry-run`, the blocks that would be. Empty when every block is held |
 | `freedBlocks[].branch` | `string` | The registry key the block was filed under: a branch, or `local:<path>` for a checkout in detached HEAD |
 | `freedBlocks[].block` | `number` | The block index, 0-based |
 | `freedBlocks[].base` | `number` | The first port in the block |
@@ -190,12 +198,21 @@ Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote envir
 
 **The branch is not a feature branch.** `sync` and `destroy` derive the issue and slug from the checked-out branch, so they must be run from inside the worktree — as does `pithy provision --feature`.
 
-**`prune` outside a git repository.** It judges blocks by the repository's worktree listing, and without one every block would look unused, so it refuses rather than freeing them.
+**`prune` outside a git repository.** It judges blocks by the repository's branches and worktrees, and without them every block would look unused, so it refuses rather than freeing them.
 
 ```
 Could not resolve the repo's git directory.
 Run pithy from inside a git repository.
 ```
+
+**`prune` in a bare repository's worktree or a submodule.** The registry files a checkout under the directory that holds its git directory. For a bare repository that is the directory the repository sits in, beside any other; for a submodule it is the superproject's `.git/modules`, the same for every submodule it has. Another repository's blocks may be filed under the same key, and their branches are not this repository's, so every one would look deleted. It refuses and names the key.
+
+```
+This checkout is in a bare repository or a submodule, whose registry key other repositories can share.
+Free these blocks with pithy feature destroy from each feature's worktree. Prune cannot judge blocks other repositories may hold.
+```
+
+**A `.dev.config.json` that will not parse.** It sits in a directory on disk holding some block, and nobody can say which, so `prune` refuses rather than guess. Fix or delete the file.
 
 **An illegal `--env` on `destroy`.** Validated at the flag, before any Cloudflare client is built. It is `destroy`'s flag alone: nothing else here takes one.
 
@@ -255,7 +272,7 @@ Worktree pruned.
 Done.
 ```
 
-Free the blocks of features whose worktree was removed without `destroy`, from any checkout. Look first.
+Free the blocks of features whose worktree and branch are both gone, from the project directory of any checkout. Look first.
 
 ```
 $ pithy feature prune --dry-run

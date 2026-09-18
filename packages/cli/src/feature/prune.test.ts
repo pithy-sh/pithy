@@ -58,6 +58,15 @@ describe("pruneFeatureBlocks", () => {
     git(["worktree", "prune"]);
   };
 
+  /**
+   * The one state `prune` frees: the worktree's directory gone from disk **and** its branch deleted. Git
+   * does the deleting here — a directory this suite created, in its own temp dir, and nothing else.
+   */
+  const removeEntirely = (path: string, branch: string): void => {
+    git(["worktree", "remove", "--force", path]);
+    git(["branch", "-D", branch]);
+  };
+
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-prune-"));
     registryPath = join(dir, "config", "dev-ports.json");
@@ -75,17 +84,37 @@ describe("pruneFeatureBlocks", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("frees only the block whose worktree is gone, not main's and not a live worktree's", async () => {
+  it("frees a block only when its worktree directory is gone and its branch is gone too", async () => {
     addWorktree("1-live", "feature/1-live");
-    await removeWorktree(addWorktree("2-gone", "feature/2-gone"));
-    await writeRegistry({ [root]: { main: block(0), "feature/1-live": block(1), "feature/2-gone": block(2) } });
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
+    // The branch outlived the worktree: checked out nowhere, but it exists, so its block is kept.
+    git(["worktree", "remove", "--force", addWorktree("3-branch-only", "feature/3-branch-only")]);
+    // The directory outlived the branch — a gitlink-drop teardown leaves its files on disk by design.
+    await removeWorktree(addWorktree("4-dir-only", "feature/4-dir-only"));
+    git(["branch", "-D", "feature/4-dir-only"]);
+    await writeRegistry({
+      [root]: {
+        main: block(0),
+        "feature/1-live": block(1),
+        "feature/2-gone": block(2),
+        "feature/3-branch-only": block(3),
+        "feature/4-dir-only": block(4),
+      },
+    });
 
     const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
 
     expect(report.freedBlocks).toEqual([{ branch: "feature/2-gone", ...block(2) }]);
     expect(report.root).toBe(root);
     expect(report.dryRun).toBe(false);
-    expect(await readRegistry()).toEqual({ [root]: { main: block(0), "feature/1-live": block(1) } });
+    expect(await readRegistry()).toEqual({
+      [root]: {
+        main: block(0),
+        "feature/1-live": block(1),
+        "feature/3-branch-only": block(3),
+        "feature/4-dir-only": block(4),
+      },
+    });
   });
 
   it("keeps a feature branch checked out in the main checkout", async () => {
@@ -168,19 +197,138 @@ describe("pruneFeatureBlocks", () => {
     ]);
   });
 
-  it("keeps a detached worktree's own local: key", async () => {
+  it("keeps a detached worktree's own local: key, and the branch it left", async () => {
     const wt = addWorktree("6-detached", "feature/6-detached");
     git(["switch", "-q", "--detach"], wt);
     await writeRegistry({ [root]: { main: block(0), [`local:${wt}`]: block(6), "feature/6-detached": block(7) } });
 
     const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
 
-    // The branch is checked out nowhere now; the detached checkout is still one `pithy dev` runs in.
-    expect(report.freedBlocks.map((entry) => entry.branch)).toEqual(["feature/6-detached"]);
+    // The branch is checked out nowhere now, but it exists; the detached checkout is still on disk.
+    expect(report.freedBlocks).toEqual([]);
+  });
+
+  describe("a project in a subdirectory of the repository", () => {
+    // `pithy dev` runs where the project is, so a repository whose project sits in `app/` keys a detached
+    // checkout `local:<worktree>/app` and pins `<worktree>/app/.dev.config.json`. Prune, run from the
+    // project in the main checkout, takes the same relative location to every worktree.
+    it("keeps the block a worktree's app/.dev.config.json pins after its branch is deleted", async () => {
+      await mkdir(join(root, "app"));
+      // Named unlike its branch, so the conventional `.worktrees/<slug>` directory says nothing.
+      const wt = addWorktree("x", "feat-x");
+      await mkdir(join(wt, "app"));
+      await writeDevConfig(
+        devConfigPath(join(wt, "app")),
+        buildDevConfig({ branch: "feat-x", block: block(1), workers: [], previous: null }),
+      );
+      git(["switch", "-q", "--detach"], wt);
+      git(["branch", "-D", "feat-x"]);
+      await writeRegistry({ [root]: { main: block(0), "feat-x": block(1) } });
+
+      const report = await pruneFeatureBlocks({ cwd: join(root, "app"), registryPath, dryRun: false });
+
+      // The directory holding the pin is on disk, so the block is held.
+      expect(report.freedBlocks).toEqual([]);
+    });
+  });
+
+  it("reads a branch a same-named tag shadows the way pithy dev spells it, heads/<branch>", async () => {
+    // `git rev-parse --abbrev-ref HEAD` answers `heads/feat-x` when a tag `feat-x` exists, and that is
+    // the key `pithy dev` files the block under. The branch survives its worktree, so the block is held.
+    git(["tag", "feat-x"]);
+    const wt = addWorktree("x", "feat-x");
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], wt)).toBe("heads/feat-x");
+    git(["worktree", "remove", "--force", wt]);
+    await writeRegistry({ [root]: { main: block(0), "heads/feat-x": block(1) } });
+
+    const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
+
+    expect(report.freedBlocks).toEqual([]);
+  });
+
+  it("keeps a worktree whose directory was deleted by hand while its branch exists", async () => {
+    // `git worktree list` still reports it, marked prunable. The branch is the claim.
+    const wt = addWorktree("7-deleted", "feature/7-deleted");
+    await rm(wt, { recursive: true, force: true });
+    expect(git(["worktree", "list", "--porcelain"])).toContain("prunable");
+    await writeRegistry({ [root]: { main: block(0), "feature/7-deleted": block(7) } });
+
+    const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
+
+    expect(report.freedBlocks).toEqual([]);
+  });
+
+  it("frees a detached worktree git reports prunable: its directory is gone and it has no branch", async () => {
+    // Listed, but the directory is gone. The listing is not a directory on disk.
+    const wt = addWorktree("8-detached-gone", "feature/8-detached-gone");
+    git(["switch", "-q", "--detach"], wt);
+    git(["branch", "-D", "feature/8-detached-gone"]);
+    await rm(wt, { recursive: true, force: true });
+    expect(git(["worktree", "list", "--porcelain"])).toContain("prunable");
+    await writeRegistry({ [root]: { main: block(0), [`local:${wt}`]: block(8) } });
+
+    const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
+
+    expect(report.freedBlocks).toEqual([{ branch: `local:${wt}`, ...block(8) }]);
+  });
+
+  it("reads the listing NUL-separated, so a worktree path with a newline is still found", async () => {
+    // Outside `.worktrees`, so the listing is the only thing that knows this directory exists.
+    const wt = join(dir, "odd\nplace");
+    git(["worktree", "add", "-q", "-b", "feat-nl", wt]);
+    await writeDevConfig(
+      devConfigPath(wt),
+      buildDevConfig({ branch: "feat-nl", block: block(1), workers: [], previous: null }),
+    );
+    git(["switch", "-q", "--detach"], wt);
+    git(["branch", "-D", "feat-nl"]);
+    await writeRegistry({ [root]: { main: block(0), "feat-nl": block(1) } });
+
+    const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
+
+    expect(report.freedBlocks).toEqual([]);
+  });
+
+  describe("a registry key another repository may share", () => {
+    // `resolveMainRepoRoot` keys a checkout by the directory holding its git dir. For a bare repository
+    // that is the directory the bare repository sits in, and for a submodule it is the superproject's
+    // `.git/modules` — shared by every submodule it has. A listing of one repository cannot speak for
+    // another's blocks, so prune refuses there and says why.
+    it("refuses in a bare repository's worktree", async () => {
+      const bare = join(dir, "proj.git");
+      git(["clone", "-q", "--bare", root, bare], dir);
+      const wt = join(dir, "main-wt");
+      git(["worktree", "add", "-q", wt, "main"], bare);
+      const before = await writeRegistry({ [dir]: { main: block(0), "feature/dead": block(2) } });
+
+      await expect(pruneFeatureBlocks({ cwd: wt, registryPath, dryRun: false })).rejects.toSatisfy(
+        (error: PithyError) => {
+          expect(error.payload.message).toMatch(/bare repository or a submodule/);
+          expect(error.payload.action).toMatch(/other repositor/);
+          return true;
+        },
+      );
+      expect(await readFile(registryPath, "utf8")).toBe(before);
+    });
+
+    it("refuses in a submodule", async () => {
+      const source = join(dir, "subsrc");
+      await mkdir(source);
+      git(["init", "-q"], source);
+      git(["-c", "user.email=t@t.dev", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "s"], source);
+      git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "sub"]);
+
+      await expect(pruneFeatureBlocks({ cwd: join(root, "sub"), registryPath, dryRun: true })).rejects.toSatisfy(
+        (error: PithyError) => {
+          expect(error.payload.message).toMatch(/bare repository or a submodule/);
+          return true;
+        },
+      );
+    });
   });
 
   it("--dry-run lists what it would free and leaves the registry byte-identical", async () => {
-    await removeWorktree(addWorktree("2-gone", "feature/2-gone"));
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
     const before = await writeRegistry({ [root]: { main: block(0), "feature/2-gone": block(2) } });
 
     const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: true });
@@ -195,7 +343,7 @@ describe("pruneFeatureBlocks", () => {
   it("never touches another checkout's blocks", async () => {
     const other = join(dir, "other-app");
     await mkdir(other);
-    await removeWorktree(addWorktree("2-gone", "feature/2-gone"));
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
     await writeRegistry({
       [root]: { main: block(0), "feature/2-gone": block(2) },
       [other]: { main: block(8), "feature/9-elsewhere": block(9) },
@@ -207,8 +355,7 @@ describe("pruneFeatureBlocks", () => {
   });
 
   it("drops the checkout's key once nothing under it is left", async () => {
-    const wt = addWorktree("2-gone", "feature/2-gone");
-    await removeWorktree(wt);
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
     git(["switch", "-q", "--detach"]);
     await writeRegistry({ [root]: { "feature/2-gone": block(2) } });
 
@@ -233,6 +380,22 @@ describe("pruneFeatureBlocks", () => {
     expect(await readFile(registryPath, "utf8")).toBe(before);
   });
 
+  it("refuses when a .dev.config.json on disk will not parse, and writes nothing", async () => {
+    // A directory on disk holds some block, and nobody can say which. When in doubt, keep: refuse.
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
+    await mkdir(join(root, ".worktrees", "9-corrupt"), { recursive: true });
+    await writeFile(devConfigPath(join(root, ".worktrees", "9-corrupt")), "{ not json", "utf8");
+    const before = await writeRegistry({ [root]: { main: block(0), "feature/2-gone": block(2) } });
+
+    await expect(pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false })).rejects.toSatisfy(
+      (error: PithyError) => {
+        expect(error.payload.message).toMatch(/will not parse/);
+        return true;
+      },
+    );
+    expect(await readFile(registryPath, "utf8")).toBe(before);
+  });
+
   it("with no registry at all, frees nothing and creates nothing", async () => {
     const report = await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: true });
     expect(report.freedBlocks).toEqual([]);
@@ -247,7 +410,7 @@ describe("pruneFeatureBlocks", () => {
    */
   it("doctor marks exactly the blocks the command frees, from every checkout", async () => {
     const live = addWorktree("1-live", "feature/1-live");
-    await removeWorktree(addWorktree("2-gone", "feature/2-gone"));
+    removeEntirely(addWorktree("2-gone", "feature/2-gone"), "feature/2-gone");
     const pinned = addWorktree("5-pinned", "feature/5-pinned");
     await writeDevConfig(
       devConfigPath(pinned),
