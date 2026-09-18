@@ -11,6 +11,8 @@ import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudfl
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
+import { portsRegistryPath } from "../feature/ports";
+import { pruneFeatureBlocks } from "../feature/prune";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
@@ -375,7 +377,52 @@ const destroy = defineCommand({
     }),
 });
 
+/**
+ * `pithy feature prune` — free the port blocks of features whose worktree directory and branch are both gone
+ * (#637). Run from the project directory of any checkout of the repository, where `pithy dev` runs.
+ *
+ * `destroy` frees a feature's block, and has to be run from inside the worktree to know which. A worktree
+ * removed any other way — `git worktree prune`, an adopter's own teardown, a directory deleted by hand —
+ * leaves nothing to run it from, and the block was held until somebody edited the registry by hand.
+ *
+ * **Not run for you on allocation**, unlike the sweep of dead checkouts. That sweep asks the filesystem one
+ * `stat` per root; this asks git several questions and walks every worktree, inside the registry lock, on a
+ * machine-wide file shared with projects that may not be repositories at all. A command someone chose to run
+ * is the right cost.
+ */
+const prune = defineCommand({
+  meta: {
+    name: "prune",
+    description: "Free the port blocks of features whose worktree and branch are both gone",
+  },
+  args: {
+    "dry-run": { type: "boolean", default: false, description: "List what would be freed, and write nothing" },
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const report = await pruneFeatureBlocks({
+        cwd: process.cwd(),
+        registryPath: portsRegistryPath(),
+        dryRun: args["dry-run"],
+      });
+
+      if (args.json) {
+        process.stdout.write(
+          `${formatJsonLine({ command: "feature.prune", root: report.root, dryRun: report.dryRun, freedBlocks: report.freedBlocks })}\n`,
+        );
+        return;
+      }
+      const verb = report.dryRun ? "Would free" : "Freed";
+      for (const entry of report.freedBlocks) {
+        process.stdout.write(`${verb} ${entry.base}–${entry.base + entry.size - 1}, ${entry.branch}.\n`);
+      }
+      if (report.freedBlocks.length === 0) process.stdout.write("Nothing to free.\n");
+      process.stdout.write(report.dryRun ? "Dry run. Nothing written.\n" : `${formatDone()}\n`);
+    }),
+});
+
 export default defineCommand({
   meta: { name: "feature", description: "Set up and tear down an isolated, fully-provisioned feature environment" },
-  subCommands: { create, sync, destroy },
+  subCommands: { create, sync, destroy, prune },
 });

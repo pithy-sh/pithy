@@ -1,16 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
-import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
-import { BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
+import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig, writeDevConfig } from "../feature/devConfig";
+import { BASE_PORT, BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
+import { pruneFeatureBlocks } from "../feature/prune";
 import type { WorkerTarget } from "../project/workers";
 import type { MaterializeHostConfigsOptions } from "./hostWorkers";
 import {
@@ -1846,5 +1848,78 @@ describe("startDev — capability hosts", () => {
     await startDev(h.options);
     expect(h.spawned.map((s) => s.opts.cwd)).not.toContain("/proj/.wrangler/pithy/hosts/email");
     expect(h.stdoutLines.join("\n")).toContain("No project name in pithy.config.ts");
+  });
+});
+
+/**
+ * **The reclaim and `pithy feature prune` answer one question, with one predicate** (#637). The reclaim
+ * rebuilds a lost registry from the blocks worktrees still pin, and prune frees the blocks nothing holds.
+ * If the two disagree, a block prune frees is put back by the next config-less `pithy dev`, and prune frees
+ * it again — or a block prune keeps is left off a rebuilt registry and handed to somebody else.
+ */
+describe("ensureDevConfig — the reclaim agrees with prune", () => {
+  let dir: string;
+  let root: string;
+  let registryPath: string;
+  const git = (args: string[], cwd = root): string =>
+    execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
+  const block = (index: number) => ({ block: index, base: BASE_PORT + index * BLOCK_SIZE, size: BLOCK_SIZE });
+  /** Every seam but the registry's location is the real one: a real repository answers the rest. */
+  const ensure = (projectDir: string) =>
+    ensureDevConfig({ projectDir, workers: [], existing: null, registryPathFor: async () => registryPath });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A repository with a feature torn down the gitlink-drop way: its directory and pinned config stay. */
+  async function tornDown(): Promise<string> {
+    dir = await mkdtemp(join(tmpdir(), "pithy-reclaim-"));
+    registryPath = join(dir, "config", "dev-ports.json");
+    await mkdir(join(dir, "config"));
+    await mkdir(join(dir, "repo"));
+    root = await realpath(join(dir, "repo"));
+    git(["init", "-q"]);
+    git(["config", "user.email", "t@t.dev"]);
+    git(["config", "user.name", "T"]);
+    git(["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(["branch", "-M", "main"]);
+    const wt = join(root, ".worktrees", "2-gone");
+    git(["worktree", "add", "-q", "-b", "feature/2-gone", wt]);
+    await writeDevConfig(
+      devConfigPath(wt),
+      buildDevConfig({ branch: "feature/2-gone", block: block(1), workers: [], previous: null }),
+    );
+    await unlink(join(wt, ".git"));
+    git(["worktree", "prune"]);
+    git(["branch", "-D", "feature/2-gone"]);
+    return wt;
+  }
+
+  test("a block prune frees is never put back by the next config-less pithy dev", async () => {
+    await tornDown();
+    await writeFile(registryPath, JSON.stringify({ [root]: { main: block(0), "feature/2-gone": block(1) } }));
+
+    await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: false });
+    const scratch = join(dir, "scratch-wt");
+    git(["worktree", "add", "-q", "--detach", scratch]);
+    await ensure(scratch);
+
+    // A fixed point: whatever the reclaim registered, prune does not want to free.
+    expect((await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: true })).freedBlocks).toEqual([]);
+  });
+
+  test("a lost registry is rebuilt with every block prune would keep", async () => {
+    await tornDown();
+    // The registry is gone: a wiped config directory, a new machine. The directory still pins its block.
+    const scratch = join(dir, "scratch-wt");
+    git(["worktree", "add", "-q", "--detach", scratch]);
+
+    const dev = await ensure(scratch);
+
+    const registry = JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry;
+    expect(registry[root]?.["feature/2-gone"]).toEqual(block(1));
+    expect(dev.ports.index).not.toBe(1);
+    expect((await pruneFeatureBlocks({ cwd: root, registryPath, dryRun: true })).freedBlocks).toEqual([]);
   });
 });

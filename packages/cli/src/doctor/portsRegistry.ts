@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { portsRegistryPath, readPortsRegistry, registryRootExists, registryRootFor } from "../feature/ports";
+import { findOrphanedFeatureBlocks } from "../feature/prune";
 import type { StatePathOptions } from "../notifier/state";
 
 /**
@@ -43,6 +44,16 @@ export interface PortsRegistryEntry {
    * nothing anywhere reports that it happened. This row is taken **before** the sweep.
    */
   onDisk: boolean;
+  /**
+   * Whether this is one of the checkout's own blocks whose worktree directory is gone from disk and whose
+   * branch no longer exists locally — a feature removed without `destroy`, leaving only its block (#637).
+   *
+   * **Decided by `findOrphanedFeatureBlocks`, the function `pithy feature prune` frees by**, so every row
+   * marked here is a row the command frees and no other. Always `false` for another checkout's block — a
+   * repository speaks only for its own branches — and for every row when there is no repository here to
+   * ask, or prune refuses here (a bare repository's worktree, a submodule, a config that will not parse).
+   */
+  orphaned: boolean;
 }
 
 /**
@@ -182,6 +193,7 @@ function operatorSentence(err: unknown): string {
 async function readEntries(
   registryPath: string,
   root: string | null,
+  projectDir: string,
 ): Promise<{ entries: PortsRegistryEntry[]; unreadable: string | null }> {
   let registry: Awaited<ReturnType<typeof readPortsRegistry>>;
   try {
@@ -190,11 +202,24 @@ async function readEntries(
     return { entries: [], unreadable: operatorSentence(err) };
   }
 
+  // The command's own predicate, never a second one (#637). A failure is no listing — not a repository,
+  // no git — and no listing marks nothing: a report that called every block orphaned because it could not
+  // ask would send someone to a command that refuses in exactly that state.
+  const orphaned = new Set(
+    root === null
+      ? []
+      : await findOrphanedFeatureBlocks({ registry, root, cwd: projectDir }).then(
+          (blocks) => blocks.map((entry) => entry.branch),
+          () => [],
+        ),
+  );
+
   const entries: PortsRegistryEntry[] = [];
   for (const [entryRoot, branches] of Object.entries(registry)) {
     const onDisk = await registryRootExists(entryRoot);
+    const own = entryRoot === root;
     for (const [branch, block] of Object.entries(branches)) {
-      entries.push({ root: entryRoot, branch, ...block, own: entryRoot === root, onDisk });
+      entries.push({ root: entryRoot, branch, ...block, own, onDisk, orphaned: own && orphaned.has(branch) });
     }
   }
   // Own first, then a number line. `base` alone would interleave the two halves, and a registry holding
@@ -216,7 +241,7 @@ export async function checkPortsRegistry(
   const path = portsRegistryPath(options);
   const legacy = join(projectDir, LEGACY_REGISTRY_FILE_NAME);
   const root = await ownRoot(projectDir, options.resolveRoot ?? registryRootFor);
-  const { entries, unreadable } = await readEntries(path, root);
+  const { entries, unreadable } = await readEntries(path, root, projectDir);
   return {
     path,
     present: await isFile(path),
