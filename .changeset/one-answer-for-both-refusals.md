@@ -4,7 +4,9 @@
 "@pithy-sh/ui-react": patch
 ---
 
-Security: a refused social sign-in answered with a different code depending on whether an account existed at the address the provider asserted, so pressing a provider button and reading the `Location` header enumerated accounts — no page load, one GitHub account, none on the target.
+A refused social sign-in is now decided before Better Auth branches, so the two codes that told an attacker whether an account existed are never produced at all.
+
+Security: a refused social sign-in answered with a different code depending on whether an account existed at the address the provider asserted — `account_not_linked` only when a user row matched, `signup_disabled` only when none did — so pressing a provider button and reading the `Location` header enumerated accounts with no page load, needing one GitHub account and none on the target. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
 
 `account_not_linked` was returned only when a user row matched the provider-resolved address and `signup_disabled` only when none did. GitHub will assert any address its holder has typed in, verified or not, so the question could be asked about anybody. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
 

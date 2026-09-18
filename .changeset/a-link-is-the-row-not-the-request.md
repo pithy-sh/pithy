@@ -2,9 +2,9 @@
 "@pithy-sh/auth": patch
 ---
 
-Security: the audit trail recorded provider links that never happened and recorded no removals at all, so the record of which providers could sign in as an account was wrong in both directions; a refused request was also written as `outcome: "success"`, and an account removal driven by an operator was attributed to the account's owner, with the operator's IP.
-
 Attaching and detaching a social provider are both recorded, and recorded when they happen. The trail carried `auth/oauth_linked` at `/link-social` — the moment the provider redirect is *minted*, before the person has seen a consent screen — so abandoning that screen, a provider refusing, or the freshness gate rejecting the link all wrote a success row for a link that never existed. Detaching one wrote nothing at all: there was no `auth/oauth_unlinked` code and nothing on `/unlink-account` emitted, so a provider was removed and the trail was silent. Between the two, "which providers can sign in as this account today, and when did that change" was unanswerable from the record that exists to answer it.
+
+Security: the audit trail recorded provider links that never happened and recorded no removals at all, so the record of which providers could sign in as an account was wrong in both directions; a refused request was also written as `outcome: "success"`, and an account removal driven by an operator was attributed to the account's owner, with the operator's IP.
 
 Both events now come from the account row rather than from an endpoint. Better Auth reaches that row from four directions — `/callback/:id` on a first social sign-up and on a link, the OAuth linking path, `/unlink-account`, and the cascade that drops every account when a user is deleted — and all of them pass through the `account` database hooks, so one pair of hooks covers what four endpoint wirings would have had to enumerate and keep current. It is the seam the session-revoked hook already used, applied to the other table: a handler wired to one endpoint misses the others, and the row is what the fact is keyed by. An abandoned link now emits nothing, because nothing happened.
 
