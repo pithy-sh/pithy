@@ -24,10 +24,14 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email } from "@pithy-sh/email/src/capability";
+import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
+import type { BetterAuthPlugin } from "better-auth";
+import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { publishSameOrigin } from "../http/csrf";
@@ -49,6 +53,11 @@ const TABLES = [
   "pithy_auth_sessions",
   "pithy_auth_users",
   "pithy_auth_verifications",
+  // The send seam's own tables. A queued message is what `auth/magic_link_sent` and `auth/otp_sent`
+  // claim, so the claim is checked against the row the email capability writes rather than against a
+  // stub this file controls — the assertion has to come from outside the thing it is asserting about.
+  "pithy_email_jobs",
+  "pithy_email_events",
 ];
 
 const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
@@ -65,13 +74,14 @@ function capturingEmit(): { emit: AuditEmit; events: AuditEventInput[] } {
   return { events, emit: async (event) => void events.push(event) };
 }
 
-function wiring(): AuthWiring {
+function wiring(over: { disableSignUp?: boolean } = {}): AuthWiring {
   return {
     config: AuthConfig.parse({
       baseURL: "http://localhost",
       basePath: "/auth",
       trustedOrigins: ["http://localhost"],
       google: { enabled: true },
+      ...over,
     }),
     resolveGithubUserInfo: undefined,
     // The real capability's enqueue. Nothing here sends mail, but the seam is the composed one rather
@@ -83,7 +93,7 @@ function wiring(): AuthWiring {
 }
 
 /** The capability's own middleware order, so a request reaching a route carries what the route reads. */
-function buildApp(emit: AuditEmit): Hono<PithyHonoEnv> {
+function buildApp(emit: AuditEmit, config: AuthWiring = wiring()): Hono<PithyHonoEnv> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   app.use("*", async (c, next) => {
@@ -91,11 +101,19 @@ function buildApp(emit: AuditEmit): Hono<PithyHonoEnv> {
     if (c.get("auth") === undefined) c.set("auth", null);
     await next();
   });
-  const config = wiring();
   publishSameOrigin(config)(app);
   createSessionMiddleware(config)(app);
   createAuthRoutes(config)(app);
   return app;
+}
+
+/** The email jobs the send seam actually queued — the send events' subject, read from its own table. */
+async function queuedEmails(): Promise<{ to_address: string; template: string }[]> {
+  const result = await env.DB.prepare("select to_address, template from pithy_email_jobs").all<{
+    to_address: string;
+    template: string;
+  }>();
+  return result.results;
 }
 
 function appEnv(): Record<string, unknown> {
@@ -105,8 +123,42 @@ function appEnv(): Record<string, unknown> {
   };
 }
 
+/**
+ * A management console, as an adopter's plugin — the seam `auth({ plugins: [...] })` exists for, and the
+ * shape Better Auth's own `/delete-user` has.
+ *
+ * **Two endpoints, because the cascade's actor depends on who reached it.** One declares
+ * `sessionMiddleware`, so `ctx.context.session` is the operator's and the row names them; the other
+ * declares none, so a server-to-server caller has an address and no identity. Nothing here is a stand-in
+ * for the cascade itself: both call the real `internalAdapter.deleteUser`, which walks the real
+ * `deleteManyWithHooks` over the real account table.
+ */
+function operatorConsole() {
+  const body = z.object({ userId: z.string().describe("The user to delete, cascading their accounts.") });
+  return {
+    id: "test-operator-console",
+    endpoints: {
+      operatorDeleteUser: createAuthEndpoint(
+        "/operator/delete-user",
+        { method: "POST", body, use: [sessionMiddleware] },
+        async (ctx) => {
+          await ctx.context.internalAdapter.deleteUser(ctx.body.userId);
+          return ctx.json({ deleted: true });
+        },
+      ),
+      machineDeleteUser: createAuthEndpoint("/operator/machine-delete-user", { method: "POST", body }, async (ctx) => {
+        await ctx.context.internalAdapter.deleteUser(ctx.body.userId);
+        return ctx.json({ deleted: true });
+      }),
+    },
+  };
+}
+
 /** A real instance over the real D1 bindings, with the `emit` seam handed in. */
-function instance(emit: AuditEmit) {
+function instance<const Plugins extends readonly BetterAuthPlugin[]>(
+  emit: AuditEmit,
+  plugins: Plugins = [] as unknown as Plugins,
+) {
   const mailbox: { template: string; code?: string }[] = [];
   const auth = makeAuth({
     db: authDatabase(env.DB),
@@ -128,9 +180,25 @@ function instance(emit: AuditEmit) {
     disableSignUp: false,
     providerSignUp: { google: true, apple: true, facebook: true, github: true },
     emit,
-    plugins: [],
+    plugins,
   });
   return { auth, mailbox };
+}
+
+/** Somebody else's account, with a provider linked to it — what an operator's cascade removes. */
+async function victimWithAccount(emit: AuditEmit): Promise<{ userId: string; accountId: string }> {
+  const ctx = await instance(emit).auth.$context;
+  const user = await ctx.internalAdapter.createUser(
+    { email: "victim@test.com", name: "Victim", emailVerified: true },
+    { method: "oauth", oauth: { providerId: "google", profile: {} } },
+  );
+  const account = await createAccountRow(emit, {
+    userId: String(user.id),
+    providerId: "google",
+    accountId: "google-sub-victim",
+    issuer: "https://accounts.google.com",
+  });
+  return { userId: String(user.id), accountId: account.id };
 }
 
 /** Sign somebody in for real (OTP, no HTTP, no mail) and hand back a usable bearer token. */
@@ -226,6 +294,7 @@ beforeEach(async () => {
   }
   const provider = createMigrationRegistry([
     { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
+    { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);
@@ -480,6 +549,71 @@ describe("who the trail says did it", () => {
     expect(unlinked[0]?.userAgent ?? null).toBeNull();
   });
 
+  test("a cascade an operator drove through an endpoint is the operator's action", async () => {
+    // **A1, and the reason two docblocks changed.** `deleteWithHooks` resolves its context from
+    // `getCurrentAuthContext()`, which is async-scoped to the dispatch — so a cascade reached from an
+    // endpoint carries *that endpoint's* context, session and all. The operator is named, correctly:
+    // they caused every removal the cascade made. `system` is not what a cascade is; it is what *no
+    // request* is, and the two had been written down as the same thing.
+    const { emit, events } = capturingEmit();
+    const operator = await signIn(emit);
+    const victim = await victimWithAccount(emit);
+    events.length = 0;
+
+    const { auth } = instance(emit, [operatorConsole()] as const);
+    await auth.api.operatorDeleteUser({
+      body: { userId: victim.userId },
+      headers: new Headers({
+        authorization: `Bearer ${operator.token}`,
+        "cf-connecting-ip": "198.51.100.77",
+        "user-agent": "operator-console/1",
+      }),
+    });
+
+    expect(await accountRows()).toHaveLength(0);
+    const unlinked = events.filter((e) => e.action === "auth/oauth_unlinked");
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0]).toMatchObject({
+      outcome: "success",
+      actorType: "user",
+      actorId: operator.userId,
+      ip: "198.51.100.77",
+      userAgent: "operator-console/1",
+      resourceId: victim.accountId,
+      // Whose link it was. The operator acted; the victim owned it, and the columns disagree on purpose.
+      metadata: { provider: "google", userId: victim.userId },
+    });
+    expect(unlinked[0]?.actorId).not.toBe(victim.userId);
+  });
+
+  test("a cascade a server-to-server call drove is anonymous, with that call's address", async () => {
+    // **A2.** The same endpoint with no session middleware and no credential: somebody was calling, so
+    // the request's address is a fact about the row, and nobody was signed in, so no id is. Still not
+    // `system` — that is reserved for a cascade with no request behind it at all, which the case above
+    // this pair already pins.
+    const { emit, events } = capturingEmit();
+    const victim = await victimWithAccount(emit);
+    events.length = 0;
+
+    const { auth } = instance(emit, [operatorConsole()] as const);
+    await auth.api.machineDeleteUser({
+      body: { userId: victim.userId },
+      headers: new Headers({ "cf-connecting-ip": "203.0.113.44", "user-agent": "provisioner/3" }),
+    });
+
+    expect(await accountRows()).toHaveLength(0);
+    const unlinked = events.filter((e) => e.action === "auth/oauth_unlinked");
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0]).toMatchObject({
+      outcome: "success",
+      actorType: "anonymous",
+      ip: "203.0.113.44",
+      userAgent: "provisioner/3",
+      metadata: { provider: "google", userId: victim.userId },
+    });
+    expect(unlinked[0]?.actorId ?? null).toBeNull();
+  });
+
   test("two concurrent unlinks of one account emit oauth_unlinked once", async () => {
     // Better Auth's `deleteWithHooks` reads the row, deletes it, then runs `delete.after` gated on the
     // row it *read* — so both callers reach the hook and one removal is recorded twice. A trail that
@@ -543,6 +677,24 @@ describe("a refused request is never recorded as a success", () => {
     expect(events.map((e) => e.action)).not.toContain("auth/signout");
   });
 
+  test("GET /token with a session answers 200 and records the refresh", async () => {
+    // The other half of the 401 case above, and the one that stops "record nothing" from being the fix.
+    // It is also what drives `token-minted`: the row is written because the response carried a token.
+    const { emit, events } = capturingEmit();
+    const { token } = await signIn(emit);
+    events.length = 0;
+
+    const res = await buildApp(emit).request(
+      "/auth/token",
+      { method: "GET", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect((await res.json<{ token?: string }>()).token).toBeTruthy();
+    expect(events.filter((e) => e.action === "auth/token_refresh").map((e) => e.outcome)).toEqual(["success"]);
+  });
+
   test("a real sign-out still records one", async () => {
     // The other half, and the one that stops "record nothing" from being the fix.
     const { emit, events } = capturingEmit();
@@ -567,5 +719,125 @@ describe("a refused request is never recorded as a success", () => {
     expect(events).toContainEqual(
       expect.objectContaining({ action: "auth/signout", outcome: "success", actorId: userId }),
     );
+  });
+});
+
+/**
+ * **A non-2xx is sufficient evidence of a refusal and is nowhere near necessary.**
+ *
+ * `/email-otp/send-verification-otp` declines to send and answers `200 {"success":true}` — deliberately,
+ * twice over. Better Auth refuses to confirm or deny that an address is registered
+ * (`plugins/email-otp/routes.mjs`: no user and `shouldSendOTP` false, so it drops the verification row
+ * and returns success), and the kit's own `sendVerificationOTP` returns without queuing anything for a
+ * `type` other than `sign-in`. Reading the status alone, both look exactly like a send.
+ *
+ * So the claim `auth/otp_sent` is a claim about a **message**, and the evidence is the message: a row in
+ * `pithy_email_jobs`, written by the email capability, read here from its own table. Nothing below is
+ * asserted against the marker the emitter reads — a gate derived from its own subject proves only that
+ * two copies of one value agree.
+ *
+ * **The wire does not change, and that is the point of the endpoint.** Every case here checks the status
+ * *and* the body of the declined call against a call that really sent, because a caller who can tell a
+ * registered address from an unregistered one is the defect that 200 exists to prevent. The trail may
+ * know; the response may not say.
+ */
+describe("a refusal expressed as a success", () => {
+  const SEND = "/auth/email-otp/send-verification-otp";
+
+  /** POST the send endpoint over HTTP, handing back exactly what a caller can observe. */
+  async function send(
+    app: Hono<PithyHonoEnv>,
+    body: { email: string; type: "sign-in" | "email-verification" },
+  ): Promise<{ status: number; body: string }> {
+    const res = await app.request(
+      SEND,
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      appEnv(),
+    );
+    return { status: res.status, body: await res.text() };
+  }
+
+  test("a send that reached the queue is the success", async () => {
+    // The half that stops "record nothing" from being the fix, and the control every case below is read
+    // against: this is what a real send looks like on the wire and in both tables.
+    const { emit, events } = capturingEmit();
+    const answer = await send(buildApp(emit), { email: "sends@test.com", type: "sign-in" });
+
+    expect(answer).toEqual({ status: 200, body: '{"success":true}' });
+    expect(await queuedEmails()).toEqual([{ to_address: "sends@test.com", template: "otp" }]);
+    expect(events.filter((e) => e.action === "auth/otp_sent").map((e) => e.outcome)).toEqual(["success"]);
+  });
+
+  test("an address nobody registered is declined, and a decline is not a send", async () => {
+    // Better Auth's user-enumeration guard: no user, and `sign-in` is not the type, so the OTP row is
+    // deleted and the caller is told `success`. Nothing was queued, and `auth/otp_sent outcome=success`
+    // was the lie — recorded for a send the endpoint had refused to make.
+    const { emit, events } = capturingEmit();
+    const answer = await send(buildApp(emit), { email: "nobody@test.com", type: "email-verification" });
+
+    expect(answer).toEqual({ status: 200, body: '{"success":true}' });
+    expect(await queuedEmails()).toEqual([]);
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+  });
+
+  test("a registered address the kit will not mail for is declined the same way", async () => {
+    // The second decline on the same endpoint, and it is the kit's own: `sendVerificationOTP` returns
+    // without queuing for any `type` but `sign-in`. Better Auth's guard does not fire here — the user
+    // exists — so this case is only reachable by asking whether a message was queued.
+    const { emit, events } = capturingEmit();
+    await signIn(emit);
+    events.length = 0;
+
+    const answer = await send(buildApp(emit), { email: "u@test.com", type: "email-verification" });
+
+    expect(answer).toEqual({ status: 200, body: '{"success":true}' });
+    expect(await queuedEmails()).toEqual([]);
+    expect(events.filter((e) => e.action === "auth/otp_sent").map((e) => e.outcome)).toEqual(["denied"]);
+  });
+
+  test("the trail may know which address is registered; the response may not say", async () => {
+    // **The tension, resolved and pinned.** With sign-up off, Better Auth's guard fires for an
+    // unregistered address and not for a registered one — so this is the configuration where the two
+    // calls genuinely differ, and the whole point of the 200 is that a caller cannot see it. The audit
+    // trail records the difference (a send, and a decline); the wire carries the same status and the
+    // same bytes for both, and the audit row names neither address.
+    const { emit, events } = capturingEmit();
+    await signIn(emit);
+    events.length = 0;
+    const app = buildApp(emit, wiring({ disableSignUp: true }));
+
+    const registered = await send(app, { email: "u@test.com", type: "sign-in" });
+    const unregistered = await send(app, { email: "stranger@test.com", type: "sign-in" });
+
+    expect(unregistered).toEqual(registered);
+    expect(await queuedEmails()).toEqual([{ to_address: "u@test.com", template: "otp" }]);
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["success", "denied"]);
+    expect(JSON.stringify(written)).not.toContain("stranger@test.com");
+    expect(JSON.stringify(written)).not.toContain("u@test.com");
+  });
+
+  test("a magic link that reached the queue is a success", async () => {
+    // The fourth audited path, driven for the same reason: `auth/magic_link_sent` claims a message, and
+    // its evidence is the queued job rather than the 200 the endpoint would answer either way.
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(emit).request(
+      "/auth/sign-in/magic-link",
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify({ email: "link@test.com", callbackURL: "http://localhost/cb" }),
+      },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await queuedEmails()).toEqual([{ to_address: "link@test.com", template: "magicLink" }]);
+    expect(events.filter((e) => e.action === "auth/magic_link_sent").map((e) => e.outcome)).toEqual(["success"]);
   });
 });

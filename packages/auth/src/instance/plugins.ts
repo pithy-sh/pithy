@@ -9,6 +9,7 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { jwt } from "better-auth/plugins/jwt";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { z } from "zod";
+import { markMessageQueued } from "../audit/evidence";
 import { authErrorTranslations } from "../i18n/errorCopy";
 import type { SendAuthEmail } from "./auth";
 
@@ -96,7 +97,17 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
     magicLink({
       expiresIn: deps.verificationExpiresIn,
       disableSignUp: deps.disableSignUp,
-      sendMagicLink: async ({ email, url, token }) => {
+      /**
+       * **The only place that knows a message exists** — hence `markMessageQueued`, and see
+       * `../audit/evidence.ts` for why the two send events need it. `auth/magic_link_sent` claims a
+       * message; the endpoint answers `200 {"status":true}` whether or not one was made, and the `after`
+       * hook that writes the row cannot see the difference.
+       *
+       * Marked **before** the await: the send is handed over synchronously, while the rest of the
+       * callback may be deferred past the response entirely.
+       */
+      sendMagicLink: async ({ email, url, token }, ctx) => {
+        markMessageQueued((ctx as { context?: unknown } | undefined)?.context);
         await deps.sendEmail({ to: email, template: "magicLink", token, url });
       },
     }),
@@ -104,8 +115,19 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
       otpLength: deps.otpLength,
       expiresIn: deps.verificationExpiresIn,
       disableSignUp: deps.disableSignUp,
-      sendVerificationOTP: async ({ email, otp, type }) => {
+      /**
+       * **Two ways this declines, and neither shows on the wire.** Better Auth calls this only after its
+       * own user-enumeration guard has passed — an unregistered address that is not signing up gets the
+       * verification row dropped and `200 {"success":true}`, deliberately, so a caller cannot tell a
+       * registered address from a stranger's. And the kit declines again below: an OTP is a sign-in
+       * credential here, and no other `type` is a message this product sends.
+       *
+       * So the mark sits past the early return, beside the send itself. That is what `auth/otp_sent` has
+       * to mean, and reading it off the status wrote `success` for every one of these (#627).
+       */
+      sendVerificationOTP: async ({ email, otp, type }, ctx) => {
         if (type !== "sign-in") return;
+        markMessageQueued((ctx as { context?: unknown } | undefined)?.context);
         await deps.sendEmail({ to: email, template: "otp", code: otp });
       },
     }),

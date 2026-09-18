@@ -7,15 +7,23 @@ import type { AuthDatabase } from "../data/tables";
  * **Evidence that the thing an event claims actually happened, carried from the database hook that saw
  * it to the emitter that writes the row.**
  *
- * Both halves of this file exist for the same reason, which is the reason #627 exists: an audit event is
+ * Every part of this file exists for the same reason, which is the reason #627 exists: an audit event is
  * a claim about the world, and the place a request is answered is not always the place that knows
  * whether the claim is true. `/sign-out` answers `200 {"success":true}` having found no session to
- * delete; `deleteWithHooks` runs `delete.after` on a row it read rather than on a row it removed. In
- * both cases the endpoint is not lying — the event was.
+ * delete; `/email-otp/send-verification-otp` answers `200 {"success":true}` having declined to send;
+ * `deleteWithHooks` runs `delete.after` on a row it read rather than on a row it removed. In none of
+ * those is the endpoint lying — the event was.
  *
- * Neither marker is request state Better Auth offers, so both are held in a `WeakSet` keyed by an object
+ * **A non-2xx is sufficient evidence of a refusal and is nowhere near necessary.** That is the general
+ * shape: a status says whether the *request* was answered, and some events claim something stronger than
+ * that — a message queued, a session gone, a row removed. Those have to be observed where they happen,
+ * which is never the `after` hook that writes the row.
+ *
+ * None of these markers is request state Better Auth offers, so each is held weakly, keyed by an object
  * the runtime already scopes correctly: the account row instance for a removal, and the endpoint's own
- * per-dispatch context object for a session. Weakly, so nothing here outlives the request that made it.
+ * per-dispatch context object for a session and for a queued message (`dispatchAuthEndpoint` builds a
+ * fresh `context` per call, and hands the same object to database hooks, send callbacks and the `after`
+ * hook alike). Weakly, so nothing here outlives the request that made it.
  */
 
 /** Whose session it was. `/sign-out` reads no session of its own, so this is the only actor available. */
@@ -49,6 +57,36 @@ export function markSessionEnded(requestContext: unknown, userId: unknown): void
 export function sessionEndedDuring(requestContext: unknown): EndedSession | null {
   if (typeof requestContext !== "object" || requestContext === null) return null;
   return endedSessions.get(requestContext) ?? null;
+}
+
+/** Requests that handed a message to the email seam, keyed by that request's Better Auth context object. */
+const queuedMessages = new WeakSet<object>();
+
+/**
+ * Record that this request handed a magic link or an OTP to the email seam.
+ *
+ * **Called from the send callback, which is the only place that knows.** `auth/magic_link_sent` and
+ * `auth/otp_sent` claim a message exists, and the two send endpoints answer `200 {"success":true}`
+ * whether or not one does. `/email-otp/send-verification-otp` declines twice over: Better Auth drops the
+ * verification row and returns success rather than confirm that an address is registered
+ * (`plugins/email-otp/routes.mjs`), and the kit's own `sendVerificationOTP` returns without queuing for
+ * any `type` but `sign-in`. Neither decline is visible from the status, from the body, or from anywhere
+ * the `after` hook can reach.
+ *
+ * **Marked at the call, not after it.** The message is handed over synchronously, before the first
+ * `await` in the callback, while `runInBackgroundOrAwait` may defer the rest of it past the `after` hook
+ * entirely. So the claim this records is precisely *the endpoint handed a message to the sender* — which
+ * is what these two events have ever been able to mean, since delivery belongs to a Workflow that runs
+ * long after the response.
+ */
+export function markMessageQueued(requestContext: unknown): void {
+  if (typeof requestContext !== "object" || requestContext === null) return;
+  queuedMessages.add(requestContext);
+}
+
+/** Whether this request queued a message. The two send paths' evidence. */
+export function messageQueuedDuring(requestContext: unknown): boolean {
+  return typeof requestContext === "object" && requestContext !== null && queuedMessages.has(requestContext);
 }
 
 /**

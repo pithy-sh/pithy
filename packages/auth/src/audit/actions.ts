@@ -22,13 +22,36 @@ export const AuthAuditActions = {
    * carries to the emitter; with no session gone there is no event, because nothing happened.
    */
   signout: "auth/signout",
-  /** A session was exchanged for a fresh access token, rotating the refresh credential. */
+  /**
+   * A session was exchanged for a fresh access token, rotating the refresh credential. The evidence is
+   * the token in the response — an endpoint's own payload is what it claims to have made — rather than
+   * the 200 around it.
+   */
   tokenRefresh: "auth/token_refresh",
   /** A consumed (already-rotated) refresh token was replayed — reuse detected, the family revoked. Outcome `denied`. */
   tokenReuseDetected: "auth/token_reuse_detected",
-  /** A magic link was requested and enqueued for delivery. */
+  /**
+   * A magic link was requested and **enqueued for delivery** — the second half is the claim, and it is
+   * not what the status says. Both send endpoints answer 200 whether or not a message was made, so the
+   * evidence is the message reaching the email seam; with none, the row is `denied`, because a send this
+   * deployment declined to make is an attempt worth counting and never a send.
+   */
   magicLinkSent: "auth/magic_link_sent",
-  /** An email OTP was requested and enqueued for delivery. */
+  /**
+   * An email OTP was requested and enqueued for delivery. Same claim, same evidence — and this is the
+   * endpoint that made the point (#627).
+   *
+   * It declines twice over and answers `200 {"success":true}` both times. Better Auth drops the
+   * verification row and returns success rather than confirm that an address is registered, which is the
+   * whole reason the response is shaped that way; and the kit's own `sendVerificationOTP` returns without
+   * queuing for any `type` but `sign-in`, because an OTP is a sign-in credential here. Read off the
+   * status, every one of those wrote a send that never happened.
+   *
+   * **The trail records the decline; the response still does not.** Writing `denied` here changes nothing
+   * a caller can see — the status, the body and the headers are the endpoint's — and the row names an
+   * action, an outcome, an actor and a correlation, never an address. The enumeration guard survives the
+   * audit trail knowing better.
+   */
   otpSent: "auth/otp_sent",
   /**
    * A social account row was created — from here on that provider can sign in as this user.
@@ -57,10 +80,13 @@ export const AuthAuditActions = {
    * rather than the one endpoint somebody remembered to wire. Both are driven in `emit.workers.test.ts`:
    * a sentence claiming a class is covered is not the same as a test that reddens when it stops being.
    *
-   * **The actor is whoever caused it, which on a cascade is nobody.** `delete.after` fires for the
-   * cascade as readily as for an unlink, so attributing the row to the account's owner would say that
-   * person detached their own providers when an operator deleted them — from the operator's address. The
-   * owner is the *subject* and rides in `metadata.userId`; `actorId` is the caller or nothing.
+   * **The actor is whoever caused it, which on a cascade is whoever drove the cascade.** `delete.after`
+   * fires for the cascade as readily as for an unlink, so attributing the row to the account's owner
+   * would say that person detached their own providers when an operator deleted them — from the
+   * operator's address. The owner is the *subject* and rides in `metadata.userId`; `actorId` is the
+   * caller. An operator reaching the cascade through an endpoint **is** that caller and is named, which
+   * is right, and is what `../audit/emit.ts`'s three cases mean: `system` is the row with no request
+   * behind it at all, not the row a cascade wrote.
    */
   oauthUnlinked: "auth/oauth_unlinked",
   /** A device was registered or updated from sign-in metadata. */

@@ -5,7 +5,13 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
-import { claimAccountRemoval, markSessionEnded, removalWasClaimed, sessionEndedDuring } from "../audit/evidence";
+import {
+  claimAccountRemoval,
+  markSessionEnded,
+  messageQueuedDuring,
+  removalWasClaimed,
+  sessionEndedDuring,
+} from "../audit/evidence";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
@@ -141,10 +147,16 @@ interface HookContext {
  *
  * **The context is absent as often as it is present, and that absence is information.** A hook reached
  * from `/unlink-account` gets the full endpoint context with the caller's session on it; one reached
- * from the user-deletion cascade, or from an admin path calling `internalAdapter` directly, gets `null`.
- * So `fromRequest` distinguishes *nobody was calling* from *a caller with no session*, which is the
- * difference between `system` and `anonymous` in the row — and it is what stops a cascade from being
+ * from a script, a queue consumer or a migration calling `internalAdapter` outside any dispatch gets
+ * `null`. So `fromRequest` distinguishes *nobody was calling* from *a caller with no session*, which is
+ * the difference between `system` and `anonymous` in the row — and it is what stops a cascade from being
  * written as the account owner's own action, which is what #627's first cut did.
+ *
+ * **It is not, and must not be read as, "the cascade is `system`".** `getWithHooks` resolves its context
+ * from `getCurrentAuthContext()`, which is async-scoped to the dispatch, so a cascade reached through an
+ * endpoint arrives here with that endpoint's session and headers — and the operator who drove it is
+ * named as the actor of every row it writes, correctly. What this function reads is who was calling, and
+ * a cascade is not a special kind of caller.
  */
 function callerOf(ctx: HookContext | null | undefined): {
   callerId: string | null;
@@ -484,6 +496,14 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
        * that minted a token — and wrote `auth/token_refresh outcome=success` for a request that was
        * refused. `ctx.context.returned` is the only thing that tells them apart, and the judgment is
        * `emitAfterRequest`'s so it is made once for every path rather than per wiring.
+       *
+       * **The two markers are passed because a refusal can answer 200.** `/sign-out` deletes nothing and
+       * says so cheerfully; `/email-otp/send-verification-otp` declines to send and answers
+       * `{"success":true}` on purpose, so a caller cannot tell a registered address from a stranger's.
+       * Neither decline is visible from anything this hook holds, so each audited path names what must
+       * have *happened* and `../audit/evidence.ts` carries it here from the place that saw it — the
+       * session row going away, the message reaching the email seam. Reading them is all this does: the
+       * response has already been decided and is not touched.
        */
       after: createAuthMiddleware(async (ctx) => {
         const newSession = ctx.context.newSession;
@@ -500,6 +520,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
           currentUserId: ctx.context.session?.user?.id ?? null,
           returned: ctx.context.returned,
           endedSession: sessionEndedDuring(ctx.context),
+          messageQueued: messageQueuedDuring(ctx.context),
         });
       }),
     },

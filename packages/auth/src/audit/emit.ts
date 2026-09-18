@@ -33,28 +33,55 @@ async function safeEmit(emit: AuditEmit, event: Parameters<AuditEmit>[0]): Promi
 }
 
 /**
- * What an endpoint must have *done* for its path event to be a success, beyond answering without an
- * error. `null` means the response is its own evidence: a magic link either went to the queue or the
- * endpoint refused, and there is no third state.
+ * What an endpoint must have *done* for its path event to be a success.
  *
- * **`"session-ended"` exists because `/sign-out` has one.** It answers `200 {"success":true}` whether or
- * not it found a session to delete, so a caller with no session — an expired cookie, a bearer token
- * (which `/sign-out` does not read), a bare `curl` — got a success response and a success row for a
- * sign-out that signed nobody out. The endpoint is not lying; `auth/signout` was. The evidence is the
- * session row disappearing, which `session.delete.after` observes.
+ * **There is no "the response is its own evidence" member, and its removal is #627's last half.** A
+ * non-2xx is sufficient evidence of a refusal and is nowhere near necessary: `/sign-out` answers
+ * `200 {"success":true}` having deleted nothing, and `/email-otp/send-verification-otp` answers
+ * `200 {"success":true}` having declined to send — Better Auth drops the verification row and returns
+ * success rather than confirm that an address is registered (`plugins/email-otp/routes.mjs`), and the
+ * kit's own `sendVerificationOTP` returns without queuing for any `type` but `sign-in`. Both are
+ * deliberate; neither is visible from the status or the body. So every entry names something that must
+ * have *happened*, and `emitAfterRequest` writes `success` only when it did.
+ *
+ * Each member is observed by {@link EVIDENCE_OBSERVERS}, and a member added here does not compile until
+ * that record names how to see it.
+ *
+ * - `"session-ended"` — a session row disappeared, which `session.delete.after` observes. `/sign-out`
+ *   reads no session of its own, so this is also the only actor it can name.
+ * - `"message-queued"` — a magic link or an OTP was handed to the email seam, which the send callback in
+ *   `../instance/plugins.ts` observes.
+ * - `"token-minted"` — the response actually carries a token, which is readable from `returned` because
+ *   an endpoint's own payload is what it claims to have made.
  */
-export type PathEvidence = "session-ended" | null;
+export type PathEvidence = "session-ended" | "message-queued" | "token-minted";
+
+/**
+ * What a *completed* response with no evidence behind it means, and therefore what to record for it.
+ *
+ * `"denied"` where a rule this deployment holds declined to act — the enumeration guard, a send the kit
+ * will not make. Those are the rows an abuse count is made of, and `denied` is core's word for "an
+ * authorization gate blocked it".
+ *
+ * `"silent"` where nothing was attempted and nothing refused: `/sign-out` with no session confirms a
+ * state that already held. There is no event, because nothing happened. (A *refused* request still
+ * writes `denied` on every path, silent ones included — the attempt was made and turned away.)
+ */
+export type WithoutEvidence = "denied" | "silent";
 
 /** One audited endpoint: the action its path means, and what must have happened for that to be true. */
 export interface PathEvent {
   /** The action code this path writes. */
   action: AuthAuditAction;
-  /** What must be observably true for the action to have happened; `null` when a completed response says it. */
+  /** What must be observably true for the action to have happened. Required: there is no unevidenced claim. */
   evidence: PathEvidence;
+  /** What a completed response with that evidence absent is, and therefore what is recorded for it. */
+  withoutEvidence: WithoutEvidence;
 }
 
 /**
- * The endpoints whose *path* names an audit action, and what "success" means for each.
+ * The endpoints whose *path* names an audit action, what "success" means for each, and what a completed
+ * response without it means instead.
  *
  * **A table rather than a chain of `if`s so the rule can be asserted over all of it.** #627's second
  * half was that every entry here wrote `outcome: "success"` for a request the endpoint had refused:
@@ -64,16 +91,30 @@ export interface PathEvent {
  * probe would have fixed those two; the exposure was every entry, including ones added later. So the
  * rule is `emitAfterRequest` reading the outcome, and the gate walks this table.
  *
+ * **Its third half was that a refusal can answer 200**, which the first fix could not see, and the
+ * correction is the same shape: not a fifth branch for the endpoint somebody probed, but a column every
+ * entry must fill. `evidence` has no "the response says so" member, so an entry that claims an outcome
+ * it cannot evidence does not compile, and `emit.test.ts` walks the table asserting that an entry whose
+ * evidence is absent never writes `success`.
+ *
  * **No path maps to `oauth_linked`, and that is the correction #627 made first.** `/link-social` mints
  * a redirect, which is a request rather than an outcome; `/callback/:id` completes a sign-in *or* a link
  * and cannot be told apart by its path. The event that means "this provider can sign in as this user" is
  * the account row, so it is emitted from the row — see `emitProviderAccountChanged`.
  */
 export const PATH_EVENTS: Readonly<Record<string, PathEvent>> = {
-  "/sign-in/magic-link": { action: AuthAuditActions.magicLinkSent, evidence: null },
-  "/email-otp/send-verification-otp": { action: AuthAuditActions.otpSent, evidence: null },
-  "/sign-out": { action: AuthAuditActions.signout, evidence: "session-ended" },
-  "/token": { action: AuthAuditActions.tokenRefresh, evidence: null },
+  "/sign-in/magic-link": {
+    action: AuthAuditActions.magicLinkSent,
+    evidence: "message-queued",
+    withoutEvidence: "denied",
+  },
+  "/email-otp/send-verification-otp": {
+    action: AuthAuditActions.otpSent,
+    evidence: "message-queued",
+    withoutEvidence: "denied",
+  },
+  "/sign-out": { action: AuthAuditActions.signout, evidence: "session-ended", withoutEvidence: "silent" },
+  "/token": { action: AuthAuditActions.tokenRefresh, evidence: "token-minted", withoutEvidence: "denied" },
 };
 
 /** The session just created on a sign-in endpoint, plus the (already-authenticated) caller, if any. */
@@ -93,7 +134,37 @@ export interface AfterRequest {
    * the only actor it can name, since it declares no session middleware and reads the cookie itself.
    */
   endedSession: EndedSession | null;
+  /**
+   * Whether this request handed a magic link or an OTP to the email seam — the evidence the two send
+   * paths need, since both answer `200 {"success":true}` whether or not a message exists.
+   */
+  messageQueued: boolean;
 }
+
+/**
+ * Whether the response actually carries a token. `/token`'s evidence, read from the endpoint's own
+ * payload — `dispatchAuthEndpoint` forces `asResponse: false` before calling the handler, so
+ * `ctx.context.returned` is the object `ctx.json()` was given rather than a `Response`.
+ */
+function mintedAToken(returned: unknown): boolean {
+  if (typeof returned !== "object" || returned === null) return false;
+  const token = (returned as { token?: unknown }).token;
+  return typeof token === "string" && token.length > 0;
+}
+
+/**
+ * How each kind of evidence is seen, one observer per {@link PathEvidence} member.
+ *
+ * **A total record, so the union cannot outgrow it.** A new kind of evidence added to the type without
+ * a way to observe it is a compile error here, and a new entry in {@link PATH_EVENTS} cannot name a kind
+ * that is not in the union. That is the whole gate: an entry that claims an outcome it cannot evidence
+ * does not exist.
+ */
+export const EVIDENCE_OBSERVERS: Readonly<Record<PathEvidence, (req: AfterRequest) => boolean>> = {
+  "session-ended": (req) => req.endedSession !== null,
+  "message-queued": (req) => req.messageQueued,
+  "token-minted": (req) => mintedAToken(req.returned),
+};
 
 /**
  * Whether the endpoint refused this request.
@@ -118,6 +189,17 @@ export function wasRefused(returned: unknown): boolean {
  * is how abuse becomes visible), and `denied` is first-class in core's schema for exactly this. It never
  * writes the sign-in pair: a refusal created no session, and `newSession` being set at all would be a
  * contradiction rather than something to record.
+ *
+ * **Then evidence, because a completed response is not the same as a completed action.** A path event is
+ * `success` only when its declared evidence is there; without it the entry's `withoutEvidence` says what
+ * a completed-but-empty response is, and `denied` or nothing is written instead.
+ *
+ * **Nothing here changes what the caller is told, and on one path that is load-bearing.**
+ * `/email-otp/send-verification-otp` answers 200 for an address it declined precisely so that a caller
+ * cannot tell a registered address from an unregistered one; this function is an `after` hook that
+ * writes an audit row and returns, so the status, the body and the headers are whatever the endpoint
+ * decided. The row names no address either — action, outcome, actor and correlation, as every other path
+ * event does. The trail may know; the response does not say.
  */
 export async function emitAfterRequest(emit: AuditEmit, req: AfterRequest): Promise<void> {
   const corr = correlation(req.headers);
@@ -144,12 +226,14 @@ export async function emitAfterRequest(emit: AuditEmit, req: AfterRequest): Prom
   }
   const event = PATH_EVENTS[req.path];
   if (!event) return;
+  // A refusal is never evidence of the action, whatever else is lying around from earlier in the request.
+  const happened = !refused && EVIDENCE_OBSERVERS[event.evidence](req);
   // Nothing happened and nothing was refused: no row, because there is no event to record.
-  if (!refused && event.evidence === "session-ended" && !req.endedSession) return;
+  if (!happened && !refused && event.withoutEvidence === "silent") return;
   const actorId = req.newSession?.userId ?? req.currentUserId ?? req.endedSession?.userId ?? undefined;
   await safeEmit(emit, {
     action: event.action,
-    outcome: refused ? "denied" : "success",
+    outcome: happened ? "success" : "denied",
     actorType: actorId ? "user" : "anonymous",
     actorId,
     ...corr,
@@ -334,10 +418,21 @@ const PROVIDER_CHANGE_ACTIONS: Record<ProviderChange, AuthAuditAction> = {
  * own providers — from the operator's IP. A trail that misattributes an actor is worse than one that is
  * silent, because it reads as evidence. Three cases, and only three:
  *
- * - An authenticated caller — `/unlink-account`, a link from a signed-in session — is `user`, named.
- * - A request with no session (a first social sign-up completing at `/callback/:id`) is `anonymous`.
- * - No request at all (the user-deletion cascade, an admin path calling `internalAdapter` directly) is
- *   `system`, with no actor id and no ip: there is no caller to name and nothing to borrow one from.
+ * - An authenticated caller — `/unlink-account`, a link from a signed-in session, an operator's console
+ *   endpoint — is `user`, named.
+ * - A request with no session — a first social sign-up completing at `/callback/:id`, a server-to-server
+ *   call holding no credential — is `anonymous`: an address, and no identity.
+ * - No request at all is `system`, with no actor id and no ip: there is no caller to name and nothing to
+ *   borrow one from.
+ *
+ * **A cascade is not a fourth case, and an earlier revision of this list said it was.** `deleteWithHooks`
+ * resolves its context from `getCurrentAuthContext()`, which is async-scoped to the dispatch, so the
+ * cascade `internalAdapter.deleteUser` runs carries whatever context reached it: an operator deleting
+ * somebody through an endpoint is named as the actor of every row it writes, with their address, because
+ * they caused every one of them. `system` is what *no request* looks like — a queue consumer, a script,
+ * a migration — not what a cascade looks like, and the two were written down here as the same thing. The
+ * rule that does hold everywhere is the one above it: the account's owner is never the actor merely for
+ * owning the row. Both shapes are driven in `emit.workers.test.ts` rather than asserted here.
  *
  * Unparseable input is dropped rather than thrown. The write it describes has already happened, and an
  * audit failure must never break the action it records — the same contract `safeEmit` holds.
