@@ -251,9 +251,63 @@ describe("the request handed to Better Auth", () => {
     ).rejects.toBeInstanceOf(PithyError);
   });
 
-  test("is left alone on a GET, which carries no body to guard", async () => {
+  test("refuses the fragment in a GET's query, which is where `oauthPopup()` reads it from", async () => {
+    // Round 5's first hole, and it is a `GET` with no body at all. `better-auth/plugins`' own
+    // `oauthPopup()` stores `errorURL: c.query.errorCallbackURL` off exactly this request
+    // (`oauth-popup/index.mjs:143`), so a guard that opened on `request.body` guarded nothing here.
     const request = new Request(`${REQUEST}?errorCallbackURL=https://app.example/sign-in%23x`);
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("is left alone on a GET whose query names no errorCallbackURL", async () => {
+    const request = new Request(`${REQUEST}?callbackURL=https://app.example/app`);
     expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
+  });
+
+  test("normalizes a query value in place, keeping the adopter's other parameters and their order", async () => {
+    const request = new Request(`${REQUEST}?tenant=acme&errorCallbackURL=https%3A%2F%2Fapp.example%2Fx%3F&p=github`);
+    const guarded = await guardErrorCallbackURL(request, REQUEST);
+    expect([...new URL(guarded.url).searchParams]).toEqual([
+      ["tenant", "acme"],
+      ["errorCallbackURL", "https://app.example/x"],
+      ["p", "github"],
+    ]);
+  });
+
+  test("is left alone when the query names the field twice, which the router hands over as an array", async () => {
+    // `router.mjs:54` folds repeats into an array, and an array is not the string `errorURL` is stored
+    // from. Refusing it would be the guard reaching past the dependency, which is the other defect.
+    const request = new Request(`${REQUEST}?errorCallbackURL=%2Fa&errorCallbackURL=%2Fsign-in%23x`);
+    expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
+  });
+
+  test("refuses a query fragment that arrived percent-encoded, because the router decodes it", async () => {
+    // `c.query` is built from `URL.searchParams`, so `%23` is a `#` by the time Better Auth stores it.
+    // A guard reading the raw query string would have seen no fragment at all.
+    const request = new Request(`${REQUEST}?errorCallbackURL=https%3A%2F%2Fapp.example%2Fsign-in%2523x`);
+    expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
+    const encoded = new Request(`${REQUEST}?errorCallbackURL=https%3A%2F%2Fapp.example%2Fsign-in%23x`);
+    await expect(guardErrorCallbackURL(encoded, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("guards a query value on a request that also carries a body", async () => {
+    const request = new Request(`${REQUEST}?errorCallbackURL=%2Fsign-in%23x`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "github" }),
+    });
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("normalizes a query value and leaves the body it arrived with readable", async () => {
+    const request = new Request(`${REQUEST}?errorCallbackURL=https%3A%2F%2Fapp.example%2Fx%3F`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "github" }),
+    });
+    const guarded = await guardErrorCallbackURL(request, REQUEST);
+    expect(new URL(guarded.url).searchParams.get("errorCallbackURL")).toBe("https://app.example/x");
+    expect(await guarded.json()).toEqual({ provider: "github" });
   });
 
   test("is left alone when the body decodes to no keyed object, as `text/plain` does", async () => {
@@ -349,6 +403,77 @@ describe("the request handed to Better Auth", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: '{"errorCallbackURL": ',
+    });
+    expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
+  });
+
+  test("refuses the fragment in a multipart body whose media type also names the urlencoded encoding", async () => {
+    // Round 5's second hole. better-call's branch predicates read the whole `content-type` and match
+    // urlencoded first; `formData()` dispatches on the essence. So this header sends `getBody` into the
+    // urlencoded branch and the multipart bytes are decoded there — while a guard decoding the same
+    // branch with `new URLSearchParams(text)` found no field and handed the request on untouched.
+    const boundary = "----pithy625";
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: {
+        "content-type": `multipart/form-data; note=application/x-www-form-urlencoded; boundary=${boundary}`,
+      },
+      body: `--${boundary}\r\ncontent-disposition: form-data; name="errorCallbackURL"\r\n\r\nhttps://app.example/sign-in#x\r\n--${boundary}--\r\n`,
+    });
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("re-encodes that body under the media type it arrived as, parameters and all", async () => {
+    // The rebuild mints a new boundary, so the header has to be rewritten rather than kept or dropped.
+    // Kept, it names parts that are gone. Dropped whole, `note=` goes with it — and that parameter is
+    // what puts the request in `getBody`'s stringifying branch, so dropping it hands Better Auth
+    // different values than it would have had.
+    const boundary = "----pithy625";
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: {
+        "content-type": `multipart/form-data; note=application/x-www-form-urlencoded; boundary=${boundary}`,
+      },
+      body: `--${boundary}\r\ncontent-disposition: form-data; name="provider"\r\n\r\ngithub\r\n--${boundary}\r\ncontent-disposition: form-data; name="errorCallbackURL"\r\n\r\nhttps://app.example/x?\r\n--${boundary}--\r\n`,
+    });
+    const guarded = await guardErrorCallbackURL(request, REQUEST);
+    const rebuilt = guarded.headers.get("content-type") ?? "";
+    expect(rebuilt).toContain("multipart/form-data");
+    expect(rebuilt).toContain("note=application/x-www-form-urlencoded");
+    expect(rebuilt).not.toContain(boundary);
+    const form = await guarded.formData();
+    expect([form.get("provider"), form.get("errorCallbackURL")]).toEqual(["github", "https://app.example/x"]);
+  });
+
+  test("reads a file part as the string the dependency's stringifying branch would have made of it", async () => {
+    // `result[key] = value.toString()` there, so a `File` reaches Better Auth as `"[object File]"` — a
+    // string it acts on, and so a string this guard has to rule on. Under a plain multipart media type
+    // the same part stays a `File`, which Better Auth refuses itself, and the guard leaves it alone.
+    const boundary = "----pithy625";
+    const filePart = `--${boundary}\r\ncontent-disposition: form-data; name="errorCallbackURL"; filename="f.txt"\r\ncontent-type: text/plain\r\n\r\n/sign-in\r\n--${boundary}--\r\n`;
+    const plain = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      body: filePart,
+    });
+    expect(await guardErrorCallbackURL(plain, REQUEST)).toBe(plain);
+
+    const stringifying = new Request(REQUEST, {
+      method: "POST",
+      headers: {
+        "content-type": `multipart/form-data; note=application/x-www-form-urlencoded; boundary=${boundary}`,
+      },
+      body: filePart,
+    });
+    await expect(guardErrorCallbackURL(stringifying, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("is left alone when the body will not decode under the media type it claims", async () => {
+    // `formData()` throws on these bytes and so does the dependency's; nothing reaches an endpoint.
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data; boundary=----pithy625" },
+      body: "not multipart at all",
     });
     expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
   });

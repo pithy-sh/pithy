@@ -12,6 +12,8 @@ import { email } from "@pithy-sh/email/src/capability";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
+import type { BetterAuthPlugin } from "better-auth";
+import { oauthPopup } from "better-auth/plugins";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthConfig, type AuthWiring } from "../capability";
@@ -81,7 +83,7 @@ function appEnv(): Record<string, unknown> {
   };
 }
 
-function buildWiring(onResolved: () => void, allowSignUp: boolean): AuthWiring {
+function buildWiring(onResolved: () => void, allowSignUp: boolean, plugins: BetterAuthPlugin[] = []): AuthWiring {
   const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
   return {
     config: AuthConfig.parse({
@@ -90,6 +92,8 @@ function buildWiring(onResolved: () => void, allowSignUp: boolean): AuthWiring {
       trustedOrigins: ["http://localhost"],
       // The provider's sign-up policy is the suite's one variable. See `POLICIES`.
       github: { enabled: true, allowSignUp },
+      // Empty for every case but the popup one, which composes the adopter seam the guard has to cover.
+      plugins,
     }),
     // The provider hands over one unverified address. Better Auth trusts a resolver verbatim, so this is
     // the whole of what the callback knows about the caller.
@@ -600,5 +604,86 @@ describe("a body the guard now parses is still the body Better Auth is handed", 
   test("a JSON sign-in whose value needs normalizing still starts, and still mints state", async () => {
     const started = await startSignIn("http://localhost/sign-in?");
     expect({ status: started.status, minted: started.states > 0 }).toEqual({ status: 200, minted: true });
+  });
+});
+
+/**
+ * Round 5: the value also arrives in a query string, and the guard only read bodies (#625).
+ *
+ * `guardErrorCallbackURL` opened `if (!request.body) return request`. `better-auth/plugins`' own
+ * `oauthPopup()` takes the field off a **GET** — `oauth-popup/index.mjs:143` stores
+ * `errorURL: c.query.errorCallbackURL` — so the fragment walked in untouched and round 3's oracle came
+ * back whole for anyone composing it.
+ *
+ * **The kit composes no such plugin, which is why this is driven rather than argued.** `AuthConfig.plugins`
+ * is a documented seam, `assertAdditivePlugins` permits this id, and the plugin is the dependency's own.
+ * Composing it here is what an adopter does, with the kit's real routes over real D1 either way — so
+ * what the cases assert is what that adopter's Worker answers, not what a function returns.
+ */
+const POPUP_ORIGIN = "http://localhost";
+
+/** Start an OAuth popup through a composed `oauthPopup()`, with the field in the query where it reads it. */
+async function startPopup(errorCallbackURL: string): Promise<Started> {
+  const wiring = buildWiring(() => {}, false, [oauthPopup()]);
+  const app = buildApp(wiring, async () => {});
+  const query = new URLSearchParams({
+    provider: "github",
+    popupOrigin: POPUP_ORIGIN,
+    callbackURL: "http://localhost/app",
+    errorCallbackURL,
+  });
+  const response = await app.request(
+    `/auth/oauth-popup/start?${query.toString()}`,
+    { redirect: "manual", headers: { origin: POPUP_ORIGIN } },
+    appEnv(),
+  );
+  const states = await env.DB.prepare("select count(*) as n from pithy_auth_verifications").first<{ n: number }>();
+  return { status: response.status, body: await response.text(), states: states?.n ?? -1 };
+}
+
+describe("a fragment smuggled through the query, where an adopter's popup plugin reads it", () => {
+  test("is refused at the door, naming the field, with no state minted", async () => {
+    const refused = await startPopup("http://localhost/sign-in#");
+
+    expect({ status: refused.status, states: refused.states }).toEqual({ status: 400, states: 0 });
+    expect(refused.body).toContain("errorCallbackURL");
+    for (const leaked of PROVIDER_REFUSAL_CODES) {
+      expect(refused.body).not.toContain(leaked);
+    }
+  });
+
+  test("a usable value in the same query still starts the flow, and still mints state", async () => {
+    // The reach change must not cost a working request. This one goes the whole way: the plugin writes
+    // its state row and answers the provider's authorize URL.
+    const started = await startPopup("http://localhost/sign-in?provider=github");
+    expect({ status: started.status, minted: started.states > 0 }).toEqual({ status: 302, minted: true });
+  });
+
+  test("a value needing only normalizing is normalized rather than refused", async () => {
+    const started = await startPopup("http://localhost/sign-in?");
+    expect({ status: started.status, minted: started.states > 0 }).toEqual({ status: 302, minted: true });
+  });
+});
+
+/**
+ * Round 5's other hole: two decoders where the dependency has one.
+ *
+ * better-call's branch predicates `includes()` the whole `content-type`, urlencoded first; the decode
+ * that branch performs — `request.formData()` — dispatches on the media type's **essence**. A header
+ * whose essence is multipart and which carries the urlencoded name in a parameter therefore sent both
+ * programs into the urlencoded branch, where `formData()` found the field and the guard's
+ * `new URLSearchParams(text)` did not.
+ */
+describe("a fragment smuggled behind a media type the two programs read differently", () => {
+  test("is refused at the door, naming the field, with no state minted", async () => {
+    const refused = await startSignInWithBody(
+      `multipart/form-data; note=application/x-www-form-urlencoded; boundary=${MULTIPART_BOUNDARY}`,
+      multipartBody({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL: SMUGGLED }),
+    );
+    expect({ status: refused.status, states: refused.states }).toEqual({ status: 400, states: 0 });
+    expect(refused.body).toContain("errorCallbackURL");
+    for (const leaked of PROVIDER_REFUSAL_CODES) {
+      expect(refused.body).not.toContain(leaked);
+    }
   });
 });
