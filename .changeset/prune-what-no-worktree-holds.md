@@ -1,0 +1,5 @@
+---
+"@pithy-sh/cli": minor
+---
+
+`pithy feature prune` frees the port blocks of features whose worktree is gone. `feature destroy` frees a block, but only from inside the worktree, so a worktree removed any other way — `git worktree prune`, a teardown script of your own, a directory deleted by hand — stranded its block, and the sweep of deleted checkouts never reached it, because the checkout it is filed under was still there. A block is in use when some checkout of the repository would bind it: the branch each worktree has checked out, main checkout included, `local:<path>` for a detached one, and the branch each worktree's `.dev.config.json` pins. The checkout it runs from is never freed, and no other checkout's blocks are judged. It frees under the registry lock in one read-modify-write, and refuses outside a git repository. `--dry-run` reads without the lock and writes nothing; `--json` carries `command`, `root`, `dryRun` and `freedBlocks`. `pithy doctor` marks the same blocks `← no worktree; pithy feature prune`, and its `--json` entries carry `orphaned`, decided by the function the command frees by. Allocation does not run it for you.

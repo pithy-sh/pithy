@@ -2109,6 +2109,7 @@ describe("port registry listing", () => {
     size: 20,
     own: true,
     onDisk: true,
+    orphaned: false,
     ...over,
   });
 
@@ -2167,6 +2168,24 @@ describe("port registry listing", () => {
     expect(renderDoctorText(report, "/home/u")).toContain(
       "            8947–8966  ~/code/old-thing — main  ← not on disk",
     );
+  });
+
+  test("names the command that frees a feature block no worktree holds", async () => {
+    // #637: the worktree is gone, the branch and the block outlived it, and nothing else in the toolchain
+    // would ever say so. The row is decided by the predicate `pithy feature prune` frees by.
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [
+            entry({ base: 8787 }),
+            entry({ branch: "feature/9-billing", block: 3, base: 8847, orphaned: true }),
+          ],
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("            8847–8866  feature/9-billing  ← no worktree; pithy feature prune");
+    expect(text).toContain("            8787–8806  main\n");
   });
 
   test("aligns the range column against the widest range, mixed widths included", async () => {
@@ -2232,8 +2251,8 @@ describe("port registry listing", () => {
       unreadable: null,
       detail: null,
       entries: [
-        { root: ACME, branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true },
-        { root: OTHER, branch: "main", block: 2, base: 8827, size: 20, own: false, onDisk: false },
+        { root: ACME, branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true, orphaned: false },
+        { root: OTHER, branch: "main", block: 2, base: 8827, size: 20, own: false, onDisk: false, orphaned: false },
       ],
     });
   });

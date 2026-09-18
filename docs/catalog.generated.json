@@ -314,6 +314,16 @@
       ]
     },
     {
+      "path": "feature prune",
+      "flags": [
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "feature sync",
       "flags": [
         "--skip-data",

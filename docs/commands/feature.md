@@ -10,9 +10,10 @@ Stand up an isolated environment for one issue — worktree, ports, local backen
 pithy feature create <slug> --issue <n> [--skip-install] [--json]
 pithy feature sync [--skip-data] [--json]
 pithy feature destroy [--env <environment>] [--local-only] [--json]
+pithy feature prune [--dry-run] [--json]
 ```
 
-`create` runs from the main checkout. `sync` and `destroy` run from inside the worktree, and take no name: the branch says which feature it is.
+`create` runs from the main checkout. `sync` and `destroy` run from inside the worktree, and take no name: the branch says which feature it is. `prune` runs from any checkout of the repository.
 
 **The feature's live Cloudflare environment is [`pithy provision --feature`](provision.md).** Provisioning is one job whichever environment it is for, so it is one command and one page. What lives here is the rest of a branch's lifecycle, which is a branch's alone.
 
@@ -28,7 +29,8 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 | `--skip-data` | `sync` | `false` | Reconcile ports only, leaving the backend alone |
 | `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recorded and recomputed feature name regardless |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
-| `--json` | all three | `false` | One line of machine-readable output |
+| `--dry-run` | `prune` | `false` | List the blocks it would free, and write nothing |
+| `--json` | all four | `false` | One line of machine-readable output |
 
 ## What it does
 
@@ -61,6 +63,14 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 **`destroy` does not need a Worker config to load.** Its local half — free the port block, prune the worktree — is derived from the branch and the root `pithy.config.ts`, and that is deliberate: the state it is most needed in is a `create` that failed partway, which leaves a worktree whose Worker config throws. A teardown that loaded it first was unavailable in exactly that state, and the port block leaked to a branch that no longer existed. The remote half genuinely cannot run without those configs, so an unloadable one is refused unless `--local-only` says the remote half is not wanted.
 
 Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every Worker script, D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+
+**`prune`** frees the port blocks of features whose worktree is gone. `destroy` frees a feature's block, but it has to run from inside the worktree to know which — so a worktree removed any other way, by `git worktree prune`, a teardown script of your own, or a directory deleted by hand, leaves nothing to run it from. The branch outlives the worktree, the block outlives both, and the sweep that frees a deleted checkout's blocks never reaches it, because the checkout it is filed under is still there. `prune` is how you get those ports back.
+
+**A block is in use when some checkout of the repository would bind it.** That is the branch checked out in each worktree `git worktree list` reports — the main checkout included, whichever branch it is on — plus `local:<path>` for a worktree in detached HEAD, plus the branch each worktree's `.dev.config.json` pins, because `pithy dev` keeps using the pinned branch's block whatever HEAD says now. A branch that exists but is checked out nowhere is not in use; if you check it out again, the next `pithy dev` there allocates it a block. **The checkout `prune` runs from is never freed**, whatever it is on. Only this checkout's blocks are judged — another project's are its own business, and a listing speaks for one repository.
+
+It frees under the registry lock, in one read-modify-write, and asks git for the listing inside the lock, so it cannot race a `pithy dev` or `pithy feature create` allocating at the same moment. `--dry-run` reads without the lock and writes nothing — not even the lock file — and the registry is byte-identical afterward. Outside a git repository it refuses: with no listing to ask, every block would look unused. [`pithy doctor`](doctor.md) marks the same blocks with `← no worktree; pithy feature prune`, decided by the same function, so the two cannot disagree.
+
+**It is not run for you.** Every allocation already sweeps checkouts that are gone from disk, for the price of one `stat` each. This question costs a `git` spawn, inside a lock held on a file every project on the machine shares, some of which are not repositories — and a branch you switched away from for an hour would lose the block its `.dev.config.json` still pins. A command you chose to run is the right price for that.
 
 Both provisioning and `destroy` are audited. The trail lands in the project's own top-level `dev` database rather than the feature's, because the feature's does not exist yet when provisioning starts and is deleted by teardown; each event names the environment it acted on.
 
@@ -131,6 +141,22 @@ $ pithy feature destroy --json
 | `branchDeleted` | `boolean` | Whether the feature branch was deleted. Only when it has been merged |
 | `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is 1 |
 
+```
+$ pithy feature prune --json
+{"command":"feature.prune","root":"/repo","dryRun":false,"freedBlocks":[{"branch":"feature/70-old-idea","block":2,"base":8827,"size":20}]}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `command` | `"feature.prune"` | The subcommand that produced the line |
+| `root` | `string` | The main checkout root whose blocks were judged — the registry key they are filed under |
+| `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was written when it is `true` |
+| `freedBlocks` | `object[]` | The blocks freed, in port order — or under `--dry-run`, the blocks that would be. Empty when nothing was orphaned |
+| `freedBlocks[].branch` | `string` | The registry key the block was filed under: a branch, or `local:<path>` for a checkout in detached HEAD |
+| `freedBlocks[].block` | `number` | The block index, 0-based |
+| `freedBlocks[].base` | `number` | The first port in the block |
+| `freedBlocks[].size` | `number` | How many ports the block spans |
+
 A teardown deletes real infrastructure one resource at a time, with no transaction across them. So a
 failure on the fourth delete still fails the command, and stdout still names the three that went: an
 operator finishing the teardown by hand needs the record more on that run than on the one that worked.
@@ -163,6 +189,13 @@ Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote envir
 **The project has no name.** `pithy.config.ts`'s `name` is the first segment of every feature resource name and the only key teardown has to find them by, so it is required with no guessed fallback: a wrong guess means `destroy` computes names that match nothing, deletes nothing, and exits 0.
 
 **The branch is not a feature branch.** `sync` and `destroy` derive the issue and slug from the checked-out branch, so they must be run from inside the worktree — as does `pithy provision --feature`.
+
+**`prune` outside a git repository.** It judges blocks by the repository's worktree listing, and without one every block would look unused, so it refuses rather than freeing them.
+
+```
+Could not resolve the repo's git directory.
+Run pithy from inside a git repository.
+```
 
 **An illegal `--env` on `destroy`.** Validated at the flag, before any Cloudflare client is built. It is `destroy`'s flag alone: nothing else here takes one.
 
@@ -219,5 +252,16 @@ Remove the worktree and free its ports on a laptop with no credentials.
 $ pithy feature destroy --local-only
 Remote teardown skipped. Cloudflare resources were left in place.
 Worktree pruned.
+Done.
+```
+
+Free the blocks of features whose worktree was removed without `destroy`, from any checkout. Look first.
+
+```
+$ pithy feature prune --dry-run
+Would free 8827–8846, feature/70-old-idea.
+Dry run. Nothing written.
+$ pithy feature prune
+Freed 8827–8846, feature/70-old-idea.
 Done.
 ```
