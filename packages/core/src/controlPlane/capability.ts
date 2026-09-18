@@ -7,7 +7,7 @@ import type { BindingSpecInput } from "../capability/bindings";
 import { type Capability, defineCapability, type PithyHonoEnv } from "../capability/capability";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { KvNamespaceSpecMap, KvRegistry } from "../kv/namespaces";
-import { PACKAGE_VERSION } from "../version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "../version.generated";
 import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
 import { ControlPlaneConnection } from "./data/connection";
@@ -138,6 +138,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     // package.json. The seam reports itself in the manifest beside every other composed capability, so a
     // client can see which core an adopter is on without a separate question.
     version: PACKAGE_VERSION,
+    // And the package that version belongs to — **the case no naming convention survives** (#626). This
+    // capability is called `controlplane` and ships inside `@pithy-sh/core`, so a client deriving
+    // `@pithy-sh/${name}` asks a release feed about a package that has never been published and is told
+    // nothing, which reads as up to date. Stamped from this package's own `package.json`, like the
+    // version above, because only the producing package knows which one it is.
+    package: PACKAGE_NAME,
     // No `dependsOn`. The seam must work in a Worker composing neither auth nor audit nor secrets: it
     // holds no secret, mints no session, and emits through a seam that is a no-op when absent.
     requiredBindings,
@@ -166,6 +172,10 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // `?? null`, never undefined: the adopter's own `app` capability has a name and no package
         // version, and that must render as an explicit null rather than vanish from the JSON.
         version: cap.version ?? null,
+        // The join key that version is worth nothing without (#626), **read off the capability and never
+        // derived from its name here**. `@pithy-sh/${cap.name}` would be right for most of them and
+        // wrong for the seam writing this line — which is the whole defect, rebuilt inside its fix.
+        package: cap.package ?? null,
         adminRoutes: [...(cap.adminRoutes ?? [])],
         // The vocabulary, always — a capability declaring a number this connection cannot see must be
         // visible as a withheld number rather than as silence.

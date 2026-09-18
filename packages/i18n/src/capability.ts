@@ -10,7 +10,7 @@ import type { I18nClientProjection } from "./client/projection";
 import { I18nConfig, type I18nConfigInput } from "./config/config";
 import { i18nMiddleware } from "./http/middleware";
 import { i18nSettings } from "./settings/coverage";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * The i18n capability, with its resolved config and the catalogs it composed attached for inspection.
@@ -81,9 +81,12 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
 
   const capability = defineCapability({
     name: "i18n",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     config: I18nConfig,
     /**
      * Merge every composed capability's English once, at assembly.
