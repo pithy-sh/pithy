@@ -59,34 +59,65 @@ export function sessionEndedDuring(requestContext: unknown): EndedSession | null
   return endedSessions.get(requestContext) ?? null;
 }
 
-/** Requests that handed a message to the email seam, keyed by that request's Better Auth context object. */
-const queuedMessages = new WeakSet<object>();
+/**
+ * **What the email seam did with one message — the answer `SendAuthEmail` hands back.**
+ *
+ * The three are not degrees of the same thing, and collapsing any two of them is how the trail starts
+ * misreporting. A message that reached the queue is a send. A message the capability **withheld** is that
+ * capability working correctly — the address hard-bounced, or the person complained — so the trail says
+ * the send did not happen and why it did not, never that something broke. A send that **failed** did
+ * break, and the operator reading it is looking for a binding or a migration rather than for an abuser.
+ *
+ * `reason` is a closed vocabulary in both cases, never an error message: a suppression reason from
+ * `@pithy-sh/email`, or {@link SEND_FAULT}. An audit row is long-lived and queryable, and a thrown
+ * error's text is the one thing in reach that nobody has vetted for what it might carry.
+ */
+export type AuthEmailDelivery =
+  /** Handed to the email seam, which wrote a job row for it. A send is what the trail may claim. */
+  | { readonly delivery: "queued" }
+  /** The capability withheld it, correctly, and named why. Not a fault, and not a send. */
+  | { readonly delivery: "withheld"; readonly reason: string }
+  /** The seam itself failed. Nothing was queued and something is wrong with this deployment. */
+  | { readonly delivery: "failed"; readonly reason: string };
+
+/** The one reason a failed delivery reports. The thrown error's own text never reaches an audit row. */
+export const SEND_FAULT = "enqueue-failed";
+
+/** What the email seam answered during one request, keyed by that request's Better Auth context object. */
+const messageDeliveries = new WeakMap<object, AuthEmailDelivery>();
 
 /**
- * Record that this request handed a magic link or an OTP to the email seam.
+ * Record what the email seam did with this request's magic link or OTP.
  *
  * **Called from the send callback, which is the only place that knows.** `auth/magic_link_sent` and
  * `auth/otp_sent` claim a message exists, and the two send endpoints answer `200 {"success":true}`
- * whether or not one does. `/email-otp/send-verification-otp` declines twice over: Better Auth drops the
- * verification row and returns success rather than confirm that an address is registered
- * (`plugins/email-otp/routes.mjs`), and the kit's own `sendVerificationOTP` returns without queuing for
- * any `type` but `sign-in`. Neither decline is visible from the status, from the body, or from anywhere
- * the `after` hook can reach.
+ * whether or not one does. `/email-otp/send-verification-otp` declines twice over before the callback is
+ * even reached: Better Auth drops the verification row and returns success rather than confirm that an
+ * address is registered (`plugins/email-otp/routes.mjs`), and the kit's own `sendVerificationOTP` returns
+ * without queuing for any `type` but `sign-in`. Neither decline is visible from the status, from the
+ * body, or from anywhere the `after` hook can reach.
  *
- * **Marked at the call, not after it.** The message is handed over synchronously, before the first
- * `await` in the callback, while `runInBackgroundOrAwait` may defer the rest of it past the `after` hook
- * entirely. So the claim this records is precisely *the endpoint handed a message to the sender* — which
- * is what these two events have ever been able to mean, since delivery belongs to a Workflow that runs
- * long after the response.
+ * **Marked after the await, which is the whole of #627's last hole.** An earlier revision marked at the
+ * call — before `sendEmail` was awaited — reasoning that `runInBackgroundOrAwait` might defer the rest of
+ * the callback past the response. It defers only when `options.advanced.backgroundTasks.handler` is set
+ * (`better-auth/dist/context/create-context.mjs`, `runInBackgroundOrAwait`), and `makeAuth` sets no such
+ * handler and exposes no way for an adopter to; absent one it awaits, so the mark still lands before the
+ * `after` hook. What marking early cost was everything underneath: a suppressed recipient and a thrown
+ * enqueue both wrote `auth/otp_sent outcome=success`, over a `200 {"success":true}`, for an
+ * unauthenticated caller on the default composition.
+ *
+ * So the claim recorded here is *what the email seam did*, which is as far as any of this can see —
+ * delivery belongs to a Workflow that runs long after the response.
  */
-export function markMessageQueued(requestContext: unknown): void {
+export function markMessageDelivery(requestContext: unknown, delivery: AuthEmailDelivery): void {
   if (typeof requestContext !== "object" || requestContext === null) return;
-  queuedMessages.add(requestContext);
+  messageDeliveries.set(requestContext, delivery);
 }
 
-/** Whether this request queued a message. The two send paths' evidence. */
-export function messageQueuedDuring(requestContext: unknown): boolean {
-  return typeof requestContext === "object" && requestContext !== null && queuedMessages.has(requestContext);
+/** What the email seam answered during this request, or null if it was never reached. The send paths' evidence. */
+export function messageDeliveryDuring(requestContext: unknown): AuthEmailDelivery | null {
+  if (typeof requestContext !== "object" || requestContext === null) return null;
+  return messageDeliveries.get(requestContext) ?? null;
 }
 
 /**

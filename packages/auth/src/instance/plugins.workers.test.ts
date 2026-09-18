@@ -65,6 +65,7 @@ function instanceWithMailbox() {
       ...NO_SOCIAL_PROVIDERS,
       sendEmail: async (message) => {
         mailbox.push(message);
+        return { delivery: "queued" };
       },
       sessionExpiresIn: 60 * 60 * 24 * 7,
       sessionUpdateAge: 60 * 60 * 24,

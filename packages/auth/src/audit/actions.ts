@@ -33,8 +33,8 @@ export const AuthAuditActions = {
   /**
    * A magic link was requested and **enqueued for delivery** — the second half is the claim, and it is
    * not what the status says. Both send endpoints answer 200 whether or not a message was made, so the
-   * evidence is the message reaching the email seam; with none, the row is `denied`, because a send this
-   * deployment declined to make is an attempt worth counting and never a send.
+   * evidence is the email seam's own answer about the message; with none, the row is `denied`, because a
+   * send this deployment declined to make is an attempt worth counting and never a send.
    */
   magicLinkSent: "auth/magic_link_sent",
   /**
@@ -47,10 +47,18 @@ export const AuthAuditActions = {
    * queuing for any `type` but `sign-in`, because an OTP is a sign-in credential here. Read off the
    * status, every one of those wrote a send that never happened.
    *
-   * **The trail records the decline; the response still does not.** Writing `denied` here changes nothing
+   * **Two more declines sit under the send callback rather than over it, and they are not the same
+   * thing as each other.** `@pithy-sh/email` withholds a message to a suppressed address — a hard bounce,
+   * a complaint — which is that capability working exactly as designed, so the row is `denied` and carries
+   * the reason in `metadata.reason`. An enqueue that *fails* is `failure`, severity `warning`: nothing
+   * declined it, something broke, and `runInBackgroundOrAwait` swallows the error so the endpoint answers
+   * `200 {"success":true}` over it. Recording a fault as a decline sends an operator hunting an abuser
+   * when a binding is missing.
+   *
+   * **The trail records all of it; the response still does not.** None of these outcomes changes anything
    * a caller can see — the status, the body and the headers are the endpoint's — and the row names an
-   * action, an outcome, an actor and a correlation, never an address. The enumeration guard survives the
-   * audit trail knowing better.
+   * action, an outcome, an actor, a correlation and at most a reason from a closed vocabulary, never an
+   * address. The enumeration guard survives the audit trail knowing better.
    */
   otpSent: "auth/otp_sent",
   /**

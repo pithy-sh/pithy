@@ -43,6 +43,7 @@ function instanceWithMailbox() {
     ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (message) => {
       mailbox.push(message);
+      return { delivery: "queued" };
     },
     sessionExpiresIn: 60 * 60 * 24 * 7,
     sessionUpdateAge: 60 * 60 * 24,
@@ -69,7 +70,10 @@ function instanceWatchingRevocations() {
     basePath: "/api/auth",
     trustedOrigins: ["http://localhost:8787"],
     ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async (message) => void mailbox.push(message),
+    sendEmail: async (message) => {
+      mailbox.push(message);
+      return { delivery: "queued" };
+    },
     sessionExpiresIn: 60 * 60 * 24 * 7,
     sessionUpdateAge: 60 * 60 * 24,
     verificationExpiresIn: 300,
@@ -251,7 +255,7 @@ describe("social providers and account linking, via instance.options", () => {
       baseURL: "http://localhost:8787",
       basePath: "/api/auth",
       trustedOrigins: ["http://localhost:8787"],
-      sendEmail: async () => {},
+      sendEmail: async () => ({ delivery: "queued" }),
       sessionExpiresIn: 60 * 60 * 24 * 7,
       sessionUpdateAge: 60 * 60 * 24,
       verificationExpiresIn: 300,

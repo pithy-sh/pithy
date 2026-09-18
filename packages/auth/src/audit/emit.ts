@@ -5,7 +5,7 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { APIError } from "better-auth/api";
 import { z } from "zod";
 import { type AuthAuditAction, AuthAuditActions } from "./actions";
-import type { EndedSession } from "./evidence";
+import type { AuthEmailDelivery, EndedSession } from "./evidence";
 
 /**
  * Audit emission helpers, kept out of the instance so the hook wiring stays legible. Every helper goes
@@ -49,8 +49,9 @@ async function safeEmit(emit: AuditEmit, event: Parameters<AuditEmit>[0]): Promi
  *
  * - `"session-ended"` — a session row disappeared, which `session.delete.after` observes. `/sign-out`
  *   reads no session of its own, so this is also the only actor it can name.
- * - `"message-queued"` — a magic link or an OTP was handed to the email seam, which the send callback in
- *   `../instance/plugins.ts` observes.
+ * - `"message-queued"` — the email seam answered that a message reached the queue, which the send callback
+ *   in `../instance/plugins.ts` observes. Its *absence* is two different facts and the observer reports
+ *   which: a message the capability withheld is a decline, a send that threw is a fault.
  * - `"token-minted"` — the response actually carries a token, which is readable from `returned` because
  *   an endpoint's own payload is what it claims to have made.
  */
@@ -135,10 +136,11 @@ export interface AfterRequest {
    */
   endedSession: EndedSession | null;
   /**
-   * Whether this request handed a magic link or an OTP to the email seam — the evidence the two send
-   * paths need, since both answer `200 {"success":true}` whether or not a message exists.
+   * What the email seam did with this request's magic link or OTP, or null where it was never reached —
+   * the evidence the two send paths need, since both answer `200 {"success":true}` whether or not a
+   * message exists. The answer rather than the attempt: see `./evidence.ts`.
    */
-  messageQueued: boolean;
+  messageDelivery: AuthEmailDelivery | null;
 }
 
 /**
@@ -153,6 +155,38 @@ function mintedAToken(returned: unknown): boolean {
 }
 
 /**
+ * What one observer saw, and — where it knows — what the absence of it was.
+ *
+ * Most observers know only "it did not happen", and for those the path entry's {@link PathEvent.withoutEvidence}
+ * is the whole answer. The send paths know more, because the email capability told them: a **withheld**
+ * message is a rule declining to act, a **failed** enqueue is a fault, and recording the two alike would
+ * wake somebody looking for an abuser when a binding is missing, or bury a broken seam among the rows an
+ * abuse count is made of.
+ */
+export interface EvidenceReading {
+  /** Whether the thing the action claims was actually observed. */
+  observed: boolean;
+  /** What the absence was, where the observer knows more than "not seen". Null leaves it to the entry. */
+  absence: { outcome: "denied" | "failure"; reason: string } | null;
+}
+
+/** What the email seam's answer says about the two send paths' claim. Null means it was never reached. */
+function readDelivery(delivery: AuthEmailDelivery | null): EvidenceReading {
+  // Never reached: Better Auth's enumeration guard returned before the callback, or the kit's own
+  // `type` check did. Nothing underneath has an opinion, so the path entry decides.
+  if (delivery === null) return { observed: false, absence: null };
+  if (delivery.delivery === "queued") return { observed: true, absence: null };
+  return {
+    observed: false,
+    absence: {
+      // A withheld message is the email capability working; a failed one is this deployment not.
+      outcome: delivery.delivery === "failed" ? "failure" : "denied",
+      reason: delivery.reason,
+    },
+  };
+}
+
+/**
  * How each kind of evidence is seen, one observer per {@link PathEvidence} member.
  *
  * **A total record, so the union cannot outgrow it.** A new kind of evidence added to the type without
@@ -160,10 +194,10 @@ function mintedAToken(returned: unknown): boolean {
  * that is not in the union. That is the whole gate: an entry that claims an outcome it cannot evidence
  * does not exist.
  */
-export const EVIDENCE_OBSERVERS: Readonly<Record<PathEvidence, (req: AfterRequest) => boolean>> = {
-  "session-ended": (req) => req.endedSession !== null,
-  "message-queued": (req) => req.messageQueued,
-  "token-minted": (req) => mintedAToken(req.returned),
+export const EVIDENCE_OBSERVERS: Readonly<Record<PathEvidence, (req: AfterRequest) => EvidenceReading>> = {
+  "session-ended": (req) => ({ observed: req.endedSession !== null, absence: null }),
+  "message-queued": (req) => readDelivery(req.messageDelivery),
+  "token-minted": (req) => ({ observed: mintedAToken(req.returned), absence: null }),
 };
 
 /**
@@ -193,6 +227,17 @@ export function wasRefused(returned: unknown): boolean {
  * **Then evidence, because a completed response is not the same as a completed action.** A path event is
  * `success` only when its declared evidence is there; without it the entry's `withoutEvidence` says what
  * a completed-but-empty response is, and `denied` or nothing is written instead.
+ *
+ * **An observer that knows why outranks both.** The email seam answers whether it queued a message, and
+ * where it did not, whether it *withheld* one or *failed* to make one. A withheld message is that
+ * capability working correctly, so the row is `denied` and carries the reason; a failed enqueue is
+ * `failure`, `warning`, and the same reason column. It outranks the refusal branch on purpose:
+ * `/sign-in/magic-link` answers 500 when the enqueue throws, and "the request was denied" is not what
+ * happened there.
+ *
+ * **`metadata.reason` is a closed vocabulary and never an address.** A suppression reason from
+ * `@pithy-sh/email`, or `SEND_FAULT`. The row still names an action, an outcome, an actor and a
+ * correlation, and nothing about who was being mailed.
  *
  * **Nothing here changes what the caller is told, and on one path that is load-bearing.**
  * `/email-otp/send-verification-otp` answers 200 for an address it declined precisely so that a caller
@@ -226,17 +271,24 @@ export async function emitAfterRequest(emit: AuditEmit, req: AfterRequest): Prom
   }
   const event = PATH_EVENTS[req.path];
   if (!event) return;
+  const reading = EVIDENCE_OBSERVERS[event.evidence](req);
   // A refusal is never evidence of the action, whatever else is lying around from earlier in the request.
-  const happened = !refused && EVIDENCE_OBSERVERS[event.evidence](req);
-  // Nothing happened and nothing was refused: no row, because there is no event to record.
-  if (!happened && !refused && event.withoutEvidence === "silent") return;
+  const happened = !refused && reading.observed;
+  // Nothing happened, nothing was refused and nobody underneath has anything to report: no row, because
+  // there is no event to record.
+  if (!happened && !refused && !reading.absence && event.withoutEvidence === "silent") return;
+  const outcome = happened ? "success" : (reading.absence?.outcome ?? "denied");
   const actorId = req.newSession?.userId ?? req.currentUserId ?? req.endedSession?.userId ?? undefined;
   await safeEmit(emit, {
     action: event.action,
-    outcome: happened ? "success" : "denied",
+    outcome,
+    // A send seam that broke is the one of these an operator has to act on, and `info` is where a row
+    // goes to be counted rather than seen.
+    ...(outcome === "failure" ? { severity: "warning" as const } : {}),
     actorType: actorId ? "user" : "anonymous",
     actorId,
     ...corr,
+    ...(happened || !reading.absence ? {} : { metadata: { reason: reading.absence.reason } }),
   });
 }
 

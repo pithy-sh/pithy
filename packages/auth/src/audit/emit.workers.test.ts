@@ -25,6 +25,7 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email } from "@pithy-sh/email/src/capability";
 import { email_0001_init } from "@pithy-sh/email/src/migrations/0001_init";
+import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import type { BetterAuthPlugin } from "better-auth";
@@ -58,6 +59,10 @@ const TABLES = [
   // stub this file controls — the assertion has to come from outside the thing it is asserting about.
   "pithy_email_jobs",
   "pithy_email_events",
+  // The suppression list, which is how a *withheld* message is driven. In a deployment it is its own
+  // durable database, shared by every environment; here it is a table in the same D1 and reached the
+  // same way, through the `EMAIL_SUPPRESSIONS` binding `appEnv` hands the composed capability.
+  "pithy_email_suppressions",
 ];
 
 const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
@@ -116,11 +121,57 @@ async function queuedEmails(): Promise<{ to_address: string; template: string }[
   return result.results;
 }
 
+/**
+ * The same rows with the status the email capability was born with.
+ *
+ * **A withheld message still writes a row**, which is why `queuedEmails` alone cannot tell a send from a
+ * suppression: `enqueueEmail` marks the job `suppressed` and starts nothing. The status is the seam's own
+ * answer to "is anything coming for this", and it is the fact `auth/otp_sent` has to reflect.
+ */
+async function emailJobs(): Promise<{ to_address: string; template: string; status: string }[]> {
+  const result = await env.DB.prepare("select to_address, template, status from pithy_email_jobs").all<{
+    to_address: string;
+    template: string;
+    status: string;
+  }>();
+  return result.results;
+}
+
+/** Put an address on the suppression list — a hard bounce, which withholds transactional mail too. */
+async function suppressAddress(address: string, reason: string): Promise<void> {
+  await env.DB.prepare("insert into pithy_email_suppressions (email, reason, created_at) values (?, ?, ?)")
+    .bind(address, reason, Date.now())
+    .run();
+}
+
 function appEnv(): Record<string, unknown> {
   return {
     ...(env as unknown as Record<string, unknown>),
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
+    // The composed capability reads this binding off the env the consumer forwarded, which is what makes
+    // suppression automatic. In a deployment it is a separate durable database; the table is what matters
+    // here, and it is the real one, created by the capability's own migration in `beforeEach`.
+    EMAIL_SUPPRESSIONS: env.DB,
   };
+}
+
+const SEND_OTP = "/auth/email-otp/send-verification-otp";
+
+/** POST the OTP send endpoint over HTTP, handing back exactly what a caller can observe. */
+async function sendOtp(
+  app: Hono<PithyHonoEnv>,
+  body: { email: string; type: "sign-in" | "email-verification" },
+): Promise<{ status: number; body: string }> {
+  const res = await app.request(
+    SEND_OTP,
+    {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    appEnv(),
+  );
+  return { status: res.status, body: await res.text() };
 }
 
 /**
@@ -172,6 +223,7 @@ function instance<const Plugins extends readonly BetterAuthPlugin[]>(
     github: { state: "disabled" },
     sendEmail: async (m) => {
       mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
+      return { delivery: "queued" };
     },
     sessionExpiresIn: 604800,
     sessionUpdateAge: 86400,
@@ -295,6 +347,14 @@ beforeEach(async () => {
   const provider = createMigrationRegistry([
     { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
+    // The suppression table, from the capability's own migration rather than a `create table` written
+    // out here. A list this file built by hand could disagree with the one `enqueue` reads.
+    {
+      database: "app",
+      namespace: "emailsuppressions",
+      order: 210,
+      migrations: { "0001_suppressions": email_0001_suppressions },
+    },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);
@@ -742,24 +802,7 @@ describe("a refused request is never recorded as a success", () => {
  * know; the response may not say.
  */
 describe("a refusal expressed as a success", () => {
-  const SEND = "/auth/email-otp/send-verification-otp";
-
-  /** POST the send endpoint over HTTP, handing back exactly what a caller can observe. */
-  async function send(
-    app: Hono<PithyHonoEnv>,
-    body: { email: string; type: "sign-in" | "email-verification" },
-  ): Promise<{ status: number; body: string }> {
-    const res = await app.request(
-      SEND,
-      {
-        method: "POST",
-        headers: { origin: "http://localhost", "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-      appEnv(),
-    );
-    return { status: res.status, body: await res.text() };
-  }
+  const send = sendOtp;
 
   test("a send that reached the queue is the success", async () => {
     // The half that stops "record nothing" from being the fix, and the control every case below is read
@@ -839,5 +882,154 @@ describe("a refusal expressed as a success", () => {
     expect(res.status).toBe(200);
     expect(await queuedEmails()).toEqual([{ to_address: "link@test.com", template: "magicLink" }]);
     expect(events.filter((e) => e.action === "auth/magic_link_sent").map((e) => e.outcome)).toEqual(["success"]);
+  });
+});
+
+/**
+ * **The evidence is marked after the thing happens, not before it.**
+ *
+ * The round above moved `auth/otp_sent` and `auth/magic_link_sent` off the status and onto a message —
+ * but marked that message at the *call*, before the send was awaited, and threw the seam's answer away:
+ * `SendAuthEmail` returned `Promise<void>`, so every decision `@pithy-sh/email` made underneath was
+ * invisible. Two of them are live on the default composition for an unauthenticated caller.
+ *
+ * **A withheld message is not a failure, and a failed one is not a decline.** A suppressed recipient is
+ * the email capability working exactly as designed — the address hard-bounced, and sending again damages
+ * the sending domain — so the trail says the send did not happen and *why*, as `denied`, the word core
+ * keeps for a rule that declined to act. An enqueue that threw is `failure`: something broke, and an
+ * operator's next move is not the same one.
+ *
+ * Both are driven end to end over real D1: the suppression list is the capability's own table, read
+ * through the binding `enqueue` reads it through, and the fault is the jobs table genuinely not being
+ * there. Nothing below asserts against the marker the emitter reads.
+ */
+describe("the evidence is the seam's answer, not the call", () => {
+  /** Everything a caller can see of one answer — status, every header, the body, and its byte length. */
+  async function observable(
+    app: Hono<PithyHonoEnv>,
+    body: { email: string; type: "sign-in" },
+  ): Promise<{ status: number; headers: [string, string][]; body: string; bytes: number }> {
+    const res = await app.request(
+      SEND_OTP,
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      appEnv(),
+    );
+    const text = await res.text();
+    return {
+      status: res.status,
+      // `date` is the clock, not the endpoint. Everything else a caller could correlate on is compared.
+      headers: [...res.headers.entries()].filter(([name]) => name !== "date").sort(),
+      body: text,
+      bytes: new TextEncoder().encode(text).byteLength,
+    };
+  }
+
+  test("a suppressed recipient is withheld, and the trail says so rather than claiming a send", async () => {
+    // **The first hole.** `enqueueEmail` consults the suppression list, marks the row `suppressed` and
+    // starts nothing — the message is never made. Marked before the await, `auth/otp_sent` was written
+    // `success` for it, so the trail claimed a sign-in code that had deliberately not been sent.
+    const { emit, events } = capturingEmit();
+    await suppressAddress("blocked@test.com", "hard_bounce");
+
+    const answer = await sendOtp(buildApp(emit), { email: "blocked@test.com", type: "sign-in" });
+
+    // The wire does not move. Withholding is the capability working, not a refusal to answer.
+    expect(answer).toEqual({ status: 200, body: '{"success":true}' });
+    // The seam's own table agrees: a row, and nothing coming for it.
+    expect(await emailJobs()).toEqual([{ to_address: "blocked@test.com", template: "otp", status: "suppressed" }]);
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+    // Why it did not happen, in the capability's own vocabulary. "Suppressed" alone would not tell an
+    // operator whether the mailbox is dead or the person opted out.
+    expect(written[0]?.metadata).toMatchObject({ reason: "hard_bounce" });
+    // And still no address in the row — the trail may know; it does not write down who.
+    expect(JSON.stringify(written)).not.toContain("blocked@test.com");
+  });
+
+  test("a magic link to a suppressed recipient is withheld too", async () => {
+    // The other send callback, driven for the same reason: one of the two being fixed is how the next
+    // reader concludes the seam is covered.
+    const { emit, events } = capturingEmit();
+    await suppressAddress("blocked-link@test.com", "complaint");
+
+    const res = await buildApp(emit).request(
+      "/auth/sign-in/magic-link",
+      {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify({ email: "blocked-link@test.com", callbackURL: "http://localhost/cb" }),
+      },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await emailJobs()).toEqual([
+      { to_address: "blocked-link@test.com", template: "magicLink", status: "suppressed" },
+    ]);
+    const written = events.filter((e) => e.action === "auth/magic_link_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+    expect(written[0]?.metadata).toMatchObject({ reason: "complaint" });
+  });
+
+  test("a send the seam could not make is a failure, and never a success", async () => {
+    // **The second hole**, and the one a status could never have seen. With the jobs table gone the
+    // enqueue throws, Better Auth's `runInBackgroundOrAwait` swallows it, and the endpoint still answers
+    // `200 {"success":true}` — so the response, the queue and the trail all said a code had been sent.
+    const { emit, events } = capturingEmit();
+    await env.DB.prepare("alter table pithy_email_jobs rename to pithy_email_jobs_moved").run();
+    try {
+      const answer = await sendOtp(buildApp(emit), { email: "fault@test.com", type: "sign-in" });
+      expect(answer).toEqual({ status: 200, body: '{"success":true}' });
+    } finally {
+      await env.DB.prepare("alter table pithy_email_jobs_moved rename to pithy_email_jobs").run();
+    }
+
+    expect(await emailJobs()).toEqual([]);
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    // `failure`, not `denied`. Nothing declined this — it broke, and an operator woken by one of these
+    // is looking for a binding or a migration, not for an abuser.
+    expect(written.map((e) => e.outcome)).toEqual(["failure"]);
+    expect(written.map((e) => e.severity)).toEqual(["warning"]);
+  });
+
+  test("the wire does not move: registered and unregistered answer identically, byte for byte", async () => {
+    // **Re-asserted, because this is the invariant the change is most able to undo.** With sign-up off,
+    // Better Auth's enumeration guard fires for a stranger and not for a customer — that is the one
+    // configuration where the two calls genuinely differ, and the 200 exists so a caller cannot tell.
+    // Status, every header, the body and its length, all compared.
+    const { emit, events } = capturingEmit();
+    await signIn(emit);
+    events.length = 0;
+    const app = buildApp(emit, wiring({ disableSignUp: true }));
+
+    const registered = await observable(app, { email: "u@test.com", type: "sign-in" });
+    const unregistered = await observable(app, { email: "stranger@test.com", type: "sign-in" });
+
+    expect(unregistered).toEqual(registered);
+    expect(unregistered.bytes).toBe(registered.bytes);
+    expect(unregistered.status).toBe(200);
+    // And the trail did record the difference — otherwise this passes for an emitter that stopped
+    // knowing anything, which is not the fix.
+    expect(events.filter((e) => e.action === "auth/otp_sent").map((e) => e.outcome)).toEqual(["success", "denied"]);
+  });
+
+  test("the wire does not move: a suppressed address answers exactly as a sending one does", async () => {
+    // The pair this change is able to separate, and the reason the case above is not sufficient on its
+    // own: suppression is a new answer the emitter learned to read, and it must stay unreadable from
+    // outside. One address is on the list, one is not; a caller sees one answer.
+    const { emit, events } = capturingEmit();
+    await suppressAddress("bounced@test.com", "hard_bounce");
+    const app = buildApp(emit);
+
+    const sending = await observable(app, { email: "fine@test.com", type: "sign-in" });
+    const withheld = await observable(app, { email: "bounced@test.com", type: "sign-in" });
+
+    expect(withheld).toEqual(sending);
+    expect(withheld.bytes).toBe(sending.bytes);
+    expect(events.filter((e) => e.action === "auth/otp_sent").map((e) => e.outcome)).toEqual(["success", "denied"]);
   });
 });

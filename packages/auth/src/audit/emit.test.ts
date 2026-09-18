@@ -19,7 +19,7 @@
  *   total records over the union, so a new kind of evidence does not compile until this file says how it
  *   is made present and how it reads when it is absent.
  * - `emitAfterRequest`'s decision, and nothing about whether the markers it reads are set correctly:
- *   `endedSession`, `messageQueued` and `returned` arrive here as fixtures. **Whether the real request
+ *   `endedSession`, `messageDelivery` and `returned` arrive here as fixtures. **Whether the real request
  *   populates them is `emit.workers.test.ts`'s**, which drives a real instance over real D1 and checks a
  *   queued message against `pithy_email_jobs` and a sign-out against `pithy_auth_sessions` — outside the
  *   thing being asserted about. Neither file is sufficient alone, and this one is not the gate for
@@ -43,6 +43,7 @@ import {
   type PathEvidence,
   wasRefused,
 } from "./emit";
+import { SEND_FAULT } from "./evidence";
 
 function capturing(): { emit: AuditEmit; events: AuditEventInput[] } {
   const events: AuditEventInput[] = [];
@@ -62,7 +63,7 @@ function request(path: string, over: Partial<AfterRequest> = {}): AfterRequest {
     currentUserId: "user-1",
     returned: { ok: true },
     endedSession: null,
-    messageQueued: false,
+    messageDelivery: null,
     ...over,
   };
 }
@@ -74,7 +75,7 @@ function request(path: string, over: Partial<AfterRequest> = {}): AfterRequest {
  */
 const EVIDENCE_PRESENT: Readonly<Record<PathEvidence, Partial<AfterRequest>>> = {
   "session-ended": { endedSession: { userId: "user-1" } },
-  "message-queued": { messageQueued: true },
+  "message-queued": { messageDelivery: { delivery: "queued" } },
   "token-minted": { returned: { token: "ey.header.payload.signature" } },
 };
 
@@ -92,11 +93,18 @@ describe("the fixtures are the evidence, and are proven to be", () => {
   // would make "with evidence" and "without evidence" the same request, and half the walk would pass
   // for free. So each observer is read directly, both ways, before anything is asserted through it.
   test.each(EVIDENCE_KINDS)("nothing evidences %s in a bare request", (kind) => {
-    expect(EVIDENCE_OBSERVERS[kind](request("/x"))).toBe(false);
+    expect(EVIDENCE_OBSERVERS[kind](request("/x")).observed).toBe(false);
   });
 
   test.each(EVIDENCE_KINDS)("the %s fixture is seen by its own observer", (kind) => {
-    expect(EVIDENCE_OBSERVERS[kind](request("/x", EVIDENCE_PRESENT[kind]))).toBe(true);
+    expect(EVIDENCE_OBSERVERS[kind](request("/x", EVIDENCE_PRESENT[kind])).observed).toBe(true);
+  });
+
+  test.each(EVIDENCE_KINDS)("a bare request's %s absence accuses nobody of anything", (kind) => {
+    // An observer reports an `absence` only when something underneath told it why. Nothing has been
+    // asked yet in a bare request, so the path entry's `withoutEvidence` must still be what decides —
+    // otherwise the two records below would be describing the same rule twice and one could drift.
+    expect(EVIDENCE_OBSERVERS[kind](request("/x")).absence).toBeNull();
   });
 
   test("every audited path declares evidence somebody knows how to observe", () => {
@@ -326,9 +334,91 @@ describe("what each path's evidence actually is", () => {
     const { emit, events } = capturing();
     await emitAfterRequest(
       emit,
-      request("/email-otp/send-verification-otp", { returned: { success: true }, messageQueued: true }),
+      request("/email-otp/send-verification-otp", {
+        returned: { success: true },
+        messageDelivery: { delivery: "queued" },
+      }),
     );
 
     expect(events.filter((e) => e.action === "auth/otp_sent").map((e) => e.outcome)).toEqual(["success"]);
+  });
+});
+
+/**
+ * **A withheld message and a broken seam are different facts, and the row says which.**
+ *
+ * The send paths are the only ones whose observer knows more than "not seen": `@pithy-sh/email` answers
+ * whether it queued a message, withheld one, or failed to make one, and that answer reaches here as
+ * `messageDelivery`. Collapsing the last two would wake an operator hunting an abuser when a binding is
+ * missing, or bury a broken send seam among the rows an abuse count is made of.
+ *
+ * Whether the real request populates the answer correctly is `emit.workers.test.ts`'s, which drives a
+ * suppressed recipient and a genuinely absent jobs table through a real instance over real D1.
+ */
+describe("a message the seam did not send", () => {
+  const SEND = "/email-otp/send-verification-otp";
+
+  test("a withheld message is a decline, and the row names why", async () => {
+    // A suppressed recipient is the email capability working correctly. Nothing broke; nothing was sent.
+    const { emit, events } = capturing();
+    await emitAfterRequest(
+      emit,
+      request(SEND, { returned: { success: true }, messageDelivery: { delivery: "withheld", reason: "hard_bounce" } }),
+    );
+
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+    expect(written[0]?.metadata).toEqual({ reason: "hard_bounce" });
+    expect(written[0]?.severity ?? null).toBeNull();
+  });
+
+  test("a failed send is a failure, not a denial", async () => {
+    const { emit, events } = capturing();
+    await emitAfterRequest(
+      emit,
+      request(SEND, { returned: { success: true }, messageDelivery: { delivery: "failed", reason: SEND_FAULT } }),
+    );
+
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["failure"]);
+    expect(written.map((e) => e.severity)).toEqual(["warning"]);
+    expect(written[0]?.metadata).toEqual({ reason: SEND_FAULT });
+  });
+
+  test("a failed send stays a failure even when the endpoint answered with an error", async () => {
+    // `/sign-in/magic-link` awaits its send callback directly, so an enqueue that throws becomes a 500 —
+    // and "the request was denied" is not what happened. What the seam knows outranks the status.
+    const { emit, events } = capturing();
+    await emitAfterRequest(
+      emit,
+      request("/sign-in/magic-link", {
+        returned: new APIError("INTERNAL_SERVER_ERROR", { message: "no" }),
+        messageDelivery: { delivery: "failed", reason: SEND_FAULT },
+      }),
+    );
+
+    expect(events.filter((e) => e.action === "auth/magic_link_sent").map((e) => e.outcome)).toEqual(["failure"]);
+  });
+
+  test("a queued message carries no reason at all", async () => {
+    // The half that stops `metadata.reason` from becoming a column every row has. A send that worked has
+    // nothing to explain, and a reason on it would be read as one.
+    const { emit, events } = capturing();
+    await emitAfterRequest(emit, request(SEND, { messageDelivery: { delivery: "queued" } }));
+
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["success"]);
+    expect(written[0]?.metadata ?? null).toBeNull();
+  });
+
+  test("a refusal before the seam was reached is still the entry's `denied`", async () => {
+    // No delivery at all: Better Auth's enumeration guard returned before the callback, or the kit's own
+    // `type` check did. Nothing underneath has an opinion, and the path entry decides — unchanged.
+    const { emit, events } = capturing();
+    await emitAfterRequest(emit, request(SEND, { returned: { success: true } }));
+
+    const written = events.filter((e) => e.action === "auth/otp_sent");
+    expect(written.map((e) => e.outcome)).toEqual(["denied"]);
+    expect(written[0]?.metadata ?? null).toBeNull();
   });
 });

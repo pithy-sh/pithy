@@ -125,6 +125,7 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
     ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (m) => {
       mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
+      return { delivery: "queued" };
     },
     sessionExpiresIn: 604800,
     sessionUpdateAge: 86400,

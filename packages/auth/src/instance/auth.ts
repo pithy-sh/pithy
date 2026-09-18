@@ -6,9 +6,10 @@ import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
 import {
+  type AuthEmailDelivery,
   claimAccountRemoval,
   markSessionEnded,
-  messageQueuedDuring,
+  messageDeliveryDuring,
   removalWasClaimed,
   sessionEndedDuring,
 } from "../audit/evidence";
@@ -178,8 +179,23 @@ export type AuthEmailMessage =
   | { to: string; template: "magicLink"; token: string; url: string }
   | { to: string; template: "otp"; code: string };
 
-/** The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic. */
-export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
+/**
+ * The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic.
+ *
+ * **It answers what happened, and that answer is the evidence behind two audit events.** Returning
+ * `Promise<void>` made the seam structurally blind: `auth/magic_link_sent` and `auth/otp_sent` claim a
+ * message, `@pithy-sh/email` decides whether there is one, and nothing carried that decision back — so a
+ * recipient the suppression list withheld, and an enqueue that threw, both wrote `outcome: "success"`
+ * (#627). {@link AuthEmailDelivery} is the narrowest thing that closes it: queued, withheld with a
+ * reason, or failed. The instance still knows nothing about email infrastructure — `withheld` and
+ * `failed` are facts about a message, not about a binding.
+ *
+ * **Internal.** It is produced by `../email/send.ts`'s `makeSendAuthEmail`, consumed by
+ * `./plugins.ts`, and wired by `../http/resolve.ts` from the composed email capability's own `enqueue`.
+ * An adopter never supplies one — `AuthWiring.enqueueEmail` is filled by `compose` — and it is not
+ * exported from `../index.ts`, so widening the return type breaks nothing they can hold.
+ */
+export type SendAuthEmail = (message: AuthEmailMessage) => Promise<AuthEmailDelivery>;
 
 /**
  * Everything the Better-Auth instance needs, resolved per invocation from config + request env.
@@ -502,8 +518,9 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
        * `{"success":true}` on purpose, so a caller cannot tell a registered address from a stranger's.
        * Neither decline is visible from anything this hook holds, so each audited path names what must
        * have *happened* and `../audit/evidence.ts` carries it here from the place that saw it — the
-       * session row going away, the message reaching the email seam. Reading them is all this does: the
-       * response has already been decided and is not touched.
+       * session row going away, and the email seam's own answer about the message, which is the send
+       * paths' evidence rather than the fact that a callback was entered. Reading them is all this does:
+       * the response has already been decided and is not touched.
        */
       after: createAuthMiddleware(async (ctx) => {
         const newSession = ctx.context.newSession;
@@ -520,7 +537,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
           currentUserId: ctx.context.session?.user?.id ?? null,
           returned: ctx.context.returned,
           endedSession: sessionEndedDuring(ctx.context),
-          messageQueued: messageQueuedDuring(ctx.context),
+          messageDelivery: messageDeliveryDuring(ctx.context),
         });
       }),
     },

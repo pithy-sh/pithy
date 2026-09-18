@@ -14,7 +14,7 @@ const deps = {
   verificationExpiresIn: 300,
   otpLength: 6,
   disableSignUp: false,
-  sendEmail: async () => undefined,
+  sendEmail: async () => ({ delivery: "queued" as const }),
 };
 
 describe("kitPlugins()", () => {
