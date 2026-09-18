@@ -11,6 +11,7 @@ import { magicLink } from "better-auth/plugins/magic-link";
 import { z } from "zod";
 import { authErrorTranslations } from "../i18n/errorCopy";
 import type { SendAuthEmail } from "./auth";
+import { refusalTransportVerdict } from "./refusalTransport";
 
 /**
  * The four Better Auth plugins the kit composes for itself, and the reason they are fixed.
@@ -133,16 +134,27 @@ export const AuthPlugin = z
     message: "Expected a Better Auth plugin — an object with a non-empty string `id`.",
   })
   .describe(
-    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the set the kit composes, never in place of one.",
+    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the set the kit composes, never in place of one — and refused when it answers a social sign-in refusal through a response body, which the capability cannot collapse.",
   );
 
 /**
- * Refuse a plugin list that is not purely additive, naming the offending plugin.
+ * Refuse a plugin list the kit cannot compose, naming the offending plugin.
  *
- * Two ways it can fail, and both name a single id because that is what the adopter has to go delete:
- * a plugin whose id is one of {@link KIT_PLUGIN_IDS} would sit beside the kit's own copy (Better Auth
- * merges endpoints by id — the later registration silently wins, so this is a redefinition even when it
- * reads like an addition), and two plugins sharing an id do the same to each other.
+ * Three ways it can fail, and each names a single id because that is what the adopter has to go delete.
+ *
+ * **Additivity, which is what this function was originally only about.** A plugin whose id is one of
+ * {@link KIT_PLUGIN_IDS} would sit beside the kit's own copy (Better Auth merges endpoints by id — the
+ * later registration silently wins, so this is a redefinition even when it reads like an addition), and
+ * two plugins sharing an id do the same to each other.
+ *
+ * **And the transport a refusal leaves by (#625).** `../http/providerRefusal` collapses the
+ * account-enumeration oracle on the social callback by rewriting the `Location` header, which is the only
+ * transport it reads. A plugin that answers a refused callback through a **response body** instead —
+ * `oauthPopup()` is the shipped instance — restores the whole oracle with no malformed input anywhere,
+ * and no guard on the way in can see it coming. Such a plugin is refused here rather than composed and
+ * quietly left uncovered. `./refusalTransport` carries the verdict per plugin, the completeness gate over
+ * the dependency's own sources, and the argument for why that rule is a reviewed list rather than a
+ * property read off the object.
  *
  * **The `message` stays short on purpose.** `auth()` runs while `pithy.config.ts` is being imported, so
  * the CLI catches this through `classifyConfigLoadFailure`, which prints the cause's message and nothing
@@ -153,6 +165,14 @@ export function assertAdditivePlugins(plugins: readonly BetterAuthPlugin[]): voi
   const reserved: readonly string[] = KIT_PLUGIN_IDS;
   const seen = new Set<string>();
   for (const plugin of plugins) {
+    const verdict = refusalTransportVerdict(plugin.id);
+    if (verdict?.outsideLocation === true) {
+      throw new ValidationError({
+        message: `The auth capability cannot compose the Better Auth "${plugin.id}" plugin.`,
+        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). It answers a refused social sign-in through a response body rather than the redirect the capability collapses, which would put back the enumeration oracle that tells a caller whether an account exists at an address a provider handed over.`,
+        detail: `plugin "${plugin.id}" answers callback refusals outside the Location header — ${verdict.why}`,
+      });
+    }
     if (reserved.includes(plugin.id)) {
       throw new ValidationError({
         message: `The auth capability already composes the Better Auth "${plugin.id}" plugin.`,

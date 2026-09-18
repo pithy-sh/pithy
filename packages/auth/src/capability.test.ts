@@ -8,6 +8,8 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { BetterAuthPlugin } from "better-auth";
+// The barrel, for this one only: `better-auth` publishes no `./plugins/oauth-popup` export entry.
+import { oauthPopup } from "better-auth/plugins";
 import { admin } from "better-auth/plugins/admin";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { organization } from "better-auth/plugins/organization";
@@ -162,6 +164,14 @@ describe("additional Better Auth plugins", () => {
 
   test("a value that is not a plugin is refused at the config boundary", () => {
     expect(() => build({ plugins: ["organization" as unknown as BetterAuthPlugin] })).toThrow();
+  });
+
+  test("a plugin whose refusals the capability cannot collapse is refused by `auth()` itself (#625)", () => {
+    // The unit case lives in `instance/plugins.test.ts`. This one is about the *wiring*: the gate is worth
+    // nothing if `auth()` does not run it, and `oauthPopup()` composed here would restore the
+    // account-enumeration oracle on the social callback with no malformed input anywhere.
+    expect(() => build({ plugins: [oauthPopup()] })).toThrow(ValidationError);
+    expect(() => build({ plugins: [oauthPopup()] })).toThrow(/oauth-popup/);
   });
 
   // A plugin's tables carry the plugin's own names, with no `pithy_auth_` prefix keeping them out of an

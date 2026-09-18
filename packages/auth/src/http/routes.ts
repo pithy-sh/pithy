@@ -214,6 +214,12 @@ async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   // rather than in an adopter's middleware, for a reason this line demonstrates: middleware could
   // rewrite the header and would then hold nothing to record, while from here the neutral code goes on
   // the wire *and* the true reason goes on the trail.
+  //
+  // **What this reads is the `Location` header, and that is the whole of the claim.** A composed plugin
+  // that replaced the callback's response with a body carrying the code leaves nothing here to collapse,
+  // so such a plugin is refused where it is composed instead — `../instance/refusalTransport`, gated in
+  // `assertAdditivePlugins`. The guarantee is the kit's own routes plus any plugin that answers refusals
+  // through `Location`; it is stated that way in `./providerRefusal` and it is bounded that way here.
   const collapsed = collapseProviderRefusal(c.req.raw.url, response);
   if (collapsed) {
     // **A 302 is not in `DENIED_STATUSES`, and this does not change that.** Widening it would be wrong:

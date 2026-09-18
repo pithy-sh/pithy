@@ -616,9 +616,16 @@ describe("a body the guard now parses is still the body Better Auth is handed", 
  * back whole for anyone composing it.
  *
  * **The kit composes no such plugin, which is why this is driven rather than argued.** `AuthConfig.plugins`
- * is a documented seam, `assertAdditivePlugins` permits this id, and the plugin is the dependency's own.
- * Composing it here is what an adopter does, with the kit's real routes over real D1 either way — so
- * what the cases assert is what that adopter's Worker answers, not what a function returns.
+ * is a documented seam and the plugin is the dependency's own. Composing it here is what an adopter does,
+ * with the kit's real routes over real D1 either way — so what the cases assert is what that adopter's
+ * Worker answers, not what a function returns.
+ *
+ * **Round 6 refuses this plugin at `auth()`, and these cases still stand.** They build their wiring from
+ * `AuthConfig.parse` rather than `auth()`, so the composition gate is deliberately below them: what is
+ * being measured here is the *query channel*, which belongs to better-call's router and not to one
+ * plugin, and `oauthPopup()` is the readiest route in the tree that reads the field off a `GET`. Any
+ * composed plugin may declare such a query. The reason that plugin is now refused is unrelated to this
+ * one — it answers refusals through a response body — and lives in `../instance/refusalTransport`.
  */
 const POPUP_ORIGIN = "http://localhost";
 

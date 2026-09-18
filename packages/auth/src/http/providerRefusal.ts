@@ -2,7 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * One answer for every refusal the user table decided (#625).
+ * One answer for every refusal the user table decided, on every transport the kit can hold (#625).
+ *
+ * ## Reach, stated before the argument, because six rounds have turned on this
+ *
+ * This module reads exactly one thing: the `Location` header of the Response `instance.handler()`
+ * returned. So the guarantee is **a refusal that leaves this Worker through that header is collapsed** —
+ * which covers the kit's own routes, because Better Auth's social callback answers that way, and covers
+ * any composed plugin that answers refusals through `Location` too.
+ *
+ * It does not cover a plugin that replaces the callback's response with something else. There is no way
+ * for a header rewrite to reach a code that is now in a body, so the guarantee is bounded at the other
+ * end instead: `../instance/refusalTransport` refuses such a plugin at composition, by a reviewed roster
+ * whose completeness is gated against the dependency's own sources. `oauthPopup()` is the shipped
+ * instance and is refused. **An adopter's own plugin doing the same thing is not detectable at `auth()`
+ * and is not covered** — that residue is named here rather than left for a seventh round to find.
  *
  * ## The defect
  *
@@ -56,6 +70,14 @@
  * answered. An input guard that depends on out-guessing a dependency's string handling is exactly what
  * round 3 exists to stop relying on — so the guess is made once, about a value the kit then owns, and
  * checked again here against the roster. Neither is asked to carry the whole load.
+ *
+ * ## And the third line is not a guard at all
+ *
+ * Round 6 found a refusal that needs no malformed input: a composed `oauthPopup()` turns the callback's
+ * redirect into a 200 HTML page carrying the code in its body, and neither guard above can see a header
+ * that was never sent. Guarding a sixth channel would have been the same move a sixth time. Instead the
+ * composition is refused — `../instance/refusalTransport` — and this module's claim is bounded to what it
+ * can actually hold. See the reach section at the top; it is the contract, not a caveat.
  */
 
 /**
@@ -285,6 +307,11 @@ export interface CollapsedRefusal {
  * `undefined` for every response that is not a redirect off the callback path carrying a rostered,
  * collapsing `error` — which is nearly all of them, including every successful sign-in, since a
  * completed callback redirects to `callbackURL` with no `error` at all.
+ *
+ * **`undefined` also for a callback answered with no `Location` at all**, which is what a composed plugin
+ * that replaced the response leaves behind. That is not this function failing open by oversight: a code
+ * moved into a body is not reachable from a header rewrite, so the composition is refused at `auth()`
+ * instead (`../instance/refusalTransport`). The module docblock's reach section is the whole claim.
  *
  * **`error_description` goes with it.** Nothing sets one for these today, and a description is a whole
  * sentence written by whoever raises the code next — so it is dropped rather than carried past a header

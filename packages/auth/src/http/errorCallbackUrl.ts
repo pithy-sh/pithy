@@ -107,9 +107,15 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
  * request`, and `better-auth/plugins`' own `oauthPopup()` takes the field off a `GET`:
  * `oauth-popup/index.mjs:143` stores `errorURL: c.query.errorCallbackURL`, and the router builds
  * `c.query` for every request whether or not it carries a body (`router.mjs:52`). The kit composes no
- * such plugin, but `AuthConfig.plugins` is a documented seam and `assertAdditivePlugins` permits that
- * id, so every adopter who adds one inherited round 3's oracle intact. The query is now normalized
- * where the body is, by the same rules, and a rebuilt value travels on a rebuilt URL.
+ * such plugin, but `AuthConfig.plugins` is a documented seam, so every adopter who added one inherited
+ * round 3's oracle intact. The query is now normalized where the body is, by the same rules, and a
+ * rebuilt value travels on a rebuilt URL.
+ *
+ * `oauthPopup()` itself is refused at composition since round 6, for a different reason — it answers
+ * refusals through a response body, which `./providerRefusal` cannot read (`../instance/refusalTransport`).
+ * **That does not make this half redundant and it is not what closes it.** The query channel is the
+ * router's, not one plugin's: any composed plugin may declare a `GET` query holding the field, and this
+ * module's rule is the field's name rather than a list of the routes that read it.
  *
  * **And the two form branches were one decoder in the dependency and two here.** `getBody`'s
  * urlencoded branch calls `await request.formData()`; this module called

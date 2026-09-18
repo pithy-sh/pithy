@@ -53,6 +53,11 @@ import { guardErrorCallbackURL } from "./errorCallbackUrl";
  * **array** (`router.mjs:54`), and an array is not the string `errorURL` is stored from. The guard has
  * to agree, which is what the duplicate-query case below is for.
  *
+ * `oauthPopup()` is cited as the route that made the hole visible, and round 6 refuses that plugin at
+ * composition for an unrelated reason (`../instance/refusalTransport`). The channel is the router's, not
+ * that plugin's — any composed plugin may declare a `GET` query holding the field, which is why the probe
+ * below is a plugin of this suite's own rather than the dependency's.
+ *
  * ## The probe, and the one thing it deliberately switches off
  *
  * `reachProbe` is an ordinary Better Auth plugin endpoint, so `getBody` runs for it exactly as it runs
