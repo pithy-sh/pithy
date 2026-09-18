@@ -6,15 +6,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { declineRefusal, type ReconcileApplied, type ReconcilePlan } from "../capabilities/reconcile";
+import { declaredSpecs } from "../kitPackages/ranges";
+import type { RegistryFetch } from "../kitPackages/registry";
 import { scaffoldProject } from "../project/scaffold";
+import { doctorHarness } from "../test-utils/doctorHarness";
+import { fakeInstall, fakePackument, fakeRegistry } from "../test-utils/fakeInstall";
+import { templateTarball } from "../test-utils/templateTarball";
+import { readManifestDocument, writeManifestDocument } from "../ui/workerUi";
+import { buildDoctorReport, installedCapabilityVersions, renderDoctorText } from "./doctor";
 import upgrade, {
   __test,
   runUpgrade,
   type UpgradeWorker,
   type UpgradeWorkerResult,
+  upgradeFailed,
   upgradeIncomplete,
+  upgradeJsonLine,
+  upgradeText,
+  validateUpgradeFlags,
 } from "./upgrade";
 
 /**
@@ -45,12 +56,14 @@ describe("upgrade command", () => {
   test("meta and args match the CLI surface", () => {
     expect(upgrade.meta).toMatchObject({ name: "upgrade" });
     const args = upgrade.args as Record<string, ArgSpec>;
-    expect(Object.keys(args)).toEqual(["env", "worker", "dry-run", "migrate", "json"]);
+    expect(Object.keys(args)).toEqual(["env", "worker", "dry-run", "migrate", "packages", "latest", "json"]);
     expect(args.env).toMatchObject({ type: "string", default: "dev" });
     expect(args.worker).toMatchObject({ type: "string" });
     expect(args["dry-run"]).toMatchObject({ type: "boolean", default: false });
     expect(args.migrate).toMatchObject({ type: "boolean", default: false });
     expect(args.json).toMatchObject({ type: "boolean", default: false });
+    expect(args.packages).toMatchObject({ type: "boolean", default: false });
+    expect(args.latest).toMatchObject({ type: "boolean", default: false });
   });
 });
 
@@ -792,5 +805,409 @@ describe("a refused decline in both tenses", () => {
     expect(upgradeIncomplete({ workers: [result], manifestFaults: [] })).toBe(true);
     // And the lines it renders are the refusal's own, in either tense — there is one renderer.
     expect(__test.workerLines(result).join("\n")).not.toContain("Nothing to upgrade.");
+  });
+});
+
+describe("validateUpgradeFlags", () => {
+  test("--latest alone moves nothing, so it is refused", () => {
+    expect(() => validateUpgradeFlags({ packages: false, latest: true })).toThrow(ValidationError);
+    expect(() => validateUpgradeFlags({ packages: false, latest: true })).toThrow(
+      "--latest moves packages. Add --packages.",
+    );
+  });
+
+  test("--packages is project-wide, so --worker is refused beside it", () => {
+    expect(() => validateUpgradeFlags({ packages: true, latest: false, worker: "board" })).toThrow(
+      "Packages move project-wide. Drop --worker.",
+    );
+  });
+
+  test("every other combination passes", () => {
+    expect(() => validateUpgradeFlags({ packages: false, latest: false, worker: "board" })).not.toThrow();
+    expect(() => validateUpgradeFlags({ packages: true, latest: true })).not.toThrow();
+  });
+});
+
+/**
+ * `--packages` against a real project on disk: a root and one Worker, `board`, with a React front end whose
+ * sign-in screen the adopter has edited. Only the registry, the installer and the ledger are fakes, and the
+ * installer is one that writes what a rewritten range pins — so what the run reads back is what it wrote.
+ */
+describe("runUpgrade --packages", () => {
+  let dir: string;
+  let boardDir: string;
+  const UI = "@pithy-sh/ui-react";
+  const SIGN_IN_020 = 'if (code === "signup_disabled") refuse();\n';
+  const SIGN_IN_031 = 'if (code === "provider_sign_in_refused") refuse();\n';
+  const tarball = templateTarball({
+    "src/routes/pithy/sign-in.tsx": SIGN_IN_031,
+    "src/routes/pithy/choose-organization.tsx": "export const Chooser = true;\n",
+  });
+  const tarballUrl = "https://registry.npmjs.org/@pithy-sh/ui-react/-/ui-react-0.3.1.tgz";
+
+  const registry = (): RegistryFetch => {
+    const ui = fakePackument(UI, ["0.2.0", "0.3.1"]);
+    const published = ui.versions["0.3.1"];
+    if (published) published.dist = { tarball: tarballUrl, integrity: tarball.integrity };
+    return fakeRegistry(
+      { "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0", "0.2.3", "0.3.1"]), [UI]: ui },
+      { [tarballUrl]: tarball.bytes },
+    );
+  };
+  const ledger = async () => ({ state: "read" as const, pending: 0, undeclared: [] });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-upgrade-packages-"));
+    await scaffoldProject({ targetDir: dir, appName: "replay" });
+    boardDir = join(dir, "apps", "board");
+    await cp(join(dir, "apps", "api"), boardDir, { recursive: true });
+    await rm(join(dir, "apps", "api"), { recursive: true, force: true });
+    await writeFile(
+      join(dir, "package.json"),
+      `${JSON.stringify({ name: "replay", private: true, workspaces: ["apps/*"], dependencies: { "@pithy-sh/auth": "^0.2.0" } }, null, 2)}\n`,
+    );
+    await writeFile(
+      join(boardDir, "package.json"),
+      `${JSON.stringify({ name: "board", dependencies: { "@pithy-sh/auth": "^0.2.0", [UI]: "^0.2.0" } }, null, 2)}\n`,
+    );
+    await writeFile(join(dir, "bun.lock"), "{}\n");
+    const manifest = await readManifestDocument(boardDir);
+    manifest.ui = { stub: "react", build: ["vite", "build"] };
+    await writeManifestDocument(boardDir, manifest);
+    await mkdir(join(boardDir, "src", "routes", "pithy"), { recursive: true });
+    await writeFile(join(boardDir, "src", "routes", "pithy", "sign-in.tsx"), "export const SignIn = wrapped;\n");
+    await fakeInstall()("bun", ["install"], dir);
+    // The installed ui-react carries its templates, as the published one does.
+    const installed = join(boardDir, "node_modules", "@pithy-sh", "ui-react", "templates", "src", "routes", "pithy");
+    await mkdir(installed, { recursive: true });
+    await writeFile(join(installed, "sign-in.tsx"), SIGN_IN_020);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** The one Worker, resolved without importing its config — composing nothing, so the reconcile is quiet. */
+  const board = async (): Promise<UpgradeWorker[]> => [{ name: "board", dir: boardDir, capabilities: [] }];
+  const base = { account: null, env: "dev", migrate: false, readLedger: ledger } as const;
+
+  test("with no flag nothing reaches the registry or the installer, and the output is today's", async () => {
+    const fetch = vi.fn<RegistryFetch>(async () => {
+      throw new Error("the registry must not be asked");
+    });
+    const runInstall = vi.fn(async () => {});
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      resolveWorkers: board,
+      registryFetch: fetch,
+      runInstall,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(runInstall).not.toHaveBeenCalled();
+    expect(run.packages).toBeUndefined();
+    expect(upgradeText(run, false)).toEqual([...__test.renderUpgrade(run), "Done."]);
+    const json = JSON.parse(upgradeJsonLine(run, "dev", false)) as Record<string, unknown>;
+    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults"]);
+    expect(await readFile(join(dir, "package.json"), "utf8")).toContain('"@pithy-sh/auth": "^0.2.0"');
+  });
+
+  test("moves every range to the newest it admits, installs once, and reconciles after the install", async () => {
+    const runInstall = fakeInstall();
+    // Every version the resolver saw, one per call: a resolve before the install would show up as 0.2.0.
+    const installedAtResolve: string[] = [];
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: registry(),
+      runInstall,
+      // The package step runs before any config is imported: by the time the Workers resolve, the new
+      // versions are installed.
+      resolveWorkers: async () => {
+        installedAtResolve.push(
+          JSON.parse(await readFile(join(boardDir, "node_modules", "@pithy-sh", "auth", "package.json"), "utf8"))
+            .version,
+        );
+        return board();
+      },
+    });
+    expect(installedAtResolve).toEqual(["0.2.3"]);
+    expect(runInstall.calls).toEqual([["bun", ["install"], dir]]);
+    expect(JSON.parse(await readFile(join(dir, "package.json"), "utf8")).dependencies).toEqual({
+      "@pithy-sh/auth": "^0.2.3",
+    });
+    expect(JSON.parse(await readFile(join(boardDir, "package.json"), "utf8")).dependencies).toEqual({
+      "@pithy-sh/auth": "^0.2.3",
+      [UI]: "^0.2.0",
+    });
+    expect(run.packages).toMatchObject({ state: "read", installed: true, reconciled: true, mismatches: [] });
+    expect(run.workers.map((result) => result.state)).toEqual(["reconciled"]);
+    expect(upgradeFailed(run)).toBe(false);
+  });
+
+  test("a new 0.x minor is held, reported with the command, and the templates it changed are named", async () => {
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: registry(),
+      runInstall: fakeInstall(),
+      resolveWorkers: board,
+    });
+    expect(run.packages?.held).toEqual([
+      {
+        name: "@pithy-sh/auth",
+        manifest: "package.json",
+        range: "^0.2.0",
+        installed: "0.2.0",
+        latest: "0.3.1",
+        reason: "breaking",
+        command: "pithy upgrade --packages --latest",
+      },
+      {
+        name: "@pithy-sh/auth",
+        manifest: "apps/board/package.json",
+        range: "^0.2.0",
+        installed: "0.2.0",
+        latest: "0.3.1",
+        reason: "breaking",
+        command: "pithy upgrade --packages --latest",
+      },
+      {
+        name: UI,
+        manifest: "apps/board/package.json",
+        range: "^0.2.0",
+        installed: "0.2.0",
+        latest: "0.3.1",
+        reason: "breaking",
+        command: "pithy upgrade --packages --latest",
+      },
+    ]);
+    expect(run.packages?.templates).toEqual([
+      {
+        state: "checked",
+        package: UI,
+        from: ["0.2.0"],
+        to: "0.3.1",
+        applied: false,
+        files: [
+          { worker: "board", path: "src/routes/pithy/sign-in.tsx", change: "changed", copy: "edited" },
+          { worker: "board", path: "src/routes/pithy/choose-organization.tsx", change: "added", copy: "absent" },
+        ],
+      },
+    ]);
+    expect(upgradeText(run, false)).toEqual([
+      "Packages:",
+      "  @pithy-sh/auth  ^0.2.0 → ^0.2.3  (package.json, apps/board/package.json)",
+      "  @pithy-sh/auth  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.",
+      "  @pithy-sh/ui-react  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.",
+      "Templates (@pithy-sh/ui-react 0.2.0 → 0.3.1, held):",
+      "  Templates come from the CLI's @pithy-sh/ui-react. The copies are the project's; nothing here rewrites them.",
+      "  board:",
+      "    src/routes/pithy/sign-in.tsx  changed upstream. The copy is edited. Merge by hand.",
+      "    src/routes/pithy/choose-organization.tsx  new in 0.3.1. Not in this Worker.",
+      "board:",
+      "  Nothing to upgrade.",
+      "Done.",
+    ]);
+    // Held is not a failure: the run did what it was asked, and said what it would not do.
+    expect(upgradeFailed(run)).toBe(false);
+  });
+
+  test("--latest crosses the boundary, keeps the operator, and the report is the one that was applied", async () => {
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: true },
+      registryFetch: registry(),
+      runInstall: fakeInstall(),
+      resolveWorkers: board,
+    });
+    expect(JSON.parse(await readFile(join(boardDir, "package.json"), "utf8")).dependencies).toEqual({
+      "@pithy-sh/auth": "^0.3.1",
+      [UI]: "^0.3.1",
+    });
+    expect(run.packages?.held).toEqual([]);
+    expect(run.packages?.templates.map((section) => [section.to, section.applied])).toEqual([["0.3.1", true]]);
+    expect(upgradeText(run, false)).toContain("Templates (@pithy-sh/ui-react 0.2.0 → 0.3.1):");
+  });
+
+  test("a dry run and a real run carry the same plan; the dry run writes nothing and says what it reconciled", async () => {
+    const runInstall = fakeInstall();
+    const dry = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: true,
+      packages: { latest: false },
+      registryFetch: registry(),
+      runInstall,
+      resolveWorkers: board,
+    });
+    expect(runInstall.calls).toEqual([]);
+    expect(await readFile(join(dir, "package.json"), "utf8")).toContain('"@pithy-sh/auth": "^0.2.0"');
+    const real = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: registry(),
+      runInstall: fakeInstall(),
+      resolveWorkers: board,
+    });
+    const { installed: _dry, ...dryPlan } = dry.packages ?? {};
+    const { installed: _real, ...realPlan } = real.packages ?? {};
+    expect(dryPlan).toEqual(realPlan);
+    expect(dry.packages?.reconciled).toBe(true);
+    const text = upgradeText(dry, true);
+    expect(text).toContain("  Reconciled against the current install. The moves above are not installed.");
+    expect(text.at(-1)).toBe("Dry run. Nothing written.");
+    const json = JSON.parse(upgradeJsonLine(dry, "dev", true)) as Record<string, unknown>;
+    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "packages"]);
+  });
+
+  test("a registry that does not answer: nothing written, the reconcile still runs, and the run fails", async () => {
+    const runInstall = fakeInstall();
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: fakeRegistry({}),
+      runInstall,
+      resolveWorkers: board,
+    });
+    expect(run.packages).toMatchObject({ state: "unavailable", installed: false, reconciled: true, moves: [] });
+    expect(runInstall.calls).toEqual([]);
+    expect(run.workers.map((result) => result.state)).toEqual(["reconciled"]);
+    expect(upgradeFailed(run)).toBe(true);
+    expect(upgradeText(run, false)[0]).toBe("Packages: not checked. The registry did not answer. Nothing moved.");
+  });
+
+  test("an install that lands the wrong version fails the run and names it", async () => {
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: registry(),
+      runInstall: fakeInstall({ hold: ["@pithy-sh/auth"] }),
+      resolveWorkers: board,
+    });
+    expect(upgradeFailed(run)).toBe(true);
+    expect(upgradeText(run, false)).toContain("  @pithy-sh/auth  expected 0.2.3 in package.json. Installed: 0.2.0.");
+  });
+
+  test("a moved CLI stops the run before the reconcile, and says to run the new one", async () => {
+    const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+    root.devDependencies = { "@pithy-sh/cli": "^0.9.4" };
+    await writeFile(join(dir, "package.json"), `${JSON.stringify(root, null, 2)}\n`);
+    const resolveWorkers = vi.fn(board);
+    const fetch = fakeRegistry({
+      "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0"]),
+      [UI]: fakePackument(UI, ["0.2.0"]),
+      "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["0.9.4", "0.9.5"], "0.9.5", { "0.9.5": { [UI]: "^0.2.0" } }),
+    });
+    const run = await runUpgrade({
+      ...base,
+      projectDir: dir,
+      dryRun: false,
+      packages: { latest: false },
+      registryFetch: fetch,
+      runInstall: fakeInstall(),
+      resolveWorkers,
+    });
+    expect(resolveWorkers).not.toHaveBeenCalled();
+    expect(run.workers).toEqual([]);
+    expect(run.packages?.reconciled).toBe(false);
+    expect(upgradeFailed(run)).toBe(false);
+    expect(upgradeText(run, false).slice(-2)).toEqual([
+      "@pithy-sh/cli moved to 0.9.5. Run pithy upgrade to reconcile with it.",
+      "Done.",
+    ]);
+    expect(JSON.parse(upgradeJsonLine(run, "dev", false)).packages).toMatchObject({
+      reconciled: false,
+      installed: true,
+    });
+  });
+});
+
+/**
+ * **Doctor's advice, followed, clears doctor's line (#634's fourth criterion).** Built from the real pieces
+ * end to end: doctor reads the project's own manifests and `node_modules`, the command it names is run, and
+ * doctor is asked again with the same registry.
+ */
+describe("doctor's advice clears its own line", () => {
+  const harness = doctorHarness();
+  let project: string;
+
+  beforeEach(async () => {
+    project = join(harness.dir, "project");
+    await mkdir(join(project, "apps", "board"), { recursive: true });
+    await writeFile(
+      join(project, "package.json"),
+      `${JSON.stringify({ name: "replay", workspaces: ["apps/*"], dependencies: { "@pithy-sh/auth": "^0.2.0" } }, null, 2)}\n`,
+    );
+    await writeFile(join(project, "apps", "board", "package.json"), `${JSON.stringify({ name: "board" }, null, 2)}\n`);
+    await fakeInstall()("bun", ["install"], project);
+  });
+
+  const registryAt = (latest: string) =>
+    fakeRegistry({
+      "@pithy-sh/auth": fakePackument(
+        "@pithy-sh/auth",
+        ["0.2.0", "0.2.3", "0.3.1"].filter((v) => v <= latest),
+        latest,
+      ),
+      "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["1.3.0"]),
+    });
+  const doctorWith = (fetch: ReturnType<typeof registryAt>) =>
+    buildDoctorReport(
+      harness.baseOptions({
+        projectDir: project,
+        fetch,
+        installedCapabilities: installedCapabilityVersions,
+        declaredSpecs,
+      }),
+    );
+  const upgradeWith = (fetch: RegistryFetch, latest: boolean) =>
+    runUpgrade({
+      account: null,
+      env: "dev",
+      migrate: false,
+      dryRun: false,
+      projectDir: project,
+      packages: { latest },
+      registryFetch: fetch,
+      runInstall: fakeInstall(),
+      resolveWorkers: async () => [],
+    });
+  const authRow = (report: Awaited<ReturnType<typeof buildDoctorReport>>) =>
+    report.project?.capabilities.find((cap) => cap.name === "@pithy-sh/auth");
+
+  test("in range: doctor names --packages, and after it the line is current", async () => {
+    const fetch = registryAt("0.2.3");
+    const before = await doctorWith(fetch);
+    expect(authRow(before)).toMatchObject({ state: "outdated", command: "pithy upgrade --packages" });
+    expect(renderDoctorText(before, "/home/u")).toContain("(0.2.3 available — run `pithy upgrade --packages`)");
+    await upgradeWith(fetch, false);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.2.3" });
+  });
+
+  test("across a boundary: doctor names --latest, plain --packages leaves the line, and --latest clears it", async () => {
+    const fetch = registryAt("0.3.1");
+    const before = await doctorWith(fetch);
+    expect(authRow(before)).toMatchObject({ state: "outdated", command: "pithy upgrade --packages --latest" });
+    expect(renderDoctorText(before, "/home/u")).toContain(
+      "(0.3.1 available — run `pithy upgrade --packages --latest`. Crosses a breaking boundary.)",
+    );
+    await upgradeWith(fetch, false);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "outdated", installed: "0.2.3" });
+    await upgradeWith(fetch, true);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.3.1" });
   });
 });

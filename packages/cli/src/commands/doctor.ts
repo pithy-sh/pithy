@@ -84,6 +84,7 @@ import {
   describeWorkerNameConvention,
   type WorkerNameCheck,
 } from "../doctor/workerName";
+import { crossesBreakingBoundary, type DeclaredSpec, declaredSpecs, packageCommand } from "../kitPackages/ranges";
 import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
@@ -207,6 +208,13 @@ export interface CapabilityStatus {
   installed: string;
   latest: string | null;
   state: VersionState;
+  /**
+   * The command that clears an outdated row, or `null` — for a row that is not outdated, and for one no
+   * `pithy` command moves (#634). Decided from what the project declares, by the rule `--packages` moves by.
+   */
+  command: string | null;
+  /** The declared spec `pithy upgrade --packages` leaves alone, when that is why `command` is `null`. */
+  declaredAs: string | null;
 }
 
 /** The project-scoped portion of the report; `null` outside a Pithy project. */
@@ -625,6 +633,8 @@ export interface DoctorReportOptions {
   readRc?: (path: string) => Promise<string>;
   /** Installed-capability enumerator seam; defaults to scanning `node_modules/@pithy-sh/*`. */
   installedCapabilities?: (projectDir: string) => Promise<{ name: string; version: string }[]>;
+  /** Declared-dependency reader seam; defaults to {@link declaredSpecs} over the root and `apps/*` manifests. */
+  declaredSpecs?: (projectDir: string) => Promise<DeclaredSpec[]>;
   /** Project-config loader seam; defaults to {@link loadProject} (a `NotFoundError` marks "outside a project"). */
   loadProject?: (projectDir: string) => Promise<ProjectConfig>;
   /**
@@ -1004,16 +1014,20 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       declared = [];
     }
     const installedCaps = await listCapabilities(options.projectDir);
+    const packageSpecs = await (options.declaredSpecs ?? declaredSpecs)(options.projectDir);
     const capabilities: CapabilityStatus[] = [];
     for (const cap of installedCaps) {
       const unscoped = cap.name.replace("@pithy-sh/", "");
       const latest = offline ? null : await fetchLatestVersion(unscoped, { fetch: doFetch });
-      capabilities.push({
-        name: cap.name,
-        installed: cap.version,
-        latest: latest?.version ?? null,
-        state: versionState(cap.version, latest?.version ?? null),
-      });
+      const state = versionState(cap.version, latest?.version ?? null);
+      const advice =
+        state === "outdated" && latest
+          ? packageCommand(
+              packageSpecs.filter((spec) => spec.name === cap.name),
+              latest.version,
+            )
+          : { command: null, declaredAs: null };
+      capabilities.push({ name: cap.name, installed: cap.version, latest: latest?.version ?? null, state, ...advice });
     }
     // **`dev`'s composition, and never one for no environment (#586).** The Workers this report lists, and
     // the ones the checks about this machine read: `Local delivery:` is the dev session's.
@@ -2602,14 +2616,26 @@ function capabilitiesBlock(capabilities: CapabilityStatus[], offline: boolean): 
   const width = Math.max(...capabilities.map((cap) => cap.name.length));
   const rows = capabilities.map((cap) => {
     const suffix =
-      cap.state === "current"
-        ? " ✓"
-        : cap.state === "unknown"
-          ? " (not checked)"
-          : ` (${cap.latest} available — run \`pithy upgrade\`)`;
+      cap.state === "current" ? " ✓" : cap.state === "unknown" ? " (not checked)" : ` (${outdatedAdvice(cap)})`;
     return `  ${cap.name.padEnd(width)}  ${cap.installed}${suffix}`;
   });
   return ["Project capabilities:", ...rows].join("\n");
+}
+
+/**
+ * What an outdated row says after the version (#634). Only ever a command that clears the line: `pithy
+ * upgrade` alone never moved a package, so naming it was advice that printed the same row again.
+ */
+function outdatedAdvice(cap: CapabilityStatus): string {
+  const available = `${cap.latest} available`;
+  if (cap.command === null) {
+    return cap.declaredAs === null
+      ? `${available} — not a direct dependency`
+      : `${available} — declared as ${cap.declaredAs}. Not moved by pithy upgrade.`;
+  }
+  const boundary =
+    cap.latest !== null && crossesBreakingBoundary(cap.installed, cap.latest) ? ". Crosses a breaking boundary." : "";
+  return `${available} — run \`${cap.command}\`${boundary}`;
 }
 
 /** Render the report as the aligned, blocked text of docs/CLI.md §5.6. Verbose vs. terse driven by overall health. */

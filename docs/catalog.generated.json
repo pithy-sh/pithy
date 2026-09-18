@@ -823,6 +823,10 @@
         "--no-dry-run",
         "--migrate",
         "--no-migrate",
+        "--packages",
+        "--no-packages",
+        "--latest",
+        "--no-latest",
         "--json",
         "--no-json"
       ]
