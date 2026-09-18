@@ -12,6 +12,7 @@ import { multiSession } from "better-auth/plugins/multi-session";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
 import { AuthPlugin, assertAdditivePlugins, KIT_PLUGIN_IDS, kitPlugins } from "./plugins";
+import { PROVIDER_SIGN_IN_GATE_ID } from "./providerSignInGate";
 import { REFUSED_PLUGIN_IDS } from "./refusalTransport";
 
 /** The schema-only deps: `kitPlugins` reads them for lifetimes and delivery, never for identity. */
@@ -20,13 +21,21 @@ const deps = {
   otpLength: 6,
   disableSignUp: false,
   sendEmail: async () => undefined,
+  emit: async () => undefined,
 };
 
 describe("kitPlugins()", () => {
   test("composes exactly the set the kit promises, in a stable order", () => {
     // `i18n` leads, and the order is the point rather than a detail: it translates the refusals of the
     // plugins registered around it, so one composed ahead of it would answer in English regardless.
-    expect(kitPlugins(deps).map((plugin) => plugin.id)).toEqual(["i18n", "bearer", "jwt", "magic-link", "email-otp"]);
+    expect(kitPlugins(deps).map((plugin) => plugin.id)).toEqual([
+      "i18n",
+      "bearer",
+      "jwt",
+      "magic-link",
+      "email-otp",
+      PROVIDER_SIGN_IN_GATE_ID,
+    ]);
   });
 
   test("KIT_PLUGIN_IDS is what kitPlugins() actually returns — the guard cannot drift from the set", () => {

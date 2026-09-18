@@ -32,13 +32,19 @@ import { z } from "zod";
  *    read from GitHub.
  *
  * **Linking is Better Auth's branch, not this one, and that is worth knowing before editing here.**
- * `getUserInfo` runs at `callback.mjs:120`, upstream of the `if (link)` at `:150`, and it is handed only
- * the tokens — 1.7.1 exports no accessor that would let it read the OAuth state, so it genuinely cannot
- * tell a `/link-social` callback from a sign-in. It does not need to: what this module contributes to
- * that path is the boundary. The only address it ever returns is one GitHub reports `verified` for, so a
- * link licensed by an address GitHub never confirmed is not reachable from either flow. Linking also
- * cannot rewrite the user's own email — `applyUpdateUserInfoOnLink` returns early unless
- * `updateUserInfoOnLink` is set, and destructures `email` out even then.
+ * `getUserInfo` runs at `callback.mjs:120`, upstream of the `if (link)` at `:150`, and this resolver is
+ * handed only the tokens — it does not look at which flow it is on, and it does not need to: what this
+ * module contributes to that path is the boundary. The only address it ever returns is one GitHub
+ * reports `verified` for, so a link licensed by an address GitHub never confirmed is not reachable from
+ * either flow. Linking also cannot rewrite the user's own email — `applyUpdateUserInfoOnLink` returns
+ * early unless `updateUserInfoOnLink` is set, and destructures `email` out even then.
+ *
+ * **A previous version of this paragraph said 1.7.1 "exports no accessor that would let it read the
+ * OAuth state", and that was wrong.** `getOAuthState` is exported from `better-auth/api`
+ * (`api/index.mjs:216`) and `parseState` populates it at `callback.mjs:76`, before this runs — which is
+ * exactly what `./providerSignInGate` is built on. The correction is recorded rather than quietly
+ * deleted, because the false claim was load-bearing: it is the sentence that would have been cited to
+ * rule out the seam that closed #625.
  *
  * **Linking a provider whose address *differs* from the account's is not enabled here, and that is a
  * deliberate hold.** It needs `allowDifferentEmails: true`, which widens what a session alone can do —

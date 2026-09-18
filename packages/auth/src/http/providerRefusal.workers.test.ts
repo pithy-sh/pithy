@@ -17,6 +17,7 @@ import { oauthPopup } from "better-auth/plugins";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AuthConfig, type AuthWiring } from "../capability";
+import { PROVIDER_SIGN_IN_REFUSAL_REASONS } from "../instance/providerSignInGate";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
@@ -257,29 +258,33 @@ afterEach(() => {
 });
 
 /**
- * The two sign-up policies, because they produce two different oracles out of the same attack.
+ * The two sign-up policies, run over the identical assertions so this is a gate on the rule rather than
+ * on the strings any one configuration happens to produce.
  *
- * With sign-up refused the pair is Better Auth's own `account_not_linked` / `signup_disabled`, which is
- * what #625 reports. With sign-up permitted — the **default**, and the configuration most projects are
- * on — the no-row side never reaches `signup_disabled` at all: it goes on to create a user, and the
- * kit's own `user.create.before` hook refuses it with `EMAIL_NOT_VERIFIED` and a whole sentence of
- * `error_description`. Same question, same two answers, different spelling. The issue cleared that code
- * as "the provider's own state"; it is, and being able to read it is still ours.
+ * **They used to produce two different pairs, and now they produce none.** With sign-up refused the pair
+ * was Better Auth's own `account_not_linked` / `signup_disabled`, which is what #625 reports; with
+ * sign-up permitted — the default — the no-row side never reached `signup_disabled` at all but went on
+ * to create a user, where the kit's own `user.create.before` hook refused it with `EMAIL_NOT_VERIFIED`
+ * and a whole sentence of `error_description`. Same question, same two answers, different spelling.
  *
- * Running the identical assertions over both is what makes this a gate on the rule rather than on the
- * two strings the issue happened to name.
+ * `../instance/providerSignInGate` now decides both before Better Auth branches, so on either policy
+ * neither half of either pair is produced anywhere and the trail carries the gate's own word instead.
+ * That is what {@link REASONS} is, and `../instance/providerSignInGate.workers.test.ts` is where the
+ * claim "never produced at all" is asserted rather than inferred from a header.
  */
+const REASONS = [PROVIDER_SIGN_IN_REFUSAL_REASONS.accountExists, PROVIDER_SIGN_IN_REFUSAL_REASONS.noAccount] as const;
+
 const POLICIES = [
   {
     label: "sign-up refused (#554's recommended configuration)",
     allowSignUp: false,
     /** What the trail must still be able to tell apart, matched row first. */
-    reasons: ["account_not_linked", "signup_disabled"],
+    reasons: REASONS,
   },
   {
     label: "sign-up permitted (the default)",
     allowSignUp: true,
-    reasons: ["account_not_linked", "EMAIL_NOT_VERIFIED"],
+    reasons: REASONS,
   },
 ] as const;
 
@@ -319,8 +324,9 @@ describe.each(POLICIES)("a refused social sign-in, $label", ({ allowSignUp, reas
     const { matched, unmatched } = await bothRefusals(allowSignUp);
 
     // The trail tells the two apart, which is the half an adopter's own middleware could only throw
-    // away: it sees the one code this Worker now sends, and has nothing left to record. Neither code
-    // had ever reached `pithy_audit_events` before — a 302 is not a `DENIED_STATUSES` status.
+    // away: it sees the one code this Worker now sends, and has nothing left to record. Neither
+    // refusal had ever reached `pithy_audit_events` before — a 302 is not a `DENIED_STATUSES` status —
+    // and the words are now the gate's, because the dependency's two codes are no longer produced.
     expect([deniedReason(matched), deniedReason(unmatched)]).toEqual([...reasons]);
   });
 });
@@ -380,7 +386,7 @@ describe.each(BYPASSES)("a refused social sign-in through $label", ({ errorCallb
 
     expect({ status: unmatched.status, body: unmatched.body }).toEqual({ status: matched.status, body: matched.body });
     // The half a header rewrite loses. On the relative path nothing had been recorded at all.
-    expect([deniedReason(matched), deniedReason(unmatched)]).toEqual(["account_not_linked", "signup_disabled"]);
+    expect([deniedReason(matched), deniedReason(unmatched)]).toEqual([...REASONS]);
   });
 });
 

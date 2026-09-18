@@ -4,6 +4,21 @@
 /**
  * One answer for every refusal the user table decided, on every transport the kit can hold (#625).
  *
+ * ## This is the second line now, and the first one is upstream
+ *
+ * `../instance/providerSignInGate` decides a refused provider sign-in **before** Better Auth branches,
+ * so `account_not_linked` and `signup_disabled` — the pair this module was written for — are no longer
+ * produced anywhere on the redirect callback. The roster below still carries them, because a roster
+ * whose completeness is gated against the dependency's own error tables has to name every code the
+ * dependency can emit, not every code the kit can currently reach.
+ *
+ * **What is left for this module is the rest of the roster**, and it is not nothing: `unable_to_create_user`
+ * and `validation_context_missing` are raised inside `createUser`, which is the no-row side, and
+ * `INVALID_PROFILE_FIELD` on the matched-row side — all three downstream of a gate decision the gate
+ * passed through, because passing through is what it does whenever Better Auth might have succeeded.
+ * So both ends stay: the gate stops the pair being produced, and this checks what the dependency
+ * answered against the roster.
+ *
  * ## Reach, stated before the argument, because six rounds have turned on this
  *
  * This module reads exactly one thing: the `Location` header of the Response `instance.handler()`

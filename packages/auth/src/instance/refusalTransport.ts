@@ -96,7 +96,7 @@ const REFUSAL_TRANSPORT_VERDICTS: Readonly<Record<string, RefusalTransportVerdic
   "oauth-popup": {
     source: "oauth-popup",
     outsideLocation: true,
-    why: "oauth-popup/index.mjs:216-226 — the after hook matches `/callback/` and `/oauth2/callback/`, reads `error` and `error_description` off the `location` Better Auth just wrote, and assigns `c.context.returned` a 200 HTML page carrying both in a JSON script block for `postMessage`. The redirect the collapse reads never leaves the Worker, so `account_not_linked` against `signup_disabled` is legible to anyone who can open the popup. Nothing about the request needs to be malformed.",
+    why: "oauth-popup/index.mjs:216-226 — the after hook matches `/callback/` and `/oauth2/callback/`, reads `error` and `error_description` off the `location` Better Auth just wrote, and assigns `c.context.returned` a 200 HTML page carrying both in a JSON script block for `postMessage`. The redirect the collapse reads never leaves the Worker, so whatever code the callback settled on is legible to anyone who can open the popup, and nothing about the request needs to be malformed. **The pair it originally restored is no longer produced** — `./providerSignInGate` decides rows 3 and 4 before Better Auth branches — but the refusal stands on the codes that gate deliberately passes through: `unable_to_create_user` and `validation_context_missing` are raised inside `createUser`, the no-row side, and `INVALID_PROFILE_FIELD` on the matched-row side, so the same question still has two readable answers through a body the collapse cannot reach.",
   },
   "oauth-proxy": {
     source: "oauth-proxy",

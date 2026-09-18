@@ -41,6 +41,21 @@ type AppAuth = AuthInstance<[ReturnType<typeof organization>]>;
 
 **This section stays here.** `src/http/routes.ts` and `src/client/api.ts` both explain a design decision by pointing a reader at it by name — the flat response shape is read rather than rewritten precisely because `createAuthClient` is a first-class surface, and that argument is only checkable against the client this documents.
 
+## Provider sign-in is identity-based, by design
+
+Pressing a provider button while signed out is not a claim on an address. It is a claim on an identity. Four outcomes, and they are the whole of it:
+
+| # | Situation | Outcome |
+|---|---|---|
+| 1 | The provider identity is already attached to an account | Signs in |
+| 2 | Not attached, and the provider's **verified** address matches an account | Links and signs in |
+| 3 | Not attached, address unverified at the provider, an account exists there | Refused |
+| 4 | Not attached, no account at that address | Refused |
+
+**Rows 3 and 4 answer identically**, and that is a security property rather than a rough edge. They differ only in whether an account exists at an address the caller chose, and telling a stranger which one they hit is an account-enumeration oracle: one provider account, none on the target, unlimited queries. The decision is made in `src/instance/providerSignInGate.ts`, before Better Auth branches, so the two codes that used to answer it are never produced. The true reason goes to the audit trail, where an operator can read it and a browser cannot.
+
+So: **do not "improve" this by matching more addresses, and do not make the refusal more helpful.** An address is not a credential — a provider hands over whatever primary happens to be set, chosen years ago for unrelated reasons — and every sentence that separates "you have no account here" from "you have one and this provider is not attached to it" is the oracle back. The remedy for a refused sign-in is the same either way: sign in with a magic link, then connect the provider from the account. Linking from inside the account is a different flow with both sides already proven, and it is deliberately unconstrained by the address.
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

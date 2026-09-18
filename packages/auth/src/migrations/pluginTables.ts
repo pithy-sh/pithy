@@ -58,6 +58,9 @@ export function authSchemaOptions(plugins: readonly BetterAuthPlugin[]): BetterA
         otpLength: 6,
         disableSignUp: false,
         sendEmail: async () => undefined,
+        // Never invoked here for the same reason `sendEmail` is not: a schema is a shape, and `getSchema`
+        // reads `plugin.schema` rather than behavior. The gate contributes no table at all.
+        emit: async () => undefined,
       }),
       ...plugins,
     ],
