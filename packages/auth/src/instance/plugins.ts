@@ -9,8 +9,9 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { jwt } from "better-auth/plugins/jwt";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { z } from "zod";
+import { markMessageDelivery, SEND_FAULT } from "../audit/evidence";
 import { authErrorTranslations } from "../i18n/errorCopy";
-import type { SendAuthEmail } from "./auth";
+import type { AuthEmailMessage, SendAuthEmail } from "./auth";
 
 /**
  * The four Better Auth plugins the kit composes for itself, and the reason they are fixed.
@@ -96,20 +97,71 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
     magicLink({
       expiresIn: deps.verificationExpiresIn,
       disableSignUp: deps.disableSignUp,
-      sendMagicLink: async ({ email, url, token }) => {
-        await deps.sendEmail({ to: email, template: "magicLink", token, url });
+      /**
+       * **The only place that knows whether a message exists** — hence `sendAndRecord`, and see
+       * `../audit/evidence.ts` for why the two send events need it. `auth/magic_link_sent` claims a
+       * message; the endpoint answers `200 {"status":true}` whether or not one was made, and the `after`
+       * hook that writes the row cannot see the difference.
+       */
+      sendMagicLink: async ({ email, url, token }, ctx) => {
+        await sendAndRecord(deps, { to: email, template: "magicLink", token, url }, ctx);
       },
     }),
     emailOTP({
       otpLength: deps.otpLength,
       expiresIn: deps.verificationExpiresIn,
       disableSignUp: deps.disableSignUp,
-      sendVerificationOTP: async ({ email, otp, type }) => {
+      /**
+       * **Two ways this declines, and neither shows on the wire.** Better Auth calls this only after its
+       * own user-enumeration guard has passed — an unregistered address that is not signing up gets the
+       * verification row dropped and `200 {"success":true}`, deliberately, so a caller cannot tell a
+       * registered address from a stranger's. And the kit declines again below: an OTP is a sign-in
+       * credential here, and no other `type` is a message this product sends.
+       *
+       * So the mark sits past the early return, beside the send itself. That is what `auth/otp_sent` has
+       * to mean, and reading it off the status wrote `success` for every one of these (#627).
+       *
+       * **And two more ways it declines, below this callback rather than above it.** The email capability
+       * withholds a message to a suppressed address, and an enqueue can simply fail; `runInBackgroundOrAwait`
+       * logs that failure and the endpoint still answers `200 {"success":true}`. Neither is visible from
+       * here except in what `sendEmail` answers, which is why the mark is the answer and comes after it.
+       */
+      sendVerificationOTP: async ({ email, otp, type }, ctx) => {
         if (type !== "sign-in") return;
-        await deps.sendEmail({ to: email, template: "otp", code: otp });
+        await sendAndRecord(deps, { to: email, template: "otp", code: otp }, ctx);
       },
     }),
   ];
+}
+
+/**
+ * Hand one message to the email seam and record what the seam answered.
+ *
+ * **After the await, and the answer rather than the attempt — that pair is #627's last hole.** The
+ * previous revision marked the evidence *before* `sendEmail` was awaited and discarded its result, so
+ * `@pithy-sh/email` deciding to withhold a message, or failing to queue one at all, was invisible to the
+ * event that claims the message exists. Both wrote `auth/otp_sent outcome=success` over a
+ * `200 {"success":true}`, for an unauthenticated caller, on the default composition.
+ *
+ * **A throw is marked and re-thrown, never swallowed.** Swallowing would move the wire —
+ * `/sign-in/magic-link` awaits this callback directly and answers 500 when it throws, while
+ * `/email-otp/send-verification-otp` routes it through `runInBackgroundOrAwait`, which logs and answers
+ * 200 either way. Nothing here decides a status; it records what happened underneath one. The recorded
+ * reason is {@link SEND_FAULT} and never the error's own text: an audit row is long-lived and queryable,
+ * and a thrown message is the one value in reach that nobody has vetted.
+ */
+async function sendAndRecord(
+  deps: KitPluginDeps,
+  message: AuthEmailMessage,
+  ctx: { context?: unknown } | undefined,
+): Promise<void> {
+  const requestContext = ctx?.context;
+  try {
+    markMessageDelivery(requestContext, await deps.sendEmail(message));
+  } catch (error) {
+    markMessageDelivery(requestContext, { delivery: "failed", reason: SEND_FAULT });
+    throw error;
+  }
 }
 
 /** Is this value shaped like a Better Auth plugin — an object carrying a non-empty string `id`? */

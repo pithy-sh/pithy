@@ -11,7 +11,7 @@ const DEPS = {
   verificationExpiresIn: 300,
   otpLength: 6,
   disableSignUp: false,
-  sendEmail: async () => undefined,
+  sendEmail: async () => ({ delivery: "queued" as const }),
 };
 
 /** Every locale this kit writes Better Auth's refusals in. English is the source and is not one. */

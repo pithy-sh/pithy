@@ -50,7 +50,10 @@ function instance(secret = SECRET, baseURL = "http://localhost:8787") {
     basePath: "/api/auth",
     trustedOrigins: ["http://localhost:8787"],
     ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async (message) => void mailbox.push(message),
+    sendEmail: async (message) => {
+      mailbox.push(message);
+      return { delivery: "queued" };
+    },
     sessionExpiresIn: 60 * 60 * 24 * 7,
     sessionUpdateAge: 60 * 60 * 24,
     verificationExpiresIn: 300,

@@ -57,7 +57,7 @@ export function authSchemaOptions(plugins: readonly BetterAuthPlugin[]): BetterA
         verificationExpiresIn: 300,
         otpLength: 6,
         disableSignUp: false,
-        sendEmail: async () => undefined,
+        sendEmail: async () => ({ delivery: "queued" }),
       }),
       ...plugins,
     ],
