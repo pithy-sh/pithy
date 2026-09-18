@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -84,8 +84,16 @@ import {
   describeWorkerNameConvention,
   type WorkerNameCheck,
 } from "../doctor/workerName";
+import {
+  crossesBreakingBoundary,
+  type DeclaredSpec,
+  declaredSpecs,
+  type NoCommandReason,
+  type PackageAdvice,
+  packageCommand,
+} from "../kitPackages/ranges";
 import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
-import { type FetchLike, fetchLatestVersion } from "../notifier/check";
+import { type FetchLike, fetchLatestVersion, type LatestInfo } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
 import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from "../notifier/state";
 import { classifyBump } from "../notifier/version";
@@ -95,6 +103,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectEnvironments, type ProjectConfig, projectCloudflareAccount } from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
 import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
+import { alreadyProvided, detectPackageManager } from "../project/packageManager";
 import type { ResolvedWorker } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck } from "../project/workflows";
 import { describeUnrepeatedKey } from "../project/wranglerInheritance";
@@ -207,6 +216,15 @@ export interface CapabilityStatus {
   installed: string;
   latest: string | null;
   state: VersionState;
+  /**
+   * The command that clears an outdated row, or `null` — for a row that is not outdated, and for one no
+   * `pithy` command moves (#634). Decided from what the project declares, by the rule `--packages` moves by.
+   */
+  command: string | null;
+  /** The declared spec `pithy upgrade --packages` leaves alone, when that is why `command` is `null`. */
+  declaredAs: string | null;
+  /** Why `command` is `null` for an outdated row, or `null`. */
+  reason: NoCommandReason | null;
 }
 
 /** The project-scoped portion of the report; `null` outside a Pithy project. */
@@ -581,6 +599,23 @@ export function detectRuntime(versions: NodeJS.ProcessVersions = process.version
   return { name: "Node", version: versions.node, nodeCompat: null };
 }
 
+/** The CLI's package name. */
+const CLI_PACKAGE = "@pithy-sh/cli";
+
+/**
+ * Whether the running binary is the project's own install: inside a `node_modules` under the project. Both
+ * sides through `realpath`, because bun's store and a symlinked tmpdir are the ordinary case. A checkout
+ * linked in resolves outside the project, and is not this.
+ */
+export async function runsFromProject(argv1: string, projectDir: string): Promise<boolean> {
+  if (argv1 === "") return false;
+  const real = (path: string) => realpath(path).catch(() => resolvePath(path));
+  const [bin, root] = await Promise.all([real(argv1), real(projectDir)]);
+  const below = relative(root, bin);
+  if (below === "" || below.startsWith("..") || isAbsolute(below)) return false;
+  return below.split(sep).includes("node_modules");
+}
+
 /** Classify an installed version against what the registry returned — `unknown` when it returned nothing. */
 export function versionState(installed: string, latest: string | null): VersionState {
   if (latest === null) return "unknown";
@@ -625,6 +660,8 @@ export interface DoctorReportOptions {
   readRc?: (path: string) => Promise<string>;
   /** Installed-capability enumerator seam; defaults to scanning `node_modules/@pithy-sh/*`. */
   installedCapabilities?: (projectDir: string) => Promise<{ name: string; version: string }[]>;
+  /** Declared-dependency reader seam; defaults to {@link declaredSpecs} over the root and `apps/*` manifests. */
+  declaredSpecs?: (projectDir: string) => Promise<DeclaredSpec[]>;
   /** Project-config loader seam; defaults to {@link loadProject} (a `NotFoundError` marks "outside a project"). */
   loadProject?: (projectDir: string) => Promise<ProjectConfig>;
   /**
@@ -1004,16 +1041,36 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       declared = [];
     }
     const installedCaps = await listCapabilities(options.projectDir);
+    const packageSpecs = await (options.declaredSpecs ?? declaredSpecs)(options.projectDir);
+    const packageManager = await detectPackageManager(options.projectDir);
+    // The advice for one outdated package, from the facts `--packages` itself decides by (#634).
+    const adviceFor = async (name: string, latest: LatestInfo): Promise<PackageAdvice> =>
+      packageCommand(
+        packageSpecs.filter((spec) => spec.name === name),
+        latest.version,
+        {
+          linked: await alreadyProvided(options.projectDir, name),
+          latestDeprecated: latest.deprecated,
+          packageManager,
+        },
+      );
     const capabilities: CapabilityStatus[] = [];
     for (const cap of installedCaps) {
       const unscoped = cap.name.replace("@pithy-sh/", "");
       const latest = offline ? null : await fetchLatestVersion(unscoped, { fetch: doFetch });
-      capabilities.push({
-        name: cap.name,
-        installed: cap.version,
-        latest: latest?.version ?? null,
-        state: versionState(cap.version, latest?.version ?? null),
-      });
+      const state = versionState(cap.version, latest?.version ?? null);
+      const advice =
+        state === "outdated" && latest
+          ? await adviceFor(cap.name, latest)
+          : { command: null, declaredAs: null, reason: null };
+      capabilities.push({ name: cap.name, installed: cap.version, latest: latest?.version ?? null, state, ...advice });
+    }
+    // **A CLI the project installed is the project's package.** `bun run pithy` runs this copy, and a global
+    // install leaves it exactly where it was, so the installer's command printed the same line again. What
+    // moves it is what moves the project's other packages. A global CLI keeps its installer's command.
+    if (cli.state === "outdated" && cliLatest && (await runsFromProject(argv1, options.projectDir))) {
+      const advice = await adviceFor(CLI_PACKAGE, cliLatest);
+      if (advice.command !== null) cli.upgradeCommand = advice.command;
     }
     // **`dev`'s composition, and never one for no environment (#586).** The Workers this report lists, and
     // the ones the checks about this machine read: `Local delivery:` is the dev session's.
@@ -2604,14 +2661,35 @@ function capabilitiesBlock(capabilities: CapabilityStatus[], offline: boolean): 
   const width = Math.max(...capabilities.map((cap) => cap.name.length));
   const rows = capabilities.map((cap) => {
     const suffix =
-      cap.state === "current"
-        ? " ✓"
-        : cap.state === "unknown"
-          ? " (not checked)"
-          : ` (${cap.latest} available — run \`pithy upgrade\`)`;
+      cap.state === "current" ? " ✓" : cap.state === "unknown" ? " (not checked)" : ` (${outdatedAdvice(cap)})`;
     return `  ${cap.name.padEnd(width)}  ${cap.installed}${suffix}`;
   });
   return ["Project capabilities:", ...rows].join("\n");
+}
+
+/**
+ * What an outdated row says after the version (#634). Only ever a command that clears the line: `pithy
+ * upgrade` alone never moved a package, so naming it was advice that printed the same row again.
+ */
+function outdatedAdvice(cap: CapabilityStatus): string {
+  const available = `${cap.latest} available`;
+  if (cap.command === null) {
+    switch (cap.reason) {
+      case "not-a-registry-range":
+        return `${available} — declared as ${cap.declaredAs}. Not moved by pithy upgrade.`;
+      case "linked":
+        return `${available} — linked from a checkout. Not moved by pithy upgrade.`;
+      case "deprecated":
+        return `${available} — deprecated. Not moved by pithy upgrade.`;
+      case "prerelease":
+        return `${available} — a prerelease. Not moved by pithy upgrade.`;
+      default:
+        return `${available} — not a direct dependency`;
+    }
+  }
+  const boundary =
+    cap.latest !== null && crossesBreakingBoundary(cap.installed, cap.latest) ? ". Crosses a breaking boundary." : "";
+  return `${available} — run \`${cap.command}\`${boundary}`;
 }
 
 /** Render the report as the aligned, blocked text of docs/CLI.md §5.6. Verbose vs. terse driven by overall health. */

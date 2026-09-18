@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -133,10 +133,181 @@ describe("buildDoctorReport — project detection", () => {
       baseOptions({ fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }) }),
     );
     expect(report.project?.capabilities).toEqual([
-      { name: "@pithy-sh/core", installed: "1.2.0", latest: "1.2.0", state: "current" },
-      { name: "@pithy-sh/auth", installed: "1.1.8", latest: "1.2.0", state: "outdated" },
-      { name: "@pithy-sh/leaderboard", installed: "1.2.0", latest: "1.2.0", state: "current" },
+      {
+        name: "@pithy-sh/core",
+        installed: "1.2.0",
+        latest: "1.2.0",
+        state: "current",
+        command: null,
+        declaredAs: null,
+        reason: null,
+      },
+      {
+        name: "@pithy-sh/auth",
+        installed: "1.1.8",
+        latest: "1.2.0",
+        state: "outdated",
+        command: "pithy upgrade --packages",
+        declaredAs: null,
+        reason: null,
+      },
+      {
+        name: "@pithy-sh/leaderboard",
+        installed: "1.2.0",
+        latest: "1.2.0",
+        state: "current",
+        command: null,
+        declaredAs: null,
+        reason: null,
+      },
     ]);
+  });
+});
+
+/**
+ * **The command doctor names is one that clears the line (#634).** It used to print `pithy upgrade` for every
+ * outdated package, and `upgrade` never moved a version — so following the advice printed the same line again.
+ * The command is now decided from what the project declares, by the same rule `--packages` moves by.
+ */
+describe("buildDoctorReport — the command an outdated package names", () => {
+  const declared = (spec: string | null) => async () =>
+    spec === null ? [] : [{ name: "@pithy-sh/auth", manifest: "package.json", field: "dependencies" as const, spec }];
+  const reportFor = (installed: string, latest: string, spec: string | null) =>
+    buildDoctorReport(
+      baseOptions({
+        fetch: registryFetch({ cli: "1.3.0", auth: latest }),
+        installedCapabilities: async () => [{ name: "@pithy-sh/auth", version: installed }],
+        declaredSpecs: declared(spec),
+      }),
+    );
+  const row = async (installed: string, latest: string, spec: string | null) => {
+    const report = await reportFor(installed, latest, spec);
+    const line = renderDoctorText(report, "/home/u")
+      .split("\n")
+      .find((text) => text.startsWith("  @pithy-sh/auth"));
+    return { cap: report.project?.capabilities[0], line };
+  };
+
+  test("in range: --packages, which reaches latest", async () => {
+    const { cap, line } = await row("1.1.8", "1.2.0", "^1.1.8");
+    expect(cap).toMatchObject({ command: "pithy upgrade --packages", declaredAs: null });
+    expect(line).toBe("  @pithy-sh/auth  1.1.8 (1.2.0 available — run `pithy upgrade --packages`)");
+  });
+
+  test("a new 0.x minor beyond the range: --packages --latest, and the boundary is said", async () => {
+    const { cap, line } = await row("0.2.0", "0.3.1", "^0.2.0");
+    expect(cap).toMatchObject({ command: "pithy upgrade --packages --latest" });
+    expect(line).toBe(
+      "  @pithy-sh/auth  0.2.0 (0.3.1 available — run `pithy upgrade --packages --latest`. Crosses a breaking boundary.)",
+    );
+  });
+
+  test("an exact pin behind a minor past 1.0: --latest, and no boundary", async () => {
+    const { cap, line } = await row("1.1.8", "1.2.0", "1.1.8");
+    expect(cap).toMatchObject({ command: "pithy upgrade --packages --latest" });
+    expect(line).toBe("  @pithy-sh/auth  1.1.8 (1.2.0 available — run `pithy upgrade --packages --latest`)");
+  });
+
+  test("declared nowhere: no command, because nothing --packages moves would move it", async () => {
+    const { cap, line } = await row("1.1.8", "1.2.0", null);
+    expect(cap).toMatchObject({ command: null, declaredAs: null, reason: "not-declared" });
+    expect(line).toBe("  @pithy-sh/auth  1.1.8 (1.2.0 available — not a direct dependency)");
+  });
+
+  test("declared as a spec upgrade leaves alone: no command, and the spec is named", async () => {
+    const { cap, line } = await row("1.1.8", "1.2.0", "workspace:*");
+    expect(cap).toMatchObject({ command: null, declaredAs: "workspace:*", reason: "not-a-registry-range" });
+    expect(line).toBe(
+      "  @pithy-sh/auth  1.1.8 (1.2.0 available — declared as workspace:*. Not moved by pithy upgrade.)",
+    );
+  });
+
+  test("linked from a checkout: no command, because --packages leaves a linked package alone", async () => {
+    // The link-kit loop: node_modules/@pithy-sh/auth is a symlink into a kit checkout.
+    const checkout = join(dir, "checkout", "auth");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/auth", version: "0.3.0" }));
+    await mkdir(join(dir, "node_modules", "@pithy-sh"), { recursive: true });
+    await symlink(checkout, join(dir, "node_modules", "@pithy-sh", "auth"));
+    const { cap, line } = await row("0.3.0", "0.3.1", "^0.3.0");
+    expect(cap).toMatchObject({ command: null, declaredAs: null, reason: "linked" });
+    expect(line).toBe(
+      "  @pithy-sh/auth  0.3.0 (0.3.1 available — linked from a checkout. Not moved by pithy upgrade.)",
+    );
+  });
+
+  test("the range already declares latest and node_modules is behind: the install, not --packages", async () => {
+    // A teammate committed `^1.2.0`; this checkout pulled without reinstalling.
+    await writeFile(join(dir, "bun.lock"), "{}\n");
+    const { cap, line } = await row("1.1.8", "1.2.0", "^1.2.0");
+    expect(cap).toMatchObject({ command: "bun install", reason: null });
+    expect(line).toBe("  @pithy-sh/auth  1.1.8 (1.2.0 available — run `bun install`)");
+  });
+
+  test("latest is deprecated: no command, because no move lands on a deprecated version", async () => {
+    const fetch: FetchLike = vi.fn(async (url: string) => {
+      const deprecated = url.includes("auth");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          version: deprecated ? "0.7.4" : "1.3.0",
+          ...(deprecated ? { deprecated: "Broken." } : {}),
+        }),
+      };
+    });
+    const report = await buildDoctorReport(
+      baseOptions({
+        fetch,
+        installedCapabilities: async () => [{ name: "@pithy-sh/auth", version: "0.7.3" }],
+        declaredSpecs: declared("^0.7.3"),
+      }),
+    );
+    expect(report.project?.capabilities[0]).toMatchObject({ command: null, reason: "deprecated" });
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "  @pithy-sh/auth  0.7.3 (0.7.4 available — deprecated. Not moved by pithy upgrade.)",
+    );
+  });
+
+  test("no row ever names bare `pithy upgrade`, the command that cannot clear it", async () => {
+    for (const [installed, latest, spec] of [
+      ["1.1.8", "1.2.0", "^1.1.8"],
+      ["0.2.0", "0.3.1", "^0.2.0"],
+      ["1.1.8", "1.2.0", "1.1.8"],
+      ["1.1.8", "1.2.0", null],
+    ] as const) {
+      const text = renderDoctorText(await reportFor(installed, latest, spec), "/home/u");
+      expect(text).not.toMatch(/`pithy upgrade`/);
+    }
+  });
+});
+
+/**
+ * **A CLI the project installed is moved the way the project's other packages are.** `bun run pithy` runs
+ * `node_modules/.bin/pithy`, and a global install leaves that copy exactly where it was — so the global
+ * command doctor named for it printed the same `Update available` line again (#634).
+ */
+describe("buildDoctorReport — the command an outdated project-local CLI names", () => {
+  const cliSpec = async () => [
+    { name: "@pithy-sh/cli", manifest: "package.json", field: "devDependencies" as const, spec: "^1.2.0" },
+  ];
+
+  test("run from the project's node_modules: `pithy upgrade --packages`, not a global install", async () => {
+    const bin = join(dir, "node_modules", ".bun", "@pithy-sh+cli@1.2.0", "node_modules", "@pithy-sh", "cli", "dist");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "bin.js"), "");
+    const report = await buildDoctorReport(
+      baseOptions({ argv1: join(bin, "bin.js"), fetch: registryFetch({ cli: "1.3.0" }), declaredSpecs: cliSpec }),
+    );
+    expect(report.cli.upgradeCommand).toBe("pithy upgrade --packages");
+    expect(renderDoctorText(report, "/home/u")).toContain("Run: pithy upgrade --packages");
+  });
+
+  test("a global CLI keeps its installer's command, whatever the project declares", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({ argv1: "/home/u/.bun/bin/pithy", fetch: registryFetch({ cli: "1.3.0" }), declaredSpecs: cliSpec }),
+    );
+    expect(report.cli.upgradeCommand).toBe("bun install -g @pithy-sh/cli");
   });
 });
 
@@ -197,7 +368,7 @@ describe("renderDoctorText", () => {
         "Project: pithy.config.ts found",
         "Project capabilities:",
         "  @pithy-sh/core         1.2.0 ✓",
-        "  @pithy-sh/auth         1.1.8 (1.2.0 available — run `pithy upgrade`)",
+        "  @pithy-sh/auth         1.1.8 (1.2.0 available — run `pithy upgrade --packages`)",
         "  @pithy-sh/leaderboard  1.2.0 ✓",
         "",
         "Project health:",

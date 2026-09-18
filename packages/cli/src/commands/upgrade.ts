@@ -3,6 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError } from "@pithy-sh/core/src/error/terminal";
 import { defineCommand } from "citty";
 import { availableManifests, type ManifestFault } from "../capabilities/manifests";
@@ -16,14 +17,19 @@ import {
   type RunMigrate,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
+import type { RegistryFetch } from "../kitPackages/registry";
+import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
+import { execArgs, type InstallRunner } from "../project/packageManager";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
- * `pithy upgrade [--env] [--worker <name>] [--dry-run] [--migrate]` — reconcile every Worker with the
- * capability manifests installed in the project.
+ * `pithy upgrade [--env] [--worker <name>] [--dry-run] [--migrate] [--packages [--latest]]` — reconcile every
+ * Worker with the capability manifests installed in the project, and with `--packages`, move the project's
+ * `@pithy-sh/*` dependencies first (#634).
  *
  * Capabilities are per Worker, so the reconcile engine is too: `upgrade` fans out over `apps/*`, building and
  * applying one plan per Worker against that Worker's own `pithy.config.ts` and `wrangler.jsonc`. Output is
@@ -80,6 +86,16 @@ export interface UpgradeRunOptions {
   runMigrate?: RunMigrate;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
   readManifests?: (projectDir: string) => Promise<{ faults: ManifestFault[] }>;
+  /**
+   * `--packages`: move every `@pithy-sh/*` dependency to the newest version its range admits — or, with
+   * `latest`, to `latest` — and reinstall, **before** anything reads a Worker's config. Absent, the run is
+   * exactly what it was before #634: no registry request, no write, no spawn.
+   */
+  packages?: { latest: boolean };
+  /** Test seam: the registry `--packages` reads. Defaults to the global `fetch`. */
+  registryFetch?: RegistryFetch;
+  /** Test seam: the package manager `--packages` runs. Defaults to the real `<pm> install`. */
+  runInstall?: InstallRunner;
 }
 
 /**
@@ -154,6 +170,25 @@ export interface UpgradeRun {
   workers: UpgradeWorkerResult[];
   /** Installed packages whose `pithy.manifest.json` is present and unusable. Empty on a healthy install. */
   manifestFaults: ManifestFault[];
+  /** What `--packages` did. Absent without the flag, so a run without it is the run it always was. */
+  packages?: PackagesReport;
+}
+
+/**
+ * The flag combinations `upgrade` refuses, before anything is read.
+ *
+ * `--latest` without `--packages` would be a flag that does nothing, and a flag that does nothing is one an
+ * adopter believes did something. `--packages` with `--worker` would be a promise the step cannot keep:
+ * scaffolded projects are workspaces, one install moves every Worker's `node_modules`, and a hoisted copy is
+ * shared by all of them.
+ */
+export function validateUpgradeFlags(flags: { packages: boolean; latest: boolean; worker?: string }): void {
+  if (flags.latest && !flags.packages) {
+    throw new ValidationError({ message: "--latest moves packages. Add --packages." });
+  }
+  if (flags.packages && flags.worker !== undefined) {
+    throw new ValidationError({ message: "Packages move project-wide. Drop --worker." });
+  }
 }
 
 /**
@@ -179,6 +214,29 @@ async function proposalProject(projectDir: string): Promise<string | undefined> 
  * `dryRun`) applied to its own `apps/<name>/` wiring — no Worker's drift can reach another's files.
  */
 export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun> {
+  // **The packages move first**, before the manifest scan and before any `pithy.config.ts` is imported: the
+  // reconcile below has to read the capabilities the project will run, not the ones it is leaving.
+  let packages: PackagesReport | undefined;
+  if (options.packages) {
+    const step = await runPackageStep({
+      projectDir: options.projectDir,
+      latest: options.packages.latest,
+      dryRun: options.dryRun,
+      ...(options.registryFetch ? { fetch: options.registryFetch } : {}),
+      ...(options.runInstall ? { runInstall: options.runInstall } : {}),
+    });
+    packages = step.report;
+    // The running process is the old CLI. Reconciling with its manifests and its reconcile engine after
+    // installing a new one would write the old answer into a project that has just asked for the new one.
+    if (step.cliMoved !== null) return { workers: [], manifestFaults: [], packages };
+    packages.reconciled = true;
+  }
+  const reconciled = await reconcileWorkers(options);
+  return packages ? { ...reconciled, packages } : reconciled;
+}
+
+/** The reconcile, every Worker in scope — the whole of `pithy upgrade` before #634. */
+async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun> {
   const resolve = options.resolveWorkers ?? ((scope) => resolveWorkersFor(options.env, scope));
   const scan = options.readManifests ?? availableManifests;
   const { faults } = await scan(options.projectDir);
@@ -273,6 +331,25 @@ export function upgradeIncomplete(run: UpgradeRun): boolean {
     if (result.state !== "reconciled") return true;
     return result.plan.ledger.state !== "read" || result.plan.entitlements.state !== "read";
   });
+}
+
+/**
+ * Whether the `--packages` step failed: the registry did not answer, an install landed something other than
+ * what was asked for, or a template target would not read. **A held entry is not a failure** — the run did
+ * what it was asked and said what it would not do.
+ */
+function packagesIncomplete(report: PackagesReport | undefined): boolean {
+  if (!report) return false;
+  return (
+    report.state === "unavailable" ||
+    report.mismatches.length > 0 ||
+    report.templates.some((section) => section.state === "unavailable")
+  );
+}
+
+/** The run's exit gate: a Worker not fully reconciled, or a package step that did not complete. */
+export function upgradeFailed(run: UpgradeRun): boolean {
+  return upgradeIncomplete(run) || packagesIncomplete(run.packages);
 }
 
 /** `"2 bindings"` / `"1 binding"` — count with a singular/plural noun, omitted when zero. */
@@ -461,6 +538,151 @@ function workerLines(result: UpgradeWorkerResult): string[] {
   return result.applied ? appliedLines(result.applied, result.plan) : planLines(result.plan);
 }
 
+/** Group equal lines — one package moved the same way in two manifests is one line naming both. */
+function grouped<T>(entries: readonly T[], key: (entry: T) => string): [string, T[]][] {
+  const groups = new Map<string, T[]>();
+  for (const entry of entries) groups.set(key(entry), [...(groups.get(key(entry)) ?? []), entry]);
+  return [...groups];
+}
+
+const HELD_REASON = {
+  breaking: "Crosses a breaking boundary.",
+  "outside-range": "Outside the declared range.",
+} as const;
+const LEFT_ALONE_REASON = {
+  "not-a-registry-range": "Not a registry range.",
+  linked: "Linked from a checkout.",
+} as const;
+
+/** The `Packages:` block. */
+function packageLines(report: PackagesReport, dryRun: boolean): string[] {
+  if (report.state === "unavailable") {
+    return [
+      "Packages: not checked. The registry did not answer. Nothing moved.",
+      ...leftAloneLines(report).map((line) => `  ${line}`),
+    ];
+  }
+  const lines: string[] = [];
+  for (const [, moves] of grouped(report.moves, (move) => `${move.name}\0${move.from}\0${move.to}`)) {
+    const [first] = moves;
+    if (!first) continue;
+    lines.push(`${first.name}  ${first.from} → ${first.to}  (${moves.map((move) => move.manifest).join(", ")})`);
+  }
+  for (const [, held] of grouped(report.held, (entry) => `${entry.name}\0${entry.latest}\0${entry.reason}`)) {
+    const [first] = held;
+    if (!first) continue;
+    lines.push(`${first.name}  ${first.latest} held. ${HELD_REASON[first.reason]} Run ${first.command}.`);
+  }
+  lines.push(...leftAloneLines(report));
+  for (const miss of report.mismatches) {
+    lines.push(
+      `${miss.name}  expected ${miss.expected} in ${miss.manifest}. Installed: ${miss.installed ?? "nothing"}.`,
+    );
+  }
+  if (lines.length === 0) return ["Packages: nothing to move."];
+  if (dryRun && report.moves.length > 0) {
+    lines.push("Reconciled against the current install. The moves above are not installed.");
+  }
+  return ["Packages:", ...lines.map((line) => `  ${line}`)];
+}
+
+/** One line per declaration left alone, grouped the way moves are. */
+function leftAloneLines(report: PackagesReport): string[] {
+  return grouped(report.leftAlone, (entry) => `${entry.name}\0${entry.spec}\0${entry.reason}`).flatMap(([, group]) => {
+    const [first] = group;
+    return first ? [`${first.name}  ${first.spec} left alone. ${LEFT_ALONE_REASON[first.reason]}`] : [];
+  });
+}
+
+/** What one template finding asks of the adopter. */
+function findingLine(finding: TemplateFinding, to: string): string {
+  if (finding.change === "added") return `${finding.path}  new in ${to}. Not in this Worker.`;
+  if (finding.change === "removed") return `${finding.path}  gone from ${to}. Still in this Worker.`;
+  if (finding.copy === "untouched")
+    return `${finding.path}  changed upstream. The copy is ${finding.from}'s, untouched.`;
+  return `${finding.path}  changed upstream. The copy is edited. Merge by hand.`;
+}
+
+/** The `Templates` block, one heading per section, the provenance line under the first. */
+function templateLines(report: PackagesReport): string[] {
+  if (report.state === "unavailable") return [];
+  if (report.templates.length === 0) return ["Templates: not checked. No template-bearing package moves."];
+  const lines: string[] = [];
+  let noted = false;
+  for (const section of report.templates) {
+    lines.push(...sectionLines(section, noted));
+    noted ||= section.state === "checked";
+  }
+  return lines;
+}
+
+function sectionLines(section: TemplateSection, noted: boolean): string[] {
+  const to = section.to ?? "an unresolved version";
+  const from = section.from.length > 0 ? `${section.from.join(", ")} → ` : "→ ";
+  const heading = `Templates (${section.package} ${from}${to}${section.applied ? "" : ", held"})`;
+  if (section.state === "unchecked") return [`${heading}: not checked. No installed copy to compare from.`];
+  if (section.state === "unavailable") return [`${heading}: not checked. The target templates would not read.`];
+  const lines = [`${heading}:`];
+  if (!noted) {
+    lines.push(
+      `  Templates come from the CLI's ${section.package}. The copies are the project's; nothing here rewrites them.`,
+    );
+  }
+  if (section.files.length === 0) lines.push("  No copied template differs.");
+  for (const [worker, files] of grouped(section.files, (finding) => finding.worker)) {
+    lines.push(`  ${worker}:`, ...files.map((finding) => `    ${findingLine(finding, to)}`));
+  }
+  return lines;
+}
+
+/**
+ * The whole text report, closing line included. The package blocks sit above the Workers, because they
+ * happened first and the reconcile read their result.
+ */
+export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
+  const lines: string[] = [];
+  if (run.packages) lines.push(...packageLines(run.packages, dryRun), ...templateLines(run.packages));
+  lines.push(...renderUpgrade(run));
+  const cli = run.packages?.moves.find((move) => move.name === "@pithy-sh/cli");
+  if (run.packages && !run.packages.reconciled && cli) {
+    // The project's own CLI, through its package manager: a bare `pithy` may be a global one, which is the
+    // old CLI this line exists to get past.
+    const { command, args } = execArgs(run.packages.packageManager, "pithy", ["upgrade"]);
+    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run ${[command, ...args].join(" ")} to reconcile with it.`);
+  }
+  lines.push(dryRun ? "Dry run. Nothing written." : formatDone());
+  return lines;
+}
+
+/**
+ * The `--json` line. `packages` rides only when `--packages` was passed: `formatJsonLine` drops an
+ * `undefined`, so a run without the flag is the five-field line it always was.
+ */
+export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): string {
+  // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
+  // is no entry here whose absent fields could be read as empty ones.
+  const workers = run.workers.map((result) =>
+    result.state === "reconciled"
+      ? { state: result.state, ...(result.applied ?? result.plan) }
+      : result.state === "unapplied"
+        ? { state: result.state, worker: result.worker, plan: result.plan }
+        : result.state === "refused"
+          ? // `operatorError` rather than the raw payload: this line is the operator's, so it
+            // carries `action` — the field `clientError` strips and the one naming the entry to
+            // remove. A consumer reading this is driving the CLI, not receiving a response.
+            { state: result.state, worker: result.worker, plan: result.plan, ...operatorError(result.refusal) }
+          : { state: result.state, worker: result.worker },
+  );
+  return formatJsonLine({
+    command: "upgrade",
+    env,
+    dryRun,
+    workers,
+    manifestFaults: run.manifestFaults,
+    packages: run.packages,
+  });
+}
+
 export default defineCommand({
   meta: {
     name: "upgrade",
@@ -471,11 +693,22 @@ export default defineCommand({
     worker: { type: "string", description: "Upgrade only this worker (default: every worker under apps/)" },
     "dry-run": { type: "boolean", default: false, description: "Show the plan without writing anything" },
     migrate: { type: "boolean", default: false, description: "Run pending migrations after reconciling" },
+    packages: {
+      type: "boolean",
+      default: false,
+      description: "Move each @pithy-sh/* dependency to the newest version its range admits, and reinstall",
+    },
+    latest: { type: "boolean", default: false, description: "With --packages: move held packages to latest" },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
+      validateUpgradeFlags({
+        packages: args.packages,
+        latest: args.latest,
+        ...(args.worker ? { worker: args.worker } : {}),
+      });
       const dryRun = args["dry-run"];
       const projectDir = process.cwd();
       const run = await runUpgrade({
@@ -485,35 +718,19 @@ export default defineCommand({
         ...(args.worker ? { worker: args.worker } : {}),
         dryRun,
         migrate: args.migrate,
+        ...(args.packages ? { packages: { latest: args.latest } } : {}),
       });
 
       // A Worker that could not be read establishes nothing, so the run does not exit 0 around it. Set
       // before either renderer, so the two paths cannot disagree about whether the run succeeded.
-      if (upgradeIncomplete(run)) process.exitCode = 1;
+      if (upgradeFailed(run)) process.exitCode = 1;
 
       if (args.json) {
-        // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
-        // is no entry here whose absent fields could be read as empty ones.
-        const workers = run.workers.map((result) =>
-          result.state === "reconciled"
-            ? { state: result.state, ...(result.applied ?? result.plan) }
-            : result.state === "unapplied"
-              ? { state: result.state, worker: result.worker, plan: result.plan }
-              : result.state === "refused"
-                ? // `operatorError` rather than the raw payload: this line is the operator's, so it
-                  // carries `action` — the field `clientError` strips and the one naming the entry to
-                  // remove. A consumer reading this is driving the CLI, not receiving a response.
-                  { state: result.state, worker: result.worker, plan: result.plan, ...operatorError(result.refusal) }
-                : { state: result.state, worker: result.worker },
-        );
-        process.stdout.write(
-          `${formatJsonLine({ command: "upgrade", env, dryRun, workers, manifestFaults: run.manifestFaults })}\n`,
-        );
+        process.stdout.write(`${upgradeJsonLine(run, env, dryRun)}\n`);
         return;
       }
 
-      for (const line of renderUpgrade(run)) process.stdout.write(`${line}\n`);
-      process.stdout.write(dryRun ? "Dry run. Nothing written.\n" : `${formatDone()}\n`);
+      for (const line of upgradeText(run, dryRun)) process.stdout.write(`${line}\n`);
     }),
 });
 

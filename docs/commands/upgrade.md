@@ -2,12 +2,12 @@
 
 _The site renders this for readers: [pithy.sh/docs/cli/commands/upgrade](https://pithy.sh/docs/cli/commands/upgrade). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
 
-Reconcile every Worker's wiring with the capability manifests the project has installed.
+Reconcile every Worker's wiring with the capability manifests the project has installed. With `--packages`, move the project's `@pithy-sh/*` dependencies first.
 
 ## Synopsis
 
 ```
-pithy upgrade [--env <env>] [--worker <name>] [--dry-run] [--migrate] [--json]
+pithy upgrade [--env <env>] [--worker <name>] [--dry-run] [--migrate] [--packages [--latest]] [--json]
 ```
 
 ## Flags
@@ -18,6 +18,8 @@ pithy upgrade [--env <env>] [--worker <name>] [--dry-run] [--migrate] [--json]
 | `--worker <name>` | string | — | Upgrade only this Worker. Default: every Worker under `apps/` |
 | `--dry-run` | boolean | `false` | Show the plan without writing anything |
 | `--migrate` | boolean | `false` | Run pending migrations after reconciling |
+| `--packages` | boolean | `false` | Move each `@pithy-sh/*` dependency to the newest version its range admits, and reinstall, before reconciling. Project-wide: refused beside `--worker` |
+| `--latest` | boolean | `false` | With `--packages`: move held packages across a breaking boundary to `latest`. Refused without `--packages` |
 | `--json` | boolean | `false` | Machine-readable output |
 
 ## What it does
@@ -58,7 +60,60 @@ Over every composed capability, not only the ones with a missing binding — a p
 
 A dry run resolves no project name and proposes none, so nothing can be written. An apply resolves the name from the root `pithy.config.ts`, because a capability wired by `upgrade` must get the same `<project>-<env>-<binding>` resource name it would have got from `add`. With `--migrate`, the name is required and checked first, so a nameless project fails having written nothing rather than mid-fan-out.
 
-`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, and — with `--migrate` — the database for `--env`.
+`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, and — with `--migrate` — the database for `--env`. With `--packages` it also writes the `package.json` files it moves and runs one install.
+
+## `--packages`
+
+Without it, `upgrade` never moves a version. It reads the manifests installed and wires what they declare. `--packages` is the step before that: it moves the versions, then the reconcile reads the ones just installed.
+
+**Every `@pithy-sh/*` dependency, in every manifest.** The root `package.json` and each `apps/*/package.json`, `dependencies` and `devDependencies`, `@pithy-sh/cli` included. Each declaration is planned on its own, so a Worker that pins a package differently from the root keeps its own answer.
+
+**Within range by default.** `^x.y.z`, `~x.y.z` and an exact `x.y.z` are moved to the newest version the range admits, by rewriting the floor and keeping the operator: `^0.2.0` becomes `^0.2.3`. The floor is what makes the lockfile move. The candidates are the published versions that are not prereleases, not deprecated, and not newer than `latest`. Everything else is left alone and said so: `workspace:`, `link:`, `file:`, git and URL specs, tags, `*`, `>=`, `||` and x-ranges are not registry ranges, and a package linked in from a checkout is not the registry's to move.
+
+**Held at a breaking boundary.** When `latest` is outside the range, the entry is held and named — `breaking` across a new major, or a new minor under `0.x`, where a minor is breaking by convention; `outside-range` for any other gap, such as an exact pin behind a patch. A move and a hold can both apply: `^0.2.0` moves to `^0.2.3` and holds 0.3.1. **`--latest` is the opt-in.** It moves every held entry to `latest`, keeping the operator; an exact pin stays exact. It lands only where the default move could: a `latest` that is deprecated, a prerelease, or not a published version is never written, and the newest version that is none of those is the target and the hold instead.
+
+```
+$ pithy upgrade --packages
+Packages:
+  @pithy-sh/auth  ^0.6.3 → ^0.6.5  (package.json, apps/board/package.json)
+  @pithy-sh/ui-react  0.3.1 held. Crosses a breaking boundary. Run pithy upgrade --packages --latest.
+  @pithy-sh/x  workspace:* left alone. Not a registry range.
+Templates (@pithy-sh/ui-react 0.2.0, 0.3.0 → 0.3.1, held):
+  Templates come from the CLI's @pithy-sh/ui-react. The copies are the project's; nothing here rewrites them.
+  board:
+    client-env.d.ts  changed upstream. The copy is edited. Merge by hand.
+    src/routes/pithy/sign-in.tsx  changed upstream. The copy is edited. Merge by hand.
+    src/routes/pithy/choose-organization.tsx  new in 0.3.1. Not in this Worker.
+board:
+  Nothing to upgrade.
+Done.
+```
+
+**One install, at the root.** The rewritten manifests and the lockfile are one rollback scope: an install that fails puts every `package.json` and a text lockfile back byte for byte, and the run ends there. `bun.lockb` is binary and is not restored; `bun install` settles it. After the install, every moved package is read back from where its manifest resolves it. A package manager that resolved something else is a mismatch, named, and the run exits 1.
+
+**When `@pithy-sh/cli` itself moves, the reconcile waits.** The process running is the old CLI, and reconciling with its engine would write the old answer into a project that just asked for the new one. It says so, naming the project's own CLI through its package manager — `@pithy-sh/cli moved to 0.10.0. Run bun x pithy upgrade to reconcile with it.` — and exits 0. A bare `pithy` may be a global install, which is the old CLI.
+
+**A registry that does not answer moves nothing.** Every packument is read before any is acted on, and one that fails or will not parse makes the step `unavailable`: nothing is written or installed, the reconcile still runs, and the exit is 1. A plan built from the packages that did answer would move half of a group that is released together.
+
+### The templates a move changed
+
+`pithy ui add` copies `@pithy-sh/ui-react`'s templates into the Worker, and the copies are yours from then on. A version bump that changes a template leaves your copy on the old shape: the sign-in screen that still reads a refusal code the server no longer sends renders nothing, and nothing says why. So `--packages` reports, per Worker with a React front end, every copied file whose template changed between what is installed now and what the move installs.
+
+The comparison is by content, not by record. The installed versions are read from disk — the project's own `@pithy-sh/ui-react`, and the one each installed CLI resolves, since that is where `pithy ui add` reads its templates from. An installed copy already at the target is not a version anything moves from, and is left out of them. The target is read from disk when a copy of that exact version is installed, and otherwise from the published tarball, checked against its `sha512` integrity and read in memory. When a file of yours matches neither the target nor any installed version, up to eight older published versions are read the same way, only to place it: a Worker scaffolded from 0.2.0 whose dependency was later moved by hand still holds 0.2.0's copies. Your file at each template path is:
+
+- **equal to the target** — silent. It is current.
+- **equal to any other version's template** — `changed upstream. The copy is 0.2.0's, untouched.` Named even where the installed version and the target agree, because the copy is behind both.
+- **anything else, where the template differs between an installed version and the target** — `changed upstream. The copy is edited. Merge by hand.` An edit of a file the move does not change is yours, and is not named.
+- **new in the target, and absent here** — `new in 0.3.1. Not in this Worker.` Informational.
+- **gone from the target, and still here** — `gone from 0.3.1. Still in this Worker.`
+
+A tarball is fetched only from `registry.npmjs.org`, read to 10 MB and no further, and refused whole when an entry's name carries a control character, since the names are printed.
+
+It runs on **every** move of the package that carries the templates, patch included: a refusal code changed in a `0.3.0 → 0.3.1` patch. When ui-react is not declared, a moving `@pithy-sh/cli` stands in for it, through the ui-react range that CLI version declares. Nothing here rewrites a file, and a finding does not change the exit. A target that will not read — no tarball, an integrity mismatch, an archive shape the reader refuses — does, as `unavailable`.
+
+A file moved off its template path is not seen; the comparison is by path.
+
+`--dry-run --packages` fetches, plans and reports the templates, writes nothing and runs nothing, and reconciles as a dry run against what is installed now — saying so in one line, since the moves above it are not.
 
 ## `--json`
 
@@ -86,6 +141,27 @@ $ pithy upgrade --json
 | `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
+| `packages` | object | Present only with `--packages`. What the package step did — below |
+
+### `packages`
+
+| key | type | meaning |
+|---|---|---|
+| `packages.state` | `"read"` \| `"unavailable"` | `unavailable` when any packument would not read. Nothing was written or installed, and the run exits 1 |
+| `packages.packageManager` | `"bun"` \| `"pnpm"` \| `"yarn"` \| `"npm"` | The manager detected from the lockfile, which ran the install |
+| `packages.installed` | boolean | Whether the install ran. `false` on a dry run, when nothing moves, and when `unavailable` |
+| `packages.reconciled` | boolean | Whether the Workers were reconciled afterwards. `false` when `@pithy-sh/cli` itself moved, and `workers` is then empty |
+| `packages.moves` | array | One entry per declaration rewritten, each with `name`, `manifest` (relative to the root), `field` (`dependencies` or `devDependencies`), `from` and `to` (the ranges), and `target` (the version the new range installs) |
+| `packages.held` | array | One entry per declaration whose `latest` is outside its range, each with `name`, `manifest`, `range`, `installed` (or `null`), `latest`, `reason` (`"breaking"` \| `"outside-range"`) and `command`, the command that moves it |
+| `packages.leftAlone` | array | One entry per declaration not moved, each with `name`, `manifest`, `spec` and `reason` (`"not-a-registry-range"` \| `"linked"`) |
+| `packages.mismatches` | array | Moves whose target is not what the install left, each with `name`, `manifest`, `expected` and `installed` (or `null`). Non-empty exits 1 |
+| `packages.templates` | array | At most two sections: the target this run installs (`applied: true`) and the one only `--latest` would (`applied: false`). Empty when no template-bearing package moves |
+| `packages.templates[].state` | `"checked"` \| `"unchecked"` \| `"unavailable"` | `unchecked` when nothing installed carries templates to compare from; `unavailable` when the target would not read, which exits 1 |
+| `packages.templates[].package` | `"@pithy-sh/ui-react"` | The package the templates come from |
+| `packages.templates[].from` | string[] | The installed versions compared from, ascending |
+| `packages.templates[].to` | string \| null | The target version, or `null` when it could not be resolved |
+| `packages.templates[].applied` | boolean | Whether this run installs `to` |
+| `packages.templates[].files` | array | One entry per file to look at, each with `worker`, `path` (relative to the Worker), `change` (`"changed"` \| `"added"` \| `"removed"`), `copy` (`"untouched"` \| `"edited"` \| `"absent"` \| `"present"`) and, for an untouched copy, `from` — the version it is a copy of |
 
 ### `workers[]` when a Worker was refused
 
@@ -252,4 +328,11 @@ Narrow to one Worker.
 
 ```
 $ pithy upgrade --worker deck
+```
+
+Move every `@pithy-sh/*` dependency within its range, then reconcile. Add `--latest` to cross the boundaries it held.
+
+```
+$ pithy upgrade --packages
+$ pithy upgrade --packages --latest
 ```

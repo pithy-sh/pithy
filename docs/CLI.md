@@ -1022,7 +1022,7 @@ Distinct from CLI updates. When run inside a Pithy project, the doctor command r
 | To update... | Run... |
 |---|---|
 | The Pithy CLI binary | The installer-specific command (e.g., `npm i -g @pithy-sh/cli`, `brew upgrade pithy`) |
-| Project capabilities | `pithy upgrade` |
+| Project capabilities | `pithy upgrade --packages` |
 
 These are intentionally separate. The CLI binary version is one concept; a project's capability versions are another. Conflating them would confuse the upgrade story and produce ambiguous commands.
 
@@ -1038,7 +1038,9 @@ board:
 
 That line is the difference between `upgrade` and `doctor` agreeing and not. Reporting the *plan* instead is what made `upgrade` say "added 3 bindings" over a `wrangler.jsonc` it had left untouched, while `doctor` — run seconds later, against the same tree, through the same plan builder — correctly still called them missing.
 
-`pithy upgrade --json` carries five fields. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
+**`--packages` is what moves a version; `pithy upgrade` alone never did.** It moves every `@pithy-sh/*` dependency to the newest version its range admits and reinstalls, then reconciles. A version beyond a breaking boundary — a new major, or a new minor under `0.x` — is held and named, and `--latest` is the explicit opt-in that crosses it. Doctor names whichever of the two clears its line, and names none when no `pithy` command would.
+
+`pithy upgrade --json` carries five fields, and a sixth, `packages`, only when `--packages` was passed. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
 
 `pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
 

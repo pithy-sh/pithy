@@ -20,12 +20,17 @@ describe("registryUrl", () => {
 describe("fetchLatestVersion", () => {
   test("reads the version and defaults security to not-flagged", async () => {
     const info = await fetchLatestVersion("cli", { fetch: okFetch({ version: "1.3.0" }) });
-    expect(info).toEqual({ version: "1.3.0", securityFlagged: false });
+    expect(info).toEqual({ version: "1.3.0", securityFlagged: false, deprecated: false });
   });
 
   test("reads a top-level pithy:security marker", async () => {
     const info = await fetchLatestVersion("cli", { fetch: okFetch({ version: "1.2.1", "pithy:security": true }) });
-    expect(info).toEqual({ version: "1.2.1", securityFlagged: true });
+    expect(info).toEqual({ version: "1.2.1", securityFlagged: true, deprecated: false });
+  });
+
+  test("reads the deprecation the registry puts on the version's manifest", async () => {
+    const info = await fetchLatestVersion("auth", { fetch: okFetch({ version: "0.7.4", deprecated: "Broken." }) });
+    expect(info?.deprecated).toBe(true);
   });
 
   test("reads a nested pithy.security marker", async () => {

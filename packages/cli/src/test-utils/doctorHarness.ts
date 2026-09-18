@@ -184,6 +184,14 @@ export function doctorHarness(): DoctorHarness {
         { name: "@pithy-sh/auth", version: "1.1.8" },
         { name: "@pithy-sh/leaderboard", version: "1.2.0" },
       ],
+      // What the root `package.json` declares for them: each at a caret over what is installed, which is
+      // what `pithy add` writes. The command an outdated row names is decided from this (#634).
+      declaredSpecs: async () =>
+        [
+          ["@pithy-sh/core", "^1.2.0"],
+          ["@pithy-sh/auth", "^1.1.8"],
+          ["@pithy-sh/leaderboard", "^1.2.0"],
+        ].map(([name = "", spec = ""]) => ({ name, manifest: "package.json", field: "dependencies" as const, spec })),
       buildPlan: planStub(cleanPlanFor("api")),
       ...overrides,
     };

@@ -15,8 +15,14 @@ import type { UiStub, UiStubContext } from "./stubs";
  * invocation produces stays assertable as a plain value.
  */
 
-/** Replace every literal token in `text`. Tokens are fixed strings, never patterns. */
-function substitute(text: string, tokens: Record<string, string>): string {
+/**
+ * Replace every literal token in `text`. Tokens are fixed strings, never patterns.
+ *
+ * Exported for `pithy upgrade --packages`, which renders a published template the way this module wrote it
+ * before comparing it with the Worker's copy — a second renderer would be a second answer to what a
+ * scaffolded file looks like.
+ */
+export function substitute(text: string, tokens: Record<string, string>): string {
   let out = text;
   for (const [token, value] of Object.entries(tokens)) out = out.split(token).join(value);
   return out;

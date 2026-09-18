@@ -37,6 +37,8 @@ export function registryUrl(unscopedName: string): string {
 export interface LatestInfo {
   version: string;
   securityFlagged: boolean;
+  /** Whether the publisher deprecated that version. `pithy upgrade --packages` never moves to one. */
+  deprecated: boolean;
 }
 
 /** Read the `pithy:security` marker off a registry manifest: a top-level flag or a nested `pithy.security`. */
@@ -67,7 +69,7 @@ export async function fetchLatestVersion(
     const body = (await response.json()) as Record<string, unknown>;
     const version = body.version;
     if (typeof version !== "string") return null;
-    return { version, securityFlagged: readSecurityFlag(body) };
+    return { version, securityFlagged: readSecurityFlag(body), deprecated: typeof body.deprecated === "string" };
   } catch {
     return null;
   } finally {
