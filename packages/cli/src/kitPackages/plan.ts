@@ -56,7 +56,10 @@ export interface PackageHeld {
   range: string;
   /** The version installed where this manifest resolves it, or `null` when nothing is. */
   installed: string | null;
-  /** `dist-tags.latest`. */
+  /**
+   * The newest version a move may land on: `dist-tags.latest` when it is stable, published and not
+   * deprecated, and the newest one that is otherwise. What `--latest` moves to.
+   */
   latest: string;
   /** `breaking` across a major, or a minor under 0.x; `outside-range` for any other gap. */
   reason: "breaking" | "outside-range";
@@ -86,7 +89,7 @@ export interface PlanInput {
   specs: readonly DeclaredSpec[];
   /** The packument of every managed, unlinked package among them. */
   packuments: ReadonlyMap<string, Packument>;
-  /** `--latest`: move held entries to `latest`. */
+  /** `--latest`: move held entries to the newest version a move may land on. */
   latest: boolean;
   /** Whether a declaration's package is a checkout linked in. */
   isLinked: (spec: DeclaredSpec) => boolean;
@@ -114,7 +117,12 @@ export function planPackages(input: PlanInput): PackagePlan {
     }
     const packument = input.packuments.get(spec.name);
     if (!packument) continue; // the caller refuses a missing packument before planning; nothing to decide here
-    const latest = packument["dist-tags"].latest;
+    // **The ceiling is the newest version a move may land on, not `dist-tags.latest` as written.** The tag is
+    // a string an unauthenticated document chose: it can name a deprecated release (the usual window after a
+    // compromised one), a prerelease, or nothing published at all. `--latest` crosses a boundary on purpose;
+    // it never crosses onto a version the default move would refuse.
+    const candidates = candidateVersions({ latest: packument["dist-tags"].latest, versions: packument.versions });
+    const ceiling = candidates.at(-1) ?? null;
     const move = (target: string) =>
       plan.moves.push({
         name: spec.name,
@@ -124,14 +132,14 @@ export function planPackages(input: PlanInput): PackagePlan {
         to: rewriteRange(range, target),
         target,
       });
-    // Held only when latest is *ahead* of the floor. A range declared past latest is the adopter's own,
+    // Held only when the ceiling is *ahead* of the floor. A range declared past it is the adopter's own,
     // and "move back to latest" is not a thing anyone asked for.
-    const beyond = !admits(range, latest) && compareVersions(latest, range.floor) > 0;
+    const beyond = ceiling !== null && !admits(range, ceiling) && compareVersions(ceiling, range.floor) > 0;
     if (beyond && input.latest) {
-      move(latest);
+      move(ceiling);
       continue;
     }
-    const target = newestAdmitted(range, candidateVersions({ latest, versions: packument.versions }));
+    const target = newestAdmitted(range, candidates);
     if (target !== null && compareVersions(target, range.floor) > 0) move(target);
     if (beyond) {
       plan.held.push({
@@ -139,8 +147,8 @@ export function planPackages(input: PlanInput): PackagePlan {
         manifest: spec.manifest,
         range: spec.spec,
         installed: input.installed(spec),
-        latest,
-        reason: crossesBreakingBoundary(range.floor, latest) ? "breaking" : "outside-range",
+        latest: ceiling,
+        reason: crossesBreakingBoundary(range.floor, ceiling) ? "breaking" : "outside-range",
         command: PACKAGES_LATEST_COMMAND,
       });
     }

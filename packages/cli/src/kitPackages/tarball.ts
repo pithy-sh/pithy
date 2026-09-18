@@ -76,8 +76,17 @@ function checksumOk(header: Uint8Array): boolean {
   return sum === stored;
 }
 
-/** Whether a name is absolute or climbs out of where it sits. */
+/** C0 controls, DEL and C1 controls: bytes that steer a terminal rather than name a file. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Whether a name is absolute, climbs out of where it sits, or carries a control character. A template path
+ * is printed in `pithy upgrade`'s report, so an escape sequence in one is a forged or erased line — a fake
+ * `Done.`, a hidden link — and no template we publish has one.
+ */
 function unsafeName(name: string): boolean {
+  if (CONTROL.test(name)) return true;
   if (name.startsWith("/") || name.startsWith("\\") || /^[A-Za-z]:/.test(name)) return true;
   return name.split(/[/\\]/).some((segment) => segment === "..");
 }

@@ -11,7 +11,7 @@ import type { UiStubContext } from "../ui/stubs";
 import { substitute } from "../ui/templates";
 import { readWorkerUi } from "../ui/workerUi";
 import type { PackagePlan } from "./plan";
-import { candidateVersions, newestAdmitted, parseRange } from "./ranges";
+import { candidateVersions, isStable, newestAdmitted, parseRange } from "./ranges";
 import { fetchPackument, fetchTarball, type Packument, type RegistryFetch } from "./registry";
 import { readTemplateTarball } from "./tarball";
 
@@ -19,10 +19,12 @@ import { readTemplateTarball } from "./tarball";
  * **Which of the files a Worker copied from a template changed upstream in the move this run makes.**
  *
  * `pithy ui add` copies `@pithy-sh/ui-react`'s templates into `apps/<worker>/` and records nothing about
- * it. So this does not ask what was copied; it diffs. Every path whose content differs between a version
- * the project has installed now (F) and the version it is moving to (T) is a candidate, and the Worker's
- * own file at that path is compared against both sides: equal to T is already current, equal to an F
- * version is an untouched copy, anything else is edited and has to be merged by hand.
+ * it. So this does not ask what was copied; it diffs. The Worker's own file at each template path is
+ * compared against the version it is moving to (T), the versions the project has installed now (F), and —
+ * when a copy matches none of those — the published versions below T that nothing installs. Equal to T is
+ * already current. Equal to any other version is an untouched copy of it, named whether or not F and T
+ * differ there, because the copy is stale either way. Anything else is edited, and is named only where F
+ * and T differ: an edit of a file this move does not change is the adopter's business.
  *
  * **The report runs on every move of the template-bearing package, not only a breaking one.** The refusal
  * code #634 was filed about moved in the 0.3.0 → 0.3.1 *patch*, so a report limited to breaking moves
@@ -35,6 +37,12 @@ import { readTemplateTarball } from "./tarball";
  *
  * Nothing here rewrites a file. The copies are the project's.
  */
+
+/**
+ * How many published versions below T the report reads to place a copy nothing installed matches. ui-react
+ * has published eight versions in all; this is a bound on a hostile packument, not a budget.
+ */
+const MAX_HISTORY = 8;
 
 /** The package whose templates are reported. */
 export const TEMPLATE_PACKAGE = "@pithy-sh/ui-react";
@@ -115,17 +123,34 @@ function differs(a: readonly string[] | undefined, b: readonly string[] | undefi
 
 const ORDER = { changed: 0, removed: 1, added: 2 } as const;
 
-/** Classify every Worker's copy of every path that differs between F and T. Pure. */
+/**
+ * Classify every Worker's copy against T. Pure.
+ *
+ * **F never includes T.** A ui-react copy already at the target — the project CLI's own, resolving the new
+ * version while a Worker still declares the old one — is not a version anything moves *from*, and counting
+ * it made every file new in T read as one the Worker had chosen not to copy.
+ *
+ * **What the move changed is the gate for an edit; any known version places an untouched copy.** A path F
+ * and T agree on is still named when the Worker's copy is an untouched copy of an older version, from
+ * `history` — published versions nothing installs now, read only to place such a copy. An edited copy of a
+ * path this move does not change stays silent: it is the adopter's, and this move asks nothing of it.
+ */
 export function classifyTemplates(input: {
   from: ReadonlyMap<string, TemplateTree>;
+  /** Published versions older than F, for placing copies F cannot. Never a reason to name an edit. */
+  history?: ReadonlyMap<string, TemplateTree>;
   to: { version: string; tree: TemplateTree };
   workers: readonly { name: string; files: ReadonlyMap<string, string> }[];
 }): TemplateFinding[] {
   const target = byTarget(input.to.tree);
   // Newest first, so an untouched copy is attributed to the latest version it matches.
-  const from = [...input.from]
-    .sort(([a], [b]) => compareVersions(b, a))
-    .map(([v, tree]) => [v, byTarget(tree)] as const);
+  const newestFirst = (trees: ReadonlyMap<string, TemplateTree>) =>
+    [...trees]
+      .filter(([version]) => version !== input.to.version)
+      .sort(([a], [b]) => compareVersions(b, a))
+      .map(([v, tree]) => [v, byTarget(tree)] as const);
+  const from = newestFirst(input.from);
+  const known = [...from, ...newestFirst(input.history ?? new Map())];
   const paths = [...new Set([...target.keys(), ...from.flatMap(([, tree]) => [...tree.keys()])])].sort();
   const findings: TemplateFinding[] = [];
   for (const worker of input.workers) {
@@ -133,30 +158,48 @@ export function classifyTemplates(input: {
     const render = (text: string) => normalize(substitute(text, tokens));
     for (const path of paths) {
       const t = target.get(path);
-      if (!from.some(([, tree]) => differs(tree.get(path), t))) continue;
+      const moved = from.some(([, tree]) => differs(tree.get(path), t));
       const held = worker.files.get(path);
       const copy = held === undefined ? undefined : normalize(held);
-      const inFrom = from.some(([, tree]) => tree.has(path));
       if (t === undefined) {
-        if (copy !== undefined) findings.push({ worker: worker.name, path, change: "removed", copy: "present" });
+        if (moved && copy !== undefined) {
+          findings.push({ worker: worker.name, path, change: "removed", copy: "present" });
+        }
         continue;
       }
       if (copy === undefined) {
-        if (!inFrom) findings.push({ worker: worker.name, path, change: "added", copy: "absent" });
+        const inFrom = from.some(([, tree]) => tree.has(path));
+        if (moved && !inFrom) findings.push({ worker: worker.name, path, change: "added", copy: "absent" });
         continue;
       }
       if (t.some((text) => render(text) === copy)) continue; // already current
-      const match = from.find(([, tree]) => (tree.get(path) ?? []).some((text) => render(text) === copy));
-      findings.push(
-        match
-          ? { worker: worker.name, path, change: "changed", copy: "untouched", from: match[0] }
-          : { worker: worker.name, path, change: "changed", copy: "edited" },
-      );
+      const match = known.find(([, tree]) => (tree.get(path) ?? []).some((text) => render(text) === copy));
+      if (match) findings.push({ worker: worker.name, path, change: "changed", copy: "untouched", from: match[0] });
+      else if (moved) findings.push({ worker: worker.name, path, change: "changed", copy: "edited" });
     }
   }
   return findings.sort(
     (a, b) => a.worker.localeCompare(b.worker) || ORDER[a.change] - ORDER[b.change] || a.path.localeCompare(b.path),
   );
+}
+
+/**
+ * Whether any Worker holds a copy at a known path that is neither T's nor any F version's — the only case
+ * the published history can change the answer for.
+ */
+function unplaced(
+  trees: readonly TemplateTree[],
+  to: TemplateTree,
+  workers: readonly { name: string; files: ReadonlyMap<string, string> }[],
+): boolean {
+  const all = [to, ...trees].map(byTarget);
+  return workers.some((worker) => {
+    const tokens = reactStub.substitutions(everything(worker.name, true));
+    const render = (text: string) => normalize(substitute(text, tokens));
+    return [...worker.files].some(
+      ([path, held]) => !all.some((tree) => (tree.get(path) ?? []).some((text) => render(text) === normalize(held))),
+    );
+  });
 }
 
 /** A section's target version, and whether this run installs it. `null` when it could not be resolved. */
@@ -326,6 +369,36 @@ export async function templateSections(options: {
   for (const [version, dir] of copies) trees.set(version, await readTree(join(dir, "templates")));
   const workers = await uiWorkers(options.projectDir);
 
+  // Each published tree fetched once per run, whichever section asks for it first.
+  const fetched = new Map<string, Promise<TemplateTree | null>>();
+  const published = (version: string): Promise<TemplateTree | null> => {
+    const known = fetched.get(version);
+    if (known) return known;
+    const read = (async () => {
+      const meta = ui?.versions[version];
+      if (meta?.dist.integrity === undefined) return null;
+      const bytes = await fetchTarball(meta.dist.tarball, fetchOptions);
+      const tarball = bytes ? readTemplateTarball(bytes, meta.dist.integrity) : null;
+      return tarball?.state === "read" ? tarball.files : null;
+    })();
+    fetched.set(version, read);
+    return read;
+  };
+  // The published versions below T that nothing installs, newest first, bounded. Best effort: one that will
+  // not read places nothing, and a copy it would have placed reads as it did without it.
+  const publishedHistory = async (to: string, installed: readonly string[]) => {
+    const versions = Object.keys(ui?.versions ?? {})
+      .filter((version) => isStable(version) && compareVersions(version, to) < 0 && !installed.includes(version))
+      .sort((a, b) => compareVersions(b, a))
+      .slice(0, MAX_HISTORY);
+    const history = new Map<string, TemplateTree>();
+    for (const version of versions) {
+      const tree = await published(version);
+      if (tree) history.set(version, tree);
+    }
+    return history;
+  };
+
   const sections: TemplateSection[] = [];
   for (const target of targets) {
     const base = {
@@ -343,17 +416,10 @@ export async function templateSections(options: {
       sections.push({ ...base, state: "unchecked" });
       continue;
     }
-    let tree = trees.get(target.version);
+    const tree = trees.get(target.version) ?? (await published(target.version));
     if (!tree) {
-      const published = ui?.versions[target.version];
-      const bytes =
-        published?.dist.integrity === undefined ? null : await fetchTarball(published.dist.tarball, fetchOptions);
-      const read = bytes && published?.dist.integrity ? readTemplateTarball(bytes, published.dist.integrity) : null;
-      if (read?.state !== "read") {
-        sections.push({ ...base, state: "unavailable" });
-        continue;
-      }
-      tree = read.files;
+      sections.push({ ...base, state: "unavailable" });
+      continue;
     }
     const known = [
       ...new Set([...byTarget(tree).keys(), ...[...trees.values()].flatMap((t) => [...byTarget(t).keys()])]),
@@ -361,10 +427,13 @@ export async function templateSections(options: {
     const held = await Promise.all(
       workers.map(async (worker) => ({ name: worker.name, files: await workerFiles(worker.dir, known) })),
     );
+    const history = unplaced([...trees.values()], tree, held)
+      ? await publishedHistory(target.version, from)
+      : new Map<string, TemplateTree>();
     sections.push({
       ...base,
       state: "checked",
-      files: classifyTemplates({ from: trees, to: { version: target.version, tree }, workers: held }),
+      files: classifyTemplates({ from: trees, history, to: { version: target.version, tree }, workers: held }),
     });
   }
   return sections;

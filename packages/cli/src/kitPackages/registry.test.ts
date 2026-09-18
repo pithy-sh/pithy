@@ -111,6 +111,52 @@ describe("fetchTarball", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  test("a tarball URL off the registry is refused without a request, however https it is", async () => {
+    // `dist.tarball` is a string an unauthenticated packument chose. Every real one is on the registry.
+    const fetch = vi.fn<RegistryFetch>(async () => bytesResponse(new Uint8Array([1])));
+    expect(await fetchTarball("https://intranet.corp.example/admin/delete?all=1", { fetch })).toBeNull();
+    expect(await fetchTarball("https://registry.npmjs.org.evil.example/x.tgz", { fetch })).toBeNull();
+    expect(await fetchTarball("https://registry.npmjs.org:8443/x.tgz", { fetch })).toBeNull();
+    expect(await fetchTarball("https://user@registry.npmjs.org/x.tgz", { fetch })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("an oversize streamed body is abandoned at the bound, never buffered whole", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 1000) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));
+    const fetch: RegistryFetch = async () => ({ ok: true, status: 200, json: async () => null, arrayBuffer, body });
+    expect(await fetchTarball(url, { fetch, maxBytes: 4 * 1024 })).toBeNull();
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    // The stream stops being read once the bound is passed; a thousand chunks were on offer.
+    expect(pulled).toBeLessThan(10);
+  });
+
+  test("a streamed body within the bound is read whole", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3]));
+        controller.close();
+      },
+    });
+    const fetch: RegistryFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => null,
+      arrayBuffer: async () => new ArrayBuffer(0),
+      body,
+    });
+    expect(await fetchTarball(url, { fetch })).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
   test("a non-200, a throw, or an oversize body is null", async () => {
     expect(await fetchTarball(url, { fetch: async () => bytesResponse(new Uint8Array([1]), 500) })).toBeNull();
     expect(

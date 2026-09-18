@@ -90,6 +90,12 @@ describe("readTemplateTarball", () => {
     ["a parent segment", entry("package/templates/../../etc/passwd", "x"), "path"],
     ["a parent segment outside templates", entry("package/../evil", "x"), "path"],
     ["an absolute name", entry("/etc/passwd", "x"), "path"],
+    // A name is printed to the terminal. An escape sequence in it is a forged line, not a file.
+    ["an ESC in a name", entry("package/templates/\x1b]8;;https://evil\x07x\x1b[2K.tsx", "x"), "path"],
+    ["a CR or LF in a name", entry("package/templates/a\rDone.\n.tsx", "x"), "path"],
+    ["a DEL in a name", entry("package/templates/a\x7f.tsx", "x"), "path"],
+    ["a C1 control in a name", entry("package/templates/a\u009b2K.tsx", "x"), "path"],
+    ["a control in the prefix", entry("templates/a.tsx", "x", { prefix: "pack\x1bage" }), "path"],
     ["a pax header", entry("package/PaxHeader", "30 path=package/templates/a\n", { typeflag: "x" }), "entry-type"],
     ["a global pax header", entry("pax_global_header", "x", { typeflag: "g" }), "entry-type"],
     ["a GNU long name", entry("././@LongLink", "package/templates/a", { typeflag: "L" }), "entry-type"],

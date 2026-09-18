@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -1126,7 +1126,9 @@ describe("runUpgrade --packages", () => {
     expect(run.packages?.reconciled).toBe(false);
     expect(upgradeFailed(run)).toBe(false);
     expect(upgradeText(run, false).slice(-2)).toEqual([
-      "@pithy-sh/cli moved to 0.9.5. Run pithy upgrade to reconcile with it.",
+      // The project's own CLI, through the project's package manager. A bare `pithy` may be a global one,
+      // which is the old CLI this line exists to get past.
+      "@pithy-sh/cli moved to 0.9.5. Run bun x pithy upgrade to reconcile with it.",
       "Done.",
     ]);
     expect(JSON.parse(upgradeJsonLine(run, "dev", false)).packages).toMatchObject({
@@ -1196,6 +1198,77 @@ describe("doctor's advice clears its own line", () => {
     expect(renderDoctorText(before, "/home/u")).toContain("(0.2.3 available — run `pithy upgrade --packages`)");
     await upgradeWith(fetch, false);
     expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.2.3" });
+  });
+
+  test("a range already at latest over a stale node_modules: doctor names the install, and it clears the line", async () => {
+    // A teammate committed `^0.2.3`; this checkout pulled without reinstalling, so 0.2.0 is still installed.
+    await writeFile(
+      join(project, "package.json"),
+      `${JSON.stringify({ name: "replay", workspaces: ["apps/*"], dependencies: { "@pithy-sh/auth": "^0.2.3" } }, null, 2)}\n`,
+    );
+    const fetch = registryAt("0.2.3");
+    const before = await doctorWith(fetch);
+    expect(authRow(before)).toMatchObject({ state: "outdated", installed: "0.2.0", command: "npm install" });
+    // What the finding saw: --packages has nothing to move here, so it never installs.
+    const run = await upgradeWith(fetch, false);
+    expect(run.packages?.installed).toBe(false);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "outdated" });
+    // The named command, followed.
+    await fakeInstall()("npm", ["install"], project);
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.2.3" });
+  });
+
+  test("a checkout linked in: doctor names nothing, because --packages leaves it alone", async () => {
+    const checkout = join(harness.dir, "kit", "auth");
+    await mkdir(checkout, { recursive: true });
+    await writeFile(join(checkout, "package.json"), JSON.stringify({ name: "@pithy-sh/auth", version: "0.2.0" }));
+    await rm(join(project, "node_modules", "@pithy-sh", "auth"), { recursive: true });
+    await symlink(checkout, join(project, "node_modules", "@pithy-sh", "auth"));
+    const fetch = registryAt("0.2.3");
+    const before = await doctorWith(fetch);
+    expect(authRow(before)).toMatchObject({ state: "outdated", command: null, reason: "linked" });
+    expect(renderDoctorText(before, "/home/u")).toContain(
+      "(0.2.3 available — linked from a checkout. Not moved by pithy upgrade.)",
+    );
+    const run = await upgradeWith(fetch, false);
+    expect(run.packages?.leftAlone).toMatchObject([{ name: "@pithy-sh/auth", reason: "linked" }]);
+  });
+
+  test("a deprecated latest: doctor names nothing, and --latest does not move to it", async () => {
+    const auth = fakePackument("@pithy-sh/auth", ["0.2.0", "0.2.3"]);
+    const bad = auth.versions["0.2.3"];
+    if (bad) bad.deprecated = "Broken.";
+    const fetch = fakeRegistry({ "@pithy-sh/auth": auth, "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["1.3.0"]) });
+    expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "outdated", command: null, reason: "deprecated" });
+    const run = await upgradeWith(fetch, true);
+    expect(run.packages?.moves).toEqual([]);
+  });
+
+  test("a project-local CLI: doctor names --packages for it, and after it the CLI line is current", async () => {
+    const root = JSON.parse(await readFile(join(project, "package.json"), "utf8"));
+    root.devDependencies = { "@pithy-sh/cli": "^1.2.0" };
+    await writeFile(join(project, "package.json"), `${JSON.stringify(root, null, 2)}\n`);
+    await fakeInstall()("npm", ["install"], project);
+    const fetch = fakeRegistry({
+      "@pithy-sh/auth": fakePackument("@pithy-sh/auth", ["0.2.0"]),
+      "@pithy-sh/cli": fakePackument("@pithy-sh/cli", ["1.2.0", "1.3.0"]),
+    });
+    const home = join(project, "node_modules", "@pithy-sh", "cli");
+    const doctorAsCli = async () =>
+      buildDoctorReport(
+        harness.baseOptions({
+          projectDir: project,
+          fetch,
+          argv1: join(home, "dist", "bin.js"),
+          installedVersion: JSON.parse(await readFile(join(home, "package.json"), "utf8")).version,
+          installedCapabilities: installedCapabilityVersions,
+          declaredSpecs,
+        }),
+      );
+    const before = await doctorAsCli();
+    expect(before.cli).toMatchObject({ state: "outdated", upgradeCommand: "pithy upgrade --packages" });
+    await upgradeWith(fetch, false);
+    expect((await doctorAsCli()).cli).toMatchObject({ state: "current", installed: "1.3.0" });
   });
 
   test("across a boundary: doctor names --latest, plain --packages leaves the line, and --latest clears it", async () => {

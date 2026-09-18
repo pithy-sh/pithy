@@ -70,7 +70,7 @@ Without it, `upgrade` never moves a version. It reads the manifests installed an
 
 **Within range by default.** `^x.y.z`, `~x.y.z` and an exact `x.y.z` are moved to the newest version the range admits, by rewriting the floor and keeping the operator: `^0.2.0` becomes `^0.2.3`. The floor is what makes the lockfile move. The candidates are the published versions that are not prereleases, not deprecated, and not newer than `latest`. Everything else is left alone and said so: `workspace:`, `link:`, `file:`, git and URL specs, tags, `*`, `>=`, `||` and x-ranges are not registry ranges, and a package linked in from a checkout is not the registry's to move.
 
-**Held at a breaking boundary.** When `latest` is outside the range, the entry is held and named — `breaking` across a new major, or a new minor under `0.x`, where a minor is breaking by convention; `outside-range` for any other gap, such as an exact pin behind a patch. A move and a hold can both apply: `^0.2.0` moves to `^0.2.3` and holds 0.3.1. **`--latest` is the opt-in.** It moves every held entry to `latest`, keeping the operator; an exact pin stays exact.
+**Held at a breaking boundary.** When `latest` is outside the range, the entry is held and named — `breaking` across a new major, or a new minor under `0.x`, where a minor is breaking by convention; `outside-range` for any other gap, such as an exact pin behind a patch. A move and a hold can both apply: `^0.2.0` moves to `^0.2.3` and holds 0.3.1. **`--latest` is the opt-in.** It moves every held entry to `latest`, keeping the operator; an exact pin stays exact. It lands only where the default move could: a `latest` that is deprecated, a prerelease, or not a published version is never written, and the newest version that is none of those is the target and the hold instead.
 
 ```
 $ pithy upgrade --packages
@@ -91,7 +91,7 @@ Done.
 
 **One install, at the root.** The rewritten manifests and the lockfile are one rollback scope: an install that fails puts every `package.json` and a text lockfile back byte for byte, and the run ends there. `bun.lockb` is binary and is not restored; `bun install` settles it. After the install, every moved package is read back from where its manifest resolves it. A package manager that resolved something else is a mismatch, named, and the run exits 1.
 
-**When `@pithy-sh/cli` itself moves, the reconcile waits.** The process running is the old CLI, and reconciling with its engine would write the old answer into a project that just asked for the new one. It says so — `@pithy-sh/cli moved to 0.10.0. Run pithy upgrade to reconcile with it.` — and exits 0.
+**When `@pithy-sh/cli` itself moves, the reconcile waits.** The process running is the old CLI, and reconciling with its engine would write the old answer into a project that just asked for the new one. It says so, naming the project's own CLI through its package manager — `@pithy-sh/cli moved to 0.10.0. Run bun x pithy upgrade to reconcile with it.` — and exits 0. A bare `pithy` may be a global install, which is the old CLI.
 
 **A registry that does not answer moves nothing.** Every packument is read before any is acted on, and one that fails or will not parse makes the step `unavailable`: nothing is written or installed, the reconcile still runs, and the exit is 1. A plan built from the packages that did answer would move half of a group that is released together.
 
@@ -99,13 +99,15 @@ Done.
 
 `pithy ui add` copies `@pithy-sh/ui-react`'s templates into the Worker, and the copies are yours from then on. A version bump that changes a template leaves your copy on the old shape: the sign-in screen that still reads a refusal code the server no longer sends renders nothing, and nothing says why. So `--packages` reports, per Worker with a React front end, every copied file whose template changed between what is installed now and what the move installs.
 
-The comparison is by content, not by record. The installed versions are read from disk — the project's own `@pithy-sh/ui-react`, and the one each installed CLI resolves, since that is where `pithy ui add` reads its templates from. The target is read from disk when a copy of that exact version is installed, and otherwise from the published tarball, checked against its `sha512` integrity and read in memory. A path is reported when its template differs between an installed version and the target, and your file there is:
+The comparison is by content, not by record. The installed versions are read from disk — the project's own `@pithy-sh/ui-react`, and the one each installed CLI resolves, since that is where `pithy ui add` reads its templates from. An installed copy already at the target is not a version anything moves from, and is left out of them. The target is read from disk when a copy of that exact version is installed, and otherwise from the published tarball, checked against its `sha512` integrity and read in memory. When a file of yours matches neither the target nor any installed version, up to eight older published versions are read the same way, only to place it: a Worker scaffolded from 0.2.0 whose dependency was later moved by hand still holds 0.2.0's copies. Your file at each template path is:
 
 - **equal to the target** — silent. It is current.
-- **equal to an installed version's template** — `changed upstream. The copy is 0.2.0's, untouched.`
-- **anything else** — `changed upstream. The copy is edited. Merge by hand.`
+- **equal to any other version's template** — `changed upstream. The copy is 0.2.0's, untouched.` Named even where the installed version and the target agree, because the copy is behind both.
+- **anything else, where the template differs between an installed version and the target** — `changed upstream. The copy is edited. Merge by hand.` An edit of a file the move does not change is yours, and is not named.
 - **new in the target, and absent here** — `new in 0.3.1. Not in this Worker.` Informational.
 - **gone from the target, and still here** — `gone from 0.3.1. Still in this Worker.`
+
+A tarball is fetched only from `registry.npmjs.org`, read to 10 MB and no further, and refused whole when an entry's name carries a control character, since the names are printed.
 
 It runs on **every** move of the package that carries the templates, patch included: a refusal code changed in a `0.3.0 → 0.3.1` patch. When ui-react is not declared, a moving `@pithy-sh/cli` stands in for it, through the ui-react range that CLI version declares. Nothing here rewrites a file, and a finding does not change the exit. A target that will not read — no tarball, an integrity mismatch, an archive shape the reader refuses — does, as `unavailable`.
 

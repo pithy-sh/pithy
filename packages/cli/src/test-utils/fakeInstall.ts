@@ -96,7 +96,12 @@ export function fakeRegistry(
     );
     const doc = docs[name];
     if (!doc) return respond(404, null);
-    if (latest) return respond(200, { name, version: doc["dist-tags"].latest });
+    if (latest) {
+      // The real `/latest` document is that version's manifest, so a deprecation rides on it.
+      const version = doc["dist-tags"].latest;
+      const deprecated = doc.versions[version]?.deprecated;
+      return respond(200, { name, version, ...(deprecated === undefined ? {} : { deprecated }) });
+    }
     return respond(200, doc);
   };
 }

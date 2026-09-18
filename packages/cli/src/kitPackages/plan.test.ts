@@ -111,6 +111,45 @@ describe("planPackages", () => {
     ]);
   });
 
+  /**
+   * **`--latest` lands only where the default move could: stable, not deprecated, published.** `dist-tags.latest`
+   * is the publisher's word, and the usual window after a compromised release is a `latest` still pointing at
+   * the deprecated version. Moving there because a flag said "latest" writes it into package.json.
+   */
+  describe("--latest never lands on a version the default move refuses", () => {
+    const withMeta = (doc: Packument, version: string, deprecated: string): Packument => {
+      const entry = doc.versions[version];
+      if (entry) entry.deprecated = deprecated;
+      return doc;
+    };
+
+    test("a deprecated latest is neither held nor moved to; the newest good version is", () => {
+      const doc = withMeta(packument("@pithy-sh/auth", ["0.2.0", "0.2.3", "0.9.0", "1.0.0"]), "1.0.0", "Compromised.");
+      for (const latest of [false, true]) {
+        const result = plan([spec("@pithy-sh/auth", "^0.2.0")], [doc], { latest });
+        expect(result.moves.map((move) => move.to)).not.toContain("^1.0.0");
+      }
+      expect(plan([spec("@pithy-sh/auth", "^0.2.0")], [doc], { latest: true }).moves).toMatchObject([
+        { to: "^0.9.0", target: "0.9.0" },
+      ]);
+      expect(plan([spec("@pithy-sh/auth", "^0.2.0")], [doc]).held).toMatchObject([
+        { latest: "0.9.0", reason: "breaking" },
+      ]);
+    });
+
+    test("a prerelease latest is never written", () => {
+      const doc = packument("@pithy-sh/auth", ["0.2.0", "1.0.0-evil"], "1.0.0-evil");
+      const result = plan([spec("@pithy-sh/auth", "^0.2.0")], [doc], { latest: true });
+      expect(result).toEqual({ moves: [], held: [], leftAlone: [] });
+    });
+
+    test("a latest that names no published version is never written", () => {
+      const doc = packument("@pithy-sh/auth", ["0.2.0", "0.3.1"], "9.9.9");
+      const result = plan([spec("@pithy-sh/auth", "^0.2.0")], [doc], { latest: true });
+      expect(result.moves).toMatchObject([{ to: "^0.3.1", target: "0.3.1" }]);
+    });
+  });
+
   test("a range already at its newest admitted version neither moves nor holds", () => {
     const result = plan([spec("@pithy-sh/auth", "^0.2.3")], [packument("@pithy-sh/auth", ["0.2.0", "0.2.3"])]);
     expect(result).toEqual({ moves: [], held: [], leftAlone: [] });

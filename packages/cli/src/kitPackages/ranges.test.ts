@@ -154,29 +154,68 @@ describe("packageCommand", () => {
     spec: value,
   });
 
+  const facts = { linked: false, latestDeprecated: false, packageManager: "bun" as const };
+
   test("declared nowhere: no command, and no spec to blame", () => {
-    expect(packageCommand([], "0.2.3")).toEqual({ command: null, declaredAs: null });
+    expect(packageCommand([], "0.2.3", facts)).toEqual({ command: null, declaredAs: null, reason: "not-declared" });
   });
 
   test("an unmanaged spec anywhere: no command, and it names the spec", () => {
-    expect(packageCommand([spec("^0.2.0"), spec("workspace:*", "apps/board/package.json")], "0.2.3")).toEqual({
+    expect(packageCommand([spec("^0.2.0"), spec("workspace:*", "apps/board/package.json")], "0.2.3", facts)).toEqual({
       command: null,
       declaredAs: "workspace:*",
+      reason: "not-a-registry-range",
     });
   });
 
   test("every range admits latest: the in-range move reaches it", () => {
-    expect(packageCommand([spec("^0.2.0"), spec("~0.2.1", "apps/board/package.json")], "0.2.3")).toEqual({
+    expect(packageCommand([spec("^0.2.0"), spec("~0.2.1", "apps/board/package.json")], "0.2.3", facts)).toEqual({
       command: "pithy upgrade --packages",
       declaredAs: null,
+      reason: null,
     });
   });
 
   test("one range short of latest: only --latest reaches it", () => {
-    expect(packageCommand([spec("^0.2.0"), spec("^0.3.0", "apps/board/package.json")], "0.3.1").command).toBe(
+    expect(packageCommand([spec("^0.2.0"), spec("^0.3.0", "apps/board/package.json")], "0.3.1", facts).command).toBe(
       "pithy upgrade --packages --latest",
     );
-    expect(packageCommand([spec("1.1.8")], "1.2.0").command).toBe("pithy upgrade --packages --latest");
+    expect(packageCommand([spec("1.1.8")], "1.2.0", facts).command).toBe("pithy upgrade --packages --latest");
+  });
+
+  test("linked from a checkout: no command, because --packages leaves a linked package alone", () => {
+    expect(packageCommand([spec("^0.3.0")], "0.3.1", { ...facts, linked: true })).toEqual({
+      command: null,
+      declaredAs: null,
+      reason: "linked",
+    });
+  });
+
+  test("every range already declares latest: node_modules is stale, and the install is what clears it", () => {
+    // A teammate committed `^0.3.1`; this checkout never reinstalled. --packages has nothing to move.
+    expect(packageCommand([spec("^0.3.1")], "0.3.1", facts)).toEqual({
+      command: "bun install",
+      declaredAs: null,
+      reason: null,
+    });
+    expect(packageCommand([spec("0.3.1")], "0.3.1", { ...facts, packageManager: "npm" }).command).toBe("npm install");
+    // One range still behind: the move installs, and that install settles the stale one too.
+    expect(packageCommand([spec("^0.3.1"), spec("^0.3.0", "apps/board/package.json")], "0.3.1", facts).command).toBe(
+      "pithy upgrade --packages",
+    );
+  });
+
+  test("latest deprecated or a prerelease: no command, because no move lands on it", () => {
+    expect(packageCommand([spec("^0.7.3")], "0.7.4", { ...facts, latestDeprecated: true })).toEqual({
+      command: null,
+      declaredAs: null,
+      reason: "deprecated",
+    });
+    expect(packageCommand([spec("^0.7.3")], "1.0.0-rc.1", facts)).toEqual({
+      command: null,
+      declaredAs: null,
+      reason: "prerelease",
+    });
   });
 });
 

@@ -155,6 +155,75 @@ describe("classifyTemplates", () => {
     });
   });
 
+  test("an installed copy already at the target does not hide what is new in it", () => {
+    // The project CLI resolves its own ui-react at 0.3.1 while the Worker's is 0.2.0: F = {0.2.0, 0.3.1}.
+    const findings = classify({
+      from: [
+        ["0.2.0", V020],
+        ["0.3.1", V031],
+      ],
+    });
+    expect(findings).toContainEqual({
+      worker: "board",
+      path: "src/routes/pithy/choose-organization.tsx",
+      change: "added",
+      copy: "absent",
+    });
+    expect(findings).toEqual(classify({ from: [["0.2.0", V020]] }));
+  });
+
+  /**
+   * **A copy older than every installed version is still a copy.** The Worker was scaffolded from 0.2.0 and
+   * the dependency moved to 0.3.0 by hand, so F = {0.3.0}. Diffed against F alone, client-env.d.ts — the same
+   * in 0.3.0 and 0.3.1 — was never looked at, and the untouched 0.2.0 sign-in read as an edit.
+   */
+  describe("history: published versions older than F, for the copies F cannot place", () => {
+    const untouched020 = new Map([
+      ["src/routes/pithy/sign-in.tsx", V020.get("src/routes/pithy/sign-in.tsx") ?? ""],
+      ["client-env.d.ts", V020.get("client-env.d.ts") ?? ""],
+      ["src/pithy-screens.css", V020.get("src/pithy-screens.css") ?? ""],
+    ]);
+    const withHistory = (files: Map<string, string>, history: [string, TemplateTree][]) =>
+      classifyTemplates({
+        from: new Map([["0.3.0", V030]]),
+        history: new Map(history),
+        to: { version: "0.3.1", tree: V031 },
+        workers: [{ name: "board", files }],
+      }).filter((finding) => finding.change !== "added");
+
+    test("a copy matching an older version is untouched from it, even where F and T agree", () => {
+      // 0.3.0's client-env equals 0.3.1's; the Worker's is 0.2.0's, without providerSignUp.
+      const v030 = new Map(V030);
+      v030.set("client-env.d.ts", V031.get("client-env.d.ts") ?? "");
+      expect(
+        classifyTemplates({
+          from: new Map([["0.3.0", v030]]),
+          history: new Map([["0.2.0", V020]]),
+          to: { version: "0.3.1", tree: V031 },
+          workers: [{ name: "board", files: untouched020 }],
+        }).filter((finding) => finding.change !== "added"),
+      ).toEqual([
+        { worker: "board", path: "client-env.d.ts", change: "changed", copy: "untouched", from: "0.2.0" },
+        { worker: "board", path: "src/pithy-screens.css", change: "changed", copy: "untouched", from: "0.3.0" },
+        { worker: "board", path: "src/routes/pithy/sign-in.tsx", change: "changed", copy: "untouched", from: "0.2.0" },
+      ]);
+    });
+
+    test("plant: without the history the same copies are misread — the history is what places them", () => {
+      expect(withHistory(untouched020, [])).toContainEqual({
+        worker: "board",
+        path: "src/routes/pithy/sign-in.tsx",
+        change: "changed",
+        copy: "edited",
+      });
+    });
+
+    test("an edit of a file this move does not change stays silent, history or not", () => {
+      const files = new Map([["src/router.tsx", "export const router = mine;\n"]]);
+      expect(withHistory(files, [["0.2.0", V020]])).toEqual([]);
+    });
+  });
+
   test("a patch-level move is reported too: 0.3.0 → 0.3.1 names sign-in.tsx", () => {
     const findings = classify({ from: [["0.3.0", V030]] });
     expect(findings).toContainEqual({
@@ -346,6 +415,67 @@ describe("templateSections", () => {
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(sections[0]).toMatchObject({ state: "checked", from: ["0.2.0", "0.3.1"], to: "0.3.1" });
+  });
+
+  test("a copy older than every installed version is placed from the published history", async () => {
+    // F = {0.3.0}; the Worker's sign-in is an untouched 0.2.0 copy.
+    await installCopy(join(dir, "node_modules", "@pithy-sh", "ui-react"), "0.3.0", V030);
+    await writeFile(
+      join(dir, "apps", "board", "src", "routes", "pithy", "sign-in.tsx"),
+      V020.get("src/routes/pithy/sign-in.tsx") ?? "",
+    );
+    const v020 = templateTarball(Object.fromEntries(V020));
+    const tarballs: Record<string, Uint8Array> = { "0.2.0": v020.bytes, "0.3.1": tarball.bytes };
+    const fetch = vi.fn<RegistryFetch>(async (url) => {
+      const version = /ui-react-(.+)\.tgz$/.exec(url)?.[1] ?? "";
+      const bytes = tarballs[version];
+      return {
+        ok: bytes !== undefined,
+        status: bytes ? 200 : 404,
+        json: async () => null,
+        arrayBuffer: async () => (bytes ?? new Uint8Array()).slice().buffer as ArrayBuffer,
+      };
+    });
+    const doc = ui();
+    const at = (version: string, integrity: string) => ({
+      version,
+      dist: { tarball: `https://registry.npmjs.org/@pithy-sh/ui-react/-/ui-react-${version}.tgz`, integrity },
+    });
+    doc.versions["0.2.0"] = at("0.2.0", v020.integrity);
+    doc.versions["0.3.0"] = at("0.3.0", "sha512-AA==");
+    const sections = await templateSections({
+      projectDir: dir,
+      plan: heldPlan,
+      packuments: new Map([[UI, doc]]),
+      fetch,
+    });
+    expect(sections[0]?.files).toContainEqual({
+      worker: "board",
+      path: "src/routes/pithy/sign-in.tsx",
+      change: "changed",
+      copy: "untouched",
+      from: "0.2.0",
+    });
+    // 0.3.0 is installed, so it is read from disk; only T and the one older version are fetched.
+    expect(fetch.mock.calls.map(([url]) => url).sort()).toEqual([
+      "https://registry.npmjs.org/@pithy-sh/ui-react/-/ui-react-0.2.0.tgz",
+      "https://registry.npmjs.org/@pithy-sh/ui-react/-/ui-react-0.3.1.tgz",
+    ]);
+  });
+
+  test("every copy placed by what is installed: no history is fetched", async () => {
+    await installCopy(join(dir, "node_modules", "@pithy-sh", "ui-react"), "0.2.0", V020);
+    for (const path of BOARD.keys()) {
+      await writeFile(join(dir, "apps", "board", path), (V020.get(path) ?? "").replace("__PITHY_WORKER__", "board"));
+    }
+    const fetch = registry();
+    const doc = ui();
+    doc.versions["0.1.0"] = {
+      version: "0.1.0",
+      dist: { tarball: "https://registry.npmjs.org/x-0.1.0.tgz", integrity: "sha512-AA==" },
+    };
+    await templateSections({ projectDir: dir, plan: heldPlan, packuments: new Map([[UI, doc]]), fetch });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   test("nothing installed to compare from: unchecked", async () => {

@@ -23,7 +23,7 @@ import type { TemplateFinding, TemplateSection } from "../kitPackages/templates"
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
-import type { InstallRunner } from "../project/packageManager";
+import { execArgs, type InstallRunner } from "../project/packageManager";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -645,7 +645,10 @@ export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
   lines.push(...renderUpgrade(run));
   const cli = run.packages?.moves.find((move) => move.name === "@pithy-sh/cli");
   if (run.packages && !run.packages.reconciled && cli) {
-    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run pithy upgrade to reconcile with it.`);
+    // The project's own CLI, through its package manager: a bare `pithy` may be a global one, which is the
+    // old CLI this line exists to get past.
+    const { command, args } = execArgs(run.packages.packageManager, "pithy", ["upgrade"]);
+    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run ${[command, ...args].join(" ")} to reconcile with it.`);
   }
   lines.push(dryRun ? "Dry run. Nothing written." : formatDone());
   return lines;

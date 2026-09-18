@@ -23,6 +23,8 @@ export interface RegistryResponse {
   status: number;
   json(): Promise<unknown>;
   arrayBuffer(): Promise<ArrayBuffer>;
+  /** The body as a stream, when there is one. A tarball is read through it, so the bound stops the read. */
+  body?: ReadableStream<Uint8Array> | null;
 }
 
 /** A `fetch` that can send headers and read bytes. The real `globalThis.fetch` satisfies it. */
@@ -120,9 +122,11 @@ export async function fetchPackument(name: string, options: RegistryReadOptions 
 }
 
 /**
- * A tarball's bytes, or `null`. The URL comes out of a packument, so it is held to `https:` before any request
- * is made, and the body is bounded. What the bytes are is {@link readTemplateTarball}'s question, and its
- * first check is the integrity hash.
+ * A tarball's bytes, or `null`. The URL comes out of an unauthenticated packument, so it is held to the
+ * registry's own origin before any request is made — every `@pithy-sh/*` tarball is published there, and a
+ * URL anywhere else is a request from the adopter's machine to a host the document chose. The body is read
+ * to the bound and no further. What the bytes are is {@link readTemplateTarball}'s question, and its first
+ * check is the integrity hash.
  */
 export async function fetchTarball(
   url: string,
@@ -134,10 +138,42 @@ export async function fetchTarball(
   } catch {
     return null;
   }
-  if (parsed.protocol !== "https:") return null;
+  if (parsed.origin !== REGISTRY || parsed.username !== "" || parsed.password !== "") return null;
   const max = options.maxBytes ?? MAX_TARBALL_BYTES;
-  return request(parsed.href, {}, options, async (response) => {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.byteLength > max ? null : bytes;
-  });
+  return request(parsed.href, {}, options, async (response) =>
+    response.body ? readBounded(response.body, max) : boundedBytes(await response.arrayBuffer(), max),
+  );
+}
+
+/** `bytes`, or `null` past `max`. */
+function boundedBytes(buffer: ArrayBuffer, max: number): Uint8Array | null {
+  return buffer.byteLength > max ? null : new Uint8Array(buffer);
+}
+
+/** A stream read whole, or `null` the moment it passes `max` — the rest is never pulled. */
+async function readBounded(body: ReadableStream<Uint8Array>, max: number): Promise<Uint8Array | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
