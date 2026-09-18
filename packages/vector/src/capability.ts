@@ -13,7 +13,7 @@ import { provisionGuard } from "./http/provisionGuard";
 import { registerVectorRoutes } from "./http/routes";
 import { vector_0001_documents } from "./migrations/0001_documents";
 import { vectorExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { vectorWorkflows } from "./workflows/specs";
 
 /**
@@ -91,9 +91,12 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
 
   const capability = defineCapability({
     name: "vector",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     requiredBindings,
     config: VectorConfig,
     workflows: vectorWorkflows,

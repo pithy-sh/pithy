@@ -5,7 +5,7 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import type { TurnstileClientProjection } from "./client/projection";
 import { TURNSTILE_LOGIN_ACTION, TurnstileConfig, type TurnstileConfigInput } from "./config/config";
 import { turnstileSecretsRegistry } from "./secret/registry";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /** The turnstile capability, with its resolved config attached for inspection (e.g. by `@pithy-sh/auth`). */
 export interface TurnstileCapability extends Capability {
@@ -27,9 +27,12 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
   const resolved = TurnstileConfig.parse(config);
   const capability = defineCapability({
     name: "turnstile",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     config: TurnstileConfig,
     // The widget secret is read through @pithy-sh/secrets, so the secrets capability must be composed;
     // createBackend fails fast if it isn't (rather than 500-ing each gated request).

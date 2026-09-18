@@ -10,7 +10,7 @@ import { ratingTables } from "./data/tables";
 import { registerRatingRoutes } from "./http/routes";
 import { rating_0001_rating } from "./migrations/0001_rating";
 import { ratingExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
  * Where rating's migrations sort in the app database. Unique per database; the registry composes keys like
@@ -52,9 +52,12 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
 
   const capability = defineCapability({
     name: "rating",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     requiredBindings,
     config: RatingConfig,
     databases: {

@@ -71,7 +71,17 @@ export const CapabilityDeclaration = z
       .string()
       .nullable()
       .describe(
-        "The npm version of the package supplying this capability, or null where there is none — the adopter's own `app` capability has a name and no package. Reported per capability and never aggregated: the package name is the join key against a release feed, and a project composes some capabilities and not others, so only the intersection of what it composes and what changed is worth reporting.",
+        "The npm version of the package supplying this capability, or null where there is none — the adopter's own `app` capability has a name and no package. Reported per capability and never aggregated: a project composes some capabilities and not others, so only the intersection of what it composes and what changed is worth reporting. Joined against a release feed on the `package` beside it, never on `name` — the two are different kinds of thing.",
+      ),
+    // **Defaulted, like every field added after the first manifest shipped**, and for the reason written
+    // out below against `healthKeys`: a Worker deployed before #626 sends no package, and a required
+    // field would cost that client the whole manifest rather than the one key it did not get.
+    package: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The npm package supplying this capability — the join key against a release feed — or null where there is none, which is the adopter's own `app` capability and a Worker that predates this field. **Never derivable from `name`:** `controlplane` ships inside `@pithy-sh/core`, so a name-derived `@pithy-sh/<name>` reaches a package that has never been published and the join comes back empty, which reads exactly like up to date. Null together with `version`: a package with no version says nothing joinable, and a version with no package is the reason this field exists.",
       ),
     adminRoutes: z
       .array(AdminRoute)
@@ -103,7 +113,7 @@ export const CapabilityDeclaration = z
     ),
   })
   .describe(
-    "One capability this Worker composes, the version it is at, the admin surface it exposes, the summary it may report, and the configured facts a client must respect to call any of it.",
+    "One capability this Worker composes, the package and version it is at, the admin surface it exposes, the summary it may report, and the configured facts a client must respect to call any of it.",
   );
 export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
 
@@ -163,8 +173,13 @@ export const CapabilityDescriptor = z
     // Both fields, from the one value, in the one place. A handler cannot write the numbers and forget
     // the flag, which is what makes `encode(decode(entry))` the entry again — the property the seam's
     // response contract test rests on.
-    encode: ({ health, healthKeys, configKeys, config, ...declaration }) => ({
+    encode: ({ health, healthKeys, configKeys, config, package: suppliedBy, ...declaration }) => ({
       ...declaration,
+      // The package, explicitly, for the same reason the two below are explicit: it is defaulted, so it
+      // is optional on the way in and required on the way out, and absence and null mean the one thing —
+      // this capability comes from no npm package, which is the adopter's own app capability. Renamed on
+      // the way past because `package` is a reserved word and cannot be a binding name.
+      package: suppliedBy ?? null,
       // Every defaulted field is optional on the way back out, and empty is the meaning absence already
       // had: a capability that declares no summary, and one that states no configured fact.
       //
@@ -197,6 +212,11 @@ export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
  * identities below.** A client dispatches on the routes described here — what this Worker declares right
  * now — so a capability that changed its paths or its scopes reports the change directly, and a schema
  * version would be a second source of truth to keep in sync with the first. That reasoning is unchanged.
+ *
+ * **And `capabilities[].version` travels with the package it belongs to** (#626). A version is only
+ * actionable joined against a release feed, a feed is keyed by package name, and a capability name is
+ * not one — `controlplane` ships inside `@pithy-sh/core`. Reporting the version alone left every client
+ * guessing the key, and the guess failed silently on the most frequently released package there is.
  *
  * What the manifest does carry is **identity**, not schema, and it carries two of them because they
  * answer questions neither can answer alone. `version` is Cloudflare's opaque per-deploy id: it says

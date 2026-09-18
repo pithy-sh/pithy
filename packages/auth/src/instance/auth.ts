@@ -4,7 +4,14 @@
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
+import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
+import {
+  type AuthEmailDelivery,
+  claimedDelete,
+  markSessionEnded,
+  messageDeliveryDuring,
+  sessionEndedDuring,
+} from "../audit/evidence";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
@@ -129,6 +136,40 @@ function refuseUnsafeProfileFields(user: { name?: unknown; image?: unknown }): v
   throw new APIError("BAD_REQUEST", { code: "INVALID_PROFILE_FIELD", message: refusal.message });
 }
 
+/** The endpoint context a database hook is handed, narrowed to the two things attribution needs. */
+interface HookContext {
+  headers?: Headers;
+  context?: { session?: { user?: { id?: string } } | null };
+}
+
+/**
+ * Who caused a row change, read from the endpoint context Better Auth hands a database hook.
+ *
+ * **The context is absent as often as it is present, and that absence is information.** A hook reached
+ * from `/unlink-account` gets the full endpoint context with the caller's session on it; one reached
+ * from a script, a queue consumer or a migration calling `internalAdapter` outside any dispatch gets
+ * `null`. So `fromRequest` distinguishes *nobody was calling* from *a caller with no session*, which is
+ * the difference between `system` and `anonymous` in the row — and it is what stops a cascade from being
+ * written as the account owner's own action, which is what #627's first cut did.
+ *
+ * **It is not, and must not be read as, "the cascade is `system`".** `getWithHooks` resolves its context
+ * from `getCurrentAuthContext()`, which is async-scoped to the dispatch, so a cascade reached through an
+ * endpoint arrives here with that endpoint's session and headers — and the operator who drove it is
+ * named as the actor of every row it writes, correctly. What this function reads is who was calling, and
+ * a cascade is not a special kind of caller.
+ */
+function callerOf(ctx: HookContext | null | undefined): {
+  callerId: string | null;
+  fromRequest: boolean;
+  headers: Headers | undefined;
+} {
+  return {
+    callerId: ctx?.context?.session?.user?.id ?? null,
+    fromRequest: Boolean(ctx),
+    headers: ctx?.headers,
+  };
+}
+
 /**
  * What the instance hands to Pithy's email seam to deliver. The route never sends inline — the hook
  * enqueues an `@pithy-sh/email` job (`magicLink`/`otp` template) which a Workflow delivers.
@@ -137,8 +178,23 @@ export type AuthEmailMessage =
   | { to: string; template: "magicLink"; token: string; url: string }
   | { to: string; template: "otp"; code: string };
 
-/** The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic. */
-export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
+/**
+ * The email-delivery seam: enqueue (never send inline). Injected so the instance stays I/O-agnostic.
+ *
+ * **It answers what happened, and that answer is the evidence behind two audit events.** Returning
+ * `Promise<void>` made the seam structurally blind: `auth/magic_link_sent` and `auth/otp_sent` claim a
+ * message, `@pithy-sh/email` decides whether there is one, and nothing carried that decision back — so a
+ * recipient the suppression list withheld, and an enqueue that threw, both wrote `outcome: "success"`
+ * (#627). {@link AuthEmailDelivery} is the narrowest thing that closes it: queued, withheld with a
+ * reason, or failed. The instance still knows nothing about email infrastructure — `withheld` and
+ * `failed` are facts about a message, not about a binding.
+ *
+ * **Internal.** It is produced by `../email/send.ts`'s `makeSendAuthEmail`, consumed by
+ * `./plugins.ts`, and wired by `../http/resolve.ts` from the composed email capability's own `enqueue`.
+ * An adopter never supplies one — `AuthWiring.enqueueEmail` is filled by `compose` — and it is not
+ * exported from `../index.ts`, so widening the return type breaks nothing they can hold.
+ */
+export type SendAuthEmail = (message: AuthEmailMessage) => Promise<AuthEmailDelivery>;
 
 /**
  * Everything the Better-Auth instance needs, resolved per invocation from config + request env.
@@ -310,6 +366,55 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
           },
         },
       },
+      account: {
+        /**
+         * **The provider-link trail, recorded where the account table changes.**
+         *
+         * An account row is what lets a provider sign in as somebody, so its creation and its removal
+         * are the two account-security events — and the row is the only place both are visible. Better
+         * Auth reaches it from several directions: `/callback/:id` on a first social sign-up and on a
+         * link, `linkAccount` from the OAuth linking path, `/unlink-account`, and the cascade that drops
+         * every account when a user is deleted. All of them go through `createWithHooks` /
+         * `deleteWithHooks` on the `account` model (`better-auth/dist/db/internal-adapter.mjs`), so one
+         * pair of hooks covers what four endpoint wirings would have had to enumerate and keep current.
+         *
+         * **This is the seam `session.delete.after` below already argues for**, applied to the other
+         * table: a handler wired to one endpoint misses the others, and the row is what the fact is
+         * keyed by. #627 is what that costs — `/link-social` was wired, so a link recorded the request
+         * rather than the result, and an unlink recorded nothing.
+         *
+         * **After, not before, in both directions.** The write has happened by the time these run, so a
+         * slow or failing audit seam can neither hold up nor refuse a link or an unlink — and
+         * `emitProviderAccountChanged` swallows its own failure for the same reason.
+         */
+        create: {
+          after: async (account, ctx) => {
+            await emitProviderAccountChanged(deps.emit, {
+              change: "link",
+              account,
+              ...callerOf(ctx),
+            });
+          },
+        },
+        /**
+         * **Through `claimedDelete`, because `delete.after` fires on the row that was read.** Two
+         * concurrent unlinks of one account both reach `after` and the trail double-counts one removal.
+         * The pair below issues the delete in `before` and runs this body only for the caller whose
+         * statement removed the row — see `../audit/evidence.ts` for the primitive, its two
+         * preconditions, and why every `delete.after` here goes through it rather than two of them.
+         */
+        delete: claimedDelete<{ id: unknown }, HookContext | null | undefined>({
+          db: deps.db,
+          table: "pithyAuthAccounts",
+          after: async (account, ctx) => {
+            await emitProviderAccountChanged(deps.emit, {
+              change: "unlink",
+              account,
+              ...callerOf(ctx),
+            });
+          },
+        }),
+      },
       session: {
         create: {
           /**
@@ -351,19 +456,32 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
             return { data: { ...session, deviceId: meta.id, authenticatedAt } };
           },
         },
-        delete: {
-          /**
-           * Tell whoever keyed state on this session that it has gone.
-           *
-           * A sign-out, a revoke, an admin ending somebody's devices — all of them land here, which is
-           * why the seam is on the row rather than on the sign-out endpoint. A handler wired to one
-           * endpoint would miss the other three, and the row is what the state was keyed by.
-           *
-           * **After, not before.** The session is already gone when this runs, so a slow or failing
-           * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
-           * reason the audit emit does: the thing it reports has already happened.
-           */
-          after: async (session) => {
+        /**
+         * Tell whoever keyed state on this session that it has gone, and record that it did.
+         *
+         * A sign-out, a revoke, an admin ending somebody's devices — all of them land here, which is
+         * why the seam is on the row rather than on the sign-out endpoint. A handler wired to one
+         * endpoint would miss the other three, and the row is what the state was keyed by.
+         *
+         * **After, not before.** The session is already gone when this runs, so a slow or failing
+         * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
+         * reason the audit emit does: the thing it reports has already happened.
+         *
+         * **Through `claimedDelete`, and that is the second half of #627's last hole.** `/sign-out`
+         * reaches `internalAdapter.deleteSession(token)`, so concurrent sign-outs on one cookie all find
+         * the row, all issue a delete, exactly one removes anything — and all of them reached this body.
+         * `markSessionEnded` ran for each, and `emitAfterRequest` wrote `auth/signout outcome=success`
+         * for callers that signed nobody out. The same primitive the account hooks use covers it,
+         * because the defect is `deleteWithHooks`'s rather than either table's.
+         */
+        delete: claimedDelete<{ id: unknown; userId: unknown }, HookContext | null | undefined>({
+          db: deps.db,
+          table: "pithyAuthSessions",
+          after: async (session, ctx) => {
+            // **The evidence `/sign-out` has none of.** That endpoint answers 200 whether or not it
+            // found a session to delete, so the path alone cannot say whether anybody was signed out.
+            // A session row disappearing can, and this is where that is visible (#627).
+            markSessionEnded(ctx?.context, session.userId);
             if (!deps.onSessionRevoked) return;
             try {
               await deps.onSessionRevoked({ id: String(session.id), userId: String(session.userId) });
@@ -371,7 +489,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               // Swallowed by contract. The sign-out succeeded; a listener's failure is not the caller's.
             }
           },
-        },
+        }),
       },
     },
     hooks: {
@@ -399,8 +517,26 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
         await emitProviderUnavailable(deps.emit, { provider, headers: ctx.headers });
         throw providerUnavailable(provider);
       }),
-      // Emit audit events for every completed auth request: sign-in (+device) from the new session,
-      // plus the send/sign-out/token/OAuth events by path. Endpoint-scoped, so a rotation never emits.
+      /**
+       * Emit audit events for an auth request: sign-in (+device) from the new session, plus the
+       * send/sign-out/token event by path. Endpoint-scoped, so a rotation never emits.
+       *
+       * **`returned` is passed because this hook runs on refusals too.** Better Auth catches an
+       * endpoint's `APIError` into a result and dispatches the `after` hooks over it
+       * (`better-auth/dist/api/dispatch.mjs`), so a 401 `/token` reaches here looking exactly like one
+       * that minted a token — and wrote `auth/token_refresh outcome=success` for a request that was
+       * refused. `ctx.context.returned` is the only thing that tells them apart, and the judgment is
+       * `emitAfterRequest`'s so it is made once for every path rather than per wiring.
+       *
+       * **The two markers are passed because a refusal can answer 200.** `/sign-out` deletes nothing and
+       * says so cheerfully; `/email-otp/send-verification-otp` declines to send and answers
+       * `{"success":true}` on purpose, so a caller cannot tell a registered address from a stranger's.
+       * Neither decline is visible from anything this hook holds, so each audited path names what must
+       * have *happened* and `../audit/evidence.ts` carries it here from the place that saw it — the
+       * session row going away, and the email seam's own answer about the message, which is the send
+       * paths' evidence rather than the fact that a callback was entered. Reading them is all this does:
+       * the response has already been decided and is not touched.
+       */
       after: createAuthMiddleware(async (ctx) => {
         const newSession = ctx.context.newSession;
         await emitAfterRequest(deps.emit, {
@@ -414,6 +550,9 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               }
             : null,
           currentUserId: ctx.context.session?.user?.id ?? null,
+          returned: ctx.context.returned,
+          endedSession: sessionEndedDuring(ctx.context),
+          messageDelivery: messageDeliveryDuring(ctx.context),
         });
       }),
     },

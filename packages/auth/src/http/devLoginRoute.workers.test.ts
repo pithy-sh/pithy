@@ -73,7 +73,10 @@ function instance(secret = SECRET) {
     basePath: "/auth",
     trustedOrigins: ["http://localhost"],
     ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async (message) => void mailbox.push(message),
+    sendEmail: async (message) => {
+      mailbox.push(message);
+      return { delivery: "queued" };
+    },
     sessionExpiresIn: 604800,
     sessionUpdateAge: 86400,
     verificationExpiresIn: 300,

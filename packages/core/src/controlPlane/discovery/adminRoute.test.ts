@@ -77,10 +77,27 @@ describe("a manifest from a Worker that predates the health fields", () => {
       expect(capability.config).toEqual({});
     }
   });
+
+  /**
+   * And it predates the package name beside the version (#626), which is the same mechanism again.
+   *
+   * This transcript carries a version for `auth` and `payments` and no package for either, because no
+   * Worker sent one until #626. A client reading it gets `null` and falls back to whatever guess it
+   * already had — which is worse than the field and better than losing the manifest, and is the only
+   * shape that lets the field ship at all.
+   */
+  test("and it predates the package name, which reads as null rather than failing the read", () => {
+    const parsed = ControlPlaneManifest.parse(PRE_317_MANIFEST);
+    for (const capability of parsed.capabilities) expect(capability.package).toBeNull();
+    // The versions are still there: absence of the join key costs the client the key, not the manifest.
+    expect(parsed.capabilities.map((capability) => capability.version)).toEqual(["0.4.1", "0.4.1", null]);
+  });
 });
 
 describe("a configured fact a client must respect (#422)", () => {
-  const base = { name: "payments", version: "0.4.1", adminRoutes: [] };
+  // `package` beside the version, as a current Worker sends it (#626) — the round-trip test below is
+  // about a build that sends every field it knows, so a field left off here would quietly weaken it.
+  const base = { name: "payments", package: "@pithy-sh/payments", version: "0.4.1", adminRoutes: [] };
 
   /** The first fact the kit states: what a project bills. Spelled out, as a Worker would send it. */
   const BILLING_SUBJECT = {
@@ -132,7 +149,7 @@ describe("a configured fact a client must respect (#422)", () => {
 });
 
 describe("and the four states survive this", () => {
-  const base = { name: "secrets", version: "0.4.1", adminRoutes: [] };
+  const base = { name: "secrets", package: "@pithy-sh/secrets", version: "0.4.1", adminRoutes: [] };
 
   /** One declared key, spelled out — a `count`, so `states` is null, which the schema refines for. */
   const DUE_FOR_ROTATION = {

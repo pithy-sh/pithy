@@ -13,7 +13,7 @@ import { registerStorageRoutes } from "./http/routes";
 import { storage_0001_objects } from "./migrations/0001_objects";
 import { STORAGE_BUCKET_BINDING, storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { storageWorkflows } from "./workflows/specs";
 
 /**
@@ -76,9 +76,12 @@ export function storage(options: StorageOptions = {}): StorageCapability {
 
   const capability = defineCapability({
     name: "storage",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     dependsOn: ["secrets"],
     secretRegistry: storageSecretsRegistry,
     workflows: storageWorkflows,

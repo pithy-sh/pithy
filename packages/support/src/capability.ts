@@ -28,7 +28,7 @@ import { support_0001_threads } from "./migrations/0001_threads";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { supportWorkflows } from "./workflows/specs";
 
 /**
@@ -235,9 +235,12 @@ export function support(options: SupportOptions = {}): SupportCapability {
 
   const capability = defineCapability({
     name: "support",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     // Attachment presigning reads an R2 credential bundle through @pithy-sh/secrets.
     dependsOn: ["secrets"],
     secretRegistry: supportSecretsRegistry,

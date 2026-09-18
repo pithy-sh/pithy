@@ -154,7 +154,7 @@ function instance(): ReturnType<typeof makeAuth<[BetterAuthPlugin]>> {
     basePath: "/api/auth",
     trustedOrigins: [ORIGIN],
     ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async () => {},
+    sendEmail: async () => ({ delivery: "queued" as const }),
     sessionExpiresIn: 60 * 60 * 24 * 7,
     sessionUpdateAge: 60 * 60 * 24,
     verificationExpiresIn: 300,

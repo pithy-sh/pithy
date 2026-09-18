@@ -16,7 +16,7 @@ import { media_0001_init } from "./migrations/0001_init";
 import { mediaExtendMigration } from "./migrations/extend";
 import { assertValidKvMetadata } from "./record/kvStore";
 import { MEDIA_BUCKET_BINDING, mediaSecretsRegistry } from "./secret/registry";
-import { PACKAGE_VERSION } from "./version.generated";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { mediaWorkflows } from "./workflows/specs";
 
 /**
@@ -101,9 +101,12 @@ export function media(options: MediaOptions = {}): MediaCapability {
 
   const capability = defineCapability({
     name: "media",
-    // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
-    // cannot read its own package.json. Reported per capability by the control-plane manifest.
+    // The package this capability ships in and the version it ships at, both stamped by
+    // `scripts/stampVersions.ts` — a Worker cannot read its own package.json. Reported per capability by
+    // the control-plane manifest, and reported together: a release feed is keyed by package name, so the
+    // version alone leaves a client guessing the key (#626).
     version: PACKAGE_VERSION,
+    package: PACKAGE_NAME,
     // Storage credentials are read through @pithy-sh/secrets, so secrets must be composed.
     dependsOn: ["secrets"],
     secretRegistry: mediaSecretsRegistry,

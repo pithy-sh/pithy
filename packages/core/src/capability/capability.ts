@@ -484,6 +484,28 @@ export interface Capability<
    */
   version?: string | null;
   /**
+   * The npm **package** that supplies this capability, or `null` where there is none.
+   *
+   * The join key {@link Capability.version} is useless without. A version joins against a release feed
+   * by package name, and this manifest reported the version alone until #626 — so a client had to guess
+   * `@pithy-sh/${name}`, which is right for most capabilities and wrong for the one that matters:
+   * `controlplane` ships inside `@pithy-sh/core`, so the guess reaches a package that has never been
+   * published and the join comes back empty, which is indistinguishable from "up to date".
+   *
+   * **A capability name and a package name are different kinds of thing.** One is what a composition
+   * calls a concept; the other is how that concept is distributed. A package may ship more than one
+   * capability — `core` already ships `controlplane` — so no convention makes the second derivable from
+   * the first, and the relationship is a fact only the producing package knows. Which is why **the
+   * framework never fills this in from `name`**: deriving it here would re-create the bug inside the fix.
+   *
+   * Every `@pithy-sh/*` capability sets it from its generated `PACKAGE_NAME` constant
+   * (`scripts/stampVersions.ts`), beside the version off the same stamp. **Nullable for the same reason
+   * `version` is**, and null in the same breath: the adopter's own `app` capability has a name, no
+   * package and no version. Neither alone is a state worth having — a package with no version says
+   * nothing joinable, and a version with no package is the defect this field closes.
+   */
+  package?: string | null;
+  /**
    * Optional startup hook, called once when {@link createBackend} assembles the backend, with every
    * composed capability. Runs after binding and `dependsOn` validation, before middleware and routes
    * mount. Lets a capability wire across capabilities at startup — `@pithy-sh/secrets` aggregates
