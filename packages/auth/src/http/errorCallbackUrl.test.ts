@@ -256,12 +256,85 @@ describe("the request handed to Better Auth", () => {
     expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
   });
 
-  test("is left alone when the body is not JSON", async () => {
-    // A form post under `basePath` is Better Auth's to parse, in its own shape.
+  test("is left alone when the body decodes to no keyed object, as `text/plain` does", async () => {
+    // `getBody` answers a bare string here, so there is no field for Better Auth to read and none for
+    // this module to guard. The bytes say `errorCallbackURL`; the decoded body does not have one.
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ errorCallbackURL: "https://app.example/sign-in#x" }),
+    });
+    expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
+  });
+
+  test("refuses the fragment in a form-encoded body, which the dependency reads the same field out of", async () => {
     const request = new Request(REQUEST, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: "errorCallbackURL=https%3A%2F%2Fapp.example%2Fsign-in%23x",
+    });
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("refuses the fragment behind a JSON key written as a `\\u` escape", async () => {
+    // Round 4's live bypass. `"\u0065rrorCallbackURL"` is `errorCallbackURL` to `JSON.parse` and shares
+    // not one byte with it beforehand, so nothing short of parsing can be the decision.
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"\\u0065rrorCallbackURL":"https://app.example/sign-in#x"}',
+    });
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("normalizes a form-encoded body back into a form-encoded body, other fields intact", async () => {
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "provider=github&errorCallbackURL=https%3A%2F%2Fapp.example%2Fx%3F",
+    });
+    const guarded = await guardErrorCallbackURL(request, REQUEST);
+    expect(guarded.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect([...new URLSearchParams(await guarded.text())]).toEqual([
+      ["provider", "github"],
+      ["errorCallbackURL", "https://app.example/x"],
+    ]);
+  });
+
+  test("guards the value the dependency would use when a form body names the field twice", async () => {
+    // `getBody`'s `forEach` assignment leaves the last; `URLSearchParams.get` answers the first. Reading
+    // the first would refuse a value nobody acts on and pass the one that reaches the concatenation.
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "errorCallbackURL=%2Fsign-in&errorCallbackURL=%2Fsign-in%23x",
+    });
+    await expect(guardErrorCallbackURL(request, REQUEST)).rejects.toBeInstanceOf(PithyError);
+  });
+
+  test("normalizes a multipart body back into one Better Auth can still read", async () => {
+    // The rebuilt request re-encodes the parts and mints a new boundary, so the incoming
+    // `boundary=…` header has to go with the old body. Kept, it would describe parts that are no
+    // longer there and `formData()` would answer nothing — a guard that silently ate the whole body.
+    const boundary = "----pithy625";
+    const part = (name: string, value: string) =>
+      `--${boundary}\r\ncontent-disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      body: `${part("provider", "github")}${part("errorCallbackURL", "https://app.example/x?")}--${boundary}--\r\n`,
+    });
+    const guarded = await guardErrorCallbackURL(request, REQUEST);
+    expect(guarded.headers.get("content-type")).toContain("multipart/form-data");
+    const form = await guarded.formData();
+    expect([form.get("provider"), form.get("errorCallbackURL")]).toEqual(["github", "https://app.example/x"]);
+  });
+
+  test("is left alone on a body the dependency parses but finds no string field in", async () => {
+    const request = new Request(REQUEST, {
+      method: "POST",
+      headers: { "content-type": "application/vnd.api+json" },
+      body: JSON.stringify({ provider: "github" }),
     });
     expect(await guardErrorCallbackURL(request, REQUEST)).toBe(request);
   });

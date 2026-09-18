@@ -67,6 +67,35 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
  * the value and which concatenate it is exactly the out-guessing above, and it is a claim that goes stale
  * on the next bump. One field, one rule. (An adopter whose error screen is a hash route passes it as a
  * query parameter instead; the kit's own templates already do.)
+ *
+ * ## Reach: whatever the dependency reads a body from, this reads too
+ *
+ * Round 4 (#625) is not about what the guard decides but about which requests it looks inside, and it
+ * was wrong twice in one function — **both times by testing something cheap instead of doing the parse
+ * the test was standing in for.** A substring search of the raw body for `errorCallbackURL` misses
+ * `"\u0065rrorCallbackURL"`, which is the same key after `JSON.parse` and shares no byte before it. A
+ * `content-type` test for the literal `application/json` misses two of the three branches `getBody`
+ * builds a keyed object in — form-encoded and multipart — and part of the third besides: the `+json`
+ * structured-suffix family is JSON to the dependency's own regex and was not to that substring. Either
+ * miss returned the request untouched and the fragment reached `redirectOnError` intact.
+ *
+ * So the dispatch below is `better-call/dist/utils.mjs`'s `getBody`, mirrored: the same three
+ * body-to-object branches, the same predicates, in the same order, guarded by the same `request.body`
+ * test rather than by a list of verbs. Not a superset and not a subset — **equal**, because either
+ * direction is a defect. Reading less leaves the bypass open; reading more refuses adopters over a
+ * value Better Auth would never have been handed.
+ *
+ * That equality is not asserted in a comment. `errorCallbackUrlReach.workers.test.ts` runs both
+ * programs over one corpus of request shapes and compares them case by case, with the dependency's
+ * side executed rather than modeled, so a bump that teaches `getBody` a new media type or a new
+ * decoding turns it red naming the shape.
+ *
+ * **The prefilter that is gone, and the performance claim it rested on.** It read "the overwhelming
+ * majority of bodies do not mention the field, and this spares them a parse." It spared them nothing
+ * measurable: the body had *already* been cloned and read to a string one line above, which is the
+ * copy, and what the prefilter avoided was a `JSON.parse` of a string in hand — on a body better-call
+ * is about to parse anyway, microseconds later, in the same request. There was no work to save and no
+ * exposure to add, so there was nothing on the other side of the trade to weigh the bypass against.
  */
 
 /** The body field this module owns. Better Auth names it; so do `sign-in.mjs`, `account.mjs` and the magic-link plugin. */
@@ -158,6 +187,52 @@ export function normalizeErrorCallbackURL(value: string, requestUrl: string): st
 }
 
 /**
+ * The media types `getBody` decodes as JSON, copied from `better-call/dist/utils.mjs:3`.
+ *
+ * The structured suffix is the half a hand-written check forgets: `application/vnd.api+json` and
+ * `application/ld+json` are JSON to the dependency and were not to this module. Copied rather than
+ * approximated so the two can be compared character for character on a bump, and `/i` is kept even
+ * though the caller lowercases first — the point is that this is the same expression, not one that
+ * happens to agree.
+ */
+const JSON_MEDIA_TYPE = /^application\/([a-z0-9.+-]*\+)?json/i;
+
+/** A plain keyed object, which is the only body shape `errorCallbackURL` can be a field of. */
+function asFields(body: unknown): Record<string, unknown> | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  return body as Record<string, unknown>;
+}
+
+/**
+ * The value Better Auth will see at `FIELD`, or `undefined` if it will see no string there.
+ *
+ * **The last occurrence, not the first.** `getBody` builds its object with
+ * `formData.forEach((value, key) => { result[key] = … })`, so a body naming the field twice leaves the
+ * *last* value — where `URLSearchParams.get` and `FormData.get` both answer the first. Guarding the
+ * first would refuse a value nobody acts on and pass the one that reaches the concatenation.
+ *
+ * A non-string is Better Auth's own `BAD_REQUEST` (`origin-check.mjs:53`), in its own shape. Nothing
+ * here improves on that, and inventing a second refusal for it would only split the contract. A
+ * multipart file part arrives as a `File` and lands here for the same reason.
+ */
+function lastString(values: readonly unknown[]): string | undefined {
+  const value = values.at(-1);
+  return typeof value === "string" ? value : undefined;
+}
+
+/** Rebuild the request around a re-encoded body, keeping every header the route still needs. */
+function rebuild(request: Request, body: BodyInit, dropContentType: boolean): Request {
+  const headers = new Headers(request.headers);
+  // The re-encoded body is a different length, and a stale `content-length` is how a body gets truncated.
+  headers.delete("content-length");
+  // A `FormData` body mints its own boundary, and the incoming `multipart/…; boundary=…` names the old
+  // one. Kept, it would describe a body that is no longer there; dropped, the constructor writes the
+  // header that matches what it just encoded.
+  if (dropContentType) headers.delete("content-type");
+  return new Request(request.url, { method: request.method, headers, body });
+}
+
+/**
  * Hand back the request Better Auth should see: the same one, or one whose `errorCallbackURL` is normalized.
  *
  * **The original is returned untouched whenever nothing needs doing**, which is almost every request.
@@ -166,44 +241,82 @@ export function normalizeErrorCallbackURL(value: string, requestUrl: string): st
  *
  * **The body is read from a clone.** A request body is a stream and Better Auth reads the original; this
  * one is consumed here.
+ *
+ * **The dispatch is `getBody`'s**, in `getBody`'s order — see the module docblock on reach. A body it
+ * decodes to something that is not a keyed object (`text/plain` to a string, `application/octet-stream`
+ * to a buffer, an unknown type to the stream itself) carries no field to guard, so it is left alone
+ * here for the same reason it is ignored there.
  */
 export async function guardErrorCallbackURL(request: Request, requestUrl: string): Promise<Request> {
-  if (request.method !== "POST" && request.method !== "PUT") return request;
-  if (!(request.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) return request;
+  // `getBody`'s own first line. A verb test would be a second rule about which requests carry bodies,
+  // and the two would disagree the first time Better Auth put a body on a `PATCH`.
+  if (!request.body) return request;
+  const contentType = (request.headers.get("content-type") ?? "").toLowerCase();
 
-  let raw: string;
-  try {
-    raw = await request.clone().text();
-  } catch {
-    // A body that will not read is Better Auth's refusal to write, not ours.
-    return request;
-  }
-  // Cheap prefilter: the overwhelming majority of bodies under `basePath` do not mention the field, and
-  // this spares them a parse. A body that mentions it is parsed properly below, so this can only be a
-  // fast path — never the decision.
-  if (!raw.includes(FIELD)) return request;
+  if (JSON_MEDIA_TYPE.test(contentType)) return guardJsonBody(request, requestUrl);
+  if (contentType.includes("application/x-www-form-urlencoded")) return guardFormBody(request, requestUrl);
+  if (contentType.includes("multipart/form-data")) return guardMultipartBody(request, requestUrl);
+  return request;
+}
 
+/** `getBody`'s JSON branch: `await request.json()`. */
+async function guardJsonBody(request: Request, requestUrl: string): Promise<Request> {
   let body: unknown;
   try {
-    body = JSON.parse(raw);
+    body = await request.clone().json();
   } catch {
+    // A body that will not read, or will not parse, is Better Auth's refusal to write — `getBody`
+    // answers `400 BAD_REQUEST` on the same bytes, and nothing reaches an endpoint to be guarded.
     return request;
   }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return request;
-  const value = (body as Record<string, unknown>)[FIELD];
-  // A non-string is Better Auth's own `BAD_REQUEST` (`origin-check.mjs:53`), in its own shape. Nothing
-  // here improves on that, and inventing a second refusal for it would only split the contract.
-  if (typeof value !== "string") return request;
+  const fields = asFields(body);
+  if (!fields) return request;
+  // `JSON.parse` has already decided what the key is, escapes and all, which is the whole of round 4's
+  // first half: the field is looked up on the parsed object and never searched for in the text. One
+  // candidate, not a list — a duplicate key in a JSON document is collapsed by the parser, not here —
+  // but through the same tail, so the rule about what is and is not a value lives in one place.
+  const value = lastString([fields[FIELD]]);
+  if (value === undefined) return request;
 
   const normalized = normalizeErrorCallbackURL(value, requestUrl);
   if (normalized === value) return request;
+  // Re-encoded through `JSON.stringify`, so an escaped key is written back plainly. Same object to
+  // `JSON.parse`, and still JSON under whatever `+json` media type the caller sent.
+  return rebuild(request, JSON.stringify({ ...fields, [FIELD]: normalized }), false);
+}
 
-  const headers = new Headers(request.headers);
-  // The re-encoded body is a different length, and a stale `content-length` is how a body gets truncated.
-  headers.delete("content-length");
-  return new Request(request.url, {
-    method: request.method,
-    headers,
-    body: JSON.stringify({ ...(body as Record<string, unknown>), [FIELD]: normalized }),
-  });
+/** `getBody`'s `application/x-www-form-urlencoded` branch, whose every value it stringifies. */
+async function guardFormBody(request: Request, requestUrl: string): Promise<Request> {
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(await request.clone().text());
+  } catch {
+    return request;
+  }
+  const value = lastString(params.getAll(FIELD));
+  if (value === undefined) return request;
+
+  const normalized = normalizeErrorCallbackURL(value, requestUrl);
+  if (normalized === value) return request;
+  // `set` collapses every occurrence to one, which is exactly what the dependency would have read off
+  // the original: the last value, and only it.
+  params.set(FIELD, normalized);
+  return rebuild(request, params.toString(), false);
+}
+
+/** `getBody`'s `multipart/form-data` branch, which keeps a file part as a `File`. */
+async function guardMultipartBody(request: Request, requestUrl: string): Promise<Request> {
+  let form: FormData;
+  try {
+    form = await request.clone().formData();
+  } catch {
+    return request;
+  }
+  const value = lastString(form.getAll(FIELD));
+  if (value === undefined) return request;
+
+  const normalized = normalizeErrorCallbackURL(value, requestUrl);
+  if (normalized === value) return request;
+  form.set(FIELD, normalized);
+  return rebuild(request, form, true);
 }

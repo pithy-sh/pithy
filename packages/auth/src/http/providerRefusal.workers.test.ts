@@ -433,21 +433,38 @@ const DOOR = [
   },
 ] as const;
 
-/** Start a social sign-in and report only what the caller can see, plus whether any state was minted. */
-async function startSignIn(errorCallbackURL: string): Promise<{ status: number; body: string; states: number }> {
+/** What the caller can see of a started sign-in, plus whether any state was minted. */
+interface Started {
+  status: number;
+  body: string;
+  states: number;
+}
+
+/**
+ * Start a social sign-in from a body written out by hand, and report only what the caller can see.
+ *
+ * The raw text matters: `startSignIn` below serializes an object, which can express neither of round
+ * 4's shapes — a key spelled with a `\u` escape is the same key to `JSON.parse` and a different one to
+ * `JSON.stringify`, and a form encoding is not JSON at all.
+ */
+async function startSignInWithBody(contentType: string, body: BodyInit): Promise<Started> {
   const wiring = buildWiring(() => {}, false);
   const app = buildApp(wiring, async () => {});
   const response = await app.request(
     "/auth/sign-in/social",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost" },
-      body: JSON.stringify({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL }),
-    },
+    { method: "POST", headers: { "content-type": contentType, origin: "http://localhost" }, body },
     appEnv(),
   );
   const states = await env.DB.prepare("select count(*) as n from pithy_auth_verifications").first<{ n: number }>();
   return { status: response.status, body: await response.text(), states: states?.n ?? -1 };
+}
+
+/** Start a social sign-in carrying one `errorCallbackURL`, in the ordinary JSON body a client sends. */
+async function startSignIn(errorCallbackURL: string): Promise<Started> {
+  return startSignInWithBody(
+    "application/json",
+    JSON.stringify({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL }),
+  );
 }
 
 describe.each(DOOR)("an errorCallbackURL carrying $label", ({ errorCallbackURL }) => {
@@ -487,5 +504,101 @@ describe("the door narrows what reaches Better Auth without widening it", () => 
     const started = await startSignIn(ERROR_CALLBACK);
     expect(started.status).toBe(200);
     expect(started.states).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Round 4: the guard was reading the wrong bytes, so the door had a second entrance (#625).
+ *
+ * The value was guarded, but only for requests the guard recognized as carrying one — and it decided
+ * that by looking at the **raw body text** for the literal field name and at the `content-type` for the
+ * literal string `application/json`. Two spellings of the same request walked past both:
+ *
+ * - **A `\u` escape in the key.** JSON permits `\uXXXX` anywhere in a string, keys included, so
+ *   `"errorCallbackURL"` is `errorCallbackURL` after `JSON.parse` and shares not one byte with it
+ *   before. The substring test said no, the request went through untouched, and the fragment arrived
+ *   at `redirectOnError` intact — the whole of round 3's oracle, restored by six characters.
+ * - **Another media type better-call parses.** `getBody` reads a keyed body from `application/json`
+ *   *and* from the `+json` structured-suffix family, from `application/x-www-form-urlencoded` and from
+ *   `multipart/form-data`. A `content-type` test written as one substring covers one of the four.
+ *
+ * **These are the same defect in two places**: a cheap test standing in for the parse it was supposed
+ * to precede. `errorCallbackUrlReach.workers.test.ts` holds the gate on the class — it measures the
+ * dependency's reach and the guard's against each other, rather than listing today's two spellings.
+ * These cases are the two spellings, driven the whole way, because the claim is about what an attacker
+ * can send and not about what a function returns.
+ */
+const MULTIPART_BOUNDARY = "----pithy625";
+
+function multipartBody(fields: Record<string, string>): string {
+  const parts = Object.entries(fields).map(
+    ([name, value]) => `--${MULTIPART_BOUNDARY}\r\ncontent-disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+  );
+  return `${parts.join("")}--${MULTIPART_BOUNDARY}--\r\n`;
+}
+
+/** The fragment of round 3, carried by a request the round-3 guard did not look inside. */
+const SMUGGLED = "http://localhost/sign-in#";
+
+const SMUGGLED_BODIES = [
+  {
+    label: "a JSON key spelled with a `\\u` escape, which is the same key after parsing",
+    contentType: "application/json",
+    body: `{"provider":"github","callbackURL":"http://localhost/app","\\u0065rrorCallbackURL":"${SMUGGLED}"}`,
+  },
+  {
+    label: "a `+json` media type, which better-call parses as JSON by its structured suffix",
+    contentType: "application/vnd.api+json",
+    body: JSON.stringify({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL: SMUGGLED }),
+  },
+  {
+    label: "a form-encoded body, whose fields better-call hands over as the same object",
+    contentType: "application/x-www-form-urlencoded",
+    body: new URLSearchParams({
+      provider: "github",
+      callbackURL: "http://localhost/app",
+      errorCallbackURL: SMUGGLED,
+    }).toString(),
+  },
+  {
+    label: "a multipart body, likewise",
+    contentType: `multipart/form-data; boundary=${MULTIPART_BOUNDARY}`,
+    body: multipartBody({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL: SMUGGLED }),
+  },
+] as const;
+
+describe.each(SMUGGLED_BODIES)("a fragment smuggled in $label", ({ contentType, body }) => {
+  test("is refused at the door, naming the field, with no state minted", async () => {
+    const refused = await startSignInWithBody(contentType, body);
+
+    // A 400 from the guard, not a 415 from the dependency's media-type list. Three of these four are
+    // media types Better Auth's own router happens to reject today, at the version pinned today, on
+    // the routes it ships today — a plugin that widens `allowedMediaTypes` (its own
+    // `device-authorization` does exactly that) makes them reachable without touching this package.
+    // The guard is not permitted to depend on that list; this asserts it does not.
+    expect({ status: refused.status, states: refused.states }).toEqual({ status: 400, states: 0 });
+    expect(refused.body).toContain("errorCallbackURL");
+    for (const leaked of PROVIDER_REFUSAL_CODES) {
+      expect(refused.body).not.toContain(leaked);
+    }
+  });
+});
+
+describe("a body the guard now parses is still the body Better Auth is handed", () => {
+  test("a form-encoded sign-in with a usable errorCallbackURL still starts, and still mints state", async () => {
+    // The reach change must not cost a working request. Better Auth's router refuses this media type
+    // on this route today, so what is asserted is that the *guard* let it past to be refused there —
+    // not a 400 naming the field, and not a normalization that broke the encoding.
+    const started = await startSignInWithBody(
+      "application/x-www-form-urlencoded",
+      new URLSearchParams({ provider: "github", callbackURL: "http://localhost/app", errorCallbackURL: "/sign-in" }),
+    );
+    expect(started.status).not.toBe(400);
+    expect(started.body).not.toContain("errorCallbackURL cannot be used");
+  });
+
+  test("a JSON sign-in whose value needs normalizing still starts, and still mints state", async () => {
+    const started = await startSignIn("http://localhost/sign-in?");
+    expect({ status: started.status, minted: started.states > 0 }).toEqual({ status: 200, minted: true });
   });
 });
