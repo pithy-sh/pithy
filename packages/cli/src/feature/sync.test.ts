@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -9,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
 import { devConfigPath, readDevConfig } from "./devConfig";
 import { BASE_PORT } from "./ports";
+import { pruneFeatureBlocks } from "./prune";
 import { syncFeatureDevConfig } from "./sync";
 
 describe("syncFeatureDevConfig", () => {
@@ -166,20 +168,17 @@ describe("syncFeatureDevConfig", () => {
   });
 
   test("never reclaims a destroyed feature's block back into the registry", async () => {
-    // `pithy feature destroy` frees the block and prunes the worktree by dropping its gitlink — it never
-    // recursively deletes the files (CLAUDE.md), so the config can linger. Treating that leftover as a live
-    // claim re-registered a feature that no longer exists, holding its ports forever and pushing every
-    // later feature to a higher base.
+    // `pithy feature destroy` frees the block and removes the worktree's `.dev.config.json` before it drops
+    // the gitlink — it never recursively deletes the files (CLAUDE.md), so the directory stays, but the pin
+    // does not. With no pin left there is nothing to reclaim, and the block goes to the next feature.
     const destroyed = await sync(["api"]);
     const registry = JSON.parse(await readFile(registryPath, "utf8"));
     delete registry[mainRoot]["feature/69-demo"]; // what freePortBlock does.
     await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
-    // The worktree is gone — no gitlink — but its .dev.config.json is still on disk.
-    expect(await readDevConfig(devConfigPath(worktreePath))).not.toBeNull();
+    await rm(devConfigPath(worktreePath)); // what destroy does, first.
 
     const otherWorktree = join(mainRoot, ".worktrees", "70-other");
     await mkdir(otherWorktree, { recursive: true });
-    await writeFile(join(otherWorktree, ".git"), "gitdir: /somewhere/.git/worktrees/70-other\n");
     const other = await syncFeatureDevConfig({
       mainRoot,
       registryPath,
@@ -192,6 +191,48 @@ describe("syncFeatureDevConfig", () => {
     expect(after["feature/69-demo"]).toBeUndefined(); // stays freed
     // And the freed block is handed straight to the next feature.
     expect(other.block).toEqual(destroyed.block);
+  });
+
+  test("reclaims the block a directory still pins, as prune keeps it, whatever git says of it (#637)", async () => {
+    // A worktree torn down the gitlink-drop way by something other than `destroy` leaves its directory and
+    // its `.dev.config.json`. `pithy feature prune` keeps a block while its directory is on disk, so the
+    // reclaim must put it back into a lost registry too — or the next feature is handed ports prune says
+    // are held. One predicate decides both.
+    const git = (args: string[], cwd = mainRoot) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" });
+    mainRoot = await realpath(mainRoot);
+    registryPath = join(mainRoot, "config", "dev-ports.json");
+    git(["init", "-q"]);
+    git(["config", "user.email", "t@t.dev"]);
+    git(["config", "user.name", "T"]);
+    git(["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(["branch", "-M", "main"]);
+    const gone = join(mainRoot, ".worktrees", "68-gone");
+    git(["worktree", "add", "-q", "-b", "feature/68-gone", gone]);
+    const first = await syncFeatureDevConfig({
+      mainRoot,
+      registryPath,
+      worktreePath: gone,
+      branch: "feature/68-gone",
+      discoverWorkers: async () => workerTargets(gone, ["api"]),
+    });
+    await rm(join(gone, ".git"));
+    git(["worktree", "prune"]);
+    await rm(registryPath); // lost: a wiped config directory, a new machine.
+
+    const next = join(mainRoot, ".worktrees", "71-next");
+    git(["worktree", "add", "-q", "-b", "feature/71-next", next]);
+    const other = await syncFeatureDevConfig({
+      mainRoot,
+      registryPath,
+      worktreePath: next,
+      branch: "feature/71-next",
+      discoverWorkers: async () => workerTargets(next, ["api"]),
+    });
+
+    expect((await readRegistry())["feature/68-gone"]).toEqual(first.block);
+    expect(other.block.block).not.toBe(first.block.block);
+    const report = await pruneFeatureBlocks({ cwd: mainRoot, registryPath, dryRun: true });
+    expect(report.freedBlocks).toEqual([]);
   });
 
   test("touches no .dev.vars at all — a worktree generates its own (#154)", async () => {

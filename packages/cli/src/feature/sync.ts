@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access } from "node:fs/promises";
-import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import {
@@ -14,6 +12,7 @@ import {
   writeDevConfig,
 } from "./devConfig";
 import { allocatePortBlock, type PortBlock, portsRegistryPath, reclaimPortBlocks } from "./ports";
+import { heldReservations } from "./prune";
 
 /**
  * Reconcile a feature's worktree with the workers actually in it — the operation behind `pithy feature sync`
@@ -24,32 +23,6 @@ import { allocatePortBlock, type PortBlock, portsRegistryPath, reclaimPortBlocks
  * feature's *already reserved* block, and leaves every existing worker exactly where it was — so an addition
  * never moves a sibling's address, and never reaches into another feature's block.
  */
-
-/** Whether a path exists. */
-async function exists(path: string): Promise<boolean> {
-  return access(path).then(
-    () => true,
-    () => false,
-  );
-}
-
-/**
- * Whether a pinned block still belongs to a worktree that exists.
- *
- * Reclaim rebuilds a lost registry from the blocks worktrees still hold, so it must only re-register blocks
- * a **live** feature is using. `pithy feature destroy` prunes a worktree by dropping its gitlink and pruning
- * the registration — never a recursive delete (CLAUDE.md) — so a torn-down worktree is a directory with no
- * `.git`. Re-registering its block would hand a destroyed feature its ports back forever.
- *
- * Judged only where a positive answer is possible: a directory that is not where this branch's worktree
- * would live says nothing about liveness, so it stays reclaimable. Only "the directory is there and its
- * gitlink is gone" is treated as dead — the one state teardown leaves behind.
- */
-async function isLiveWorktree(mainRoot: string, branch: string): Promise<boolean> {
-  const dir = join(mainRoot, ".worktrees", branch.replace(/^feature\//, ""));
-  if (!(await exists(dir))) return true;
-  return exists(join(dir, ".git"));
-}
 
 /** The outcome of a sync: the reconciled config plus what actually changed. */
 export interface SyncReport {
@@ -116,18 +89,15 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
   }
 
   // Rebuild any registry entry lost since the worktrees were created before reserving, so a fresh registry
-  // can never hand out a block a live feature still holds. A destroyed feature's leftover config is not a
-  // claim: reclaiming it would undo the teardown that just freed its block.
+  // can never hand out a block a live feature still holds. Which pins still hold a block is prune's
+  // question, answered by prune's predicate (#637): a second answer here is how a block prune keeps gets
+  // handed out, or one it frees comes back. `destroy` removes the pin before freeing, so it leaves none.
   //
   // The path comes from the one resolver (#435). It was composed here, from `mainRoot`, which made this a
   // second derivation of a location that has exactly one — and a second derivation is how `create`/`sync`
   // end up writing one file while `destroy` frees a key in another, both exiting 0.
   const registryPath = options.registryPath ?? portsRegistryPath();
-  const pinned = await scanPinnedBlocks(options.mainRoot);
-  const reservations: typeof pinned = [];
-  for (const reservation of pinned) {
-    if (await isLiveWorktree(options.mainRoot, reservation.branch)) reservations.push(reservation);
-  }
+  const reservations = await heldReservations(options.worktreePath, await scanPinnedBlocks(options.mainRoot));
   await reclaimPortBlocks({ registryPath, root: options.mainRoot, reservations });
 
   const block = await allocatePortBlock({

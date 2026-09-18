@@ -638,6 +638,33 @@ export async function reclaimPortBlocks(options: {
   );
 }
 
+/**
+ * Drop branches from one checkout's allocations, in memory. Returns the entries it dropped, in the order
+ * asked, so the caller knows whether a write is owed and what to report.
+ *
+ * One body for both ways a block is freed — `feature destroy`'s one branch and `feature prune`'s many — so
+ * the rule about an emptied checkout below cannot be true of one and not the other.
+ */
+function dropBranches(
+  registry: PortsRegistry,
+  root: string,
+  branches: readonly string[],
+): { branch: string; entry: BranchDevState }[] {
+  const held = registry[root];
+  if (held === undefined) return [];
+  const dropped: { branch: string; entry: BranchDevState }[] = [];
+  for (const branch of branches) {
+    const entry = held[branch];
+    if (entry === undefined) continue;
+    delete held[branch];
+    dropped.push({ branch, entry });
+  }
+  // A checkout holding nothing is not a checkout the registry has anything to say about, and leaving
+  // the empty object behind would keep a deleted project in the file until the pruner reached it.
+  if (dropped.length > 0 && Object.keys(held).length === 0) delete registry[root];
+  return dropped;
+}
+
 /** Free a branch's block under the lock (idempotent: a missing branch/checkout/registry is a no-op). */
 export async function freePortBlock(options: FreeOptions): Promise<void> {
   const { registryPath, root, branch } = options;
@@ -646,15 +673,43 @@ export async function freePortBlock(options: FreeOptions): Promise<void> {
     registryPath,
     async () => {
       const registry = await readPortsRegistry(registryPath);
-      const branches = registry[root];
-      if (branches === undefined || !(branch in branches)) {
-        return;
-      }
-      delete branches[branch];
-      // A checkout holding nothing is not a checkout the registry has anything to say about, and leaving
-      // the empty object behind would keep a deleted project in the file until the pruner reached it.
-      if (Object.keys(branches).length === 0) delete registry[root];
-      await writeRegistry(registryPath, registry);
+      if (dropBranches(registry, root, [branch]).length > 0) await writeRegistry(registryPath, registry);
+    },
+    options.lock,
+  );
+}
+
+/** Inputs to {@link freePortBlocks}. */
+export interface FreeManyOptions {
+  /** Absolute path to the registry — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
+  registryPath: string;
+  /** The absolute main-checkout root whose branches may be freed. Nothing under any other key is touched. */
+  root: string;
+  /**
+   * Which of this checkout's branches to free, decided **under the lock** from the registry as it is read
+   * there. A decision taken before the lock is a decision about a file somebody may have changed since —
+   * `pithy feature create` allocating for the very branch the caller was about to call unused.
+   */
+  select: (registry: PortsRegistry) => Promise<readonly string[]>;
+  /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
+  lock?: LockBudget;
+}
+
+/**
+ * Free several of one checkout's blocks in one locked read-modify-write, and return what was freed.
+ *
+ * `feature prune`'s path (#637), and {@link freePortBlock}'s in every way that matters: the same lock, the
+ * same reader, the same {@link dropBranches}. One write rather than one per branch, so a prune freeing five
+ * blocks cannot be interleaved with an allocation that lands between the second and the third.
+ */
+export async function freePortBlocks(options: FreeManyOptions): Promise<({ branch: string } & BranchDevState)[]> {
+  return withLock(
+    options.registryPath,
+    async () => {
+      const registry = await readPortsRegistry(options.registryPath);
+      const dropped = dropBranches(registry, options.root, await options.select(registry));
+      if (dropped.length > 0) await writeRegistry(options.registryPath, registry);
+      return dropped.map(({ branch, entry }) => ({ branch, ...entry }));
     },
     options.lock,
   );

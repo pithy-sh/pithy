@@ -30,6 +30,7 @@ import {
   reclaimPortBlocks,
   registryRootFor,
 } from "../feature/ports";
+import { heldReservations } from "../feature/prune";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { openUrl as openUrlDefault } from "../platform/browser";
 import { composeFor } from "../project/composeFor";
@@ -382,8 +383,10 @@ export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<
     // Rebuild any registry entry lost since the worktrees were created, so a fresh registry can never hand
     // out a block a live feature still holds. Scanned from the repository root, never from the registry's
     // own directory: the file sits in the config directory now, which has no `.worktrees` and never will,
-    // so `dirname(registryPath)` would make this a silent no-op in every direction (#435).
-    await reclaimPortBlocks({ registryPath, root, reservations: await scanPinnedBlocks(root) });
+    // so `dirname(registryPath)` would make this a silent no-op in every direction (#435). Filtered by
+    // prune's own predicate (#637), so this never puts back a block prune frees, nor leaves out one it keeps.
+    const reservations = await heldReservations(options.projectDir, await scanPinnedBlocks(root));
+    await reclaimPortBlocks({ registryPath, root, reservations });
     block = await allocatePortBlock({ registryPath, root, branch });
   }
 

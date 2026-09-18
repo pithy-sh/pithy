@@ -107,8 +107,17 @@ describe("checkPortsRegistry", () => {
 
     expect(check.root).toBe(projectDir);
     expect(check.entries).toEqual([
-      { root: projectDir, branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true },
-      { root: projectDir, branch: "feature/12-auth", block: 1, base: 8807, size: 20, own: true, onDisk: true },
+      { root: projectDir, branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true, orphaned: false },
+      {
+        root: projectDir,
+        branch: "feature/12-auth",
+        block: 1,
+        base: 8807,
+        size: 20,
+        own: true,
+        onDisk: true,
+        orphaned: false,
+      },
     ]);
   });
 
@@ -160,7 +169,7 @@ describe("checkPortsRegistry", () => {
     const check = await checkPortsRegistry(projectDir, paths());
 
     expect(check.entries).toEqual([
-      { root: goneRoot, branch: "main", block: 3, base: 8847, size: 20, own: false, onDisk: false },
+      { root: goneRoot, branch: "main", block: 3, base: 8847, size: 20, own: false, onDisk: false, orphaned: false },
     ]);
   });
 

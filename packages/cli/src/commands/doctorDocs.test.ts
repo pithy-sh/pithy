@@ -200,9 +200,10 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
     // its listing tilde-abbreviate like every other one on the page. Stubbed rows rather than the machine's
     // own registry, which would put whichever checkouts the suite happens to run beside into the document.
     //
-    // Four rows, because the page has to show all four kinds: two of this checkout's own, unqualified; a
-    // second checkout named by path, which is the answer to who took the ports you cannot have; and a root
-    // the registry still holds that is gone from disk, which is the one line here anybody can act on.
+    // Five rows, because the page has to show all five kinds: two of this checkout's own, unqualified; one
+    // of its own that no worktree holds any more, which `pithy feature prune` frees (#637); a second
+    // checkout named by path, which is the answer to who took the ports you cannot have; and a root the
+    // registry still holds that is gone from disk.
     checkPortsRegistry: async () => ({
       path: join(harness.dir, ".config", "pithy", "dev-ports.json"),
       present: true,
@@ -218,6 +219,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
           size: 20,
           own: true,
           onDisk: true,
+          orphaned: false,
         },
         {
           root: join(harness.dir, "code", "acme"),
@@ -227,6 +229,17 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
           size: 20,
           own: true,
           onDisk: true,
+          orphaned: false,
+        },
+        {
+          root: join(harness.dir, "code", "acme"),
+          branch: "feature/9-billing",
+          block: 3,
+          base: 8847,
+          size: 20,
+          own: true,
+          onDisk: true,
+          orphaned: true,
         },
         {
           root: join(harness.dir, "code", "other-app"),
@@ -236,6 +249,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
           size: 20,
           own: false,
           onDisk: true,
+          orphaned: false,
         },
         {
           root: join(harness.dir, "code", "old-thing"),
@@ -245,6 +259,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
           size: 20,
           own: false,
           onDisk: false,
+          orphaned: false,
         },
       ],
     }),
@@ -1550,7 +1565,8 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   deployedAs: ["add", "ui", "upgrade", "worker"],
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
-  dryRun: ["seed", "upgrade"],
+  // The same question on three commands: was anything written. `feature prune` joined in #637.
+  dryRun: ["feature", "seed", "upgrade"],
   env: [
     "deploy",
     "email",

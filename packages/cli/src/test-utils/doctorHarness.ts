@@ -161,7 +161,16 @@ export function doctorHarness(): DoctorHarness {
         root: "/home/u/code/acme",
         unreadable: null,
         entries: [
-          { root: "/home/u/code/acme", branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true },
+          {
+            root: "/home/u/code/acme",
+            branch: "main",
+            block: 0,
+            base: 8787,
+            size: 20,
+            own: true,
+            onDisk: true,
+            orphaned: false,
+          },
         ],
       }),
       now: () => 1_000,

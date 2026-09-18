@@ -1428,15 +1428,17 @@ const PATHS_INDENT = " ".repeat("Config dir: ".length);
  * mixed-width registry legible, and it is the form the question arrives in.
  *
  * Own rows are unqualified because there is nothing to disambiguate; every other row names the checkout
- * that holds it, which is the whole answer to "8847, and I don't know why". `← not on disk` trails the
- * one row a developer can do something about — see {@link PortsRegistryEntry.onDisk}.
+ * that holds it, which is the whole answer to "8847, and I don't know why". `← not on disk` trails a
+ * row a developer can do something about — see {@link PortsRegistryEntry.onDisk} — and so does
+ * `← no worktree`, which names the command that frees it (#637, {@link PortsRegistryEntry.orphaned}).
  */
 function portsRegistryRows(check: PortsRegistryCheck, home: string): string[] {
   const range = (entry: PortsRegistryEntry): string => `${entry.base}–${entry.base + entry.size - 1}`;
   const width = Math.max(0, ...check.entries.map((entry) => range(entry).length));
   return check.entries.map((entry) => {
     const held = entry.own ? entry.branch : `${tildify(entry.root, home)} — ${entry.branch}`;
-    return `${range(entry).padEnd(width)}  ${held}${entry.onDisk ? "" : "  ← not on disk"}`;
+    const note = !entry.onDisk ? "  ← not on disk" : entry.orphaned ? "  ← no worktree; pithy feature prune" : "";
+    return `${range(entry).padEnd(width)}  ${held}${note}`;
   });
 }
 
