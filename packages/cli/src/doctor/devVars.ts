@@ -15,7 +15,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { bindingSecrets } from "../provision/secretBindings";
 import { mintedTokensPath } from "../tokens/mintedTokens";
-import { declaredVars } from "./wranglerVars";
+import { declaredBindings, declaredRequiredSecrets, declaredVars } from "./wranglerVars";
 
 /**
  * The two `.dev.vars` questions nothing else in the toolchain asks: **is each Worker actually getting
@@ -63,10 +63,21 @@ export const ROOT_DEV_VAR_STATES = [
    */
   "secret",
   /**
-   * A name some Worker requires as a binding, or declares in its `wrangler.jsonc` `vars` — but not
-   * from this file, which no Worker reads. The value is real and its home is elsewhere.
+   * A name some Worker reads as a value — a `secret` binding a capability requires, a `wrangler.jsonc`
+   * `vars` entry, or a name wrangler's `secrets.required` lists — but not from this file, which no Worker
+   * reads. The value is real and its home is elsewhere.
    */
   "binding",
+  /**
+   * A name some Worker binds to a resource, and none reads as a value (#636): a binding its
+   * `wrangler.jsonc` declares, in any stanza, or one a capability requires of a kind no string stands in
+   * for. `dev.json` would hand the string to every Worker — ignored where the binding is at the top level,
+   * a string where the binding should be everywhere else. It belongs nowhere.
+   *
+   * Read through `declaredBindings`, the reader the `.dev.vars.local` check uses. A store secret's binding
+   * is withheld while a Worker is unresolvable: the registry nobody read may declare it as a secret (#208).
+   */
+  "bound",
   /**
    * A Worker's `pithy.config.ts` would not import, so **nothing here can say what reads this** (#208).
    *
@@ -77,8 +88,8 @@ export const ROOT_DEV_VAR_STATES = [
    * secrets, so every key in the file classified `unread` and the report said "delete it" about the
    * broken Worker's own secrets.
    *
-   * The three states above survive a partial read because each is positive evidence: a fixed credential
-   * list, a registry that *did* declare the name, a composition that *does* want it. This one is what is
+   * The four states above survive a partial read because each is positive evidence: a fixed credential
+   * list, a registry that *did* declare the name, a composition that *does* want or bind it. This one is what is
    * left when the only remaining answer would have been an inference from files nobody could open.
    */
   "unclassified",
@@ -95,8 +106,10 @@ export interface RootDevVar {
   key: string;
   /** What reads it, if anything. */
   state: RootDevVarState;
-  /** The Workers that want it, for a `binding` key — so the sentence can name one. Sorted. */
+  /** The Workers that want it, for a `binding` key, or bind it, for a `bound` one — so the sentence can name one. Sorted. */
   workers: string[];
+  /** For a `bound` key, each Worker's binding of it and its kind. Sorted by Worker. */
+  bindings?: { worker: string; kind: string }[];
 }
 
 /** One Worker whose generated `.dev.vars` is a header and nothing else. */
@@ -211,24 +224,38 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
   const declaredSecrets = new Set(
     targets.flatMap((target) => [...Object.keys(target.registry), ...bindingSecrets(target.registry).keys()]),
   );
+  // What a Worker reads as a value, and what it binds to a resource. A `secret` binding's dev value is a
+  // `.dev.vars` string (#603); every other kind is a resource no string stands in for (#636).
+  const partial = unresolvable.length > 0;
   const wants = new Map<string, string[]>();
+  const bound = new Map<string, { worker: string; kind: string }[]>();
   for (const worker of workers) {
     const names = new Set<string>();
+    const binds = new Map<string, string>();
+    for (const [name, binding] of await declaredBindings(worker.dir)) {
+      if (!(binding.kind === "secrets_store_secrets" && partial)) binds.set(name, binding.kind);
+    }
     for (const capability of worker.capabilities) {
-      for (const binding of capability.requiredBindings ?? []) names.add(binding.name);
+      for (const binding of capability.requiredBindings ?? []) {
+        if (binding.type === "secret") names.add(binding.name);
+        else if (!binds.has(binding.name)) binds.set(binding.name, binding.type);
+      }
     }
     for (const name of await declaredVars(worker.dir)) names.add(name);
+    for (const name of await declaredRequiredSecrets(worker.dir)) names.add(name);
     for (const name of names) wants.set(name, [...(wants.get(name) ?? []), worker.name].sort());
+    for (const [name, kind] of binds) bound.set(name, [...(bound.get(name) ?? []), { worker: worker.name, kind }]);
   }
 
   const inRoot = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
   const root: RootDevVar[] = Object.keys(inRoot)
     .sort()
-    .map((key) => ({
-      key,
-      state: classify(key, declaredSecrets, wants, unresolvable.length > 0),
-      workers: wants.get(key) ?? [],
-    }));
+    .map((key) => {
+      const state = classify(key, declaredSecrets, wants, bound, partial);
+      if (state !== "bound") return { key, state, workers: wants.get(key) ?? [] };
+      const bindings = [...(bound.get(key) ?? [])].sort((a, b) => a.worker.localeCompare(b.worker));
+      return { key, state, workers: bindings.map((binding) => binding.worker), bindings };
+    });
 
   const empty: EmptyDevVars[] = [];
   for (const worker of workers) {
@@ -307,21 +334,26 @@ export function isCloudflareEnvKey(name: string): boolean {
 }
 
 /**
- * One root key's state. Ordered by who reads it: the CLI, then a registry, then a composition.
+ * One root key's state. Ordered by who reads it: the CLI, then a registry, then a composition — a value
+ * before a binding.
  *
- * The first three are positive evidence and survive a `partial` read — a fixed credential list, a
- * registry that did declare the name, a composition that does want it. `unread` is the one negative
+ * The first four are positive evidence and survive a `partial` read — a fixed credential list, a
+ * registry that did declare the name, a composition that does want or bind it. `unread` is the one negative
  * claim, so with a Worker nobody could ask it becomes `unclassified` instead (#208).
  */
 function classify(
   key: string,
   declaredSecrets: Set<string>,
   wants: Map<string, string[]>,
+  bound: Map<string, unknown>,
   partial: boolean,
 ): RootDevVarState {
   if (isCloudflareEnvKey(key)) return "credential";
   if (declaredSecrets.has(key)) return "secret";
+  // A Worker reading it as a value outranks one binding it: dev.json is where that Worker's value lives,
+  // and wrangler dev ignores it for a top-level binding of the same name.
   if (wants.has(key)) return "binding";
+  if (bound.has(key)) return "bound";
   return partial ? "unclassified" : "unread";
 }
 
@@ -393,7 +425,11 @@ function describeRootDevVar(
       // and nothing here checks it afterwards, so the mode belongs in the sentence.
       const wanted = entry.workers.length > 0 ? entry.workers.join(", ") : "this project";
       const home = devConfigPath === null ? "this machine's dev config" : devConfigPath;
-      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home}, as { "vars": { "${entry.key}": "<value>" } }, chmod 600.`;
+      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} reads it as a value — its dev value belongs in ${home}, as { "vars": { "${entry.key}": "<value>" } }, chmod 600.`;
+    }
+    case "bound": {
+      const named = (entry.bindings ?? []).map(({ worker, kind }) => `${worker}'s ${kind} binding`).join(", ");
+      return `${entry.key} is in .dev.vars, which no Worker reads. It is the name of ${named}, and a value cannot stand in for a binding. Delete it.`;
     }
     case "unclassified": {
       // Named, never advised on. The one thing this line must not do is repeat what `unread` says: the

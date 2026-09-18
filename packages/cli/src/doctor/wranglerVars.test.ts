@@ -8,7 +8,14 @@ import { dirname, join } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { NOT_INHERITED_BY_ENVIRONMENTS } from "../project/wranglerInheritance";
-import { BINDING_NAMED_BY_NAME, bindingsIn, declaredBindings, VALUE_MAPS } from "./wranglerVars";
+import {
+  BINDING_NAMED_BY_NAME,
+  bindingsIn,
+  declaredBindings,
+  requiredSecretsIn,
+  STANZAS,
+  VALUE_MAPS,
+} from "./wranglerVars";
 
 let dir: string;
 
@@ -93,7 +100,7 @@ describe("bindingsIn", () => {
     const config = Object.fromEntries(Object.entries(SAMPLES).map(([key, sample]) => [key, sample.value]));
     const found = bindingsIn(config);
     for (const [kind, sample] of Object.entries(SAMPLES)) {
-      expect(found.get(sample.binding), kind).toBe(kind);
+      expect(found.get(sample.binding), kind).toEqual({ kind, in: null });
     }
     expect(found.size).toBe(Object.keys(SAMPLES).length);
   });
@@ -103,7 +110,7 @@ describe("bindingsIn", () => {
       workflows: [],
       env: { staging: { workflows: [{ binding: "EMAIL_SENDER", name: "w", class_name: "C" }] } },
     });
-    expect(found.get("EMAIL_SENDER")).toBe("workflows");
+    expect(found.get("EMAIL_SENDER")).toEqual({ kind: "workflows", in: "env.staging" });
   });
 
   test("vars, define, a container's name and a queue consumer name no binding", () => {
@@ -116,6 +123,42 @@ describe("bindingsIn", () => {
       tail_consumers: [{ service: "tail" }],
     });
     expect([...found.keys()]).toEqual([]);
+  });
+
+  test("previews is read as the stanza it is — every kind, nested and name-spelled, under its real kind", () => {
+    const config = {
+      previews: Object.fromEntries(Object.entries(SAMPLES).map(([key, sample]) => [key, sample.value])),
+    };
+    const found = bindingsIn(config);
+    for (const [kind, sample] of Object.entries(SAMPLES)) {
+      expect(found.get(sample.binding), kind).toEqual({ kind, in: "previews" });
+    }
+  });
+
+  test("a top-level binding's label never comes from previews, whichever is written first", () => {
+    const found = bindingsIn({
+      previews: { workflows: [{ binding: "EMAIL_SENDER", name: "p", class_name: "C" }] },
+      env: { staging: { workflows: [{ binding: "EMAIL_SENDER", name: "s", class_name: "C" }] } },
+      workflows: [{ binding: "EMAIL_SENDER", name: "w", class_name: "C" }],
+    });
+    expect(found.get("EMAIL_SENDER")).toEqual({ kind: "workflows", in: null });
+  });
+
+  test("where a binding is declared is said: an environment, previews, or an environment's previews", () => {
+    const found = bindingsIn({
+      previews: { ai: { binding: "PREVIEW_AI" } },
+      env: {
+        staging: {
+          kv_namespaces: [{ binding: "SESSIONS" }],
+          previews: { d1_databases: [{ binding: "STAGING_PREVIEW_DB" }] },
+        },
+      },
+    });
+    expect(Object.fromEntries(found)).toEqual({
+      SESSIONS: { kind: "kv_namespaces", in: "env.staging" },
+      PREVIEW_AI: { kind: "ai", in: "previews" },
+      STAGING_PREVIEW_DB: { kind: "d1_databases", in: "env.staging.previews" },
+    });
   });
 
   test("anything that is not a config declares nothing", () => {
@@ -137,13 +180,32 @@ describe("declaredBindings", () => {
 `,
     );
     const found = await declaredBindings(dir);
-    expect(Object.fromEntries(found)).toEqual({ ROOMS: "durable_objects", SIGNING_KEY: "secrets_store_secrets" });
+    expect(Object.fromEntries(found)).toEqual({
+      ROOMS: { kind: "durable_objects", in: null },
+      SIGNING_KEY: { kind: "secrets_store_secrets", in: "env.prod" },
+    });
   });
 
   test("an absent or unreadable config declares nothing", async () => {
     expect((await declaredBindings(dir)).size).toBe(0);
     await writeFile(join(dir, "wrangler.jsonc"), "{ not json");
     expect((await declaredBindings(dir)).size).toBe(0);
+  });
+});
+
+describe("requiredSecretsIn", () => {
+  test("secrets.required, at the top level and in every environment, is a set of secret names", () => {
+    const names = requiredSecretsIn({
+      secrets: { required: ["STRIPE_KEY"] },
+      env: { staging: { secrets: { required: ["STAGING_ONLY"] } }, prod: null },
+    });
+    expect([...names].sort()).toEqual(["STAGING_ONLY", "STRIPE_KEY"]);
+  });
+
+  test("anything else declares none", () => {
+    expect(requiredSecretsIn(null).size).toBe(0);
+    expect(requiredSecretsIn({ secrets: { required: "STRIPE_KEY" } }).size).toBe(0);
+    expect(requiredSecretsIn({ secrets: { required: [1, "OK"] } })).toEqual(new Set(["OK"]));
   });
 });
 
@@ -169,10 +231,44 @@ function balanced(text: string, from: number, until: "}" | ";"): string {
   return "";
 }
 
-/** Each top-level field of one wrangler config interface, with the text of every type it names inlined. */
+/**
+ * One declared type's text — a `type` alias up to its `;`, or an `interface` with its `extends` clause and
+ * its body — or `null` when the file does not declare it (`Partial`, `Record`, `string`).
+ */
+function declaration(declarations: string, name: string): string | null {
+  const alias = new RegExp(String.raw`\ntype ${name}(<[^>]*>)? = `).exec(declarations);
+  if (alias) return balanced(declarations, alias.index + alias[0].length, ";");
+  const iface = new RegExp(String.raw`\ninterface ${name}(<[^>]*>)?( extends [^{]*)? \{`).exec(declarations);
+  if (iface === null) return null;
+  const open = iface.index + iface[0].length - 1;
+  return `${iface[2] ?? ""}\n${balanced(declarations, open, "}")}`;
+}
+
+/**
+ * `text` with every type it names inlined, and every type those name, to any depth. An `interface` brings
+ * its `extends` clause, so what it inherits is followed too. `seen` stops a cycle, and a type is inlined
+ * once however often it is named.
+ */
+function inlined(declarations: string, text: string, seen: Set<string> = new Set()): string {
+  let out = text;
+  for (const ref of new Set(text.match(/\b[A-Z]\w+\b/g) ?? [])) {
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const body = declaration(declarations, ref);
+    if (body !== null) out += inlined(declarations, body, seen);
+  }
+  return out;
+}
+
+/**
+ * Each top-level field of one wrangler config interface, and of every interface it `extends`, with the
+ * text of every type it names inlined to any depth. A field typed as an interface, as an alias of an
+ * alias, or as an interface that inherits its fields is read through, not stopped at its name.
+ */
 function interfaceFields(declarations: string, name: string): { name: string; text: string }[] {
-  const open = declarations.indexOf("{", declarations.indexOf(`interface ${name} {`));
-  const body = balanced(declarations, open, "}");
+  const text = declaration(declarations, name);
+  if (text === null) return [];
+  const [heritage = "", body = ""] = text.split(/\n(.*)/s);
   const fields: { name: string; text: string }[] = [];
   let depth = 0;
   for (const line of body.split("\n")) {
@@ -185,13 +281,12 @@ function interfaceFields(declarations: string, name: string): { name: string; te
       else if ("})]".includes(char)) depth--;
     }
   }
-  for (const field of fields) {
-    for (const ref of new Set(field.text.match(/\b[A-Z]\w+\b/g) ?? [])) {
-      const alias = new RegExp(String.raw`\ntype ${ref}(<[^>]*>)? = `).exec(declarations);
-      if (alias) field.text += balanced(declarations, alias.index + alias[0].length, ";");
-    }
-  }
-  return fields;
+  for (const field of fields) field.text = inlined(declarations, field.text);
+  // Inherited fields are the parent's own. `Pick<X, "a">` names X, whose other fields it does not carry —
+  // but every parent wrangler's two config interfaces extend is whole, and a gate that over-reads fails
+  // loud where one that under-reads passes quiet.
+  const parents = [...new Set(heritage.match(/\b[A-Z]\w+\b/g) ?? [])];
+  return [...fields, ...parents.flatMap((parent) => interfaceFields(declarations, parent))];
 }
 
 /**
@@ -202,8 +297,12 @@ function interfaceFields(declarations: string, name: string): { name: string; te
 function ungated(fields: readonly { name: string; text: string }[]): string[] {
   const missing: string[] = [];
   for (const field of fields) {
+    // A stanza is read with the reader the whole config is — the sample test above holds it to that.
+    if (STANZAS.has(field.name)) continue;
     const bindingField = /\bbinding\??: string/.test(field.text);
-    const nameField = /(^|[^\w?])name: string/.test(field.text.replace(/^ {4}name:.*$/m, ""));
+    // The Worker's own top-level `name` is not an entry's; every other `name: string` in the text is.
+    const own = field.name === "name" ? field.text.replace(/^ {4}name:.*$/m, "") : field.text;
+    const nameField = /(^|[^\w?])name: string/.test(own);
     if (bindingField && !SAMPLES[field.name]) missing.push(field.name);
     else if (!bindingField && nameField && !NOT_BINDINGS[field.name]) {
       if (!BINDING_NAMED_BY_NAME.has(field.name) || !SAMPLES[field.name]) missing.push(field.name);
@@ -241,6 +340,62 @@ describe("the reader against wrangler's declarations", () => {
     expect(
       ungated([{ name: "future_things", text: "    future_things: {\n        binding: string;\n    }[];\n" }]),
     ).toEqual(["future_things"]);
+  });
+
+  /**
+   * `previews: PreviewsConfig` is an `interface` that `extends Partial<EnvironmentNonInheritable>`: a gate
+   * that inlines one level of `type` alias sees neither. Each plant below is a kind the old gate passed.
+   */
+  const PLANTED = `
+interface FutureNamed {
+    name: string;
+    class_name: string;
+}
+type FutureInner = {
+    name: string;
+};
+type FutureWrap = {
+    bindings: FutureInner[];
+};
+interface PlantedBase {
+    future_inherited: {
+        binding: string;
+    }[];
+}
+interface PlantedBlock extends Partial<PlantedBase>, Partial<Pick<PlantedOther, "x">> {
+}
+interface PlantedOther {
+    x?: string;
+}
+interface Planted extends PlantedBase {
+    future_named: FutureNamed[];
+    future_nested: FutureWrap;
+    future_block: PlantedBlock | undefined;
+}
+`;
+
+  test("the gate follows a kind typed as an interface", () => {
+    const fields = interfaceFields(PLANTED, "Planted");
+    expect(ungated(fields.filter((field) => field.name === "future_named"))).toEqual(["future_named"]);
+  });
+
+  test("the gate follows a kind nested two aliases deep", () => {
+    const fields = interfaceFields(PLANTED, "Planted");
+    expect(ungated(fields.filter((field) => field.name === "future_nested"))).toEqual(["future_nested"]);
+  });
+
+  test("the gate follows extends — an interface's inherited fields, and a field whose interface inherits", () => {
+    const fields = interfaceFields(PLANTED, "Planted");
+    expect(fields.map((field) => field.name)).toContain("future_inherited");
+    expect(ungated(fields.filter((field) => field.name === "future_inherited"))).toEqual(["future_inherited"]);
+    expect(ungated(fields.filter((field) => field.name === "future_block"))).toEqual(["future_block"]);
+  });
+
+  test("the gate sees into previews, which is why it is a stanza rather than an ungated kind", async () => {
+    const declarations = blankComments(await readFile(declarationsPath, "utf8"));
+    const previews = interfaceFields(declarations, "EnvironmentInheritable").find((field) => field.name === "previews");
+    expect(previews?.text).toMatch(/\bworkflows\??:/);
+    expect(previews?.text).toMatch(/\bbinding\??: string/);
   });
 
   test("the gate fails on a planted kind spelled by name — the reader cannot see one it was not told of", () => {

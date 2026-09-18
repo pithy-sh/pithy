@@ -237,6 +237,63 @@ describe("the root .dev.vars — is anything reading it", () => {
     expect((await check([board])).root.map((entry) => entry.state)).toEqual(["binding"]);
   });
 
+  /**
+   * #636's sibling. dev.json's `vars` reaches every Worker's generated `.dev.vars`, so a binding's name
+   * there is a string standing where a binding should be — or, where wrangler.jsonc declares it at the top
+   * level, a value wrangler dev ignores. Either way it is never where the value belongs.
+   */
+  test("a key named like a binding a capability requires is never sent to dev.json (#636)", async () => {
+    const requires = [
+      { name: "email", requiredBindings: [{ type: "workflow", name: "EMAIL_SENDER" }] },
+      { name: "db", requiredBindings: [{ type: "d1", name: "DB" }] },
+    ] as unknown as Capability[];
+    const board = await worker("board", { vars: {} }, requires);
+    await writeFile(join(dir, ".dev.vars"), "DB=y\nEMAIL_SENDER=x\n");
+
+    const result = await check([board]);
+
+    expect(result.root.map((entry) => [entry.key, entry.state])).toEqual([
+      ["DB", "bound"],
+      ["EMAIL_SENDER", "bound"],
+    ]);
+    const lines = describeDevVars(result);
+    expect(lines.join("\n")).not.toContain("dev.json");
+    expect(lines).toContain(
+      "EMAIL_SENDER is in .dev.vars, which no Worker reads. It is the name of board's workflow binding, and a value cannot stand in for a binding. Delete it.",
+    );
+  });
+
+  test("a key named like a binding wrangler.jsonc declares, anywhere, is the same finding (#636)", async () => {
+    const board = await worker("board", {
+      vars: {},
+      workflows: [{ binding: "EMAIL_SENDER", name: "w", class_name: "S" }],
+      previews: { ai: { binding: "PREVIEW_AI" } },
+    });
+    await writeFile(join(dir, ".dev.vars"), "EMAIL_SENDER=x\nPREVIEW_AI=y\n");
+
+    const result = await check([board]);
+
+    expect(result.root).toEqual([
+      { key: "EMAIL_SENDER", state: "bound", workers: ["board"], bindings: [{ worker: "board", kind: "workflows" }] },
+      { key: "PREVIEW_AI", state: "bound", workers: ["board"], bindings: [{ worker: "board", kind: "ai" }] },
+    ]);
+  });
+
+  test("a name one Worker binds and another reads as a var still goes to dev.json, for the reader (#636)", async () => {
+    const board = await worker("board", { vars: { API_URL: "https://api.example" } });
+    const web = await worker("web", { vars: {}, services: [{ binding: "API_URL", service: "api" }] });
+    await writeFile(join(dir, ".dev.vars"), "API_URL=http://localhost\n");
+
+    expect((await check([board, web])).root).toEqual([{ key: "API_URL", state: "binding", workers: ["board"] }]);
+  });
+
+  test("a name in wrangler's secrets.required is a value the Worker reads, so dev.json is its home (#636)", async () => {
+    const board = await worker("board", { vars: {}, secrets: { required: ["STRIPE_KEY"] } });
+    await writeFile(join(dir, ".dev.vars"), "STRIPE_KEY=sk_test\n");
+
+    expect((await check([board])).root).toEqual([{ key: "STRIPE_KEY", state: "binding", workers: ["board"] }]);
+  });
+
   test("a key nothing declares is the nothing-reads-this case, and is told to go", async () => {
     const board = await worker("board", { vars: {} });
     await writeFile(join(dir, ".dev.vars"), "LEFTOVER_FROM_2024=x\n");
@@ -261,8 +318,18 @@ describe("the root .dev.vars — is anything reading it", () => {
    * carrying one of each shape must come back with one verdict per key and no key unaccounted for.
    */
   test("every key in the file is classified exactly once — nothing falls through", async () => {
-    const board = await worker("board", { vars: {} }, composes("SECRETS_ENCRYPTION_KEYS"));
-    const keys = ["CLOUDFLARE_API_TOKEN", "auth-session-secret", "SECRETS_ENCRYPTION_KEYS", "LEFTOVER_FROM_2024"];
+    const board = await worker(
+      "board",
+      { vars: {}, workflows: [{ binding: "EMAIL_SENDER", name: "w", class_name: "S" }] },
+      composes("SECRETS_ENCRYPTION_KEYS"),
+    );
+    const keys = [
+      "CLOUDFLARE_API_TOKEN",
+      "auth-session-secret",
+      "SECRETS_ENCRYPTION_KEYS",
+      "EMAIL_SENDER",
+      "LEFTOVER_FROM_2024",
+    ];
     await writeFile(join(dir, ".dev.vars"), keys.map((key) => `${key}=x`).join("\n"));
 
     const result = await check([board]);
@@ -380,6 +447,24 @@ describe("a Worker nobody could ask (#208)", () => {
     expect(lines.join("\n")).toContain("CLOUDFLARE_API_TOKEN is in .dev.vars");
     expect(lines.join("\n")).toContain("SOMETHING_ELSE");
     expect(devVarsHealthy(result)).toBe(false);
+  });
+
+  test("a store-secret binding is not called bound: the unread registry may declare it as a secret (#636)", async () => {
+    const board = await worker("board", {
+      vars: {},
+      secrets_store_secrets: [{ binding: "MAYBE_A_SECRET", store_id: "s", secret_name: "k" }],
+    });
+    await writeFile(join(dir, ".dev.vars"), "MAYBE_A_SECRET=x\n");
+
+    const result = await checkDevVars({
+      projectDir: dir,
+      workers: [board],
+      targets: [],
+      unresolvable: broken,
+      paths: paths(),
+    });
+
+    expect(result.root.map((entry) => entry.state)).toEqual(["unclassified"]);
   });
 
   test("a healthy sibling's registry still classifies its own secrets — a partial read is not no read", async () => {
