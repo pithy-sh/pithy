@@ -251,9 +251,11 @@ export function auth(options: AuthOptions): AuthCapability {
   // its `resolveSubject` out for the same reason.
   const { resolveGithubUserInfo, onSessionRevoked, ...config } = options;
   const resolved = AuthConfig.parse(config);
-  // Additivity, before anything is built from the list. The four the kit composes are the sign-in this
-  // product promises and what the control-plane seam verifies against, so a list naming one of them is
-  // refused here by name rather than silently redefining a route at request time.
+  // What may be composed, before anything is built from the list. The four the kit composes are the
+  // sign-in this product promises and what the control-plane seam verifies against, so a list naming one
+  // of them is refused here by name rather than silently redefining a route at request time — and so is a
+  // plugin that answers a refused social sign-in somewhere `http/providerRefusal` cannot collapse it,
+  // because composing that one would leave the guarantee stated and not held (#625).
   assertAdditivePlugins(resolved.plugins);
   // And the tables those plugins imply, derived now so a collision is a config error at `auth()` rather
   // than a half-applied migration against a database with no transactional DDL.

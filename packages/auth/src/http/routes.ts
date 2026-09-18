@@ -23,9 +23,11 @@ import {
   revokeFamily,
 } from "../token/rotation";
 import { registerAuthAdminRoutes } from "./adminRoutes";
+import { guardErrorCallbackURL } from "./errorCallbackUrl";
 import { apiErrorToPithy } from "./errors";
 import { requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
+import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
 import { RevokeDeviceBody } from "./schemas";
 
@@ -190,12 +192,47 @@ async function auditRefusal(c: Ctx, response: Response): Promise<void> {
  */
 async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
+
+  // **The first of the two guards on the refusal redirect (#625).** `errorCallbackURL` is the caller's
+  // string and `redirectOnError` concatenates it without parsing, so the shape handed *in* decides
+  // whether the collapse below is reading a query at all. `./errorCallbackUrl` normalizes it to something
+  // the kit produced, or refuses it — and carries the argument for why guarding the input is not the same
+  // job as reading the output, and why both stay.
+  const request = await guardErrorCallbackURL(c.req.raw, c.req.raw.url);
+
   let response: Response;
   try {
-    response = await instance.handler(c.req.raw);
+    response = await instance.handler(request);
   } catch (error) {
     throw apiErrorToPithy(error);
   }
+
+  // **The enumeration oracle on the social callback, closed here because here is the only place both
+  // halves are in reach (#625).** A refused social sign-in redirects with a code that says whether an
+  // account exists at the address the provider handed over; `./providerRefusal` carries the full
+  // argument and the roster. The collapse has to happen where the capability hands the response back,
+  // rather than in an adopter's middleware, for a reason this line demonstrates: middleware could
+  // rewrite the header and would then hold nothing to record, while from here the neutral code goes on
+  // the wire *and* the true reason goes on the trail.
+  //
+  // **What this reads is the `Location` header, and that is the whole of the claim.** A composed plugin
+  // that replaced the callback's response with a body carrying the code leaves nothing here to collapse,
+  // so such a plugin is refused where it is composed instead — `../instance/refusalTransport`, gated in
+  // `assertAdditivePlugins`. The guarantee is the kit's own routes plus any plugin that answers refusals
+  // through `Location`; it is stated that way in `./providerRefusal` and it is bounded that way here.
+  const collapsed = collapseProviderRefusal(c.req.raw.url, response);
+  if (collapsed) {
+    // **A 302 is not in `DENIED_STATUSES`, and this does not change that.** Widening it would be wrong:
+    // a 302 is also what a *successful* OAuth callback answers with, so `auditRefusal` — which knows
+    // only a status and a JSON body — would either read every completed social sign-in as a denial or
+    // have to re-derive this decision from the Location header it is not looking at. The refusal is
+    // recorded from the one place that has already established it is a refusal and knows which one, so
+    // these refusals reach `pithy_audit_events` for the first time (#449 closed the same gap for the
+    // JSON refusals and could not see this one, because it is not a JSON refusal).
+    await emitDenied(c.var.emit, { ...correlation(c.req.raw.headers), detail: collapsed.reason });
+    return collapsed.response;
+  }
+
   await auditRefusal(c, response);
   return response;
 }

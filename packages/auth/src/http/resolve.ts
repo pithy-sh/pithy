@@ -160,6 +160,9 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // Read the emit seam lazily so a later-composed audit capability is honored regardless of the
     // capability order (the instance may be built before audit's middleware runs).
     emit: (event) => c.var.emit(event),
+    // This request's own headers, for the refusal rows `../instance/providerSignInGate` writes from
+    // inside `getUserInfo`, where no request is in scope to read them from.
+    requestHeaders: c.req.raw.headers,
     // The adopter's additional Better Auth plugins, exactly as `auth({ plugins: [...] })` declared them
     // and already checked for additivity at `auth()` call time. The same list the derived migrations
     // were built from — the routes a plugin serves and the tables it needs come from one declaration.

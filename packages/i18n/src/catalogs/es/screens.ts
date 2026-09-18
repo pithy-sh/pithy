@@ -36,9 +36,12 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.provider.label": "Continuar con {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} no está configurado aquí. Usa el enlace.",
   "auth/sign_in.provider_silent": "{provider} no respondió. Usa el enlace.",
-  "auth/sign_in.refused.title": "No hay ninguna cuenta para este {provider}.",
+  // Ni una palabra sobre si la cuenta existe (#625). El servidor manda un solo código para "tienes
+  // cuenta y este proveedor no está conectado a ella" y para "no tienes ninguna", así que una frase que
+  // eligiera una de las dos devolvería, escrita, el oráculo que el Worker acaba de cerrar en la cabecera.
+  "auth/sign_in.refused.title": "{provider} no te ha dejado entrar.",
   "auth/sign_in.refused.primary":
-    "{provider} nos da una sola dirección: la principal de tu cuenta. Esa no coincide con ninguna de aquí.",
+    "{provider} nos da una sola dirección: la principal de tu cuenta. Con esa no has entrado aquí.",
   "auth/sign_in.refused.secondary":
     "Una dirección secundaria no sirve. Al entrar nunca miramos más allá de la principal, y es a propósito.",
   "auth/sign_in.refused.remedy":

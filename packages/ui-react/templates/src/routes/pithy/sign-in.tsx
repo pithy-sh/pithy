@@ -1,5 +1,9 @@
 import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
 import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+// The one code a refused provider sign-in comes back with. Imported rather than spelled, for the reason
+// #393 gives about `callbackPath`: a literal here and a literal there is a pair that can drift, and the
+// drift would show as this block silently never rendering again.
+import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusal";
 import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
@@ -72,12 +76,18 @@ const EN = {
   "auth/sign_in.provider_unconfigured": "{provider} is not configured here. Use the link instead.",
   "auth/sign_in.provider_silent": "{provider} didn't answer. Use the link instead.",
   // The three-point refusal, and the order is the point. This failure is counter-intuitive: the address
-  // genuinely *is* on the user's GitHub, so a bare "no account" sends them to verify something already
-  // correct, and they conclude the product is broken. Say what the provider told us, say that a
+  // genuinely *is* on the user's GitHub, so a bare "that didn't work" sends them to check something
+  // already correct, and they conclude the product is broken. Say what the provider told us, say that a
   // secondary is refused on purpose, then say the remedy.
-  "auth/sign_in.refused.title": "No account for this {provider}.",
+  //
+  // **Not one word about whether the account exists, and the words were chosen for that (#625).** The
+  // server sends one code for "you have an account and this provider is not attached to it" and for
+  // "you have none", so a screen that named either would put back the enumeration oracle the Worker was
+  // changed to close — this time in rendered copy, where it also gets read aloud. Every sentence below
+  // is true of both, and the remedy is the same either way, which is why it can be.
+  "auth/sign_in.refused.title": "{provider} didn't sign you in.",
   "auth/sign_in.refused.primary":
-    "{provider} gives us one address: the primary on your account. That one matches nothing here.",
+    "{provider} gives us one address: the primary on your account. That one did not get you in here.",
   "auth/sign_in.refused.secondary":
     "A secondary address will not do it. Sign-in never looks past the primary, deliberately.",
   "auth/sign_in.refused.remedy":
@@ -311,11 +321,16 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
  * Why a provider button did not take you anywhere.
  *
  * Three arms, and the third is unlike the other two: `unconfigured` and `silent` are learned from the
- * pre-redirect call, while `no_account` comes *back from the round trip* as `?error=` — the user has
- * been to the provider and returned. It renders three sentences rather than one line, because a refusal
+ * pre-redirect call, while `refused` comes *back from the round trip* as `?error=` — the user has been
+ * to the provider and returned. It renders three sentences rather than one line, because a refusal
  * whose remedy is "do a different thing first" cannot be said in a clause.
+ *
+ * **`refused` and not `no_account`, and the rename is the whole of #625 on this side.** The screen is
+ * not told whether the account exists, because the Worker deliberately no longer says — so a name that
+ * claimed it would be a claim this code cannot support, and the next person to write copy from the
+ * name would reopen the oracle in words.
  */
-type Refusal = { provider: string; reason: "unconfigured" | "silent" | "no_account" } | null;
+type Refusal = { provider: string; reason: "unconfigured" | "silent" | "refused" } | null;
 
 function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
   const key = refusal.reason === "unconfigured" ? "auth/sign_in.provider_unconfigured" : "auth/sign_in.provider_silent";
@@ -329,8 +344,10 @@ function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
  * file, not one: add it to the table and it gets a button, a refusal, and a sign-up promise that knows
  * about it. An id absent from the table renders no refusal at all.
  *
- * `signup_disabled` is its own code for "this provider may not create an account", which is what
- * `github: { allowSignUp: false }` asks it to answer.
+ * `provider_sign_in_refused` is the one code the capability sends for every refusal its own user table
+ * decided — whether the address has an account here and the provider is not attached to it, or whether
+ * it has none. The screen cannot tell them apart because there is nothing left to tell apart, which is
+ * the point of #625 rather than a limitation of this function.
  *
  * **Both halves come from the URL, and the provider half has to.** Better Auth does not put the provider
  * in the error redirect, so the screen has to carry it — and it cannot carry it in React state, because
@@ -339,13 +356,13 @@ function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
  * hands Better Auth, which appends `&error=` to whatever query is already there (callback.mjs:82).
  */
 function urlRefusal(error: string | null, providerId: string | null): Refusal {
-  if (error !== "signup_disabled") return null;
+  if (error !== NEUTRAL_PROVIDER_REFUSAL) return null;
   // Resolved through the table rather than rendered. `?provider=` is attacker-supplied — anyone can hand
-  // somebody a `/sign-in?provider=…&error=signup_disabled` link — and these four sentences are
-  // first-party product copy telling the reader what to do next. React escapes the markup; it does not
-  // stop the words. An id nobody offers resolves to nothing and the block does not render.
+  // somebody a `/sign-in?provider=…&error=…` link — and these four sentences are first-party product
+  // copy telling the reader what to do next. React escapes the markup; it does not stop the words. An id
+  // nobody offers resolves to nothing and the block does not render.
   const known = SOCIAL.find((candidate) => candidate.id === providerId);
-  return known ? { provider: known.label, reason: "no_account" } : null;
+  return known ? { provider: known.label, reason: "refused" } : null;
 }
 
 /**

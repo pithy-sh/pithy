@@ -257,6 +257,15 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   /** Audit seam — emits `auth/*` events. A no-op when the audit capability is absent. */
   emit: AuditEmit;
   /**
+   * This request's headers, threaded for the one seam that cannot reach them itself.
+   *
+   * `./providerSignInGate` decides a refused provider sign-in from inside `getUserInfo`, which Better
+   * Auth hands the OAuth tokens and nothing else — so the `ip` and `user-agent` every other denial row
+   * carries have to arrive from here. Optional, because `makeAuth` is also called where there is no
+   * request: the seeds, `../test-utils/liveApp.ts`, an adopter building an instance by hand.
+   */
+  requestHeaders?: Headers;
+  /**
    * Called when a session row is deleted — a sign-out, a revoke, an admin ending somebody's devices.
    *
    * **The seam exists because a session id is a key other capabilities hang state on**, and nothing

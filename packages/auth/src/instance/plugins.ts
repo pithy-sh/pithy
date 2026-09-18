@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { i18n } from "@better-auth/i18n";
+import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { BetterAuthPlugin } from "better-auth";
 import { bearer } from "better-auth/plugins/bearer";
@@ -12,18 +13,23 @@ import { z } from "zod";
 import { markMessageDelivery, SEND_FAULT } from "../audit/evidence";
 import { authErrorTranslations } from "../i18n/errorCopy";
 import type { AuthEmailMessage, SendAuthEmail } from "./auth";
+import { PROVIDER_SIGN_IN_GATE_ID, providerSignInGate } from "./providerSignInGate";
+import { refusalTransportVerdict } from "./refusalTransport";
 
 /**
- * The four Better Auth plugins the kit composes for itself, and the reason they are fixed.
+ * The Better Auth plugins the kit composes for itself, and the reason they are fixed.
  *
  * `magic-link` and `email-otp` **are** the sign-in this product promises — passwordless, no
  * `emailAndPassword` anywhere. `jwt` mints the JWKS the control-plane seam verifies against and
- * `bearer` is how a mobile client presents its credential. Every one of them is depended on by code
- * outside this package, so an adopter who removed or redefined one would break a contract they cannot
- * see from their config. The adopter's list is therefore **additive**: it extends this set, never
- * replaces a member of it.
+ * `bearer` is how a mobile client presents its credential. `i18n` puts the dependency's own refusals in
+ * the reader's language, and {@link PROVIDER_SIGN_IN_GATE_ID} is the kit's own: it decides a refused
+ * provider sign-in before Better Auth branches, so the account-enumeration pair is never produced
+ * (#625, `./providerSignInGate`). Every one of them is depended on by code outside this package, so an
+ * adopter who removed or redefined one would break a contract they cannot see from their config — and
+ * for the gate, redefining it *is* removing it. The adopter's list is therefore **additive**: it extends
+ * this set, never replaces a member of it.
  */
-export const KIT_PLUGIN_IDS = ["i18n", "bearer", "jwt", "magic-link", "email-otp"] as const;
+export const KIT_PLUGIN_IDS = ["i18n", "bearer", "jwt", "magic-link", "email-otp", PROVIDER_SIGN_IN_GATE_ID] as const;
 
 /** What the kit's own plugins need to be constructed. The subset of `AuthInstanceDeps` they read. */
 export interface KitPluginDeps {
@@ -48,10 +54,22 @@ export interface KitPluginDeps {
    * is what the plugin answers with anyway, so its absence is not a special case.
    */
   locale?: string | null;
+  /**
+   * Audit seam — where a refused provider sign-in records which refusal it really was (#625).
+   *
+   * Read by `./providerSignInGate` and by nothing else in this list. The browser gets one code for rows
+   * 3 and 4 alike, so the trail is the only place the distinction survives.
+   */
+  emit: AuditEmit;
+  /**
+   * This request's headers, for the `ip` and `user-agent` a refusal row carries. Absent where no request
+   * built the instance — the schema baseline, a seed, a unit test. See `./providerSignInGate`.
+   */
+  requestHeaders?: Headers;
 }
 
 /**
- * The kit's four, as a **tuple** rather than an array. Better Auth infers a composed instance's whole
+ * The kit's own, as a **tuple** rather than an array. Better Auth infers a composed instance's whole
  * `$Infer` surface from the element types of its `plugins` list, so widening this to
  * `BetterAuthPlugin[]` here would erase the adopter's plugin types one line later, where `makeAuth`
  * spreads the two lists together.
@@ -66,6 +84,10 @@ export type KitPlugins = [
   ReturnType<typeof jwt>,
   ReturnType<typeof magicLink>,
   ReturnType<typeof emailOTP>,
+  // Widened for the same reason the translator is: the gate contributes no endpoints, no schema and no
+  // `$Infer` surface — it only decorates provider objects the context already holds — so there is no
+  // adopter-visible type here to erase.
+  BetterAuthPlugin,
 ];
 
 /**
@@ -131,6 +153,14 @@ export function kitPlugins(deps: KitPluginDeps): KitPlugins {
         await sendAndRecord(deps, { to: email, template: "otp", code: otp }, ctx);
       },
     }),
+    /**
+     * The provider sign-in gate (#625). **Last in the list deliberately**, and it is not a preference:
+     * `runPluginInit` walks the plugins in order, so wrapping `getUserInfo` after every other kit plugin
+     * has had its `init` means the wrap sits outside anything one of them did to the same objects. The
+     * adopter's plugins come after this in `makeAuth`, which is the residue `./providerSignInGate`
+     * states rather than hides.
+     */
+    providerSignInGate({ emit: deps.emit, headers: deps.requestHeaders }),
   ];
 }
 
@@ -185,16 +215,27 @@ export const AuthPlugin = z
     message: "Expected a Better Auth plugin — an object with a non-empty string `id`.",
   })
   .describe(
-    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the set the kit composes, never in place of one.",
+    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the set the kit composes, never in place of one — and refused when it answers a social sign-in refusal through a response body, which the capability cannot collapse.",
   );
 
 /**
- * Refuse a plugin list that is not purely additive, naming the offending plugin.
+ * Refuse a plugin list the kit cannot compose, naming the offending plugin.
  *
- * Two ways it can fail, and both name a single id because that is what the adopter has to go delete:
- * a plugin whose id is one of {@link KIT_PLUGIN_IDS} would sit beside the kit's own copy (Better Auth
- * merges endpoints by id — the later registration silently wins, so this is a redefinition even when it
- * reads like an addition), and two plugins sharing an id do the same to each other.
+ * Three ways it can fail, and each names a single id because that is what the adopter has to go delete.
+ *
+ * **Additivity, which is what this function was originally only about.** A plugin whose id is one of
+ * {@link KIT_PLUGIN_IDS} would sit beside the kit's own copy (Better Auth merges endpoints by id — the
+ * later registration silently wins, so this is a redefinition even when it reads like an addition), and
+ * two plugins sharing an id do the same to each other.
+ *
+ * **And the transport a refusal leaves by (#625).** `../http/providerRefusal` collapses the
+ * account-enumeration oracle on the social callback by rewriting the `Location` header, which is the only
+ * transport it reads. A plugin that answers a refused callback through a **response body** instead —
+ * `oauthPopup()` is the shipped instance — restores the whole oracle with no malformed input anywhere,
+ * and no guard on the way in can see it coming. Such a plugin is refused here rather than composed and
+ * quietly left uncovered. `./refusalTransport` carries the verdict per plugin, the completeness gate over
+ * the dependency's own sources, and the argument for why that rule is a reviewed list rather than a
+ * property read off the object.
  *
  * **The `message` stays short on purpose.** `auth()` runs while `pithy.config.ts` is being imported, so
  * the CLI catches this through `classifyConfigLoadFailure`, which prints the cause's message and nothing
@@ -205,6 +246,14 @@ export function assertAdditivePlugins(plugins: readonly BetterAuthPlugin[]): voi
   const reserved: readonly string[] = KIT_PLUGIN_IDS;
   const seen = new Set<string>();
   for (const plugin of plugins) {
+    const verdict = refusalTransportVerdict(plugin.id);
+    if (verdict?.outsideLocation === true) {
+      throw new ValidationError({
+        message: `The auth capability cannot compose the Better Auth "${plugin.id}" plugin.`,
+        action: `Remove ${plugin.id}() from auth({ plugins: [...] }). It answers a refused social sign-in through a response body rather than the redirect the capability collapses, which would put back the enumeration oracle that tells a caller whether an account exists at an address a provider handed over.`,
+        detail: `plugin "${plugin.id}" answers callback refusals outside the Location header — ${verdict.why}`,
+      });
+    }
     if (reserved.includes(plugin.id)) {
       throw new ValidationError({
         message: `The auth capability already composes the Better Auth "${plugin.id}" plugin.`,

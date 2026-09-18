@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
+// The code a refused provider sign-in comes back with, read rather than restated — same reason as
+// `callbackPath` below (#393).
+import { NEUTRAL_PROVIDER_REFUSAL } from "@pithy-sh/auth/src/http/providerRefusal";
 import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { createTranslator } from "@pithy-sh/core/src/i18n/translator";
 // The kit's translations, read as the value `@pithy-sh/i18n` composes into its layers rather than as
@@ -255,13 +258,32 @@ describe("the humanity check", () => {
     // out to the provider and home again, so the component remounts with nothing: any provider name held
     // in React state is gone by the time `?error=` arrives, and the copy would silently never render.
     // Both halves therefore travel in the URL. No click precedes this — that is the whole point.
-    window.history.replaceState({}, "", "/sign-in?provider=github&error=signup_disabled");
+    window.history.replaceState({}, "", `/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`);
     try {
       const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
       const text = (container.querySelector(".auth__failed") as HTMLElement | null)?.textContent ?? "";
-      expect(text).toContain("No account for this GitHub.");
+      expect(text).toContain("GitHub didn't sign you in.");
       expect(text).toContain("A secondary address will not do it.");
       expect(text).toContain("connect GitHub from your profile");
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+  });
+
+  test("the copy never says whether the account exists, because the server no longer does", () => {
+    // **#625, on the render side.** One code arrives for "you have an account here and this provider is
+    // not attached to it" and for "you have none", so any sentence that picked one would put the
+    // enumeration oracle back in words after the Worker took it out of the header. There is nothing to
+    // diff two renders against — they are the same render — so the claim is held as a ban on the
+    // vocabulary that could only be written by somebody who thought the screen knew.
+    window.history.replaceState({}, "", `/sign-in?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`);
+    try {
+      const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
+      const text = ((container.querySelector(".auth__failed") as HTMLElement | null)?.textContent ?? "").toLowerCase();
+      expect(text).not.toBe("");
+      for (const claim of ["no account", "not registered", "already", "exists", "sign up first", "unknown address"]) {
+        expect(text, `the refusal copy says "${claim}"`).not.toContain(claim);
+      }
     } finally {
       window.history.replaceState({}, "", "/");
     }
@@ -271,7 +293,11 @@ describe("the humanity check", () => {
     // `?provider=` is attacker-supplied: anyone can hand somebody this link, and the block beneath is
     // four sentences of first-party copy ending in an instruction. Resolving through `SOCIAL` is what
     // keeps the words ours.
-    window.history.replaceState({}, "", "/sign-in?provider=Support%20-%20call%205550100&error=signup_disabled");
+    window.history.replaceState(
+      {},
+      "",
+      `/sign-in?provider=Support%20-%20call%205550100&error=${NEUTRAL_PROVIDER_REFUSAL}`,
+    );
     try {
       const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
       expect(container.querySelector(".auth__failed")).toBeNull();
@@ -519,10 +545,42 @@ describe("every language the kit ships", () => {
     es: /c[oó]digo/i,
   };
 
-  /** The screen rendered in `locale`, with that locale's catalog as its only layer. */
-  function inLocale(locale: string, auth: AuthProjection = ALL_PROVIDERS): HTMLElement {
+  /**
+   * The vocabulary a **refusal** may not use, in each language: anything that asserts whether an
+   * account exists at the address the provider handed over.
+   *
+   * **Per locale for the same reason `OTP_WORD` is, and it matters more here.** The English case some
+   * describes up bans "no account"; a Spanish screen saying `No hay ninguna cuenta para este GitHub.`
+   * shares not one matching character with it, and that is exactly what the Spanish catalog said until
+   * #625 — the Worker's header was neutral and the rendered page put the oracle straight back, in the
+   * language of whoever was reading. The header fix is worth nothing on a screen that narrates it.
+   *
+   * A locale with no entry fails the first case in this describe rather than being waved through.
+   */
+  const EXISTENCE_WORDS: Record<string, readonly RegExp[]> = {
+    // "there is no account", "you do not have an account", "already registered", "sign up first".
+    es: [
+      /no (hay|tienes|existe)[^.]{0,20}cuenta/i,
+      /ninguna cuenta/i,
+      /ya (tienes|est[aá]s|existe)/i,
+      /reg[ií]strate/i,
+    ],
+  };
+
+  /**
+   * The screen rendered in `locale`, with that locale's catalog as its only layer.
+   *
+   * `query` puts the screen into a state that only a URL can reach — the refusal that comes back from
+   * the provider round trip, which no click in this file can produce because the component remounts.
+   */
+  function inLocale(locale: string, auth: AuthProjection = ALL_PROVIDERS, query = ""): HTMLElement {
     const t: Translator = createTranslator({ catalogLocale: locale, layers: [KIT_CATALOGS[locale]] });
-    return mount(<SignInScreen auth={auth} t={t} fetch={recorder().fetch} origin="https://x" />);
+    if (query) window.history.replaceState({}, "", `/sign-in${query}`);
+    try {
+      return mount(<SignInScreen auth={auth} t={t} fetch={recorder().fetch} origin="https://x" />);
+    } finally {
+      if (query) window.history.replaceState({}, "", "/");
+    }
   }
 
   test("is a language this file knows the vocabulary of", () => {
@@ -530,6 +588,9 @@ describe("every language the kit ships", () => {
     // the second case below vacuous for that language, and vacuous is what passing looks like.
     expect(LOCALES.length, "the kit ships no translation at all").toBeGreaterThanOrEqual(1);
     expect(LOCALES.filter((locale) => OTP_WORD[locale] === undefined)).toEqual([]);
+    // Same forcing function for the refusal vocabulary. A locale nobody has screened cannot be shipped
+    // quietly: the cost of adding French is one line, and the cost of not adding it is a red build.
+    expect(LOCALES.filter((locale) => EXISTENCE_WORDS[locale] === undefined)).toEqual([]);
   });
 
   test("puts the visible word inside the accessible name — WCAG 2.5.3, in every language", () => {
@@ -561,6 +622,22 @@ describe("every language the kit ships", () => {
       // structure rather than words, so a translation cannot change the answer. It is repeated here so
       // that a locale-specific screen variant, if one ever lands, is held to it too.
       expect(all(container, "button[type=submit]"), locale).toHaveLength(1);
+      mounted?.unmount();
+      mounted = null;
+    }
+  });
+
+  test("never says whether the account exists, in the words of the language saying it", () => {
+    for (const locale of LOCALES) {
+      const container = inLocale(locale, AUTH, `?provider=github&error=${NEUTRAL_PROVIDER_REFUSAL}`);
+      const text = one(container, ".auth__failed").textContent ?? "";
+      // Rendered, and rendered in this language: an empty block or a fallthrough to English would
+      // satisfy every `not` below while proving nothing.
+      expect(text.length, locale).toBeGreaterThan(40);
+      expect(text, locale).not.toContain("No account for this");
+      for (const claim of EXISTENCE_WORDS[locale] as readonly RegExp[]) {
+        expect(claim.test(text), `${locale} refusal copy matches ${claim}: ${text}`).toBe(false);
+      }
       mounted?.unmount();
       mounted = null;
     }
