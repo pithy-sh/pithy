@@ -1,5 +1,13 @@
 # @pithy-sh/ledger
 
+## 0.2.5
+
+### Patch Changes
+
+- [#629](https://github.com/pithy-sh/pithy/pull/629) [`0af7119`](https://github.com/pithy-sh/pithy/commit/0af7119842e77db3cf3b45bb982660e502b86313) Thanks [@kingmesal](https://github.com/kingmesal)! - Every capability reports the package that supplies it, beside the version it already reported. `GET /control-plane/manifest` carried a version per capability and no package name, and a version is only actionable joined against a release feed keyed by package — so a client had to derive one from the capability's name. `@pithy-sh/<name>` is right for most capabilities and wrong for the one that matters: the seam is named `controlplane` and ships inside `@pithy-sh/core`, so the guess asked about a package that has never been published, the join came back empty, and empty is indistinguishable from *up to date* for the most frequently released package in the feed. Each capability now sets `package` from its own generated `PACKAGE_NAME`, stamped from its own `package.json` — never derived from `name` by the framework, because a capability name and a package name are different kinds of thing and one package may ship more than one capability. `package` and `version` are null together, which is the adopter's own `app` capability: a name, no package, no version. The field is optional on the wire, so a manifest produced by a Worker deployed before this parses whole and reads as null, and a client falls back to whatever it guessed before rather than losing every pane over one key. A repo-wide gate enumerates the capability packages from the source tree and fails when one declares a package that is not its own `package.json` name, or reads the constant from a sibling. That second half asks where the import lands — it resolves the specifier against the capability's own directory and requires the result to be that package's `src/version.generated` — rather than matching the spellings a well-behaved import has. Matching shape cannot hold this claim: `.` is an ordinary character in a directory name, so a `..` segment is indistinguishable from a descent, and `../../core/src/version.generated` satisfies every pattern written to exclude exactly it.
+- Updated dependencies [[`0af7119`](https://github.com/pithy-sh/pithy/commit/0af7119842e77db3cf3b45bb982660e502b86313)]:
+  - @pithy-sh/core@0.7.3
+
 ## 0.2.4
 
 ### Patch Changes

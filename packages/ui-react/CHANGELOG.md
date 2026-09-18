@@ -1,5 +1,25 @@
 # @pithy-sh/ui-react
 
+## 0.3.1
+
+### Patch Changes
+
+- [#631](https://github.com/pithy-sh/pithy/pull/631) [`6a12e7b`](https://github.com/pithy-sh/pithy/commit/6a12e7b761f29f4a8113eebfdc062b1dbb8e8a6b) Thanks [@kingmesal](https://github.com/kingmesal)! - A refused social sign-in is now decided before Better Auth branches, so the two codes that told an attacker whether an account existed are never produced at all.
+  
+  Security: a refused social sign-in answered with a different code depending on whether an account existed at the address the provider asserted — `account_not_linked` only when a user row matched, `signup_disabled` only when none did — so pressing a provider button and reading the `Location` header enumerated accounts with no page load, needing one GitHub account and none on the target. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
+  
+  `account_not_linked` was returned only when a user row matched the provider-resolved address and `signup_disabled` only when none did. GitHub will assert any address its holder has typed in, verified or not, so the question could be asked about anybody. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
+  
+  **The refusal is now decided before Better Auth branches, so neither code is produced at all.** A kit plugin decorates `getUserInfo` on each provider object Better Auth has already built — wrapping it, never replacing it — and between that call and `handleOAuthUserInfo` there is nothing else. An identity already attached to an account signs in; an identity whose provider-**verified** address matches an account is linked and signed in; anything else is one refusal, the same one every time.
+  
+  Wrapping rather than replacing is what keeps it honest. Each provider's own resolver still runs, so no profile fetch is reimplemented — and `mapProfileToUser` is applied inside it, so the wrapper reads the effective verified flag by construction. Facebook, whose address is asserted verified for a documented reason and whose OAuth payload carries no `email_verified` claim at all, needs no special case.
+  
+  **Who gets in does not change.** Somebody who signed up with a magic link, presses Google — or GitHub, or Apple, or Facebook — and whose provider-verified address matches their account is linked and signed in on the first attempt, exactly as before. That is asserted per provider, driven end to end, with `allowSignUp` either way.
+  
+  The reason for a refusal survives server-side: it reaches `pithy_audit_events` as its own outcome with the true cause, which no 302 ever carried, because a 302 is also what a completed sign-in answers with.
+  
+  Also hardened on the way in: `errorCallbackURL` is normalized before Better Auth stores it — fragments, pre-existing `error` parameters and shapes that cannot be reasoned about are refused at the door — across both the body and the query, with one decoder mirroring `better-call`'s own and a gate that executes the real dependency rather than a model of it. A Better Auth plugin that surfaces callback refusals through a transport the capability cannot reach is refused at composition rather than silently uncovered.
+
 ## 0.3.0
 
 ### Minor Changes

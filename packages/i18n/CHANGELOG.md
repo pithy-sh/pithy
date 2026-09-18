@@ -1,5 +1,29 @@
 # @pithy-sh/i18n
 
+## 0.7.3
+
+### Patch Changes
+
+- [#629](https://github.com/pithy-sh/pithy/pull/629) [`0af7119`](https://github.com/pithy-sh/pithy/commit/0af7119842e77db3cf3b45bb982660e502b86313) Thanks [@kingmesal](https://github.com/kingmesal)! - Every capability reports the package that supplies it, beside the version it already reported. `GET /control-plane/manifest` carried a version per capability and no package name, and a version is only actionable joined against a release feed keyed by package — so a client had to derive one from the capability's name. `@pithy-sh/<name>` is right for most capabilities and wrong for the one that matters: the seam is named `controlplane` and ships inside `@pithy-sh/core`, so the guess asked about a package that has never been published, the join came back empty, and empty is indistinguishable from *up to date* for the most frequently released package in the feed. Each capability now sets `package` from its own generated `PACKAGE_NAME`, stamped from its own `package.json` — never derived from `name` by the framework, because a capability name and a package name are different kinds of thing and one package may ship more than one capability. `package` and `version` are null together, which is the adopter's own `app` capability: a name, no package, no version. The field is optional on the wire, so a manifest produced by a Worker deployed before this parses whole and reads as null, and a client falls back to whatever it guessed before rather than losing every pane over one key. A repo-wide gate enumerates the capability packages from the source tree and fails when one declares a package that is not its own `package.json` name, or reads the constant from a sibling. That second half asks where the import lands — it resolves the specifier against the capability's own directory and requires the result to be that package's `src/version.generated` — rather than matching the spellings a well-behaved import has. Matching shape cannot hold this claim: `.` is an ordinary character in a directory name, so a `..` segment is indistinguishable from a descent, and `../../core/src/version.generated` satisfies every pattern written to exclude exactly it.
+
+- [#631](https://github.com/pithy-sh/pithy/pull/631) [`6a12e7b`](https://github.com/pithy-sh/pithy/commit/6a12e7b761f29f4a8113eebfdc062b1dbb8e8a6b) Thanks [@kingmesal](https://github.com/kingmesal)! - A refused social sign-in is now decided before Better Auth branches, so the two codes that told an attacker whether an account existed are never produced at all.
+  
+  Security: a refused social sign-in answered with a different code depending on whether an account existed at the address the provider asserted — `account_not_linked` only when a user row matched, `signup_disabled` only when none did — so pressing a provider button and reading the `Location` header enumerated accounts with no page load, needing one GitHub account and none on the target. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
+  
+  `account_not_linked` was returned only when a user row matched the provider-resolved address and `signup_disabled` only when none did. GitHub will assert any address its holder has typed in, verified or not, so the question could be asked about anybody. It worked against `allowSignUp: false`, the configuration the kit's own guidance recommends, so the projects that followed the advice were the exposed ones.
+  
+  **The refusal is now decided before Better Auth branches, so neither code is produced at all.** A kit plugin decorates `getUserInfo` on each provider object Better Auth has already built — wrapping it, never replacing it — and between that call and `handleOAuthUserInfo` there is nothing else. An identity already attached to an account signs in; an identity whose provider-**verified** address matches an account is linked and signed in; anything else is one refusal, the same one every time.
+  
+  Wrapping rather than replacing is what keeps it honest. Each provider's own resolver still runs, so no profile fetch is reimplemented — and `mapProfileToUser` is applied inside it, so the wrapper reads the effective verified flag by construction. Facebook, whose address is asserted verified for a documented reason and whose OAuth payload carries no `email_verified` claim at all, needs no special case.
+  
+  **Who gets in does not change.** Somebody who signed up with a magic link, presses Google — or GitHub, or Apple, or Facebook — and whose provider-verified address matches their account is linked and signed in on the first attempt, exactly as before. That is asserted per provider, driven end to end, with `allowSignUp` either way.
+  
+  The reason for a refusal survives server-side: it reaches `pithy_audit_events` as its own outcome with the true cause, which no 302 ever carried, because a 302 is also what a completed sign-in answers with.
+  
+  Also hardened on the way in: `errorCallbackURL` is normalized before Better Auth stores it — fragments, pre-existing `error` parameters and shapes that cannot be reasoned about are refused at the door — across both the body and the query, with one decoder mirroring `better-call`'s own and a gate that executes the real dependency rather than a model of it. A Better Auth plugin that surfaces callback refusals through a transport the capability cannot reach is refused at composition rather than silently uncovered.
+- Updated dependencies [[`0af7119`](https://github.com/pithy-sh/pithy/commit/0af7119842e77db3cf3b45bb982660e502b86313)]:
+  - @pithy-sh/core@0.7.3
+
 ## 0.7.2
 
 ### Patch Changes
