@@ -20,7 +20,7 @@ import type { AuthDatabase } from "../data/tables";
  * which is never the `after` hook that writes the row.
  *
  * None of these markers is request state Better Auth offers, so each is held weakly, keyed by an object
- * the runtime already scopes correctly: the account row instance for a removal, and the endpoint's own
+ * the runtime already scopes correctly: the row instance for a removal, and the endpoint's own
  * per-dispatch context object for a session and for a queued message (`dispatchAuthEndpoint` builds a
  * fresh `context` per call, and hands the same object to database hooks, send callbacks and the `after`
  * hook alike). Weakly, so nothing here outlives the request that made it.
@@ -121,33 +121,57 @@ export function messageDeliveryDuring(requestContext: unknown): AuthEmailDeliver
 }
 
 /**
- * **Exactly one `auth/oauth_unlinked` per removal, decided by the database rather than by a snapshot.**
+ * **`delete.after` fires on a row that was read, not on a row that was removed — and that is a fact
+ * about the primitive, not about any one table.**
  *
- * Better Auth's `deleteWithHooks` reads the row, deletes it, then runs `delete.after` — and it gates
- * that hook on *the row it read* being non-null, never on the delete having removed anything. Two
- * concurrent `/unlink-account` calls for the same account therefore both find the row, both issue a
- * delete (the second removing nothing), and both fire `delete.after`: one removal, two rows in a trail
- * somebody will one day reconcile against.
+ * Better Auth's `deleteWithHooks` reads the row, runs `delete.before`, issues the delete, then runs
+ * `delete.after` gated on *the row it read* being non-null. Nothing anywhere asks whether the delete
+ * removed anything. So N callers racing for one row all find it, all issue a delete, exactly one of
+ * those removes anything, and all N reach `delete.after` believing they did it. `deleteManyWithHooks`
+ * has the same shape per entity. (`consumeOneWithHooks`, added for verification rows, gates its after
+ * hooks on the consume — so upstream knows the shape; it has simply not been applied to the other two.)
  *
- * The only single-winner fact available is the row's existence, so the claim *is* a delete. `delete.before`
- * issues it; SQLite serializes the two statements, so exactly one reports a removed row and only that
- * caller emits. Better Auth's own delete then runs and removes nothing, which it neither checks nor
- * reports — `deleteAccount` and the user-deletion cascade both discard the count — so its control flow is
- * untouched.
+ * **Two producers of that one defect have now been driven to failure**, which is why the guard below is
+ * a primitive rather than a branch in either of them. Concurrent unlinks emitted `auth/oauth_unlinked`
+ * twice for one removal. Concurrent sign-outs then did it again on a different table: `/sign-out` reaches
+ * `internalAdapter.deleteSession(token)`, every caller fires `session.delete.after`, `markSessionEnded`
+ * runs for each, and `emitAfterRequest` wrote `auth/signout outcome=success` for requests that signed
+ * nobody out. A third `delete.after` wired the obvious way would be the third producer.
  *
- * **Why pre-empting the delete is safe here, stated so a later reader can re-check it rather than trust
- * it.** Plugin database hooks are registered before the instance's own (`runPluginInit` pushes
- * `plugin:<id>` entries, then `source: "user"` last), and a `delete.before` returning `false` aborts
- * immediately — so any veto has already fired and returned before this runs. The one case it would not
- * cover is `deleteManyWithHooks`, which walks entity-major: a veto on the *third* account of a cascade
- * would leave the first two already removed. Better Auth registers no `account.delete.before`, and the
- * kit composes no plugin that does; an adopter's plugin that vetoes an account delete is the case to
- * revisit this for.
+ * **The only single-winner fact available is the row's existence, so the claim *is* a delete.**
+ * `delete.before` issues it; SQLite serializes the statements, so exactly one reports a removed row and
+ * only that caller's `after` body runs. Better Auth's own delete then removes nothing, which it neither
+ * checks nor reports — `deleteAccount`, `deleteSession` and the user-deletion cascade all discard the
+ * count — so its control flow is untouched. It is the same gate `../token/rotation.ts`'s `consumeSession`
+ * already uses for concurrent rotations, which is the other place this package had to decide who won.
  *
- * The claim is carried to `delete.after` in a `WeakSet` keyed by the row object Better Auth passes to
- * both hooks — the same object instance, held weakly, so nothing here outlives the request.
+ * **Two preconditions, stated so a later reader can re-check them rather than trust them.**
+ *
+ * 1. *No `delete.before` veto runs after this one.* Plugin database hooks are registered before the
+ *    instance's own (`runPluginInit` pushes `plugin:<id>` entries, then `source: "user"` last) and a
+ *    `delete.before` returning `false` aborts immediately, so any veto has already fired and returned.
+ *    The case it would not cover is `deleteManyWithHooks`, which runs every row's `before` first: a veto
+ *    on the third row of a cascade would leave the first two already removed. Better Auth registers no
+ *    `account` or `session` `delete.before`, and the kit composes no plugin that does.
+ * 2. *The delete this pre-empts is a real delete.* `deleteWithHooks` and `deleteManyWithHooks` accept a
+ *    `customDeleteFn` with `executeMainFn: false`, and Better Auth uses one for `endPreservedSessions` —
+ *    which does not delete at all, it expires the row in place. `consumeOneWithHooks` is the same hazard
+ *    in its other form: claiming there would delete the verification row before the consume could read
+ *    it. Neither is reachable in this composition — `makeAuth` sets no `preserveSessionInDatabase` and
+ *    wires no verification delete hook — and {@link ClaimableTable} is the list of models for which this
+ *    has been checked. **One adopter-reachable way to break it, named rather than left implied:** a
+ *    plugin's `init` may return options, `runPluginInit` merges them with `defu` under the instance's
+ *    own, and the instance sets nothing for `preserveSessionInDatabase` — so a plugin that turns it on
+ *    would have session rows removed here that Better Auth meant to expire in place. Both remain the
+ *    dependency's to fix; see `surveyDeleteHooks` for what the kit holds from its own side.
  */
-const claimedRemovals = new WeakSet<object>();
+
+/**
+ * The models a removal may be claimed on: reached only through a plain `deleteWithHooks` /
+ * `deleteManyWithHooks`, keyed by a string `id`, and with no `customDeleteFn` in any path that reaches
+ * them. Precondition 2 above is checked per entry, so adding one is a decision rather than a spelling.
+ */
+export type ClaimableTable = "pithyAuthAccounts" | "pithyAuthSessions";
 
 /** Kysely reports a delete's row count as a bigint; anything else means the dialect told us nothing. */
 function removedARow(numDeletedRows: unknown): boolean {
@@ -157,26 +181,117 @@ function removedARow(numDeletedRows: unknown): boolean {
 }
 
 /**
- * Claim the removal of one account row, before Better Auth deletes it.
+ * Remove one row ahead of Better Auth and report whether this caller is the one that removed it.
  *
- * **A failed claim claims anyway.** If the delete throws — the binding is gone, the table is locked —
- * the caller still saw a row and a removal is still happening, so falling silent would turn a database
- * fault into a missing audit event. A trail that occasionally double-counts a removal costs somebody an
- * afternoon; one that silently drops removals costs the trail its purpose.
+ * **A failed claim claims anyway.** If the delete throws — the binding is gone, the table is locked — the
+ * caller still saw a row and a removal is still happening, so falling silent would turn a database fault
+ * into a missing event. A trail that occasionally double-counts a removal costs somebody an afternoon;
+ * one that silently drops removals costs the trail its purpose.
  */
-export async function claimAccountRemoval(db: AuthDatabase, account: unknown): Promise<void> {
-  if (typeof account !== "object" || account === null) return;
-  const id = (account as { id?: unknown }).id;
-  if (typeof id !== "string" && typeof id !== "number") return;
+async function claimRemoval(db: AuthDatabase, table: ClaimableTable, row: object): Promise<boolean> {
+  const id = (row as { id?: unknown }).id;
+  if (typeof id !== "string" && typeof id !== "number") return false;
   try {
-    const result = await db.deleteFrom("pithyAuthAccounts").where("id", "=", String(id)).executeTakeFirst();
-    if (removedARow(result?.numDeletedRows)) claimedRemovals.add(account);
+    const result = await db.deleteFrom(table).where("id", "=", String(id)).executeTakeFirst();
+    return removedARow(result?.numDeletedRows);
   } catch {
-    claimedRemovals.add(account);
+    return true;
   }
 }
 
-/** Whether this row's removal was claimed here — i.e. whether this caller is the one that removed it. */
-export function removalWasClaimed(account: unknown): boolean {
-  return typeof account === "object" && account !== null && claimedRemovals.has(account);
+/**
+ * The brand `claimedDelete` stamps on the `after` it produces, and the whole of what
+ * {@link surveyDeleteHooks} reads.
+ *
+ * A private symbol rather than a property name, so nothing can satisfy the gate by declaring a flag: the
+ * only way to carry it is to have come out of the function below.
+ */
+const CLAIMS_ITS_REMOVALS = Symbol("pithy.auth.claimsItsRemovals");
+
+/** One model's delete hooks: the claim, and the handler only the caller that removed the row reaches. */
+export interface ClaimedDelete<Row, Ctx> {
+  /** Claims the removal by issuing the delete. Registered as `delete.before`. */
+  before: (row: Row, ctx: Ctx) => Promise<void>;
+  /** The supplied handler, gated on this caller having won the claim. Registered as `delete.after`. */
+  after: (row: Row, ctx: Ctx) => Promise<void>;
+}
+
+/**
+ * **Build a `delete` hook pair whose `after` runs once per removal rather than once per caller.**
+ *
+ * This is the shape every `delete.after` in this kit is wired through — session, account, and whatever
+ * is added next — because the hole is in `deleteWithHooks` and therefore under all of them equally.
+ * Handing back the pair rather than two loose functions is what makes the protection hard to omit: there
+ * is no `after` to register without a `before` beside it, and the `after` carries a brand
+ * {@link surveyDeleteHooks} can see, so a third model wired the obvious way fails a test rather than
+ * quietly becoming the third producer.
+ *
+ * The claim is carried between the two hooks in a `WeakSet` keyed by the row object Better Auth passes to
+ * both — the same instance, held weakly, so nothing here outlives the request — and the set is private to
+ * one pair, so two models cannot read each other's claims.
+ *
+ * **What the gated handler must therefore be: a claim about a removal, wanting exactly-once.** An audit
+ * event is one. So is `onSessionRevoked`, which tells whoever keyed state on a session that it has gone:
+ * at-least-once still holds under the gate, because the only way a claim loses is that another caller won
+ * it, and that caller runs the handler.
+ */
+export function claimedDelete<Row extends object, Ctx>(spec: {
+  /** The Kysely the claim is issued through — the instance's own. */
+  db: AuthDatabase;
+  /** Which table the row belongs to. See {@link ClaimableTable} for what qualifies. */
+  table: ClaimableTable;
+  /** What to do for a removal this caller actually made. */
+  after: (row: Row, ctx: Ctx) => Promise<void>;
+}): ClaimedDelete<Row, Ctx> {
+  const won = new WeakSet<object>();
+  const after = async (row: Row, ctx: Ctx): Promise<void> => {
+    if (!won.has(row)) return;
+    await spec.after(row, ctx);
+  };
+  Object.defineProperty(after, CLAIMS_ITS_REMOVALS, { value: true });
+  return {
+    before: async (row: Row): Promise<void> => {
+      if (await claimRemoval(spec.db, spec.table, row)) won.add(row);
+    },
+    after,
+  };
+}
+
+/** What one walk of a `databaseHooks` object found. Both halves matter — see {@link surveyDeleteHooks}. */
+export interface DeleteHookSurvey {
+  /** Every model wiring a `delete.after`, protected or not. Empty means there was nothing to check. */
+  wired: string[];
+  /** Those whose `delete.after` did not come from {@link claimedDelete}. The invariant is that it is empty. */
+  unclaimed: string[];
+}
+
+/**
+ * **Walk a `databaseHooks` object and report every `delete.after` that is not claimed.**
+ *
+ * The rule this enforces is about the primitive, not about the models that happen to be wired today: it
+ * reads whatever keys are there, so a model added tomorrow is covered the day it lands, and nothing here
+ * mentions `session` or `account`. A `delete.after` passes only by being the function `claimedDelete`
+ * produced — a `before` beside it is necessary and nowhere near sufficient, since a `before` that does
+ * something else entirely would satisfy a shape check.
+ *
+ * `wired` is reported alongside so a caller can assert there was something to check. A gate whose subject
+ * has gone missing — a renamed option, a hooks object built somewhere else — would otherwise pass by
+ * finding nothing, which is the failure mode a gate exists to not have.
+ */
+export function surveyDeleteHooks(databaseHooks: unknown): DeleteHookSurvey {
+  const survey: DeleteHookSurvey = { wired: [], unclaimed: [] };
+  if (typeof databaseHooks !== "object" || databaseHooks === null) return survey;
+  for (const [model, hooks] of Object.entries(databaseHooks as Record<string, unknown>)) {
+    if (typeof hooks !== "object" || hooks === null) continue;
+    const remove = (hooks as { delete?: unknown }).delete;
+    if (typeof remove !== "object" || remove === null) continue;
+    const { after, before } = remove as { after?: unknown; before?: unknown };
+    if (typeof after !== "function") continue;
+    survey.wired.push(model);
+    const branded = (after as { [CLAIMS_ITS_REMOVALS]?: unknown })[CLAIMS_ITS_REMOVALS] === true;
+    if (typeof before !== "function" || !branded) survey.unclaimed.push(model);
+  }
+  survey.wired.sort();
+  survey.unclaimed.sort();
+  return survey;
 }

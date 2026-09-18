@@ -5,6 +5,7 @@ import { env } from "cloudflare:test";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { beforeEach, describe, expect, test } from "vitest";
+import { surveyDeleteHooks } from "../audit/evidence";
 import { authDatabase } from "../data/tables";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
@@ -368,5 +369,38 @@ describe("onSessionRevoked", () => {
     const token = await signedIn(auth, mailbox, "unwired@example.test");
     const out = await auth.api.signOut({ headers: new Headers({ authorization: `Bearer ${token}` }) });
     expect(out.success).toBe(true);
+  });
+});
+
+/**
+ * **The structural half of #627: a `delete.after` that is not claimed cannot be wired unnoticed.**
+ *
+ * Better Auth's `deleteWithHooks` runs `delete.after` on the row it *read*, never on the delete having
+ * removed anything, so every caller racing for one row reaches the hook believing it did the work. Two
+ * hooks have now produced that defect — the account trail double-counting an unlink, and `/sign-out`
+ * writing a success for callers that signed nobody out — which is why the fix is a primitive and why
+ * this asserts a property of *whatever is wired* rather than of those two.
+ *
+ * `surveyDeleteHooks` names nothing: it walks the keys that are there, so a third model added tomorrow
+ * is covered the day it lands. `wired` is asserted non-empty in the same breath, because a gate whose
+ * subject has gone missing — a renamed option, hooks assembled somewhere else — would otherwise pass by
+ * finding nothing to check. What it can see is the brand `claimedDelete` stamps; what it cannot see is
+ * whether the body underneath is right, which is `../audit/emit.workers.test.ts`'s half.
+ *
+ * **Its reach is the hooks `makeAuth` declares, and stops there.** An adopter's plugin registers its own
+ * database hooks separately — `runPluginInit` pushes `plugin:<id>` entries beside the instance's — and
+ * they never reach `options.databaseHooks`. A plugin wiring an unclaimed `delete.after` has the same
+ * defect and this says nothing about it, which is the dependency's hole showing through rather than a
+ * corner this could cover.
+ *
+ * That the checker can fail at all is proven against a synthetic hooks object in
+ * `../audit/evidence.test.ts`, not from the instance it is pointed at here.
+ */
+describe("every delete.after the instance wires claims its removals", () => {
+  test("the composed instance wires no unclaimed delete.after", () => {
+    const survey = surveyDeleteHooks(instanceWithMailbox().auth.options.databaseHooks);
+
+    expect(survey.unclaimed).toEqual([]);
+    expect(survey.wired.length).toBeGreaterThan(0);
   });
 });

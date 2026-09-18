@@ -7,10 +7,9 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderAccountChanged, emitProviderUnavailable } from "../audit/emit";
 import {
   type AuthEmailDelivery,
-  claimAccountRemoval,
+  claimedDelete,
   markSessionEnded,
   messageDeliveryDuring,
-  removalWasClaimed,
   sessionEndedDuring,
 } from "../audit/evidence";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
@@ -388,26 +387,24 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
             });
           },
         },
-        delete: {
-          /**
-           * **The claim, not the emit.** `deleteWithHooks` fires `delete.after` on the row it read
-           * rather than on a row it removed, so two concurrent unlinks of the same account both reach
-           * `after` and the trail double-counts one removal. `claimAccountRemoval` issues the delete
-           * itself and only the caller whose statement removed the row goes on to emit — see
-           * `../audit/evidence.ts` for why pre-empting Better Auth's delete is safe at this position.
-           */
-          before: async (account) => {
-            await claimAccountRemoval(deps.db, account);
-          },
+        /**
+         * **Through `claimedDelete`, because `delete.after` fires on the row that was read.** Two
+         * concurrent unlinks of one account both reach `after` and the trail double-counts one removal.
+         * The pair below issues the delete in `before` and runs this body only for the caller whose
+         * statement removed the row — see `../audit/evidence.ts` for the primitive, its two
+         * preconditions, and why every `delete.after` here goes through it rather than two of them.
+         */
+        delete: claimedDelete<{ id: unknown }, HookContext | null | undefined>({
+          db: deps.db,
+          table: "pithyAuthAccounts",
           after: async (account, ctx) => {
-            if (!removalWasClaimed(account)) return;
             await emitProviderAccountChanged(deps.emit, {
               change: "unlink",
               account,
               ...callerOf(ctx),
             });
           },
-        },
+        }),
       },
       session: {
         create: {
@@ -450,23 +447,32 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
             return { data: { ...session, deviceId: meta.id, authenticatedAt } };
           },
         },
-        delete: {
-          /**
-           * Tell whoever keyed state on this session that it has gone.
-           *
-           * A sign-out, a revoke, an admin ending somebody's devices — all of them land here, which is
-           * why the seam is on the row rather than on the sign-out endpoint. A handler wired to one
-           * endpoint would miss the other three, and the row is what the state was keyed by.
-           *
-           * **After, not before.** The session is already gone when this runs, so a slow or failing
-           * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
-           * reason the audit emit does: the thing it reports has already happened.
-           */
+        /**
+         * Tell whoever keyed state on this session that it has gone, and record that it did.
+         *
+         * A sign-out, a revoke, an admin ending somebody's devices — all of them land here, which is
+         * why the seam is on the row rather than on the sign-out endpoint. A handler wired to one
+         * endpoint would miss the other three, and the row is what the state was keyed by.
+         *
+         * **After, not before.** The session is already gone when this runs, so a slow or failing
+         * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
+         * reason the audit emit does: the thing it reports has already happened.
+         *
+         * **Through `claimedDelete`, and that is the second half of #627's last hole.** `/sign-out`
+         * reaches `internalAdapter.deleteSession(token)`, so concurrent sign-outs on one cookie all find
+         * the row, all issue a delete, exactly one removes anything — and all of them reached this body.
+         * `markSessionEnded` ran for each, and `emitAfterRequest` wrote `auth/signout outcome=success`
+         * for callers that signed nobody out. The same primitive the account hooks use covers it,
+         * because the defect is `deleteWithHooks`'s rather than either table's.
+         */
+        delete: claimedDelete<{ id: unknown; userId: unknown }, HookContext | null | undefined>({
+          db: deps.db,
+          table: "pithyAuthSessions",
           after: async (session, ctx) => {
             // **The evidence `/sign-out` has none of.** That endpoint answers 200 whether or not it
             // found a session to delete, so the path alone cannot say whether anybody was signed out.
             // A session row disappearing can, and this is where that is visible (#627).
-            markSessionEnded((ctx as { context?: unknown } | null | undefined)?.context, session.userId);
+            markSessionEnded(ctx?.context, session.userId);
             if (!deps.onSessionRevoked) return;
             try {
               await deps.onSessionRevoked({ id: String(session.id), userId: String(session.userId) });
@@ -474,7 +480,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               // Swallowed by contract. The sign-out succeeded; a listener's failure is not the caller's.
             }
           },
-        },
+        }),
       },
     },
     hooks: {

@@ -783,6 +783,70 @@ describe("a refused request is never recorded as a success", () => {
 });
 
 /**
+ * **`delete.after` fires on a row that was read, not on a row that was removed.**
+ *
+ * One defect in Better Auth's `deleteWithHooks`, and by now two producers of it: concurrent unlinks
+ * double-counted one removal, and concurrent sign-outs write a success for requests that signed nobody
+ * out. Both cases below drive the *same* race against the *two* tables the kit hangs a `delete.after` on,
+ * because the hole is the primitive rather than either path. The structural half — that a third
+ * `delete.after` cannot be wired without the protection — is in `../instance/auth.workers.test.ts`, where
+ * the composed instance can be walked.
+ */
+describe("a delete.after is not evidence that this caller removed anything", () => {
+  test("two concurrent sign-outs on one cookie record one signout", async () => {
+    // `/sign-out` reaches `internalAdapter.deleteSession(token)` -> `deleteWithHooks`, so both callers
+    // find the row, both issue a delete, exactly one removes anything — and both fired
+    // `session.delete.after`. `emitAfterRequest` then wrote `auth/signout outcome=success` for the caller
+    // that signed nobody out.
+    //
+    // **Driven at the endpoint, on one instance, with a cookie signed by the HTTP sign-in above.** The
+    // race is Better Auth's `deleteWithHooks`, and reaching it needs two dispatches genuinely in flight
+    // at once — which the layers above happen to prevent in this harness rather than by design. Two
+    // `app.request` calls do not overlap: the capability builds an instance per request
+    // (`getAuthInstance` caches on the Hono `Context`) and building one does enough I/O that the first
+    // sign-out has finished before the second reads. Two `auth.handler` calls do not either. Both would
+    // have recorded a green suite over a live defect, so the drive is `auth.api.signOut` — Better Auth's
+    // own server-side surface for this endpoint, through the same `dispatchAuthEndpoint`, the same
+    // `after` hook and the same database hooks the route reaches.
+    const { emit, events } = capturingEmit();
+    const { cookie, userId } = await signInForCookie(emit);
+    events.length = 0;
+
+    const { auth } = instance(emit);
+    const headers = new Headers({ origin: "http://localhost", cookie });
+    const responses = await Promise.all([auth.api.signOut({ headers }), auth.api.signOut({ headers })]);
+
+    // The wire does not move: both callers are told the cookie is dead, which it is.
+    expect(responses.map((r) => r.success)).toEqual([true, true]);
+    const after = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
+    expect(after?.n).toBe(0);
+    const signout = events.filter((e) => e.action === "auth/signout");
+    expect(signout).toHaveLength(1);
+    expect(signout[0]).toMatchObject({ outcome: "success", actorId: userId });
+  });
+
+  test("two concurrent unlinks of one account still record one unlink", async () => {
+    // The producer that was reported two rounds ago and left. It is re-driven here rather than left
+    // where it was, so the two live beside each other: one primitive, one guarantee, two tables.
+    const { emit, events } = capturingEmit();
+    const { userId } = await signIn(emit);
+    const account = await createAccountRow(emit, {
+      userId,
+      providerId: "google",
+      accountId: "google-sub-race",
+      issuer: "https://accounts.google.com",
+    });
+    events.length = 0;
+
+    const ctx = await instance(emit).auth.$context;
+    await Promise.all([ctx.internalAdapter.deleteAccount(account.id), ctx.internalAdapter.deleteAccount(account.id)]);
+
+    expect(await accountRows()).toHaveLength(0);
+    expect(events.filter((e) => e.action === "auth/oauth_unlinked")).toHaveLength(1);
+  });
+});
+
+/**
  * **A non-2xx is sufficient evidence of a refusal and is nowhere near necessary.**
  *
  * `/email-otp/send-verification-otp` declines to send and answers `200 {"success":true}` — deliberately,
