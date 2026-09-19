@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/payments",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,7 +43,7 @@
   },
   "peerDependencies": {
     "@pithy-sh/core": "^0.7.4",
-    "@pithy-sh/ledger": "^0.2.5",
+    "@pithy-sh/ledger": "^0.2.6",
     "@pithy-sh/secrets": "^0.2.7",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
