@@ -40,14 +40,18 @@ function refusal(options: MatchmakingOptions, siblings: Capability[]): PithyErro
 describe("rating, for a game that buckets its queue by skill", () => {
   test("a skill-pooled game with no rating in this Worker is refused, naming the game, its pool and the fix", () => {
     const said = refusal({ games: [RANKED] }, [AUTH]);
-    expect(said?.message).toBe("A game buckets its queue by skill, and no rating is composed in this Worker.");
-    expect(said?.action).toContain("Add `rating(...)` to this Worker's capabilities");
+    expect(said?.message).toBe(
+      'No rating is composed in this Worker, and game "ranked" buckets its queue by skill through it.',
+    );
+    expect(said?.action).toBe(
+      'Compose `rating(...)` in this Worker, or turn skill matching off by removing `skillPool` from game "ranked".',
+    );
     expect(said?.detail).toContain('ranked (pool "elo")');
   });
 
   test("a rating too old to carry its surface is refused", () => {
     expect(refusal({ games: [RANKED] }, [AUTH, OLD_RATING])?.message).toBe(
-      "Matchmaking buckets a queue by skill through @pithy-sh/rating, and the composed one is too old to be reached.",
+      "The composed rating is too old for matchmaking to bucket a queue by skill.",
     );
   });
 
@@ -63,9 +67,7 @@ describe("rating, for a game that buckets its queue by skill", () => {
 describe("auth, for an invite resolved by address", () => {
   test("an auth too old to carry its surface is refused rather than answering 404 for a user who exists", () => {
     const said = refusal({ games: [DUEL] }, [OLD_AUTH]);
-    expect(said?.message).toBe(
-      "Matchmaking resolves an invite by address through @pithy-sh/auth, and the composed one is too old to be reached.",
-    );
+    expect(said?.message).toBe("The composed auth is too old for matchmaking to resolve an invite by address.");
     expect(said?.action).toBe("Upgrade @pithy-sh/auth to the version this @pithy-sh/matchmaking peers.");
   });
 

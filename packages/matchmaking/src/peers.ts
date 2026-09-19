@@ -45,7 +45,7 @@ function surface<T>(
   const value = (found as unknown as Record<string, Record<string, unknown> | undefined>)[peer.key];
   if (typeof value?.[peer.probe] !== "function") {
     throw new ValidationError({
-      message: `Matchmaking ${peer.wants} through ${peer.pkg}, and the composed one is too old to be reached.`,
+      message: `The composed ${peer.name} is too old for matchmaking to ${peer.wants}.`,
       action: `Upgrade ${peer.pkg} to the version this @pithy-sh/matchmaking peers.`,
       detail: `The composed ${peer.name} capability carries no \`${peer.key}\`. It was released before optional peers arrived through the composition (#645).`,
     });
@@ -61,7 +61,7 @@ export function matchmakingPeers(capabilities: readonly Capability[], config: Ma
     config: "authConfig",
     key: "authPeer",
     probe: "authDatabase",
-    wants: "resolves an invite by address",
+    wants: "resolve an invite by address",
   });
   const rating = surface<RatingPeer>(capabilities, {
     name: "rating",
@@ -69,14 +69,16 @@ export function matchmakingPeers(capabilities: readonly Capability[], config: Ma
     config: "ratingConfig",
     key: "ratingPeer",
     probe: "ratingStore",
-    wants: "buckets a queue by skill",
+    wants: "bucket a queue by skill",
   });
   const skilled = config.games.filter((game) => game.skillPool !== undefined);
+  const keys = skilled.map((game) => `"${game.key}"`);
+  const named =
+    keys.length === 1 ? `game ${keys[0]}` : `games ${keys.slice(0, -1).join(", ")} and ${keys[keys.length - 1]}`;
   if (skilled.length > 0 && rating === undefined) {
     throw new ValidationError({
-      message: "A game buckets its queue by skill, and no rating is composed in this Worker.",
-      action:
-        "Add `rating(...)` to this Worker's capabilities in pithy.config.ts — the one that composes matchmaking — or drop the game's `skillPool`.",
+      message: `No rating is composed in this Worker, and ${named} ${skilled.length === 1 ? "buckets its" : "bucket their"} queue by skill through it.`,
+      action: `Compose \`rating(...)\` in this Worker, or turn skill matching off by removing \`skillPool\` from ${named}.`,
       detail: `Games with a skillPool: ${skilled.map((game) => `${game.key} (pool "${game.skillPool}")`).join(", ")}. Without rating every player would be bucketed by region alone.`,
     });
   }

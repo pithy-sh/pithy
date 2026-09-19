@@ -64,10 +64,17 @@ function find<T>(
   return { state: "present", peer: peer as T };
 }
 
+/** Games named for a sentence: `game "craps"`, or `games "craps" and "dice"`. */
+function named(list: readonly ResolvedGame[]): string {
+  const keys = list.map((game) => `"${game.key}"`);
+  if (keys.length === 1) return `game ${keys[0]}`;
+  return `games ${keys.slice(0, -1).join(", ")} and ${keys[keys.length - 1]}`;
+}
+
 /** The refusal for a composed peer released before its surface. */
-function tooOld(pkg: string, key: string, wants: string): ValidationError {
+function tooOld(name: string, pkg: string, key: string, wants: string): ValidationError {
   return new ValidationError({
-    message: `Multiplayer ${wants} through ${pkg}, and the composed one is too old to be reached.`,
+    message: `The composed ${name} is too old for multiplayer to ${wants}.`,
     action: `Upgrade ${pkg} to the version this @pithy-sh/multiplayer peers.`,
     detail: `The composed capability carries no \`${key}\`. It was released before optional peers arrived through the composition (#645).`,
   });
@@ -86,24 +93,23 @@ export function composeMultiplayerPeers(capabilities: readonly Capability[], gam
     "leaderboardPeer",
     "entryStore",
   );
-  if (ledger.state === "old") throw tooOld("@pithy-sh/ledger", "ledgerPeer", "settles a wager");
-  if (leaderboard.state === "old") throw tooOld("@pithy-sh/leaderboard", "leaderboardPeer", "publishes a result");
+  if (ledger.state === "old") throw tooOld("ledger", "@pithy-sh/ledger", "ledgerPeer", "settle a wager");
+  if (leaderboard.state === "old")
+    throw tooOld("leaderboard", "@pithy-sh/leaderboard", "leaderboardPeer", "publish a result");
 
   const publishing = games.filter((game) => game.leaderboard !== undefined);
   if (publishing.length > 0 && leaderboard.state === "absent") {
     throw new ValidationError({
-      message: "A game publishes to a leaderboard, and no leaderboard is composed in this Worker.",
-      action:
-        "Add `leaderboard(...)` to this Worker's capabilities in pithy.config.ts — the one that composes multiplayer — or drop the game's `leaderboard` block.",
+      message: `No leaderboard is composed in this Worker, and ${named(publishing)} ${publishing.length === 1 ? "publishes its" : "publish their"} results to one.`,
+      action: `Compose \`leaderboard(...)\` in this Worker, or turn publishing off by removing the \`leaderboard\` block from ${named(publishing)}.`,
       detail: `Games with a leaderboard block: ${publishing.map((game) => `${game.key} (board "${game.leaderboard?.board}")`).join(", ")}. A session publishes from its Durable Object, which reaches only what its own Worker composes.`,
     });
   }
   const wagering = games.filter((game) => resolveModel(game.kind)?.movesBalances === true);
   if (wagering.length > 0 && ledger.state === "absent") {
     throw new ValidationError({
-      message: "A game moves balances, and no ledger is composed in this Worker.",
-      action:
-        "Add `ledger(...)` to this Worker's capabilities in pithy.config.ts — the one that composes multiplayer — or remove the wagering game.",
+      message: `No ledger is composed in this Worker, and ${named(wagering)} ${wagering.length === 1 ? "moves" : "move"} balances through one.`,
+      action: `Compose \`ledger(...)\` in this Worker, or turn wagering off by removing ${named(wagering)} from \`games\`.`,
       detail: `Games whose model moves balances: ${wagering.map((game) => `${game.key} (${game.kind})`).join(", ")}. A session settles from its Durable Object, which reaches only what its own Worker composes.`,
     });
   }

@@ -53,17 +53,17 @@ function said(error: unknown): { message: string; action?: string; detail?: stri
 describe("the ledger a wagering game settles through", () => {
   test("a wagering game with no ledger in this Worker is refused, naming the game and the fix", () => {
     const refusal = said(assemble({ games: [CRAPS] }, []));
-    expect(refusal.message).toBe("A game moves balances, and no ledger is composed in this Worker.");
-    expect(refusal.action).toContain("Add `ledger(...)` to this Worker's capabilities");
+    expect(refusal.message).toBe('No ledger is composed in this Worker, and game "craps" moves balances through one.');
+    expect(refusal.action).toBe(
+      'Compose `ledger(...)` in this Worker, or turn wagering off by removing game "craps" from `games`.',
+    );
     expect(refusal.detail).toContain("craps (craps)");
   });
 
   test("a ledger too old to carry its surface is refused, whatever the games are", () => {
     for (const games of [[CRAPS], [TIC_TAC_TOE]]) {
       const refusal = said(assemble({ games }, [OLD_LEDGER]));
-      expect(refusal.message).toBe(
-        "Multiplayer settles a wager through @pithy-sh/ledger, and the composed one is too old to be reached.",
-      );
+      expect(refusal.message).toBe("The composed ledger is too old for multiplayer to settle a wager.");
       expect(refusal.action).toBe("Upgrade @pithy-sh/ledger to the version this @pithy-sh/multiplayer peers.");
     }
   });
@@ -78,14 +78,17 @@ describe("the leaderboard a game publishes to", () => {
   test("a game with a leaderboard block and no leaderboard in this Worker is refused, naming game and board", () => {
     const error = assemble({ games: [PUBLISHING] }, []);
     expect(said(error).message).toBe(
-      "A game publishes to a leaderboard, and no leaderboard is composed in this Worker.",
+      'No leaderboard is composed in this Worker, and game "ranked" publishes its results to one.',
+    );
+    expect(said(error).action).toBe(
+      'Compose `leaderboard(...)` in this Worker, or turn publishing off by removing the `leaderboard` block from game "ranked".',
     );
     expect(said(error).detail).toContain('ranked (board "wins")');
   });
 
   test("a leaderboard too old to carry its surface is refused", () => {
     expect(said(assemble({ games: [PUBLISHING] }, [OLD_BOARD])).message).toBe(
-      "Multiplayer publishes a result through @pithy-sh/leaderboard, and the composed one is too old to be reached.",
+      "The composed leaderboard is too old for multiplayer to publish a result.",
     );
   });
 

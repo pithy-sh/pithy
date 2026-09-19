@@ -77,7 +77,7 @@ export function testersAuth(projectDir: string, capabilities: readonly Capabilit
   if (typeof peer?.authDatabase === "function") return peer as AuthPeer;
   if (!kitCarries(projectDir, "@pithy-sh/testers/src/workflows/hostPeers")) return undefined;
   throw new ValidationError({
-    message: "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+    message: "The composed auth is too old for testers to see who has used the app.",
     action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
     detail:
       "The composed auth capability carries no `authPeer`, so every tester would read unobservable and `pithy testers run` would record nobody observed.",

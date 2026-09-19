@@ -411,9 +411,10 @@ describe("the email an invitation is mailed through", () => {
 
   test("mailing invitations with no email in this Worker is refused, naming email and both fixes", () => {
     const said = assemble(BASE, []);
-    expect(said?.message).toBe("Invitations are mailed, and no email is composed in this Worker.");
-    expect(said?.action).toContain("Add `email(...)` to this Worker's capabilities");
-    expect(said?.action).toContain("`sendInvitationEmail: false`");
+    expect(said?.message).toBe("No email is composed in this Worker, and invitations are mailed through it.");
+    expect(said?.action).toBe(
+      "Compose `email(...)` in this Worker, or turn invitation mail off with `sendInvitationEmail: false` and deliver the link yourself.",
+    );
   });
 
   test("with email beside it, it composes", () => {

@@ -97,6 +97,13 @@ function composedLedger(capabilities: readonly Capability[]): PaymentsLedgerPeer
   return capabilities.find(isLedgerPeer)?.ledgerPeer;
 }
 
+/** Products named for a sentence: `product "coins_100"`, or `products "a" and "b"`. */
+function products(list: readonly { id: string }[]): string {
+  const ids = list.map((entry) => `"${entry.id}"`);
+  if (ids.length === 1) return `product ${ids[0]}`;
+  return `products ${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]}`;
+}
+
 /**
  * Validate every `grants.currency` against the composed ledger, at assembly.
  *
@@ -135,8 +142,8 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
   const peer = capabilities.find(isLedgerPeer);
   if (!peer) {
     throw new ValidationError({
-      message: "This catalog credits a balance, and no ledger is composed.",
-      action: "Add `ledger(...)` to this Worker's capabilities, or drop the `grants` clause from the product.",
+      message: `No ledger is composed in this Worker, and ${products(granting)} ${granting.length === 1 ? "credits" : "credit"} a balance through one.`,
+      action: `Compose \`ledger(...)\` in this Worker, or turn crediting off by removing the \`grants.ledger\` clause from ${products(granting)}.`,
       detail: `Products with a \`grants.ledger\` clause: ${granting.map((entry) => entry.id).join(", ")}. Crediting needs @pithy-sh/ledger composed in the same Worker.`,
     });
   }
@@ -144,7 +151,7 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
   // longer imports the package to reach around it. Refused here, by name, rather than as the first purchase.
   if (typeof peer.ledgerPeer?.openLedger !== "function") {
     throw new ValidationError({
-      message: "This catalog credits a balance, and the composed ledger is too old to credit one.",
+      message: "The composed ledger is too old for payments to credit a balance.",
       action: "Upgrade @pithy-sh/ledger to the version this @pithy-sh/payments peers.",
       detail: `The composed ledger capability carries no \`ledgerPeer\`. Products with a \`grants.ledger\` clause: ${granting.map((entry) => entry.id).join(", ")}.`,
     });

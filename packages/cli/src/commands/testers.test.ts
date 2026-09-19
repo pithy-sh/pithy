@@ -325,9 +325,7 @@ describe("the read commands and the pass see through the project's auth", () => 
   test("an auth too old to carry its surface is refused by name, beside a testers that takes it", async () => {
     project.siblings = [{ name: "auth", authConfig: {} }];
     const error = await failure("list", { json: true, env: "dev" });
-    expect(error.message).toBe(
-      "Testers reads who has used the app through auth, and the composed auth is too old to say.",
-    );
+    expect(error.message).toBe("The composed auth is too old for testers to see who has used the app.");
     expect(roster.readCohortCalls).toHaveLength(0);
   });
 });

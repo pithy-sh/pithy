@@ -803,7 +803,12 @@ describe("a kit host handed the peers the project composes", () => {
   }
 
   async function deployPayments(capabilities: Capability[]): Promise<{ report: KitDeployReport; shipped: Shipped[] }> {
-    await linkKitPackages(projectDir, ["payments", "ledger"]);
+    await linkKitPackages(projectDir, ["ledger"]);
+    // A copy, never the link: a deploy writes its temp config and generated entry beside the host's worker,
+    // and through a link that is the repository's own `packages/payments/src/workflows` — where
+    // `turboInputs.test.ts`, running beside this file, hashes `packages/**` twice and saw the file once (#645
+    // review, CI run 35468486220). `linkKit.ts` states the rule: the link or the write, never both.
+    await materializeKitPackage(projectDir, "payments");
     const dir = await writeApp(PROVISIONED);
     const shipped: Shipped[] = [];
     const report = await deployKitWorkers({
@@ -916,6 +921,8 @@ describe("a kit host handed the peers the project composes", () => {
 describe("a kit host older than the peer seam", () => {
   test("testers from before the seam, beside auth, deploys from its own worker with no entry written", async () => {
     await linkKitPackages(projectDir, ["auth"]);
+    // Copies, because this deploys both hosts and each writes beside its worker — see the note on `payments`.
+    await materializeKitPackage(projectDir, "email");
     await materializeKitPackage(projectDir, "testers");
     const home = join(projectDir, "node_modules", "@pithy-sh", "testers");
     await rm(join(home, "src", "workflows", "hostPeers.ts"));

@@ -5,10 +5,10 @@
 "@pithy-sh/ledger": patch
 "@pithy-sh/matchmaking": patch
 "@pithy-sh/multiplayer": patch
-"@pithy-sh/organization": patch
+"@pithy-sh/organization": minor
 "@pithy-sh/payments": patch
 "@pithy-sh/rating": patch
-"@pithy-sh/support": patch
+"@pithy-sh/support": minor
 "@pithy-sh/testers": patch
 ---
 
@@ -16,13 +16,13 @@ A project that composes payments without the ledger can deploy its payments host
 
 Every other optional kit peer is reached the same way. Multiplayer finds the ledger and the leaderboard, matchmaking finds auth and rating, support finds auth and payments, and testers finds auth, each through its `compose` hook, off the `ledgerPeer`, `leaderboardPeer`, `authPeer`, `ratingPeer` and `paymentsPeer` those capabilities now carry. Organization recognizes email by shape rather than importing email's guard. A project without any of them bundles; one with them behaves as it did. A gate fails any shipped module that imports a kit package its package declares only as an optional peer: an `import`, an `export … from`, an `import()`, a `require()`, an `import x = require()`, an inline `type` specifier that `verbatimModuleSyntax` keeps, or a relative path into another package's source.
 
-Nothing degrades silently. Where a Worker's config uses a peer's feature and the peer is not composed in that Worker, it is refused at assembly, naming the peer, the feature and the fix:
+Nothing degrades silently. A capability a feature needs is expected in the same Worker unless the adopter turns the feature off. Where it is missing, assembly refuses and says what is missing, which feature needs it, and both remedies: compose it in this Worker, or turn the feature off with the named setting. Support and organization are minor releases for this. Both features are on by default, so a Worker that composes support without auth, or organization without email, must now compose it or turn the feature off.
 
-- Multiplayer: a game with a `leaderboard` block needs `leaderboard()`, and a game whose model moves balances, such as `craps`, needs `ledger()`. A game model declares it with `movesBalances`, and `wageringTable` sets it.
-- Matchmaking: a game with a `skillPool` needs `rating()`.
-- Support: the in-app channel, on by default, needs `auth()`. A mail-only inbox sets `submission: { enabled: false }`.
-- Organization: `sendInvitationEmail`, on by default, needs `email()`. It was refused at the first invitation.
-- Payments: a catalog that credits a balance needs `ledger()`, as before.
+- Multiplayer: a game with a `leaderboard` block needs `leaderboard()`. Off: remove the block. A game whose model moves balances, such as `craps`, needs `ledger()`. Off: remove the game. A game model declares it with `movesBalances`, and `wageringTable` sets it.
+- Matchmaking: a game with a `skillPool` needs `rating()`. Off: remove the `skillPool`.
+- Support: the in-app channel, on by default, needs `auth()`. Off: `submission: { enabled: false }`.
+- Organization: invitation mail, on by default, needs `email()`. Off: `sendInvitationEmail: false`. It was refused at the first invitation.
+- Payments: a product that credits a balance needs `ledger()`, as before. Off: remove its `grants.ledger` clause.
 
 A composed auth, ledger, leaderboard, rating or payments released before its peer surface is refused beside any capability that reads it, with the upgrade to make. Read as absent, it cost testers every observation, support every sender link, and matchmaking every invite by address. The peer ranges rise to the releases that carry the surfaces.
 

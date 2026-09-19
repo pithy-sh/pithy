@@ -250,9 +250,9 @@ export function organization<const Power extends string = never, const Role exte
       // out by the first person to invite someone. Refused here instead, by name (#645 review).
       if (resolved.sendInvitationEmail && email === undefined) {
         throw new ValidationError({
-          message: "Invitations are mailed, and no email is composed in this Worker.",
+          message: "No email is composed in this Worker, and invitations are mailed through it.",
           action:
-            "Add `email(...)` to this Worker's capabilities in pithy.config.ts — the one that composes organization — or set `sendInvitationEmail: false` and deliver the link yourself.",
+            "Compose `email(...)` in this Worker, or turn invitation mail off with `sendInvitationEmail: false` and deliver the link yourself.",
           detail:
             "`sendInvitationEmail` defaults to true. The invite route mails through the email capability composed beside it, and without one every invitation would be refused as it was made.",
         });

@@ -165,22 +165,23 @@ describe("senderPeers", () => {
 
   test("the in-app channel with no auth in this Worker is refused, naming auth, the channel and both fixes", () => {
     const said = refused(() => senderPeers([cap("support"), cap("email")], IN_APP));
-    expect(said?.message).toBe("The in-app support channel is on, and no auth is composed in this Worker.");
-    expect(said?.action).toContain("Add `auth(...)` to this Worker's capabilities");
-    expect(said?.action).toContain("`submission: { enabled: false }`");
+    expect(said?.message).toBe(
+      "No auth is composed in this Worker, and the in-app support channel needs it to know who is writing.",
+    );
+    expect(said?.action).toBe(
+      "Compose `auth(...)` in this Worker, or turn the in-app channel off with `submission: { enabled: false }` for a mail-only inbox.",
+    );
   });
 
   test("an auth too old to carry its surface is refused, even for a mail-only inbox", () => {
     const said = refused(() => senderPeers([auth({})], MAIL_ONLY));
-    expect(said?.message).toBe(
-      "Support links a sender to an account through @pithy-sh/auth, and the composed one is too old to be reached.",
-    );
+    expect(said?.message).toBe("The composed auth is too old for support to link a sender to an account.");
     expect(said?.action).toBe("Upgrade @pithy-sh/auth to the version this @pithy-sh/support peers.");
   });
 
   test("a payments too old to carry its surface is refused", () => {
     expect(refused(() => senderPeers([auth(), payments({})], IN_APP))?.message).toBe(
-      "Support shows what a sender bought through @pithy-sh/payments, and the composed one is too old to be reached.",
+      "The composed payments is too old for support to show what a sender bought.",
     );
   });
 

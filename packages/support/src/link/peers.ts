@@ -42,7 +42,7 @@ function surface<T>(capabilities: readonly Capability[], wanted: Wanted): T | un
   const value = (found as unknown as Record<string, Record<string, unknown> | undefined>)[wanted.key];
   if (typeof value?.[wanted.probe] !== "function") {
     throw new ValidationError({
-      message: `Support ${wanted.wants} through ${wanted.pkg}, and the composed one is too old to be reached.`,
+      message: `The composed ${wanted.name} is too old for support to ${wanted.wants}.`,
       action: `Upgrade ${wanted.pkg} to the version this @pithy-sh/support peers.`,
       detail: `The composed ${wanted.name} capability carries no \`${wanted.key}\`. It was released before optional peers arrived through the composition (#645).`,
     });
@@ -64,7 +64,7 @@ export function senderPeers(capabilities: readonly Capability[], config: Support
     config: "authConfig",
     key: "authPeer",
     probe: "authDatabase",
-    wants: "links a sender to an account",
+    wants: "link a sender to an account",
   });
   const payments = surface<PaymentsPeer>(capabilities, {
     name: "payments",
@@ -72,13 +72,13 @@ export function senderPeers(capabilities: readonly Capability[], config: Support
     config: "paymentsConfig",
     key: "paymentsPeer",
     probe: "resolveEntitlements",
-    wants: "shows what a sender bought",
+    wants: "show what a sender bought",
   });
   if (config.submission.enabled && auth === undefined) {
     throw new ValidationError({
-      message: "The in-app support channel is on, and no auth is composed in this Worker.",
+      message: "No auth is composed in this Worker, and the in-app support channel needs it to know who is writing.",
       action:
-        "Add `auth(...)` to this Worker's capabilities in pithy.config.ts — the one that composes support — or set `submission: { enabled: false }` for a mail-only inbox.",
+        "Compose `auth(...)` in this Worker, or turn the in-app channel off with `submission: { enabled: false }` for a mail-only inbox.",
       detail:
         "`submission.enabled` defaults to true. A submission is keyed to the account its session proves, read through @pithy-sh/auth, so without auth in this Worker the channel refuses every report, and no sender on the mail path is ever linked to an account.",
     });

@@ -211,7 +211,7 @@ describe("the auth testers reads through", () => {
       thrown = error;
     }
     expect((thrown as { payload?: unknown })?.payload).toMatchObject({
-      message: "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+      message: "The composed auth is too old for testers to see who has used the app.",
       action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
     });
   });
