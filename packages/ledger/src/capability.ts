@@ -9,6 +9,7 @@ import { ledgerTables } from "./data/tables";
 import { LEDGER_DEFAULT_BASE_PATH, registerLedgerRoutes } from "./http/routes";
 import { ledgerAdminRoutes } from "./http/scopes";
 import { ledger_0001_accounts } from "./migrations/0001_accounts";
+import { type LedgerPeer, ledgerPeer } from "./peer";
 import { ledgerExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -29,6 +30,12 @@ export type LedgerOptions = LedgerConfigInput & {
 
 export interface LedgerCapability extends Capability {
   ledgerConfig: LedgerConfig;
+  /**
+   * What a capability composed beside this one calls the ledger through — `payments` crediting a purchase,
+   * `multiplayer` settling a wager. Found in their `compose` hooks, so neither ever imports this package and a
+   * project without it bundles them (#645). See `peer.ts`.
+   */
+  ledgerPeer: LedgerPeer;
 }
 
 /**
@@ -92,7 +99,7 @@ export function ledger(options: LedgerOptions = { currencies: [] }): LedgerCapab
     seeds: [ledgerExampleSeed],
   });
 
-  return Object.assign(capability, { ledgerConfig: resolved });
+  return Object.assign(capability, { ledgerConfig: resolved, ledgerPeer });
 }
 
 export function isLedgerCapability(capability: Capability): capability is LedgerCapability {

@@ -12,6 +12,7 @@ import { recordReconcileRun } from "../data/reconcileRun";
 import type { PurchaseStatus } from "../data/status";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { fulfillPurchase } from "../grants/apply";
+import type { PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import type { PurchaseProjection } from "../projection/writer";
 import { projectPurchase } from "../projection/writer";
 import type { PaddleSweepReport } from "./paddleSweep";
@@ -128,6 +129,11 @@ export interface ReconcileDeps {
    * the webhook already applied is a no-op rather than a double.
    */
   fulfill?: (projection: PurchaseProjection) => Promise<unknown>;
+  /**
+   * The ledger the default {@link fulfill} credits through — handed to the host by the entry `pithy` generates
+   * when the catalog credits a balance, and undefined otherwise. Never imported here: see `grants/ledgerSeam.ts`.
+   */
+  ledgerPeer?: PaymentsLedgerPeer;
   /**
    * The Paddle events sweep, or undefined to skip it.
    *
@@ -392,7 +398,12 @@ async function reconcileOne(
   const fulfill =
     deps.fulfill ??
     ((repaired: PurchaseProjection) =>
-      fulfillPurchase(deps.d1, repaired, { config: deps.config, emit: deps.emit, now: () => now.getTime() }));
+      fulfillPurchase(deps.d1, repaired, {
+        config: deps.config,
+        emit: deps.emit,
+        ledgerPeer: deps.ledgerPeer,
+        now: () => now.getTime(),
+      }));
   try {
     await fulfill(projection);
   } catch (cause) {

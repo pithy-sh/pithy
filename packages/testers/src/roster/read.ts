@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { type Logger, noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { resolveActivity, type TesterActivity } from "../activity/resolve";
 import { dayKey, daysSince } from "../clock/days";
@@ -136,6 +137,9 @@ export async function countSnapshots(db: TestersDatabase, cohortId: string): Pro
  * activity read degrades the whole roster to "never signed in", which is indistinguishable from a
  * genuinely inactive cohort — so the caller's logger is the only thing that says why. Defaults to the
  * no-op so a caller with nothing to log through still reads.
+ *
+ * `auth` is the surface the composition handed the caller, passed through to the reader. Absent, every tester
+ * resolves `unobservable` — see `ActivityOptions.auth`.
  */
 export async function readCohort(
   db: TestersDatabase,
@@ -144,6 +148,7 @@ export async function readCohort(
   config: TestersConfig,
   now: Date,
   log: Logger = noopLogger,
+  auth?: AuthPeer,
 ): Promise<CohortReading> {
   const members = await listMembers(db, cohort.id);
   const events = await listEvents(db, cohort.id);
@@ -167,6 +172,7 @@ export async function readCohort(
       since: new Date(now.getTime() - cohort.windowDays * MS_PER_DAY),
       activeSince: new Date(now.getTime() - config.activeWithinDays * MS_PER_DAY),
       unreachable,
+      ...(auth ? { auth } : {}),
     },
     log,
   );

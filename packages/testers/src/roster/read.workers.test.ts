@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createLogger } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
@@ -87,7 +88,15 @@ describe("an activity read that cannot be made", () => {
     await inviteMember(write(), { cohortId: COHORT_ID, email: "ada@example.test", maxRosterSize: 3 });
     const records: LogRecord[] = [];
 
-    const reading = await readCohort(testersDatabase(env.DB), env.DB, target, CONFIG, NOW, capturing(records));
+    const reading = await readCohort(
+      testersDatabase(env.DB),
+      env.DB,
+      target,
+      CONFIG,
+      NOW,
+      capturing(records),
+      authPeer,
+    );
 
     // The roster still reads. That is exactly why the log line is the only evidence.
     expect(reading.readings).toHaveLength(1);
@@ -108,7 +117,7 @@ describe("an activity read that cannot be made", () => {
     await inviteMember(write(), { cohortId: COHORT_ID, email: "grace@example.test", maxRosterSize: 3 });
     const records: LogRecord[] = [];
 
-    await readCohort(testersDatabase(env.DB), env.DB, target, CONFIG, NOW, capturing(records));
+    await readCohort(testersDatabase(env.DB), env.DB, target, CONFIG, NOW, capturing(records), authPeer);
 
     expect(records.filter((record) => record.level === "warn")[0]?.fields).toMatchObject({ addresses: 2 });
   });

@@ -3,6 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
@@ -164,6 +165,28 @@ export interface WranglerOptions {
  * installed *the adopter's* wrangler. `cwd` defaults to the process's, which is the project a command
  * is being run against.
  */
+/**
+ * **wrangler's own error block, from its captured output** — every line from the first `✘ [ERROR]` to the
+ * footer that says where its log went, colors stripped (#645).
+ *
+ * That block is the reason, in wrangler's words: `Could not resolve "@pithy-sh/ledger/src/ledger"`, with the
+ * file and line under it. What is around it is not: the version banner above, and the `Logs were written to`
+ * footer below, which names a file on this machine that nobody reading a CI log can open. An output with no
+ * error marker — a stand-in, a crash before wrangler printed anything — has no block, and the failure keeps the
+ * one line it always had.
+ */
+export function wranglerErrorBlock(output: string): string[] {
+  const lines = stripVTControlCharacters(output)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd());
+  const start = lines.findIndex((line) => line.includes("✘ [ERROR]"));
+  if (start < 0) return [];
+  const footer = lines.findIndex((line, index) => index > start && line.includes("Logs were written to"));
+  const block = lines.slice(start, footer < 0 ? lines.length : footer);
+  while (block.length > 0 && block[block.length - 1] === "") block.pop();
+  return block;
+}
+
 /** The child's environment, from whichever of the two things the caller holds. See {@link WranglerAccount}. */
 function wranglerChildEnv(account: WranglerAccount): Record<string, string> {
   if (account !== null && "apiToken" in account) return credentialedChildEnv(account);
@@ -242,7 +265,18 @@ export async function runWrangler(
       }
       // Surface the captured output (the errors) even in quiet mode; in passthrough it already streamed.
       const captured = options.passthrough ? "" : `\n${(stderr || stdout).trim()}`;
-      reject(new InternalError({ message: `${label} ${args[0] ?? ""} failed.`, detail: `exit ${code}${captured}` }));
+      // **wrangler's own reason goes under the failure line, not only into `detail`** (#645). `detail` never
+      // reaches a terminal, so a deploy that could not bundle said `wrangler deploy failed.` and the line
+      // naming the import it could not resolve was only in wrangler's log file.
+      const block = options.passthrough ? [] : wranglerErrorBlock(`${stderr}\n${stdout}`);
+      const failed = `${label} ${args[0] ?? ""} failed.`;
+      reject(
+        new InternalError({
+          message:
+            block.length > 0 ? [failed, ...block.map((line) => (line === "" ? "" : `  ${line}`))].join("\n") : failed,
+          detail: `exit ${code}${captured}`,
+        }),
+      );
     });
   });
 }

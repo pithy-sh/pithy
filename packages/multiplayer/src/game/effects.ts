@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { LedgerPeer } from "@pithy-sh/ledger/src/peer";
 
 /**
  * A ledger operation a game model asks the session to perform — the wager seam.
@@ -52,16 +54,27 @@ export type LedgerEffect =
     };
 
 /**
- * Settle a model's declared effects. `@pithy-sh/ledger` is an *optional* peer, loaded by dynamic import
- * only when a game actually emits effects — a game with no wagering never touches it, and a deployment
- * without the ledger never resolves the import. Applied **before** the DO commits the new game state
- * (see the DO): a hold that a player cannot cover throws here, so the wagering action is rejected and the
- * state never advances.
+ * Settle a model's declared effects through the ledger the composition handed over. `@pithy-sh/ledger` is an
+ * *optional* peer, reached only when a game actually emits effects — a game with no wagering never touches it.
+ * Never imported: `session/peers.ts` says why, and a deployment without the ledger has nothing to resolve.
+ * Applied **before** the DO commits the new game state (see the DO): a hold that a player cannot cover throws
+ * here, so the wagering action is rejected and the state never advances — and so does a wager with no ledger
+ * composed to hold it, rather than a session that plays for stakes nobody recorded.
  */
-export async function applyLedgerEffects(d1: D1Database, effects: readonly LedgerEffect[]): Promise<void> {
+export async function applyLedgerEffects(
+  d1: D1Database,
+  effects: readonly LedgerEffect[],
+  peer: LedgerPeer | undefined,
+): Promise<void> {
   if (effects.length === 0) return;
-  const { openLedger } = await import("@pithy-sh/ledger/src/ledger");
-  const ledger = openLedger(d1);
+  if (peer === undefined) {
+    throw new InternalError({
+      message: "This game moves a balance, and no ledger is composed.",
+      action: "Add `ledger(...)` to this Worker's capabilities in pithy.config.ts, or play the game without stakes.",
+      detail: `A game model emitted ${effects.length} ledger effect(s) and multiplayer() found no ledger among the composed capabilities.`,
+    });
+  }
+  const ledger = peer.openLedger(d1);
   for (const effect of effects) {
     switch (effect.op) {
       case "credit":

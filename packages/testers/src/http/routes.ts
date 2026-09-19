@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
@@ -163,6 +164,11 @@ export interface TestersRoutesOptions {
    * captured at registration would close over whichever request happened to assemble the routes.
    */
   enqueue?: (env: Record<string, unknown>) => EnqueueNudge | undefined;
+  /**
+   * `auth()`'s surface, read per request — `testers()` hands the slot its `compose` hook fills, because
+   * `compose` runs after this factory. Undefined when auth is not composed. Never imported (#645).
+   */
+  auth?: () => AuthPeer | undefined;
 }
 
 /**
@@ -414,7 +420,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
       // A tester sees their own memberships and nothing else — not the roster, not the other testers,
       // and not the cohort's forecast. What they legitimately want to know is whether their own
       // confirmation registered and how long is left.
-      const userEmail = await resolveCallerEmail(d1, callerId(c));
+      const userEmail = await resolveCallerEmail(d1, callerId(c), options.auth?.());
       if (!userEmail) return c.json({ memberships: [], disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
 
       const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
@@ -424,7 +430,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
         if (!member) continue;
         // The request's own logger, namespaced to this capability. An activity read that degrades is
         // then correlated to the request that asked, rather than being an orphaned line.
-        const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"));
+        const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"), options.auth?.());
         memberships.push({
           cohortName: cohort.name,
           state: member.state,
@@ -450,7 +456,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
         const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
         const views = [];
         for (const cohort of cohorts) {
-          const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"));
+          const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"), options.auth?.());
           // The latest snapshot is read even when the series is not, because it carries the
           // precomputed trend — recomputing the deltas here would let the card and the chart disagree.
           const snapshots = await listSnapshots(db, cohort.id, query.trend ? query.trendDays : 1);
@@ -914,14 +920,15 @@ function eligibleForKind(member: TestersMember, kind: NudgeKind): boolean {
 /**
  * The caller's own email address, from `@pithy-sh/auth`.
  *
- * A guarded dynamic import, because auth is an optional peer: a project with no sign-in has no
- * `/status` route worth serving, and the honest answer there is an empty membership list rather than a
- * failure to boot.
+ * Through the surface the composition handed over, because auth is an optional peer (#645): a project with
+ * no sign-in has no `/status` route worth serving, and the honest answer there is an empty membership list
+ * rather than a failure to boot.
  */
-async function resolveCallerEmail(d1: D1Database, userId: string): Promise<string | null> {
+async function resolveCallerEmail(d1: D1Database, userId: string, auth: AuthPeer | undefined): Promise<string | null> {
+  if (!auth) return null;
   try {
-    const { authDatabase } = await import("@pithy-sh/auth/src/data/tables");
-    const row = await authDatabase(d1)
+    const row = await auth
+      .authDatabase(d1)
       .selectFrom("pithyAuthUsers")
       .select(["email"])
       .where("id", "=", userId)

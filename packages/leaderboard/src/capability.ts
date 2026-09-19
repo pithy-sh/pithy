@@ -8,6 +8,7 @@ import { LeaderboardConfig, type LeaderboardConfigInput, materializeSchedule } f
 import { leaderboardTables } from "./data/tables";
 import { registerLeaderboardRoutes } from "./http/routes";
 import { leaderboard_0001_entries } from "./migrations/0001_entries";
+import { type LeaderboardPeer, leaderboardPeer } from "./peer";
 import { leaderboardExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -24,6 +25,12 @@ export type LeaderboardOptions = LeaderboardConfigInput & {
 
 export interface LeaderboardCapability extends Capability {
   leaderboardConfig: LeaderboardConfig;
+  /**
+   * What a capability composed beside this one publishes through — `multiplayer`, submitting a session's
+   * result to a board. Found in its `compose` hook, so it never imports this package and a project without it
+   * bundles multiplayer (#645). See `peer.ts`.
+   */
+  leaderboardPeer: LeaderboardPeer;
 }
 
 /**
@@ -75,7 +82,7 @@ export function leaderboard(options: LeaderboardOptions = { boards: [] }): Leade
     seeds: [leaderboardExampleSeed],
   });
 
-  return Object.assign(capability, { leaderboardConfig: resolved });
+  return Object.assign(capability, { leaderboardConfig: resolved, leaderboardPeer });
 }
 
 export function isLeaderboardCapability(capability: Capability): capability is LeaderboardCapability {

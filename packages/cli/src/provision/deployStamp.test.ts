@@ -132,28 +132,28 @@ describe("stampVerdict", () => {
   test("no Worker deploys — a first provision has no stamp to match", () => {
     expect(stampVerdict({ ...base, deployed: { state: "absent" } })).toEqual({
       deploy: true,
-      reason: "acme-prod-email is not deployed.",
+      reason: "It was not on the account.",
     });
   });
 
   test("a Worker deployed before this gate existed carries no stamp, and deploys", () => {
     expect(stampVerdict({ ...base, deployed: { state: "unstamped" } })).toEqual({
       deploy: true,
-      reason: "acme-prod-email carries no deploy stamp.",
+      reason: "It carried no deploy stamp.",
     });
   });
 
   test("an unreachable account deploys, and the reason carries what went wrong", () => {
     expect(stampVerdict({ ...base, deployed: { state: "unreadable", detail: "getaddrinfo ENOTFOUND" } })).toEqual({
       deploy: true,
-      reason: "acme-prod-email's deploy stamp could not be read. getaddrinfo ENOTFOUND",
+      reason: "Its deploy stamp could not be read. getaddrinfo ENOTFOUND",
     });
   });
 
   test("a stamp in a shape this release cannot read deploys, rather than being guessed at", () => {
     expect(stampVerdict({ ...base, deployed: { state: "read", stamp: "who-knows" } })).toEqual({
       deploy: true,
-      reason: "acme-prod-email's deploy stamp is not one this release can read.",
+      reason: "Its deploy stamp was not one this release can read.",
     });
   });
 

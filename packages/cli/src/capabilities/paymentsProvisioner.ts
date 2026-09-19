@@ -114,6 +114,11 @@ export interface CloudflarePaymentsProvisionerOptions {
   resolveEnv: ResolvePaymentsEnv;
   /** The Workflows REST client, for running a pass in a deployed environment on demand. */
   workflows: CloudflareWorkflowsClient;
+  /**
+   * The entry the host deploys from when the catalog credits a balance — `hostEntrySource`'s answer, asked only
+   * when a deploy runs (#645). Absent, or answering undefined, the host deploys from its own `worker.ts`.
+   */
+  hostEntry?: () => string | undefined;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -129,6 +134,7 @@ export class CloudflarePaymentsProvisioner {
   readonly #paymentsConfig: PaymentsConfig;
   readonly #resolveEnv: ResolvePaymentsEnv;
   readonly #workflows: CloudflareWorkflowsClient;
+  readonly #hostEntry: (() => string | undefined) | undefined;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflarePaymentsProvisionerOptions) {
@@ -141,6 +147,7 @@ export class CloudflarePaymentsProvisioner {
     this.#paymentsConfig = options.paymentsConfig;
     this.#resolveEnv = options.resolveEnv;
     this.#workflows = options.workflows;
+    this.#hostEntry = options.hostEntry;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -175,9 +182,11 @@ export class CloudflarePaymentsProvisioner {
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
     // too: a false redeploy costs seconds, a false skip is silent.
     try {
+      const entry = this.#hostEntry?.();
       const { outcome } = await deployHostWorker({
         capability: "payments",
         pkg: "@pithy-sh/payments",
+        ...(entry === undefined ? {} : { entry }),
         version: await kitPackageVersion(this.#projectDir, "@pithy-sh/payments"),
         config,
         dir,

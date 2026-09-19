@@ -10,6 +10,7 @@ import { multiplayerTables } from "./data/tables";
 import { registerMultiplayerRoutes } from "./http/routes";
 import { multiplayer_0001_results } from "./migrations/0001_results";
 import { multiplayerExampleSeed } from "./seeds/example";
+import { composeMultiplayerPeers } from "./session/peers";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
 /**
@@ -53,8 +54,9 @@ export interface MultiplayerCapability extends Capability {
  *
  * `dependsOn` is deliberately empty. Auth is a seam, not a peer: the routes read `c.var.auth` through
  * core's `AuthContext`, so without `@pithy-sh/auth` every route is denied rather than open. Leaderboard is
- * an *optional* one-way sink: a game may publish its result to a board, loaded by dynamic import so
- * `@pithy-sh/leaderboard` is never a hard dependency.
+ * an *optional* one-way sink and the ledger an optional settlement: `compose` finds each among the composed
+ * capabilities and hands it to the session, so neither package is ever imported and a project without them
+ * still bundles (#645). See `session/peers.ts`.
  */
 export function multiplayer(options: MultiplayerOptions = { games: [] }): MultiplayerCapability {
   const { basePath, ...configInput } = options;
@@ -94,6 +96,9 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
       },
     },
     routes: registerMultiplayerRoutes({ games, basePath }),
+    // The optional peers — the ledger a wager settles through, the leaderboard a result publishes to — found
+    // among the composed capabilities rather than imported. See `session/peers.ts`.
+    compose: ({ capabilities }) => composeMultiplayerPeers(capabilities),
     seeds: [multiplayerExampleSeed],
   });
 

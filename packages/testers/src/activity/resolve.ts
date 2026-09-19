@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
@@ -67,33 +68,17 @@ export interface ActivityOptions {
   readonly activeSince: Date;
   /** Addresses known to have bounced or be suppressed — reported `unreachable` whatever else we find. */
   readonly unreachable: ReadonlySet<string>;
-}
-
-/** The auth modules this reader needs, or null when `@pithy-sh/auth` is not installed. */
-type AuthModules = {
-  authDatabase: typeof import("@pithy-sh/auth/src/data/tables").authDatabase;
-  User: typeof import("@pithy-sh/auth/src/data/betterAuth").User;
-  Device: typeof import("@pithy-sh/auth/src/data/device").Device;
-} | null;
-
-/**
- * Load `@pithy-sh/auth`, or `null` if it is not installed.
- *
- * A missing optional peer is not an error here — it is a project that has no sign-in, which is a
- * legitimate way to run a closed test. Returning null lets every tester resolve `unobservable`, which
- * is the honest reading, rather than raising in a daily Workflow nobody is watching.
- */
-async function loadAuth(): Promise<AuthModules> {
-  try {
-    const [tables, betterAuth, device] = await Promise.all([
-      import("@pithy-sh/auth/src/data/tables"),
-      import("@pithy-sh/auth/src/data/betterAuth"),
-      import("@pithy-sh/auth/src/data/device"),
-    ]);
-    return { authDatabase: tables.authDatabase, User: betterAuth.User, Device: device.Device };
-  } catch {
-    return null;
-  }
+  /**
+   * `auth()`'s surface, as the composition handed it over — `testers()`'s `compose` hook for a request, the
+   * generated host entry for the daily pass — or undefined when auth is not composed.
+   *
+   * A missing auth is not an error here — it is a project that has no sign-in, which is a legitimate way
+   * to run a closed test, and every tester resolves `unobservable`, which is the honest reading. It was a
+   * guarded `import()` until #645, which is optional at runtime and required at bundle time: wrangler's
+   * esbuild resolves a literal specifier whether or not the branch holding it ever runs, so a project
+   * without auth could not deploy the testers host at all.
+   */
+  readonly auth?: AuthPeer;
 }
 
 /** A tester we cannot see, with the reason stated rather than implied. */
@@ -136,15 +121,14 @@ export async function resolveActivity(
   }
   if (normalized.length === 0) return results;
 
-  const auth = await loadAuth();
+  const auth = options.auth;
   if (!auth) return results;
 
   try {
     await readActivityInto(results, auth, d1, normalized, options);
   } catch (error) {
-    // The auth tables are not there — the package is installed but its migration has not run, or this
-    // project composes testers without composing auth. Either way it is the same fact as an uninstalled
-    // package, and it must degrade the same way: every tester resolves `unobservable`, the forecast
+    // The auth tables are not there — auth is composed but its migration has not run. It is the same fact
+    // as no auth at all, and it must degrade the same way: every tester resolves `unobservable`, the forecast
     // widens its band to say so, and the daily pass still advances state and records the day. Throwing
     // here would take down a cron at 05:00 over data that was never promised to exist.
     //
@@ -163,7 +147,7 @@ export async function resolveActivity(
 /** Fill in what the auth tables can tell us about these addresses. Throws if they are not there. */
 async function readActivityInto(
   results: Map<string, TesterActivity>,
-  auth: NonNullable<AuthModules>,
+  auth: AuthPeer,
   d1: D1Database,
   normalized: readonly string[],
   options: ActivityOptions,

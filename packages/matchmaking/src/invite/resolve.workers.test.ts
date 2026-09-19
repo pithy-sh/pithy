@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import { beforeEach, describe, expect, it } from "vitest";
 import { resolveInvitee } from "./resolve";
 
 /**
- * `resolveInvitee` reads the `@pithy-sh/auth` `pithy_auth_users` table via a dynamic import. These tests
+ * `resolveInvitee` reads the `@pithy-sh/auth` `pithy_auth_users` table through the surface the composition
+ * hands it — `auth()`'s `authPeer`, never an import (#645). These tests
  * stand up that table with inline DDL and seed rows, then resolve by email (unique) and by name (ambiguous).
  */
 beforeEach(async () => {
@@ -41,17 +43,17 @@ describe("resolveInvitee", () => {
     await insertUser("u-alice", "Alice", "alice@example.com");
     await insertUser("u-bob", "Bob", "bob@example.com");
 
-    expect(await resolveInvitee(env.DB, { email: "alice@example.com" })).toBe("u-alice");
+    expect(await resolveInvitee(env.DB, { email: "alice@example.com" }, authPeer)).toBe("u-alice");
   });
 
   it("resolves a name that matches exactly one user", async () => {
     await insertUser("u-uniq", "Solo", "solo@example.com");
-    expect(await resolveInvitee(env.DB, { name: "Solo" })).toBe("u-uniq");
+    expect(await resolveInvitee(env.DB, { name: "Solo" }, authPeer)).toBe("u-uniq");
   });
 
   it("an unknown email gives user_not_found", async () => {
     await insertUser("u-alice", "Alice", "alice@example.com");
-    await expect(resolveInvitee(env.DB, { email: "ghost@example.com" })).rejects.toMatchObject({
+    await expect(resolveInvitee(env.DB, { email: "ghost@example.com" }, authPeer)).rejects.toMatchObject({
       payload: { code: "matchmaking/user_not_found" },
     });
   });
@@ -59,16 +61,23 @@ describe("resolveInvitee", () => {
   it("an ambiguous name gives user_not_found", async () => {
     await insertUser("u-1", "Twin", "one@example.com");
     await insertUser("u-2", "Twin", "two@example.com");
-    await expect(resolveInvitee(env.DB, { name: "Twin" })).rejects.toMatchObject({
+    await expect(resolveInvitee(env.DB, { name: "Twin" }, authPeer)).rejects.toMatchObject({
       payload: { code: "matchmaking/user_not_found" },
     });
   });
 
   it("requires exactly one of email or name", async () => {
-    await expect(resolveInvitee(env.DB, {})).rejects.toMatchObject({
+    await expect(resolveInvitee(env.DB, {}, authPeer)).rejects.toMatchObject({
       payload: { code: "matchmaking/user_not_found" },
     });
-    await expect(resolveInvitee(env.DB, { email: "a@example.com", name: "A" })).rejects.toMatchObject({
+    await expect(resolveInvitee(env.DB, { email: "a@example.com", name: "A" }, authPeer)).rejects.toMatchObject({
+      payload: { code: "matchmaking/user_not_found" },
+    });
+  });
+
+  it("with no auth composed, it cannot resolve anyone, and says so", async () => {
+    await insertUser("u-alice", "Alice", "alice@example.com");
+    await expect(resolveInvitee(env.DB, { email: "alice@example.com" }, undefined)).rejects.toMatchObject({
       payload: { code: "matchmaking/user_not_found" },
     });
   });

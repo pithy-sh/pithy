@@ -12,6 +12,8 @@ import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages"
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { hostEntrySource } from "../capabilities/hostEntry";
+import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
@@ -455,6 +457,12 @@ async function buildProvisioner(projectDir: string, worker?: string) {
       apiToken,
       testersConfig: testers.testersConfig,
       email,
+      // Auth, handed to the daily-pass host when the project composes it — asked only when a deploy runs (#645).
+      hostEntry: () => {
+        const spec = hostWorkerFor("testers");
+        const siblings = capabilities.filter((capability) => capability !== testers);
+        return spec ? hostEntrySource(projectDir, spec, testers, siblings) : undefined;
+      },
       resolveEnv: buildResolveEnv(appReadiness, project, cf, account),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),

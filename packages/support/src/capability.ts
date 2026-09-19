@@ -24,6 +24,8 @@ import { makeResolveDeps } from "./http/resolve";
 import { registerSupportRoutes } from "./http/routes";
 import { supportAdminRoutes } from "./http/scopes";
 import { createSupportEmailHandler } from "./inbound/handler";
+import { senderPeers } from "./link/peers";
+import type { SenderPeers } from "./link/sender";
 import { support_0001_threads } from "./migrations/0001_threads";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
 import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
@@ -67,6 +69,11 @@ export interface SupportWiring {
    * so with `support/reply_failed` rather than the capability refusing to start.
    */
   enqueueEmail: EmailCapability["enqueue"] | undefined;
+  /**
+   * The optional peers the sender link reads through — `auth()`'s and `payments()`'s surfaces, set by
+   * `compose` when each is composed. Found, never imported (#645): see `link/sender.ts`.
+   */
+  peers: SenderPeers;
   /**
    * The audit seam the inbound handler emits through.
    *
@@ -202,6 +209,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     categories,
     snippets,
     enqueueEmail: undefined,
+    peers: {},
     emit: noopEmit,
   };
 
@@ -271,6 +279,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     compose: ({ capabilities }) => {
       const email = capabilities.find(isEmailCapability);
       wiring.enqueueEmail = email?.enqueue;
+      wiring.peers = senderPeers(capabilities);
     },
     // What a browser may know. Built from the resolved `mountPath`, never the default — the whole
     // point is that moving the mount moves the address the client posts to. See `clientProjection`

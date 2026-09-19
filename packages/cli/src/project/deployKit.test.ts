@@ -10,12 +10,14 @@ import { featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
 import { PACKAGE_VERSION } from "@pithy-sh/email/src/version.generated";
+import { ledger } from "@pithy-sh/ledger/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
+import { payments } from "@pithy-sh/payments/src/capability";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readHostTemplate } from "../capabilities/hostRegistry";
 import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
-import { linkKitPackages } from "../test-utils/linkKit";
+import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
 import {
   deployKitWorkers,
   type KitDeployReport,
@@ -168,7 +170,7 @@ describe("deployKitWorkers", () => {
         capability: "email",
         worker: "acme-prod-email",
         outcome: "deployed",
-        reason: "acme-prod-email is not deployed.",
+        reason: "It was not on the account.",
       },
     ]);
     const config = deployed[0];
@@ -184,6 +186,35 @@ describe("deployKitWorkers", () => {
     // id reached the resolver rather than the `""` that used to; the theme proves the config did.
     expect(config?.secrets_store_secrets?.[0]?.store_id).toBe("store-1a2b3c");
     expect(JSON.parse(config?.vars?.EMAIL_THEME as string).accent).toBe(EMAIL.emailConfig.theme.accent);
+  });
+
+  /**
+   * **A host that deployed is never reported as not deployed** (#645). Kit hosts are deployed with
+   * `workers_dev: false` — they are reached through bindings, never by an address — so nothing about them may
+   * be established by probing a `workers.dev` URL, and nothing here does: whether one is there is read off the
+   * account's own API (`readVars`), before the upload. The line printed after the upload used to restate that
+   * reading in the present tense — `acme-prod-email: deployed. acme-prod-email is not deployed.` — two
+   * statements, the second false by the time it was read.
+   */
+  test("a first deploy of a workers.dev-less host reads as one true statement, and probes no address", async () => {
+    const probes: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      probes.push(String(input instanceof Request ? input.url : input));
+      throw new Error("no network in this test");
+    }) as typeof fetch;
+    try {
+      const rows = await run({
+        vars: null,
+        readTemplate: async () => ({ ...structuredClone(template), workers_dev: false }),
+      });
+      expect(deployed[0]?.workers_dev).toBe(false);
+      expect(rows.map(summarizeKitDeploy)).toEqual(["acme-prod-email: deployed. It was not on the account."]);
+      expect(rows.map(summarizeKitDeploy).join("\n")).not.toContain("not deployed");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(probes).toEqual([]);
   });
 
   test("a capability nothing composes is not in the set at all", async () => {
@@ -735,4 +766,199 @@ describe("a feature's kit Workers", () => {
     expect(report.workers).toEqual([]);
     expect(deployed).toEqual([]);
   });
+});
+
+/**
+ * **A host that composes nothing is handed the peers the project composes** (#645).
+ *
+ * The payments reconcile host credits a balance when a pass repairs a purchase whose product has a
+ * `grants.ledger` clause — and it may not import `@pithy-sh/ledger` to do it, because a project that never
+ * installed the ledger then cannot bundle the host at all. So `pithy deploy --kit` deploys it from a generated
+ * entry that imports the ledger's surface from the project's own install and hands it over.
+ *
+ * This runs the command end to end with the real registry, the real payments template and resolver, and — in
+ * place of the upload — **wrangler's own bundler** over exactly the config and entry the command wrote. So what
+ * is proved is not that a string was generated but that the Worker it describes builds, with the ledger in it.
+ */
+describe("a kit host handed the peers the project composes", () => {
+  const GRANTING = {
+    billingSubject: "user" as const,
+    rails: { apple: true },
+    products: {
+      coins_100: {
+        type: "consumable" as const,
+        name: "100 coins",
+        grants: { ledger: { currency: "coins", amount: 100 } },
+        apple: { productId: "com.acme.coins100" },
+      },
+    },
+  };
+
+  /** What `runDeploy` saw: the config, the entry it named, and what wrangler made of them. */
+  interface Shipped {
+    config: WorkflowHostTemplate;
+    entry: string | null;
+    bundle: { status: number | null; output: string; code: string | null };
+  }
+
+  async function deployPayments(capabilities: Capability[]): Promise<{ report: KitDeployReport; shipped: Shipped[] }> {
+    await linkKitPackages(projectDir, ["payments", "ledger"]);
+    const dir = await writeApp(PROVISIONED);
+    const shipped: Shipped[] = [];
+    const report = await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "prod",
+      account: null,
+      workers: [{ name: "api", dir, hasWrangler: true }],
+      capabilitiesFor: async () => capabilities,
+      readTemplate: readHostTemplate,
+      readVars: async () => null,
+      runDeploy: async (args, cwd) => {
+        const { spawnSync } = await import("node:child_process");
+        const { existsSync, readFileSync } = await import("node:fs");
+        const { configFromArgs } = await import("./effectiveConfig");
+        const configPath = configFromArgs(args) as string;
+        const config = JSON.parse(readFileSync(configPath, "utf8")) as WorkflowHostTemplate;
+        const main = join(cwd, config.main);
+        const outdir = join(projectDir, "out");
+        const home = join(projectDir, "home");
+        await mkdir(join(home, ".config"), { recursive: true });
+        // The bundler wrangler deploys with, and nothing past it: `--dry-run` builds and stops, with no
+        // account and no credentials in its environment.
+        const result = spawnSync(
+          process.execPath,
+          [
+            join(import.meta.dirname, "..", "..", "node_modules", "wrangler", "bin", "wrangler.js"),
+            "deploy",
+            "--dry-run",
+            "--outdir",
+            outdir,
+            "--config",
+            configPath,
+          ],
+          {
+            cwd,
+            encoding: "utf8",
+            env: {
+              PATH: process.env.PATH,
+              HOME: home,
+              XDG_CONFIG_HOME: join(home, ".config"),
+              WRANGLER_LOG_PATH: join(projectDir, "logs"),
+              WRANGLER_SEND_METRICS: "false",
+              CI: "1",
+            },
+          },
+        );
+        const bundled = join(outdir, `${config.main.replace(/^\.\//, "").replace(/\.ts$/, "")}.js`);
+        shipped.push({
+          config,
+          entry: config.main.endsWith("worker.ts") ? null : readFileSync(main, "utf8"),
+          bundle: {
+            status: result.status,
+            output: `${result.stdout}\n${result.stderr}`,
+            code: existsSync(bundled) ? readFileSync(bundled, "utf8") : null,
+          },
+        });
+      },
+    });
+    return { report, shipped };
+  }
+
+  test("a catalog that credits a balance deploys its reconcile host with the project's ledger in it", async () => {
+    const { report, shipped } = await deployPayments([
+      payments(GRANTING),
+      ledger({ currencies: [{ code: "coins", name: "Coins" }] }),
+    ]);
+
+    expect(report.problems).toEqual([]);
+    expect(report.workers.map((row) => [row.worker, row.outcome])).toEqual([["acme-prod-payments", "deployed"]]);
+    const [host] = shipped;
+    expect(host?.config.main).toBe("./.pithy-host.prod.ts");
+    expect(host?.entry).toContain('providePeers({ "ledger": peer0 });');
+    expect(host?.entry).toContain("ledger/src/peer.ts");
+    expect(host?.bundle.status, host?.bundle.output).toBe(0);
+    // The ledger's own primitive, bundled into the host — the credit a repair owes can now be made.
+    expect(host?.bundle.code).toContain("pithy_ledger_accounts");
+    // And the generated entry is gone again: it names paths on this machine and lives inside a package.
+    const { existsSync } = await import("node:fs");
+    expect(
+      existsSync(join(projectDir, "node_modules", "@pithy-sh", "payments", "src", "workflows", ".pithy-host.prod.ts")),
+    ).toBe(false);
+  }, 180_000);
+
+  test("a catalog that credits nothing deploys the host from its own entry, with no ledger to resolve", async () => {
+    const { coins_100: _credits, ...features } = GRANTING.products;
+    const { report, shipped } = await deployPayments([
+      payments({
+        ...GRANTING,
+        products: {
+          ...features,
+          pro: { type: "non_consumable", name: "Pro", entitlements: ["pro"], apple: { productId: "com.acme.pro" } },
+        },
+      }),
+    ]);
+
+    expect(report.workers.map((row) => row.outcome)).toEqual(["deployed"]);
+    expect(shipped[0]?.config.main).toBe("./worker.ts");
+    expect(shipped[0]?.entry).toBeNull();
+  }, 180_000);
+});
+
+/**
+ * **A failed wrangler step shows wrangler's own reason** (#645). The payments host failed to bundle for weeks
+ * as `wrangler deploy failed.`, with the one line that said why — `Could not resolve
+ * "@pithy-sh/ledger/src/ledger"` — only in wrangler's log file.
+ *
+ * Driven through the command and the real `runWrangler`, spawning **real wrangler** as a dry run over a host
+ * whose entry imports a package the project does not have: the upload is the only thing replaced, so what
+ * fails is the bundle, exactly as it failed on the account.
+ */
+describe("a kit host whose bundle cannot resolve an import", () => {
+  test("prints wrangler's error lines under the failure line", async () => {
+    await materializeKitPackage(projectDir, "email");
+    const workflows = join(projectDir, "node_modules", "@pithy-sh", "email", "src", "workflows");
+    await writeFile(
+      join(workflows, "broken.ts"),
+      [
+        'import { openLedger } from "@pithy-sh/ledger/src/ledger";',
+        "export default { fetch: () => new Response(String(openLedger)) };",
+        "",
+      ].join("\n"),
+    );
+    const home = join(projectDir, "home");
+    await mkdir(join(home, ".config"), { recursive: true });
+    const { runWrangler } = await import("./wrangler");
+    const dir = await writeApp(PROVISIONED);
+    const report = await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "prod",
+      account: null,
+      workers: [{ name: "api", dir, hasWrangler: true }],
+      capabilitiesFor: async () => [EMAIL],
+      readTemplate: async () => ({ ...structuredClone(template), main: "./broken.ts" }),
+      readVars: async () => null,
+      // The default runner's call, with `--dry-run` added so wrangler bundles and stops: no account, no upload.
+      runDeploy: async (args, cwd) => {
+        await runWrangler([...args, "--dry-run"], {
+          account: null,
+          cwd,
+          bin: join(import.meta.dirname, "..", "..", "node_modules", "wrangler", "bin", "wrangler.js"),
+          env: {
+            HOME: home,
+            XDG_CONFIG_HOME: join(home, ".config"),
+            WRANGLER_LOG_PATH: join(projectDir, "logs"),
+            WRANGLER_SEND_METRICS: "false",
+          },
+        });
+      },
+    });
+
+    expect(report.workers.map((row) => row.outcome)).toEqual(["failed"]);
+    const [line, ...under] = summarizeKitDeploy(report.workers[0] as KitWorkerDeploy).split("\n");
+    expect(line).toMatch(/^acme-prod-email: failed\. .*wrangler\.js deploy failed\.$/);
+    expect(under.join("\n")).toContain('✘ [ERROR] Could not resolve "@pithy-sh/ledger/src/ledger"');
+    expect(under.join("\n")).toContain("broken.ts");
+  }, 180_000);
 });

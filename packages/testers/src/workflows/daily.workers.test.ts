@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createLogger, noopLogger } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
@@ -69,6 +70,8 @@ function deps(now: Date, overrides: Partial<DailyPassDeps> = {}): DailyPassDeps 
     // Most tests here assert on state rather than on output, so the pass logs nowhere. The two that
     // care about what it said pass a capturing logger of their own.
     log: noopLogger,
+    // Composed beside auth, as the generated host entry hands it over (#645).
+    auth: authPeer,
     optOutLinkFor: (member) => `https://api.example.test/testers/opt-out/${member.optInToken}`,
     linkFor: (kind, member) =>
       kind === "confirm"

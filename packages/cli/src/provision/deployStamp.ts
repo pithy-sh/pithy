@@ -149,7 +149,7 @@ export type DeployedStamp =
   /** The read itself failed — no credentials, an unreachable account, a 500. */
   | { readonly state: "unreadable"; readonly detail: string };
 
-/** Everything the gate compares, named so the reason it prints can name it too. */
+/** Everything the gate compares. The Worker is named by the row the reason is printed on, not by the reason. */
 export interface StampComparison {
   /** The deployed script name, e.g. `acme-prod-email`. What an operator finds in the dashboard. */
   worker: string;
@@ -178,19 +178,24 @@ export interface StampVerdict {
  * stamp this release can read, whose version **and** hash both match what this run would write.
  */
 export function stampVerdict(comparison: StampComparison): StampVerdict {
-  const { worker, pkg, current, deployed } = comparison;
+  const { pkg, current, deployed } = comparison;
   if (comparison.force) return { deploy: true, reason: "--force was given." };
-  if (deployed.state === "absent") return { deploy: true, reason: `${worker} is not deployed.` };
-  if (deployed.state === "unstamped") return { deploy: true, reason: `${worker} carries no deploy stamp.` };
+  // **Past tense, because the reason is read after the outcome** (#645). The row prints `<worker>: deployed.
+  // <reason>`, so a reason in the present tense describes an account the deploy has just changed:
+  // `acme-prod-email: deployed. acme-prod-email is not deployed.` was two statements, and the second was
+  // false by the time anybody read it. Each sentence here is about what the account held before this run,
+  // which stays true whatever the run then did — and names nothing the row has not already named.
+  if (deployed.state === "absent") return { deploy: true, reason: "It was not on the account." };
+  if (deployed.state === "unstamped") return { deploy: true, reason: "It carried no deploy stamp." };
   if (deployed.state === "unreadable") {
-    return { deploy: true, reason: `${worker}'s deploy stamp could not be read. ${deployed.detail}` };
+    return { deploy: true, reason: `Its deploy stamp could not be read. ${deployed.detail}` };
   }
 
   const live = parseDeployStamp(deployed.stamp);
   const mine = parseDeployStamp(current);
   // `mine` is built two lines from here by this same module, so an unreadable one is not an adopter's
   // problem — but it is still doubt, and doubt deploys rather than throws inside a deploy.
-  if (!live || !mine) return { deploy: true, reason: `${worker}'s deploy stamp is not one this release can read.` };
+  if (!live || !mine) return { deploy: true, reason: "Its deploy stamp was not one this release can read." };
 
   const moved = live.version !== mine.version;
   const changed = live.hash !== mine.hash;

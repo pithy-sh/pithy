@@ -9,6 +9,7 @@ import { RatingConfig, type RatingConfigInput, type ResolvedRatingGame, validate
 import { ratingTables } from "./data/tables";
 import { registerRatingRoutes } from "./http/routes";
 import { rating_0001_rating } from "./migrations/0001_rating";
+import { type RatingPeer, ratingPeer } from "./peer";
 import { ratingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -26,6 +27,12 @@ export type RatingOptions = RatingConfigInput & {
 export interface RatingCapability extends Capability {
   ratingConfig: RatingConfig;
   ratingGames: ResolvedRatingGame[];
+  /**
+   * What a capability composed beside this one reads skill through — `matchmaking`, bucketing a queue. Found
+   * in its `compose` hook, so it never imports this package and a project without rating bundles it (#645).
+   * See `peer.ts`.
+   */
+  ratingPeer: RatingPeer;
 }
 
 /**
@@ -72,7 +79,7 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
     seeds: [ratingExampleSeed],
   });
 
-  return Object.assign(capability, { ratingConfig: resolved, ratingGames: games });
+  return Object.assign(capability, { ratingConfig: resolved, ratingGames: games, ratingPeer });
 }
 
 export function isRatingCapability(c: Capability): c is RatingCapability {

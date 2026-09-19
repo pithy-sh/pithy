@@ -116,6 +116,11 @@ export interface CloudflareTestersProvisionerOptions {
   readonly email: TestersEmailIdentity | undefined;
   /** Resolve the per-env database ids — injected so it is testable and decoupled from wrangler parsing. */
   readonly resolveEnv: ResolveTestersEnv;
+  /**
+   * The entry the host deploys from when the project composes auth — `hostEntrySource`'s answer, asked only
+   * when a deploy runs (#645). Absent, or answering undefined, the host deploys from its own `worker.ts`.
+   */
+  readonly hostEntry?: () => string | undefined;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   readonly audit?: CliAuditEmit;
 }
@@ -130,6 +135,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
   readonly #testersConfig: TestersConfig;
   readonly #email: TestersEmailIdentity | undefined;
   readonly #resolveEnv: ResolveTestersEnv;
+  readonly #hostEntry: (() => string | undefined) | undefined;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTestersProvisionerOptions) {
@@ -141,6 +147,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     this.#testersConfig = options.testersConfig;
     this.#email = options.email;
     this.#resolveEnv = options.resolveEnv;
+    this.#hostEntry = options.hostEntry;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -176,9 +183,11 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
     // too: a false redeploy costs seconds, a false skip is silent.
     try {
+      const entry = this.#hostEntry?.();
       const { outcome } = await deployHostWorker({
         capability: "testers",
         pkg: "@pithy-sh/testers",
+        ...(entry === undefined ? {} : { entry }),
         version: await kitPackageVersion(this.#projectDir, "@pithy-sh/testers"),
         config,
         dir,

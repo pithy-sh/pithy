@@ -9,6 +9,7 @@ import { matchmakingTables } from "./data/tables";
 import { registerMatchmakingRoutes } from "./http/routes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { matchmaking_0001_matchmaking } from "./migrations/0001_matchmaking";
+import { type MatchmakingPeers, matchmakingPeers } from "./peers";
 import { matchmakingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -61,6 +62,9 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
     },
   ];
 
+  // Filled once by `compose`, which runs after this factory — so the routes are handed a reader, not a value.
+  let peers: MatchmakingPeers = {};
+
   const capability = defineCapability({
     name: "matchmaking",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -87,7 +91,12 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
         },
       },
     },
-    routes: registerMatchmakingRoutes({ config: resolved, basePath }),
+    // The optional peers — auth for an invite, rating for a skill bucket — found among the composed
+    // capabilities rather than imported (#645). See `peers.ts`.
+    compose: ({ capabilities }) => {
+      peers = matchmakingPeers(capabilities);
+    },
+    routes: registerMatchmakingRoutes({ config: resolved, basePath, peers: () => peers }),
     seeds: [matchmakingExampleSeed],
   });
 

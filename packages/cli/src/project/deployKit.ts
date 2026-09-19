@@ -15,6 +15,7 @@ import {
   type ReadWorkerVars,
   type RunHostDeploy,
 } from "../capabilities/hostDeploy";
+import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from "../capabilities/hostRegistry";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
@@ -541,12 +542,16 @@ async function deployOneKitWorker(input: {
   if (shortfall) return skipped(capability, shortfall);
 
   try {
+    // The peers this composition hands a host that composes nothing — the ledger to payments' reconcile host,
+    // auth to testers' — written as the entry it deploys from. Undefined for every other host (#645).
+    const entry = hostEntrySource(options.projectDir, host.spec, host.composed, host.siblings);
     const outcome = await deployHostWorker({
       capability,
       pkg: host.spec.package,
       version: await kitPackageVersion(options.projectDir, host.spec.package),
       config,
       dir: dirname(hostTemplatePath(options.projectDir, host.spec.entry)),
+      ...(entry === undefined ? {} : { entry }),
       env: options.env,
       readVars: input.readVars,
       runDeploy: options.runDeploy,

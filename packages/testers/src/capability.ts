@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
@@ -48,6 +49,12 @@ export interface TestersCapability
   testersConfig: TestersConfig;
 }
 
+/** `auth()`'s peer surface among the composed capabilities, or undefined when auth is not composed. */
+function composedAuth(capabilities: readonly Capability[]): AuthPeer | undefined {
+  const found = capabilities.find((capability) => capability.name === "auth" && "authPeer" in capability);
+  return found ? ((found as unknown as { authPeer: AuthPeer }).authPeer as AuthPeer) : undefined;
+}
+
 /** Whether a composed capability is the testers capability — carries its resolved config. */
 export function isTestersCapability(capability: Capability): capability is TestersCapability {
   return capability.name === "testers" && "testersConfig" in capability;
@@ -68,7 +75,10 @@ export function testers(options: TestersOptions = {}): TestersCapability {
    * Held in a mutable slot rather than passed in because `compose` runs after the factory: the routes
    * are registered at assembly and need a way to reach an enqueue that does not exist yet.
    */
-  const wiring: { enqueue: EmailCapability["enqueue"] | undefined } = { enqueue: undefined };
+  const wiring: { enqueue: EmailCapability["enqueue"] | undefined; auth: AuthPeer | undefined } = {
+    enqueue: undefined,
+    auth: undefined,
+  };
 
   const requiredBindings: BindingSpecInput[] = [
     // The app database — all four pithy_testers_* tables live here, alongside the pithy_auth_* tables
@@ -101,6 +111,9 @@ export function testers(options: TestersOptions = {}): TestersCapability {
       // `dependsOn` already fails assembly without it; this narrows the type and gives a message
       // naming what testers actually wanted it for.
       if (email) wiring.enqueue = email.enqueue;
+      // Auth is optional: with it, the activity reader sees who has used the app; without it, every tester
+      // reads `unobservable`. Found here, never imported (#645) — see `activity/resolve.ts`.
+      wiring.auth = composedAuth(capabilities);
     },
     requiredBindings,
     databases: {
@@ -116,6 +129,7 @@ export function testers(options: TestersOptions = {}): TestersCapability {
     adminRoutes: testersAdminRoutes(resolved.basePath),
     routes: registerTestersRoutes({
       config: resolved,
+      auth: () => wiring.auth,
       enqueue: (env) => {
         const enqueue = wiring.enqueue;
         if (!enqueue) return undefined;

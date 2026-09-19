@@ -55,6 +55,7 @@ import {
   PaymentsSubscriptionChangeRefusedError,
 } from "../error/errors";
 import { fulfillPurchase } from "../grants/apply";
+import type { PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, providerAccountForSubject, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
@@ -333,6 +334,13 @@ export interface PaymentsRoutesOptions {
    * compose organization billing without a resolver rather than reaching this state.
    */
   subject?: PaymentsSubjectSeam;
+  /**
+   * The ledger a `grants` product credits through, read per request — `payments()` hands the slot its
+   * `compose` hook fills, because `compose` runs after this factory. Undefined when no ledger is composed,
+   * which `payments()` refuses at assembly for any catalog that credits one. Never imported: see
+   * `grants/ledgerSeam.ts`.
+   */
+  ledger?: () => PaymentsLedgerPeer | undefined;
 }
 
 /** The app `DB` binding, or a wiring failure. Payments cannot resolve anything without it. */
@@ -1255,14 +1263,6 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   }
 
   /**
-   * Credit what the purchase bought, and reverse it where a refund and the catalog both ask.
-   *
-   * A no-op for every product with no `grants` clause, and it resolves the optional `@pithy-sh/ledger` import
-   * only when one is present — so a project selling nothing but features never reaches the package. A failure
-   * here is deliberately left to propagate: the credit's ref is stable, so a retry settles it, and swallowing
-   * it would lose a purchase's currency with nothing anywhere to read.
-   */
-  /**
    * Project the orphans a link just made resolvable. Never throws: see {@link repairOrphanedEvents}.
    *
    * The rail provider is built here rather than passed, because `replay` is the one thing the repair needs
@@ -1291,10 +1291,19 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     }
   }
 
+  /**
+   * Credit what the purchase bought, and reverse it where a refund and the catalog both ask.
+   *
+   * A no-op for every product with no `grants` clause, and it calls the ledger the composition handed over
+   * only when one is present — so a project selling nothing but features never needs one. A failure here is
+   * deliberately left to propagate: the credit's ref is stable, so a retry settles it, and swallowing it would
+   * lose a purchase's currency with nothing anywhere to read.
+   */
   async function fulfill(c: Context<PithyHonoEnv>, projection: PurchaseProjection): Promise<void> {
     await fulfillPurchase(database(c), projection, {
       config,
       emit: c.var.emit,
+      ledgerPeer: options.ledger?.(),
       now: () => clock().getTime(),
     });
   }

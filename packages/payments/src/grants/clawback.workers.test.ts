@@ -7,6 +7,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
+import { ledgerPeer } from "@pithy-sh/ledger/src/peer";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsAuditActions } from "../audit/actions";
@@ -124,7 +125,7 @@ describe("clawbackRef", () => {
 describe("clawbackGrants", () => {
   test("reverses the credit when the catalog opts in and the balance covers it", async () => {
     const purchase = await project();
-    await fulfillPurchase(env.DB, purchase, { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, purchase, { config: CONFIG, ledgerPeer, emit });
     expect((await balance(ADA)).balance).toBe(100);
 
     const refund = await boughtThenRefunded();
@@ -139,6 +140,7 @@ describe("clawbackGrants", () => {
   test("is off by default — a refunded product that never opted in keeps its balance", async () => {
     await fulfillPurchase(env.DB, await project(event({ providerProductId: "com.acme.coins500" })), {
       config: CONFIG,
+      ledgerPeer,
       emit,
     });
     const refund = await boughtThenRefunded({ providerProductId: "com.acme.coins500" });
@@ -157,7 +159,7 @@ describe("clawbackGrants", () => {
   });
 
   test("a revoked purchase claws back too — the money came back either way", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     await project(event({ status: "revoked", providerEventAt: new Date(T0 + SECOND) }));
     const revoked = await project(event({ status: "revoked", providerEventAt: new Date(T0 + 2 * SECOND) }));
 
@@ -166,14 +168,14 @@ describe("clawbackGrants", () => {
   });
 
   test("reverses once however many times the refund is delivered", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     const refund = await boughtThenRefunded();
     for (let i = 0; i < 3; i++) await clawbackGrants(ledger(), refund, { config: CONFIG });
     expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("a spent balance refuses the reversal, and the refusal is the outcome rather than an exception", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     // The player spent it. The refund arrives anyway, as refunds do.
     await ledger().debit(ledgerAccountId(ADA), "coins", 60, "game:spend:1");
     const refund = await boughtThenRefunded();
@@ -200,11 +202,11 @@ describe("clawbackGrants", () => {
 
 describe("fulfillPurchase — the recorded state a refused clawback becomes", () => {
   test("emits a critical audit event naming the code, the account, and the shortfall", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
     emitted = [];
 
-    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, emit });
+    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, ledgerPeer, emit });
 
     expect(report.clawedBack[0]?.outcome).toBe("refused");
     expect(emitted).toHaveLength(1);
@@ -225,27 +227,27 @@ describe("fulfillPurchase — the recorded state a refused clawback becomes", ()
   });
 
   test("records nothing when the reversal succeeded — the ledger row is already the record", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     emitted = [];
-    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, emit });
+    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, ledgerPeer, emit });
 
     expect(report.clawedBack[0]?.outcome).toBe("reversed");
     expect(emitted).toEqual([]);
   });
 
   test("the refund still stands, whatever the clawback did", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer, emit });
     await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
-    await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, emit });
+    await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, ledgerPeer, emit });
 
     const { results } = await env.DB.prepare("SELECT status FROM pithy_payments_purchases").all<{ status: string }>();
     expect(results).toEqual([{ status: "refunded" }]);
   });
 
   test("needs no audit recorder composed — the seam defaults to core's no-op", async () => {
-    await fulfillPurchase(env.DB, await project(), { config: CONFIG });
+    await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer });
     await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
-    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG });
+    const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, ledgerPeer });
     expect(report.clawedBack[0]?.outcome).toBe("refused");
   });
 });

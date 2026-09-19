@@ -37,6 +37,7 @@ function deps(config = CONFIG): HandlerDeps {
     snippets: {},
     fts: false,
     dispatchClassify: async () => true,
+    peers: {},
     emit: async () => {},
     log: noopLogger,
     newId: () => "id",

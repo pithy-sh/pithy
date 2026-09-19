@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { parseAddress } from "@pithy-sh/core/src/address/address";
 import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
+import type { PaymentsPeer } from "@pithy-sh/payments/src/peer";
 import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
 
 /**
@@ -14,13 +16,18 @@ import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
  * different object from a message in a mailbox — and every one of those facts is already in the
  * adopter's own D1, one table over, unused.
  *
- * ## Guarded dynamic imports, not dependencies
+ * ## Handed over by the composition, never imported
  *
  * `@pithy-sh/auth` and `@pithy-sh/payments` are **optional** here (principle 4: depend on core seams,
- * never on a sibling's internals), so both are reached the way `@pithy-sh/matchmaking` already
- * reaches auth — a dynamic import inside a `try`, degrading to "no link" when the package is not
- * installed. A support inbox in a project with no accounts and no payments is a perfectly reasonable
- * thing to run, and it must not fail to start, or to store mail, because of what it cannot see.
+ * never on a sibling's internals), so both reach this module from the composition: `support()`'s `compose`
+ * hook finds each one's peer surface among the composed capabilities and every function below is handed
+ * {@link SenderPeers}, degrading to "no link" when one is absent. They were reached by `import()` inside a
+ * `try` until #645, which is optional at runtime and required at bundle time — wrangler's esbuild resolves a
+ * literal specifier whether or not the branch holding it ever runs, so a project without either package
+ * could not deploy support at all. Only types name the two packages now, and a bundler never sees a type.
+ *
+ * A support inbox in a project with no accounts and no payments is a perfectly reasonable thing to run, and
+ * it must not fail to start, or to store mail, because of what it cannot see.
  *
  * Every function here is **best-effort by contract**: it returns nothing rather than throwing, and
  * the caller stores the message either way. Linkage is context, and context is never worth losing a
@@ -96,6 +103,17 @@ export interface SenderPurchase {
   revokedAt: Date | null;
 }
 
+/**
+ * The optional peers the link reads through — what `support()`'s `compose` hook found. Either may be absent,
+ * and an absent one is "no link", never a failure.
+ */
+export interface SenderPeers {
+  /** `auth()`'s surface, when auth is composed: who an address or a session id belongs to. */
+  readonly auth?: AuthPeer;
+  /** `payments()`'s surface, when payments is composed: what that account bought and holds. */
+  readonly payments?: PaymentsPeer;
+}
+
 /** How many purchases a thread view carries. Enough to see the pattern, bounded so a whale is not a slow page. */
 export const MAX_LINKED_PURCHASES = 25;
 
@@ -110,20 +128,20 @@ export const MAX_LINKED_PURCHASES = 25;
  * capitals by some other route simply does not link, which costs a line of context rather than a
  * customer's request.
  */
-export async function resolveSenderUserId(d1: D1Database, address: string): Promise<string | null> {
+export async function resolveSenderUserId(d1: D1Database, address: string, peers: SenderPeers): Promise<string | null> {
   const normalized = parseAddress(address);
-  if (!normalized) return null;
+  if (!normalized || !peers.auth) return null;
 
   try {
-    const { authDatabase } = await import("@pithy-sh/auth/src/data/tables");
-    const row = await authDatabase(d1)
+    const row = await peers.auth
+      .authDatabase(d1)
       .selectFrom("pithyAuthUsers")
       .select(["id"])
       .where("email", "=", normalized)
       .executeTakeFirst();
     return row?.id ?? null;
   } catch {
-    // `@pithy-sh/auth` is not installed, or the table does not exist yet. Both mean the same thing
+    // The auth table does not exist yet — composed but not migrated. It means what an absent auth means
     // here: nobody to link to.
     return null;
   }
@@ -134,8 +152,8 @@ export async function resolveSenderUserId(d1: D1Database, address: string): Prom
  * nothing deliverable.
  *
  * Extracted rather than inlined because it is the one decision in {@link resolveSubmitterAccount} with
- * a wrong answer available, and inlining it puts that decision behind a guarded dynamic import where
- * no test can reach it.
+ * a wrong answer available, and inlining it puts that decision behind a peer read where no test can
+ * reach it.
  *
  * **`parseAddress` only, with no `normalizeAddress` fallback.** The fallback merely trims and
  * lowercases, so it would hand back an address this capability's own parser had just refused — and
@@ -156,17 +174,18 @@ export function submitterAddress(email: string | null | undefined): string | nul
  * back to. Deriving that from anything the client sent would hand a signed-in caller the ability to
  * point a support conversation — and every operator reply on it — at somebody else's mailbox.
  *
- * Returns null when `@pithy-sh/auth` is absent or the account is gone. A submission whose account
+ * Returns null when `@pithy-sh/auth` is not composed or the account is gone. A submission whose account
  * cannot be read is refused by the caller rather than stored with a guessed address: an app thread with
  * no working reply address is a report nobody can answer.
  */
 export async function resolveSubmitterAccount(
   d1: D1Database,
   userId: string,
+  peers: SenderPeers,
 ): Promise<{ email: string; name?: string; emailVerified?: boolean } | null> {
+  if (!peers.auth) return null;
+  const { authDatabase, User } = peers.auth;
   try {
-    const { authDatabase } = await import("@pithy-sh/auth/src/data/tables");
-    const { User } = await import("@pithy-sh/auth/src/data/betterAuth");
     const row = await authDatabase(d1)
       .selectFrom("pithyAuthUsers")
       .selectAll()
@@ -186,10 +205,11 @@ export async function resolveSubmitterAccount(
 async function resolveAccount(
   d1: D1Database,
   address: string,
+  peers: SenderPeers,
 ): Promise<{ userId: string; name?: string; emailVerified?: boolean } | null> {
+  if (!peers.auth) return null;
+  const { authDatabase, User } = peers.auth;
   try {
-    const { authDatabase } = await import("@pithy-sh/auth/src/data/tables");
-    const { User } = await import("@pithy-sh/auth/src/data/betterAuth");
     const row = await authDatabase(d1)
       .selectFrom("pithyAuthUsers")
       .selectAll()
@@ -211,10 +231,14 @@ async function resolveAccount(
  * is the whole reason payments made the holder a pair. See {@link SUPPORT_BILLING_SCOPE} for why the
  * type half is pinned to `user` rather than resolved.
  */
-async function resolvePurchases(d1: D1Database, userId: string): Promise<readonly SenderPurchase[]> {
+async function resolvePurchases(
+  d1: D1Database,
+  userId: string,
+  peers: SenderPeers,
+): Promise<readonly SenderPurchase[]> {
+  if (!peers.payments) return [];
+  const { PAYMENTS_PURCHASES_TABLE, paymentsDatabase, PaymentsPurchase } = peers.payments;
   try {
-    const { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } = await import("@pithy-sh/payments/src/data/tables");
-    const { PaymentsPurchase } = await import("@pithy-sh/payments/src/data/purchase");
     const rows = await paymentsDatabase(d1)
       .selectFrom(PAYMENTS_PURCHASES_TABLE)
       .selectAll()
@@ -242,10 +266,15 @@ async function resolvePurchases(d1: D1Database, userId: string): Promise<readonl
 }
 
 /** Read what the account is entitled to, when payments is composed — **`user`-subject rows only**. */
-async function resolveLinkedEntitlements(d1: D1Database, userId: string, now: Date): Promise<readonly Entitlement[]> {
+async function resolveLinkedEntitlements(
+  d1: D1Database,
+  userId: string,
+  now: Date,
+  peers: SenderPeers,
+): Promise<readonly Entitlement[]> {
+  if (!peers.payments) return [];
+  const { paymentsDatabase, resolveEntitlements } = peers.payments;
   try {
-    const { paymentsDatabase } = await import("@pithy-sh/payments/src/data/tables");
-    const { resolveEntitlements } = await import("@pithy-sh/payments/src/projection/resolve");
     return await resolveEntitlements(
       paymentsDatabase(d1),
       { subjectType: SUPPORT_BILLING_SCOPE, subjectId: userId },
@@ -269,13 +298,14 @@ export async function resolveSenderContext(
   address: string,
   now: Date,
   options: { authenticated: boolean },
+  peers: SenderPeers,
 ): Promise<SenderContext> {
   const empty: SenderContext = { authenticated: options.authenticated, userId: null, purchases: [], entitlements: [] };
 
   const normalized = parseAddress(address);
   if (!normalized) return empty;
 
-  const account = await resolveAccount(d1, normalized);
+  const account = await resolveAccount(d1, normalized, peers);
   if (!account) return empty;
 
   // **An unverified match is reported; its billing history is not.**
@@ -292,7 +322,7 @@ export async function resolveSenderContext(
     return { authenticated: false, userId: account.userId, name: account.name, purchases: [], entitlements: [] };
   }
 
-  return provenContext(d1, account, now);
+  return provenContext(d1, account, now, peers);
 }
 
 /**
@@ -304,12 +334,17 @@ export async function resolveSenderContext(
  * nobody — turning the one link that *is* certain into the one the console shows as unknown.
  *
  * Everything below the link degrades exactly as it does on the mail path: purchases and entitlements
- * are guarded dynamic imports and come back empty when `@pithy-sh/payments` is absent.
+ * come back empty when `@pithy-sh/payments` is not composed.
  */
-export async function resolveSubmitterContext(d1: D1Database, userId: string, now: Date): Promise<SenderContext> {
-  const account = await resolveSubmitterAccount(d1, userId);
+export async function resolveSubmitterContext(
+  d1: D1Database,
+  userId: string,
+  now: Date,
+  peers: SenderPeers,
+): Promise<SenderContext> {
+  const account = await resolveSubmitterAccount(d1, userId, peers);
   if (!account) return { authenticated: true, userId, purchases: [], entitlements: [] };
-  return provenContext(d1, { userId, name: account.name, emailVerified: account.emailVerified }, now);
+  return provenContext(d1, { userId, name: account.name, emailVerified: account.emailVerified }, now, peers);
 }
 
 /** The proven half, shared by both entry points: the account, plus what it bought and what it holds. */
@@ -317,10 +352,11 @@ async function provenContext(
   d1: D1Database,
   account: { userId: string; name?: string; emailVerified?: boolean },
   now: Date,
+  peers: SenderPeers,
 ): Promise<SenderContext> {
   const [purchases, entitlements] = await Promise.all([
-    resolvePurchases(d1, account.userId),
-    resolveLinkedEntitlements(d1, account.userId, now),
+    resolvePurchases(d1, account.userId, peers),
+    resolveLinkedEntitlements(d1, account.userId, now, peers),
   ]);
 
   return {

@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { MatchmakingUserNotFoundError } from "../error/errors";
 
 /**
  * Resolve an invite target — an email or a screen name — to a single authenticated user id, via the
- * optional `@pithy-sh/auth` seam (dynamic-imported, like multiplayer → leaderboard). Email is the reliable
+ * optional `@pithy-sh/auth` seam: the surface the composition handed over, never an import (#645). Email is the reliable
  * key (unique on the user table); a display name is best-effort and may be ambiguous. Auth exposes no
  * unique screen name, so a name that matches zero or many users throws `matchmaking/user_not_found` —
- * invite by email for certainty. If `@pithy-sh/auth` is not installed, resolution is impossible.
+ * invite by email for certainty. If `@pithy-sh/auth` is not composed, resolution is impossible.
  */
 
 /** How an invitee is addressed — exactly one of these. */
@@ -19,7 +20,11 @@ export interface InviteTarget {
   name?: string;
 }
 
-export async function resolveInvitee(db: D1Database, target: InviteTarget): Promise<string> {
+export async function resolveInvitee(
+  db: D1Database,
+  target: InviteTarget,
+  authPeer: AuthPeer | undefined,
+): Promise<string> {
   const byEmail = typeof target.email === "string" && target.email.length > 0;
   const byName = typeof target.name === "string" && target.name.length > 0;
   if (byEmail === byName) {
@@ -28,17 +33,12 @@ export async function resolveInvitee(db: D1Database, target: InviteTarget): Prom
     });
   }
 
-  let authDatabase: typeof import("@pithy-sh/auth/src/data/tables").authDatabase;
-  let User: typeof import("@pithy-sh/auth/src/data/betterAuth").User;
-  try {
-    ({ authDatabase } = await import("@pithy-sh/auth/src/data/tables"));
-    ({ User } = await import("@pithy-sh/auth/src/data/betterAuth"));
-  } catch (cause) {
-    throw new MatchmakingUserNotFoundError(
-      { detail: "@pithy-sh/auth is required to resolve an invitee by email or name." },
-      { cause },
-    );
+  if (authPeer === undefined) {
+    throw new MatchmakingUserNotFoundError({
+      detail: "@pithy-sh/auth must be composed to resolve an invitee by email or name.",
+    });
   }
+  const { authDatabase, User } = authPeer;
 
   const auth = authDatabase(db);
 

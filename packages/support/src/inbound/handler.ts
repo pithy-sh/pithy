@@ -76,7 +76,7 @@ export function createSupportEmailHandler(wiring: SupportWiring): CapabilityEmai
           bucket: bindings.SUPPORT_BUCKET,
           fts: wiring.config.search.fts,
           dispatchClassify: makeClassifyDispatcher(env, log),
-          linkSender: (address) => resolveSenderUserId(d1, address),
+          linkSender: (address) => resolveSenderUserId(d1, address, wiring.peers),
           emit: wiring.emit,
           log,
           newId: () => crypto.randomUUID(),

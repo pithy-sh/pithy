@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
@@ -64,7 +65,9 @@ function makeApp(input: MatchmakingConfigInput = CONFIG) {
     else c.set("auth", null);
     await next();
   });
-  registerMatchmakingRoutes({ config: MatchmakingConfig.parse(input) })(app);
+  // Composed beside auth, as `matchmaking()`'s `compose` hook would have found it — an invite resolves through
+  // it and nothing in matchmaking imports it (#645).
+  registerMatchmakingRoutes({ config: MatchmakingConfig.parse(input), peers: () => ({ auth: authPeer }) })(app);
   return app;
 }
 

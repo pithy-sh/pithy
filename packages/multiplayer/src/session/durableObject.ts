@@ -21,6 +21,7 @@ import {
 import { applyLedgerEffects } from "../game/effects";
 import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
+import { multiplayerPeers } from "./peers";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
 import { type GameSnapshot, isTerminal, SessionMeta, type SessionOutcome, type SessionView } from "./state";
 
@@ -277,7 +278,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
       if (model.onJoin) {
         const state = await this.loadModelState(model);
         const seated = model.onJoin(ctx, state, userId);
-        await applyLedgerEffects(this.env.DB, seated.effects ?? []);
+        await applyLedgerEffects(this.env.DB, seated.effects ?? [], multiplayerPeers().ledger);
         await this.ctx.storage.put(MODEL_STATE_KEY, seated.state);
       }
       meta.rng.cursor = rng.spent();
@@ -325,7 +326,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
 
     // Settle the action's ledger effects (a bet's hold) BEFORE committing the new state: a hold the player
     // cannot cover throws here, so the action is rejected and the game state never advances.
-    await applyLedgerEffects(this.env.DB, effects ?? []);
+    await applyLedgerEffects(this.env.DB, effects ?? [], multiplayerPeers().ledger);
     await this.ctx.storage.put(MODEL_STATE_KEY, next);
     meta.rng.cursor = rng.spent(); // persist any randomness the action drew (a dice roll, a card draw)
 
@@ -333,7 +334,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     // model loops rounds internally and settles each via effects; the table ends only on close or empty.
     if (meta.game.mode === "match" && model.isComplete(ctx, next)) {
       const resolved = model.resolve(ctx, next);
-      await applyLedgerEffects(this.env.DB, resolved.effects ?? []); // final payouts
+      await applyLedgerEffects(this.env.DB, resolved.effects ?? [], multiplayerPeers().ledger); // final payouts
       // resolve persists meta (with the advanced cursor) as it commits the terminal state.
       await this.resolve(meta, resolved.outcome);
     } else {
@@ -364,7 +365,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     if (model.onLeave) {
       const state = await this.loadModelState(model);
       const settled = model.onLeave(ctx, state, userId);
-      await applyLedgerEffects(this.env.DB, settled.effects ?? []);
+      await applyLedgerEffects(this.env.DB, settled.effects ?? [], multiplayerPeers().ledger);
       await this.ctx.storage.put(MODEL_STATE_KEY, settled.state);
     }
     meta.rng.cursor = rng.spent();
@@ -468,21 +469,27 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
 
   /**
    * Publish a resolved result to the leaderboard, one-way and best-effort — only when the game configured a
-   * board. Loaded by dynamic import so `@pithy-sh/leaderboard` stays an optional peer.
+   * board. Through the surface the composition handed over, so `@pithy-sh/leaderboard` stays an optional peer
+   * nothing here imports (#645).
    */
   private async publishResult(meta: SessionMeta, outcome: SessionOutcome): Promise<void> {
     const leaderboard = meta.game.leaderboard;
     if (!leaderboard || outcome.status !== "resolved" || outcome.scores === null) return;
     try {
       const { publishResultToLeaderboard } = await import("../publish/leaderboard");
-      await publishResultToLeaderboard(this.env.DB, leaderboard, {
-        members: meta.members,
-        winnerUserId: outcome.winnerUserId,
-        draw: outcome.draw,
-        at: new Date(outcome.resolvedAt),
-      });
+      await publishResultToLeaderboard(
+        this.env.DB,
+        leaderboard,
+        {
+          members: meta.members,
+          winnerUserId: outcome.winnerUserId,
+          draw: outcome.draw,
+          at: new Date(outcome.resolvedAt),
+        },
+        multiplayerPeers().leaderboard,
+      );
     } catch (error) {
-      // A board misconfigured (or leaderboard not installed) must not fail a resolved session. The result is
+      // A board misconfigured (or no leaderboard composed) must not fail a resolved session. The result is
       // already durable in D1; only the leaderboard entry is lost. Lost, and never retried — so this is a
       // failure someone has to see and fix, not a degraded path that heals itself. It logs at `error`, and
       // this record is the only trace it ever happened.
@@ -507,7 +514,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     if (state !== undefined && model.isComplete(ctx, state)) {
       // The final action raced the deadline and won — resolve rather than abandon.
       const resolved = model.resolve(ctx, state);
-      await applyLedgerEffects(this.env.DB, resolved.effects ?? []);
+      await applyLedgerEffects(this.env.DB, resolved.effects ?? [], multiplayerPeers().ledger);
       await this.resolve(meta, resolved.outcome);
     } else {
       await this.abandon(meta);

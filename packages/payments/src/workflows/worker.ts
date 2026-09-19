@@ -9,6 +9,7 @@ import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/sr
 import type { PurchaseEnvironment } from "../data/purchase";
 import { triggerPaymentsReconcile } from "../http/dispatch";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry, railCredentials } from "../secret/registry";
+import { hostPeers } from "./hostPeers";
 import { sweepPaddle } from "./paddleSweep";
 import { batchedRailAccess } from "./railAccess";
 import { type ReconcileReport, reconcilePayments } from "./reconcile";
@@ -111,6 +112,9 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
         railAccess: (now) => batchedRailAccess({ config, credentials, now }),
         now: () => new Date(),
         emit: auditLogEmit(log),
+        // Handed over by the generated entry when the catalog credits a balance, undefined otherwise — this
+        // host composes nothing, so it cannot find a ledger for itself. See `hostPeers.ts`.
+        ledgerPeer: hostPeers.ledger,
         /**
          * The Paddle events sweep, supplied only when that rail is on.
          *
@@ -134,6 +138,7 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
                   // The raw `ENVIRONMENT`, not the two-valued store environment: the shared-sandbox fence
                   // separates `dev` from `staging`, and both are `sandbox` on the other axis.
                   deployment: this.env.ENVIRONMENT,
+                  ledgerPeer: hostPeers.ledger,
                   now: () => new Date(),
                 }),
             }

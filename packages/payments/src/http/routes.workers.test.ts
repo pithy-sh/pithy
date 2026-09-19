@@ -3,7 +3,7 @@
 
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
-import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { type ControlPlaneVerifier, createControlPlaneVerifier } from "@pithy-sh/core/src/controlPlane/http/guard";
@@ -14,8 +14,10 @@ import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { createTranslator, DEFAULT_LOCALE } from "@pithy-sh/core/src/i18n/translator";
+import { ledger as ledgerCapability } from "@pithy-sh/ledger/src/capability";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
+import { ledgerPeer } from "@pithy-sh/ledger/src/peer";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
@@ -23,6 +25,7 @@ import type { Kysely } from "kysely";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { PaymentsAuditActions } from "../audit/actions";
+import { payments } from "../capability";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import { PaymentsPurchase, type PurchaseRole } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
@@ -72,6 +75,7 @@ import {
   CUSTOMER_ID as LEMON_CUSTOMER,
   FIXTURE_WEBHOOK_SECRET as LEMON_FIXTURE_SECRET,
   VARIANT_ID as LEMON_VARIANT,
+  orderDelivery,
   subscriptionDelivery,
   subscriptionResponse,
 } from "../rails/lemonSqueezy/fixtures/events";
@@ -580,6 +584,9 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
     config: PaymentsConfig.parse(input),
     now: () => NOW,
     ...(options.subject === undefined ? {} : { subject: options.subject }),
+    // The ledger `payments()`'s `compose` hook would have found: this app stands for a Worker that composes
+    // `ledger()` beside payments, which the catalog's coin packs require.
+    ledger: () => ledgerPeer,
     trust: {
       ...(options.trustedApple === false ? {} : { appleTrustedRoots: [chain.root] }),
       ...(options.trustedGoogle === false ? {} : { googleTrustedKeys: [googleKey.jwk] }),
@@ -2625,6 +2632,64 @@ describe("ledger fulfillment", () => {
       amount: 100,
       reason: "payments/clawback_failed",
     });
+  });
+});
+
+/**
+ * **The composition itself, end to end** (#645). Every case above hands the routes a ledger the way the
+ * harness says a composition would; this one lets the real `payments()` and `ledger()` compose and credits a
+ * paid purchase through the routes `payments()` itself mounts.
+ *
+ * It is the other half of `workflows/hostBundle.test.ts`. That one proves a project *without* the ledger can
+ * bundle payments now that nothing in it names the package; this proves a project *with* the ledger still gets
+ * its coins, which is the only reason the package was ever reached for. The ledger arrives through
+ * `payments()`'s `compose` hook — nothing here passes it in.
+ *
+ * Lemon Squeezy, because its order webhook is verified by a secret the harness seeds and projected with no
+ * call out, so the routes need none of the trust or transport seams `payments()` does not accept.
+ */
+describe("a Worker composing payments() beside ledger()", () => {
+  const COIN_SHOP: PaymentsConfigInput = {
+    billingSubject: "user",
+    rails: { lemonSqueezy: true },
+    lemonSqueezy: { successUrl: "https://acme.example/thanks" },
+    products: {
+      coins_100: {
+        type: "consumable",
+        name: "100 coins",
+        grants: { ledger: { currency: "coins", amount: 100 } },
+        lemonSqueezy: { variantId: String(LEMON_VARIANT) },
+      },
+    },
+  };
+
+  /** The routes `payments()` mounts, after every composed capability's `compose` hook has run. */
+  function composedApp(peers: readonly Capability[]): Hono<PithyHonoEnv> {
+    const capability = payments(COIN_SHOP);
+    const capabilities = [capability, ...peers];
+    for (const each of capabilities) each.compose?.({ capabilities });
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("auth", null);
+      c.set("controlPlaneVerifier", null);
+      c.set("t", createTranslator({ catalogLocale: DEFAULT_LOCALE, formattingLocale: DEFAULT_LOCALE, layers: [] }));
+      c.set("emit", async (event) => {
+        emitted.push(event);
+      });
+      await next();
+    });
+    capability.routes?.(app);
+    return app;
+  }
+
+  test("a paid order credits the balance the catalog promised, through the ledger compose found", async () => {
+    const app = composedApp([ledgerCapability({ currencies: [{ code: "coins", name: "Coins" }] })]);
+    const response = await lemonHook(app, await orderDelivery("order_created", {}, { deployment: "prod" }));
+
+    expect(response.status).toBe(200);
+    expect((await purchases())[0]?.productId).toBe("coins_100");
+    expect(await coinBalance(user("ada"))).toBe(100);
   });
 });
 
