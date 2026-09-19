@@ -8,6 +8,7 @@ import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentityWithoutWorkers } from "../feature/identity";
+import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
 import { readProjectLedger } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning } from "../project/deploy";
@@ -174,6 +175,9 @@ export default defineCommand({
       const projectDir = process.cwd();
       assertDeployFlags(args);
       const selection = deploySelection(args);
+      // **A rate-limit namespace in the feature range is nobody's to declare (#643)**, for any selection and any
+      // environment: a feature of any project in the account can be allocated it, and the two would share counters.
+      await assertProjectDeclaresNoFeatureIds(projectDir);
 
       // The three gates below are about the **adopter's** Workers: their bindings, their declared
       // origins, their Workflow stanzas. `--kit` touches nothing under `apps/`, so it is not held to

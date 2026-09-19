@@ -5,106 +5,125 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import {
-  type FeatureIdentity,
-  featureSecretEntryName,
-  isFeatureOwnedName,
-  parseFeatureName,
-} from "@pithy-sh/core/src/naming/feature";
+import { canonicalIssue, type FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { hash6, kebab } from "@pithy-sh/core/src/naming/resource";
 import { parse } from "comment-json";
-import type { SecretsStore, StoreEntry } from "../provision/store";
+import { z } from "zod";
+import { discoverWorkers } from "../project/workers";
+import type { ResourceProvisioner } from "../provision/resources";
 
 /**
  * **A feature's own rate-limit namespaces, allocated so no two owners can ever hold one (#643).**
  *
- * Cloudflare keys a rate limiter's counters by `namespace_id`, a number, across the whole account. A feature
- * that kept production's id spent production's per-IP budget, and a hashed id (the first fix) made two branches
- * or two projects share one a hundredth of the time. A number that fits the binding cannot carry a project, an
- * issue and a slug injectively, so the id is **allocated and recorded**, not derived:
+ * Cloudflare keys a rate limiter's counters by `namespace_id`, "a positive integer that uniquely defines this rate
+ * limiting namespace within your Cloudflare account", and two bindings sharing one "share the same rate limit
+ * counters for a given key", across Workers
+ * (https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/). A feature that kept production's
+ * id spent production's per-IP budget, and a hashed id made two branches share one a hundredth of the time. A
+ * number cannot carry a project, an issue and a slug injectively, so the id is **allocated and recorded**:
  *
- * - **A reserved range.** Every feature id is ten digits starting with 1 ({@link isFeatureRatelimitId}). A
- *   declared environment may not use one: `pithy provision --feature` refuses a tracked config that does, in any
- *   Worker and any stanza. So no staging or prod id of a project with features is in the range a feature draws
- *   from, and a project that has none is refused the moment it provisions its first.
- * - **A claim per limiter, in the account's one Secrets Store.** Each allocation is an entry named for the
- *   feature, `<project>-f<issue>-<slug>--ratelimit-<id>-<limiter>`, the one store every project in the account
- *   shares, so every feature of every project sees every claim. Two claims on one id are settled the way
- *   `createSecretIfAbsent` settles two entries of one name: the oldest stands, whoever looks, and the other run
- *   withdraws its claim and takes the next free id.
+ * - **A reserved range, kit-wide.** Every feature id is an integer from {@link FEATURE_RATELIMIT_MIN} through
+ *   {@link FEATURE_RATELIMIT_MAX}. No project running this kit may declare one, in any Worker or stanza:
+ *   `pithy provision`, `pithy deploy` and `pithy doctor` all read every tracked `wrangler.jsonc`
+ *   ({@link assertNoDeclaredFeatureIds}), whether or not the project has ever provisioned a feature. So an id a
+ *   feature draws cannot be any project's declared one. The check reads the **integer**, never the string:
+ *   `"01031275746"` and `1.031275746e9` are `1031275746`.
+ * - **A claim per limiter, in the account's feature registry** ({@link RatelimitRegistry}): one D1 database per
+ *   account, `pithy--feature-registry`, created if absent, holding one row per claim — the id, the feature and the
+ *   limiter, nothing else. Not the Secrets Store: the store holds 100 secrets per account
+ *   (https://developers.cloudflare.com/secrets-store/manage-secrets/, and the changelog of 2025-05-19), and a claim
+ *   per limiter per open branch spent that quota on bookkeeping.
+ * - **The oldest claim wins because it is the only one there.** The id is the table's primary key, so a second
+ *   claim on it is not a second row that loses a comparison: the insert does nothing. D1 runs "each individual D1
+ *   database ... single-threaded, and processes queries one at a time"
+ *   (https://developers.cloudflare.com/d1/platform/limits/), and without the Sessions API — which the REST API
+ *   does not offer — "all queries will continue to be executed only by the primary database"
+ *   (https://developers.cloudflare.com/d1/best-practices/read-replication/). So a read after a write sees it: no
+ *   lag to wait out, and no race for a read-back to lose. KV was the other candidate and was ruled out on exactly
+ *   this: changes "may take up to 60 seconds or more to be visible in other global network locations", and it is
+ *   "not ideal for applications where you need support for atomic operations"
+ *   (https://developers.cloudflare.com/kv/concepts/how-kv-works/).
  * - **One claim per limiter, not per Worker.** A limiter is the namespace its Worker declares, so two Workers
  *   bound to one namespace in production share one in the feature, and two distinct ones never merge.
  *
- * Teardown removes every claim the feature holds, by parsing, so an id comes back when the branch goes.
+ * Teardown deletes every row the feature holds — exactly its project, issue and slug — so an id comes back when
+ * the branch goes, and nobody else's does.
  */
 
 /** The lowest feature id: ten digits, a leading 1. */
 export const FEATURE_RATELIMIT_MIN = 1_000_000_000;
 /** How many ids the reserved range holds: `1000000000` through `1999999999`, all under 2^31. */
 export const FEATURE_RATELIMIT_SPAN = 1_000_000_000;
+/** The highest feature id. */
+export const FEATURE_RATELIMIT_MAX = FEATURE_RATELIMIT_MIN + FEATURE_RATELIMIT_SPAN - 1;
 
-/** Is this a feature's id — inside the range no declared environment may use? */
-export function isFeatureRatelimitId(id: string): boolean {
-  return /^1[0-9]{9}$/.test(id);
+/**
+ * **The integer a declared `namespace_id` names, or `null` when it names none.**
+ *
+ * Cloudflare documents the value as "a string containing a positive integer" and says "the value must be a valid
+ * integer" (https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/). It does not document how
+ * a zero-padded or exponent spelling is read, so this assumes the worst: every spelling a number parser accepts is
+ * read as the integer it spells. `"01031275746"`, `" 1031275746 "`, `1031275746` and `"1.031275746e9"` are one id.
+ */
+export function namespaceIdValue(id: unknown): number | null {
+  if (typeof id === "number") return Number.isInteger(id) ? id : null;
+  if (typeof id === "bigint") return Number(id);
+  if (typeof id !== "string" || id.trim() === "") return null;
+  const text = id.trim();
+  const spelled = Number(text);
+  if (Number.isInteger(spelled)) return spelled;
+  // A prefix a lenient parser would stop at, `"1031275746abc"`, is read the lenient way too.
+  const leading = Number.parseInt(text, 10);
+  return Number.isInteger(leading) ? leading : null;
 }
 
-/** The `thing` every claim's name carries after the feature's head. */
-const CLAIM_THING = "ratelimit";
+/** Is this id inside the range reserved for features — the one no project may declare? Read as an integer. */
+export function isFeatureRatelimitId(id: unknown): boolean {
+  const value = namespaceIdValue(id);
+  return value !== null && value >= FEATURE_RATELIMIT_MIN && value <= FEATURE_RATELIMIT_MAX;
+}
 
 /**
  * The limiter a `ratelimits` entry is: the namespace it declares, or its binding name when it declares none.
- * This is what a claim is made for, so two entries that share a namespace in production share one here.
+ * This is what a claim is made for, so two entries that share a namespace in production share one here. The
+ * namespace is read as its integer, so two spellings of one id are one limiter.
  */
 export function limiterKey(entry: { name?: unknown; namespace_id?: unknown }): string {
   if (entry.namespace_id !== undefined && entry.namespace_id !== null && String(entry.namespace_id) !== "") {
+    const value = namespaceIdValue(entry.namespace_id);
+    if (value !== null) return `ns-${value}`;
     return `ns-${kebab(String(entry.namespace_id)) || hash6(String(entry.namespace_id))}`;
   }
   return `binding-${kebab(String(entry.name ?? "")) || "unnamed"}`;
 }
 
-/** The store entry recording that this feature holds `id` for `limiter`. A feature name, so it parses back. */
-export function ratelimitClaimName(identity: FeatureIdentity, limiter: string, id: string): string {
-  return featureSecretEntryName(identity, `${CLAIM_THING}-${id}-${limiter}`);
+/**
+ * **The account's record of which feature holds which id** — claim metadata only, never runtime data.
+ *
+ * Every method reads or writes exactly what it names, and a feature is its exact project, canonical issue and
+ * slug. {@link d1RatelimitRegistry} is the real one.
+ */
+export interface RatelimitRegistry {
+  /** The id this feature holds for `limiter`, or `null`. */
+  held(identity: FeatureIdentity, limiter: string): Promise<string | null>;
+  /** Every id any feature of any project holds. */
+  claimed(): Promise<Set<string>>;
+  /** Claim `id` for this feature's `limiter` — a no-op when the id, or this feature's limiter, is already claimed. */
+  claim(identity: FeatureIdentity, limiter: string, id: string): Promise<void>;
+  /** Delete every claim this feature holds; resolves the ids released. */
+  release(identity: FeatureIdentity): Promise<string[]>;
 }
 
-/** One claim read off the store: which id, which feature, which limiter, and the entry that records it. */
-interface Claim {
-  entry: StoreEntry;
-  id: string;
-  limiter: string;
-}
-
-/** Every claim any feature of any project holds, read off the store's entries. */
-function claimsIn(entries: readonly StoreEntry[]): Claim[] {
-  const claims: Claim[] = [];
-  for (const entry of entries) {
-    const parsed = parseFeatureName(entry.name);
-    if (parsed === null) continue;
-    const [thing, id, ...limiter] = parsed.thing.split("-");
-    if (thing !== CLAIM_THING || id === undefined || !isFeatureRatelimitId(id)) continue;
-    claims.push({ entry, id, limiter: limiter.join("-") });
-  }
-  return claims;
-}
-
-/** The claim that stands on each id: the oldest, the smaller entry id breaking a tie — one answer, whoever asks. */
-function standing(claims: readonly Claim[]): Map<string, Claim> {
-  const byId = new Map<string, Claim>();
-  for (const claim of claims) {
-    const held = byId.get(claim.id);
-    const older =
-      held === undefined ||
-      claim.entry.created.getTime() < held.entry.created.getTime() ||
-      (claim.entry.created.getTime() === held.entry.created.getTime() && claim.entry.id < held.entry.id);
-    if (older) byId.set(claim.id, claim);
-  }
-  return byId;
+/** The feature as a registry row carries it: exact, so a sibling slug or another project is another row. */
+export function claimOwner(identity: FeatureIdentity): { project: string; issue: string; slug: string } {
+  return { project: kebab(identity.project), issue: canonicalIssue(identity.issue), slug: kebab(identity.slug) };
 }
 
 /** Where probing starts for a limiter: stable in the feature and the limiter, so a quiet account allocates alike. */
 function firstCandidate(identity: FeatureIdentity, limiter: string): number {
+  const owner = claimOwner(identity);
   let hash = 0x811c9dc5;
-  for (const char of ratelimitClaimName(identity, limiter, "0")) {
+  for (const char of `${owner.project}|${owner.issue}|${owner.slug}|${limiter}`) {
     hash ^= char.charCodeAt(0);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
@@ -116,12 +135,15 @@ function next(id: number): number {
   return FEATURE_RATELIMIT_MIN + ((id - FEATURE_RATELIMIT_MIN + 1) % FEATURE_RATELIMIT_SPAN);
 }
 
-/** Gives up after this many lost races on one limiter, rather than spin against a store that will not settle. */
+/** Gives up after this many lost races on one limiter, rather than spin against a registry that will not settle. */
 const MAX_ATTEMPTS = 32;
 
 /**
- * **Allocate this feature's namespace for each limiter**, reusing one it already holds. Resolves limiter →
- * id. Never an id another claim stands on, one a tracked config declares, or one another limiter here holds.
+ * **Allocate this feature's namespace for each limiter**, reusing one it already holds. Resolves limiter → id.
+ * Never an id another feature holds, one a tracked config declares, or one another limiter here holds.
+ *
+ * Claim, then read back what the feature holds: a claim that lost to a concurrent run — on the id, or on this
+ * feature's limiter — inserted nothing, and the read says what stands.
  */
 export async function allocateFeatureRatelimits(options: {
   identity: FeatureIdentity;
@@ -129,68 +151,113 @@ export async function allocateFeatureRatelimits(options: {
   limiters: readonly string[];
   /** Every `namespace_id` the project's tracked configs declare, in any Worker and any stanza. */
   declared: ReadonlySet<string>;
-  store: Required<Pick<SecretsStore, "list">> & Pick<SecretsStore, "create" | "remove">;
+  registry: RatelimitRegistry;
 }): Promise<Map<string, string>> {
-  const { identity, store } = options;
+  const { identity, registry } = options;
   const allocated = new Map<string, string>();
-  const limiters = [...new Set(options.limiters)].sort();
-  if (limiters.length === 0) return allocated;
-
-  for (const limiter of limiters) {
+  const declared = new Set([...options.declared].map((id) => String(namespaceIdValue(id) ?? id)));
+  for (const limiter of [...new Set(options.limiters)].sort()) {
     for (let attempt = 0; ; attempt += 1) {
+      const held = await registry.held(identity, limiter);
+      if (held !== null) {
+        allocated.set(limiter, held);
+        break;
+      }
       if (attempt >= MAX_ATTEMPTS) {
         throw new InternalError({
           message: "A rate-limit namespace could not be allocated for this feature.",
           action: "Run pithy provision --feature again.",
-          detail: `limiter ${limiter}: lost ${MAX_ATTEMPTS} races for a namespace id in the Secrets Store`,
+          detail: `limiter ${limiter}: ${MAX_ATTEMPTS} claims in the feature registry, none of them standing`,
         });
       }
-      const claims = claimsIn(await store.list());
-      const stands = standing(claims);
-      const mine = claims.filter(
-        (claim) => claim.limiter === limiter && isFeatureOwnedName(identity, claim.entry.name),
-      );
-      // Already held, and still standing: this feature's namespace, kept across every re-run.
-      const kept = mine.find((claim) => stands.get(claim.id) === claim && !isTaken(claim.id, allocated, options));
-      if (kept) {
-        allocated.set(limiter, kept.id);
-        for (const other of mine) if (other !== kept) await store.remove(other.entry.name);
-        break;
-      }
-      // Any claim of ours that lost is withdrawn, so the id goes back to whoever holds it.
-      for (const lost of mine) await store.remove(lost.entry.name);
-
+      const taken = await registry.claimed();
       let candidate = firstCandidate(identity, limiter);
-      while (stands.has(String(candidate)) || isTaken(String(candidate), allocated, options)) {
-        candidate = next(candidate);
-      }
-      const id = String(candidate);
-      const name = ratelimitClaimName(identity, limiter, id);
-      await store.create(name, id);
-      // Read back: the claim stands only if no older one on the same id appeared beside it.
-      const after = standing(claimsIn(await store.list())).get(id);
-      if (after?.entry.name === name) {
-        allocated.set(limiter, id);
-        break;
-      }
-      await store.remove(name);
+      const busy = (id: number): boolean =>
+        taken.has(String(id)) || declared.has(String(id)) || [...allocated.values()].includes(String(id));
+      while (busy(candidate)) candidate = next(candidate);
+      await registry.claim(identity, limiter, String(candidate));
     }
   }
   return allocated;
 }
 
-function isTaken(id: string, allocated: ReadonlyMap<string, string>, options: { declared: ReadonlySet<string> }) {
-  return options.declared.has(id) || [...allocated.values()].includes(id);
+/** The D1 database every feature of every project in the account records its claims in. Not a feature name. */
+export const RATELIMIT_REGISTRY_DATABASE = "pithy--feature-registry";
+
+/** The one statement that makes the table, run before every use: idempotent, and the whole schema. */
+export const RATELIMIT_REGISTRY_SCHEMA = `CREATE TABLE IF NOT EXISTS ratelimit_claims (
+  namespace_id INTEGER PRIMARY KEY,
+  project TEXT NOT NULL,
+  issue TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  limiter TEXT NOT NULL,
+  claimed_at TEXT NOT NULL,
+  UNIQUE (project, issue, slug, limiter)
+)`;
+
+/** Run one statement, resolving its rows. The D1 REST query in a real run; any SQLite in a test. */
+export type SqlExecutor = (sql: string, params: string[]) => Promise<unknown[]>;
+
+/** A row the registry reads back: only the id, validated rather than cast. */
+const ClaimedIdRow = z
+  .object({
+    namespace_id: z.union([z.number(), z.string()]).describe("The claimed namespace id."),
+  })
+  .describe("One claimed namespace id, as the feature registry returns it.");
+
+function idsOf(rows: readonly unknown[]): string[] {
+  return rows.map((row) => {
+    const parsed = ClaimedIdRow.safeParse(row);
+    const value = parsed.success ? namespaceIdValue(parsed.data.namespace_id) : null;
+    if (value === null) {
+      throw new InternalError({
+        message: "The feature registry returned a row it could not read.",
+        action: "Run the command again.",
+        detail: `unexpected ratelimit_claims row: ${JSON.stringify(row)}`,
+      });
+    }
+    return String(value);
+  });
 }
 
-/** Every claim this feature holds, by name — what teardown removes. */
-export async function featureRatelimitClaims(
-  identity: FeatureIdentity,
-  store: Required<Pick<SecretsStore, "list">>,
-): Promise<string[]> {
-  return claimsIn(await store.list())
-    .filter((claim) => isFeatureOwnedName(identity, claim.entry.name))
-    .map((claim) => claim.entry.name);
+/** **The registry over SQL** — the D1 database in a real run. The schema is ensured once per registry. */
+export function sqlRatelimitRegistry(execute: SqlExecutor, now: () => Date = () => new Date()): RatelimitRegistry {
+  let ready: Promise<unknown> | null = null;
+  const run = async (sql: string, params: string[] = []): Promise<unknown[]> => {
+    ready ??= execute(RATELIMIT_REGISTRY_SCHEMA, []);
+    await ready;
+    return execute(sql, params);
+  };
+  return {
+    held: async (identity, limiter) => {
+      const { project, issue, slug } = claimOwner(identity);
+      const [id] = idsOf(
+        await run(
+          "SELECT namespace_id FROM ratelimit_claims WHERE project = ? AND issue = ? AND slug = ? AND limiter = ?",
+          [project, issue, slug, limiter],
+        ),
+      );
+      return id ?? null;
+    },
+    claimed: async () => new Set(idsOf(await run("SELECT namespace_id FROM ratelimit_claims"))),
+    claim: async (identity, limiter, id) => {
+      const { project, issue, slug } = claimOwner(identity);
+      await run(
+        "INSERT OR IGNORE INTO ratelimit_claims (namespace_id, project, issue, slug, limiter, claimed_at) VALUES (CAST(? AS INTEGER), ?, ?, ?, ?, ?)",
+        [id, project, issue, slug, limiter, now().toISOString()],
+      );
+    },
+    release: async (identity) => {
+      const { project, issue, slug } = claimOwner(identity);
+      return idsOf(
+        await run("DELETE FROM ratelimit_claims WHERE project = ? AND issue = ? AND slug = ? RETURNING namespace_id", [
+          project,
+          issue,
+          slug,
+        ]),
+      );
+    },
+  };
 }
 
 /** One `ratelimits` entry, as far as allocation reads one. */
@@ -205,7 +272,7 @@ export interface WorkerRatelimits {
   worker: string;
   /** The limiters its feature stanza will bind: the top level's, and a tracked `env.feature`'s own. */
   limiters: string[];
-  /** Every id it declares for the top level and every declared environment, by where. */
+  /** Every id it declares, at the top level and in every stanza `feature`'s included, by where. */
   declared: { id: string; where: string }[];
 }
 
@@ -233,26 +300,111 @@ export async function readWorkerRatelimits(worker: { name: string; dir: string }
     }
   };
   collect(top, "the top level");
-  for (const [name, stanza] of Object.entries(config.env ?? {})) {
-    if (name !== FEATURE_ENVIRONMENT) collect(list(stanza?.ratelimits), `env.${name}`);
-  }
+  // Every stanza, `feature` included (#643). A feature's allocated ids are written to a generated config under
+  // `.wrangler/`, never here, so an id in the range in a tracked file is always one somebody chose.
+  for (const [name, stanza] of Object.entries(config.env ?? {})) collect(list(stanza?.ratelimits), `env.${name}`);
   return { worker: worker.name, limiters, declared };
 }
 
-/**
- * **Refuse a declared environment's id inside the feature range**, in any Worker of the project. It is the half
- * of the reservation that keeps staging and prod out of what features draw from, so it is checked across every
- * Worker's tracked config, never only the one being written.
- */
-export function assertNoDeclaredFeatureIds(workers: readonly WorkerRatelimits[]): void {
+/** Every tracked rate-limit id in the reserved range, as one sentence each: what doctor reports and the gates refuse. */
+export function declaredFeatureIdFindings(workers: readonly WorkerRatelimits[]): string[] {
+  const findings: string[] = [];
   for (const worker of workers) {
     for (const { id, where } of worker.declared) {
       if (!isFeatureRatelimitId(id)) continue;
-      throw new ValidationError({
-        message: `${worker.worker} declares rate-limit namespace ${id} in ${where}. Ten digits starting with 1 are reserved for features.`,
-        action: `Give that limiter a namespace_id below ${FEATURE_RATELIMIT_MIN} in wrangler.jsonc.`,
-        detail: `Feature namespaces are allocated from ${FEATURE_RATELIMIT_MIN} to ${FEATURE_RATELIMIT_MIN + FEATURE_RATELIMIT_SPAN - 1}, and a declared id there could be handed to a branch.`,
-      });
+      const value = String(namespaceIdValue(id));
+      const spelled = value === id ? id : `"${id}" (${value})`;
+      findings.push(`${worker.worker} declares rate-limit namespace ${spelled} in ${where}.`);
     }
   }
+  return findings;
+}
+
+/**
+ * **Refuse any declared id inside the feature range, in any Worker and any stanza (#643).** Asked by `pithy
+ * provision` for every environment, `pithy deploy`, and reported by `pithy doctor` — in every project, whether or
+ * not it has features, because a feature of *another* project in the account draws from the same range.
+ */
+export function assertNoDeclaredFeatureIds(workers: readonly WorkerRatelimits[]): void {
+  const [first, ...rest] = declaredFeatureIdFindings(workers);
+  if (first === undefined) return;
+  throw new ValidationError({
+    message: `${first} Namespaces ${FEATURE_RATELIMIT_MIN} through ${FEATURE_RATELIMIT_MAX} are reserved for features.`,
+    action: `Give that limiter a namespace_id below ${FEATURE_RATELIMIT_MIN} in wrangler.jsonc.`,
+    detail: [
+      "Feature namespaces are allocated from that range for every project in the account, so a declared id there could be handed to any branch and share its counters.",
+      ...rest,
+    ].join(" "),
+  });
+}
+
+/** Every Worker under `apps/`, read for its declared rate-limit ids — what deploy and doctor read (#643). */
+export async function projectRatelimits(projectDir: string): Promise<WorkerRatelimits[]> {
+  return Promise.all((await discoverWorkers(projectDir)).map(readWorkerRatelimits));
+}
+
+/**
+ * **Refuse a project that declares an id in the feature range, anywhere (#643).** `pithy deploy` asks it before
+ * anything is built, for every selection: the reservation holds for a project that never provisions a feature,
+ * because a feature of another project in the account can draw the id.
+ */
+export async function assertProjectDeclaresNoFeatureIds(projectDir: string): Promise<void> {
+  assertNoDeclaredFeatureIds(await projectRatelimits(projectDir));
+}
+
+/**
+ * **The account's feature registry, found by name — and created when `create` says so and it is absent.**
+ * `null` when it is absent and not to be created: teardown creates nothing, and an account with no registry holds
+ * no claim. Found and created through the confirmed-account provisioner, so an unconfirmed account never gets one.
+ *
+ * Two runs creating it at once: the loser's create fails on the taken name, and it takes the winner's database.
+ */
+export async function accountRatelimitRegistry(options: {
+  d1: Pick<ResourceProvisioner, "find" | "create">;
+  execute: (databaseId: string) => SqlExecutor;
+  create: boolean;
+}): Promise<RatelimitRegistry | null> {
+  let found = await options.d1.find(RATELIMIT_REGISTRY_DATABASE);
+  if (found === null) {
+    if (!options.create) return null;
+    try {
+      found = await options.d1.create(RATELIMIT_REGISTRY_DATABASE);
+    } catch (error) {
+      found = await options.d1.find(RATELIMIT_REGISTRY_DATABASE);
+      if (found === null) throw error;
+    }
+  }
+  return sqlRatelimitRegistry(options.execute(found.id));
+}
+
+/** A D1 database's REST query as a {@link SqlExecutor}: the rows of every result set, in order. */
+export function d1Executor(query: (sql: string, params: string[]) => Promise<{ results?: unknown[] }[]>): SqlExecutor {
+  return async (sql, params) => (await query(sql, params)).flatMap((result) => result.results ?? []);
+}
+
+/**
+ * **A registry opened on first use**, so a feature that binds no limiter never creates the account's database, and
+ * a teardown on an account that never had one finds nothing to release rather than making one.
+ */
+export function lazyRatelimitRegistry(open: () => Promise<RatelimitRegistry | null>): RatelimitRegistry {
+  let pending: Promise<RatelimitRegistry | null> | null = null;
+  const opened = (): Promise<RatelimitRegistry | null> => {
+    pending ??= open();
+    return pending;
+  };
+  const required = async (): Promise<RatelimitRegistry> => {
+    const registry = await opened();
+    if (registry !== null) return registry;
+    throw new InternalError({
+      message: "The account's feature registry could not be opened.",
+      action: "Run the command again.",
+      detail: `${RATELIMIT_REGISTRY_DATABASE} is absent and this run may not create it`,
+    });
+  };
+  return {
+    held: async (identity, limiter) => (await required()).held(identity, limiter),
+    claimed: async () => (await required()).claimed(),
+    claim: async (identity, limiter, id) => (await required()).claim(identity, limiter, id),
+    release: async (identity) => (await opened())?.release(identity) ?? [],
+  };
 }

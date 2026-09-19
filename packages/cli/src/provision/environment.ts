@@ -15,6 +15,7 @@ import type { MintedSecret } from "../capabilities/mintSecrets";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
 import type { FeatureResource, FeatureScript } from "../feature/manifest";
+import { assertNoDeclaredFeatureIds, readWorkerRatelimits } from "../feature/ratelimits";
 import { migrateProject } from "../migrations/run";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
@@ -544,6 +545,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const workers = await (options.resolveWorkers
     ? options.resolveWorkers(options.projectDir)
     : defaultResolveWorkers(options.projectDir, scope.stanza));
+  // **No Worker may declare a rate-limit namespace in the feature range, for any environment (#643)** — checked
+  // before a resource is created. A feature of any project in the account can be allocated one.
+  assertNoDeclaredFeatureIds(await Promise.all(workers.map(readWorkerRatelimits)));
   const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,

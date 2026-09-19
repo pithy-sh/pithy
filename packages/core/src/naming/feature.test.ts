@@ -5,14 +5,18 @@ import { describe, expect, it } from "vitest";
 import { PithyError } from "../error/pithyError";
 import {
   assertFeatureProject,
+  assertFeatureSlugFits,
   canonicalIssue,
   type FeatureIdentity,
+  type FeatureNameShape,
   type FeatureResourceKind,
   featureMarkerInProjectName,
   featureResourceName,
   featureSecretEntryName,
+  featureSlugRoom,
   featureWorkerName,
   isFeatureOwnedName,
+  maxFeatureSlug,
   parseFeatureName,
 } from "./feature";
 import { MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
@@ -44,10 +48,10 @@ describe("featureResourceName", () => {
     const identity = {
       project: "a".repeat(MAX_PROJECT_NAME),
       issue: "9".repeat(MAX_ISSUE_DIGITS),
-      slug: "s".repeat(80),
+      slug: "s",
     };
     for (const kind of KINDS) {
-      const name = featureResourceName(identity, "USER_NOTIFICATION_PREFERENCES_STORE", kind);
+      const name = featureResourceName(identity, "USER_NOTIFICATION_PREF", kind);
       expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
       expect(name.length).toBeGreaterThanOrEqual(NAMESPACE_LIMITS.r2.minLength);
       expect(name).toMatch(R2_BUCKET);
@@ -81,19 +85,18 @@ describe("featureResourceName", () => {
     expect(names.size).toBe(4);
   });
 
-  it("keeps the kind suffix whole even when everything else is truncated", () => {
-    // The suffix is the only thing telling a `DB` bucket from a `DB` database, so it is never the
-    // segment that gives way.
+  it("refuses, rather than truncates, a slug and binding that do not fit together (#643)", () => {
+    // Truncation hashed both into a few characters some sibling branch could have as its whole slug.
     const identity = { project: "acme", issue: "123", slug: "z".repeat(50) };
     for (const kind of KINDS) {
-      expect(featureResourceName(identity, "SOME_VERY_LONG_BINDING_NAME_INDEED", kind).endsWith(`-${kind}`)).toBe(true);
+      expect(() => featureResourceName(identity, "SOME_VERY_LONG_BINDING_NAME_INDEED", kind)).toThrow(PithyError);
     }
   });
 
-  it("keeps two different long slugs distinct", () => {
-    const a = featureResourceName({ project: "acme", issue: "1", slug: `${"x".repeat(60)}-one` }, "DB", "d1");
-    const b = featureResourceName({ project: "acme", issue: "1", slug: `${"x".repeat(60)}-two` }, "DB", "d1");
-    expect(a).not.toBe(b);
+  it("refuses two long slugs sharing a prefix rather than composing either", () => {
+    for (const slug of [`${"x".repeat(60)}-one`, `${"x".repeat(60)}-two`]) {
+      expect(() => featureResourceName({ project: "acme", issue: "1", slug }, "DB", "d1")).toThrow(PithyError);
+    }
   });
 
   it("refuses an empty slug or binding rather than composing a doubled hyphen", () => {
@@ -121,22 +124,26 @@ describe("featureWorkerName", () => {
   it("never runs past the Worker cap — the bug this had", () => {
     // Measured before the fix: 69 characters for `collaboration-realtime-gateway`, 109 for a 70-character
     // worker name. `apps/<name>` has a charset rule and no length rule, so nothing upstream stopped it.
-    for (const worker of ["collaboration-realtime-gateway", "w".repeat(70)]) {
-      const name = featureWorkerName({ project: "acme", issue: "1", slug: "media-cli" }, worker);
-      expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
-      expect(name).toMatch(WORKER_SCRIPT);
-    }
+    const name = featureWorkerName(
+      { project: "acme", issue: "1", slug: "media-cli" },
+      "collaboration-realtime-gateway",
+    );
+    expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
+    expect(name).toMatch(WORKER_SCRIPT);
+    // Past it, refused whole (#643): a truncated script name is one a sibling can compose.
+    expect(() => featureWorkerName({ project: "acme", issue: "1", slug: "media-cli" }, "w".repeat(70))).toThrow(
+      PithyError,
+    );
   });
 
-  it("holds the cap at the worst legal input", () => {
+  it("refuses the worst legal input rather than fitting it", () => {
     const identity = {
       project: "a".repeat(MAX_PROJECT_NAME),
       issue: "9".repeat(MAX_ISSUE_DIGITS),
       slug: "s".repeat(80),
     };
-    const name = featureWorkerName(identity, "w".repeat(80));
-    expect(name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
-    expect(name).toMatch(WORKER_SCRIPT);
+    expect(() => featureWorkerName(identity, "w".repeat(80))).toThrow(PithyError);
+    expect(featureWorkerName({ ...identity, slug: "s" }, "api")).toMatch(WORKER_SCRIPT);
   });
 
   it("lands exactly on the cap without truncating, one character below it", () => {
@@ -148,12 +155,10 @@ describe("featureWorkerName", () => {
     expect(name).toBe(`acme-f1-${"s".repeat(20)}--${worker}`);
   });
 
-  it("keeps two long worker names distinct rather than colliding on a truncation", () => {
+  it("refuses two long worker names rather than colliding on a truncation", () => {
     const identity = { project: "acme", issue: "1", slug: "media-cli" };
-    const a = featureWorkerName(identity, `${"w".repeat(60)}-alpha`);
-    const b = featureWorkerName(identity, `${"w".repeat(60)}-omega`);
-    expect(a).not.toBe(b);
-    expect(a.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
+    expect(() => featureWorkerName(identity, `${"w".repeat(60)}-alpha`)).toThrow(PithyError);
+    expect(() => featureWorkerName(identity, `${"w".repeat(60)}-omega`)).toThrow(PithyError);
   });
 
   it("refuses an empty worker rather than composing a trailing hyphen", () => {
@@ -197,11 +202,11 @@ describe("parseFeatureName and isFeatureOwnedName", () => {
     }
   });
 
-  it("owns its own names, including truncated ones, and no sibling's", () => {
-    const long: FeatureIdentity = { ...me, slug: "s".repeat(80) };
+  it("owns its own names, and no sibling's", () => {
+    const long: FeatureIdentity = { ...me, slug: "s".repeat(20) };
     expect(isFeatureOwnedName(me, featureWorkerName(me, "email"))).toBe(true);
     expect(isFeatureOwnedName(long, featureSecretEntryName(long, "SECRETS_ENCRYPTION_KEYS"))).toBe(true);
-    expect(isFeatureOwnedName(long, featureResourceName(long, "USER_NOTIFICATION_PREFERENCES_STORE", "r2"))).toBe(true);
+    expect(isFeatureOwnedName(long, featureResourceName(long, "USER_NOTIFICATION_PREF", "r2"))).toBe(true);
     for (const other of [
       { ...me, slug: "feature-address-2" },
       { ...me, slug: "feature" },
@@ -230,5 +235,76 @@ describe("assertFeatureProject", () => {
     expect(() => assertFeatureProject("acme-f12-x")).toThrow("Its name carries f12");
     expect(() => featureWorkerName({ project: "acme-f12-x", issue: "3", slug: "y" }, "api")).toThrow(PithyError);
     expect(() => assertFeatureProject("acme")).not.toThrow();
+  });
+});
+
+/**
+ * **No feature name is truncated (#643, the review of 4828e1fc).** A truncated slug is a hash, and a hash is a
+ * slug some sibling can have: `feature/12-login` owned `feature/12-c`'s names, and two long slugs of one issue
+ * composed one database. So a slug that does not fit is refused, the refusal names the longest that does, and
+ * ownership is an exact parse.
+ */
+describe("feature slugs are never truncated", () => {
+  /** Finding 1, the reviewer's case: `login` owned `c`, because `c` is the first hex of `login`'s hash. */
+  it("does not let feature/12-login own feature/12-c's names", () => {
+    const login: FeatureIdentity = { project: "acme", issue: "12", slug: "login" };
+    const c: FeatureIdentity = { project: "acme", issue: "12", slug: "c" };
+    expect(isFeatureOwnedName(login, featureSecretEntryName(c, "ratelimit-1000000001-ns-1001"))).toBe(false);
+    expect(isFeatureOwnedName(login, featureWorkerName(c, "api"))).toBe(false);
+    expect(isFeatureOwnedName(login, featureResourceName(c, "B", "r2"))).toBe(false);
+  });
+
+  /** Finding 1, the reviewer's sweep: no slug owns a one-to-four-character sibling's names unless it is that slug. */
+  it("owns a name only when its slug is the feature's slug, character for character", () => {
+    const slugs = ["login", "auth", "billing", "signin", "feature-address", "media-cli", "docs", "api", "cache"];
+    const siblings = ["a", "b", "c", "d", "e", "f", "1", "2", "3", "db", "ab", "cd", "e2", "42", "1-2", "a-1b"];
+    for (const mine of slugs) {
+      for (const sibling of siblings) {
+        const name = featureSecretEntryName({ project: "acme", issue: "12", slug: sibling }, "x");
+        expect(isFeatureOwnedName({ project: "acme", issue: "12", slug: mine }, name), `${mine} / ${sibling}`).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  /** Finding 3, the reviewer's case: two long slugs of one issue composed one database. */
+  it("refuses a slug that does not fit rather than hashing it into a sibling's name", () => {
+    const project = "p".repeat(MAX_PROJECT_NAME);
+    for (const slug of ["add-search-import", "add-media-webhook"]) {
+      expect(() => featureResourceName({ project, issue: "123456", slug }, "EMAIL_SUPPRESSIONS", "d1")).toThrow(
+        PithyError,
+      );
+    }
+  });
+
+  it("names the longest slug the name leaves room for", () => {
+    const identity = { project: "acme", issue: "12", slug: "s".repeat(40) };
+    // `acme-f12-` is 9, `--email-suppressions-d1` is 23: 63 leaves 31.
+    expect(featureSlugRoom(identity, "email-suppressions-d1", NAMESPACE_LIMITS.r2.maxLength)).toBe(31);
+    expect(() => featureResourceName(identity, "EMAIL_SUPPRESSIONS", "d1")).toThrow("at most 31");
+    const fits = { ...identity, slug: "s".repeat(31) };
+    expect(featureResourceName(fits, "EMAIL_SUPPRESSIONS", "d1")).toBe(
+      `acme-f12-${"s".repeat(31)}--email-suppressions-d1`,
+    );
+  });
+
+  it("refuses a binding or Worker too long to leave any slug, and says which", () => {
+    const identity = { project: "acme", issue: "12", slug: "x" };
+    expect(() => featureWorkerName(identity, "w".repeat(60))).toThrow(`w`.repeat(60));
+  });
+
+  it("refuses a slug over the project's budget for every shape, naming the maximum", () => {
+    const shapes: FeatureNameShape[] = [
+      { label: "a Workflow name", limit: 64, thing: "media-audio-transcribe" },
+      { label: "an R2 bucket name", limit: 63, thing: "email-suppressions-d1" },
+    ];
+    const parts = { project: "acme", issue: "12" };
+    // Workflow: 64 - 9 - 2 - 22 = 31. Bucket: 63 - 9 - 2 - 21 = 31. The smaller wins either way.
+    expect(maxFeatureSlug(parts, shapes)).toBe(31);
+    expect(() => assertFeatureSlugFits({ ...parts, slug: "s".repeat(31) }, shapes)).not.toThrow();
+    expect(() => assertFeatureSlugFits({ ...parts, slug: "s".repeat(32) }, shapes)).toThrow(
+      "Feature slugs in acme stop at 31 characters at issue 12.",
+    );
   });
 });

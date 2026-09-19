@@ -123,12 +123,17 @@ describe("a feature's names", () => {
     expect(feature.worker("api")).toBe("acme-f95-media-cli--api");
   });
 
-  it("holds every feature name inside the Worker and R2 caps", () => {
+  it("refuses a feature name past the Worker or R2 cap rather than truncating it (#643)", () => {
     const big = resourceNames("a".repeat(MAX_PROJECT_NAME)).feature({
       issue: "9".repeat(MAX_ISSUE_DIGITS),
       slug: "s".repeat(60),
     });
-    expect(big.resource("SOME_VERY_LONG_BINDING_NAME", "kv").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
-    expect(big.worker("w".repeat(60)).length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
+    expect(() => big.resource("SOME_VERY_LONG_BINDING_NAME", "kv")).toThrow(PithyError);
+    expect(() => big.worker("w".repeat(60))).toThrow(PithyError);
+    const fits = resourceNames("a".repeat(MAX_PROJECT_NAME)).feature({
+      issue: "9".repeat(MAX_ISSUE_DIGITS),
+      slug: "s",
+    });
+    expect(fits.resource("DB", "kv").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
   });
 });

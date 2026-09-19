@@ -64,7 +64,6 @@ function account(seed: { scripts: string[]; workflows: [string, string][]; entri
         put: async () => {},
         create: async () => "created" as const,
         remove: async (name: string) => entries.delete(name),
-        list: async () => [...entries].map((name) => ({ id: name, name, created: new Date(0) })),
       },
     },
   };

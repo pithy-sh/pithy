@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { ENVIRONMENTS, MAX_ENVIRONMENT_NAME } from "@pithy-sh/core/src/naming/environment";
 import { featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import {
@@ -118,9 +119,14 @@ function cells(line: string): string[] {
 function verbatimSlug(projectLength: number, binding: string, issueDigits: number): number {
   const project = `p${"a".repeat(projectLength - 1)}`;
   const issue = "1".repeat(issueDigits);
+  // The longest the composer accepts: a slug past it is refused whole, never fitted (#643).
   for (let length = 60; length >= 1; length -= 1) {
     const slug = "s".repeat(length);
-    if (featureResourceName({ project, issue, slug }, binding, "r2").includes(`-${slug}-`)) return length;
+    try {
+      if (featureResourceName({ project, issue, slug }, binding, "r2").includes(`-${slug}--`)) return length;
+    } catch (error) {
+      if (!(error instanceof PithyError)) throw error;
+    }
   }
   return 0;
 }
@@ -244,12 +250,11 @@ describe("the worked examples", () => {
     expect(NAMING).toContain(
       featureResourceName({ project: "acme", issue: "95", slug: "project-scope-resources" }, "DB", "r2"),
     );
+    // The over-budget example is a refusal now (#643): the doc names the room it had, and the composer agrees.
+    const over = { project: "acme-backend-platform", issue: "999999", slug: "project-scope-resources" };
+    expect(() => featureResourceName(over, "EMAIL_SUPPRESSIONS", "r2")).toThrow(PithyError);
     expect(NAMING).toContain(
-      featureResourceName(
-        { project: "acme-backend-platform", issue: "999999", slug: "project-scope-resources" },
-        "EMAIL_SUPPRESSIONS",
-        "r2",
-      ),
+      `\`acme-backend-platform\` at issue 999999 has ${verbatimSlug(over.project.length, "EMAIL_SUPPRESSIONS", 6)} characters`,
     );
   });
 });

@@ -3,6 +3,7 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
@@ -24,7 +25,7 @@ import type { ResourceProvisioner, ResourceProvisioners } from "../provision/res
 import type { SecretsStore } from "../provision/store";
 import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./hosts";
 import { provisionFeature } from "./provision";
-import { isFeatureRatelimitId, ratelimitClaimName } from "./ratelimits";
+import { isFeatureRatelimitId, sqlRatelimitRegistry } from "./ratelimits";
 
 /**
  * **The isolation gate (#643): nothing a feature binds is anybody else's.**
@@ -135,8 +136,6 @@ function account() {
   };
   const provisioners = { d1: kind("d1"), kv: kind("kv"), r2: kind("r2") } as unknown as ResourceProvisioners;
   const entries = new Map<string, string>();
-  const created = new Map<string, number>();
-  let clock = 0;
   const store: SecretsStore = {
     storeId: "store-1",
     exists: async (name) => entries.has(name),
@@ -144,14 +143,20 @@ function account() {
     create: async (name, value) => {
       if (entries.has(name)) return "present";
       entries.set(name, value);
-      clock += 1;
-      created.set(name, clock);
       return "created";
     },
     remove: async (name) => entries.delete(name),
-    list: async () =>
-      [...entries.keys()].map((name) => ({ id: name, name, created: new Date(created.get(name) ?? 0) })),
   };
+  // The account's feature registry, on the engine D1 runs: every rate-limit claim is a row (#643).
+  const registryDb = new DatabaseSync(":memory:");
+  const ratelimits = sqlRatelimitRegistry(async (sql, params) => {
+    const statement = registryDb.prepare(sql);
+    if (/SELECT|RETURNING/i.test(sql)) return statement.all(...params);
+    statement.run(...params);
+    return [];
+  });
+  const claimRows = (): { namespace_id: number; project: string; issue: string; slug: string; limiter: string }[] =>
+    registryDb.prepare("SELECT * FROM ratelimit_claims").all() as never;
   const cf = {
     secrets: () => ({
       exists: async (name: string) => entries.has(name),
@@ -162,7 +167,7 @@ function account() {
       throw new Error("a feature's provisioning reached for an account token");
     },
   } as unknown as CloudflareClients;
-  return { names, provisioners, store, entries, cf };
+  return { names, provisioners, store, entries, cf, ratelimits, claimRows };
 }
 
 /** One config's bindings, as a deploy reads them. */
@@ -288,6 +293,7 @@ async function provisioned() {
     identity,
     provisioners: stand.provisioners,
     store: stand.store,
+    ratelimits: stand.ratelimits,
     administersItself: false,
     resolveWorkers: async () => [{ name: "replay-app", dir: appDir, capabilities }],
     migrate: async () => {},
@@ -330,15 +336,15 @@ async function provisioned() {
 }
 
 /**
- * Every rate-limit claim in the account's store, id → the entry that holds it. Only claims can be read back this
- * way; a claim's name is `…--ratelimit-<id>-<limiter>`, so the id is read off the name.
+ * Every rate-limit claim in the account's feature registry, id → the feature that holds it, spelled as that
+ * feature's names begin (`<project>-f<issue>-<slug>--`), so {@link isOurs} reads it exactly.
  */
-function claimsOf(entries: ReadonlyMap<string, string>): Map<string, string> {
+function claimsOf(stand: {
+  claimRows: () => { namespace_id: number; project: string; issue: string; slug: string }[];
+}) {
   const claims = new Map<string, string>();
-  for (const name of entries.keys()) {
-    const match = /--ratelimit-([0-9]{10})-/.exec(name);
-    if (match?.[1]) claims.set(match[1], name);
-  }
+  for (const row of stand.claimRows())
+    claims.set(String(row.namespace_id), `${row.project}-f${row.issue}-${row.slug}--`);
   return claims;
 }
 
@@ -368,17 +374,15 @@ describe("a feature composing every host-owning capability", () => {
   });
 
   test("the feature's app stanza binds nothing anybody else has", () => {
-    expect(shared(result.stanza, result.stand.names, claimsOf(result.stand.entries))).toEqual([]);
+    expect(shared(result.stanza, result.stand.names, claimsOf(result.stand))).toEqual([]);
   });
 
   test("no feature host binds anything anybody else has", () => {
     for (const config of result.hosts) {
-      expect({ host: config.name, shared: shared(config, result.stand.names, claimsOf(result.stand.entries)) }).toEqual(
-        {
-          host: config.name,
-          shared: [],
-        },
-      );
+      expect({ host: config.name, shared: shared(config, result.stand.names, claimsOf(result.stand)) }).toEqual({
+        host: config.name,
+        shared: [],
+      });
     }
   });
 
@@ -432,7 +436,7 @@ describe("a feature composing every host-owning capability", () => {
     planted.queues = { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] };
     planted.hyperdrive = [{ binding: "PG", id: "shared" }];
     // Sorted: which key the walk meets first is the stanza's order, and not what is being proven.
-    expect(shared(planted, result.stand.names, claimsOf(result.stand.entries)).sort()).toEqual(
+    expect(shared(planted, result.stand.names, claimsOf(result.stand)).sort()).toEqual(
       [
         "d1 DB: unknown id prod-db-id",
         `ratelimit AUTH_RATE_LIMITER: namespace ${TOP_LIMITER.namespace_id}`,
@@ -490,13 +494,14 @@ describe("a feature composing every host-owning capability", () => {
   });
 
   test("every rate-limit namespace the feature binds is claimed for it, and none is anyone else's", () => {
-    const claims = claimsOf(result.stand.entries);
+    const claims = claimsOf(result.stand);
     const bound = (result.stanza.ratelimits as { name: string; namespace_id: string }[]).map(
       (entry) => entry.namespace_id,
     );
     expect(bound.length).toBeGreaterThan(0);
-    for (const id of bound) {
-      expect(claims.get(id)).toBe(ratelimitClaimName(identity, "ns-1001", id));
-    }
+    for (const id of bound) expect(claims.get(id)).toBe(OWN);
+    expect(result.stand.claimRows().map((row) => row.limiter)).toEqual(["ns-1001"]);
+    // Claims are metadata in the registry, never Secrets Store entries: the store's 100 secrets are for secrets.
+    expect([...result.stand.entries.keys()].filter((name) => name.includes("ratelimit"))).toEqual([]);
   });
 });

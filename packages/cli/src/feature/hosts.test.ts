@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { describe, expect, test } from "vitest";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
@@ -102,6 +103,23 @@ describe("featureHostNameLeaks", () => {
         owned,
       ),
     ).toEqual([]);
+  });
+
+  /**
+   * The reviewer's case of the review of 4828e1fc: `c` is the first hex of `login`'s hash, so the fitted-slug
+   * ownership check passed `feature/12-c`'s Worker and bucket as `feature/12-login`'s.
+   */
+  test("a sibling whose whole slug is a hash prefix of this one's is not this feature's", () => {
+    const login = { project: "acme", issue: "12", slug: "login" };
+    const leaks = featureHostNameLeaks(
+      {
+        name: featureWorkerName(login, "web"),
+        services: [{ binding: "API", service: featureWorkerName({ ...login, slug: "c" }, "api") }],
+        r2_buckets: [{ binding: "B", bucket_name: featureResourceName({ ...login, slug: "c" }, "B", "r2") }],
+      },
+      login,
+    );
+    expect(leaks).toEqual(["service API: acme-f12-c--api", "r2 B: acme-f12-c--b-r2"]);
   });
 
   test("a binding kind the gate has never seen is refused until it is classified", () => {

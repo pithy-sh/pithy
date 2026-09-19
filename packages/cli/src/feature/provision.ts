@@ -60,9 +60,10 @@ import {
 import {
   allocateFeatureRatelimits,
   assertNoDeclaredFeatureIds,
-  featureRatelimitClaims,
+  type RatelimitRegistry,
   readWorkerRatelimits,
 } from "./ratelimits";
+import { assertFeatureSlugFitsSources } from "./slugBudget";
 
 /**
  * `pithy provision --feature` — one branch's ephemeral Cloudflare environment.
@@ -165,6 +166,11 @@ export interface ProvisionFeatureOptions {
    * it the feature is provisioned exactly as it was before, and the omission is visible in the report.
    */
   store?: SecretsStore;
+  /**
+   * **The account's feature registry (#643)** — where each limiter the feature binds claims a namespace of its own
+   * (`d1RatelimitRegistry` in a real run; see `./ratelimits`). Required only when a Worker binds a limiter.
+   */
+  ratelimits?: RatelimitRegistry;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
@@ -218,6 +224,13 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const workers = await (options.resolveWorkers
     ? options.resolveWorkers(options.projectDir)
     : defaultResolveWorkers(options.projectDir, scope.stanza));
+  // Before anything is created: a slug too long for any name this feature composes (#643). Names are never
+  // truncated, so the branch is refused here, with the project's maximum, rather than one name at a time later.
+  await assertFeatureSlugFitsSources(options.identity, {
+    capabilities: options.capabilities,
+    workers: workers.map(provisionWorkerNames),
+    projectDir: options.projectDir,
+  });
   // Before anything is created: an app Worker that would deploy under a kit host's name (F3 of #643's review).
   assertNoFeatureHostCollision(options.identity, workers.map(provisionWorkerNames));
 
@@ -230,19 +243,18 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   const limiters = ratelimits.flatMap((worker) => worker.limiters);
   let ratelimitIds: Map<string, string> | undefined;
   if (limiters.length > 0) {
-    const list = store?.list?.bind(store);
-    if (!store || !list) {
+    if (!options.ratelimits) {
       throw new ValidationError({
-        message: "This feature binds rate limiters, and each takes a namespace of its own from the Secrets Store.",
-        action: "Set SECRETS_STORE_ID and the Cloudflare credentials, then run pithy provision --feature again.",
-        detail: `feature ${options.identity.project}-f${options.identity.issue}-${options.identity.slug}: ${limiters.length} limiter(s), no store to allocate from`,
+        message: "This feature binds rate limiters, and each takes a namespace from the account's feature registry.",
+        action: "Set the Cloudflare credentials, then run pithy provision --feature again.",
+        detail: `feature ${options.identity.project}-f${options.identity.issue}-${options.identity.slug}: ${limiters.length} limiter(s), no registry to claim from`,
       });
     }
     ratelimitIds = await allocateFeatureRatelimits({
       identity: options.identity,
       limiters,
       declared: new Set(ratelimits.flatMap((worker) => worker.declared.map((entry) => entry.id))),
-      store: { list, create: (name, value) => store.create(name, value), remove: (name) => store.remove(name) },
+      registry: options.ratelimits,
     });
   }
 
@@ -474,6 +486,8 @@ export interface DeprovisionFeatureOptions {
    * namespace with nothing pointing at it.
    */
   store?: SecretsStore;
+  /** The account's feature registry, when reachable: teardown deletes the feature's own rate-limit claims (#643). */
+  ratelimits?: RatelimitRegistry;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -616,15 +630,9 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
       }
       // The feature's master key, which no Worker's registry declares: the manager binds it (#643).
       await options.store.remove(masterKeySecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
-      // Its rate-limit claims, found by parsing every entry, so an id this branch held is free again (#643).
-      if (options.store.list) {
-        for (const claim of await featureRatelimitClaims(options.identity, {
-          list: options.store.list.bind(options.store),
-        })) {
-          await options.store.remove(claim);
-        }
-      }
     }
+    // Its rate-limit claims: exactly this feature's rows, so its ids are free again and nobody else's move (#643).
+    if (options.ratelimits) await options.ratelimits.release(options.identity);
     // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).
   } catch (error) {
     // Carried, never replaced. `deleted` is what this run destroyed, by kind, name and id — the three

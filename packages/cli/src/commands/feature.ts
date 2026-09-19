@@ -14,6 +14,8 @@ import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type Remote
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { portsRegistryPath } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
+import { accountRatelimitRegistry, d1Executor, lazyRatelimitRegistry } from "../feature/ratelimits";
+import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
@@ -60,8 +62,17 @@ async function buildTeardown(
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmed = { accountId, confirmation: cloudflareAccountConfirmation({ account }) };
   const clients = await cloudflareClients({ accountId, apiToken });
+  const provisioners = cloudflareProvisioners(clients, confirmed);
   return {
-    provisioners: cloudflareProvisioners(clients, confirmed),
+    provisioners,
+    // The feature's rate-limit claims, found in the account's registry and never created by a teardown (#643).
+    ratelimits: lazyRatelimitRegistry(() =>
+      accountRatelimitRegistry({
+        d1: provisioners.d1,
+        execute: (databaseId) => d1Executor((sql, params) => clients.d1(databaseId).executeQuery(sql, params)),
+        create: false,
+      }),
+    ),
     scripts: cloudflareWorkerScripts(clients, confirmed),
     // Every kit host's Workflows, deleted by name (#643). No token: a feature's manager holds none.
     workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),
@@ -150,6 +161,10 @@ const create = defineCommand({
           action: "Use lowercase words joined by hyphens, e.g. media-cli.",
         });
       }
+
+      // Before a branch or a worktree exists: a slug too long for a name this feature would compose (#643).
+      // Feature names are never truncated, so the refusal names the longest slug this project takes.
+      await assertFeatureSlugFitsProject(projectDir, { issue: args.issue, slug: args.slug });
 
       // Capabilities are read from the worktree it creates, not from here: the feature branch is what
       // decides which Workers exist and what each composes.

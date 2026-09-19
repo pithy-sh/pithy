@@ -130,9 +130,11 @@ A feature shares nothing with any other feature, with staging or production, in 
 
 Together they make every feature name parse back to exactly one project, issue and slug, which is how the isolation gates check ownership: by parsing, never by prefix. The issue is read without leading zeros, so `feature/0643-foo` is `feature/643-foo`. `packages/cli/src/feature/naming.property.test.ts` holds the property over generated projects, environments and branches.
 
-A slug too long for its budget is still truncated to a head and a six-hex hash, so two very long slugs of one issue that agree on their head are distinct only through the hash. Keep the slug short, as below.
+**No feature name is truncated.** A slug that does not fit every name its feature composes is refused, by `pithy feature create` before a branch exists and by `pithy provision --feature` before anything is created, and the refusal names the longest slug the project takes at that issue: `Slug "add-search-import" is 17 characters. Feature slugs in <project> stop at 5 characters at issue 123456.` A truncated slug was a short hash, and a hash is a slug some sibling can have whole: `feature/12-login` used to own `feature/12-c`'s names, and two long slugs of one issue composed one database. So ownership is an exact parse of project, issue and slug, with nothing fitted to accept. The maximum is the least room any name leaves: every resource, Worker, kit host, Workflow, store entry and index the composed capabilities name. See [the feature-branch budget](#the-feature-branch-budget).
 
-**Rate-limit namespaces are numbers, so they are allocated, not named.** A feature's `namespace_id` is ten digits starting with 1, a range no declared environment may use: `pithy provision --feature` refuses a tracked config that declares one there, in any Worker and any stanza. Each limiter's id is claimed in the account's Secrets Store under the feature's own name, `<project>-f<issue>-<slug>--ratelimit-<id>-<limiter>`, where every project in the account sees it. Two claims on one id are settled by age, and the younger withdraws. `pithy feature destroy` removes the feature's claims.
+**Rate-limit namespaces are numbers, so they are allocated, not named.** Cloudflare keys a limiter's counters by `namespace_id` across the whole account. A feature's is an integer from 1000000000 through 1999999999, a range **no project running this kit may declare**, in any Worker or stanza: `pithy provision` for every environment and `pithy deploy` refuse one, and `pithy doctor` reports it, whether or not the project ever provisions a feature. The id is read as the integer it spells, so `"01031275746"` is `1031275746` and is refused too.
+
+Each limiter's id is claimed in the account's **feature registry**, a D1 database named `pithy--feature-registry`, created on the first claim. It holds one row per claim, the id, the project, issue, slug and limiter, and nothing else. The id is the table's primary key, so a second claim on it inserts nothing: the oldest claim stands because it is the only one. D1 runs each database single-threaded, one query at a time, and the REST API reads the primary, so a claim is visible to the next read. `pithy feature destroy` deletes the feature's own rows. Claims used to be Secrets Store entries, which spent the account's 100 secrets on bookkeeping.
 
 ## Where `<project>` comes from
 
@@ -200,6 +202,8 @@ Which one a namespace gets is not a style choice. It follows from whether the na
 
 **Truncated** where Pithy recomputes the name from the same inputs on every command — D1, KV, R2, secret entries, tokens. Truncation is deterministic and hash-disambiguated, so `provision` and `destroy` still agree on the string, and a long binding name does not fail a CI run.
 
+**Except in a feature's names, where nothing is truncated (#643).** A feature name is refused whole when it does not fit, in every namespace. A fitted slug is a short hash, and one branch's hash can be another branch's whole slug.
+
 **Only `<thing>` is ever shortened.** When it does not fit, it becomes a truncated head plus a short stable hash — `media-bucket` at a budget of 8 becomes `m-f4aeb8`. The hash is derived from the segment alone, so two commands computing the same name agree without storing it anywhere.
 
 **`<project>` and `<env>` are always verbatim.** A hashed project segment would let two long project names share a prefix, and `pithy token list` filters the account's tokens on exactly that prefix — a collision there means one project enumerating and revoking another's credentials. If the project and environment alone overflow a budget, the name is refused with the limit named, never quietly hashed into something ambiguous.
@@ -261,7 +265,7 @@ project + issue + slug + binding = 55
 
 The issue number is reserved **6 digits** — `f999999`, just under a million open issues in one repository, which nothing this toolkit serves is going to exhaust. Every digit reserved here costs one character of every project name, so it is six rather than seven. At the worst case the slug gets `49 - project - binding`.
 
-Here is what that leaves the slug, in characters kept verbatim, at a 6-digit issue.
+Here is what that leaves the slug, the longest a feature is allowed, at a 6-digit issue.
 
 | Project name | `DB` (2) | `SESSIONS` (8) | `MEDIA_BUCKET` (12) | `EMAIL_SUPPRESSIONS` (18) |
 |---|---|---|---|---|
@@ -278,14 +282,13 @@ A real issue number is rarely six digits, and every digit you do not use comes s
 
 ```
 acme-f95-project-scope-resources--db-r2
-acme-backend-platform-f999999-pro-c37741--email-suppressions-r2
 ```
 
-A slug over budget is not an error. It becomes a truncated head plus a six-hex hash, which is what the second example shows: `project-scope-resources` had 10 characters to work with, so it became `pro-c37741`. The name is still unique and still recomputable, but nobody reading a bucket listing can tell you which branch owns it.
+**A slug over budget is refused, not shortened (#643).** `acme-backend-platform` at issue 999999 has 10 characters for a slug beside `EMAIL_SUPPRESSIONS`, so `feature/999999-project-scope-resources` is refused at `pithy feature create`, naming the 10. It used to become `pro-c37741`, and a hash is a slug another branch can have whole. The table is the resource shape only: the budget is the least room any name the feature composes leaves, and a Workflow such as `media-audio-transcribe`, in a Workflow's 64, is usually as tight as `EMAIL_SUPPRESSIONS`.
 
-**The guidance that falls out of it.** Keep the branch slug to roughly 20 characters — `feature/95-project-scope` rather than `feature/95-project-scope-resources-and-limits`. Only the part after the issue number becomes the slug. If a branch needs a long name for humans, it can have one; the cost is a hashed segment in a resource that lives for the length of the review.
+**The guidance that falls out of it.** Keep the branch slug to roughly 20 characters — `feature/95-project-scope` rather than `feature/95-project-scope-resources-and-limits`. Only the part after the issue number becomes the slug. The refusal says the maximum, so a slug that fits is one rename away.
 
-A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>--<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
+A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>--<worker>`, held to the Worker script rule of 63. A Worker directory whose name leaves no room for the slug is refused too, naming the directory.
 
 `<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo--board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
 

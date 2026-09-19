@@ -418,6 +418,14 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
  */
 export function featureWorkerScriptNames(identity: FeatureIdentity, worker: ProvisionWorkerNames): string[] {
   const current = featureScope(identity).worker(worker);
-  const beforeSingleProject = featureWorkerName(identity, worker.script);
+  let beforeSingleProject: string;
+  try {
+    beforeSingleProject = featureWorkerName(identity, worker.script);
+  } catch (error) {
+    // Too long to compose whole (#643). The release that deployed that shape fitted it with a hash instead, so no
+    // exact name here would reach it anyway; teardown reaches the current name, which always composes.
+    if (error instanceof ValidationError) return [current];
+    throw error;
+  }
   return current === beforeSingleProject ? [current] : [current, beforeSingleProject];
 }

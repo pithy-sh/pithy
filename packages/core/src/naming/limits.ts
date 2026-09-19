@@ -33,6 +33,9 @@ export type LimitSource = "cloudflare" | "pithy";
  * **`truncate`** where Pithy recomputes the name from the same inputs on every command — a D1
  * database, a KV namespace, a bucket, a secret entry, a token. Truncation is deterministic and
  * hash-disambiguated, so provision and teardown still agree, and a failed CI run is avoided.
+ *
+ * **A feature's names are refused in every namespace, whatever its policy here (#643).** A fitted slug is a
+ * short hash, and a hash is a slug another branch can have whole; see `composeFeatureName` in `./feature`.
  */
 export type OverflowPolicy = "refuse" | "truncate";
 
@@ -163,9 +166,8 @@ export const MAX_ISSUE_DIGITS = 6;
  * The slug length a feature resource name keeps verbatim at the worst legal project name.
  *
  * Eleven — it was twelve until {@link FEATURE_TAIL_SEPARATOR} took a character of it (#643). About where a
- * feature slug stops being readable in a listing: below it,
- * `fitSegment` has to fall back to a short head plus a six-hex disambiguator, and
- * `acme-f95-medi-8f21c4-db-d1` tells a human nothing about which branch owns the database.
+ * feature slug stops being readable in a listing. A slug past a feature's budget is refused, not fitted (#643),
+ * so this is the room the project-name cap guarantees every project's features at the worst legal input.
  */
 export const MIN_LEGIBLE_SLUG = 11;
 

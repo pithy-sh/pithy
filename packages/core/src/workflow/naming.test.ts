@@ -309,17 +309,13 @@ describe("host names for a feature", () => {
     expect(workflowScriptName({ ...parts, feature })).not.toBe(workflowScriptName({ ...parts, feature: other }));
   });
 
-  it("fits a long slug under the Workflow limit rather than past it", () => {
+  it("refuses a slug that does not fit under the Workflow limit rather than truncating it (#643)", () => {
     const long = { ...feature, slug: "a-very-long-feature-slug-that-would-not-otherwise-fit-anywhere" };
-    const name = workflowScriptName({
-      project: "replay",
-      capability: "email",
-      job: "schedule",
-      env: "feature",
-      feature: long,
-    });
+    const parts = { project: "replay", capability: "email", job: "schedule", env: "feature", feature: long };
+    expect(() => workflowScriptName(parts)).toThrow("leaves room for at most 36");
+    const name = workflowScriptName({ ...parts, feature: { ...feature, slug: "a-shorter-slug" } });
     expect(name.length).toBeLessThanOrEqual(MAX_WORKFLOW_NAME_BYTES);
-    expect(name.endsWith("-email-schedule")).toBe(true);
+    expect(name.endsWith("-a-shorter-slug--email-schedule")).toBe(true);
   });
 
   it("refuses a feature of another project", () => {

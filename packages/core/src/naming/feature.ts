@@ -4,7 +4,7 @@
 import { ValidationError } from "../error/pithyError";
 import { featureMarker, isFeatureMarker } from "./environment";
 import { FEATURE_TAIL_SEPARATOR, MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
-import { assertValidProjectName, fitSegment, kebab } from "./resource";
+import { assertValidProjectName, kebab } from "./resource";
 
 /**
  * The names a feature environment provisions under: `<project>-f<issue>-<slug>--<binding>-<kind>` for a
@@ -23,9 +23,12 @@ import { assertValidProjectName, fitSegment, kebab } from "./resource";
  *
  * Every name here is **derived and recomputed**, never stored: `provision` and `destroy` both compute the
  * same string from `(identity, binding, kind)`, which is what lets teardown reconcile exactly rather than
- * scan a prefix a hyphenated sibling slug could ambiguously match. That is also why these names
- * **truncate** where a capability's Workflow refuses: a feature name addresses nothing that outlives the
- * feature, and failing a CI run because a branch slug was long would be the worse failure.
+ * scan a prefix a hyphenated sibling slug could ambiguously match.
+ *
+ * **Never truncated (#643).** These names used to fit a long slug with a hash, on the reasoning that a feature
+ * name addresses nothing that outlives the feature. But a short hash is a slug some sibling branch can have
+ * whole, so a fitted name was a name two features could compose. A slug that does not fit is refused instead,
+ * naming the maximum ({@link assertFeatureSlugFits}), and every feature name is exactly its feature's.
  *
  * It lives in `core`, beside the rest of the naming rule, so the CLI and the facade compose one
  * implementation rather than two that drift.
@@ -46,9 +49,6 @@ export interface FeatureIdentity {
   /** The kebab-case feature slug, from the branch (e.g. `media-cli`). */
   slug: string;
 }
-
-/** Below this the slug segment isn't worth keeping legible; the trailing segment is truncated to give it room. */
-const MIN_SLUG_BUDGET = 3;
 
 /**
  * Refuse an issue number the budgets were not derived against.
@@ -110,7 +110,7 @@ export function assertFeatureProject(project: string): void {
 }
 
 /** The `<project>-f<issue>` head both feature shapes share, with the project held to the one project rule. */
-function head(identity: FeatureIdentity): string {
+function head(identity: FeatureHead): string {
   assertValidProjectName(identity.project);
   assertFeatureProject(identity.project);
   return `${kebab(identity.project)}-${featureMarker(canonicalIssue(identity.issue))}`;
@@ -122,7 +122,7 @@ export interface ParsedFeatureName {
   project: string;
   /** The issue, canonical. */
   issue: string;
-  /** The slug segment as it stands in the name: the whole slug, or its fitted form when it was truncated. */
+  /** The slug segment: the whole slug, since no feature name is truncated. */
   slug: string;
   /** Everything after {@link FEATURE_TAIL_SEPARATOR}: the binding and kind, Worker, Workflow or entry. */
   thing: string;
@@ -154,31 +154,52 @@ export function parseFeatureName(name: string): ParsedFeatureName | null {
 /**
  * **Is this name one this feature composes?** The ownership check the isolation gates ask (#643).
  *
- * Parsed, never prefix-matched. `<project>-f<issue>-` is shared by every branch of one issue, and a slug that is
- * a hyphen-prefix of a sibling's (`feature-address` of `feature-address-2`) matched the sibling's names too. The
- * slug segment must be the feature's slug, or a fitted form of it, which is what a truncated name carries.
+ * Parsed, never prefix-matched, and exact: the name's project, issue and slug are this feature's, character for
+ * character. `<project>-f<issue>-` is shared by every branch of one issue, so a prefix match reached siblings; and
+ * a fitted form of the slug, which this used to accept, is a short hash some sibling can have as its whole slug
+ * (`feature/12-login` owned `feature/12-c`). No feature name is fitted any more ({@link composeFeatureName}), so
+ * there is nothing but the slug itself to accept.
  */
 export function isFeatureOwnedName(identity: FeatureIdentity, name: string): boolean {
   const parsed = parseFeatureName(name);
   if (parsed === null) return false;
-  if (parsed.project !== kebab(identity.project) || parsed.issue !== canonicalIssue(identity.issue)) return false;
-  const slug = kebab(identity.slug);
-  if (parsed.slug === slug) return true;
-  for (let budget = 1; budget < slug.length; budget += 1) {
-    if (fitSegment(slug, budget) === parsed.slug) return true;
-  }
-  return false;
+  return (
+    parsed.project === kebab(identity.project) &&
+    parsed.issue === canonicalIssue(identity.issue) &&
+    parsed.slug === kebab(identity.slug)
+  );
+}
+
+/** A feature's project and issue: everything its names are derived from but the slug. */
+export type FeatureHead = Pick<FeatureIdentity, "project" | "issue">;
+
+/**
+ * **The longest slug one feature name leaves room for** — `limit` less `<project>-f<issue>-`, the
+ * {@link FEATURE_TAIL_SEPARATOR}, and `thing`, which is everything after it. Zero or less when `thing` leaves none.
+ */
+export function featureSlugRoom(parts: FeatureHead, thing: string, limit: number): number {
+  return limit - head(parts).length - 1 - FEATURE_TAIL_SEPARATOR.length - thing.length;
 }
 
 /**
- * Fit `<head>-<slug>--<tail><fixed>` into `budget`, truncating the slug first and the tail only if the
- * tail is what is eating the name. `fixed` is never touched — it carries the kind suffix, which is the
- * only thing telling a `DB` bucket from a `DB` database.
+ * Compose `<head>-<slug>--<tail><fixed>` whole, or refuse (#643).
  *
- * Deterministic in its inputs and hash-disambiguated on both variable segments, so two long inputs
- * sharing a prefix still produce two different names.
+ * **Never truncated.** A fitted slug was a short hash, and a hash is a slug some sibling branch can have: the
+ * review of 4828e1fc found `feature/12-login` owning `feature/12-c`'s names, and two long slugs of one issue
+ * composing one database. A name that does not fit is refused, naming the longest slug that does, and
+ * `pithy feature create` and `pithy provision --feature` refuse the branch before anything exists
+ * ({@link assertFeatureSlugFits}). This is the backstop behind them: no path composes a feature name that is not
+ * exactly its feature's.
  */
-function composeFeatureName(headSegment: string, slug: string, tail: string, fixed: string, budget: number): string {
+function composeFeatureName(
+  parts: FeatureHead,
+  slug: string,
+  tail: string,
+  fixed: string,
+  limit: number,
+  label: string,
+): string {
+  const headSegment = head(parts);
   for (const [role, value] of [
     ["slug", slug],
     ["binding or worker", tail],
@@ -193,19 +214,81 @@ function composeFeatureName(headSegment: string, slug: string, tail: string, fix
     });
   }
 
-  const inner = budget - fixed.length;
-  const separator = FEATURE_TAIL_SEPARATOR.length;
-  let tailSegment = tail;
-  let slugBudget = inner - headSegment.length - 1 - (separator + tailSegment.length);
-
-  if (slugBudget < MIN_SLUG_BUDGET) {
-    // The tail is eating the name — truncate it too, reserving the slug its minimum.
-    const tailBudget = inner - headSegment.length - 1 - MIN_SLUG_BUDGET - separator;
-    tailSegment = fitSegment(tailSegment, Math.max(1, tailBudget));
-    slugBudget = inner - headSegment.length - 1 - (separator + tailSegment.length);
+  const thing = `${tail}${fixed}`;
+  const room = featureSlugRoom(parts, thing, limit);
+  if (room < 1) {
+    throw new ValidationError({
+      message: `"${thing}" is too long for a feature's ${label.replace(/^an? /, "")}.`,
+      action: `Shorten it. ${label[0]?.toUpperCase()}${label.slice(1)} stops at ${limit}, and ${headSegment}-<slug>-- comes first.`,
+      detail: `${headSegment}-<slug>--${thing} leaves ${room} characters for a slug.`,
+    });
   }
+  if (slug.length > room) {
+    throw new ValidationError({
+      message: `Slug "${slug}" is ${slug.length} characters. ${label[0]?.toUpperCase()}${label.slice(1)} ${headSegment}-<slug>--${thing} leaves room for at most ${room}.`,
+      action: "Use a shorter branch slug.",
+      detail: `${headSegment}-${slug}--${thing} is ${headSegment.length + 1 + slug.length + FEATURE_TAIL_SEPARATOR.length + thing.length} characters; the limit is ${limit}. Feature names are never truncated.`,
+    });
+  }
+  return `${headSegment}-${slug}${FEATURE_TAIL_SEPARATOR}${thing}`;
+}
 
-  return `${headSegment}-${fitSegment(slug, Math.max(1, slugBudget))}${FEATURE_TAIL_SEPARATOR}${tailSegment}${fixed}`;
+/** One kind of name a feature composes, as far as its slug budget reads it. */
+export interface FeatureNameShape {
+  /** How an error names the namespace, e.g. `a Workflow name`. */
+  label: string;
+  /** The longest name the namespace takes. */
+  limit: number;
+  /** Everything after {@link FEATURE_TAIL_SEPARATOR}, e.g. `email-suppressions-d1`. */
+  thing: string;
+}
+
+/** The longest slug every one of `shapes` leaves room for, for this project and issue, and the shape that sets it. */
+export function tightestFeatureShape(
+  parts: FeatureHead,
+  shapes: readonly FeatureNameShape[],
+): { max: number; shape: FeatureNameShape | null } {
+  let max = Number.POSITIVE_INFINITY;
+  let shape: FeatureNameShape | null = null;
+  for (const candidate of shapes) {
+    const room = featureSlugRoom(parts, candidate.thing, candidate.limit);
+    if (room < max) {
+      max = room;
+      shape = candidate;
+    }
+  }
+  return { max, shape };
+}
+
+/** The longest slug a feature of this project and issue may have, across every name it composes. */
+export function maxFeatureSlug(parts: FeatureHead, shapes: readonly FeatureNameShape[]): number {
+  return tightestFeatureShape(parts, shapes).max;
+}
+
+/**
+ * **Refuse a branch whose slug cannot fit every name its feature composes (#643).** The one refusal
+ * `pithy feature create` and `pithy provision --feature` make, before a worktree or a resource exists, with the
+ * project's maximum in the message. {@link composeFeatureName} refuses the same slug one name at a time; this says
+ * it once, for all of them.
+ */
+export function assertFeatureSlugFits(identity: FeatureIdentity, shapes: readonly FeatureNameShape[]): void {
+  const { max, shape } = tightestFeatureShape(identity, shapes);
+  const slug = kebab(identity.slug);
+  if (shape === null || slug.length <= max) return;
+  const issue = canonicalIssue(identity.issue);
+  const project = kebab(identity.project);
+  if (max < 1) {
+    throw new ValidationError({
+      message: `"${shape.thing}" leaves no room for a slug in ${project}'s features.`,
+      action: `Shorten it. ${shape.label[0]?.toUpperCase()}${shape.label.slice(1)} stops at ${shape.limit}.`,
+      detail: `${head(identity)}-<slug>--${shape.thing} leaves ${max} characters for a slug.`,
+    });
+  }
+  throw new ValidationError({
+    message: `Slug "${slug}" is ${slug.length} characters. Feature slugs in ${project} stop at ${max} characters at issue ${issue}.`,
+    action: `Name the branch feature/${issue}-<slug of ${max} or fewer>. Feature names are never truncated.`,
+    detail: `${shape.label} ${head(identity)}-<slug>--${shape.thing} is held to ${shape.limit} characters.`,
+  });
 }
 
 /**
@@ -217,11 +300,12 @@ function composeFeatureName(headSegment: string, slug: string, tail: string, fix
  */
 export function featureResourceName(identity: FeatureIdentity, binding: string, kind: FeatureResourceKind): string {
   return composeFeatureName(
-    head(identity),
+    identity,
     kebab(identity.slug),
     kebab(binding),
     `-${kind}`,
     NAMESPACE_LIMITS.r2.maxLength,
+    NAMESPACE_LIMITS.r2.label,
   );
 }
 
@@ -242,11 +326,12 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
  */
 export function featureSecretEntryName(identity: FeatureIdentity, secret: string): string {
   return composeFeatureName(
-    head(identity),
+    identity,
     kebab(identity.slug),
     kebab(secret),
     "",
     NAMESPACE_LIMITS.secretEntry.maxLength,
+    NAMESPACE_LIMITS.secretEntry.label,
   );
 }
 
@@ -269,7 +354,14 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
  * and picks.
  */
 export function featureWorkerName(identity: FeatureIdentity, app: string): string {
-  return composeFeatureName(head(identity), kebab(identity.slug), kebab(app), "", NAMESPACE_LIMITS.worker.maxLength);
+  return composeFeatureName(
+    identity,
+    kebab(identity.slug),
+    kebab(app),
+    "",
+    NAMESPACE_LIMITS.worker.maxLength,
+    NAMESPACE_LIMITS.worker.label,
+  );
 }
 
 /**
@@ -285,11 +377,12 @@ export function featureWorkerName(identity: FeatureIdentity, app: string): strin
  */
 export function featureWorkflowName(identity: FeatureIdentity, capability: string, job: string): string {
   return composeFeatureName(
-    head(identity),
+    identity,
     kebab(identity.slug),
     `${kebab(capability)}-${kebab(job)}`,
     "",
     NAMESPACE_LIMITS.workflow.maxLength,
+    NAMESPACE_LIMITS.workflow.label,
   );
 }
 
@@ -302,10 +395,11 @@ export function featureWorkflowName(identity: FeatureIdentity, capability: strin
  */
 export function featureVectorizeIndexName(identity: FeatureIdentity, thing: string): string {
   return composeFeatureName(
-    head(identity),
+    identity,
     kebab(identity.slug),
     kebab(thing),
     "",
     NAMESPACE_LIMITS.vectorizeIndex.maxLength,
+    NAMESPACE_LIMITS.vectorizeIndex.label,
   );
 }
