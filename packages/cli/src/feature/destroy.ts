@@ -7,13 +7,7 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { ProvisionWorker } from "../provision/environment";
-import type {
-  FeatureApiTokens,
-  FeatureIndexes,
-  ResourceProvisioners,
-  WorkerScripts,
-  WorkflowDefinitions,
-} from "../provision/resources";
+import type { FeatureIndexes, ResourceProvisioners, WorkerScripts, WorkflowDefinitions } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
@@ -86,8 +80,6 @@ export type RemoteTeardown =
       scripts: WorkerScripts;
       /** The account's Workflow definitions — every one a feature script hosts is deleted by name (#643). */
       workflows: WorkflowDefinitions;
-      /** The account's API tokens — the feature manager's own is revoked by name (#643). */
-      tokens: FeatureApiTokens;
       /** The feature's own Vectorize indexes, deleted by recomputed name (#643). */
       indexes?: FeatureIndexes;
     }
@@ -98,8 +90,6 @@ export type RemoteTeardown =
       scripts?: undefined;
       /** Absent with `provisioners`. */
       workflows?: undefined;
-      /** Absent with `provisioners`. */
-      tokens?: undefined;
       /** Absent with `provisioners`. */
       indexes?: undefined;
     };
@@ -163,7 +153,6 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
         provisioners: options.provisioners,
         scripts: options.scripts,
         workflows: options.workflows,
-        tokens: options.tokens,
         ...(options.indexes ? { indexes: options.indexes } : {}),
         workers: options.workers,
         ...(options.store !== undefined ? { store: options.store } : {}),

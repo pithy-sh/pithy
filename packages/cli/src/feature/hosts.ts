@@ -3,12 +3,14 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { type FeatureIdentity, featureNamePrefix } from "@pithy-sh/core/src/naming/feature";
+import { type FeatureIdentity, featureResourceName, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
 import { featureScope, type ProvisionScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { workflowHostName, workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { type FeatureIndex, HOST_WORKERS, hostWorkerFor } from "../capabilities/hostRegistry";
+import type { ResourceProvisioners } from "../provision/resources";
+import { provisionableBindings } from "./bindings";
 
 /**
  * **Every kit Worker a feature composes, stood up for the feature (#643).**
@@ -24,8 +26,8 @@ import { type FeatureIndex, HOST_WORKERS, hostWorkerFor } from "../capabilities/
  * the branch composes, read the same way `pithy dev` and `pithy deploy` read it, so a capability that gains a
  * host joins a feature with no change in this directory. Email was the first instance, not a special case.
  *
- * What a resolver must do for a feature is stated once, in {@link featureHostNameLeaks}: every account-wide name
- * in its config begins with the feature's prefix. A resolver that forgets the feature composes
+ * What a resolver must do for a feature is stated once, in {@link featureHostNameLeaks}: every binding in its
+ * config reaches something the feature owns. A resolver that forgets the feature composes
  * `<project>-feature-…`, one Worker every open branch would share, and that host fails rather than deploys.
  */
 
@@ -127,27 +129,152 @@ export function hostedWorkflowEntries(
 }
 
 /**
- * **Every account-wide name in a resolved host config that is not this feature's** — empty when the resolver
- * named everything for the feature.
- *
- * The script, each Workflow, each R2 bucket, each Vectorize index and each Secrets Store entry: each is one
- * account-wide namespace, so each must begin with {@link featureNamePrefix}. **No exception for a `global`
- * entry**: nothing is shared between a feature and any other environment, so even the secrets manager's CF API
- * token is the feature's own. D1 databases and KV namespaces are bound by id, and every id a feature host binds is
- * read off the feature's own generated stanza — the gate in `feature/isolation.test.ts` follows each id to the
- * resource behind it.
+ * The resources a feature owns that a config can only name by id — its D1 databases and KV namespaces, id → the
+ * name each was created under. Read off the feature's manifest (`featureOwnedIds`), whose entries are honored only
+ * when their names recompute for this feature.
  */
-export function featureHostNameLeaks(config: WorkflowHostTemplate, identity: FeatureIdentity): string[] {
-  const prefix = featureNamePrefix(identity);
+export interface FeatureOwnedIds {
+  /** D1 database id → name. */
+  d1: ReadonlyMap<string, string>;
+  /** KV namespace id → title. */
+  kv: ReadonlyMap<string, string>;
+}
+
+/**
+ * **The feature's own D1 databases and KV namespaces, asked of the account (#643)** — each binding the composed
+ * capabilities declare, named for the feature and looked up by that name. The account, never a file: a manifest
+ * is repository content, and an id read out of one is an id anyone could have written there.
+ */
+export async function featureOwnedIds(
+  provisioners: Pick<ResourceProvisioners, "d1" | "kv">,
+  identity: FeatureIdentity,
+  capabilities: readonly Capability[],
+): Promise<FeatureOwnedIds> {
+  const d1 = new Map<string, string>();
+  const kv = new Map<string, string>();
+  for (const { binding, kind } of provisionableBindings(capabilities)) {
+    if (kind !== "d1" && kind !== "kv") continue;
+    const name = featureResourceName(identity, binding, kind);
+    const found = await provisioners[kind].find(name);
+    if (found) (kind === "d1" ? d1 : kv).set(found.id, name);
+  }
+  return { d1, kv };
+}
+
+/**
+ * Keys a Worker config carries that name no account resource: settings, code, or a service Cloudflare runs for
+ * the whole account that no environment owns a copy of (Workers AI, Email Sending). Every other key is walked.
+ */
+const NOT_A_RESOURCE = new Set([
+  "$schema",
+  "main",
+  "compatibility_date",
+  "compatibility_flags",
+  "vars",
+  "workers_dev",
+  "triggers",
+  "observability",
+  "ai",
+  "send_email",
+  "build",
+  "assets",
+  "placement",
+  "limits",
+  "minify",
+  "keep_vars",
+  "upload_source_maps",
+  "rules",
+  "no_bundle",
+  "find_additional_modules",
+]);
+
+/**
+ * **Every binding in a resolved host config that is not this feature's** — empty when the resolver named
+ * everything for the feature (#643).
+ *
+ * Every key the config carries is walked, and a key this cannot classify is itself a leak, so a binding kind
+ * added tomorrow is refused until it is classified. Each binding is followed to the thing it reaches and that
+ * thing must be the feature's, by {@link isFeatureOwnedName}: parsed back to its project, issue **and slug**, so
+ * a sibling branch of the same issue is not the feature. A D1 database or KV namespace is bound by id, so the id
+ * is followed to the name it was created under through `owned`; an id the feature did not create is a leak,
+ * whatever `database_name` label sits beside it. A route is always one: a feature answers on its own `workers.dev` address.
+ */
+export function featureHostNameLeaks(
+  config: WorkflowHostTemplate | Record<string, unknown>,
+  identity: FeatureIdentity,
+  owned: FeatureOwnedIds = { d1: new Map(), kv: new Map() },
+): string[] {
   const leaks: string[] = [];
-  const check = (name: string | undefined): void => {
-    if (name !== undefined && !name.startsWith(prefix)) leaks.push(name);
+  const own = (what: string, name: unknown): void => {
+    if (typeof name !== "string" || !isFeatureOwnedName(identity, name)) leaks.push(`${what}: ${String(name)}`);
   };
-  check(config.name);
-  for (const entry of config.workflows ?? []) check(entry.name);
-  for (const entry of config.r2_buckets ?? []) check(entry.bucket_name);
-  for (const entry of config.vectorize ?? []) check(entry.index_name);
-  for (const entry of config.secrets_store_secrets ?? []) check(entry.secret_name);
+  const byId = (what: string, ids: ReadonlyMap<string, string>, id: unknown): void => {
+    // No id yet — absent, empty or a template's `<placeholder>` — is provisioning that has not run, which the
+    // readiness check refuses in its own words. It names no resource, so it cannot be anybody else's.
+    if (id === undefined || String(id).trim() === "" || /^<.+>$/.test(String(id).trim())) return;
+    const name = ids.get(String(id));
+    if (name === undefined) leaks.push(`${what}: id ${String(id)} is not one this feature created`);
+    else own(what, name);
+  };
+  const list = (value: unknown): Record<string, unknown>[] =>
+    Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+  for (const [key, value] of Object.entries(config as Record<string, unknown>)) {
+    if (NOT_A_RESOURCE.has(key)) continue;
+    switch (key) {
+      case "name":
+        own("script", value);
+        break;
+      case "route":
+        leaks.push(`route: ${JSON.stringify(value)}`);
+        break;
+      case "routes":
+        for (const route of list(value)) leaks.push(`route: ${JSON.stringify(route)}`);
+        break;
+      case "d1_databases":
+        // By id alone: wrangler binds the id, and a `database_name` beside it is a label nothing reads.
+        for (const entry of list(value)) byId(`d1 ${String(entry.binding)}`, owned.d1, entry.database_id);
+        break;
+      case "kv_namespaces":
+        for (const entry of list(value)) byId(`kv ${String(entry.binding)}`, owned.kv, entry.id);
+        break;
+      case "r2_buckets":
+        for (const entry of list(value)) own(`r2 ${String(entry.binding)}`, entry.bucket_name);
+        break;
+      case "vectorize":
+        for (const entry of list(value)) own(`vectorize ${String(entry.binding)}`, entry.index_name);
+        break;
+      case "services":
+        for (const entry of list(value)) own(`service ${String(entry.binding)}`, entry.service);
+        break;
+      case "workflows":
+        for (const entry of list(value)) {
+          own(`workflow ${String(entry.binding)}`, entry.name);
+          if (entry.script_name !== undefined) own(`workflow ${String(entry.binding)} script`, entry.script_name);
+        }
+        break;
+      case "secrets_store_secrets":
+        for (const entry of list(value)) own(`store entry ${String(entry.binding)}`, entry.secret_name);
+        break;
+      case "durable_objects":
+        for (const entry of list((value as { bindings?: unknown } | undefined)?.bindings)) {
+          if (entry.script_name !== undefined) own(`durable object ${String(entry.name)}`, entry.script_name);
+        }
+        break;
+      case "queues":
+        for (const entry of [
+          ...list((value as { producers?: unknown } | undefined)?.producers),
+          ...list((value as { consumers?: unknown } | undefined)?.consumers),
+        ]) {
+          own(`queue ${String(entry.binding ?? "consumer")}`, entry.queue);
+        }
+        break;
+      case "analytics_engine_datasets":
+        for (const entry of list(value)) own(`dataset ${String(entry.binding)}`, entry.dataset);
+        break;
+      default:
+        leaks.push(`unclassified key ${key}`);
+    }
+  }
   return leaks;
 }
 

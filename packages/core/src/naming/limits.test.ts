@@ -79,10 +79,12 @@ describe("MAX_PROJECT_NAME", () => {
   });
 
   it("is the feature derivation, executed", () => {
-    // 63 = <project> + "-f" + <issue> + "-" + <slug> + "-" + <binding> + "-" + <kind>
+    // 63 = <project> + "-f" + <issue> + "-" + <slug> + "--" + <binding> + "-" + <kind>
     expect(FEATURE_DERIVED_PROJECT_NAME).toBe(
-      NAMESPACE_LIMITS.r2.maxLength - 2 - MAX_ISSUE_DIGITS - (1 + MIN_LEGIBLE_SLUG) - (1 + MIN_VERBATIM_BINDING) - 3,
+      NAMESPACE_LIMITS.r2.maxLength - 2 - MAX_ISSUE_DIGITS - (1 + MIN_LEGIBLE_SLUG) - (2 + MIN_VERBATIM_BINDING) - 3,
     );
+    // The separator took a character from the slug, not from any project name already accepted (#643).
+    expect(MIN_LEGIBLE_SLUG).toBe(11);
     expect(FEATURE_DERIVED_PROJECT_NAME).toBe(26);
     // Six digits, not seven: `f999999` is just under a million issues, and a seventh digit would
     // charge every adopter a character of project name for ten million nobody asked for.

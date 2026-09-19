@@ -86,7 +86,7 @@ An environment is lowercase, digits, and single inner hyphens, starting with a l
 
 A custom environment is allowed, and held to the same two rules. `live` is fine. `eu-prod` is fine. `preprod-eu` is 10 characters and is refused. `global` is refused for a different reason: it occupies the same slot for a different purpose, and a project cannot have one set of names covering two scopes.
 
-**An environment cannot start the way a feature does.** A feature takes the same slot with `f<issue>`, and its Worker is `<project>-f<issue>-<slug>-<worker>` with no kind suffix. So an environment called `f1-demo` stamps `<project>-f1-demo-api` into its stanza, which is feature 1-demo's Worker character for character, and `pithy feature destroy` on `feature/1-demo` deletes it. `f1` meets it too, through a Worker called `demo-api`. An environment whose first segment is `f` and digits is refused — `f1`, `f12-ab`, `f01` — and nothing else: `fr-1`, `f1a` and `fix` are fine, because no name composed under them can be a feature's. For the same reason `pithy provision --env` refuses a Worker name that a stanza declares, or that wrangler composes from a deploy name, inside `<project>-f<issue>-`.
+**An environment cannot start the way a feature does.** A feature takes the same slot with `f<issue>`, and its Worker is `<project>-f<issue>-<slug>--<worker>` with no kind suffix. Before the double hyphen (#643), an environment called `f1-demo` stamped `<project>-f1-demo-api` into its stanza, which was feature 1-demo's Worker character for character, and `pithy feature destroy` on `feature/1-demo` deleted it. `f1` met it too, through a Worker called `demo-api`. An environment whose first segment is `f` and digits is refused — `f1`, `f12-ab`, `f01` — and nothing else: `fr-1`, `f1a` and `fix` are fine, because no name composed under them can be a feature's. For the same reason `pithy provision --env` refuses a Worker name that a stanza declares, or that wrangler composes from a deploy name, inside `<project>-f<issue>-`.
 
 **A project declares which of them it has.** `environments` in the root `pithy.config.ts`, defaulting to `["staging", "prod"]`, asked at `pithy init` with that default. It is the one answer to "what environments does this project have", and everything that iterates environments reads it: each Worker's `env.<name>` stanzas are generated from it, `pithy secrets provision` gives every declared environment a master key and a manager, and `--env` refuses one the project does not declare, naming the ones it does. `dev` is never listed — it is local, it is the top-level wrangler stanza rather than an `env.dev`, and it always exists.
 
@@ -112,14 +112,27 @@ Some things are shared across all of a project's environments on purpose. They p
 An ephemeral feature environment is an environment, so it occupies the environment slot:
 
 ```
-<project>-f<issue>-<slug>-<binding>-<kind>
+<project>-f<issue>-<slug>--<binding>-<kind>
 ```
 
 `pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
 
 There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
 
-A feature also deploys Workers, under `<project>-f<issue>-<slug>-<worker>`. This is the tightest shape Pithy composes, and it has its own budget — see [the feature-branch budget](#the-feature-branch-budget).
+A feature also deploys Workers, under `<project>-f<issue>-<slug>--<worker>`. This is the tightest shape Pithy composes, and it has its own budget — see [the feature-branch budget](#the-feature-branch-budget).
+
+### Nothing is shared with a feature
+
+A feature shares nothing with any other feature, with staging or production, in its own project or in another project in the same account (#643). The account and its one Secrets Store are the only containers that cannot be split; every name inside them is the feature's own. Two rules make that true of the names rather than likely:
+
+- **Two hyphens end the slug.** `<project>-f<issue>-<slug>--<thing>`. Every other segment Pithy composes is kebab-cased, and a kebab never holds two hyphens in a row, so no declared environment of any project can compose a feature's name. And the slug ends where the double hyphen starts, so `feature/12-x` binding `PROD_DB` and `feature/12-x-prod` binding `DB` no longer name one database.
+- **A project with features has no `f<digits>` segment in its name.** A feature name is read from the first `f<digits>` segment, which is the issue. `acme-f12-x`'s feature 3 on `y` and `acme`'s feature 12 on `x-f3-y` would be one string. `pithy init` refuses such a name, `pithy provision --feature` refuses to create features for an existing one, and `pithy doctor` names the segment. Its staging and production are unaffected, and nothing is renamed: a rename orphans everything already provisioned.
+
+Together they make every feature name parse back to exactly one project, issue and slug, which is how the isolation gates check ownership: by parsing, never by prefix. The issue is read without leading zeros, so `feature/0643-foo` is `feature/643-foo`. `packages/cli/src/feature/naming.property.test.ts` holds the property over generated projects, environments and branches.
+
+A slug too long for its budget is still truncated to a head and a six-hex hash, so two very long slugs of one issue that agree on their head are distinct only through the hash. Keep the slug short, as below.
+
+**Rate-limit namespaces are numbers, so they are allocated, not named.** A feature's `namespace_id` is ten digits starting with 1, a range no declared environment may use: `pithy provision --feature` refuses a tracked config that declares one there, in any Worker and any stanza. Each limiter's id is claimed in the account's Secrets Store under the feature's own name, `<project>-f<issue>-<slug>--ratelimit-<id>-<limiter>`, where every project in the account sees it. Two claims on one id are settled by age, and the younger withdraws. `pithy feature destroy` removes the feature's claims.
 
 ## Where `<project>` comes from
 
@@ -215,12 +228,14 @@ The second is a feature resource, the tightest shape of all.
    63   an R2 bucket name
  -  2   `-f`
  -  6   the issue number, at 6 digits — `f999999`
- - 13   `-` plus a slug still legible at 12 characters
- - 13   `-` plus a binding kept whole at 12 characters
+ - 12   `-` plus a slug still legible at 11 characters
+ - 14   `--` plus a binding kept whole at 12 characters
  -  3   `-` plus the kind, `d1` | `kv` | `r2`
  ----
  = 26
 ```
+
+The double hyphen after the slug (#643) took its character from the slug's legible minimum, which was 12, so every project name already accepted still is.
 
 The cap is the minimum: **26**. The feature shape is the binding one, and it used to be invisible — the cap was derived from the Workflow alone, so a project comfortably inside 33 could still compose a feature bucket whose slug had been hashed down to nothing.
 
@@ -235,44 +250,44 @@ Practically: aim for 8 to 16 characters. That leaves a comfortable slug on every
 This is the tightest shape Pithy composes, so it is worth the arithmetic.
 
 ```
-<project>-f<issue>-<slug>-<binding>-<kind>
+<project>-f<issue>-<slug>--<binding>-<kind>
 ```
 
-Held to R2's 63 — the strictest of the three kinds a feature provisions — so one shape is legal for the bucket, the database, and the KV namespace alike. Five literal characters (`-`, `f`, and three more hyphens) plus a two-character kind is 7, which leaves 56 to divide.
+Held to R2's 63 — the strictest of the three kinds a feature provisions — so one shape is legal for the bucket, the database, and the KV namespace alike. Six literal characters (`-`, `f`, and four more hyphens) plus a two-character kind is 8, which leaves 55 to divide.
 
 ```
-project + issue + slug + binding = 56
+project + issue + slug + binding = 55
 ```
 
-The issue number is reserved **6 digits** — `f999999`, just under a million open issues in one repository, which nothing this toolkit serves is going to exhaust. Every digit reserved here costs one character of every project name, so it is six rather than seven. At the worst case the slug gets `50 - project - binding`.
+The issue number is reserved **6 digits** — `f999999`, just under a million open issues in one repository, which nothing this toolkit serves is going to exhaust. Every digit reserved here costs one character of every project name, so it is six rather than seven. At the worst case the slug gets `49 - project - binding`.
 
 Here is what that leaves the slug, in characters kept verbatim, at a 6-digit issue.
 
 | Project name | `DB` (2) | `SESSIONS` (8) | `MEDIA_BUCKET` (12) | `EMAIL_SUPPRESSIONS` (18) |
 |---|---|---|---|---|
-| 4 | 44 | 38 | 34 | 28 |
-| 8 | 40 | 34 | 30 | 24 |
-| 12 | 36 | 30 | 26 | 20 |
-| 16 | 32 | 26 | 22 | 16 |
-| 20 | 28 | 22 | 18 | 12 |
-| 26 | 22 | 16 | 12 | 6 |
+| 4 | 43 | 37 | 33 | 27 |
+| 8 | 39 | 33 | 29 | 23 |
+| 12 | 35 | 29 | 25 | 19 |
+| 16 | 31 | 25 | 21 | 15 |
+| 20 | 27 | 21 | 17 | 11 |
+| 26 | 21 | 15 | 11 | 5 |
 
-Read the last row against the derivation above: at the maximum project name, a 12-character binding leaves exactly 12 characters of slug. That is where the cap comes from.
+Read the last row against the derivation above: at the maximum project name, a 12-character binding leaves exactly 11 characters of slug. That is where the cap comes from.
 
-A real issue number is rarely six digits, and every digit you do not use comes straight back to the slug. Issue 95 on a 12-character project with a `DB` binding gets 40 slug characters, not 36.
+A real issue number is rarely six digits, and every digit you do not use comes straight back to the slug. Issue 95 on a 12-character project with a `DB` binding gets 39 slug characters, not 35.
 
 ```
-acme-f95-project-scope-resources-db-r2
-acme-backend-platform-f999999-proj-c37741-email-suppressions-r2
+acme-f95-project-scope-resources--db-r2
+acme-backend-platform-f999999-pro-c37741--email-suppressions-r2
 ```
 
-A slug over budget is not an error. It becomes a truncated head plus a six-hex hash, which is what the second example shows: `project-scope-resources` had 11 characters to work with, so it became `proj-c37741`. The name is still unique and still recomputable, but nobody reading a bucket listing can tell you which branch owns it.
+A slug over budget is not an error. It becomes a truncated head plus a six-hex hash, which is what the second example shows: `project-scope-resources` had 10 characters to work with, so it became `pro-c37741`. The name is still unique and still recomputable, but nobody reading a bucket listing can tell you which branch owns it.
 
 **The guidance that falls out of it.** Keep the branch slug to roughly 20 characters — `feature/95-project-scope` rather than `feature/95-project-scope-resources-and-limits`. Only the part after the issue number becomes the slug. If a branch needs a long name for humans, it can have one; the cost is a hashed segment in a resource that lives for the length of the review.
 
-A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>-<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
+A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>--<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
 
-`<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo-board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
+`<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo--board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
 
 `pithy feature destroy` looks for both shapes (#592), so a feature deployed before that change — and redeployed since, under both names — has both removed. Both are exact names, recomputed from the Worker's directory and its deploy name. A third name some features deployed under before #592, wrangler's `<script>-feature`, carries no feature identity and is shared by every branch that deployed it, so no teardown looks for it; [`feature.md`](commands/feature.md) says how to remove it.
 

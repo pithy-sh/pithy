@@ -27,6 +27,22 @@ export interface SecretsStore {
   create(name: string, value: string): Promise<CreateSecretOutcome>;
   /** Delete an entry if it is there. Resolves `true` when something was removed. */
   remove(name: string): Promise<boolean>;
+  /**
+   * Every entry in the store, deleted ones left out — names and creation times, never a value. How a feature's
+   * rate-limit claims are read across every project in the account (`feature/ratelimits.ts`, #643). Optional: a
+   * store without it can hold no claim, and a feature that binds a limiter is refused rather than guessed.
+   */
+  list?(): Promise<StoreEntry[]>;
+}
+
+/** One entry as {@link SecretsStore.list} reads it: its name, its id, and when it was created. */
+export interface StoreEntry {
+  /** Cloudflare's id for the entry, which breaks a tie between two created in one instant. */
+  id: string;
+  /** The entry's name. */
+  name: string;
+  /** When it was created: the older of two claims on one id stands. */
+  created: Date;
 }
 
 /** The live store, over the `@pithy-sh/cloudflare` control-plane client. */
@@ -38,5 +54,9 @@ export function cloudflareSecretsStore(clients: CloudflareClients, storeId: stri
     put: (name, value) => store.putSecret(name, value),
     create: (name, value) => store.createSecretIfAbsent(name, value),
     remove: (name) => store.deleteSecretIfPresent(name),
+    list: async () =>
+      (await store.listSecrets())
+        .filter((entry) => entry.status !== "deleted")
+        .map((entry) => ({ id: entry.id, name: entry.name, created: entry.created })),
   };
 }

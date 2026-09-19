@@ -3,7 +3,7 @@
 
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
-import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
@@ -60,10 +60,8 @@ export const MANAGER_CF_API_TOKEN_SECRET = "SECRETS_MANAGER_CF_API_TOKEN";
  * near-miss of a real environment. Provisioning owns this store-entry-name → binding-var mapping out of
  * band; the manager registry stays keyed by the binding var (see `manager/managerRegistry`).
  */
-export function managerCfApiTokenSecretName(project: string, feature?: FeatureIdentity): string {
-  // A feature's manager holds a token of its own, in an entry of its own (#643): nothing in the store is shared
-  // between a feature and anything else, and the project's `global` token is every declared manager's.
-  if (feature) return featureScope(feature).secretEntry(MANAGER_CF_API_TOKEN_SECRET, "global");
+export function managerCfApiTokenSecretName(project: string): string {
+  // Never a feature's (#643): a feature's manager holds no Cloudflare API token, so there is no entry to name.
   return resourceNames(project).global.secretEntry(MANAGER_CF_API_TOKEN_SECRET);
 }
 
@@ -81,10 +79,7 @@ export function managerCfApiTokenSecretName(project: string, feature?: FeatureId
  * Named as an **API token** through the facade, which is the only reason the two functions can differ
  * in budget as well as in suffix: a token label is a free-text field Cloudflare puts no cap on.
  */
-export function managerCfApiTokenName(project: string, feature?: FeatureIdentity): string {
-  // A feature's own token, by a name only that feature composes, so teardown's delete-by-name reaches nothing
-  // else (#643).
-  if (feature) return featureWorkerName(feature, "secrets-manager");
+export function managerCfApiTokenName(project: string): string {
   return resourceNames(project).global.apiToken("secrets-manager");
 }
 

@@ -3097,6 +3097,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           state: report.projectName.state,
           project: report.projectName.project,
           misnamed: report.projectName.misnamed,
+          featureMarker: report.projectName.featureMarker ?? null,
           detail: describeProjectName(report.projectName),
         }
       : null,

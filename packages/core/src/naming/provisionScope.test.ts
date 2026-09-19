@@ -206,15 +206,15 @@ describe("featureScope", () => {
 
   it("composes the names a feature's resources are provisioned under", () => {
     const scope = featureScope(identity);
-    expect(scope.resource("DB", "d1", {})).toBe("replay-f241-environments-db-d1");
-    expect(scope.worker({ app: "board", script: "replay-board" })).toBe("replay-f241-environments-board");
+    expect(scope.resource("DB", "d1", {})).toBe("replay-f241-environments--db-d1");
+    expect(scope.worker({ app: "board", script: "replay-board" })).toBe("replay-f241-environments--board");
   });
 
   /**
    * **The gate for #587: a feature Worker is `<project>-f<issue>-<slug>-<app>`, composed from its directory.**
    *
    * It was composed from the deploy name, which already leads with the project, so every feature Worker
-   * carried it twice — `replay-f241-environments-replay-board`. Stated as the exact string over projects
+   * carried it twice — `replay-f241-environments--replay-board`. Stated as the exact string over projects
    * that are a prefix of no worker's directory, so a doubled segment cannot satisfy it by coincidence, and
    * over a deploy name that does not lead with the project at all (`web-app`), so a scope that strips a
    * `<project>-` prefix off the deploy name instead of reading the directory fails too.
@@ -230,10 +230,10 @@ describe("featureScope", () => {
     for (const project of PROJECTS) {
       const scope = featureScope({ project, issue: "241", slug: "environments" });
       for (const worker of WORKERS) {
-        expect(scope.worker(worker)).toBe(`${project}-f241-environments-${worker.app}`);
+        expect(scope.worker(worker)).toBe(`${project}-f241-environments--${worker.app}`);
         // A declared name is ignored — a feature's is the kit's, recomputed rather than read.
         expect(scope.worker(worker, `${project}-staging-${worker.app}`)).toBe(
-          `${project}-f241-environments-${worker.app}`,
+          `${project}-f241-environments--${worker.app}`,
         );
       }
     }
@@ -247,9 +247,9 @@ describe("featureScope", () => {
    */
   it("fits a feature Worker at the cap without spending it on the project twice", () => {
     const scope = featureScope({ project: "acme", issue: "1", slug: "s".repeat(20) });
-    const app = "w".repeat(NAMESPACE_LIMITS.worker.maxLength - "acme-f1-".length - 20 - 1);
+    const app = "w".repeat(NAMESPACE_LIMITS.worker.maxLength - "acme-f1-".length - 20 - 2);
     const name = scope.worker({ app, script: `acme-${app}` });
-    expect(name).toBe(`acme-f1-${"s".repeat(20)}-${app}`);
+    expect(name).toBe(`acme-f1-${"s".repeat(20)}--${app}`);
     expect(name.length).toBe(NAMESPACE_LIMITS.worker.maxLength);
   });
 
@@ -263,7 +263,9 @@ describe("featureScope", () => {
   it("gives a feature its own resource even where the binding says the project shares one", () => {
     const scope = featureScope(identity);
     for (const naming of [{}, { scope: "global" as const }, { scope: "global" as const, resource: "support" }]) {
-      expect(scope.resource("EMAIL_SUPPRESSIONS", "d1", naming)).toBe("replay-f241-environments-email-suppressions-d1");
+      expect(scope.resource("EMAIL_SUPPRESSIONS", "d1", naming)).toBe(
+        "replay-f241-environments--email-suppressions-d1",
+      );
     }
   });
 
@@ -276,11 +278,11 @@ describe("featureScope", () => {
   it("gives a feature its own secret entries, a global secret's included", () => {
     const scope = featureScope(identity);
     expect(scope.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")).toBe(
-      "replay-f241-environments-secrets-encryption-keys",
+      "replay-f241-environments--secrets-encryption-keys",
     );
     // Nothing is shared between a feature and any other environment (#643): a `global` secret is one value
     // for every declared environment, and a feature has its own entry for it rather than binding theirs.
-    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-f241-environments-stripe-api-key");
+    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-f241-environments--stripe-api-key");
     expect(environmentScope("replay", "prod").secretEntry("STRIPE_API_KEY", "global")).toBe(
       "replay-global-stripe-api-key",
     );
@@ -379,7 +381,7 @@ describe("a declared environment and a feature's namespace (#587)", () => {
   it("refuses a Worker name an environment's stanza declares inside it, however it came to be written", () => {
     const scope = environmentScope("acme", "staging");
     // Written by hand, or left from an environment declared before the rule.
-    expect(() => scope.worker({ app: "api", script: "acme-api" }, "acme-f1-demo-api")).toThrow(ValidationError);
+    expect(() => scope.worker({ app: "api", script: "acme-api" }, "acme-f1-demo--api")).toThrow(ValidationError);
     // Or reached through wrangler's fallback, from a deploy name that already sits there.
     expect(() => scope.worker({ app: "api", script: "acme-f1-demo" })).toThrow(ValidationError);
     // A name that only resembles one is still the environment's.
@@ -396,13 +398,13 @@ describe("featureWorkerScriptNames", () => {
 
   it("names the single-project shape first, then the doubled one a feature deployed before #587 still runs", () => {
     expect(featureWorkerScriptNames(identity, { app: "board", script: "replay-board" })).toEqual([
-      "replay-f69-demo-board",
-      "replay-f69-demo-replay-board",
+      "replay-f69-demo--board",
+      "replay-f69-demo--replay-board",
     ]);
   });
 
   it("names one script when the deploy name is the directory, so nothing is looked for twice", () => {
-    expect(featureWorkerScriptNames(identity, { app: "board", script: "board" })).toEqual(["replay-f69-demo-board"]);
+    expect(featureWorkerScriptNames(identity, { app: "board", script: "board" })).toEqual(["replay-f69-demo--board"]);
   });
 
   it("leads with exactly the name the feature scope deploys under", () => {

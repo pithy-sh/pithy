@@ -157,27 +157,27 @@ describe("a feature's email host", () => {
       suppressionDatabaseId: "sup-1",
       secretsDatabaseId: "sec-1",
       storeId: "store-abc",
-      baseUrl: "https://acme-f643-feature-address-board.acme.workers.dev",
+      baseUrl: "https://acme-f643-feature-address--board.acme.workers.dev",
       theme: defaultTheme,
     },
   );
 
   test("names the Worker and both Workflows for the feature, and says it is a feature", () => {
-    expect(config.name).toBe("acme-f643-feature-address-email");
+    expect(config.name).toBe("acme-f643-feature-address--email");
     expect(config.workflows?.map((entry) => entry.name).sort()).toEqual([
-      "acme-f643-feature-address-email-schedule",
-      "acme-f643-feature-address-email-send",
+      "acme-f643-feature-address--email-schedule",
+      "acme-f643-feature-address--email-send",
     ]);
     expect(config.vars?.ENVIRONMENT).toBe("feature");
   });
 
   test("binds the feature's own master key, link key and suppression list — never a declared environment's", () => {
     expect(config.secrets_store_secrets.map((entry) => entry.secret_name)).toEqual([
-      "acme-f643-feature-address-secrets-encryption-keys",
-      "acme-f643-feature-address-email-link-signing-key",
+      "acme-f643-feature-address--secrets-encryption-keys",
+      "acme-f643-feature-address--email-link-signing-key",
     ]);
     const suppressions = config.d1_databases.find((entry) => entry.binding === "EMAIL_SUPPRESSIONS");
-    expect(suppressions?.database_name).toBe("acme-f643-feature-address-email-suppressions-d1");
+    expect(suppressions?.database_name).toBe("acme-f643-feature-address--email-suppressions-d1");
     expect(suppressions?.database_id).toBe("sup-1");
   });
 });

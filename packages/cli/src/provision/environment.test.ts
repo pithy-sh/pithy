@@ -858,12 +858,12 @@ describe("provisionEnvironment, for a declared environment", () => {
         ...noBackend,
       });
       expect(feature.resources.map((resource) => resource.name)).toEqual([
-        "replay-f513-binding-scope-db-d1",
-        "replay-f513-binding-scope-email-suppressions-d1",
+        "replay-f513-binding-scope--db-d1",
+        "replay-f513-binding-scope--email-suppressions-d1",
       ]);
       expect(saved.at(-1)?.map((resource) => resource.name)).toEqual([
-        "replay-f513-binding-scope-db-d1",
-        "replay-f513-binding-scope-email-suppressions-d1",
+        "replay-f513-binding-scope--db-d1",
+        "replay-f513-binding-scope--email-suppressions-d1",
       ]);
 
       // And the guard from the other end, so honoring `global` in a feature namer could never quietly
@@ -944,8 +944,8 @@ describe("a self-administering project", () => {
     const report = await provision(featureScope({ project: "replay", issue: "616", slug: "self" }), true);
 
     const stanza = await featureStanza();
-    expect(stanza?.name).toBe("replay-f616-self-board");
-    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f616-self-board" }]);
+    expect(stanza?.name).toBe("replay-f616-self--board");
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f616-self--board" }]);
     expect(stanza?.services?.[0]?.service).toBe(report.workers[0]?.name);
   });
 

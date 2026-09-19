@@ -207,6 +207,26 @@ describe("checkProjectName", () => {
     expect(await checkProjectName(dir)).toEqual({ state: "unconfigured", project: null, misnamed: [] });
   });
 
+  /**
+   * **A name carrying `f<digits>` can have no features (#643).** Another project's branch could compose its feature
+   * names, so feature provisioning refuses it — and doctor says so, beside a verdict that is otherwise `ok`,
+   * because the project's staging and prod are unaffected and nothing is renamed.
+   */
+  test("a name carrying an f<digits> segment is ok, and says it can have no feature environments", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme-f12-x" };\n');
+
+    const check = await nameCheck();
+    expect(check).toEqual({ state: "ok", project: "acme-f12-x", misnamed: [], featureMarker: "f12" });
+    expect(describeProjectName(check)).toContain("No feature environments: the name carries f12");
+    expect(describeProjectName(check)).toContain("Staging and prod are unaffected, and nothing is renamed");
+  });
+
+  test("a name with no such segment says nothing about features", async () => {
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme-fx12" };\n');
+
+    expect(await nameCheck()).toEqual({ state: "ok", project: "acme-fx12", misnamed: [] });
+  });
+
   test("a name no Cloudflare namespace could carry is invalid, not unconfigured", async () => {
     // The operator set a name; it is just illegal. Reporting "not set" tells them to add the thing they
     // already added, while `pithy add`, `migrate`, and `token mint` all hard-fail on it.

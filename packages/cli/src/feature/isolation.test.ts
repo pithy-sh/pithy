@@ -5,11 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import {
-  type FeatureIdentity,
-  featureNamePrefix,
-  featureRatelimitNamespaceId,
-} from "@pithy-sh/core/src/naming/feature";
+import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import { email } from "@pithy-sh/email/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
@@ -26,8 +22,9 @@ import { deployKitWorkers } from "../project/deployKit";
 import { featureConfigPath } from "../provision/featureConfig";
 import type { ResourceProvisioner, ResourceProvisioners } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
-import { featureHostCapabilities, featureHostScripts } from "./hosts";
+import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./hosts";
 import { provisionFeature } from "./provision";
+import { isFeatureRatelimitId, ratelimitClaimName } from "./ratelimits";
 
 /**
  * **The isolation gate (#643): nothing a feature binds is anybody else's.**
@@ -52,7 +49,18 @@ import { provisionFeature } from "./provision";
 
 const PROJECT = "replay";
 const identity: FeatureIdentity = { project: PROJECT, issue: "643", slug: "feature-address" };
-const sibling: FeatureIdentity = { project: PROJECT, issue: "644", slug: "feature-address" };
+/** A branch of the same issue whose slug the feature's is a hyphen-prefix of — the sibling a prefix check passed. */
+const sibling: FeatureIdentity = { project: PROJECT, issue: "643", slug: "feature-address-2" };
+/** Another project in the same account, whose name the feature's project is a prefix of. */
+const neighbor: FeatureIdentity = { project: `${PROJECT}-two`, issue: "643", slug: "feature-address" };
+
+/**
+ * **What the feature owns, stated here and not borrowed from the namers or the runtime gate**: every name it
+ * composes starts `<project>-f<issue>-<slug>--`, the double hyphen ending the slug. Nothing is truncated at this
+ * identity's length, so the literal is exact, and a sibling's `…-feature-address-2--` does not match it.
+ */
+const OWN = `${PROJECT}-f643-feature-address--`;
+const isOurs = (name: string): boolean => name.startsWith(OWN);
 const TOP_LIMITER = { name: "AUTH_RATE_LIMITER", namespace_id: "1001", simple: { limit: 20, period: 60 } };
 const PROD_LIMITER = { ...TOP_LIMITER, namespace_id: "2001" };
 
@@ -93,6 +101,9 @@ beforeAll(async () => {
           name: "replay-prod-app",
           ratelimits: [PROD_LIMITER],
           d1_databases: [{ binding: "DB", database_name: "replay-prod-db", database_id: "prod-db-id" }],
+          kv_namespaces: [{ binding: "CACHE", id: "prod-kv-id" }],
+          services: [{ binding: "API", service: "replay-prod-api" }],
+          queues: { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] },
         },
       },
     }),
@@ -124,6 +135,8 @@ function account() {
   };
   const provisioners = { d1: kind("d1"), kv: kind("kv"), r2: kind("r2") } as unknown as ResourceProvisioners;
   const entries = new Map<string, string>();
+  const created = new Map<string, number>();
+  let clock = 0;
   const store: SecretsStore = {
     storeId: "store-1",
     exists: async (name) => entries.has(name),
@@ -131,9 +144,13 @@ function account() {
     create: async (name, value) => {
       if (entries.has(name)) return "present";
       entries.set(name, value);
+      clock += 1;
+      created.set(name, clock);
       return "created";
     },
     remove: async (name) => entries.delete(name),
+    list: async () =>
+      [...entries.keys()].map((name) => ({ id: name, name, created: new Date(created.get(name) ?? 0) })),
   };
   const cf = {
     secrets: () => ({
@@ -141,7 +158,9 @@ function account() {
       putSecret: async (name: string, value: string) => void entries.set(name, value),
       createSecretIfAbsent: store.create,
     }),
-    accountTokens: () => ({ rollToken: async (name: string) => ({ id: `tk-${name}`, value: `token-${name}` }) }),
+    accountTokens: () => {
+      throw new Error("a feature's provisioning reached for an account token");
+    },
   } as unknown as CloudflareClients;
   return { names, provisioners, store, entries, cf };
 }
@@ -181,11 +200,10 @@ const NOT_A_RESOURCE = new Set([
  * that is neither a known non-resource nor a binding this walk can follow is itself a finding, so nothing can
  * slip past unclassified. `ids` follows a D1 or KV id to the name the stand-in account created it under.
  */
-function shared(config: Config, ids: ReadonlyMap<string, string>, tracked: ReadonlySet<string>): string[] {
-  const prefix = featureNamePrefix(identity);
+function shared(config: Config, ids: ReadonlyMap<string, string>, claims: ReadonlyMap<string, string>): string[] {
   const findings: string[] = [];
   const own = (what: string, name: unknown): void => {
-    if (typeof name !== "string" || !name.startsWith(prefix)) findings.push(`${what}: ${String(name)}`);
+    if (typeof name !== "string" || !isOurs(name)) findings.push(`${what}: ${String(name)}`);
   };
   const byId = (what: string, id: unknown): void => own(what, ids.get(String(id)) ?? `unknown id ${String(id)}`);
   const list = (value: unknown): Record<string, unknown>[] => (Array.isArray(value) ? value : []);
@@ -227,10 +245,12 @@ function shared(config: Config, ids: ReadonlyMap<string, string>, tracked: Reado
         for (const entry of list(value)) own(`store entry ${entry.binding}`, entry.secret_name);
         break;
       case "ratelimits":
+        // A namespace is the feature's when the store's claim on it is: an id in the reserved range, claimed in
+        // the account's one Secrets Store under the feature's own name, and by nothing else.
         for (const entry of list(value)) {
           const id = String(entry.namespace_id);
-          const expected = featureRatelimitNamespaceId(identity, 0);
-          if (tracked.has(id) || id !== expected || id === featureRatelimitNamespaceId(sibling, 0)) {
+          const owner = claims.get(id);
+          if (!isFeatureRatelimitId(id) || owner === undefined || !isOurs(owner)) {
             findings.push(`ratelimit ${entry.name}: namespace ${id}`);
           }
         }
@@ -293,6 +313,7 @@ async function provisioned() {
         env: "feature",
         account: null,
         feature: identity,
+        featureOwned: (feature, composed) => featureOwnedIds(stand.provisioners, feature, composed),
         workers: [{ name: "replay-app", dir: appDir, hasWrangler: true }],
         capabilitiesFor: async () => capabilities,
         ids: { storeId: "store-1", accountId: "acct-1" },
@@ -308,8 +329,18 @@ async function provisioned() {
   return { stand, hosts, report, stanza: generated.env.feature };
 }
 
-/** Every rate-limit namespace the tracked config declares, anywhere but a feature stanza. */
-const TRACKED_NAMESPACES = new Set([TOP_LIMITER.namespace_id, PROD_LIMITER.namespace_id]);
+/**
+ * Every rate-limit claim in the account's store, id → the entry that holds it. Only claims can be read back this
+ * way; a claim's name is `…--ratelimit-<id>-<limiter>`, so the id is read off the name.
+ */
+function claimsOf(entries: ReadonlyMap<string, string>): Map<string, string> {
+  const claims = new Map<string, string>();
+  for (const name of entries.keys()) {
+    const match = /--ratelimit-([0-9]{10})-/.exec(name);
+    if (match?.[1]) claims.set(match[1], name);
+  }
+  return claims;
+}
 
 describe("a feature composing every host-owning capability", () => {
   let result: Awaited<ReturnType<typeof provisioned>>;
@@ -337,33 +368,46 @@ describe("a feature composing every host-owning capability", () => {
   });
 
   test("the feature's app stanza binds nothing anybody else has", () => {
-    expect(shared(result.stanza, result.stand.names, TRACKED_NAMESPACES)).toEqual([]);
+    expect(shared(result.stanza, result.stand.names, claimsOf(result.stand.entries))).toEqual([]);
   });
 
   test("no feature host binds anything anybody else has", () => {
     for (const config of result.hosts) {
-      expect({ host: config.name, shared: shared(config, result.stand.names, TRACKED_NAMESPACES) }).toEqual({
-        host: config.name,
-        shared: [],
-      });
+      expect({ host: config.name, shared: shared(config, result.stand.names, claimsOf(result.stand.entries)) }).toEqual(
+        {
+          host: config.name,
+          shared: [],
+        },
+      );
     }
   });
 
   test("every store entry the run wrote is the feature's own", () => {
-    const prefix = featureNamePrefix(identity);
-    expect([...result.stand.entries.keys()].filter((name) => !name.startsWith(prefix))).toEqual([]);
+    expect([...result.stand.entries.keys()].filter((name) => !isOurs(name))).toEqual([]);
     expect(result.stand.entries.size).toBeGreaterThan(0);
   });
 
+  test("the feature's manager holds no Cloudflare API token, rotates nothing, and nothing minted one", () => {
+    const manager = result.hosts.find((config) => config.name === `${OWN}secrets`) as
+      | (Config & { secrets_store_secrets?: { binding: string }[]; workflows?: { binding: string }[] })
+      | undefined;
+    expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    expect(manager?.workflows?.map((entry) => entry.binding)).toEqual(["SECRETS_WRITE"]);
+    expect((manager?.triggers as { crons?: string[] } | undefined)?.crons ?? []).toEqual([]);
+    expect([...result.stand.entries.keys()].filter((name) => name.includes("cf-api-token"))).toEqual([]);
+  });
+
   /**
-   * **The gate can fail.** The defect it exists for — the top level's rate-limit namespace copied into the
-   * feature stanza — planted back into a copy of what provisioning wrote, and the walk names it. So does a store
-   * entry bound to the project's `global` copy, and a binding kind the walk has never seen.
+   * **The gate can fail.** The defects it exists for, planted back into a copy of what provisioning wrote, and the
+   * walk names each one: the top level's rate-limit namespace, a store entry bound to the project's `global` copy,
+   * a same-issue sibling's host and Workflow (a prefix check passed both), another project's, production's D1 and
+   * KV by id, production's service and queue, and a binding kind the walk has never seen.
    */
   test("a planted shared resource fails the walk", () => {
     const planted = structuredClone(result.stanza) as Config & {
       ratelimits: { namespace_id: string }[];
       secrets_store_secrets: { binding: string; secret_name: string }[];
+      workflows?: { binding: string; name: string; class_name: string; script_name: string }[];
     };
     const [limiter] = planted.ratelimits;
     if (limiter) limiter.namespace_id = TOP_LIMITER.namespace_id;
@@ -371,11 +415,88 @@ describe("a feature composing every host-owning capability", () => {
       ...planted.secrets_store_secrets,
       { binding: "RELEASE_INGEST_SECRET", secret_name: `${PROJECT}-global-release-ingest-secret` },
     ];
+    planted.workflows = [
+      {
+        binding: "SIBLING_SEND",
+        name: `${featureWorkerName(sibling, "email")}-send`,
+        class_name: "X",
+        script_name: featureWorkerName(sibling, "email"),
+      },
+    ];
+    planted.d1_databases = [{ binding: "DB", database_name: "replay-prod-db", database_id: "prod-db-id" }];
+    planted.kv_namespaces = [{ binding: "CACHE", id: "prod-kv-id" }];
+    planted.services = [
+      { binding: "API", service: "replay-prod-api" },
+      { binding: "NEIGHBOR", service: featureWorkerName(neighbor, "api") },
+    ];
+    planted.queues = { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] };
     planted.hyperdrive = [{ binding: "PG", id: "shared" }];
-    expect(shared(planted, result.stand.names, TRACKED_NAMESPACES)).toEqual([
-      `ratelimit AUTH_RATE_LIMITER: namespace ${TOP_LIMITER.namespace_id}`,
-      `store entry RELEASE_INGEST_SECRET: ${PROJECT}-global-release-ingest-secret`,
+    // Sorted: which key the walk meets first is the stanza's order, and not what is being proven.
+    expect(shared(planted, result.stand.names, claimsOf(result.stand.entries)).sort()).toEqual(
+      [
+        "d1 DB: unknown id prod-db-id",
+        `ratelimit AUTH_RATE_LIMITER: namespace ${TOP_LIMITER.namespace_id}`,
+        `store entry RELEASE_INGEST_SECRET: ${PROJECT}-global-release-ingest-secret`,
+        `workflow SIBLING_SEND: ${featureWorkerName(sibling, "email")}-send`,
+        `workflow SIBLING_SEND script: ${featureWorkerName(sibling, "email")}`,
+        "kv CACHE: unknown id prod-kv-id",
+        "service API: replay-prod-api",
+        `service NEIGHBOR: ${featureWorkerName(neighbor, "api")}`,
+        "queue JOBS: replay-prod-jobs",
+        "unclassified key hyperdrive",
+      ].sort(),
+    );
+  });
+
+  /** The runtime gate `deployKitWorkers` runs is held to the same plants: it passes every real host and fails each plant. */
+  test("the runtime host gate refuses the same plants", async () => {
+    const { featureHostNameLeaks } = await import("./hosts");
+    const owned = await featureOwnedIds(result.stand.provisioners, identity, capabilities);
+    for (const host of result.hosts)
+      expect({ host: host.name, leaks: featureHostNameLeaks(host, identity, owned) }).toEqual({
+        host: host.name,
+        leaks: [],
+      });
+    const planted = {
+      name: featureWorkerName(sibling, "email"),
+      workflows: [
+        {
+          binding: "SEND",
+          name: `${featureWorkerName(sibling, "email")}-send`,
+          class_name: "X",
+          script_name: featureWorkerName(sibling, "email"),
+        },
+      ],
+      d1_databases: [{ binding: "DB", database_name: "replay-prod-db", database_id: "prod-db-id" }],
+      kv_namespaces: [{ binding: "CACHE", id: "prod-kv-id" }],
+      services: [
+        { binding: "API", service: "replay-prod-api" },
+        { binding: "NEIGHBOR", service: featureWorkerName(neighbor, "api") },
+      ],
+      queues: { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] },
+      hyperdrive: [{ binding: "PG", id: "shared" }],
+    };
+    expect(featureHostNameLeaks(planted, identity, owned)).toEqual([
+      `script: ${featureWorkerName(sibling, "email")}`,
+      `workflow SEND: ${featureWorkerName(sibling, "email")}-send`,
+      `workflow SEND script: ${featureWorkerName(sibling, "email")}`,
+      "d1 DB: id prod-db-id is not one this feature created",
+      "kv CACHE: id prod-kv-id is not one this feature created",
+      "service API: replay-prod-api",
+      `service NEIGHBOR: ${featureWorkerName(neighbor, "api")}`,
+      "queue JOBS: replay-prod-jobs",
       "unclassified key hyperdrive",
     ]);
+  });
+
+  test("every rate-limit namespace the feature binds is claimed for it, and none is anyone else's", () => {
+    const claims = claimsOf(result.stand.entries);
+    const bound = (result.stanza.ratelimits as { name: string; namespace_id: string }[]).map(
+      (entry) => entry.namespace_id,
+    );
+    expect(bound.length).toBeGreaterThan(0);
+    for (const id of bound) {
+      expect(claims.get(id)).toBe(ratelimitClaimName(identity, "ns-1001", id));
+    }
   });
 });

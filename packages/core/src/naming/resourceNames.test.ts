@@ -119,8 +119,8 @@ describe("a feature's names", () => {
   const feature = names.feature({ issue: "95", slug: "media-cli" });
 
   it("reaches the feature shape from the same object, with the project already bound", () => {
-    expect(feature.resource("DB", "d1")).toBe("acme-f95-media-cli-db-d1");
-    expect(feature.worker("api")).toBe("acme-f95-media-cli-api");
+    expect(feature.resource("DB", "d1")).toBe("acme-f95-media-cli--db-d1");
+    expect(feature.worker("api")).toBe("acme-f95-media-cli--api");
   });
 
   it("holds every feature name inside the Worker and R2 caps", () => {

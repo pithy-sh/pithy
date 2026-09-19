@@ -162,11 +162,26 @@ export const MAX_ISSUE_DIGITS = 6;
 /**
  * The slug length a feature resource name keeps verbatim at the worst legal project name.
  *
- * Twelve, because that is where a feature slug stops being readable in a listing: below it,
+ * Eleven — it was twelve until {@link FEATURE_TAIL_SEPARATOR} took a character of it (#643). About where a
+ * feature slug stops being readable in a listing: below it,
  * `fitSegment` has to fall back to a short head plus a six-hex disambiguator, and
  * `acme-f95-medi-8f21c4-db-d1` tells a human nothing about which branch owns the database.
  */
-export const MIN_LEGIBLE_SLUG = 12;
+export const MIN_LEGIBLE_SLUG = 11;
+
+/**
+ * **What stands between a feature's slug and whatever it names: two hyphens (#643).**
+ *
+ * `<project>-f<issue>-<slug>--<thing>`. Nothing else Pithy composes can contain it: every other segment is
+ * kebabbed, and a kebab never holds two hyphens in a row. So a name holding it is a feature's and a name without
+ * it is not — `acme`'s `staging` can never compose a feature's name, whatever its project or environment is
+ * called — and it ends the slug unambiguously, so `feature/12-x` binding `PROD_DB` and `feature/12-x-prod`
+ * binding `DB` no longer compose one database between them.
+ *
+ * It cost the slug a character: {@link MIN_LEGIBLE_SLUG} gave one up so {@link FEATURE_DERIVED_PROJECT_NAME},
+ * and with it every project name already accepted, stays where it was.
+ */
+export const FEATURE_TAIL_SEPARATOR = "--";
 
 /**
  * The binding length a feature resource name keeps verbatim at the worst legal project name.
@@ -199,7 +214,7 @@ export const WORKFLOW_DERIVED_PROJECT_NAME =
   NAMESPACE_LIMITS.workflow.maxLength - 1 - MAX_ENVIRONMENT_NAME - 1 - MAX_CAPABILITY_JOB;
 
 /**
- * What the longest feature resource name leaves a project — `<project>-f<issue>-<slug>-<binding>-<kind>`,
+ * What the longest feature resource name leaves a project — `<project>-f<issue>-<slug>--<binding>-<kind>`,
  * against R2's 63 (the strictest of the three kinds a feature provisions, and the same number a
  * feature Worker script gets).
  *
@@ -207,8 +222,8 @@ export const WORKFLOW_DERIVED_PROJECT_NAME =
  *     63   an R2 bucket name (NAMESPACE_LIMITS.r2)
  *   -  2   `-f`
  *   -  6   the issue number, six digits — `f999999` (MAX_ISSUE_DIGITS)
- *   - 13   `-` + a legible slug (MIN_LEGIBLE_SLUG)
- *   - 13   `-` + a binding kept whole (MIN_VERBATIM_BINDING)
+ *   - 12   `-` + a legible slug (MIN_LEGIBLE_SLUG)
+ *   - 14   `--` + a binding kept whole (FEATURE_TAIL_SEPARATOR, MIN_VERBATIM_BINDING)
  *   -  3   `-` + the kind, `d1` | `kv` | `r2`
  *   ----
  *     26
@@ -219,5 +234,5 @@ export const FEATURE_DERIVED_PROJECT_NAME =
   2 -
   MAX_ISSUE_DIGITS -
   (1 + MIN_LEGIBLE_SLUG) -
-  (1 + MIN_VERBATIM_BINDING) -
+  (FEATURE_TAIL_SEPARATOR.length + MIN_VERBATIM_BINDING) -
   (1 + MAX_FEATURE_KIND);

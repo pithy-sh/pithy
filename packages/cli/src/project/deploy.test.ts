@@ -790,7 +790,7 @@ describe("a feature deploy's verification", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  const SCRIPT = "replay-f643-feature-address-board";
+  const SCRIPT = "replay-f643-feature-address--board";
   const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 
   /** Worker `board`: a tracked config with no feature stanza, and the generated one provisioning wrote. */

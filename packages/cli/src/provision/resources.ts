@@ -131,15 +131,6 @@ export interface WorkflowDefinitions {
   delete(name: string): Promise<void>;
 }
 
-/**
- * **The account's API tokens, as feature teardown needs them (#643):** a feature's secrets manager holds a token
- * of its own, named for the feature, and teardown revokes it by that exact name.
- */
-export interface FeatureApiTokens {
-  /** Delete every account token of exactly this name. Resolves how many went; none is not an error. */
-  deleteByName(name: string): Promise<number>;
-}
-
 /** The default {@link WorkflowDefinitions}, over the account's Workflows REST client. */
 export function cloudflareWorkflowDefinitions(
   workflows: Pick<CloudflareWorkflowsClient, "listWorkflows" | "deleteWorkflow">,
@@ -149,11 +140,6 @@ export function cloudflareWorkflowDefinitions(
       (await workflows.listWorkflows()).filter((one) => scripts.has(one.script_name)).map((one) => one.name),
     delete: async (name) => void (await workflows.deleteWorkflow(name)),
   };
-}
-
-/** The default {@link FeatureApiTokens}, over the account's token manager. */
-export function cloudflareFeatureApiTokens(clients: CloudflareClients): FeatureApiTokens {
-  return { deleteByName: (name) => clients.accountTokens().deleteTokensByName(name) };
 }
 
 /**
@@ -210,7 +196,7 @@ export const AUDIT_DESTINATION_ENV = "dev";
  * Everything feature teardown deletes and reports, by kind: the resources provisioning creates, and the
  * Worker scripts it names for deploy (#592).
  */
-export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "api_token" | "vectorize";
+export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "vectorize";
 
 /** The resource kind recorded on a provisioning audit event. */
 export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
@@ -221,8 +207,6 @@ export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   worker: "cf_worker",
   // A Workflow definition a feature's scripts hosted, deleted by name (#643).
   workflow: "cf_workflow",
-  // A feature manager's own account API token (#643).
-  api_token: "cf_api_token",
   // A feature's own Vectorize index (#643).
   vectorize: "cf_vectorize",
 };

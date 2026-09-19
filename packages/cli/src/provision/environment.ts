@@ -410,6 +410,11 @@ export interface ProvisionEnvironmentOptions {
    */
   workersSubdomain?: () => Promise<string | null>;
   /**
+   * **A feature's own rate-limit namespaces, by limiter (#643)** — allocated by `provisionFeature` before this
+   * runs, and handed to each Worker's stanza write. Read for a feature scope only.
+   */
+  ratelimitIds?: ReadonlyMap<string, string>;
+  /**
    * Worker-resolution seam (default: {@link resolveWorkers}), so tests fix the worker set. Each entry
    * carries that Worker's **own** capabilities, which is what lets the write step give a Worker only
    * the bindings it declares.
@@ -675,6 +680,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // more thing composed here.
       administersItself: options.administersItself,
       ...(subdomain !== undefined ? { subdomain } : {}),
+      ...(options.ratelimitIds !== undefined ? { ratelimitIds: options.ratelimitIds } : {}),
       onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({

@@ -35,14 +35,14 @@ const REPO = resolve(import.meta.dirname, "..", "..", "..");
  *
  * ## `--name replay --worker board`, deliberately unequal
  *
- * The feature Worker deploys as `replay-f643-feature-address-board`. A fixture where both names are `api`
+ * The feature Worker deploys as `replay-f643-feature-address--board`. A fixture where both names are `api`
  * would pass a script composed from either one.
  */
 
 /** Every kit package the composed Worker imports, linked the way a working checkout is. */
 const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloudflare"];
 
-const SCRIPT = "replay-f643-feature-address-board";
+const SCRIPT = "replay-f643-feature-address--board";
 const FEATURE_ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 /**
  * What a set asking for a secret is told on a feature: what every deployed environment says. A feature's secrets

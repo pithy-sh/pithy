@@ -16,6 +16,7 @@ import { cloudflareFeatureIndexes } from "../capabilities/vectorProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
+import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -683,6 +684,8 @@ async function provisionBranch(
         account,
         feature: identity,
         ...(store ? { ids: { storeId: store.storeId } } : {}),
+        // What the host gate follows a bound id to: the feature's own, asked of the account by name (#643).
+        featureOwned: (feature, composed) => featureOwnedIds(provisioners, feature, composed),
       }),
     ...(progress ? { onProgress: progress } : {}),
     audit,

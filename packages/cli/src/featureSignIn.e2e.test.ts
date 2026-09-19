@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";
-import { type FeatureIdentity, featureNamePrefix } from "@pithy-sh/core/src/naming/feature";
+import { type FeatureIdentity, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
 import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { runWriteWorkflow, type WriteWorkflowPayload } from "@pithy-sh/secrets/src/manager/writeWorkflow";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -15,7 +15,7 @@ import { Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { runAdd } from "./capabilities/flow";
 import { CloudflareSecretsProvisioner } from "./capabilities/secretsProvisioner";
-import { featureHostCapabilities, featureHostScripts } from "./feature/hosts";
+import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./feature/hosts";
 import { deprovisionFeature, provisionFeature } from "./feature/provision";
 import { migrateProject } from "./migrations/run";
 import { resolveWorkersFor } from "./project/composeFor";
@@ -60,8 +60,8 @@ import { seedProject } from "./seed/run";
 const PROJECT = "replay";
 const WORKER = "board";
 const identity: FeatureIdentity = { project: PROJECT, issue: "643", slug: "feature-address" };
-const SCRIPT = "replay-f643-feature-address-board";
-const EMAIL_HOST = "replay-f643-feature-address-email";
+const SCRIPT = "replay-f643-feature-address--board";
+const EMAIL_HOST = "replay-f643-feature-address--email";
 const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 const PERSON = "ada@example.com";
 
@@ -135,11 +135,12 @@ interface Stanza {
   ratelimits?: { name: string }[];
   workflows?: { binding: string; name: string; class_name: string; script_name?: string }[];
   send_email?: { name: string }[];
+  triggers?: { crons?: string[] };
 }
 
 /** What can go wrong once, on purpose, in a run of the stand-in account. */
 interface Faults {
-  /** Fail the first migration — after the master key and the manager token are created. */
+  /** Fail the first migration — after the master key is created. */
   migrateOnce?: boolean;
   /** Fail the first deploy of this host script. */
   deployOnce?: string;
@@ -160,6 +161,9 @@ async function standInAccount() {
     return found;
   };
   const entries = new Map<string, string>();
+  /** When each entry was created, in order: what a rate-limit claim's standing is settled by. */
+  const created = new Map<string, number>();
+  let clock = 0;
   const store: SecretsStore = {
     storeId: "store-1",
     exists: async (name) => entries.has(name),
@@ -169,12 +173,16 @@ async function standInAccount() {
     create: async (name, value) => {
       if (entries.has(name)) return "present";
       entries.set(name, value);
+      clock += 1;
+      created.set(name, clock);
       return "created";
     },
     remove: async (name) => entries.delete(name),
+    list: async () =>
+      [...entries.keys()].map((name) => ({ id: name, name, created: new Date(created.get(name) ?? 0) })),
   };
-  // The Cloudflare `pithy secrets provision` talks to, as far as it does for a feature: the store, and the
-  // account tokens its manager's own token is rolled from. A write over an entry that is there fails the test.
+  // The Cloudflare `pithy secrets provision` talks to, as far as it does for a feature: the store. A write over an
+  // entry that is there fails the test, and so does any reach for an account token: a feature holds none (#643).
   const cf = {
     secrets: () => ({
       exists: store.exists,
@@ -184,7 +192,9 @@ async function standInAccount() {
         entries.set(name, value);
       },
     }),
-    accountTokens: () => ({ rollToken: async (name: string) => ({ id: `tk-${name}`, value: `token-for-${name}` }) }),
+    accountTokens: () => {
+      throw new Error("a feature's provisioning reached for an account token");
+    },
   } as unknown as CloudflareClients;
   const d1 = provisioner([...D1_POOL]);
   const provisioners = { d1, kv: provisioner([]), r2: provisioner(null) } as unknown as ResourceProvisioners;
@@ -264,6 +274,8 @@ async function provision(account: Account, faults: Faults = {}) {
         env: "feature",
         account: null,
         feature: identity,
+        // The host gate follows each bound id to its name through the account, as a real run does (#643).
+        featureOwned: (feature, composed) => featureOwnedIds(account.provisioners, feature, composed),
         ids: { storeId: account.store.storeId, accountId: "acct-replay" },
         readVars: async () => null,
         runDeploy: async (args) => {
@@ -394,7 +406,7 @@ async function signsIn(account: Account): Promise<void> {
   const requested = await requestMagicLink(await appWorker(account, dispatched));
   expect({ status: requested.status, body: await requested.json() }).toEqual({ status: 200, body: { status: true } });
   expect(dispatched.map((dispatch) => [dispatch.script, dispatch.workflow])).toEqual([
-    [EMAIL_HOST, "replay-f643-feature-address-email-send"],
+    [EMAIL_HOST, "replay-f643-feature-address--email-send"],
   ]);
 
   // The host sends it. The link in it is the feature's own origin.
@@ -434,10 +446,10 @@ describe("a feature deployment, after provision and deploy", () => {
       // Every kit host the project composes — the manager, email, storage, testers — named for the feature.
       const expected = await composedHostScripts();
       expect(expected).toEqual([
-        "replay-f643-feature-address-email",
-        "replay-f643-feature-address-storage",
-        "replay-f643-feature-address-testers",
-        "replay-f643-feature-address-secrets",
+        "replay-f643-feature-address--email",
+        "replay-f643-feature-address--storage",
+        "replay-f643-feature-address--testers",
+        "replay-f643-feature-address--secrets",
       ]);
       expect(report.hosts?.map((row) => [row.worker, row.outcome])).toEqual(
         expected.map((script) => [script, "deployed"]),
@@ -451,9 +463,13 @@ describe("a feature deployment, after provision and deploy", () => {
         environments: ["feature"],
         created: ["feature"],
       });
-      // Every store entry is the feature's own.
-      const prefix = featureNamePrefix(identity);
-      expect([...account.entries.keys()].filter((name) => !name.startsWith(prefix))).toEqual([]);
+      // Every store entry is the feature's own: parsed back to this project, issue and slug.
+      expect([...account.entries.keys()].filter((name) => !isFeatureOwnedName(identity, name))).toEqual([]);
+      // The feature's manager holds no Cloudflare API token, hosts no rotation Workflow and runs no cron (#643).
+      const manager = account.hosts.get("replay-f643-feature-address--secrets");
+      expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+      expect(manager?.workflows?.map((entry) => entry.class_name)).toEqual(["SecretsWriteWorkflow"]);
+      expect(manager?.triggers?.crons ?? []).toEqual([]);
 
       await signsIn(account);
 
@@ -463,7 +479,6 @@ describe("a feature deployment, after provision and deploy", () => {
       );
       expect(hostedWorkflows.length).toBeGreaterThan(expected.length);
       const deletedWorkflows: string[] = [];
-      const revoked: string[] = [];
       const destroyed = await deprovisionFeature({
         projectDir: dir,
         identity,
@@ -481,12 +496,6 @@ describe("a feature deployment, after provision and deploy", () => {
             hostedWorkflows.filter((workflow) => scripts.has(workflow.script)).map((workflow) => workflow.name),
           delete: async (name) => void deletedWorkflows.push(name),
         },
-        tokens: {
-          deleteByName: async (name) => {
-            revoked.push(name);
-            return 1;
-          },
-        },
       });
       expect(account.hosts.size).toBe(0);
       expect(deletedWorkflows.sort()).toEqual(hostedWorkflows.map((workflow) => workflow.name).sort());
@@ -494,15 +503,14 @@ describe("a feature deployment, after provision and deploy", () => {
         expect.arrayContaining([SCRIPT, ...expected]),
       );
       expect([...account.entries.keys()]).toEqual([]);
-      expect(revoked).toEqual(["replay-f643-feature-address-secrets-manager"]);
     } finally {
       await account.miniflare.dispose();
     }
   }, 300_000);
 
   /**
-   * **F1: a failure after the master key is created is finished by the next run.** The key and the manager token
-   * are created before the first migration; the migration fails. Nothing was sealed and nothing needs the run
+   * **F1: a failure after the master key is created is finished by the next run.** The key is created before the
+   * first migration; the migration fails. Nothing was sealed and nothing needs the run
    * that created the key: the re-run finds the key, deploys the manager, and the manager creates every `d1`
    * secret under whatever key the store holds. The feature signs people in.
    */
@@ -510,11 +518,11 @@ describe("a feature deployment, after provision and deploy", () => {
     const account = await standInAccount();
     try {
       await expect(provision(account, { migrateOnce: true })).rejects.toThrow("a transient 503 from D1");
-      expect(account.entries.has("replay-f643-feature-address-secrets-encryption-keys")).toBe(true);
-      const key = account.entries.get("replay-f643-feature-address-secrets-encryption-keys");
+      expect(account.entries.has("replay-f643-feature-address--secrets-encryption-keys")).toBe(true);
+      const key = account.entries.get("replay-f643-feature-address--secrets-encryption-keys");
 
       const report = await provision(account);
-      expect(account.entries.get("replay-f643-feature-address-secrets-encryption-keys")).toBe(key);
+      expect(account.entries.get("replay-f643-feature-address--secrets-encryption-keys")).toBe(key);
       expect(report.featureSecrets?.find((secret) => secret.name === "auth-session-secret")?.created).toEqual([
         "feature",
       ]);
@@ -544,7 +552,9 @@ describe("a feature deployment, after provision and deploy", () => {
       const stanza = await featureStanza();
       expect(stanza.workflows?.some((entry) => entry.script_name === EMAIL_HOST)).toBe(false);
       // The hosts that did deploy are bound.
-      expect(stanza.workflows?.some((entry) => entry.script_name === "replay-f643-feature-address-storage")).toBe(true);
+      expect(stanza.workflows?.some((entry) => entry.script_name === "replay-f643-feature-address--storage")).toBe(
+        true,
+      );
 
       const dispatched: Dispatch[] = [];
       const refused = await requestMagicLink(await appWorker(account, dispatched));

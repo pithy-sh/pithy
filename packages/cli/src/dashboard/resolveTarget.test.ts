@@ -190,10 +190,12 @@ describe("resolveConnectTarget on a feature", () => {
       const workerDir = join(dir, "apps", "board");
       await mkdir(dirname(featureConfigPath(workerDir)), { recursive: true });
       await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: "replay-board" }));
-      const origin = "https://replay-f643-feature-address-board.acme.workers.dev";
+      const origin = "https://replay-f643-feature-address--board.acme.workers.dev";
       await writeFile(
         featureConfigPath(workerDir),
-        JSON.stringify({ env: { feature: { name: "replay-f643-feature-address-board", vars: { BASE_URL: origin } } } }),
+        JSON.stringify({
+          env: { feature: { name: "replay-f643-feature-address--board", vars: { BASE_URL: origin } } },
+        }),
       );
 
       const target = await resolveConnectTarget({

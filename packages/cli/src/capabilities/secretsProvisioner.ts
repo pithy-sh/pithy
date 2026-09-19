@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -91,14 +91,47 @@ export interface CloudflareSecretsProvisionerOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * **The feature this provisions for, when it provisions for one (#643).** A feature is given its own secrets
-   * infrastructure by this same provisioner, and every name it touches is then the feature's: its own master-key
-   * entry, and its own manager token — an account token and a store entry of the feature's own, because nothing
-   * in the store is shared between a feature and any other environment. Absent, the project's declared
-   * environments are what it provisions, as it always was.
+   * **The feature this provisions for, when it provisions for one (#643).** It creates the feature's own
+   * master-key entry, and nothing else: a feature's manager holds no Cloudflare API token, so
+   * {@link CloudflareSecretsProvisioner.ensureManagerToken} refuses a feature outright. Absent, the project's
+   * declared environments are what it provisions, as it always was.
    */
   feature?: FeatureIdentity;
+  /**
+   * **Does Cloudflare honor this token value now?** — `GET /accounts/{id}/tokens/verify` made *with* the value,
+   * in a real run. The seam `ensureManagerToken` settles a race with (#643): a run is finished only once the value
+   * it stored is still the live one. Resolves `false` for a revoked value, and throws for anything else, since an
+   * outage is not an answer.
+   */
+  honors?: (value: string) => Promise<boolean>;
 }
+
+/**
+ * The default {@link CloudflareSecretsProvisionerOptions.honors}: verify the value as its own bearer. A 401 or
+ * 403 is Cloudflare saying the value is not live; every other failure is thrown, never read as either answer.
+ *
+ * **Asked more than once before it is believed.** A value minted or rolled a moment ago may not verify yet, and
+ * reading that as "revoked" would roll the token again, revoking the value that was about to work. So a `false`
+ * is asked again, after a second, two and four; only a value still refused after all of them is revoked.
+ */
+async function tokenIsHonored(accountId: string, value: string): Promise<boolean> {
+  const { CloudflareAccountTokensManager } = await import("@pithy-sh/cloudflare/src/tokens/accountTokensManager");
+  const { statusOf } = await import("@pithy-sh/cloudflare/src/client/errors");
+  const manager = new CloudflareAccountTokensManager({ accountId, apiToken: value });
+  for (const wait of [0, 1_000, 2_000, 4_000]) {
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    try {
+      if ((await manager.verifyToken()).status === "active") return true;
+    } catch (error) {
+      const status = statusOf((error as { cause?: unknown }).cause ?? error);
+      if (status !== 401 && status !== 403) throw error;
+    }
+  }
+  return false;
+}
+
+/** How many times one run rolls the manager token before it stops: each extra one means another run rolled too. */
+const MAX_TOKEN_ROLLS = 5;
 
 /**
  * The least-privilege permissions the manager's minted token carries: Secrets Store Read + Write,
@@ -131,6 +164,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #deploy: DeployManager;
   readonly #audit: CliAuditEmit;
   readonly #feature: FeatureIdentity | undefined;
+  readonly #honors: (value: string) => Promise<boolean>;
 
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
@@ -140,6 +174,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     this.#deploy = options.deploy;
     this.#audit = options.audit ?? (async () => {});
     this.#feature = options.feature;
+    this.#honors = options.honors ?? ((value) => tokenIsHonored(options.account.accountId, value));
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the managers. */
@@ -158,22 +193,39 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * get a fresh secret via `rollToken` — roll the existing manager token's value in place if one exists,
    * else mint a new least-privilege token — and write it into the store. A bootstrap token that cannot
    * mint fails here, before any resource is created, with an actionable error.
+   *
+   * **Never check-then-overwrite (#643).** Two runs that both find the entry absent both roll, and each roll
+   * revokes the value before it. Whichever write landed last used to win, so the store could keep a value
+   * Cloudflare had already revoked, and nothing repaired it. Now a run is finished only when the value it stored
+   * is still honored *after* its write: if another run rolled since, this one rolls and writes again. The last
+   * write is then always by a run that rolled last, so every run that returns leaves the live value stored.
+   *
+   * **Never for a feature.** A feature's manager holds no token (#643), so this refuses one rather than mint it.
    */
   async ensureManagerToken(): Promise<void> {
-    const entry = managerCfApiTokenSecretName(this.#project, this.#feature);
+    if (this.#feature) {
+      throw new InternalError({
+        message: "A feature's secrets manager holds no Cloudflare API token.",
+        detail: `ensureManagerToken called for feature ${this.#feature.project}-f${this.#feature.issue}-${this.#feature.slug}`,
+      });
+    }
+    const entry = managerCfApiTokenSecretName(this.#project);
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(entry)) return;
-    const minted = await this.#cf
-      .accountTokens()
-      .rollToken(
-        managerCfApiTokenName(this.#project, this.#feature),
-        await managerTokenPermissions(this.#account.accountId),
-      );
-    await writeManagerCfApiToken(
-      this.#cf,
-      { storeId: this.#storeId, project: this.#project, ...(this.#feature ? { feature: this.#feature } : {}) },
-      minted.value,
-    );
+    for (let roll = 1; ; roll += 1) {
+      const minted = await this.#cf
+        .accountTokens()
+        .rollToken(managerCfApiTokenName(this.#project), await managerTokenPermissions(this.#account.accountId));
+      await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
+      if (await this.#honors(minted.value)) break;
+      if (roll >= MAX_TOKEN_ROLLS) {
+        throw new UpstreamError({
+          message: "The secrets manager's token kept being rolled by another run.",
+          action: "Wait for the other pithy secrets provision to finish, then run this again.",
+          detail: `${managerCfApiTokenName(this.#project)}: rolled ${roll} times, and each value was revoked before this run could keep it`,
+        });
+      }
+    }
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
       environment: "global",
@@ -266,15 +318,12 @@ function managerDir(projectDir: string): string {
  */
 export async function writeManagerCfApiToken(
   cf: CloudflareClients,
-  target: { storeId: string; project: string; feature?: FeatureIdentity },
+  target: { storeId: string; project: string },
   apiToken: string,
 ): Promise<void> {
   await cf
     .secrets(target.storeId)
-    .putSecret(
-      managerCfApiTokenSecretName(target.project, target.feature),
-      encodeVersionedValue(initialVersionedValue(apiToken)),
-    );
+    .putSecret(managerCfApiTokenSecretName(target.project), encodeVersionedValue(initialVersionedValue(apiToken)));
 }
 
 /**

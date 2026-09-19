@@ -240,7 +240,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   /**
    * **The feature's address is looked up once and stamped where its Worker reads it (#643).** The script is
-   * `acme-f69-demo-app` — project and Worker differ — and its origin is that name under the account's
+   * `acme-f69-demo--app` — project and Worker differ — and its origin is that name under the account's
    * `workers.dev` subdomain, which only the Cloudflare API knows; so the lookup is a seam, and asked once a run.
    */
   test("stamps each Worker's generated stanza with its workers.dev origin, asking the account once", async () => {
@@ -264,7 +264,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       env: Record<string, { name?: string; vars?: Record<string, string> }>;
     };
     expect(wrangler.env.feature?.name).toBe(featureWorkerName(identity, "app"));
-    expect(wrangler.env.feature?.vars?.BASE_URL).toBe("https://acme-f69-demo-app.acme-sub.workers.dev");
+    expect(wrangler.env.feature?.vars?.BASE_URL).toBe("https://acme-f69-demo--app.acme-sub.workers.dev");
     expect(lookups).toBe(1);
   });
 
@@ -410,7 +410,7 @@ describe("provisionFeature / deprovisionFeature", () => {
    * Both halves have failed. Feature-scoping the *directory* on the service side only wrote `<feature>-api`
    * while the Worker deployed as `<feature>-acme-api`, so every RPC through `env.API` failed while
    * provision reported success. Feature-scoping the *deploy name* on both sides agreed, and put the project
-   * in every feature Worker twice: `acme-f69-demo-acme-api`. The expected names are literals, not
+   * in every feature Worker twice: `acme-f69-demo--acme-api`. The expected names are literals, not
    * `featureWorkerName` calls, so a doubled segment cannot pass by being fed the same wrong input twice.
    *
    * **What it does not see.** It holds `provisionFeature`, which is the only path that composes a feature
@@ -453,8 +453,8 @@ describe("provisionFeature / deprovisionFeature", () => {
     });
 
     const expected = new Map([
-      ["acme-api", { dir: apiDir, name: "acme-f69-demo-api", binding: "API" }],
-      ["acme-web", { dir: webDir, name: "acme-f69-demo-web", binding: "WEB" }],
+      ["acme-api", { dir: apiDir, name: "acme-f69-demo--api", binding: "API" }],
+      ["acme-web", { dir: webDir, name: "acme-f69-demo--web", binding: "WEB" }],
     ]);
     expect(report.workers).toEqual([...expected].map(([worker, { name }]) => ({ worker, name })));
     for (const [, { dir: workerDir, name, binding }] of expected) {
@@ -820,7 +820,9 @@ describe("provisionFeature / deprovisionFeature", () => {
             return "created";
           },
         }),
-        accountTokens: () => ({ rollToken: async (name: string) => ({ id: `tk-${name}`, value: `token-${name}` }) }),
+        accountTokens: () => {
+          throw new Error("a feature's provisioning reached for an account token");
+        },
       } as unknown as CloudflareClients;
       return new CloudflareSecretsProvisioner({
         cf,
@@ -851,10 +853,10 @@ describe("provisionFeature / deprovisionFeature", () => {
         seed: async () => {},
       });
 
-      const entry = "acme-f69-demo-secrets-encryption-keys";
-      // Its own key and its own manager token, under its own names — never staging's, which teardown would then
-      // delete, and never the project's `global` token, which every declared manager binds (#643).
-      expect([...entries.keys()].sort()).toEqual([entry, "acme-f69-demo-secrets-manager-cf-api-token"]);
+      const entry = "acme-f69-demo--secrets-encryption-keys";
+      // Its own key, under its own name — never staging's, which teardown would then delete. And no token: a
+      // feature's manager holds none, so the store gains no token entry and no account token is minted (#643).
+      expect([...entries.keys()].sort()).toEqual([entry]);
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
       // `devValue` and the #321 minter never touches it. The secrets provisioner creates it, above.
@@ -906,11 +908,11 @@ describe("provisionFeature / deprovisionFeature", () => {
       });
 
       // The entry keeps the key's name; the binding is the key in SCREAMING_SNAKE_CASE.
-      expect(entries.has("acme-f69-demo-link-signing-key")).toBe(true);
+      expect(entries.has("acme-f69-demo--link-signing-key")).toBe(true);
       expect(report.secretBindings.find((secret) => secret.secret === "link-signing-key")).toEqual({
         secret: "link-signing-key",
         binding: "LINK_SIGNING_KEY",
-        entry: "acme-f69-demo-link-signing-key",
+        entry: "acme-f69-demo--link-signing-key",
         bound: true,
         minted: true,
       });
@@ -940,10 +942,10 @@ describe("provisionFeature / deprovisionFeature", () => {
       };
 
       await provisionFeature(options);
-      const first = entries.get("acme-f69-demo-secrets-encryption-keys");
+      const first = entries.get("acme-f69-demo--secrets-encryption-keys");
       await provisionFeature(options);
 
-      expect(entries.get("acme-f69-demo-secrets-encryption-keys")).toBe(first);
+      expect(entries.get("acme-f69-demo--secrets-encryption-keys")).toBe(first);
     });
 
     test("destroy removes the feature's entries and leaves an environment's alone", async () => {
@@ -964,7 +966,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         migrate: async () => {},
         seed: async () => {},
       });
-      expect(entries.has("acme-f69-demo-secrets-encryption-keys")).toBe(true);
+      expect(entries.has("acme-f69-demo--secrets-encryption-keys")).toBe(true);
 
       await deprovisionFeature({
         ...noScripts,
@@ -1027,12 +1029,12 @@ describe("provisionFeature / deprovisionFeature", () => {
         expect(ingest).toEqual({
           secret: "RELEASE_INGEST_SECRET",
           binding: "RELEASE_INGEST_SECRET",
-          entry: "acme-f69-demo-release-ingest-secret",
+          entry: "acme-f69-demo--release-ingest-secret",
           bound: true,
           minted: true,
         });
         // A value went in, as the uniform envelope every other secret of this backend is stored as.
-        expect(JSON.parse(entries.get("acme-f69-demo-release-ingest-secret") as string)).toMatchObject({
+        expect(JSON.parse(entries.get("acme-f69-demo--release-ingest-secret") as string)).toMatchObject({
           currentVersion: "1",
         });
 
@@ -1041,7 +1043,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           bound: false,
           minted: false,
         });
-        expect(entries.has("acme-f69-demo-stripe-secret-key")).toBe(false);
+        expect(entries.has("acme-f69-demo--stripe-secret-key")).toBe(false);
 
         const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
           env: Record<string, { secrets_store_secrets?: { binding: string }[] }>;
@@ -1069,12 +1071,12 @@ describe("provisionFeature / deprovisionFeature", () => {
         };
 
         const first = await provisionFeature(options);
-        const value = entries.get("acme-f69-demo-release-ingest-secret");
+        const value = entries.get("acme-f69-demo--release-ingest-secret");
         const second = await provisionFeature(options);
 
         expect(first.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET")?.minted).toBe(true);
         expect(second.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET")?.minted).toBe(false);
-        expect(entries.get("acme-f69-demo-release-ingest-secret")).toBe(value);
+        expect(entries.get("acme-f69-demo--release-ingest-secret")).toBe(value);
       });
 
       /** The trail says a secret was created and where. It never says what. */
@@ -1098,8 +1100,8 @@ describe("provisionFeature / deprovisionFeature", () => {
         });
 
         const created = events.filter((event) => event.resourceType === "secret");
-        expect(created.map((event) => event.resourceId)).toEqual(["acme-f69-demo-release-ingest-secret"]);
-        const envelope = entries.get("acme-f69-demo-release-ingest-secret") as string;
+        expect(created.map((event) => event.resourceId)).toEqual(["acme-f69-demo--release-ingest-secret"]);
+        const envelope = entries.get("acme-f69-demo--release-ingest-secret") as string;
         const value = (JSON.parse(envelope) as { versions: Record<string, string> }).versions["1"];
         expect(JSON.stringify(events)).not.toContain(value);
       });
@@ -1267,8 +1269,8 @@ describe("a feature's Worker scripts", () => {
     const manifest = await readManifest(manifestPath(dir));
     // Literals, so a doubled segment cannot pass by being composed the same wrong way twice.
     expect(manifest?.scripts).toEqual([
-      { app: "api", script: "acme-api", name: "acme-f69-demo-api" },
-      { app: "web", script: "acme-web", name: "acme-f69-demo-web" },
+      { app: "api", script: "acme-api", name: "acme-f69-demo--api" },
+      { app: "web", script: "acme-web", name: "acme-f69-demo--web" },
     ]);
   });
 
@@ -1280,7 +1282,7 @@ describe("a feature's Worker scripts", () => {
    */
   test("destroy deletes the feature's email host by the name provisioning deployed it under", async () => {
     const { provisioners } = fakeProvisioners();
-    const scripts = fakeScripts(["acme-f69-demo-email", "acme-f70-demo-email", "acme-staging-email"]);
+    const scripts = fakeScripts(["acme-f69-demo--email", "acme-f70-demo-email", "acme-staging-email"]);
 
     const report = await deprovisionFeature({
       projectDir: dir,
@@ -1293,15 +1295,15 @@ describe("a feature's Worker scripts", () => {
       workers: [],
     });
 
-    expect(scripts.deletes).toEqual(["acme-f69-demo-email"]);
-    expect(report.deleted).toContainEqual({ kind: "worker", name: "acme-f69-demo-email", id: "acme-f69-demo-email" });
+    expect(scripts.deletes).toEqual(["acme-f69-demo--email"]);
+    expect(report.deleted).toContainEqual({ kind: "worker", name: "acme-f69-demo--email", id: "acme-f69-demo--email" });
   });
 
   test("destroy deletes each deployed script after confirming it is there, and reports each", async () => {
     const { provisioners } = fakeProvisioners();
     await provision(provisioners);
     // web was provisioned and never deployed: there is nothing to delete, and nothing to report.
-    const scripts = fakeScripts(["acme-f69-demo-api"]);
+    const scripts = fakeScripts(["acme-f69-demo--api"]);
 
     const report = await deprovisionFeature({
       projectDir: dir,
@@ -1315,9 +1317,9 @@ describe("a feature's Worker scripts", () => {
     });
 
     expect(report.deleted.filter((entry) => entry.kind === "worker")).toEqual([
-      { kind: "worker", name: "acme-f69-demo-api", id: "acme-f69-demo-api" },
+      { kind: "worker", name: "acme-f69-demo--api", id: "acme-f69-demo--api" },
     ]);
-    expect(scripts.deletes).toEqual(["acme-f69-demo-api"]);
+    expect(scripts.deletes).toEqual(["acme-f69-demo--api"]);
   });
 
   test("a feature provisioned before scripts were recorded is found by both naming shapes, and nothing else", async () => {
@@ -1329,13 +1331,13 @@ describe("a feature's Worker scripts", () => {
     );
     const scripts = fakeScripts([
       // Deployed before #587, when the project came twice.
-      "acme-f69-demo-acme-api",
+      "acme-f69-demo--acme-api",
       // Redeployed since, under the single shape.
-      "acme-f69-demo-api",
+      "acme-f69-demo--api",
       // Not this feature's: staging, another issue, and a sibling whose slug extends this one's.
       "acme-staging-api",
       "acme-f70-demo-api",
-      "acme-f69-demo-extended-api",
+      "acme-f69-demo--extended-api",
     ]);
 
     const report = await deprovisionFeature({
@@ -1349,9 +1351,9 @@ describe("a feature's Worker scripts", () => {
       workers,
     });
 
-    expect(report.deleted.map((entry) => entry.name).sort()).toEqual(["acme-f69-demo-acme-api", "acme-f69-demo-api"]);
+    expect(report.deleted.map((entry) => entry.name).sort()).toEqual(["acme-f69-demo--acme-api", "acme-f69-demo--api"]);
     expect([...scripts.deployed].sort()).toEqual([
-      "acme-f69-demo-extended-api",
+      "acme-f69-demo--extended-api",
       "acme-f70-demo-api",
       "acme-staging-api",
     ]);
@@ -1370,7 +1372,7 @@ describe("a feature's Worker scripts", () => {
       manifestPath(dir),
       JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "demo", env: "feature", resources: [] }),
     );
-    const scripts = fakeScripts(["acme-api-feature", "acme-web-feature", "acme-f69-demo-api"]);
+    const scripts = fakeScripts(["acme-api-feature", "acme-web-feature", "acme-f69-demo--api"]);
 
     const report = await deprovisionFeature({
       projectDir: dir,
@@ -1383,14 +1385,14 @@ describe("a feature's Worker scripts", () => {
       workers,
     });
 
-    expect(report.deleted.map((entry) => entry.name)).toEqual(["acme-f69-demo-api"]);
+    expect(report.deleted.map((entry) => entry.name)).toEqual(["acme-f69-demo--api"]);
     expect([...scripts.deployed].sort()).toEqual(["acme-api-feature", "acme-web-feature"]);
   });
 
   test("a recorded script whose Worker has left the branch is still deleted", async () => {
     const { provisioners } = fakeProvisioners();
     await provision(provisioners);
-    const scripts = fakeScripts(["acme-f69-demo-web"]);
+    const scripts = fakeScripts(["acme-f69-demo--web"]);
 
     // apps/web was removed after it deployed, so the Worker set no longer names it. The manifest does.
     const report = await deprovisionFeature({
@@ -1404,7 +1406,7 @@ describe("a feature's Worker scripts", () => {
       workers: workers.filter((worker) => worker.name !== "acme-web"),
     });
 
-    expect(report.deleted.map((entry) => entry.name)).toContain("acme-f69-demo-web");
+    expect(report.deleted.map((entry) => entry.name)).toContain("acme-f69-demo--web");
     expect(scripts.deployed.size).toBe(0);
   });
 
@@ -1441,7 +1443,7 @@ describe("a feature's Worker scripts", () => {
     await provision(fakeProvisioners().provisioners);
 
     const manifest = await readManifest(manifestPath(dir));
-    expect(manifest?.scripts.map((script) => script.name)).toEqual(["acme-f69-demo-api", "acme-f69-demo-web"]);
+    expect(manifest?.scripts.map((script) => script.name)).toEqual(["acme-f69-demo--api", "acme-f69-demo--web"]);
   });
 
   test("audits every script deletion as a warning, like every other teardown", async () => {
@@ -1455,13 +1457,13 @@ describe("a feature's Worker scripts", () => {
       capabilities,
       env: "feature",
       provisioners,
-      scripts: fakeScripts(["acme-f69-demo-api"]).seam,
+      scripts: fakeScripts(["acme-f69-demo--api"]).seam,
       ...noWorkflows(),
       workers,
       audit: async (event) => void events.push(event),
     });
 
-    expect(events.find((event) => event.resourceId === "acme-f69-demo-api")).toMatchObject({
+    expect(events.find((event) => event.resourceId === "acme-f69-demo--api")).toMatchObject({
       action: ProvisionAuditActions.resourceDeleted,
       severity: "warning",
       resourceType: "cf_worker",
@@ -1643,7 +1645,7 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
       );
     }
     // Non-vacuity for the refusal: a deployed script really does bind a sibling.
-    expect(account.serviceTargets.get("acme-f69-demo-web")).toEqual(["acme-f69-demo-api"]);
+    expect(account.serviceTargets.get("acme-f69-demo--web")).toEqual(["acme-f69-demo--api"]);
     const deployed = account.contents();
     const manifest = await readManifest(manifestPath(dir));
 

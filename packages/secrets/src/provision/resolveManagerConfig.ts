@@ -30,6 +30,12 @@ export interface ManagerWranglerTemplate {
   vars: Record<string, string>;
 }
 
+/** The manager's Secrets Store binding for its CF API token — the one a feature's manager never has (#643). */
+const MANAGER_TOKEN_BINDING = "CLOUDFLARE_API_TOKEN";
+
+/** The manager's at-rest rotation Workflow binding — the Workflow a feature's manager never hosts (#643). */
+const ROTATION_BINDING = "AT_REST_ROTATION";
+
 /** The resolved resource ids for one environment's manager deploy. */
 export interface ManagerConfigParams {
   env: ManagedEnvironment;
@@ -44,11 +50,15 @@ export interface ManagerConfigParams {
    */
   project: string;
   /**
-   * **The feature this manager serves, when it serves one (#643).** A feature is provisioned its own manager, the
-   * same way a declared environment is, and everything it is called or binds takes the feature's names: the
-   * Worker and both Workflows (`<project>-f<issue>-<slug>-secrets[-<job>]`), the feature's own master key entry,
-   * the feature's own CF API token entry, and the feature's own `SECRETS` database. `env` is then `feature`,
-   * which is what its `ENVIRONMENT` var says. Nothing it binds is shared with another environment.
+   * **The feature this manager serves, when it serves one (#643).** A feature is provisioned its own manager, and
+   * everything it is called or binds takes the feature's names: the Worker and its write Workflow
+   * (`<project>-f<issue>-<slug>--secrets[-write]`), the feature's own master key entry and its own `SECRETS`
+   * database. `env` is then `feature`, which is what its `ENVIRONMENT` var says.
+   *
+   * **And it holds no Cloudflare API token, hosts no rotation Workflow and runs no cron.** The token is what the
+   * rotation writes the new key set back with, and it can write every entry in the account's one Secrets Store,
+   * production's master key included. Branch code never holds that. A feature lives for days, so its key never
+   * needs rotating; the CLI creates it once, with its own credentials, and teardown deletes it.
    */
   feature?: FeatureIdentity;
 }
@@ -94,7 +104,7 @@ function managerWorkflowName(
   switch (binding) {
     case "SECRETS_WRITE":
       return secretsWriteWorkflowName(project, env, feature);
-    case "AT_REST_ROTATION":
+    case ROTATION_BINDING:
       return secretsRotateWorkflowName(project, env, feature);
     default:
       throw new InternalError({
@@ -126,6 +136,14 @@ export function resolveManagerConfig(
   const resolved: ManagerWranglerTemplate = structuredClone(template);
 
   resolved.name = name;
+  if (feature) {
+    // No token, no rotation, no cron (#643): see `ManagerConfigParams.feature`.
+    resolved.secrets_store_secrets = resolved.secrets_store_secrets.filter(
+      (entry) => entry.binding !== MANAGER_TOKEN_BINDING,
+    );
+    resolved.workflows = resolved.workflows.filter((wf) => wf.binding !== ROTATION_BINDING);
+    resolved.triggers = { crons: [] };
+  }
   // A declared environment's manager and its D1 share one name. A feature's D1 is the one the feature's own
   // provisioning created for its `SECRETS` binding, named by the feature's scope (#643).
   resolved.d1_databases = resolved.d1_databases.map((db) => ({
@@ -154,8 +172,6 @@ export function resolveManagerConfig(
     SECRETS_STORE_ID: storeId,
     ENVIRONMENT: env,
     PROJECT: project,
-    // Which feature, so the rotation write-back names the feature's own key entry (#643).
-    ...(feature ? { FEATURE_ISSUE: feature.issue, FEATURE_SLUG: feature.slug } : {}),
   };
 
   return resolved;
@@ -175,8 +191,9 @@ function managerStoreEntryName(
   switch (binding) {
     case "SECRETS_ENCRYPTION_KEYS":
       return masterKeySecretName(project, env, feature);
-    case "CLOUDFLARE_API_TOKEN":
-      return managerCfApiTokenSecretName(project, feature);
+    case MANAGER_TOKEN_BINDING:
+      // Never reached for a feature: its manager's config has no token binding to resolve (#643).
+      return managerCfApiTokenSecretName(project);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Secrets Store binding provisioning never writes.",

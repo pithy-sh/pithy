@@ -4,6 +4,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { isRotationDue } from "../rotation/keyRotation";
@@ -63,13 +64,6 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
    * reproduce that name inside the Worker to write the new key set back where the binding reads it.
    */
   PROJECT: string;
-  /**
-   * The feature this manager serves — its issue and slug — stamped only on a feature's manager (#643). Its
-   * master-key entry is named for the feature, so the rotation write-back needs both to find it.
-   */
-  FEATURE_ISSUE?: string;
-  /** The feature's slug, beside {@link FEATURE_ISSUE}. */
-  FEATURE_SLUG?: string;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
 }
@@ -108,10 +102,7 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
     // another attempt, and ciphertext that will not decrypt under the bound key set is not.
     await runRotationWorkflow(
       this.env,
-      rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT, {
-        issue: this.env.FEATURE_ISSUE,
-        slug: this.env.FEATURE_SLUG,
-      }),
+      rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT),
       classifiedSteps(step, secretsWorkflowRetry, NonRetryableError),
     );
   }
@@ -120,6 +111,9 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
 export default {
   /** Cron entry: trigger the at-rest rotation Workflow only when the interval has elapsed. */
   async scheduled(_controller: unknown, env: SecretsManagerEnv): Promise<void> {
+    // A feature's manager has no cron and no rotation Workflow (#643). Should a trigger reach one anyway, it
+    // rotates nothing: it holds no token to write the new key back with.
+    if (env.ENVIRONMENT === FEATURE_ENVIRONMENT) return;
     const config = await resolveEncryptionConfig(env);
     // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
     // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation

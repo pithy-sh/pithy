@@ -93,12 +93,12 @@ describe("no two published environments share an origin", () => {
  * the script name being composed from the wrong one.
  */
 describe("a feature environment's origin", () => {
-  const FEATURE_ORIGIN = "https://replay-f643-feature-address-board.acme.workers.dev";
+  const FEATURE_ORIGIN = "https://replay-f643-feature-address--board.acme.workers.dev";
 
   test("is the address provisioning stamped", () => {
     expect(resolveOrigin("feature", undefined, FEATURE_ORIGIN)).toEqual({
       origin: FEATURE_ORIGIN,
-      hostname: "replay-f643-feature-address-board.acme.workers.dev",
+      hostname: "replay-f643-feature-address--board.acme.workers.dev",
       declared: false,
     });
   });
@@ -118,9 +118,9 @@ describe("a feature environment's origin", () => {
   test("refuses anything that is not a workers.dev https origin, and goes nowhere instead", () => {
     for (const stamped of [
       "https://app.example.com",
-      "http://replay-f643-feature-address-board.acme.workers.dev",
-      "https://replay-f643-feature-address-board.acme.workers.dev/path",
-      "https://replay-f643-feature-address-board.acme.workers.dev:8443",
+      "http://replay-f643-feature-address--board.acme.workers.dev",
+      "https://replay-f643-feature-address--board.acme.workers.dev/path",
+      "https://replay-f643-feature-address--board.acme.workers.dev:8443",
       "https://workers.dev",
       "not a url",
       "",

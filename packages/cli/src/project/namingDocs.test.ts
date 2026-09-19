@@ -313,9 +313,10 @@ describe("the feature budget table", () => {
     // numbers were literals, so a change to the R2 cap or to the fixed separators would have left the doc
     // right and this test wrong. Derived from the constants instead.
     //
-    // `<project>-f<issue>-<slug>-<binding>-<kind>`: four separators, the `f`, and `<kind>` (`-r2` is the
-    // longest) are what a feature name spends before any of the four variable parts.
-    const fixed = NAMESPACE_LIMITS.r2.maxLength - (4 + 1 + MAX_FEATURE_KIND);
+    // `<project>-f<issue>-<slug>--<binding>-<kind>`: five hyphens (two of them the separator after the slug,
+    // #643), the `f`, and `<kind>` (`-r2` is the longest) are what a feature name spends before any of the four
+    // variable parts.
+    const fixed = NAMESPACE_LIMITS.r2.maxLength - (5 + 1 + MAX_FEATURE_KIND);
     expect(NAMING).toMatch(new RegExp(`= ${fixed}\\b`));
     expect(NAMING).toMatch(new RegExp(`\\b${MAX_ISSUE_DIGITS} digits\\b`));
   });
@@ -346,10 +347,10 @@ describe("the numbers the other docs restate", () => {
   });
 
   it("counts the fixed literals as literals, and divides what is left", () => {
-    // `<project>-f<issue>-<slug>-<binding>-<kind>`: `-f`, three more hyphens, and the kind. Seven, and it
-    // is not the issue reserve — the two were the same number while `MAX_ISSUE_DIGITS` was 7, which is how
-    // the budget came to spend it twice.
-    const fixed = 2 + 3 + MAX_FEATURE_KIND;
+    // `<project>-f<issue>-<slug>--<binding>-<kind>`: `-f`, four more hyphens, and the kind. Eight since the
+    // double hyphen (#643), and it is not the issue reserve — the two were the same number while
+    // `MAX_ISSUE_DIGITS` was 7, which is how the budget came to spend it twice.
+    const fixed = 2 + 4 + MAX_FEATURE_KIND;
     const [literals] = stated("docs/commands/dev.md", /with (\d+) taken by the fixed literals/, "the fixed literals");
     expect(literals).toBe(fixed);
 

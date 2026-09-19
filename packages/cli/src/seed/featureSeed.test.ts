@@ -19,7 +19,7 @@ import { seedProject } from "./run";
  * **`pithy seed` on a feature environment (#643): the origin a prepared set is handed, and the secrets.**
  *
  * Project `replay`, Worker `board`, deliberately unequal: a feature Worker deploys as
- * `replay-f643-feature-address-board`, and a fixture where project and Worker share a name cannot tell a script
+ * `replay-f643-feature-address--board`, and a fixture where project and Worker share a name cannot tell a script
  * composed from the right one from a script composed from the wrong one.
  *
  * Nothing here reaches Cloudflare. The account's `workers.dev` subdomain is the one thing a feature's address
@@ -27,7 +27,7 @@ import { seedProject } from "./run";
  */
 
 const PROJECT = "replay";
-const SCRIPT = "replay-f643-feature-address-board";
+const SCRIPT = "replay-f643-feature-address--board";
 const FEATURE_ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 
 /** A secret the registry can mint, one it cannot, as auth and an OAuth provider declare them. */

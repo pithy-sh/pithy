@@ -49,13 +49,6 @@ export function rotationConfigWriter(
   manager: CloudflareSecretsStoreManager,
   project: string,
   environment: string,
-  /**
-   * **A feature manager's feature, from its `FEATURE_ISSUE` and `FEATURE_SLUG` vars (#643).** A feature's key
-   * entry is named for the feature, so a feature manager writing back to `<project>-feature-…` would persist its
-   * new key where nothing binds it — and where every other branch's manager would too. So `feature` without
-   * both is refused, never composed as an environment.
-   */
-  feature?: { issue?: string; slug?: string },
 ): SecretsStoreConfigWriter {
   const parsed = ManagedEnvironment.safeParse(environment);
   if (!parsed.success) {
@@ -65,16 +58,15 @@ export function rotationConfigWriter(
       detail: `rotation write-back: ENVIRONMENT=${environment}`,
     });
   }
+  // **A feature's manager never writes back (#643).** It holds no Cloudflare API token and rotates nothing, so
+  // branch code never holds write access to the account's one Secrets Store. Composed as an environment, it
+  // would name `<project>-feature-…`, an entry every branch would write.
   if (parsed.data === FEATURE_ENVIRONMENT) {
-    if (!feature?.issue || !feature.slug) {
-      throw new ValidationError({
-        message: "This feature's secrets manager does not say which feature it serves.",
-        action: "Redeploy it with pithy provision --feature, which stamps FEATURE_ISSUE and FEATURE_SLUG.",
-        detail: `rotation write-back: ENVIRONMENT=feature, FEATURE_ISSUE=${feature?.issue ?? ""}, FEATURE_SLUG=${feature?.slug ?? ""}`,
-      });
-    }
-    const identity = { project, issue: feature.issue, slug: feature.slug };
-    return new SecretsStoreConfigWriter(manager, masterKeySecretName(project, parsed.data, identity));
+    throw new ValidationError({
+      message: "A feature's secrets manager does not rotate its key.",
+      action: "Nothing to do. A feature's key is created once by pithy provision --feature and deleted with it.",
+      detail: "rotation write-back: ENVIRONMENT=feature",
+    });
   }
   return new SecretsStoreConfigWriter(manager, masterKeySecretName(project, parsed.data));
 }

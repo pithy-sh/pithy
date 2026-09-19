@@ -109,10 +109,10 @@ describe("resolveWorkerAddress", () => {
  *
  * A feature Worker's script name is its `workers.dev` prefix, so its address is
  * `https://<script>.<account subdomain>.workers.dev`. Project `replay` and Worker `board`, so the script
- * (`replay-f643-feature-address-board`) is neither name alone — a resolver reading the wrong one cannot pass.
+ * (`replay-f643-feature-address--board`) is neither name alone — a resolver reading the wrong one cannot pass.
  */
 describe("resolveWorkerAddress for a feature environment", () => {
-  const SCRIPT = "replay-f643-feature-address-board";
+  const SCRIPT = "replay-f643-feature-address--board";
   const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 
   it("derives the workers.dev address from the stanza's script name and the account's subdomain", () => {
@@ -124,7 +124,7 @@ describe("resolveWorkerAddress for a feature environment", () => {
   });
 
   it("prefers the derivation to a stale stamp", () => {
-    const stale = "https://replay-f643-feature-address-board.old.workers.dev";
+    const stale = "https://replay-f643-feature-address--board.old.workers.dev";
     expect(
       resolveWorkerAddress({
         environment: "feature",

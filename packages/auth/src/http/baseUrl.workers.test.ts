@@ -240,7 +240,7 @@ test("production is untouched: the configured origin passes and the local one do
  * stamp. Project `replay`, Worker `board`: two names, so a script composed from the wrong one cannot pass.
  */
 test("a feature composition's base URL is the workers.dev origin its provisioning stamped", async () => {
-  const FEATURE_ORIGIN = "https://replay-f643-feature-address-board.acme.workers.dev";
+  const FEATURE_ORIGIN = "https://replay-f643-feature-address--board.acme.workers.dev";
   process.env.BASE_URL = FEATURE_ORIGIN;
   const DOMAINS = { prod: { pattern: "app.pithy.sh", zone: "pithy.sh" } };
   const app = compose("feature", () => originFor(process.env.ENVIRONMENT, DOMAINS));

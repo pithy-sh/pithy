@@ -3,7 +3,18 @@
 
 import { describe, expect, it } from "vitest";
 import { PithyError } from "../error/pithyError";
-import { type FeatureIdentity, type FeatureResourceKind, featureResourceName, featureWorkerName } from "./feature";
+import {
+  assertFeatureProject,
+  canonicalIssue,
+  type FeatureIdentity,
+  type FeatureResourceKind,
+  featureMarkerInProjectName,
+  featureResourceName,
+  featureSecretEntryName,
+  featureWorkerName,
+  isFeatureOwnedName,
+  parseFeatureName,
+} from "./feature";
 import { MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
 import { MAX_PROJECT_NAME } from "./resource";
 
@@ -25,8 +36,8 @@ const base: FeatureIdentity = { project: "acme", issue: "69", slug: "media-cli" 
 
 describe("featureResourceName", () => {
   it("composes <project>-f<issue>-<slug>-<binding>-<kind>", () => {
-    expect(featureResourceName(base, "ASSETS", "r2")).toBe("acme-f69-media-cli-assets-r2");
-    expect(featureResourceName(base, "MY_DB", "d1")).toBe("acme-f69-media-cli-my-db-d1");
+    expect(featureResourceName(base, "ASSETS", "r2")).toBe("acme-f69-media-cli--assets-r2");
+    expect(featureResourceName(base, "MY_DB", "d1")).toBe("acme-f69-media-cli--my-db-d1");
   });
 
   it("stays inside R2's bucket rules for every kind, because one shape serves all three", () => {
@@ -45,14 +56,15 @@ describe("featureResourceName", () => {
 
   it("keeps the slug and a working binding verbatim at the worst legal project name", () => {
     // This is the guarantee `FEATURE_DERIVED_PROJECT_NAME` was derived to give: at the cap, with a
-    // six-digit issue, a twelve-character slug and a twelve-character binding still read.
+    // six-digit issue, an eleven-character slug and a twelve-character binding still read — eleven since the
+    // double hyphen after the slug took one of its characters (#643).
     const identity = {
       project: "a".repeat(MAX_PROJECT_NAME),
       issue: "9".repeat(MAX_ISSUE_DIGITS),
-      slug: "media-upload",
+      slug: "media-queue",
     };
     const name = featureResourceName(identity, "MEDIA_BUCKET", "r2");
-    expect(name).toContain("-media-upload-media-bucket-r2");
+    expect(name).toContain("-media-queue--media-bucket-r2");
     expect(name.length).toBe(NAMESPACE_LIMITS.r2.maxLength);
   });
 
@@ -103,7 +115,7 @@ describe("featureResourceName", () => {
 
 describe("featureWorkerName", () => {
   it("composes <project>-f<issue>-<slug>-<worker>", () => {
-    expect(featureWorkerName(base, "api")).toBe("acme-f69-media-cli-api");
+    expect(featureWorkerName(base, "api")).toBe("acme-f69-media-cli--api");
   });
 
   it("never runs past the Worker cap — the bug this had", () => {
@@ -130,10 +142,10 @@ describe("featureWorkerName", () => {
   it("lands exactly on the cap without truncating, one character below it", () => {
     // `acme-f1-` is 8 characters; a 55-character tail fills the 63 exactly.
     const identity = { project: "acme", issue: "1", slug: "s".repeat(20) };
-    const worker = "w".repeat(NAMESPACE_LIMITS.worker.maxLength - 8 - 20 - 1);
+    const worker = "w".repeat(NAMESPACE_LIMITS.worker.maxLength - 8 - 20 - 2);
     const name = featureWorkerName(identity, worker);
     expect(name.length).toBe(NAMESPACE_LIMITS.worker.maxLength);
-    expect(name).toBe(`acme-f1-${"s".repeat(20)}-${worker}`);
+    expect(name).toBe(`acme-f1-${"s".repeat(20)}--${worker}`);
   });
 
   it("keeps two long worker names distinct rather than colliding on a truncation", () => {
@@ -153,5 +165,70 @@ describe("featureWorkerName", () => {
   it("is deterministic, so provision and teardown compute the same name", () => {
     expect(featureWorkerName(base, "api")).toBe(featureWorkerName(base, "api"));
     expect(featureWorkerName(base, "api")).not.toBe(featureWorkerName(base, "web"));
+  });
+});
+
+/**
+ * **A feature name parses back to exactly one owner (#643).** The double hyphen ends the slug, and the first
+ * `f<digits>` segment is the issue because a project may carry none. That is what the isolation gates ask, and
+ * what makes names injective across projects — `feature/naming.property.test.ts` in the CLI holds the property.
+ */
+describe("parseFeatureName and isFeatureOwnedName", () => {
+  const me: FeatureIdentity = { project: "acme", issue: "643", slug: "feature-address" };
+
+  it("reads a feature name back into its project, issue, slug and thing", () => {
+    expect(parseFeatureName(featureResourceName(me, "DB", "d1"))).toEqual({
+      project: "acme",
+      issue: "643",
+      slug: "feature-address",
+      thing: "db-d1",
+    });
+    expect(parseFeatureName(featureWorkerName({ project: "a-b", issue: "1", slug: "f3-y" }, "api"))).toEqual({
+      project: "a-b",
+      issue: "1",
+      slug: "f3-y",
+      thing: "api",
+    });
+  });
+
+  it("reads nothing a declared environment composes as a feature's", () => {
+    for (const name of ["acme-prod-db", "acme-f12-x-prod-email", "acme-staging-secrets", "acme--f1"]) {
+      expect(parseFeatureName(name), name).toBeNull();
+    }
+  });
+
+  it("owns its own names, including truncated ones, and no sibling's", () => {
+    const long: FeatureIdentity = { ...me, slug: "s".repeat(80) };
+    expect(isFeatureOwnedName(me, featureWorkerName(me, "email"))).toBe(true);
+    expect(isFeatureOwnedName(long, featureSecretEntryName(long, "SECRETS_ENCRYPTION_KEYS"))).toBe(true);
+    expect(isFeatureOwnedName(long, featureResourceName(long, "USER_NOTIFICATION_PREFERENCES_STORE", "r2"))).toBe(true);
+    for (const other of [
+      { ...me, slug: "feature-address-2" },
+      { ...me, slug: "feature" },
+      { ...me, issue: "6430" },
+      { ...me, project: "acme-x" },
+    ]) {
+      expect(isFeatureOwnedName(me, featureWorkerName(other, "email")), JSON.stringify(other)).toBe(false);
+      expect(isFeatureOwnedName(other, featureWorkerName(me, "email")), JSON.stringify(other)).toBe(false);
+    }
+  });
+
+  it("reads a leading zero as the same issue", () => {
+    expect(canonicalIssue("0643")).toBe("643");
+    expect(canonicalIssue("0")).toBe("0");
+    expect(featureWorkerName({ ...me, issue: "000643" }, "email")).toBe(featureWorkerName(me, "email"));
+    expect(isFeatureOwnedName({ ...me, issue: "0643" }, featureWorkerName(me, "email"))).toBe(true);
+  });
+});
+
+describe("assertFeatureProject", () => {
+  it("refuses a project whose name carries an f<digits> segment, and names the segment", () => {
+    expect(featureMarkerInProjectName("acme-f12-x")).toBe("f12");
+    expect(featureMarkerInProjectName("Acme F7")).toBe("f7");
+    expect(featureMarkerInProjectName("acme-fx12")).toBeNull();
+    expect(featureMarkerInProjectName("f")).toBeNull();
+    expect(() => assertFeatureProject("acme-f12-x")).toThrow("Its name carries f12");
+    expect(() => featureWorkerName({ project: "acme-f12-x", issue: "3", slug: "y" }, "api")).toThrow(PithyError);
+    expect(() => assertFeatureProject("acme")).not.toThrow();
   });
 });

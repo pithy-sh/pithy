@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "../error/pithyError";
-import { featureMarker } from "./environment";
-import { MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
+import { featureMarker, isFeatureMarker } from "./environment";
+import { FEATURE_TAIL_SEPARATOR, MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
 import { assertValidProjectName, fitSegment, kebab } from "./resource";
 
 /**
- * The names a feature environment provisions under: `<project>-f<issue>-<slug>-<binding>-<kind>` for a
- * resource, `<project>-f<issue>-<slug>-<worker>` for a Worker script.
+ * The names a feature environment provisions under: `<project>-f<issue>-<slug>--<binding>-<kind>` for a
+ * resource, `<project>-f<issue>-<slug>--<worker>` for a Worker script.
+ *
+ * **Two hyphens after the slug, and a project with no `f<digits>` segment (#643).** Together they make every
+ * feature name parse back to exactly one (project, issue, slug): the double hyphen is something no other name
+ * Pithy composes can hold ({@link FEATURE_TAIL_SEPARATOR}), and the first `f<digits>` segment is the issue's,
+ * because the project may carry none ({@link assertFeatureProject}). Before them, project `acme-f12-x`'s `prod`
+ * and project `acme`'s branch `feature/12-x-prod` composed every name between them, and a branch whose slug
+ * was a hyphen-prefix of a sibling's could compose the sibling's database. See {@link parseFeatureName}.
  *
  * **No environment segment, and no Worker segment.** A feature *is* an environment, and two Workers that
  * declare the same binding are meant to share one resource — so the binding name, not the topology, is
@@ -60,26 +67,111 @@ function assertIssue(issue: string): void {
   });
 }
 
+/**
+ * **The issue as a name carries it: its digits, without leading zeros (#643).** `feature/0643-foo` and
+ * `feature/643-foo` are one issue, so they are one feature and compose one set of names. Read as strings they
+ * were two features, and their rate-limit namespaces collided every time. `0` stays `0`.
+ */
+export function canonicalIssue(issue: string): string {
+  assertIssue(issue);
+  return issue.replace(/^0+(?=[0-9])/, "");
+}
+
+/**
+ * The `f<digits>` segment a project name carries, or `null` — the shape a feature's issue takes (#643).
+ *
+ * Read after kebabbing, because the kebab is what reaches an account.
+ */
+export function featureMarkerInProjectName(project: string): string | null {
+  return kebab(project).split("-").find(isFeatureMarker) ?? null;
+}
+
+/**
+ * **Refuse features for a project whose name carries an `f<digits>` segment (#643).**
+ *
+ * A feature name is read left to right: the project, then the first `f<digits>` segment, which is the issue.
+ * A project named `acme-f12-x` puts that segment inside itself, and then its feature 3 on `y` and project `acme`'s
+ * feature 12 on `x-f3-y` are one string. Environment names already obey this rule ({@link isFeatureMarker}), so
+ * the project obeys it too, where the two shapes meet.
+ *
+ * **Refused here, not at `requireProjectName`.** Such a project's staging and prod are untouched: no name they
+ * compose holds {@link FEATURE_TAIL_SEPARATOR}, so no feature anywhere can compose one of theirs. Refusing the
+ * name everywhere would break every command of a project that is otherwise sound. `pithy init` refuses a new one,
+ * and `pithy doctor` names the segment an existing one carries. Nothing is renamed.
+ */
+export function assertFeatureProject(project: string): void {
+  const marker = featureMarkerInProjectName(project);
+  if (marker === null) return;
+  throw new ValidationError({
+    message: `"${project}" can't have feature environments. Its name carries ${marker}, the shape a feature's issue takes.`,
+    action: "Staging and prod are unaffected. Features need a project name with no f and a number as one segment.",
+    detail: `A feature name is <project>-f<issue>-<slug>--<thing>, read from the first f<digits> segment. With one inside "${kebab(project)}", another project's feature could compose this project's feature names.`,
+  });
+}
+
 /** The `<project>-f<issue>` head both feature shapes share, with the project held to the one project rule. */
 function head(identity: FeatureIdentity): string {
   assertValidProjectName(identity.project);
-  assertIssue(identity.issue);
-  return `${kebab(identity.project)}-${featureMarker(identity.issue)}`;
+  assertFeatureProject(identity.project);
+  return `${kebab(identity.project)}-${featureMarker(canonicalIssue(identity.issue))}`;
+}
+
+/** A feature name, read back: which project, issue and slug it belongs to, and what it names. */
+export interface ParsedFeatureName {
+  /** The project segment, kebabbed. */
+  project: string;
+  /** The issue, canonical. */
+  issue: string;
+  /** The slug segment as it stands in the name: the whole slug, or its fitted form when it was truncated. */
+  slug: string;
+  /** Everything after {@link FEATURE_TAIL_SEPARATOR}: the binding and kind, Worker, Workflow or entry. */
+  thing: string;
 }
 
 /**
- * **The prefix every name one feature composes starts with** — `<project>-f<issue>-`, dash included (#643).
+ * **Read a feature name back into its owner, or `null` when it is not one (#643).**
  *
- * Whatever a feature names — a resource, a Worker, a Workflow, a store entry — begins with this, and nothing
- * another feature or a declared environment names does. So it is how a check that must not trust a resolver
- * asks "is this name the feature's?" without recomposing every kind of name a resolver might produce.
+ * Exact, because the shape leaves one reading: a feature name holds {@link FEATURE_TAIL_SEPARATOR} exactly once,
+ * everything before it is `<project>-f<issue>-<slug>`, and the first `f<digits>` segment there is the issue,
+ * since a project may carry none. Nothing else Pithy composes holds the separator at all.
  */
-export function featureNamePrefix(identity: FeatureIdentity): string {
-  return `${head(identity)}-`;
+export function parseFeatureName(name: string): ParsedFeatureName | null {
+  const at = name.indexOf(FEATURE_TAIL_SEPARATOR);
+  if (at < 0 || name.indexOf(FEATURE_TAIL_SEPARATOR, at + 1) >= 0) return null;
+  const thing = name.slice(at + FEATURE_TAIL_SEPARATOR.length);
+  const segments = name.slice(0, at).split("-");
+  const marker = segments.findIndex(isFeatureMarker);
+  if (thing === "" || marker < 1 || marker === segments.length - 1) return null;
+  if (segments.some((segment) => segment === "")) return null;
+  return {
+    project: segments.slice(0, marker).join("-"),
+    issue: (segments[marker] as string).slice(1).replace(/^0+(?=[0-9])/, ""),
+    slug: segments.slice(marker + 1).join("-"),
+    thing,
+  };
 }
 
 /**
- * Fit `<head>-<slug>-<tail><fixed>` into `budget`, truncating the slug first and the tail only if the
+ * **Is this name one this feature composes?** The ownership check the isolation gates ask (#643).
+ *
+ * Parsed, never prefix-matched. `<project>-f<issue>-` is shared by every branch of one issue, and a slug that is
+ * a hyphen-prefix of a sibling's (`feature-address` of `feature-address-2`) matched the sibling's names too. The
+ * slug segment must be the feature's slug, or a fitted form of it, which is what a truncated name carries.
+ */
+export function isFeatureOwnedName(identity: FeatureIdentity, name: string): boolean {
+  const parsed = parseFeatureName(name);
+  if (parsed === null) return false;
+  if (parsed.project !== kebab(identity.project) || parsed.issue !== canonicalIssue(identity.issue)) return false;
+  const slug = kebab(identity.slug);
+  if (parsed.slug === slug) return true;
+  for (let budget = 1; budget < slug.length; budget += 1) {
+    if (fitSegment(slug, budget) === parsed.slug) return true;
+  }
+  return false;
+}
+
+/**
+ * Fit `<head>-<slug>--<tail><fixed>` into `budget`, truncating the slug first and the tail only if the
  * tail is what is eating the name. `fixed` is never touched — it carries the kind suffix, which is the
  * only thing telling a `DB` bucket from a `DB` database.
  *
@@ -102,21 +194,22 @@ function composeFeatureName(headSegment: string, slug: string, tail: string, fix
   }
 
   const inner = budget - fixed.length;
+  const separator = FEATURE_TAIL_SEPARATOR.length;
   let tailSegment = tail;
-  let slugBudget = inner - headSegment.length - 1 - (1 + tailSegment.length);
+  let slugBudget = inner - headSegment.length - 1 - (separator + tailSegment.length);
 
   if (slugBudget < MIN_SLUG_BUDGET) {
     // The tail is eating the name — truncate it too, reserving the slug its minimum.
-    const tailBudget = inner - headSegment.length - 1 - MIN_SLUG_BUDGET - 1;
+    const tailBudget = inner - headSegment.length - 1 - MIN_SLUG_BUDGET - separator;
     tailSegment = fitSegment(tailSegment, Math.max(1, tailBudget));
-    slugBudget = inner - headSegment.length - 1 - (1 + tailSegment.length);
+    slugBudget = inner - headSegment.length - 1 - (separator + tailSegment.length);
   }
 
-  return `${headSegment}-${fitSegment(slug, Math.max(1, slugBudget))}-${tailSegment}${fixed}`;
+  return `${headSegment}-${fitSegment(slug, Math.max(1, slugBudget))}${FEATURE_TAIL_SEPARATOR}${tailSegment}${fixed}`;
 }
 
 /**
- * The full Cloudflare resource name for a feature's binding — `<project>-f<issue>-<slug>-<binding>-<kind>`.
+ * The full Cloudflare resource name for a feature's binding — `<project>-f<issue>-<slug>--<binding>-<kind>`.
  *
  * Held to **R2's 63**, the strictest of the three kinds a feature provisions, so one shape is legal for
  * all of them: lowercase, hyphenated, alphanumeric at both ends. A D1 or KV name could be longer, but a
@@ -134,7 +227,7 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
 
 /**
  * The CF Secrets Store entry name holding one of a feature's **environment-scoped** secrets —
- * `<project>-f<issue>-<slug>-<secret>`.
+ * `<project>-f<issue>-<slug>--<secret>`.
  *
  * A Cloudflare account has one Secrets Store, flat and unpartitionable, so the entry name is the only
  * partition there is. A feature therefore needs its own names for the same reason it needs its own
@@ -158,7 +251,7 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
 }
 
 /**
- * The Worker **script name** for one of a feature's workers — `<project>-f<issue>-<slug>-<worker>`.
+ * The Worker **script name** for one of a feature's workers — `<project>-f<issue>-<slug>--<worker>`.
  *
  * This is the name the feature's Workers deploy under, and therefore the name a sibling's `service`
  * binding must target, so RPC inside a feature environment reaches that feature's deployment rather than
@@ -170,7 +263,7 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
  * has a charset rule and no length rule, so nothing upstream was going to stop it either.
  *
  * **`app` is the `apps/<app>` directory, never the deploy name.** A scaffolded Worker deploys as
- * `<project>-<app>`, and handing that here composed `<project>-f<issue>-<slug>-<project>-<app>` — the
+ * `<project>-<app>`, and handing that here composed `<project>-f<issue>-<slug>--<project>-<app>` — the
  * project twice, spent out of the budget above (#587). This function takes a string and cannot tell the
  * two apart, so the provisioning path reaches it only through `featureScope`, which is handed both names
  * and picks.
@@ -180,7 +273,7 @@ export function featureWorkerName(identity: FeatureIdentity, app: string): strin
 }
 
 /**
- * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>-<capability>-<job>` (#643).
+ * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>--<capability>-<job>` (#643).
  *
  * A Workflow name is account-wide, like a Worker's, so a feature's email host cannot run
  * `<project>-feature-email-send`: every open branch would deploy the same Workflow over every other's. It takes
@@ -201,7 +294,7 @@ export function featureWorkflowName(identity: FeatureIdentity, capability: strin
 }
 
 /**
- * The name of one of a feature's **Vectorize indexes** — `<project>-f<issue>-<slug>-<thing>` (#643).
+ * The name of one of a feature's **Vectorize indexes** — `<project>-f<issue>-<slug>--<thing>` (#643).
  *
  * An index name is account-wide, so a feature's vector host cannot bind `<project>-feature-vector-<index>`: every
  * open branch would read and write one index. Held to the Vectorize limit and fitted the way every feature name
@@ -215,46 +308,4 @@ export function featureVectorizeIndexName(identity: FeatureIdentity, thing: stri
     "",
     NAMESPACE_LIMITS.vectorizeIndex.maxLength,
   );
-}
-
-/** How many rate limiters one feature Worker can give a namespace of its own: one decimal digit of slot. */
-export const MAX_FEATURE_RATELIMITS = 10;
-
-/**
- * **A feature's own rate-limit `namespace_id` for its `slot`-th limiter** — never staging's, prod's, the top
- * level's, or a sibling feature's (#643).
- *
- * Cloudflare keys a rate limiter's counters by `namespace_id` across the whole account, so a feature Worker bound
- * to the top level's namespace spends production's per-IP budget, and two branches spend each other's. So every
- * `ratelimits` binding in a feature stanza is renumbered here: `1`, the issue in six digits, two digits of the
- * project and slug, and the slot — ten digits, under 2^31, and exact in the issue, so two open features of one
- * project with different issues can never share one. Two branches for **one** issue share one only if their
- * project-and-slug digits agree as well. The leading `1` keeps the id clear of the small hand-picked ids adopters
- * write, and `pithy provision --feature` still refuses an id the tracked config already uses, so a collision with
- * a declared environment is refused rather than assumed away.
- */
-export function featureRatelimitNamespaceId(identity: FeatureIdentity, slot: number): string {
-  assertValidProjectName(identity.project);
-  if (!/^[0-9]+$/.test(identity.issue) || identity.issue.length > MAX_ISSUE_DIGITS) {
-    throw new ValidationError({
-      message: `A feature's issue number is at most ${MAX_ISSUE_DIGITS} digits.`,
-      detail: `featureRatelimitNamespaceId: issue "${identity.issue}"`,
-    });
-  }
-  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_FEATURE_RATELIMITS) {
-    throw new ValidationError({
-      message: `A feature Worker can bind at most ${MAX_FEATURE_RATELIMITS} rate limiters.`,
-      action: "Bind fewer rate limiters in this Worker.",
-      detail: `featureRatelimitNamespaceId: slot ${slot}`,
-    });
-  }
-  // FNV-1a over the project and the slug: stable across runs and machines, so a branch keeps its namespace, and
-  // its counters, across every re-provision.
-  let hash = 0x811c9dc5;
-  for (const char of `${identity.project}/${identity.slug}`) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  const mix = String(hash % 100).padStart(2, "0");
-  return `1${identity.issue.padStart(MAX_ISSUE_DIGITS, "0")}${mix}${slot}`;
 }

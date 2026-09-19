@@ -209,7 +209,7 @@ describe("resolveManagerConfig", () => {
 describe("resolveManagerConfig for a feature", () => {
   const feature = { project: "acme", issue: "643", slug: "feature-address" };
 
-  test("names everything for the feature, and stamps which feature for the rotation write-back", () => {
+  test("names everything for the feature, and gives it no token, no rotation Workflow and no cron", () => {
     const resolved = resolveManagerConfig(template(), {
       env: "feature",
       databaseId: "feature-secrets-db",
@@ -219,25 +219,19 @@ describe("resolveManagerConfig for a feature", () => {
       feature,
     });
 
-    expect(resolved.name).toBe("acme-f643-feature-address-secrets");
+    expect(resolved.name).toBe("acme-f643-feature-address--secrets");
     expect(resolved.d1_databases).toEqual([
-      { binding: "SECRETS", database_name: "acme-f643-feature-address-secrets-d1", database_id: "feature-secrets-db" },
+      { binding: "SECRETS", database_name: "acme-f643-feature-address--secrets-d1", database_id: "feature-secrets-db" },
     ]);
-    expect(resolved.secrets_store_secrets.map((entry) => entry.secret_name)).toEqual([
-      "acme-f643-feature-address-secrets-encryption-keys",
-      "acme-f643-feature-address-secrets-manager-cf-api-token",
+    // Its own master key, and no Cloudflare API token: branch code never holds account-wide store write (#643).
+    expect(resolved.secrets_store_secrets.map((entry) => [entry.binding, entry.secret_name])).toEqual([
+      ["SECRETS_ENCRYPTION_KEYS", "acme-f643-feature-address--secrets-encryption-keys"],
     ]);
-    expect(resolved.workflows.map((workflow) => workflow.name)).toEqual([
-      "acme-f643-feature-address-secrets-write",
-      "acme-f643-feature-address-secrets-rotate",
-    ]);
-    expect(resolved.vars).toMatchObject({
-      ENVIRONMENT: "feature",
-      PROJECT: "acme",
-      FEATURE_ISSUE: "643",
-      FEATURE_SLUG: "feature-address",
-    });
-    expect(managerCfApiTokenSecretName("acme", feature)).not.toBe(managerCfApiTokenSecretName("acme"));
+    // Its write Workflow, and no rotation Workflow or cron: a feature's key is created once and deleted with it.
+    expect(resolved.workflows.map((workflow) => workflow.name)).toEqual(["acme-f643-feature-address--secrets-write"]);
+    expect(resolved.triggers).toEqual({ crons: [] });
+    expect(resolved.vars).toMatchObject({ ENVIRONMENT: "feature", PROJECT: "acme" });
+    expect(resolved.vars).not.toHaveProperty("FEATURE_ISSUE");
     expect(masterKeySecretName("acme", "feature", feature)).toBe(resolved.secrets_store_secrets[0]?.secret_name);
   });
 });

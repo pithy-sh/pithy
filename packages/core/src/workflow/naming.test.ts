@@ -290,10 +290,10 @@ describe("host names for a feature", () => {
 
   it("names the host Worker and each Workflow for the feature, never for the literal environment", () => {
     expect(workflowHostName({ project: "replay", capability: "email", env: "feature", feature })).toBe(
-      "replay-f643-feature-address-email",
+      "replay-f643-feature-address--email",
     );
     expect(workflowScriptName({ project: "replay", capability: "email", job: "send", env: "feature", feature })).toBe(
-      "replay-f643-feature-address-email-send",
+      "replay-f643-feature-address--email-send",
     );
   });
 

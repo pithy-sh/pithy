@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRotateWorkflowName, secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import {
   managerCfApiTokenName,
@@ -73,7 +74,15 @@ function provisionerOptions(
   deploy: CloudflareSecretsProvisionerOptions["deploy"] = async () => {},
   project: string = PROJECT,
 ): CloudflareSecretsProvisionerOptions {
-  return { cf, account: { accountId: "acct-1", confirmation: "pinned" }, project, storeId: "store-1", deploy };
+  return {
+    cf,
+    account: { accountId: "acct-1", confirmation: "pinned" },
+    project,
+    storeId: "store-1",
+    deploy,
+    // Every value a test mints is live unless the test says otherwise: never a call to the real verify endpoint.
+    honors: async () => true,
+  };
 }
 
 describe("masterKeySecretName", () => {
@@ -143,25 +152,25 @@ describe("CloudflareSecretsProvisioner", () => {
   });
 
   /**
-   * **A feature's own key and token (#643).** The same provisioner, handed a feature, names the feature's own
-   * master-key entry and mints the feature's own manager token — nothing in the store is shared with another
-   * environment.
+   * **A feature's own key, and no token (#643).** The same provisioner, handed a feature, names the feature's own
+   * master-key entry — and refuses to mint a manager token at all, because a feature's manager holds none: the
+   * token can write every entry in the account's one Secrets Store, production's key included.
    */
-  test("for a feature, mints the feature's own master key and manager token", async () => {
+  test("for a feature, creates the feature's own master key and refuses to mint a token", async () => {
     const feature = { project: PROJECT, issue: "643", slug: "feature-address" };
     const { cf, exists, putSecret, createSecretIfAbsent, rollToken } = fakeCf();
     exists.mockResolvedValue(false);
-    rollToken.mockResolvedValue({ id: "tk", value: "token-value" });
     const provisioner = new CloudflareSecretsProvisioner({ ...provisionerOptions(cf), feature });
 
     await provisioner.ensureMasterKey("feature");
-    await provisioner.ensureManagerToken();
+    await expect(provisioner.ensureManagerToken()).rejects.toThrow(/holds no Cloudflare API token/);
+
     expect(createSecretIfAbsent).toHaveBeenCalledWith(
-      `${PROJECT}-f643-feature-address-secrets-encryption-keys`,
+      `${PROJECT}-f643-feature-address--secrets-encryption-keys`,
       expect.stringContaining("currentVersion"),
     );
-    expect(rollToken.mock.calls[0]?.[0]).toBe(`${PROJECT}-f643-feature-address-secrets-manager`);
-    expect(putSecret.mock.calls[0]?.[0]).toBe(`${PROJECT}-f643-feature-address-secrets-manager-cf-api-token`);
+    expect(rollToken).not.toHaveBeenCalled();
+    expect(putSecret).not.toHaveBeenCalled();
   });
 
   test("deployManager delegates to the injected deploy step", async () => {
@@ -646,5 +655,68 @@ describe("teardown refuses an unconfirmed account", () => {
       "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
     );
     expect(createDatabase).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * **The manager-token race (#643, finding 2 of the review of 8858558c).** Two `pithy secrets provision` runs both
+ * find the token entry absent and both roll the token, and each roll revokes the value before it. Before the fix
+ * the write that landed last won, so the store could keep a value Cloudflare had already revoked, and a re-run,
+ * seeing the entry, never repaired it. Now a run finishes only once the value it stored is still honored.
+ */
+describe("ensureManagerToken under a race", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Cloudflare as `rollToken` sees it: find by name, mint when absent, roll the value in place when present. */
+  function racingAccount() {
+    const entries = new Map<string, string>();
+    const tokens: { id: string; name: string; value: string }[] = [];
+    let seq = 0;
+    let puts = 0;
+    const cf = {
+      secrets: () => ({
+        exists: async (name: string) => entries.has(name),
+        // The first write is slow (a slow network leg), so the second run's write lands first.
+        putSecret: async (name: string, value: string) => {
+          puts += 1;
+          if (puts === 1) await sleep(30);
+          entries.set(name, value);
+        },
+      }),
+      accountTokens: () => ({
+        rollToken: async (name: string) => {
+          const existing = tokens.find((token) => token.name === name);
+          seq += 1;
+          if (!existing) {
+            const token = { id: `tk${seq}`, name, value: `v${seq}` };
+            tokens.push(token);
+            return { ...token, status: "active" };
+          }
+          existing.value = `v${seq}`; // rolled in place: the old value stops working
+          return { ...existing, status: "active" };
+        },
+      }),
+    } as unknown as CloudflareClients;
+    const honors = async (value: string) => tokens.some((token) => token.value === value);
+    return { cf, entries, tokens, honors };
+  }
+
+  test("two concurrent runs leave the store holding the value Cloudflare honors", async () => {
+    const account = racingAccount();
+    const make = () => new CloudflareSecretsProvisioner({ ...provisionerOptions(account.cf), honors: account.honors });
+    await Promise.all([make().ensureManagerToken(), make().ensureManagerToken()]);
+
+    const stored = decodeVersionedValue(account.entries.get(managerCfApiTokenSecretName(PROJECT)) as string);
+    expect(account.tokens).toHaveLength(1);
+    expect(stored).toEqual({ currentVersion: "1", versions: { "1": account.tokens[0]?.value } });
+  });
+
+  test("a run that cannot keep a live value stops and says so, rather than rolling forever", async () => {
+    const account = racingAccount();
+    const provisioner = new CloudflareSecretsProvisioner({
+      ...provisionerOptions(account.cf),
+      honors: async () => false,
+    });
+    await expect(provisioner.ensureManagerToken()).rejects.toThrow(/kept being rolled by another run/);
   });
 });

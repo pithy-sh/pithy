@@ -5,15 +5,16 @@ import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
+import {
+  canonicalIssue,
+  type FeatureIdentity,
+  type FeatureResourceKind,
+  featureResourceName,
+} from "@pithy-sh/core/src/naming/feature";
 import { featureScope, featureWorkerScriptNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
-import {
-  managerCfApiTokenName,
-  managerCfApiTokenSecretName,
-  type SecretsProvisioner,
-} from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { masterKeySecretName, type SecretsProvisioner } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { managerMintedSecrets, mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
@@ -29,7 +30,6 @@ import {
 } from "../provision/environment";
 import {
   AUDIT_RESOURCE_TYPE,
-  type FeatureApiTokens,
   type FeatureIndexes,
   ProvisionAuditActions,
   type ResourceProvisioners,
@@ -57,6 +57,12 @@ import {
   readManifest,
   writeManifest,
 } from "./manifest";
+import {
+  allocateFeatureRatelimits,
+  assertNoDeclaredFeatureIds,
+  featureRatelimitClaims,
+  readWorkerRatelimits,
+} from "./ratelimits";
 
 /**
  * `pithy provision --feature` — one branch's ephemeral Cloudflare environment.
@@ -105,7 +111,11 @@ function isScriptOwnedByFeature(identity: FeatureIdentity, script: FeatureScript
  */
 function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManifest | null): void {
   if (!manifest) return;
-  if (manifest.project === identity.project && manifest.issue === identity.issue && manifest.slug === identity.slug) {
+  if (
+    manifest.project === identity.project &&
+    canonicalIssue(manifest.issue) === canonicalIssue(identity.issue) &&
+    manifest.slug === identity.slug
+  ) {
     return;
   }
   throw new ValidationError({
@@ -158,13 +168,15 @@ export interface ProvisionFeatureOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * **The feature's secrets infrastructure, through the provisioner `pithy secrets provision` uses (#643)** —
-   * `CloudflareSecretsProvisioner` handed this feature, in a real run. It mints the feature's own manager token and
-   * creates the feature's own master key, each only if absent. Called only when the feature composes the secrets
-   * capability, and before anything binds the key. The feature's `SECRETS` database and its migration are the
-   * generic provisioning's; its manager is one of the kit hosts {@link deployHosts} deploys.
+   * **The feature's master key, created by the CLI with its own credentials (#643)** — `CloudflareSecretsProvisioner`
+   * handed this feature, in a real run, creating the feature's own key entry only if absent. Called only when the
+   * feature composes the secrets capability, and before anything binds the key. The feature's `SECRETS` database and
+   * its migration are the generic provisioning's; its manager is one of the kit hosts {@link deployHosts} deploys.
+   *
+   * **No token.** A feature's manager holds no Cloudflare API token and rotates nothing, so branch code never holds
+   * write access to the account's one Secrets Store, where production's master key lives. Nothing here mints one.
    */
-  secrets?: Pick<SecretsProvisioner, "ensureManagerToken" | "ensureMasterKey">;
+  secrets?: Pick<SecretsProvisioner, "ensureMasterKey">;
   /**
    * **The feature's own secrets manager, as a dispatcher (#643)** — `WorkflowSecretDispatcher` bound to this
    * feature, in a real run. Once the manager is deployed, every mintable `d1` secret is created through it by
@@ -209,19 +221,41 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   // Before anything is created: an app Worker that would deploy under a kit host's name (F3 of #643's review).
   assertNoFeatureHostCollision(options.identity, workers.map(provisionWorkerNames));
 
-  // **The feature's secrets infrastructure, the way a declared environment gets its own (#643).** A feature has
-  // its own `SECRETS` database, so it gets its own manager, its own master key and its own manager token, through
-  // the provisioner `pithy secrets provision` runs — named for the feature, and never shared with another
-  // environment. Each step creates only what is absent, and none of them seals anything: the manager does that,
-  // once deployed, under whatever key the store holds. So a run that fails anywhere after the key exists is
-  // finished by the next one — there is no "the run that created the key" for correctness to hang on (F1).
+  // **The feature's own rate-limit namespaces, allocated before any stanza is written (#643).** Every Worker's
+  // tracked config is read, so a declared id in the feature range is refused wherever it is, and each limiter
+  // the feature binds gets an id no other feature, environment or project holds — see `./ratelimits`.
+  const store = options.store;
+  const ratelimits = await Promise.all(workers.map(readWorkerRatelimits));
+  assertNoDeclaredFeatureIds(ratelimits);
+  const limiters = ratelimits.flatMap((worker) => worker.limiters);
+  let ratelimitIds: Map<string, string> | undefined;
+  if (limiters.length > 0) {
+    const list = store?.list?.bind(store);
+    if (!store || !list) {
+      throw new ValidationError({
+        message: "This feature binds rate limiters, and each takes a namespace of its own from the Secrets Store.",
+        action: "Set SECRETS_STORE_ID and the Cloudflare credentials, then run pithy provision --feature again.",
+        detail: `feature ${options.identity.project}-f${options.identity.issue}-${options.identity.slug}: ${limiters.length} limiter(s), no store to allocate from`,
+      });
+    }
+    ratelimitIds = await allocateFeatureRatelimits({
+      identity: options.identity,
+      limiters,
+      declared: new Set(ratelimits.flatMap((worker) => worker.declared.map((entry) => entry.id))),
+      store: { list, create: (name, value) => store.create(name, value), remove: (name) => store.remove(name) },
+    });
+  }
+
+  // **The feature's master key, the one secret the CLI writes into the account for it (#643).** A feature has its
+  // own `SECRETS` database and its own manager, and the manager seals every `d1` secret under whatever key the
+  // store holds, once deployed. So the key is created only if absent, and a run that fails anywhere after it
+  // exists is finished by the next one: there is no "the run that created the key" for correctness to hang on.
+  // No token is minted: a feature's manager holds none.
   //
   // Before `provisionEnvironment`, because its secret bindings bind the key only once it exists.
-  const store = options.store;
   const registry = workerSecretRegistry(options.capabilities);
   const composesSecrets = featureHostCapabilities(options.capabilities).includes("secrets");
   if (store && options.secrets && composesSecrets) {
-    await options.secrets.ensureManagerToken();
     await options.secrets.ensureMasterKey(FEATURE_ENVIRONMENT);
   }
 
@@ -257,6 +291,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
     ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
+    ...(ratelimitIds !== undefined ? { ratelimitIds } : {}),
     resolveWorkers: async () => workers,
     ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
     ...(store
@@ -422,8 +457,6 @@ export interface DeprovisionFeatureOptions {
    * hosts Workflows, and Cloudflare does not say that deleting the script deletes them.
    */
   workflows: WorkflowDefinitions;
-  /** The account's API tokens (#643): the feature's secrets manager holds one of its own, revoked here by name. */
-  tokens: FeatureApiTokens;
   /**
    * The feature's own indexes (#643), recomputed from what the branch composes and deleted by name. Omitted when
    * no account is reachable for them.
@@ -446,7 +479,7 @@ export interface DeprovisionFeatureOptions {
 }
 
 /**
- * Delete a feature's Workflows, its Worker scripts, then its Cloudflare resources, store entries and token.
+ * Delete a feature's Workflows, its Worker scripts, then its Cloudflare resources and store entries.
  *
  * **Every kit host too (#643)**, by the name each registry host takes for this feature, and **every Workflow
  * those scripts host, explicitly and first** — Cloudflare does not document that deleting a script deletes its
@@ -581,12 +614,18 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
         // `global` included: a feature's entry for a global secret is its own too (#643).
         await options.store.remove(scope.secretEntry(binding, entry.scope));
       }
-      // The feature manager's own token entry (#643). The manager's registry is not a Worker's, so it is named here.
-      await options.store.remove(managerCfApiTokenSecretName(options.identity.project, options.identity));
+      // The feature's master key, which no Worker's registry declares: the manager binds it (#643).
+      await options.store.remove(masterKeySecretName(options.identity.project, FEATURE_ENVIRONMENT, options.identity));
+      // Its rate-limit claims, found by parsing every entry, so an id this branch held is free again (#643).
+      if (options.store.list) {
+        for (const claim of await featureRatelimitClaims(options.identity, {
+          list: options.store.list.bind(options.store),
+        })) {
+          await options.store.remove(claim);
+        }
+      }
     }
-    // And the account token behind it, by the name only this feature composes.
-    const tokenName = managerCfApiTokenName(options.identity.project, options.identity);
-    if ((await options.tokens.deleteByName(tokenName)) > 0) await record("api_token", tokenName, tokenName);
+    // Nothing to revoke: a feature's manager holds no Cloudflare API token (#643).
   } catch (error) {
     // Carried, never replaced. `deleted` is what this run destroyed, by kind, name and id — the three
     // facts an operator needs to finish the teardown by hand. Nothing from the throw is copied into it.

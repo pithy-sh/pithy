@@ -3,14 +3,14 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { type FeatureIdentity, featureRatelimitNamespaceId } from "@pithy-sh/core/src/naming/feature";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
+import { limiterKey } from "../feature/ratelimits";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -220,7 +220,7 @@ function routePatterns(stanza: EnvBindings): string[] {
   });
 }
 
-/** One `ratelimits` entry, as far as this reads one: its binding name, and whatever else it carries. */
+/** One `ratelimits` entry, as far as this reads one: its binding name, its namespace, and whatever else. */
 interface RatelimitEntry {
   name?: string;
   [field: string]: unknown;
@@ -234,16 +234,15 @@ interface RatelimitEntry {
  * refused every request. Each top-level entry the stanza does not already bind by name is copied.
  *
  * **And every entry is then given the feature's own `namespace_id`**, the copied ones and any declared under a
- * tracked `env.feature` alike. Cloudflare keys a limiter's counters by that id across the account, so a copied id
- * spent production's per-IP budget, and an id declared for `env.feature` is one every open branch would spend
- * together. Nothing is shared between a feature and anything else: see `featureRatelimitNamespaceId`. The slot
- * is the binding's place among the stanza's limiters by name, so a re-run renumbers identically. A derived id the
- * tracked config already uses anywhere is refused rather than taken.
+ * tracked `env.feature` alike: the id allocated for its limiter by `allocateFeatureRatelimits`, which no other
+ * feature, environment or project can hold (`feature/ratelimits.ts`). Keyed by the limiter the entry was declared
+ * as, read before it is renumbered, so a limiter two Workers share in production is one here, and two are two.
+ * A limiter with no allocation is refused: nothing else is a namespace this feature owns.
  */
 function featureRatelimits(
   stanza: Record<string, unknown>,
   top: Record<string, unknown>,
-  identity: FeatureIdentity,
+  ids: ReadonlyMap<string, string>,
 ): void {
   const declared = Array.isArray(top.ratelimits) ? (top.ratelimits as RatelimitEntry[]) : [];
   const own = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
@@ -255,35 +254,18 @@ function featureRatelimits(
     else stanza.ratelimits = missing.map((entry) => structuredClone(entry));
   }
   const entries = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
-  if (entries.length === 0) return;
-  const names = [...new Set(entries.map((entry) => String(entry.name)))].sort();
-  const taken = trackedNamespaceIds(top);
   for (const entry of entries) {
-    const id = featureRatelimitNamespaceId(identity, names.indexOf(String(entry.name)));
-    if (taken.has(id)) {
-      throw new ValidationError({
-        message: `This feature's rate limiter ${String(entry.name)} would take namespace ${id}, which the tracked config already uses.`,
-        action: "Give that limiter another namespace_id in wrangler.jsonc. A feature's counters are its own.",
-        detail: `feature ${identity.project}-f${identity.issue}-${identity.slug}: namespace_id ${id} is declared in the tracked wrangler.jsonc`,
+    const limiter = limiterKey(entry);
+    const id = ids.get(limiter);
+    if (id === undefined) {
+      throw new InternalError({
+        message: `This feature's rate limiter ${String(entry.name)} has no namespace of its own.`,
+        action: "Run pithy provision --feature again.",
+        detail: `limiter ${limiter} was not allocated before the stanza was written`,
       });
     }
     entry.namespace_id = id;
   }
-}
-
-/** Every `ratelimits` `namespace_id` the tracked config declares: its top level, and every `env.<name>` but the feature's. */
-function trackedNamespaceIds(top: Record<string, unknown>): Set<string> {
-  const ids = new Set<string>();
-  const collect = (value: unknown): void => {
-    if (!Array.isArray(value)) return;
-    for (const entry of value as RatelimitEntry[]) {
-      if (entry.namespace_id !== undefined) ids.add(String(entry.namespace_id));
-    }
-  };
-  collect(top.ratelimits);
-  const envs = (top.env ?? {}) as Record<string, Record<string, unknown> | undefined>;
-  for (const [name, stanza] of Object.entries(envs)) if (name !== FEATURE_ENVIRONMENT) collect(stanza?.ratelimits);
-  return ids;
 }
 
 /**
@@ -371,6 +353,12 @@ export async function applyProvisionedEnv(options: {
    * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
   onRoutesDropped?: (routes: string[]) => void;
+  /**
+   * **This feature's own rate-limit namespaces, by limiter (#643)** — `allocateFeatureRatelimits`' answer, read
+   * for a feature scope only. Every `ratelimits` entry the feature stanza binds takes the id its limiter was
+   * allocated; one with none is refused.
+   */
+  ratelimitIds?: ReadonlyMap<string, string>;
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -387,8 +375,7 @@ export async function applyProvisionedEnv(options: {
     if (!options.scope.source) {
       const dropped = stripFeatureRoutes(stanza, top);
       if (dropped.length > 0) options.onRoutesDropped?.(dropped);
-      const feature = options.scope.workflowHost.feature;
-      if (feature) featureRatelimits(stanza as Record<string, unknown>, top, feature);
+      featureRatelimits(stanza as Record<string, unknown>, top, options.ratelimitIds ?? new Map());
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     for (const resource of options.resources) {

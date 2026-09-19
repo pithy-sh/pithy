@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
 import { PACKAGE_VERSION } from "@pithy-sh/email/src/version.generated";
@@ -577,7 +578,7 @@ describe("each capability settles as it is decided", () => {
  */
 describe("a feature's kit Workers", () => {
   const FEATURE = { project: "acme", issue: "643", slug: "feature-address" };
-  const ORIGIN = "https://acme-f643-feature-address-api.acme.workers.dev";
+  const ORIGIN = "https://acme-f643-feature-address--api.acme.workers.dev";
 
   /** The generated feature config provisioning writes: the tracked top level, and the feature's own stanza. */
   async function writeFeatureApp(): Promise<string> {
@@ -598,7 +599,7 @@ describe("a feature's kit Workers", () => {
           ],
           env: {
             feature: {
-              name: "acme-f643-feature-address-api",
+              name: "acme-f643-feature-address--api",
               routes: [],
               d1_databases: [
                 { binding: "DB", database_id: "feature-db" },
@@ -616,13 +617,29 @@ describe("a feature's kit Workers", () => {
     return dir;
   }
 
-  function deployFeature(dir: string, feature: typeof FEATURE | undefined, composes: Capability[] = [EMAIL]) {
+  /** The feature's own databases, as the account would answer for them: each id, under the feature's name. */
+  const OWNED = async () => ({
+    d1: new Map([
+      ["feature-db", featureResourceName(FEATURE, "DB", "d1")],
+      ["feature-sup", featureResourceName(FEATURE, "EMAIL_SUPPRESSIONS", "d1")],
+      ["feature-sec", featureResourceName(FEATURE, "SECRETS", "d1")],
+    ]),
+    kv: new Map<string, string>(),
+  });
+
+  function deployFeature(
+    dir: string,
+    feature: typeof FEATURE | undefined,
+    composes: Capability[] = [EMAIL],
+    owned: typeof OWNED | null = OWNED,
+  ) {
     return deployKitWorkers({
       projectDir,
       project: "acme",
       env: "feature",
       account: null,
       ...(feature ? { feature } : {}),
+      ...(owned ? { featureOwned: owned } : {}),
       workers: [{ name: "api", dir, hasWrangler: true }],
       capabilitiesFor: async () => composes,
       readTemplate: async () => structuredClone(template),
@@ -640,7 +657,7 @@ describe("a feature's kit Workers", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.workers.map((row) => [row.worker, row.outcome])).toEqual([
-      ["acme-f643-feature-address-email", "deployed"],
+      ["acme-f643-feature-address--email", "deployed"],
     ]);
     const config = deployed[0];
     expect(config?.d1_databases?.map((entry) => entry.database_id)).toEqual([
@@ -650,7 +667,25 @@ describe("a feature's kit Workers", () => {
     ]);
     expect(config?.vars?.BASE_URL).toBe(ORIGIN);
     expect(config?.vars?.ENVIRONMENT).toBe("feature");
-    expect(config?.secrets_store_secrets?.[0]?.secret_name).toBe("acme-f643-feature-address-secrets-encryption-keys");
+    expect(config?.secrets_store_secrets?.[0]?.secret_name).toBe("acme-f643-feature-address--secrets-encryption-keys");
+  });
+
+  /**
+   * **The host gate follows every bound id to what owns it (#643).** A feature host bound to a database the feature
+   * did not create — production's, by id — fails rather than deploys, whatever name sits beside the id; and with
+   * no way to ask the account, the feature owns nothing a host could bind by id.
+   */
+  test("refuses a feature host bound to a database the feature did not create", async () => {
+    const notOurs = async () => ({ d1: new Map([["feature-db", "acme-prod-db"]]), kv: new Map<string, string>() });
+    const report = await deployFeature(await writeFeatureApp(), FEATURE, [EMAIL], notOurs);
+    expect(report.workers.map((row) => row.outcome)).toEqual(["failed"]);
+    expect(report.workers[0]?.reason).toContain("d1 DB: acme-prod-db");
+    expect(report.workers[0]?.reason).toContain("id feature-sup is not one this feature created");
+    expect(deployed).toEqual([]);
+
+    const blind = await deployFeature(await writeFeatureApp(), FEATURE, [EMAIL], null);
+    expect(blind.workers.map((row) => row.outcome)).toEqual(["failed"]);
+    expect(deployed).toEqual([]);
   });
 
   test("refuses a feature pass that does not know which feature it is — deploying nothing", async () => {
@@ -671,10 +706,10 @@ describe("a feature's kit Workers", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.workers.map((row) => [row.capability, row.worker, row.outcome])).toEqual([
-      ["email", "acme-f643-feature-address-email", "deployed"],
-      ["media", "acme-f643-feature-address-media", "deployed"],
+      ["email", "acme-f643-feature-address--email", "deployed"],
+      ["media", "acme-f643-feature-address--media", "deployed"],
     ]);
-    const mediaHost = deployed.find((config) => config.name === "acme-f643-feature-address-media");
+    const mediaHost = deployed.find((config) => config.name === "acme-f643-feature-address--media");
     for (const workflow of mediaHost?.workflows ?? []) expect(workflow.name.startsWith("acme-f643-")).toBe(true);
   });
 

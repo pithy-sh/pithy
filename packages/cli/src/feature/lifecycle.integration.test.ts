@@ -15,12 +15,7 @@ import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
 import { cloudflareEnv } from "../cloudflare/config";
 import { buildEnvInventory } from "../project/envInventory";
-import {
-  cloudflareFeatureApiTokens,
-  cloudflareProvisioners,
-  cloudflareWorkerScripts,
-  cloudflareWorkflowDefinitions,
-} from "../provision/resources";
+import { cloudflareProvisioners, cloudflareWorkerScripts, cloudflareWorkflowDefinitions } from "../provision/resources";
 import { destroyFeature } from "./destroy";
 import { provisionFeature } from "./provision";
 
@@ -151,11 +146,10 @@ let projectDir: string | null = null;
 const clients = hasCreds ? new CloudflareClients({ accountId, apiToken }) : null;
 const provisioners = clients ? cloudflareProvisioners(clients, { accountId, confirmation: "pinned" }) : null;
 const scripts = clients ? cloudflareWorkerScripts(clients, { accountId, confirmation: "pinned" }) : null;
-// The Workflow and token halves of teardown (#643), over the same account.
+// The Workflow half of teardown (#643), over the same account. A feature holds no token, so there is none to revoke.
 const workflows = hasCreds
   ? cloudflareWorkflowDefinitions(new CloudflareWorkflowsClient({ accountId, apiToken }))
   : { hostedBy: async () => [] as string[], delete: async () => {} };
-const tokens = clients ? cloudflareFeatureApiTokens(clients) : { deleteByName: async () => 0 };
 const capabilities = [shared, collabOnly];
 
 afterAll(async () => {
@@ -171,7 +165,6 @@ afterAll(async () => {
       provisioners,
       scripts,
       workflows,
-      tokens,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,
@@ -288,7 +281,6 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
       provisioners,
       scripts,
       workflows,
-      tokens,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,

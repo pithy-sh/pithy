@@ -22,7 +22,6 @@ import { requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
 import {
   AUDIT_DESTINATION_ENV,
-  cloudflareFeatureApiTokens,
   cloudflareProvisioners,
   cloudflareWorkerScripts,
   cloudflareWorkflowDefinitions,
@@ -64,9 +63,8 @@ async function buildTeardown(
   return {
     provisioners: cloudflareProvisioners(clients, confirmed),
     scripts: cloudflareWorkerScripts(clients, confirmed),
-    // Every kit host's Workflows, deleted by name, and the feature manager's own token (#643).
+    // Every kit host's Workflows, deleted by name (#643). No token: a feature's manager holds none.
     workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),
-    tokens: cloudflareFeatureApiTokens(clients),
     indexes: cloudflareFeatureIndexes({
       projectDir,
       cf: clients,

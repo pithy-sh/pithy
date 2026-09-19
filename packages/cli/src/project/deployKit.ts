@@ -17,10 +17,16 @@ import {
 } from "../capabilities/hostDeploy";
 import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from "../capabilities/hostRegistry";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
-import { assertNoFeatureHostCollision, featureHostNameLeaks } from "../feature/hosts";
+import {
+  assertNoFeatureHostCollision,
+  type FeatureOwnedIds,
+  featureHostNameLeaks,
+  featureOwnedIds,
+} from "../feature/hosts";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { cloudflareProvisioners } from "../provision/resources";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
@@ -138,6 +144,12 @@ export interface DeployKitOptions {
    * it just wrote the feature's keys into. Each one absent here is read from the resolved credentials, as before.
    */
   ids?: { storeId?: string; accountId?: string };
+  /**
+   * **The D1 databases and KV namespaces the feature owns, id → name (#643)** — what the host gate follows a bound
+   * id to. Defaults to asking the account under the resolved credentials, by the feature's own names. With
+   * neither, the feature owns nothing a config could bind by id, and a host binding one is refused.
+   */
+  featureOwned?: (identity: FeatureIdentity, capabilities: readonly Capability[]) => Promise<FeatureOwnedIds>;
 }
 
 /** The `env.<name>` stanza slice this reads: the resource bindings, and whatever names an address. */
@@ -320,6 +332,25 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   // wrangler still authenticates on its own OAuth login, exactly as `pithy deploy` always could.
   const readVars = options.readVars ?? (credentials ? await workersVarsReader(credentials) : undefined);
 
+  // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else (#643).
+  let owned: FeatureOwnedIds | undefined;
+  if (options.feature) {
+    const [first] = hosts;
+    const capabilities = first ? [first.composed, ...first.siblings] : [];
+    owned = options.featureOwned
+      ? await options.featureOwned(options.feature, capabilities)
+      : credentials
+        ? await featureOwnedIds(
+            cloudflareProvisioners(await cloudflareClients(credentials), {
+              accountId: credentials.accountId,
+              confirmation: cloudflareAccountConfirmation({ account: options.account }),
+            }),
+            options.feature,
+            capabilities,
+          )
+        : { d1: new Map(), kv: new Map() };
+  }
+
   const stanzas = new Map<string, KitStanza | undefined>();
   for (const worker of workers) stanzas.set(worker.dir, await stanzaFor(worker, options.env));
   const declared = [...stanzas.values()].filter((stanza) => stanza !== undefined);
@@ -336,6 +367,7 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
       readVars,
       databaseIds,
       kvNamespaceIds,
+      ...(owned ? { owned } : {}),
       stanza: stanzas.get(host.sourceDir),
       storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
       accountId: options.ids?.accountId ?? vars.CLOUDFLARE_ACCOUNT_ID,
@@ -418,6 +450,8 @@ async function deployOneKitWorker(input: {
   readVars: ReadWorkerVars | undefined;
   databaseIds: Record<string, string>;
   kvNamespaceIds: Record<string, string>;
+  /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to (#643). */
+  owned?: FeatureOwnedIds;
   stanza: KitStanza | undefined;
   storeId: string | undefined;
   accountId: string | undefined;
@@ -493,13 +527,13 @@ async function deployOneKitWorker(input: {
   // that every open branch would deploy over every other's. Checked against every account-wide name the config
   // carries, not a list of resolvers that honor the feature, so a host added to the registry is held to it too.
   if (options.feature) {
-    const leaks = featureHostNameLeaks(config, options.feature);
+    const leaks = featureHostNameLeaks(config, options.feature, input.owned);
     if (leaks.length > 0) {
       return {
         capability,
         worker: null,
         outcome: "failed",
-        reason: `${capability}'s Worker would deploy with names every branch shares: ${leaks.join(", ")}. A feature's kit Worker takes the feature's names.`,
+        reason: `${capability}'s Worker would bind what is not this feature's: ${leaks.join("; ")}. A feature's kit Worker binds only the feature's own.`,
       };
     }
   }
