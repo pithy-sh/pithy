@@ -384,6 +384,12 @@ export interface ProvisionEnvironmentOptions {
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
   /**
+   * Look up the account's `workers.dev` subdomain — the seam over `CloudflareWorkersManager.accountSubdomain()`.
+   * Asked at most once a run, and only for a scope whose config is generated (a feature): its answer is how a
+   * feature's stanza gets the `vars.BASE_URL` its Worker reads (#643). Omitted, nothing is stamped.
+   */
+  workersSubdomain?: () => Promise<string | null>;
+  /**
    * Worker-resolution seam (default: {@link resolveWorkers}), so tests fix the worker set. Each entry
    * carries that Worker's **own** capabilities, which is what lets the write step give a Worker only
    * the bindings it declares.
@@ -599,6 +605,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // declared would put bindings in its wrangler config that it has no business holding.
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
+  // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
+  const subdomain =
+    !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
   for (const worker of workers) {
     // The same set the resource loop filtered on, read rather than recomputed. Resolving a Worker's
     // declines once and reading the answer twice is what keeps "created but not written" — and its
@@ -644,6 +653,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
       // more thing composed here.
       administersItself: options.administersItself,
+      ...(subdomain !== undefined ? { subdomain } : {}),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,

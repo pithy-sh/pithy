@@ -479,3 +479,72 @@ describe("a stanza applyProvisionedEnv creates", () => {
     );
   });
 });
+
+/**
+ * **A feature's generated stanza carries its own address (#643).**
+ *
+ * The Worker cannot look up the account's `workers.dev` subdomain, so provisioning does, derives
+ * `https://<script>.<subdomain>.workers.dev` through the one resolver, and stamps it as `vars.BASE_URL` — the
+ * var `originFor` reads inside a feature deployment. `replay` and `board`, so the script is neither.
+ */
+describe("the address applyProvisionedEnv stamps", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const feature = featureScope({ project: "replay", issue: "643", slug: "feature-address" });
+
+  const stanzaVars = async (path: string, key: string): Promise<Record<string, string> | undefined> =>
+    (parse(await readFile(path, "utf8")) as unknown as { env: Record<string, { vars?: Record<string, string> }> }).env[
+      key
+    ]?.vars;
+
+  const provision = (scope: typeof feature, subdomain: string | null) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+      subdomain,
+    });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envaddress-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+    // A hand-set top-level `BASE_URL`, production's: exactly what a feature stanza must not inherit as its address.
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a feature's is its script's workers.dev origin", async () => {
+    await provision(feature, "acme");
+
+    expect(await stanzaVars(featureConfigPath(dir), "feature")).toEqual({
+      ENVIRONMENT: "feature",
+      PROJECT: "replay",
+      WORKER: "board",
+      BASE_URL: "https://replay-f643-feature-address-board.acme.workers.dev",
+    });
+  });
+
+  test("an account with no subdomain gets no address, and never the inherited one", async () => {
+    await provision(feature, null);
+
+    expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
+  });
+
+  test("a declared environment is never stamped from workers.dev (#89)", async () => {
+    await provision(environmentScope("replay", "staging"), "acme");
+
+    expect((await stanzaVars(wranglerPath, "staging"))?.BASE_URL).toBe("https://app.example.com");
+  });
+});

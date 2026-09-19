@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { resolveOrigin, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { readFile } from "node:fs/promises";
+import { featureOrigin, resolveOrigin, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { BASE_URL_VAR } from "@pithy-sh/core/src/worker/identity";
+import { parse } from "comment-json";
+import { wranglerConfigPath } from "../provision/featureConfig";
 
 /**
  * The one resolver for "where does this Worker answer".
@@ -33,10 +38,20 @@ import { resolveOrigin, type WorkerDomains } from "@pithy-sh/core/src/naming/dom
  *    config sources because it is the one an adopter can most easily leave stale — it used to be the
  *    only input, so it is exactly where a contradiction lives.
  *
- * `workers.dev` is deliberately **not** in this list. It is resolved separately and only where an
- * account is reachable and has the subdomain enabled, because it can be disabled per account and
- * commonly is in production — a fallback that is weakest in the environment that counts is not a
- * fallback worth silently depending on.
+ * `workers.dev` is deliberately **not** in this list for a declared environment. It is resolved separately
+ * and only where an account is reachable and has the subdomain enabled, because it can be disabled per
+ * account and commonly is in production — a fallback that is weakest in the environment that counts is not
+ * a fallback worth silently depending on.
+ *
+ * ## A feature environment is the exception, and it is not a fallback there (#643)
+ *
+ * A feature has no domain and never will: its hostname is composed from the branch. Its script name is its
+ * `workers.dev` prefix, so `https://<script>.<account subdomain>.workers.dev` **is** its address — the only
+ * one it has. So for `feature`, and only for `feature`, the order is: a route (should one ever exist), then
+ * that derivation, from the stanza's `name` and the `subdomain` a caller looked up, then the address
+ * provisioning stamped as `vars.BASE_URL` — which is the same derivation, written down for the callers that
+ * have no account to ask. The stamp is read through core's `featureOrigin`, so a `BASE_URL` the feature
+ * inherited from the top level (production's, most likely) is never mistaken for the feature's own.
  *
  * ## Why the source is reported, not just the URL
  *
@@ -61,9 +76,13 @@ export interface WorkerAddress {
 
 /** The slice of a wrangler stanza an address can be read out of. */
 export interface AddressStanza {
+  /** The script name this stanza deploys as — a feature's `workers.dev` prefix. */
+  name?: string;
   route?: string | { pattern?: string };
   routes?: (string | { pattern?: string })[];
   vars?: Record<string, unknown>;
+  /** wrangler's `workers_dev`. `false` means the Worker answers on no `workers.dev` address at all. */
+  workers_dev?: unknown;
 }
 
 /** What the resolver reads. Every field optional — a project may have none of them. */
@@ -74,6 +93,13 @@ export interface ResolveWorkerAddressInput {
   domains?: WorkerDomains | undefined;
   /** The `wrangler.jsonc` stanza for this environment (the top-level doc is the `dev` stanza). */
   stanza?: AddressStanza | undefined;
+  /**
+   * The account's `workers.dev` subdomain, when the caller looked it up — `CloudflareWorkersManager.
+   * accountSubdomain()`, through `accountWorkersSubdomain`. Read for a feature environment only. The resolver
+   * never looks it up itself: it stays offline, so the caller decides whether reaching the account is
+   * affordable.
+   */
+  subdomain?: string | null | undefined;
 }
 
 /** One route entry reduced to its pattern, in either form wrangler accepts. */
@@ -115,6 +141,7 @@ function toAddress(value: string, source: WorkerAddressSource): WorkerAddress | 
  */
 export function resolveWorkerAddress(input: ResolveWorkerAddressInput): WorkerAddress | null {
   if (input.environment === "dev") return null;
+  if (input.environment === FEATURE_ENVIRONMENT) return resolveFeatureAddress(input);
 
   // Through the shared resolver, so the answer this reports and the answer an adopter's config composes
   // are the same function (#256). `declared` is what keeps the fallback out of here: a `LOCAL_ORIGIN`
@@ -138,6 +165,48 @@ export function resolveWorkerAddress(input: ResolveWorkerAddressInput): WorkerAd
   }
 
   return null;
+}
+
+/**
+ * A feature environment's address: a route, then the derived `workers.dev` address, then the stamped one.
+ * See the module comment for why a feature is the one environment `workers.dev` answers for.
+ */
+function resolveFeatureAddress(input: ResolveWorkerAddressInput): WorkerAddress | null {
+  const stanza = input.stanza;
+  const pattern = routePattern(stanza?.routes?.[0]) ?? routePattern(stanza?.route);
+  const fromRoute = pattern ? toAddress(pattern, "route") : null;
+  if (fromRoute) return fromRoute;
+
+  // `workers_dev: false` is the adopter saying the Worker answers on no `workers.dev` address. Then the
+  // derivation names a hostname nothing serves, and so does any stamp of it.
+  if (stanza?.workers_dev === false) return null;
+
+  const derived = workersDevAddress(stanza?.name ?? "", input.subdomain ?? null);
+  if (derived) return derived;
+
+  const stamped = stanza?.vars?.[BASE_URL_VAR];
+  const origin = featureOrigin(typeof stamped === "string" ? stamped : undefined);
+  return origin ? { url: origin.origin, source: "workers.dev", hostname: origin.hostname } : null;
+}
+
+/**
+ * The stanza an address is read out of, for one Worker and one environment — from the file that describes
+ * that environment: the generated config for a feature, the tracked `wrangler.jsonc` for everything else.
+ *
+ * **One reader, because the callers each read the tracked file (#643).** A feature's stanza is never there —
+ * provisioning writes it under `.wrangler/` — so every caller asking "where does the feature answer" found no
+ * stanza, and so no address. `undefined` for a missing file, an unparseable one, or an absent stanza: the
+ * resolver's contract is to report what it found, and a caller that needs one says so in its own words.
+ */
+export async function readAddressStanza(workerDir: string, env: string): Promise<AddressStanza | undefined> {
+  try {
+    const config = parse(await readFile(wranglerConfigPath(workerDir, env), "utf8")) as {
+      env?: Record<string, AddressStanza | undefined>;
+    } | null;
+    return config?.env?.[env] ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

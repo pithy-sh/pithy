@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
-import { describe, expect, it } from "vitest";
-import { describeAddressSource, resolveWorkerAddress, workersDevAddress } from "./workerAddress";
+import { afterEach, describe, expect, it } from "vitest";
+import { featureConfigPath } from "../provision/featureConfig";
+import { describeAddressSource, readAddressStanza, resolveWorkerAddress, workersDevAddress } from "./workerAddress";
 
 const DOMAINS = WorkerDomains.parse({
   staging: { pattern: "staging.api.example.com", zone: "example.com" },
@@ -91,6 +95,114 @@ describe("resolveWorkerAddress", () => {
       resolveWorkerAddress({ environment: "prod", stanza: { routes: [""], vars: { BASE_URL: "api.acme.test" } } })
         ?.source,
     ).toBe("var");
+  });
+});
+
+/**
+ * **A feature environment's address is derived, through this same resolver (#643).**
+ *
+ * A feature Worker's script name is its `workers.dev` prefix, so its address is
+ * `https://<script>.<account subdomain>.workers.dev`. Project `replay` and Worker `board`, so the script
+ * (`replay-f643-feature-address-board`) is neither name alone — a resolver reading the wrong one cannot pass.
+ */
+describe("resolveWorkerAddress for a feature environment", () => {
+  const SCRIPT = "replay-f643-feature-address-board";
+  const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
+
+  it("derives the workers.dev address from the stanza's script name and the account's subdomain", () => {
+    expect(resolveWorkerAddress({ environment: "feature", stanza: { name: SCRIPT }, subdomain: "acme" })).toEqual({
+      url: ORIGIN,
+      source: "workers.dev",
+      hostname: `${SCRIPT}.acme.workers.dev`,
+    });
+  });
+
+  it("prefers the derivation to a stale stamp", () => {
+    const stale = "https://replay-f643-feature-address-board.old.workers.dev";
+    expect(
+      resolveWorkerAddress({
+        environment: "feature",
+        stanza: { name: SCRIPT, vars: { BASE_URL: stale } },
+        subdomain: "acme",
+      })?.url,
+    ).toBe(ORIGIN);
+  });
+
+  it("reads the address provisioning stamped when no subdomain was looked up", () => {
+    // Offline callers — `pithy env`, `dashboard connect` — have no account to ask, and need no account:
+    // provisioning derived the address and wrote it down.
+    expect(
+      resolveWorkerAddress({ environment: "feature", stanza: { name: SCRIPT, vars: { BASE_URL: ORIGIN } } }),
+    ).toEqual({ url: ORIGIN, source: "workers.dev", hostname: `${SCRIPT}.acme.workers.dev` });
+  });
+
+  it("never reads an inherited BASE_URL that is not a feature's own", () => {
+    // The feature stanza is generated from the top level, so a hand-set production BASE_URL arrives with it.
+    // Reading it would address a branch at production.
+    expect(
+      resolveWorkerAddress({
+        environment: "feature",
+        stanza: { name: SCRIPT, vars: { BASE_URL: "https://app.example.com" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("still lets a route win where one exists", () => {
+    expect(
+      resolveWorkerAddress({
+        environment: "feature",
+        stanza: { name: SCRIPT, routes: ["preview.example.com"] },
+        subdomain: "acme",
+      }),
+    ).toEqual({ url: "https://preview.example.com", source: "route", hostname: "preview.example.com" });
+  });
+
+  it("derives nothing when workers.dev is turned off for the Worker", () => {
+    expect(
+      resolveWorkerAddress({ environment: "feature", stanza: { name: SCRIPT, workers_dev: false }, subdomain: "acme" }),
+    ).toBeNull();
+  });
+
+  it("derives nothing for an account with no subdomain, or a stanza with no script name", () => {
+    expect(resolveWorkerAddress({ environment: "feature", stanza: { name: SCRIPT }, subdomain: null })).toBeNull();
+    expect(resolveWorkerAddress({ environment: "feature", stanza: {}, subdomain: "acme" })).toBeNull();
+  });
+
+  it("is never the fallback for a declared environment (#89)", () => {
+    // `workers.dev` can be disabled per account and commonly is in production. A declared environment
+    // resolves from its config or not at all.
+    for (const environment of ["staging", "prod"]) {
+      expect(resolveWorkerAddress({ environment, stanza: { name: SCRIPT }, subdomain: "acme" })).toBeNull();
+    }
+    expect(resolveWorkerAddress({ environment: "dev", stanza: { name: SCRIPT }, subdomain: "acme" })).toBeNull();
+  });
+});
+
+describe("readAddressStanza", () => {
+  const made: string[] = [];
+  afterEach(async () => {
+    await Promise.all(made.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("reads a feature's stanza from the generated config, and a declared one's from the tracked file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-address-stanza-"));
+    made.push(dir);
+    await writeFile(
+      join(dir, "wrangler.jsonc"),
+      JSON.stringify({ env: { staging: { name: "replay-staging-board" } } }),
+    );
+    await mkdir(join(dir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(dir), JSON.stringify({ env: { feature: { name: "replay-f643-x-board" } } }));
+
+    expect((await readAddressStanza(dir, "staging"))?.name).toBe("replay-staging-board");
+    expect((await readAddressStanza(dir, "feature"))?.name).toBe("replay-f643-x-board");
+    expect(await readAddressStanza(dir, "prod")).toBeUndefined();
+  });
+
+  it("is undefined, not a throw, where there is no config at all", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-address-stanza-"));
+    made.push(dir);
+    expect(await readAddressStanza(dir, "feature")).toBeUndefined();
   });
 });
 

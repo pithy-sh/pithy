@@ -158,7 +158,7 @@ The context is deliberately narrow: `env`, `project`, `origin` — where this Wo
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
-- `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
+- `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only — with one exception: on a `feature`, a secret whose registry entry declares a `devValue` is generated for the run, one value per name, and any other answers `undefined`. The dev secrets file is never opened for anything but `dev`.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
 
 ### Where this Worker answers: `context.origin`
@@ -178,7 +178,8 @@ return { d1: [d1SeedGroup("app", "connections", Connection, [{ id: 1, url: conte
 ```
 
 - **It is an address, not an identity.** It says where to reach this Worker, on this machine, now. Never build a stored, later-verified value from it — an issuer, an audience, a signing scope — because the same project answers on a different port in every checkout and a different origin in every environment, so a row minted against one is unverifiable against the next. Reachability moves. Identity must not.
-- **`null` is an answer, never a guess.** A clone that has never run `pithy dev`, a Worker added after the block was pinned, or any environment but `dev`. A deployed environment's address is declared rather than allocated — `pithy env` answers it, and a seed running against one reads it from its own config. A set that cannot work without an origin refuses and says so — with a `ValidationError` from `@pithy-sh/core/src/error/pithyError`, never a bare `Error`, so the CLI renders a problem line and an action rather than a stack, and still says something under `--json`. An invented origin would be indistinguishable from a real one.
+- **Off `dev`, it is the Worker's own address.** A declared environment's comes from its config — the `domains` declaration, the route, `vars.BASE_URL`, as `pithy env` resolves it. A `feature`'s is `https://<script>.<subdomain>.workers.dev`, derived from the feature Worker's script name and the account's `workers.dev` subdomain. `pithy seed --host <host>` overrides either.
+- **`null` is an answer, never a guess.** A clone that has never run `pithy dev`, a Worker added after the block was pinned, or a deployed Worker with no address at all. A set that cannot work without an origin refuses and says so — with a `ValidationError` from `@pithy-sh/core/src/error/pithyError`, never a bare `Error`, so the CLI renders a problem line and an action rather than a stack, and still says something under `--json`. An invented origin would be indistinguishable from a real one.
 - **It is the Worker the set is written through.** A set composed onto two Workers that share a store is written once, and the origin it sees is the writer's — the Worker whose run report lists the set, the others having recorded it under `shared`.
 
 ### Seeing the rest of the run: `context.seeded`

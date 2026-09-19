@@ -197,6 +197,36 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(feature?.r2_buckets?.[0]).toMatchObject({ binding: "ASSETS", bucket_name: r2Name });
   });
 
+  /**
+   * **The feature's address is looked up once and stamped where its Worker reads it (#643).** The script is
+   * `acme-f69-demo-app` — project and Worker differ — and its origin is that name under the account's
+   * `workers.dev` subdomain, which only the Cloudflare API knows; so the lookup is a seam, and asked once a run.
+   */
+  test("stamps each Worker's generated stanza with its workers.dev origin, asking the account once", async () => {
+    const { provisioners } = fakeProvisioners();
+    let lookups = 0;
+
+    await provisionFeature({
+      ...noBackend,
+      projectDir: dir,
+      capabilities,
+      identity,
+      provisioners,
+      resolveWorkers: async () => [{ name: "app", dir: join(dir, "apps", "app"), capabilities }],
+      workersSubdomain: async () => {
+        lookups += 1;
+        return "acme-sub";
+      },
+    });
+
+    const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
+      env: Record<string, { name?: string; vars?: Record<string, string> }>;
+    };
+    expect(wrangler.env.feature?.name).toBe(featureWorkerName(identity, "app"));
+    expect(wrangler.env.feature?.vars?.BASE_URL).toBe("https://acme-f69-demo-app.acme-sub.workers.dev");
+    expect(lookups).toBe(1);
+  });
+
   test("re-running is idempotent: every resource is reused, nothing new is created", async () => {
     const { provisioners, typed } = fakeProvisioners();
     const opts = { projectDir: dir, capabilities, identity, provisioners, ...noBackend };

@@ -540,7 +540,8 @@
         "--yes",
         "--no-yes",
         "--confirm-production",
-        "--confirmProduction"
+        "--confirmProduction",
+        "--host"
       ]
     },
     {

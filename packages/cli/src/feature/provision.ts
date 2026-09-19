@@ -122,6 +122,12 @@ export interface ProvisionFeatureOptions {
   migrate?: BackendRunner;
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
+  /**
+   * Look up the account's `workers.dev` subdomain (`accountWorkersSubdomain` in a real run). A feature Worker
+   * answers on `https://<script>.<subdomain>.workers.dev`, and this is how its stanza is stamped with that
+   * address (#643). Omitted, no address is stamped and the feature resolves to the local placeholder.
+   */
+  workersSubdomain?: () => Promise<string | null>;
   /** Worker-resolution seam (default: the real `apps/` resolver), so tests fix the worker set. */
   resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
   /** Where each step is narrated as it happens. Forwarded verbatim; omitted means a silent run (#515). */
@@ -207,6 +213,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     },
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
+    ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
     ...(options.resolveWorkers !== undefined ? { resolveWorkers: options.resolveWorkers } : {}),
     ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
     ...(store

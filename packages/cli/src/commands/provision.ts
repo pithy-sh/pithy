@@ -10,6 +10,7 @@ import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -567,6 +568,8 @@ async function provisionBranch(
     provisioners,
     administersItself: selfAdministering,
     resolveWorkers: workers,
+    // How each Worker's generated stanza learns the `workers.dev` origin it answers on (#643).
+    workersSubdomain: accountWorkersSubdomain(account),
     ...(progress ? { onProgress: progress } : {}),
     audit: await buildAudit(projectDir, capabilities, account),
   });

@@ -83,3 +83,61 @@ describe("no two published environments share an origin", () => {
     }
   });
 });
+
+/**
+ * **A feature deployment answers on `workers.dev`, and knows it only from what provisioning stamped (#643).**
+ *
+ * A feature Worker's address is `https://<script>.<account subdomain>.workers.dev`. The Worker cannot look the
+ * subdomain up, so provisioning derives the address and stamps it as the stanza's `BASE_URL`, and this is the
+ * one reader of it. Project `replay` and Worker `board` differ on purpose: a fixture where both are `api` hides
+ * the script name being composed from the wrong one.
+ */
+describe("a feature environment's origin", () => {
+  const FEATURE_ORIGIN = "https://replay-f643-feature-address-board.acme.workers.dev";
+
+  test("is the address provisioning stamped", () => {
+    expect(resolveOrigin("feature", undefined, FEATURE_ORIGIN)).toEqual({
+      origin: FEATURE_ORIGIN,
+      hostname: "replay-f643-feature-address-board.acme.workers.dev",
+      declared: false,
+    });
+  });
+
+  test("is what originFor answers inside the deployed Worker", () => {
+    expect(originFor("feature", DOMAINS, { ENVIRONMENT: "feature", BASE_URL: FEATURE_ORIGIN })).toBe(FEATURE_ORIGIN);
+  });
+
+  test("normalizes a trailing slash away", () => {
+    expect(originFor("feature", undefined, { BASE_URL: `${FEATURE_ORIGIN}/` })).toBe(FEATURE_ORIGIN);
+  });
+
+  /**
+   * The inherited value. A feature stanza is generated from the top level, and a hand-set top-level `BASE_URL`
+   * is somebody else's origin — production's, most likely. Honoring it would mail a branch's links into prod.
+   */
+  test("refuses anything that is not a workers.dev https origin, and goes nowhere instead", () => {
+    for (const stamped of [
+      "https://app.example.com",
+      "http://replay-f643-feature-address-board.acme.workers.dev",
+      "https://replay-f643-feature-address-board.acme.workers.dev/path",
+      "https://replay-f643-feature-address-board.acme.workers.dev:8443",
+      "https://workers.dev",
+      "not a url",
+      "",
+    ]) {
+      expect(originFor("feature", undefined, { BASE_URL: stamped })).toBe(LOCAL_ORIGIN);
+    }
+  });
+
+  test("is never read for any other environment", () => {
+    for (const env of ["dev", "staging", "prod", undefined]) {
+      expect(originFor(env, undefined, { BASE_URL: FEATURE_ORIGIN })).toBe(LOCAL_ORIGIN);
+    }
+    // And a declared domain still wins where one exists.
+    expect(originFor("prod", DOMAINS, { BASE_URL: FEATURE_ORIGIN })).toBe("https://api.example.com");
+  });
+
+  test("is the local placeholder when nothing was stamped", () => {
+    expect(originFor("feature", undefined, {})).toBe(LOCAL_ORIGIN);
+  });
+});

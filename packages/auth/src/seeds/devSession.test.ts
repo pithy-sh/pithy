@@ -53,8 +53,26 @@ function prepare(ctx: SeedPrepareContext) {
 }
 
 describe("the dev-session seed set", () => {
-  test("never composes outside dev", () => {
-    expect(authDevSessionSeed.environments).toEqual(["dev"]);
+  /**
+   * `dev`, and a feature deployment (#643) — the one throwaway host where a mail round trip to sign in is pure
+   * friction. Never a declared environment: `staging` and `prod` hold real users, and no seed signs anyone in.
+   */
+  test("composes into dev and a feature, and never into a declared environment", () => {
+    expect(authDevSessionSeed.environments).toEqual(["dev", "feature"]);
+    for (const declared of ["staging", "prod", "production"]) {
+      expect(authDevSessionSeed.environments).not.toContain(declared);
+    }
+  });
+
+  /**
+   * A feature seed runs from the feature's own worktree, where `pithy dev` reads `logs/dev-login.json`. The
+   * feature's login is named for the feature, so seeding the deployment never overwrites the local one.
+   */
+  test("names a feature's login for the feature, never over dev's", async () => {
+    const prepared = await prepare(context({ env: "feature" }));
+
+    expect(prepared.artifacts?.[0]?.file).toBe("dev-login.feature.json");
+    expect(prepared.artifacts?.[0]?.file).not.toBe(DEV_LOGIN_FILE);
   });
 
   test("sorts after every set that could create the user it signs in as", () => {

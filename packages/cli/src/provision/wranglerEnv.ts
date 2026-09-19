@@ -3,11 +3,13 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
-import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
+import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
+import { resolveWorkerAddress } from "../project/workerAddress";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
@@ -42,6 +44,10 @@ export interface ServiceEntry {
 /** The env stanza slice provisioning writes: the Worker's own name, its binding arrays, and its services. */
 interface EnvBindings {
   name?: string;
+  vars?: Record<string, unknown>;
+  route?: string | { pattern?: string };
+  routes?: (string | { pattern?: string })[];
+  workers_dev?: unknown;
   d1_databases?: BindingEntry[];
   kv_namespaces?: BindingEntry[];
   r2_buckets?: BindingEntry[];
@@ -177,6 +183,25 @@ export async function applySecretBindings(
 }
 
 /**
+ * Stamp a feature stanza's `vars.BASE_URL` with its derived `workers.dev` address, or remove the one it
+ * inherited when there is none to derive.
+ *
+ * Derived from everything but `vars`: the stanza's own `BASE_URL` is what is being written, and the one it
+ * holds now was copied from the top level, so reading it would be a feature adopting whatever the tracked
+ * file said.
+ */
+function stampFeatureAddress(stanza: EnvBindings, subdomain: string | null): void {
+  const { vars: _inherited, ...address } = stanza;
+  const resolved = resolveWorkerAddress({ environment: FEATURE_ENVIRONMENT, stanza: address, subdomain });
+  if (resolved) {
+    stanza.vars ??= {};
+    stanza.vars[BASE_URL_VAR] = resolved.url;
+    return;
+  }
+  if (stanza.vars) delete stanza.vars[BASE_URL_VAR];
+}
+
+/**
  * Write one Worker's stanza, and hand back **the path that was written** — the tracked `wrangler.jsonc`
  * or the generated artifact, as the scope decided. The caller reports it, so what a run says it wrote is
  * what the writer wrote rather than a second computation of the same rule (#251).
@@ -221,6 +246,18 @@ export async function applyProvisionedEnv(options: {
    * regenerated from the tracked file on every run, so a hand-written entry could never have survived one.
    */
   administersItself: boolean;
+  /**
+   * The account's `workers.dev` subdomain, looked up by the caller — or `null` for an account with none, or
+   * omitted when nobody asked. Read for a feature scope only, where it is how the stanza gets an address.
+   *
+   * **A feature's `vars.BASE_URL` is stamped from it (#643).** A feature Worker answers on
+   * `https://<script>.<subdomain>.workers.dev`, and the Worker cannot ask Cloudflare what the subdomain is. So
+   * the address is derived here, through `resolveWorkerAddress`, from the `name` this same edit settles, and
+   * written where `originFor` reads it inside the deployment. An account with no subdomain gets no address,
+   * and the stanza loses any `BASE_URL` it inherited from the top level: that one is another environment's
+   * origin, and a feature must never answer to it.
+   */
+  subdomain?: string | null;
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -232,6 +269,9 @@ export async function applyProvisionedEnv(options: {
     // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
     // writer, which is how one used to get it wrong.
     stanza.name = options.scope.worker(options.worker, stanza.name);
+    // A feature's address, from the name just settled. Never a declared environment's: its address is
+    // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
+    if (!options.scope.source && options.subdomain !== undefined) stampFeatureAddress(stanza, options.subdomain);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then

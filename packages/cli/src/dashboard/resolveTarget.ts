@@ -6,9 +6,8 @@ import { isControlPlaneCapability } from "@pithy-sh/core/src/controlPlane/capabi
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
-import { type AddressStanza, describeAddressSource, resolveWorkerAddress } from "../project/workerAddress";
+import { describeAddressSource, readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
-import { readWranglerConfig } from "../project/wrangler";
 
 /**
  * What `pithy dashboard connect` is registering: which Worker, at what address, with the seam mounted
@@ -133,14 +132,8 @@ export async function resolveConnectTarget(
     return { worker, workerUrl: options.workerUrl, basePath, source: "from --worker-url" };
   }
 
-  let stanza: AddressStanza | undefined;
-  try {
-    stanza = ((await readWranglerConfig(worker.dir)) as { env?: Record<string, AddressStanza | undefined> }).env?.[
-      options.environment
-    ];
-  } catch {
-    stanza = undefined;
-  }
+  // From the file that describes this environment — a feature's generated config, not the tracked one (#643).
+  const stanza = await readAddressStanza(worker.dir, options.environment);
 
   const address = resolveWorkerAddress({
     environment: options.environment,

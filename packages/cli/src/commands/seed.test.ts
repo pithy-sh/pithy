@@ -22,6 +22,7 @@ describe("seed command", () => {
       "destroy-retained",
       "yes",
       "confirm-production",
+      "host",
     ]);
     // The fan-out over apps/* is the default; --worker narrows it to one worker.
     expect(args.worker).toMatchObject({ type: "string" });

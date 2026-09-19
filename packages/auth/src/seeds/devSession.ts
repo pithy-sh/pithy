@@ -21,7 +21,10 @@ import { AUTH_SESSION_SECRET } from "../instance/secrets";
  *
  * Four guard rails, because what this writes is a live credential:
  *
- * - `environments: ["dev"]` — it can never be composed into staging or production.
+ * - `environments: ["dev", "feature"]` — it can never be composed into staging or production. A feature
+ *   deployment is the one deployed host it reaches (#643): throwaway, owned by one branch, and signed into by
+ *   the people building it. Its login is written as `dev-login.feature.json`, so seeding it from the feature's
+ *   worktree never overwrites the local login `pithy dev` reads there.
  * - No `~/.config/pithy/<project>/dev.json`, no session. The default stays "there is no way in but a magic link";
  *   opting in is a per-machine file outside the repo, so two developers on one checkout can differ.
  * - The login file is transient, written under the gitignored `logs/` ({@link DEV_LOGIN_PATH}). A seeded
@@ -310,13 +313,21 @@ function requireUser(preferences: unknown, users: readonly SeededUser[]): Seeded
 }
 
 /**
- * The dev-login seed set. Composed by the auth capability; runs only in `dev`, only for a user this same run
- * creates, and only when the developer has opted in with a `dev.json`.
+ * The file a login is written to: `dev-login.json` in `dev`, which `pithy dev` reads, and one named for the
+ * environment anywhere else, so a feature's login never lands on top of the local one.
+ */
+function devLoginFileFor(env: string): string {
+  return env === "dev" ? DEV_LOGIN_FILE : `dev-login.${env}.json`;
+}
+
+/**
+ * The dev-login seed set. Composed by the auth capability; runs only in `dev` and on a feature deployment, only
+ * for a user this same run creates, and only when the developer has opted in with a `dev.json`.
  */
 export const authDevSessionSeed: SeedSet = defineSeed({
   name: "dev-session",
   order: AUTH_DEV_SESSION_SEED_ORDER,
-  environments: ["dev"],
+  environments: ["dev", "feature"],
   prepare: async (context): Promise<SeedPreparation> => {
     // No dev.json, no session. This is the default, and it is the one that keeps "there is no way in but
     // a magic link" true for everyone who never asked for anything else.
@@ -341,7 +352,9 @@ export const authDevSessionSeed: SeedSet = defineSeed({
     // `pithy_auth_sessions` until somebody opens the link and the route mints a session for them, which
     // is what makes signing out of the app harmless to the way back in.
     return {
-      artifacts: [{ file: DEV_LOGIN_FILE, contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` }],
+      artifacts: [
+        { file: devLoginFileFor(context.env), contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` },
+      ],
     };
   },
 });

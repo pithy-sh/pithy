@@ -9,16 +9,18 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
-import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import {
   previewReset,
@@ -27,6 +29,9 @@ import {
   resolveWorkerScopes,
   type WorkerScope,
 } from "../migrations/run";
+import { composeFor } from "../project/composeFor";
+import { loadWorkerDomains } from "../project/config";
+import { readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { startStep } from "../terminal/progress";
 import {
   type ImagesFactory,
@@ -42,7 +47,7 @@ import {
 } from "./drivers";
 import { type MediaFs, type MediaUploader, type SeedMediaResult, seedMediaItem } from "./media";
 import { buildDryRunPlan, type SeedPlanMediaAction, type SeedPlanSet } from "./plan";
-import { devSecretReader, readDevPreferences, writeSeedArtifact } from "./prepare";
+import { devSecretReader, featureSecretReader, readDevPreferences, seedHostOrigin, writeSeedArtifact } from "./prepare";
 import { buildSeedPlan } from "./registry";
 import { assertResetConfirmed, assertSeedConfirmed, assertSetAllowedForEnv } from "./safety";
 
@@ -166,6 +171,18 @@ export interface SeedProjectOptions {
   secret?: (name: string) => Promise<string | undefined>;
   /** Seam: write a prepared set's artifact. Defaults to the project's gitignored `logs/`. */
   writeArtifact?: (artifact: SeedArtifact) => Promise<void>;
+  /**
+   * The `--host` flag: the host a prepared set's origin is built from, overriding whatever the run would
+   * resolve — `preview.example.com`, or a full `https://` origin. In any environment; a bare host takes the
+   * environment's scheme (`http` in `dev`, `https` elsewhere). Checked before anything is written (#643).
+   */
+  host?: string;
+  /**
+   * Seam: look up the account's `workers.dev` subdomain, which is how a feature environment's origin is derived
+   * (#643). Defaults to `accountWorkersSubdomain(account)`. Asked at most once a run, and only when a prepared set
+   * on a feature environment is handed an origin and `host` named none.
+   */
+  workersSubdomain?: () => Promise<string | null>;
 }
 
 /** One Worker's slice of a seed run: what its own capabilities' fixtures wrote, and what they didn't. */
@@ -500,6 +517,8 @@ function emptyStoreIds(): ResolvedStoreIds {
  * ordinary non-destructive writes that follow simply land fresh — no row-identity logic needed.
  */
 export async function seedProject(options: SeedProjectOptions): Promise<SeedRunReport> {
+  // A malformed `--host` is refused before anything is read or written, not at the first set that asks.
+  if (options.host !== undefined) seedHostOrigin(options.host, options.env);
   const workers = await resolveWorkerScopes({
     projectDir: options.projectDir,
     env: options.env,
@@ -622,17 +641,31 @@ interface PreparedRun {
   /** The developer's preferences, read lazily and at most once — no prepared set, no filesystem read. */
   preferences: () => Promise<unknown>;
   /**
-   * One Worker's pinned local origin, from this checkout's `.dev.config.json`. `null` off `dev`, and `null`
-   * for a Worker the allocation does not name. Per Worker, unlike everything else here, because an address
-   * is: two Workers of one fan-out bind two ports.
+   * One Worker's origin in this run's environment. `--host` when it names one. In `dev`, the pinned local
+   * origin from this checkout's `.dev.config.json`, `null` for a Worker the allocation does not name. Anywhere
+   * else, the Worker's address through `resolveWorkerAddress` — declared for a declared environment, the
+   * derived `workers.dev` origin for a feature (#643) — and `null` only when it has none. Per Worker, unlike
+   * everything else here, because an address is: two Workers of one fan-out answer in two places.
    */
-  origin: (worker: string) => Promise<string | null>;
+  origin: (worker: WorkerScope) => Promise<string | null>;
   /** Resolve a secret by name. */
   secret: (name: string) => Promise<string | undefined>;
   /** The rows this run declares, per table, across the whole fan-out. */
   seeded: SeededRows;
   /** Write one artifact. */
   writeArtifact: (artifact: SeedArtifact) => Promise<void>;
+}
+
+/**
+ * The environment's own secret reader: the dev secrets file in `dev` and nowhere else (#159), values generated
+ * for the run on a feature (#643), and the refusal everywhere else.
+ */
+function environmentSecretReader(
+  options: SeedProjectOptions,
+  registry: SecretRegistry,
+): (name: string) => Promise<string | undefined> {
+  if (options.env === FEATURE_ENVIRONMENT) return featureSecretReader({ registry });
+  return devSecretReader({ project: options.project, env: options.env, registry });
 }
 
 /** Bind the prepared-set seams to this run, defaulting each to the real machine. */
@@ -644,14 +677,47 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
   // `.dev.config.json` is one file for the whole checkout, so it follows the same rule for the same reason.
   // Lazy too: a run with no prepared set never opens it.
   let dev: Promise<DevConfig | null> | undefined;
+  // `--host` wins everywhere, and was already checked at the top of the run.
+  const host = options.host !== undefined ? seedHostOrigin(options.host, options.env) : null;
+  // One lookup a run, and none at all unless a feature's set is actually handed an origin.
+  let subdomain: Promise<string | null> | undefined;
+  const lookupSubdomain = (): Promise<string | null> =>
+    (subdomain ??= (options.workersSubdomain ?? accountWorkersSubdomain(options.account))());
+  const addresses = new Map<string, Promise<string | null>>();
+  const deployedOrigin = async (worker: WorkerScope): Promise<string | null> => {
+    const stanza = await readAddressStanza(worker.dir, options.env);
+    // A feature has no `domains` key to declare, so its config is not loaded for one.
+    const domains =
+      options.env === FEATURE_ENVIRONMENT
+        ? undefined
+        : // Composed for this environment, through the one primitive, as `pithy doctor` reads the same answer.
+          await composeFor(options.env, async (load) => loadWorkerDomains(await load(worker.dir))).catch(
+            () => undefined,
+          );
+    const address = resolveWorkerAddress({
+      environment: options.env,
+      domains,
+      stanza,
+      ...(options.env === FEATURE_ENVIRONMENT ? { subdomain: await lookupSubdomain() } : {}),
+    });
+    return address?.url ?? null;
+  };
   return {
     preferences: () => (pending ??= read()),
     // Read back, never recomposed. `buildDevConfig` mints `http://localhost:<port>` in exactly one place;
     // composing it a second time here is a second rule, and two rules drift.
     origin: async (worker) => {
-      // Only `dev` allocates a port. A deployed environment's address is declared, and `resolveWorkerAddress`
-      // is what answers it — inventing a localhost URL for staging would be a fixture pointing at nothing.
-      if (options.env !== LOCAL_ENVIRONMENT) return null;
+      if (host !== null) return host;
+      // Off `dev`, the Worker's address through the one resolver — never an invented localhost URL, which
+      // would be a fixture pointing at nothing. Memoized per Worker so every set of a run sees one answer.
+      if (options.env !== LOCAL_ENVIRONMENT) {
+        let address = addresses.get(worker.name);
+        if (address === undefined) {
+          address = deployedOrigin(worker);
+          addresses.set(worker.name, address);
+        }
+        return address;
+      }
       // A corrupt or stale config answers `null` rather than failing the run, exactly as `scanPinnedBlocks`
       // treats the same file. Seeding does not depend on this file: `@pithy-sh/auth`'s dev-session set ships
       // by default, so almost every project has a prepared set, and a hand-edited trailing comma would
@@ -662,13 +728,15 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
       dev ??= readDevConfig(devConfigPath(options.projectDir)).catch(() => null);
       const config = await dev;
       // Keyed on the name `buildDevConfig` wrote and `pithy worker list` reads back.
-      return config?.workers[worker]?.origin ?? null;
+      return config?.workers[worker.name]?.origin ?? null;
     },
     // One inventory for the whole run, not one per Worker: a set deduped onto another Worker still writes
     // its rows, so a prepared set must be able to see them wherever the fan-out put them.
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
     // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything unless
     // this says `dev` (#159). The rule is inside the reader — this only tells it where the rows are going.
+    // A feature is never handed that reader at all: `featureSecretReader` takes no project and no path, so
+    // the dev secrets file is not something it could open (#643).
     //
     // The registry is the whole fan-out's, in one `aggregateSecretRegistries` call, because the seam is
     // the run's and not one Worker's: a set deduped onto another Worker must resolve the same secret it
@@ -678,11 +746,10 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     // there is no answer to hand them.
     secret:
       options.secret ??
-      devSecretReader({
-        project: options.project,
-        env: options.env,
-        registry: aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
-      }),
+      environmentSecretReader(
+        options,
+        aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
+      ),
     writeArtifact:
       options.writeArtifact ??
       (async (artifact) => {
@@ -736,7 +803,7 @@ async function writeWorker(
             // so its address is the only coherent one to hand a fixture. A set deduped across Workers that
             // share a store is written once, and the writer is the honest answer — it is the Worker whose
             // report lists the set, the others having recorded it in `shared`.
-            origin: await prepared.origin(entry.worker.name),
+            origin: await prepared.origin(entry.worker),
             secret: prepared.secret,
             preferences: await prepared.preferences(),
             seeded: prepared.seeded,

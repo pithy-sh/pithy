@@ -7,9 +7,10 @@ import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { currentValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
-import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { devSecretPayload, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
+import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { readDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
 import { projectConfigDir, type StatePathOptions, stateDir } from "../notifier/state";
@@ -186,6 +187,88 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
       detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from the dev secrets file`,
     });
   };
+}
+
+/**
+ * **A feature environment's seed secrets: generated for it, never read from anywhere (#643).**
+ *
+ * `pithy seed --env feature` gets no {@link devSecretReader} — that one refuses every environment but `dev`, and
+ * #159 stays exactly as written. What a feature gets instead is decided by the one thing the kit already knows
+ * about each secret: whether its registry entry says a value may be invented (`devValue`, through
+ * `isMintableSecret`). If it may, the run mints one, from the same declaration and through the same
+ * materialization `pithy provision` uses to create that secret in a feature's own scope (`storeSecretMinter`,
+ * #321), so a prepared set holds a value of exactly the shape the Worker would. If it may not — an OAuth client
+ * secret, an issued API token — the answer is `undefined`, and a set that needs it refuses in its own words.
+ *
+ * **Why generated, and not supplied by the seed data.** A seed set's data is a capability module: committed,
+ * bundled into the Worker, and identical for every branch and every environment the set allows. A secret
+ * stated there is a committed credential, and one value shared by every feature — the opposite of the
+ * feature's own. The registry is what states which secrets are arbitrary, and arbitrary is exactly what can be
+ * generated per environment without asking anybody.
+ *
+ * **One value per name per run**, memoized here: two sets in one fan-out that sign with two different keys
+ * would disagree with each other, and the rule is the one `devSecretReader` holds for the file it reads.
+ *
+ * **It takes no project and no config directory, so it cannot open the dev secrets file** — there is no path
+ * in scope to open. That is the structural half of the rule, as `env` is for {@link devSecretReader}.
+ */
+export function featureSecretReader(options: {
+  /** The run's aggregate registry: the authority on whether a name is a secret, and whether it may be minted. */
+  registry: SecretRegistry;
+}): (name: string) => Promise<string | undefined> {
+  const minted = new Map<string, string>();
+  return async (name: string) => {
+    // `Object.hasOwn`, for the reason `devSecretReader` gives: `constructor` is not a secret.
+    if (!Object.hasOwn(options.registry, name)) return undefined;
+    const entry = options.registry[name];
+    if (!entry || !isMintableSecret(entry) || entry.devValue === undefined) return undefined;
+    let value = minted.get(name);
+    if (value === undefined) {
+      const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
+      value = devSecretPayload(entry, name, stated, GENERATED_SOURCE).value;
+      minted.set(name, value);
+    }
+    return value;
+  };
+}
+
+/** What a generated value's refusals name as its source, where a file path would otherwise go. Never a value. */
+const GENERATED_SOURCE = "a value generated for this seed run";
+
+/**
+ * **The origin `--host` names, for a prepared set (#643).** A bare host — `preview.example.com`,
+ * `localhost:9999` — takes the environment's scheme: `http` in `dev`, where Pithy runs no TLS, `https`
+ * everywhere else. A full `http://` or `https://` origin is taken as written. Anything carrying a path, a
+ * query, credentials, or another scheme is refused: this is an origin a fixture builds links and identities
+ * against, and a near-miss would be indistinguishable from a real one.
+ */
+export function seedHostOrigin(host: string, env: string): string {
+  const explicit = /^https?:\/\//i.test(host);
+  const scheme = env === LOCAL_ENVIRONMENT ? "http:" : "https:";
+  let url: URL | null = null;
+  try {
+    url = new URL(explicit ? host : `${scheme}//${host}`);
+  } catch {
+    url = null;
+  }
+  const bare =
+    url !== null &&
+    url.hostname !== "" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.pathname === "/" &&
+    url.search === "" &&
+    url.hash === "" &&
+    // A bare host must not have smuggled a path the URL parser normalized away, like `a.test/.`.
+    (explicit || !/[/?#@\s]/.test(host));
+  if (!url || !bare) {
+    throw new ValidationError({
+      message: `--host takes a host, like preview.example.com, not "${host}".`,
+      action: "Pass the host alone, or an http(s) origin with no path.",
+      detail: `seed --host "${host}" is not a bare host or origin`,
+    });
+  }
+  return url.origin;
 }
 
 /**
