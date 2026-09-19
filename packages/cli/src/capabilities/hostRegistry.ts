@@ -352,11 +352,15 @@ export const PAYMENTS_HOST_PEERS: HostPeerSeam = {
       : [],
 };
 
-/** The testers host's peers: auth, handed over when the project composes it, so the pass can see activity. */
+/**
+ * The testers host's peers: auth, handed over when the project composes it, so the pass can see activity. The
+ * kit's auth by its shape (`authConfig`), so an adopter's own capability that happens to be called `auth` is not
+ * mistaken for a package the project may never have installed.
+ */
 export const TESTERS_HOST_PEERS: HostPeerSeam = {
   provide: "@pithy-sh/testers/src/workflows/hostPeers",
   needed: (_capability, siblings) =>
-    siblings.some((sibling) => sibling.name === "auth")
+    siblings.some((sibling) => sibling.name === "auth" && "authConfig" in sibling)
       ? [{ capability: "auth", module: "@pithy-sh/auth/src/peer", export: "authPeer" }]
       : [],
 };

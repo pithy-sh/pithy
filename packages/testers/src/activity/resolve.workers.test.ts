@@ -219,7 +219,7 @@ describe("addresses", () => {
     // and `active` through auth, are never asked about.
     await user("u1", "ada@example.test");
     await session("s1", "u1", new Date("2026-06-08T00:00:00.000Z"), new Date("2026-06-09T00:00:00.000Z"));
-    const { auth: _composed, ...withoutAuth } = OPTIONS;
+    const withoutAuth = { ...OPTIONS, auth: undefined };
     const reading = (await resolveActivity(env.DB, ["ada@example.test"], withoutAuth)).get("ada@example.test");
     expect(reading?.observability).toBe("unobservable");
     expect(reading?.userId).toBeNull();

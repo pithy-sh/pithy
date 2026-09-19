@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { authPeer } from "@pithy-sh/auth/src/peer";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { describe, expect, test } from "vitest";
 import { TestersAuditActions } from "./audit/actions";
@@ -176,6 +178,41 @@ describe("the manifest matches the capability", () => {
     return import("../pithy.manifest.json", { with: { type: "json" } }).then(({ default: manifest }) => {
       expect(manifest.whenToEnable).toMatch(/no API exposes it/i);
       expect(manifest.whenToEnable).toMatch(/estimate/i);
+    });
+  });
+});
+
+/**
+ * **An auth too old to be read is refused at assembly, never read as none** (#645 review). Auth is optional to
+ * testers, and a project without it reads every tester `unobservable`, which is true. An auth composed from a
+ * release before the peer surface is not that project: it plainly has sign-in, and reading it as absent made
+ * every snapshot a day of nobody observed.
+ */
+describe("the auth testers reads through", () => {
+  const EMAIL = { name: "email", emailConfig: {}, enqueue: async () => ({}) } as unknown as Capability;
+  const compose = (siblings: Capability[]) => {
+    const capability = testers(BASE);
+    capability.compose?.({ capabilities: [EMAIL, ...siblings, capability] });
+  };
+
+  test("an auth carrying its surface composes", () => {
+    expect(() => compose([{ name: "auth", authConfig: {}, authPeer } as unknown as Capability])).not.toThrow();
+  });
+
+  test("no auth at all composes: a closed test with no sign-in is a real thing to run", () => {
+    expect(() => compose([])).not.toThrow();
+  });
+
+  test("an auth from before the surface is refused, naming auth, what testers wanted it for, and the fix", () => {
+    let thrown: unknown;
+    try {
+      compose([{ name: "auth", authConfig: {} } as unknown as Capability]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as { payload?: unknown })?.payload).toMatchObject({
+      message: "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+      action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
     });
   });
 });

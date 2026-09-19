@@ -126,7 +126,8 @@ describe("an activity read that cannot be made", () => {
     const target = await cohort();
     await inviteMember(write(), { cohortId: COHORT_ID, email: "ada@example.test", maxRosterSize: 3 });
 
-    const reading = await readCohort(testersDatabase(env.DB), env.DB, target, CONFIG, NOW);
+    // The logger defaults; auth never does, so a caller with no auth says so (#645 review).
+    const reading = await readCohort(testersDatabase(env.DB), env.DB, target, CONFIG, NOW, undefined, undefined);
 
     expect(reading.readings).toHaveLength(1);
   });

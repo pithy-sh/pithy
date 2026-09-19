@@ -107,6 +107,8 @@ export function wageringTable<Config, Round, BetInput>(
 
   return {
     kind: spec.kind,
+    // Every bet is a hold and every decision a settlement: a table cannot be played without the ledger.
+    movesBalances: true,
     config: spec.config,
     state,
     minPlayers: spec.minPlayers ?? 1,

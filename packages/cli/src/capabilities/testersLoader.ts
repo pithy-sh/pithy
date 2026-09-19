@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { kitImport } from "../project/kitResolve";
+import { kitCarries } from "./hostEntry";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -50,4 +54,32 @@ export async function loadTesters(projectDir: string): Promise<TestersModule> {
   } catch (error) {
     throw capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
   }
+}
+
+/**
+ * **The auth a terminal read hands testers — the project's own composed auth, or none** (#645 review).
+ *
+ * `testers()` finds auth in its `compose` hook, and its host is handed auth by the entry `pithy` generates. The
+ * CLI is the third reader, and it had neither: `list`, `status` and `roster` read every tester `unobservable`,
+ * and `run` wrote a permanent day of nobody observed, for a project that composes auth. So it takes auth from the
+ * same place the host's entry does — the project's composed capabilities — and `readCohort` now requires it, so
+ * the next caller that forgets fails typecheck.
+ *
+ * Three answers. No auth composed: `undefined`, and every reading says `unobservable`, which is true. Auth
+ * carrying its surface: that surface. Auth composed and too old to carry one: that depends on the testers
+ * installed. One that takes auth as a peer would read nobody, so it is refused by name; one from before the seam
+ * ignores the argument and imports auth itself, so it is handed nothing and reads as it always did.
+ */
+export function testersAuth(projectDir: string, capabilities: readonly Capability[]): AuthPeer | undefined {
+  const auth = capabilities.find((capability) => capability.name === "auth" && "authConfig" in capability);
+  if (auth === undefined) return undefined;
+  const peer = (auth as { authPeer?: Partial<AuthPeer> }).authPeer;
+  if (typeof peer?.authDatabase === "function") return peer as AuthPeer;
+  if (!kitCarries(projectDir, "@pithy-sh/testers/src/workflows/hostPeers")) return undefined;
+  throw new ValidationError({
+    message: "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+    action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
+    detail:
+      "The composed auth capability carries no `authPeer`, so every tester would read unobservable and `pithy testers run` would record nobody observed.",
+  });
 }

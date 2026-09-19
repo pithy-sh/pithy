@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { SupportConfig } from "../config/config";
 import { senderPeers } from "./peers";
 import {
   resolveSenderContext,
@@ -127,23 +129,63 @@ describe("senderPeers", () => {
    * How the link gets its siblings at all: `support()`'s `compose` hook reads each one's surface off the
    * composed capabilities, never an import (#645). Stand-ins here, because what is being proved is the
    * finding; the surfaces are the real ones wherever a Worker composes `auth()` and `payments()`.
+   *
+   * And what it refuses (#645 review): a composed peer from before its surface, which read as absent and linked
+   * nobody; and the in-app channel, on by default, in a Worker with no auth to key a submission to.
    */
   const AUTH = { authDatabase: () => undefined };
-  const PAYMENTS = { paymentsDatabase: () => undefined };
+  const PAYMENTS = { paymentsDatabase: () => undefined, resolveEntitlements: () => undefined };
   const cap = (name: string, extra: Record<string, unknown> = {}) => ({ name, requiredBindings: [], ...extra });
+  const auth = (extra: Record<string, unknown> = { authPeer: AUTH }) => cap("auth", { authConfig: {}, ...extra });
+  const payments = (extra: Record<string, unknown> = { paymentsPeer: PAYMENTS }) =>
+    cap("payments", { paymentsConfig: {}, ...extra });
+  const IN_APP = SupportConfig.parse({});
+  const MAIL_ONLY = SupportConfig.parse({ submission: { enabled: false } });
+
+  /** What a composition was refused with, or undefined when it composed. */
+  function refused(run: () => unknown): { message: string; action?: string } | undefined {
+    try {
+      run();
+      return undefined;
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      return (error as PithyError).payload;
+    }
+  }
 
   test("finds each composed sibling's surface", () => {
-    const found = senderPeers([cap("auth", { authPeer: AUTH }), cap("payments", { paymentsPeer: PAYMENTS })]);
+    const found = senderPeers([auth(), payments()], IN_APP);
     expect(found.auth).toBe(AUTH);
     expect(found.payments).toBe(PAYMENTS);
   });
 
-  test("a composition without them is an empty set, not a failure", () => {
-    expect(senderPeers([cap("support"), cap("email")])).toEqual({});
+  test("a mail-only inbox without them is an empty set, not a failure", () => {
+    expect(senderPeers([cap("support"), cap("email")], MAIL_ONLY)).toEqual({});
   });
 
-  test("a capability merely named auth, carrying no surface, is not auth", () => {
-    // An adopter's own `defineCapability({ name: "auth" })`, or an auth from before #645.
-    expect(senderPeers([cap("auth")])).toEqual({});
+  test("the in-app channel with no auth in this Worker is refused, naming auth, the channel and both fixes", () => {
+    const said = refused(() => senderPeers([cap("support"), cap("email")], IN_APP));
+    expect(said?.message).toBe("The in-app support channel is on, and no auth is composed in this Worker.");
+    expect(said?.action).toContain("Add `auth(...)` to this Worker's capabilities");
+    expect(said?.action).toContain("`submission: { enabled: false }`");
+  });
+
+  test("an auth too old to carry its surface is refused, even for a mail-only inbox", () => {
+    const said = refused(() => senderPeers([auth({})], MAIL_ONLY));
+    expect(said?.message).toBe(
+      "Support links a sender to an account through @pithy-sh/auth, and the composed one is too old to be reached.",
+    );
+    expect(said?.action).toBe("Upgrade @pithy-sh/auth to the version this @pithy-sh/support peers.");
+  });
+
+  test("a payments too old to carry its surface is refused", () => {
+    expect(refused(() => senderPeers([auth(), payments({})], IN_APP))?.message).toBe(
+      "Support shows what a sender bought through @pithy-sh/payments, and the composed one is too old to be reached.",
+    );
+  });
+
+  test("a capability merely named auth, without auth's config, is not auth", () => {
+    // An adopter's own `defineCapability({ name: "auth" })`: not the kit's, so not a peer, old or new.
+    expect(senderPeers([cap("auth")], MAIL_ONLY)).toEqual({});
   });
 });

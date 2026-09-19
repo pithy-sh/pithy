@@ -97,8 +97,9 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
     },
     routes: registerMultiplayerRoutes({ games, basePath }),
     // The optional peers — the ledger a wager settles through, the leaderboard a result publishes to — found
-    // among the composed capabilities rather than imported. See `session/peers.ts`.
-    compose: ({ capabilities }) => composeMultiplayerPeers(capabilities),
+    // among the composed capabilities rather than imported, and refused here when a configured game needs one
+    // this Worker cannot reach. See `session/peers.ts`.
+    compose: ({ capabilities }) => composeMultiplayerPeers(capabilities, games),
     seeds: [multiplayerExampleSeed],
   });
 

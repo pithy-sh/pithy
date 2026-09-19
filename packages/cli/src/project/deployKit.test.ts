@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -13,6 +13,7 @@ import { PACKAGE_VERSION } from "@pithy-sh/email/src/version.generated";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
+import { testers } from "@pithy-sh/testers/src/capability";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readHostTemplate } from "../capabilities/hostRegistry";
 import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
@@ -903,6 +904,56 @@ describe("a kit host handed the peers the project composes", () => {
     expect(shipped[0]?.config.main).toBe("./worker.ts");
     expect(shipped[0]?.entry).toBeNull();
   }, 180_000);
+});
+
+/**
+ * **A host released before the seam deploys exactly as it did** (#645 review). The CLI and the packages it
+ * deploys are released apart, and the dashboard runs testers 0.2.9 beside auth — a testers with no `hostPeers`,
+ * whose own `worker.ts` reaches auth itself. The first cut of #645 generated an entry importing `hostPeers`
+ * anyway, and that deploy failed. Staged here by copying the workspace package and removing the module the
+ * release predates; what is asserted is what the command hands wrangler, which is what changed.
+ */
+describe("a kit host older than the peer seam", () => {
+  test("testers from before the seam, beside auth, deploys from its own worker with no entry written", async () => {
+    await linkKitPackages(projectDir, ["auth"]);
+    await materializeKitPackage(projectDir, "testers");
+    const home = join(projectDir, "node_modules", "@pithy-sh", "testers");
+    await rm(join(home, "src", "workflows", "hostPeers.ts"));
+    await rm(join(home, "dist", "workflows", "hostPeers.js"), { force: true });
+    const dir = await writeApp(PROVISIONED);
+    const shipped: { cwd: string; main: string; files: string[] }[] = [];
+    // A current auth: the testers() composed here is the workspace's, whose compose refuses an auth too old to
+    // read. What is from before the seam is the installed testers the command deploys.
+    const auth = {
+      name: "auth",
+      requiredBindings: [],
+      authConfig: {},
+      authPeer: { authDatabase: () => undefined },
+    } as unknown as Capability;
+    const report = await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "prod",
+      account: null,
+      workers: [{ name: "api", dir, hasWrangler: true }],
+      capabilitiesFor: async () => [EMAIL, auth, testers({ baseUrl: "https://acme.example" })],
+      readTemplate: readHostTemplate,
+      readVars: async () => null,
+      runDeploy: async (args, cwd) => {
+        const { readdirSync } = await import("node:fs");
+        const { configFromArgs } = await import("./effectiveConfig");
+        const config = JSON.parse(await readFile(configFromArgs(args) as string, "utf8")) as WorkflowHostTemplate;
+        shipped.push({ cwd, main: config.main, files: readdirSync(cwd) });
+      },
+    });
+
+    const row = report.workers.find((entry) => entry.capability === "testers");
+    expect(row?.outcome, JSON.stringify(report)).toBe("deployed");
+    const host = shipped.find((entry) => entry.cwd.includes(join("@pithy-sh", "testers")));
+    expect(host?.main).toBe("./worker.ts");
+    // Nothing generated beside the config wrangler read: the release reaches auth itself, as it always did.
+    expect(host?.files.filter((file) => file.startsWith(".pithy-host."))).toEqual([]);
+  });
 });
 
 /**

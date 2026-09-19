@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { linkKitPackages } from "../test-utils/linkKit";
+import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
 import { hostEntryFile, hostEntrySource } from "./hostEntry";
 import { hostWorkerFor, PAYMENTS_HOST_PEERS, TESTERS_HOST_PEERS } from "./hostRegistry";
 
@@ -67,11 +67,17 @@ describe("hostEntrySource", () => {
 
   test("the testers host is handed auth when the project composes it, and nothing when it does not", () => {
     const testers = composed("testers");
-    const withAuth = hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, testers, [composed("auth")]);
+    const withAuth = hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, testers, [
+      composed("auth", { authConfig: {} }),
+    ]);
     expect(withAuth).toContain('import { authPeer as peer0 } from "');
     expect(withAuth).toContain('providePeers({ "auth": peer0 });');
     expect(
       hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, testers, [composed("email")]),
+    ).toBeUndefined();
+    // An adopter's own capability named auth is not the kit's, and names no package to import.
+    expect(
+      hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, testers, [composed("auth")]),
     ).toBeUndefined();
   });
 
@@ -88,5 +94,61 @@ describe("hostEntrySource", () => {
   test("names one file per environment, beside the config that points at it", () => {
     expect(hostEntryFile("prod")).toBe(".pithy-host.prod.ts");
     expect(hostEntryFile("dev")).toBe(".pithy-host.dev.ts");
+  });
+});
+
+/**
+ * **A newer CLI meets older packages, and deploys them as it always did** (#645 review). The CLI and the packages
+ * it deploys are released apart. The dashboard runs testers 0.2.9 beside auth, and the entry this PR first
+ * generated imported `@pithy-sh/testers/src/workflows/hostPeers` — which 0.2.9 does not have — so its testers
+ * host stopped deploying. An installed release is staged here by copying the workspace package and removing the
+ * module the release predates, in both `src` and `dist`, since the project resolves through `dist`.
+ */
+describe("hostEntrySource against releases older than the seam", () => {
+  /** Stage `name` as a release from before `module` existed. */
+  async function predating(name: string, module: string): Promise<void> {
+    await materializeKitPackage(projectDir, name);
+    const home = join(projectDir, "node_modules", "@pithy-sh", name);
+    await rm(join(home, "src", `${module}.ts`));
+    await rm(join(home, "dist", `${module}.js`), { force: true });
+    await rm(join(home, "dist", `${module}.d.ts`), { force: true });
+  }
+
+  test("a testers host from before the seam, beside auth, gets no entry and deploys from its own worker", async () => {
+    await predating("testers", "workflows/hostPeers");
+    const source = hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, composed("testers"), [
+      composed("auth", { authConfig: {} }),
+    ]);
+    expect(source).toBeUndefined();
+  });
+
+  test("a payments host from before the seam gets no entry, whatever its catalog credits", async () => {
+    await predating("payments", "workflows/hostPeers");
+    expect(hostEntrySource(projectDir, PAYMENTS as NonNullable<typeof PAYMENTS>, CREDITING, [])).toBeUndefined();
+  });
+
+  test("a host that takes peers beside an auth too old to hand one over is refused by name", async () => {
+    await predating("auth", "peer");
+    let thrown: unknown;
+    try {
+      hostEntrySource(projectDir, TESTERS as NonNullable<typeof TESTERS>, composed("testers"), [
+        composed("auth", { authConfig: {} }),
+      ]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PithyError);
+    const payload = (thrown as PithyError).payload;
+    expect(payload.message).toBe(
+      "The testers host reads auth, and the installed @pithy-sh/auth is too old to hand it over.",
+    );
+    expect(payload.action).toBe("Upgrade @pithy-sh/auth to the version @pithy-sh/testers peers, then deploy again.");
+  });
+
+  test("a crediting catalog beside a ledger too old to hand one over is refused by name", async () => {
+    await predating("ledger", "peer");
+    expect(() => hostEntrySource(projectDir, PAYMENTS as NonNullable<typeof PAYMENTS>, CREDITING, [])).toThrow(
+      "The payments host reads ledger, and the installed @pithy-sh/ledger is too old to hand it over.",
+    );
   });
 });

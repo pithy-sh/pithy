@@ -279,7 +279,9 @@ export function support(options: SupportOptions = {}): SupportCapability {
     compose: ({ capabilities }) => {
       const email = capabilities.find(isEmailCapability);
       wiring.enqueueEmail = email?.enqueue;
-      wiring.peers = senderPeers(capabilities);
+      // Auth and payments, found rather than imported (#645), and refused here when this Worker's config needs
+      // one it cannot reach. See `link/peers.ts`.
+      wiring.peers = senderPeers(capabilities, resolved);
     },
     // What a browser may know. Built from the resolved `mountPath`, never the default — the whole
     // point is that moving the mount moves the address the client posts to. See `clientProjection`

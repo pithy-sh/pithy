@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readdirSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { parseAst } from "rolldown/parseAst";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
@@ -27,11 +27,18 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * composes nothing — is handed it by the entry the CLI generates when the project composes the peer. Nothing
  * the dependent ships names the package, so there is nothing for a bundler to resolve.
  *
- * **What counts is a value import**: `import { x } from`, a side-effect `import`, `export … from`, and a
- * literal `import()`. A type-only import is erased before any bundler sees it, and `typeof import("…")` in a
- * type position is a type. Relative imports are followed by reading every file, which is why this walks the
- * whole of `src/` rather than chasing entries: a module reachable only through a relative dynamic import was
- * one of the nine.
+ * **What counts is anything a bundler resolves**: `import { x } from`, a side-effect `import`, `export … from`,
+ * a literal `import()`, a CommonJS `require("…")`, and TypeScript's `import x = require("…")`. And a relative
+ * specifier that climbs out of its own package into another one's source — `../../ledger/src/ledger` resolves
+ * in the monorepo and in an install alike, so it is the same import spelled so no scope appears (#645 review).
+ *
+ * **Only `import type` is erased.** Under `verbatimModuleSyntax` — the kit's own setting, and the one
+ * `pithy init` gives an adopter, whose tsconfig is the one wrangler's esbuild reads for these files — an
+ * `import { type X } from "…"` is kept as `import {} from "…"`, and the bundler resolves it. The review
+ * bundled exactly that and watched esbuild fail on it. So an inline `type` specifier counts, and so does
+ * `export { type X } from`; `import type`, `export type … from` and `typeof import("…")` in a type position do
+ * not. Relative imports are followed by reading every file, which is why this walks the whole of `src/` rather
+ * than chasing entries: a module reachable only through a relative dynamic import was one of the nine.
  *
  * **Only kit peers.** A non-kit optional peer — `react`, for `payments/src/client/hooks.ts` — is a module the
  * adopter imports on purpose, having installed React to do it. No composition decides it, so nothing here is
@@ -69,10 +76,25 @@ interface OptionalPeerImport {
   readonly specifier: string;
 }
 
-/** The kit package a specifier names, or undefined for a relative or non-kit one. */
+/** The kit package a scoped specifier names, or undefined for a relative or non-kit one. */
 function kitPackage(specifier: string): string | undefined {
   if (!specifier.startsWith(SCOPE)) return undefined;
   return specifier.split("/").slice(0, 2).join("/");
+}
+
+/**
+ * The kit package a specifier reaches, as written from `importer`: the scope for a bare specifier, and for a
+ * relative one that climbs out of the importing package, the package whose directory it lands in. `packages/`
+ * holds every kit package under its own name, and an install puts each one under `@pithy-sh/` the same way,
+ * so the directory name is the package in both.
+ */
+function reachedPackage(importer: string, specifier: string): string | undefined {
+  if (!specifier.startsWith(".")) return kitPackage(specifier);
+  const packages = join(REPO_ROOT, "packages");
+  const from = relative(packages, importer).split(sep)[0];
+  const [to] = relative(packages, resolve(dirname(importer), specifier)).split(sep);
+  if (to === undefined || to === from || to === ".." || to === "") return undefined;
+  return `${SCOPE}${to}`;
 }
 
 /** A string literal's value, from a `Literal` or an expression-free template. */
@@ -87,15 +109,15 @@ function literal(node: unknown): string | undefined {
   return undefined;
 }
 
-/** Whether an `import` declaration binds any value — a side-effect import does, and so does any value specifier. */
+/**
+ * Whether a bundler keeps an `import` declaration. Only `import type` is erased: under `verbatimModuleSyntax`
+ * a declaration whose every specifier is an inline `type` survives as `import {} from "…"`, and resolves.
+ */
 function importsValue(node: Node): boolean {
-  if (node.importKind === "type") return false;
-  const specifiers = (node.specifiers ?? []) as readonly Node[];
-  if (specifiers.length === 0) return true;
-  return specifiers.some((specifier) => specifier.importKind !== "type");
+  return node.importKind !== "type";
 }
 
-/** Every specifier a module imports as a value — static, re-exported, or through a literal `import()`. */
+/** Every specifier a module asks a bundler to resolve — static, re-exported, `import()`, and both `require`s. */
 function valueSpecifiers(text: string): string[] {
   const found: string[] = [];
   const program = parseAst(text, { lang: "ts" }, "source.ts") as unknown as Node;
@@ -121,6 +143,22 @@ function valueSpecifiers(text: string): string[] {
       case "ImportExpression": {
         const specifier = literal(node.source);
         if (specifier !== undefined) found.push(specifier);
+        break;
+      }
+      // `import x = require("…")` — TypeScript's CommonJS import. `import type x = require("…")` is erased.
+      case "TSImportEqualsDeclaration": {
+        const reference = node.moduleReference as Node | undefined;
+        const specifier = reference?.type === "TSExternalModuleReference" ? literal(reference.expression) : undefined;
+        if (specifier !== undefined && node.importKind !== "type") found.push(specifier);
+        return;
+      }
+      // `require("…")` — resolved by a bundler exactly as an `import` is.
+      case "CallExpression": {
+        const callee = node.callee as Node | undefined;
+        const [first] = (node.arguments ?? []) as readonly unknown[];
+        const specifier = literal(first);
+        if (callee?.type === "Identifier" && callee.name === "require" && specifier !== undefined)
+          found.push(specifier);
         break;
       }
       // `typeof import("…")` — a type, erased with every other one.
@@ -160,7 +198,7 @@ function optionalPeerImports(
   const found: OptionalPeerImport[] = [];
   for (const file of files) {
     for (const specifier of valueSpecifiers(file.text)) {
-      const peer = kitPackage(specifier);
+      const peer = reachedPackage(file.path, specifier);
       if (peer !== undefined && optional.includes(peer)) {
         found.push({ file: relative(REPO_ROOT, file.path).split(sep).join("/"), peer, specifier });
       }
@@ -207,18 +245,62 @@ describe("the detector, proved against fixtures before it is trusted against the
     ]);
   });
 
-  test("a type-only import, and `typeof import()` in a type, are erased and do not count", () => {
+  test("`import type`, `export type … from`, and `typeof import()` in a type are erased and do not count", () => {
     expect(
       scan(
         [
           'import type { Ledger } from "@pithy-sh/ledger/src/ledger";',
-          'import { type LedgerPeer } from "@pithy-sh/ledger/src/peer";',
+          'import type ledgerModule = require("@pithy-sh/ledger/src/ledger");',
           'export type { LedgerCapability } from "@pithy-sh/ledger/src/capability";',
           'type Open = typeof import("@pithy-sh/ledger/src/ledger").openLedger;',
-          "export type T = Ledger | LedgerPeer | Open;",
+          "export type T = Ledger | Open | typeof ledgerModule;",
         ].join("\n"),
       ),
     ).toEqual([]);
+  });
+
+  test("an inline `type` specifier counts: under verbatimModuleSyntax it survives as `import {}` and resolves", () => {
+    expect(
+      scan(
+        [
+          'import { type LedgerPeer } from "@pithy-sh/ledger/src/peer";',
+          'export { type LedgerCapability } from "@pithy-sh/ledger/src/capability";',
+          "export type T = LedgerPeer;",
+        ].join("\n"),
+      ),
+    ).toEqual(["@pithy-sh/ledger/src/peer", "@pithy-sh/ledger/src/capability"]);
+  });
+
+  test("a CommonJS `require` and TypeScript's `import x = require()` count", () => {
+    expect(
+      scan(
+        [
+          "declare const require: (id: string) => unknown;",
+          'export const a = () => require("@pithy-sh/ledger/src/ledger");',
+          'import ledgerModule = require("@pithy-sh/ledger/src/capability");',
+          "export const c = ledgerModule;",
+        ].join("\n"),
+      ),
+    ).toEqual(["@pithy-sh/ledger/src/ledger", "@pithy-sh/ledger/src/capability"]);
+  });
+
+  test("a relative path that climbs into another package's source counts as that package", () => {
+    const importer = join(REPO_ROOT, "packages", "payments", "src", "grants", "fixture.ts");
+    const found = optionalPeerImports(OPTIONAL, [
+      {
+        path: importer,
+        text: [
+          'import { openLedger } from "../../../ledger/src/ledger";',
+          'export const lazy = () => import("../../../ledger/src/peer");',
+          'import { credit } from "../apply";',
+          "export { openLedger, credit };",
+        ].join("\n"),
+      },
+    ]);
+    expect(found.map((entry) => [entry.peer, entry.specifier])).toEqual([
+      ["@pithy-sh/ledger", "../../../ledger/src/ledger"],
+      ["@pithy-sh/ledger", "../../../ledger/src/peer"],
+    ]);
   });
 
   test("a required peer, a relative module and a comment are not optional-peer imports", () => {

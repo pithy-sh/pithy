@@ -78,7 +78,8 @@ const COMPOSED: Record<string, Capability> = {
   media: media({ recordStore: "kv" }),
   storage: storage({}),
   payments: payments({ billingSubject: "user" }),
-  support: support({ inboundAddresses: ["help@support.replay.example"] }),
+  // A mail-only inbox: the in-app channel needs auth in this Worker, and this fixture composes none (#645).
+  support: support({ inboundAddresses: ["help@support.replay.example"], submission: { enabled: false } }),
   testers: testers({}),
   vector: vector({ indexes: { notes: { model: "@cf/baai/bge-base-en-v1.5", dimensions: 768 } } }),
   secrets: secrets({ registry: {} }),

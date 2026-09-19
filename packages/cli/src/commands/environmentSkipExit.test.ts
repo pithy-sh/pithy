@@ -244,7 +244,8 @@ function projectWorkers(dir: string): unknown[] {
         emailCapability({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
         mediaCapability(),
         storageCapability(),
-        supportCapability(),
+        // A mail-only inbox: the in-app channel needs auth in this Worker, and this fixture composes none (#645).
+        supportCapability({ submission: { enabled: false } }),
         testersCapability(),
         paymentsCapability({
           billingSubject: "user",

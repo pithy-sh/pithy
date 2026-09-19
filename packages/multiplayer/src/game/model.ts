@@ -88,6 +88,13 @@ export interface GameModel<Config = unknown, State = unknown> {
   minPlayers?: number;
   /** The most players this model supports, or undefined for no upper bound. */
   maxPlayers?: number;
+  /**
+   * Whether this model moves balances — emits ledger effects (a bet's hold, a round's payouts). Declared, so a
+   * Worker that configures such a game without `@pithy-sh/ledger` composed beside it is refused at assembly,
+   * naming the game, rather than rejecting the first bet (#645 review). `wageringTable` sets it. A model that
+   * emits effects without declaring it is still refused, loudly, at the first effect — never settled silently.
+   */
+  movesBalances?: boolean;
   /** The initial game state, built when the roster fills and play begins. */
   init(ctx: GameContext<Config>): State;
   /**

@@ -245,7 +245,19 @@ export function organization<const Power extends string = never, const Role exte
       // The refusal first, so a Worker holding two membership models never gets as far as wiring mail
       // for one of them.
       refuseSecondMembershipModel(capabilities);
-      wiring.enqueue = composedEmail(capabilities)?.enqueue;
+      const email = composedEmail(capabilities);
+      // An invitation the config says to mail, in a Worker with no email to mail it through, used to be found
+      // out by the first person to invite someone. Refused here instead, by name (#645 review).
+      if (resolved.sendInvitationEmail && email === undefined) {
+        throw new ValidationError({
+          message: "Invitations are mailed, and no email is composed in this Worker.",
+          action:
+            "Add `email(...)` to this Worker's capabilities in pithy.config.ts — the one that composes organization — or set `sendInvitationEmail: false` and deliver the link yourself.",
+          detail:
+            "`sendInvitationEmail` defaults to true. The invite route mails through the email capability composed beside it, and without one every invitation would be refused as it was made.",
+        });
+      }
+      wiring.enqueue = email?.enqueue;
     },
     requiredBindings,
     databases: {

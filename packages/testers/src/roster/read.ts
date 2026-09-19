@@ -138,8 +138,9 @@ export async function countSnapshots(db: TestersDatabase, cohortId: string): Pro
  * genuinely inactive cohort — so the caller's logger is the only thing that says why. Defaults to the
  * no-op so a caller with nothing to log through still reads.
  *
- * `auth` is the surface the composition handed the caller, passed through to the reader. Absent, every tester
- * resolves `unobservable` — see `ActivityOptions.auth`.
+ * `auth` is the surface the composition handed the caller, passed through to the reader. `undefined`, every
+ * tester resolves `unobservable` — see `ActivityOptions.auth`. **Required, with no default**, because a caller
+ * that forgot it wrote an unobserved snapshot for a project that composes auth, and nothing noticed.
  */
 export async function readCohort(
   db: TestersDatabase,
@@ -148,7 +149,7 @@ export async function readCohort(
   config: TestersConfig,
   now: Date,
   log: Logger = noopLogger,
-  auth?: AuthPeer,
+  auth: AuthPeer | undefined,
 ): Promise<CohortReading> {
   const members = await listMembers(db, cohort.id);
   const events = await listEvents(db, cohort.id);
@@ -172,7 +173,7 @@ export async function readCohort(
       since: new Date(now.getTime() - cohort.windowDays * MS_PER_DAY),
       activeSince: new Date(now.getTime() - config.activeWithinDays * MS_PER_DAY),
       unreachable,
-      ...(auth ? { auth } : {}),
+      auth,
     },
     log,
   );

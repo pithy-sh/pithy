@@ -89,9 +89,12 @@ export interface DailyPassDeps {
   readonly optOutLinkFor: ((member: TestersMember) => string) | undefined;
   /**
    * `auth()`'s surface, when the project composes auth — how the pass sees whether a tester has used the app.
-   * The host is handed it by its generated entry (#645); absent, every tester reads `unobservable`.
+   * The host is handed it by its generated entry (#645); `undefined`, every tester reads `unobservable`.
+   *
+   * Required, and `undefined` stated rather than left out: this is the value the pass's snapshot is built on,
+   * and a caller that forgot it recorded a day of nobody observed for a project that composes auth.
    */
-  readonly auth?: AuthPeer;
+  readonly auth: AuthPeer | undefined;
 }
 
 /** What one cohort's pass did. Returned so the Workflow can log it and a test can assert it. */

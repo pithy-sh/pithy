@@ -3,7 +3,9 @@
 
 import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { RatingPeer } from "@pithy-sh/rating/src/peer";
+import type { MatchmakingConfig } from "./config/config";
 
 /**
  * **The optional peers matchmaking reads, as the composition handed them over** (#645).
@@ -15,6 +17,12 @@ import type { RatingPeer } from "@pithy-sh/rating/src/peer";
  *
  * So `matchmaking()`'s `compose` hook finds each peer's surface among the composed capabilities, and the
  * routes read it from here. Only types name the two packages, and a bundler never sees a type.
+ *
+ * **Nothing degrades silently (#645 review).** A game with a `skillPool` and no rating composed in this Worker is
+ * refused at assembly — it used to bucket by region alone and say nothing. A composed auth or rating released
+ * before its surface is refused whatever the config says: read as absent, an invite by address answered 404 for
+ * a user who exists. Auth that is not composed here at all proceeds, because it is not quiet — every route is
+ * `requireAuth()`-gated and denies.
  */
 export interface MatchmakingPeers {
   /** `auth()`'s surface, when it is composed. */
@@ -23,15 +31,54 @@ export interface MatchmakingPeers {
   readonly rating?: RatingPeer;
 }
 
-/** The named capability's peer surface, when it is composed and carries one. */
-function surface<T>(capabilities: readonly Capability[], name: string, key: string): T | undefined {
-  const found = capabilities.find((capability) => capability.name === name && key in capability);
-  return found ? ((found as unknown as Record<string, unknown>)[key] as T) : undefined;
+/**
+ * The named kit capability's peer surface: `undefined` when it is not composed, or a refusal when it is composed
+ * from a release too old to carry one. Recognized by the config field it has always carried, not by the surface,
+ * because a pre-#645 release has the one and not the other.
+ */
+function surface<T>(
+  capabilities: readonly Capability[],
+  peer: { name: string; pkg: string; config: string; key: string; probe: string; wants: string },
+): T | undefined {
+  const found = capabilities.find((capability) => capability.name === peer.name && peer.config in capability);
+  if (found === undefined) return undefined;
+  const value = (found as unknown as Record<string, Record<string, unknown> | undefined>)[peer.key];
+  if (typeof value?.[peer.probe] !== "function") {
+    throw new ValidationError({
+      message: `Matchmaking ${peer.wants} through ${peer.pkg}, and the composed one is too old to be reached.`,
+      action: `Upgrade ${peer.pkg} to the version this @pithy-sh/matchmaking peers.`,
+      detail: `The composed ${peer.name} capability carries no \`${peer.key}\`. It was released before optional peers arrived through the composition (#645).`,
+    });
+  }
+  return value as T;
 }
 
-/** The peers this composition holds. */
-export function matchmakingPeers(capabilities: readonly Capability[]): MatchmakingPeers {
-  const auth = surface<AuthPeer>(capabilities, "auth", "authPeer");
-  const rating = surface<RatingPeer>(capabilities, "rating", "ratingPeer");
+/** The peers this composition holds — refusing one the config needs and this Worker cannot reach. */
+export function matchmakingPeers(capabilities: readonly Capability[], config: MatchmakingConfig): MatchmakingPeers {
+  const auth = surface<AuthPeer>(capabilities, {
+    name: "auth",
+    pkg: "@pithy-sh/auth",
+    config: "authConfig",
+    key: "authPeer",
+    probe: "authDatabase",
+    wants: "resolves an invite by address",
+  });
+  const rating = surface<RatingPeer>(capabilities, {
+    name: "rating",
+    pkg: "@pithy-sh/rating",
+    config: "ratingConfig",
+    key: "ratingPeer",
+    probe: "ratingStore",
+    wants: "buckets a queue by skill",
+  });
+  const skilled = config.games.filter((game) => game.skillPool !== undefined);
+  if (skilled.length > 0 && rating === undefined) {
+    throw new ValidationError({
+      message: "A game buckets its queue by skill, and no rating is composed in this Worker.",
+      action:
+        "Add `rating(...)` to this Worker's capabilities in pithy.config.ts — the one that composes matchmaking — or drop the game's `skillPool`.",
+      detail: `Games with a skillPool: ${skilled.map((game) => `${game.key} (pool "${game.skillPool}")`).join(", ")}. Without rating every player would be bucketed by region alone.`,
+    });
+  }
   return { ...(auth ? { auth } : {}), ...(rating ? { rating } : {}) };
 }

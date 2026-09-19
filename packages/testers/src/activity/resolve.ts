@@ -22,7 +22,7 @@ import type { ActivityState, Observability } from "../data/enums";
  * rather than on day fourteen when the count finally moves. So this module scores worry, never
  * membership.
  *
- * **`@pithy-sh/auth` is an optional peer, reached through a guarded dynamic import.** A static import
+ * **`@pithy-sh/auth` is an optional peer, handed over by the composition (#645).** An import of any kind
  * would make auth a hard dependency of a capability that works without it: a project whose test flow
  * has no sign-in gets no activity data and should still be able to run cohorts, send invitations, and
  * track the clock. When auth is absent, every tester resolves `unobservable` and the forecast widens
@@ -72,13 +72,18 @@ export interface ActivityOptions {
    * `auth()`'s surface, as the composition handed it over — `testers()`'s `compose` hook for a request, the
    * generated host entry for the daily pass — or undefined when auth is not composed.
    *
+   * **Required, and `undefined` said out loud.** Optional, it was the key every caller could forget: the CLI's
+   * `list`, `status`, `roster` and `run` each omitted it, so a project that composes auth read every tester as
+   * `unobservable` and `pithy testers run` wrote a snapshot of nobody observed, permanently (#645 review).
+   * Required, the next caller that forgets fails typecheck.
+   *
    * A missing auth is not an error here — it is a project that has no sign-in, which is a legitimate way
    * to run a closed test, and every tester resolves `unobservable`, which is the honest reading. It was a
    * guarded `import()` until #645, which is optional at runtime and required at bundle time: wrangler's
    * esbuild resolves a literal specifier whether or not the branch holding it ever runs, so a project
    * without auth could not deploy the testers host at all.
    */
-  readonly auth?: AuthPeer;
+  readonly auth: AuthPeer | undefined;
 }
 
 /** A tester we cannot see, with the reason stated rather than implied. */

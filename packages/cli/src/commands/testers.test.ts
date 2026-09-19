@@ -34,14 +34,17 @@ vi.mock("../project/config", async (importOriginal) => ({
   projectCloudflareAccount: async () => ACCOUNT,
 }));
 
-/** Every argument each read command handed `readCohort`, so the sixth can be inspected. */
-const roster = vi.hoisted(() => ({ readCohortCalls: [] as unknown[][] }));
+/** Every argument each read command handed `readCohort`, and every deps the pass was run with. */
+const roster = vi.hoisted(() => ({ readCohortCalls: [] as unknown[][], passDeps: [] as Record<string, unknown>[] }));
+
+/** What the stubbed project's one Worker composes beside testers. Swapped per case. */
+const project = vi.hoisted(() => ({ siblings: [] as Record<string, unknown>[] }));
 
 const COHORT = { id: "c1", name: "closed-test", targetSize: 20, windowDays: 14, closedAt: null };
 
 // The optional package, stubbed at the CLI's one guarded-import seam. Enough surface for the three read
 // commands to run to their `--json` line and no more.
-vi.mock("../capabilities/testersLoader", () => ({
+vi.mock("../capabilities/testersLoader", async () => ({
   loadTesters: async () => ({
     isTestersCapability: (capability: { name: string }) => capability.name === "testers",
     testersDatabase: () => ({}),
@@ -53,7 +56,15 @@ vi.mock("../capabilities/testersLoader", () => ({
       roster.readCohortCalls.push(args);
       return { cohort: COHORT, clock: { estimatedOptedInCount: 3, estimatedHeldDays: 2 }, readings: [], events: [] };
     },
+    optOutUrl: () => "https://api.example.test/out",
+    runDailyPass: async (deps: Record<string, unknown>) => {
+      roster.passDeps.push(deps);
+      return [];
+    },
   }),
+  // The real reader of the project's auth: it is the thing under test below.
+  testersAuth: (await vi.importActual<typeof import("../capabilities/testersLoader")>("../capabilities/testersLoader"))
+    .testersAuth,
 }));
 
 // `projectCapabilities` stays real — only the filesystem scan is stubbed.
@@ -63,7 +74,7 @@ vi.mock("../project/workerScope", async (importOriginal) => ({
     {
       name: "api",
       dir: "/does/not/exist",
-      capabilities: [{ name: "testers", testersConfig: { activeWithinDays: 7 } }],
+      capabilities: [{ name: "testers", testersConfig: { activeWithinDays: 7 } }, ...project.siblings],
     },
   ],
 }));
@@ -256,5 +267,67 @@ describe("the roster commands open the driver for the account the project names"
     }
     expect(opened.calls).toHaveLength(1);
     expect((opened.calls[0] as { account?: unknown }).account).toEqual(ACCOUNT);
+  });
+});
+
+/**
+ * **The terminal reads through the project's auth, as the Worker and the host do** (#645 review).
+ *
+ * All three read commands and `run` built their calls without auth, so a project composing it read every tester
+ * `unobservable` and `pithy testers run` wrote a permanent snapshot of nobody observed. `readCohort` and the
+ * pass's deps now require it, which typecheck holds; this holds the value.
+ */
+describe("the read commands and the pass see through the project's auth", () => {
+  const AUTH_PEER = { authDatabase: () => ({}), User: {}, Device: {} };
+
+  beforeEach(() => {
+    roster.readCohortCalls.length = 0;
+    roster.passDeps.length = 0;
+    project.siblings = [];
+  });
+
+  async function quietly(name: string, extra: Record<string, unknown>): Promise<void> {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await subcommand(name).run?.({ args: { env: "dev", json: true, ...extra }, rawArgs: [] } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+  }
+
+  test.each([
+    ["list", {}],
+    ["roster", { cohort: COHORT.name }],
+    ["status", { cohort: COHORT.name }],
+  ])("%s hands readCohort the composed auth's surface", async (name, extra) => {
+    project.siblings = [{ name: "auth", authConfig: {}, authPeer: AUTH_PEER }];
+    await quietly(name, extra);
+    expect(roster.readCohortCalls).toHaveLength(1);
+    expect(roster.readCohortCalls[0]?.[6]).toBe(AUTH_PEER);
+  });
+
+  test("run hands the pass the composed auth's surface, so its snapshot counts who was observed", async () => {
+    project.siblings = [{ name: "auth", authConfig: {}, authPeer: AUTH_PEER }];
+    await quietly("run", { "skip-nudges": true });
+    expect(roster.passDeps).toHaveLength(1);
+    expect(roster.passDeps[0]?.auth).toBe(AUTH_PEER);
+  });
+
+  test("with no auth composed, both are handed undefined, said out loud", async () => {
+    await quietly("list", {});
+    await quietly("run", { "skip-nudges": true });
+    expect(roster.readCohortCalls[0]).toHaveLength(7);
+    expect(roster.readCohortCalls[0]?.[6]).toBeUndefined();
+    expect(Object.hasOwn(roster.passDeps[0] ?? {}, "auth")).toBe(true);
+    expect(roster.passDeps[0]?.auth).toBeUndefined();
+  });
+
+  test("an auth too old to carry its surface is refused by name, beside a testers that takes it", async () => {
+    project.siblings = [{ name: "auth", authConfig: {} }];
+    const error = await failure("list", { json: true, env: "dev" });
+    expect(error.message).toBe(
+      "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+    );
+    expect(roster.readCohortCalls).toHaveLength(0);
   });
 });

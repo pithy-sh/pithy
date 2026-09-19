@@ -5,6 +5,7 @@ import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
@@ -49,10 +50,31 @@ export interface TestersCapability
   testersConfig: TestersConfig;
 }
 
-/** `auth()`'s peer surface among the composed capabilities, or undefined when auth is not composed. */
+/**
+ * `auth()`'s peer surface among the composed capabilities, undefined when auth is not composed — or a refusal
+ * when an auth is composed that is too old to carry one.
+ *
+ * The kit's auth is recognized by the shape it has always had (`authConfig`), not by the surface, because an
+ * auth released before #645 has the shape and not the surface — and read as absent, it made every tester
+ * `unobservable` and every daily snapshot a day of nobody observed, in a project that plainly composes auth
+ * (#645 review). Composed and unreadable is refused by name, here, where the adopter is looking.
+ *
+ * Auth that is not composed in this Worker at all proceeds: a closed test with no sign-in is a legitimate
+ * thing to run, and every reading says `unobservable` rather than implying nobody came.
+ */
 function composedAuth(capabilities: readonly Capability[]): AuthPeer | undefined {
-  const found = capabilities.find((capability) => capability.name === "auth" && "authPeer" in capability);
-  return found ? ((found as unknown as { authPeer: AuthPeer }).authPeer as AuthPeer) : undefined;
+  const found = capabilities.find((capability) => capability.name === "auth" && "authConfig" in capability);
+  if (found === undefined) return undefined;
+  const peer = (found as { authPeer?: Partial<AuthPeer> }).authPeer;
+  if (typeof peer?.authDatabase !== "function") {
+    throw new ValidationError({
+      message: "Testers reads who has used the app through auth, and the composed auth is too old to say.",
+      action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
+      detail:
+        "The composed auth capability carries no `authPeer`, so tester activity cannot be read: every tester would read unobservable and every daily snapshot would record nobody observed.",
+    });
+  }
+  return peer as AuthPeer;
 }
 
 /** Whether a composed capability is the testers capability — carries its resolved config. */
@@ -112,7 +134,8 @@ export function testers(options: TestersOptions = {}): TestersCapability {
       // naming what testers actually wanted it for.
       if (email) wiring.enqueue = email.enqueue;
       // Auth is optional: with it, the activity reader sees who has used the app; without it, every tester
-      // reads `unobservable`. Found here, never imported (#645) — see `activity/resolve.ts`.
+      // reads `unobservable`. Found here, never imported (#645) — see `activity/resolve.ts`. An auth too old
+      // to be read is refused, rather than read as none.
       wiring.auth = composedAuth(capabilities);
     },
     requiredBindings,
