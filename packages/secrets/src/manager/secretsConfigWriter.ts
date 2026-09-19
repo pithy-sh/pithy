@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
-import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { masterKeySecretName } from "../provision/provisionSecrets";
 import { ManagedEnvironment } from "../scope";
 import type { ConfigWriter } from "./configWriter";
@@ -55,6 +56,16 @@ export function rotationConfigWriter(
       message: "The secrets manager's ENVIRONMENT var is not a managed environment.",
       action: "Redeploy the manager with `pithy secrets provision`, which stamps it.",
       detail: `rotation write-back: ENVIRONMENT=${environment}`,
+    });
+  }
+  // **A feature's manager never writes back (#643).** It holds no Cloudflare API token and rotates nothing, so
+  // branch code never holds write access to the account's one Secrets Store. Composed as an environment, it
+  // would name `<project>-feature-…`, an entry every branch would write.
+  if (parsed.data === FEATURE_ENVIRONMENT) {
+    throw new ValidationError({
+      message: "A feature's secrets manager does not rotate its key.",
+      action: "Nothing to do. A feature's key is created once by pithy provision --feature and deleted with it.",
+      detail: "rotation write-back: ENVIRONMENT=feature",
     });
   }
   return new SecretsStoreConfigWriter(manager, masterKeySecretName(project, parsed.data));

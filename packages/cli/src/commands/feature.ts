@@ -6,20 +6,27 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareFeatureIndexes } from "../capabilities/vectorProvisioner";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { portsRegistryPath } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
+import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
-import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
+import {
+  AUDIT_DESTINATION_ENV,
+  cloudflareProvisioners,
+  cloudflareWorkerScripts,
+  cloudflareWorkflowDefinitions,
+} from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -41,7 +48,11 @@ const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
  * teardown cannot be addressed to two different accounts, and neither can be built without the other
  * (#592).
  */
-async function buildTeardown(account: CloudflareAccountSelection | null): Promise<Required<RemoteTeardown> | null> {
+async function buildTeardown(
+  account: CloudflareAccountSelection | null,
+  projectDir: string,
+  project: string,
+): Promise<Required<RemoteTeardown> | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -50,9 +61,20 @@ async function buildTeardown(account: CloudflareAccountSelection | null): Promis
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmed = { accountId, confirmation: cloudflareAccountConfirmation({ account }) };
   const clients = await cloudflareClients({ accountId, apiToken });
+  const provisioners = cloudflareProvisioners(clients, confirmed);
   return {
-    provisioners: cloudflareProvisioners(clients, confirmed),
+    provisioners,
     scripts: cloudflareWorkerScripts(clients, confirmed),
+    // Every kit host's Workflows, deleted by name (#643). No token: a feature's manager holds none.
+    workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),
+    indexes: cloudflareFeatureIndexes({
+      projectDir,
+      cf: clients,
+      accountId,
+      apiToken,
+      project,
+      workflows: await cloudflareWorkflows({ accountId, apiToken }),
+    }),
   };
 }
 
@@ -130,6 +152,10 @@ const create = defineCommand({
           action: "Use lowercase words joined by hyphens, e.g. media-cli.",
         });
       }
+
+      // Before a branch or a worktree exists: a slug too long for a name this feature would compose (#643).
+      // Feature names are never truncated, so the refusal names the longest slug this project takes.
+      await assertFeatureSlugFitsProject(projectDir, { issue: args.issue, slug: args.slug });
 
       // Capabilities are read from the worktree it creates, not from here: the feature branch is what
       // decides which Workers exist and what each composes.
@@ -305,7 +331,7 @@ const destroy = defineCommand({
         });
       }
       const account = await projectCloudflareAccount(projectDir);
-      const teardown = await buildTeardown(account);
+      const teardown = await buildTeardown(account, projectDir, identity.project);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
       // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the

@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
+import { featureConfigPath } from "../provision/featureConfig";
 import { composedForGrant, resolveConnectScopes, resolveConnectTarget } from "./resolveTarget";
 
 /** A capability that declares nothing but an admin surface — enough for a grant to be derived from it. */
@@ -171,5 +175,40 @@ describe("composedForGrant", () => {
       (await refusalOf(composedForGrant({ ...options, discoverWorkers: async () => [], target: null, all: true })))
         .message,
     ).toContain("No pithy.config.ts here.");
+  });
+});
+
+/**
+ * **`dashboard connect --env feature` registers the feature's own `workers.dev` origin (#643).** The stanza is
+ * the one provisioning generated, under `.wrangler/`, never the tracked `wrangler.jsonc` — reading the tracked
+ * file is what left a feature with no address to register.
+ */
+describe("resolveConnectTarget on a feature", () => {
+  test("registers the address provisioning stamped into the feature's generated stanza", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-connect-feature-"));
+    try {
+      const workerDir = join(dir, "apps", "board");
+      await mkdir(dirname(featureConfigPath(workerDir)), { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: "replay-board" }));
+      const origin = "https://replay-f643-feature-address--board.acme.workers.dev";
+      await writeFile(
+        featureConfigPath(workerDir),
+        JSON.stringify({
+          env: { feature: { name: "replay-f643-feature-address--board", vars: { BASE_URL: origin } } },
+        }),
+      );
+
+      const target = await resolveConnectTarget({
+        projectDir: dir,
+        environment: "feature",
+        discoverWorkers: async () => [{ name: "board", dir: workerDir }],
+        loadConfig: async () => ({ capabilities: [controlplane(), support] }) as WorkerConfig,
+      });
+
+      expect(target.workerUrl).toBe(origin);
+      expect(target.source).toBe("your workers.dev subdomain");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

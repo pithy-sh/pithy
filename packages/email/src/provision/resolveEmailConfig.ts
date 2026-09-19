@@ -3,7 +3,8 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
-import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { environmentScope, featureScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type {
   HostD1Binding,
   HostSecretsStoreBinding,
@@ -14,6 +15,7 @@ import type {
 import { hostWorkflowsFor, resolveWorkflowHost } from "@pithy-sh/core/src/workflow/host";
 import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING, emailSigningRegistry } from "../crypto/signingKey";
@@ -21,7 +23,7 @@ import { emailCatalogVarName } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { EmailScheduleParams, EmailSendParams } from "../workflows/params";
 import { type DevMailDelivery, emailRemoteBindings } from "./devDelivery";
-import { EMAIL_CAPABILITY, suppressionDatabaseName } from "./provisionEmail";
+import { EMAIL_CAPABILITY, EMAIL_SUPPRESSIONS_BINDING, suppressionDatabaseName } from "./provisionEmail";
 
 /**
  * The email worker's `wrangler.jsonc` template shape. Email invented the prebuilt-host convention;
@@ -141,6 +143,14 @@ export interface EmailConfigParams {
    * governs.
    */
   env: ManagedEnvironment | "dev";
+  /**
+   * **The feature this host serves, when it serves one (#643).** A feature gets its own email host, as a
+   * declared environment does, and everything the host is called or reads takes the feature's names: the
+   * Worker and its Workflows (`<project>-f<issue>-<slug>-email[-<job>]`), the feature's own master key and
+   * link-signing key entries, and the feature's own suppression database. `env` is then `feature`, which is
+   * what the host's `ENVIRONMENT` var says.
+   */
+  feature?: FeatureIdentity;
   /** The app database id for this environment — where jobs/events live. */
   appDatabaseId: string;
   /** The shared suppression database id (same in every environment). */
@@ -197,25 +207,37 @@ export function resolveEmailConfig(
   params: EmailConfigParams,
 ): EmailWorkerWranglerTemplate {
   const { project, env, appDatabaseId, suppressionDatabaseId, secretsDatabaseId, storeId, baseUrl, theme } = params;
+  const feature = params.feature;
+  // One scope for every name below, so a feature's host can never bind a declared environment's key or list.
+  const scope = feature ? featureScope(feature) : environmentScope(project, env);
   const resolved = resolveWorkflowHost(template, {
     project,
     capability: EMAIL_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: {
       DB: appDatabaseId,
       EMAIL_SUPPRESSIONS: suppressionDatabaseId,
       SECRETS: secretsDatabaseId,
     },
-    databaseNames: { EMAIL_SUPPRESSIONS: suppressionDatabaseName(project) },
+    // A feature migrates and owns its own suppression list, so it is named for the feature (`featureScope`
+    // does not honor `global`); a declared environment shares the project's one list.
+    databaseNames: {
+      EMAIL_SUPPRESSIONS: feature
+        ? scope.resource(EMAIL_SUPPRESSIONS_BINDING, "d1", { scope: "global" })
+        : suppressionDatabaseName(project),
+    },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
-    masterKeySecretName: masterKeySecretName(project, env),
+    masterKeySecretName: feature
+      ? scope.secretEntry(MASTER_KEY_BINDING, "environment")
+      : masterKeySecretName(project, env),
     // The link-signing key, at the entry `pithy secrets provision` created and bound the app Worker to —
     // composed by the same `environmentScope(...).secretEntry` call, from the declaration's own scope, so
     // the Worker that signs a link and the Worker that verifies it cannot be handed two different keys.
     // Keyed by the binding the template declares; the entry keeps the registry key's name (#603).
     secretNames: {
-      [EMAIL_LINK_SIGNING_KEY_BINDING]: environmentScope(project, env).secretEntry(
+      [EMAIL_LINK_SIGNING_KEY_BINDING]: scope.secretEntry(
         EMAIL_LINK_SIGNING_KEY,
         emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
       ),
@@ -229,7 +251,12 @@ export function resolveEmailConfig(
     remoteBindings: emailRemoteBindings(env, params.devDelivery ?? "remote"),
     // Both Workflows, derived from the registry. A Workflow name is account-scoped, so the deployed
     // name has to carry the project — the template's `pithy-email-send` cannot be suffixed into one.
-    workflows: hostWorkflowsFor(emailWorkflowRegistry, { project, capability: EMAIL_CAPABILITY, env }).workflows,
+    workflows: hostWorkflowsFor(emailWorkflowRegistry, {
+      project,
+      capability: EMAIL_CAPABILITY,
+      env,
+      ...(feature ? { feature } : {}),
+    }).workflows,
   });
   // The resolver fills fields; it never drops one. So every field this template narrows to required
   // survives — knowledge the generic return type cannot express, restored here.

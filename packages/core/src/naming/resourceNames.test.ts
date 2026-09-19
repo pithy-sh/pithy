@@ -119,16 +119,21 @@ describe("a feature's names", () => {
   const feature = names.feature({ issue: "95", slug: "media-cli" });
 
   it("reaches the feature shape from the same object, with the project already bound", () => {
-    expect(feature.resource("DB", "d1")).toBe("acme-f95-media-cli-db-d1");
-    expect(feature.worker("api")).toBe("acme-f95-media-cli-api");
+    expect(feature.resource("DB", "d1")).toBe("acme-f95-media-cli--db-d1");
+    expect(feature.worker("api")).toBe("acme-f95-media-cli--api");
   });
 
-  it("holds every feature name inside the Worker and R2 caps", () => {
+  it("refuses a feature name past the Worker or R2 cap rather than truncating it (#643)", () => {
     const big = resourceNames("a".repeat(MAX_PROJECT_NAME)).feature({
       issue: "9".repeat(MAX_ISSUE_DIGITS),
       slug: "s".repeat(60),
     });
-    expect(big.resource("SOME_VERY_LONG_BINDING_NAME", "kv").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
-    expect(big.worker("w".repeat(60)).length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
+    expect(() => big.resource("SOME_VERY_LONG_BINDING_NAME", "kv")).toThrow(PithyError);
+    expect(() => big.worker("w".repeat(60))).toThrow(PithyError);
+    const fits = resourceNames("a".repeat(MAX_PROJECT_NAME)).feature({
+      issue: "9".repeat(MAX_ISSUE_DIGITS),
+      slug: "s",
+    });
+    expect(fits.resource("DB", "kv").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
   });
 });

@@ -158,20 +158,20 @@ Every step is idempotent, so running it when nothing is missing reports that not
 The same branch-first identity that names a feature's D1/KV/R2 resources also names its **Workers**, so a feature environment is fully self-wiring in CI:
 
 ```
-<project>-f<issue>-<slug>-<worker>     acme-f69-media-cli-api      (Worker script)
-<project>-f<issue>-<slug>-<binding>-<kind>   acme-f69-media-cli-db-d1    (D1)
+<project>-f<issue>-<slug>--<worker>          acme-f69-media-cli--api      (Worker script)
+<project>-f<issue>-<slug>--<binding>-<kind>  acme-f69-media-cli--db-d1    (D1)
 ```
 
 `pithy provision --feature` writes into each Worker's config, under `env.<env>`:
 
 - **`name`** — the script name that Worker deploys under for the feature, so a preview deploy never overwrites production's.
-- **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli-api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.
+- **`services[]`** — every `service` binding retargeted at the *feature's* copy of the callee. A capability declares the target Worker on the binding (`{ type: "service", name: "API", service: "api" }`); the CLI resolves `api` to `acme-f69-media-cli--api`. Worker-to-worker RPC therefore stays inside the feature environment instead of reaching production.
 
 **Nothing is stored or committed to make this work.** Every name is derived from the branch, and an already-provisioned resource's id is recovered by looking that name up in Cloudflare — which is exactly what makes `provision` idempotent. On a second push, CI computes the same names, finds the existing D1/KV/R2, rewrites the same wiring, and deploys. There is no id file to merge, so there is nothing to conflict.
 
-A feature environment *is* an environment, so `f<issue>-<slug>` simply occupies the environment slot of the one project-scoped rule every other name follows (`docs/NAMING.md`).
+A feature environment *is* an environment, so `f<issue>-<slug>` simply occupies the environment slot of the one project-scoped rule every other name follows (`docs/NAMING.md`). **Two hyphens end the slug**, and nothing else Pithy composes holds two in a row, so a feature name can never be a declared environment's, a sibling branch's, or another project's (#643). A project whose name carries an `f` and a number as one segment, such as `acme-f12-x`, can have no feature environments; `docs/NAMING.md` says why.
 
-**This is the tightest shape Pithy composes, and it is the shape that caps the project name.** Held to R2's 63 characters, with 7 taken by the fixed literals — `-f`, three more hyphens, and the two-character kind — the four variable segments divide 56 between them: `project + issue + slug + binding = 56`. The issue number is reserved 6 digits, so a 12-character project with a `DB` binding leaves 36 characters of slug at a 6-digit issue, and 40 at a real 2-digit one. A slug over budget is truncated to a head plus a six-hex hash rather than refused — a feature name addresses nothing that outlives the feature, and failing CI over a long branch name would be the worse failure — but a hashed slug tells nobody reading a bucket listing which branch owns it. Keep the part of the branch name after the issue number to roughly 20 characters. `docs/NAMING.md` has the budget worked out per project length.
+**This is the tightest shape Pithy composes, and it is the shape that caps the project name.** Held to R2's 63 characters, with 8 taken by the fixed literals — `-f`, four more hyphens (two of them together, after the slug), and the two-character kind — the four variable segments divide 55 between them: `project + issue + slug + binding = 55`. The issue number is reserved 6 digits, so a 12-character project with a `DB` binding leaves 35 characters of slug at a 6-digit issue, and 39 at a real 2-digit one. A slug over budget is refused, never truncated: `pithy feature create` and `pithy provision --feature` name the longest slug the project takes at that issue (#643). A truncated slug was a short hash, and one branch's hash can be another branch's whole slug. Keep the part of the branch name after the issue number to roughly 20 characters. `docs/NAMING.md` has the budget worked out per project length.
 
 `<project>` is `pithy.config.ts`'s `name` — required for `pithy feature` naming, with no guessed fallback. `resolveProjectName`'s lenient guesses (an app Worker's `wrangler.jsonc` name, the project directory's basename) are not stable across machines and checkouts, and teardown has no record of a resource beyond its computed name: a wrong guess means `pithy feature destroy` computes names that match nothing, deletes nothing, and exits 0. Set `name` in `pithy.config.ts`; a project without one gets an actionable error the first time a feature command needs it.
 

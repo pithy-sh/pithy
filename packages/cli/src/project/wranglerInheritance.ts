@@ -232,7 +232,7 @@ export function describeUnrepeatedKey(found: UnrepeatedKey): string {
  * emptied.
  *
  * Repeating a key is not the same as duplicating its value, and the difference is the whole of this
- * function. `vars` and `version_metadata` say the same thing in every environment, so they come down
+ * function. (The one list carried whole is {@link CARRIED_WHOLE}'s, and it says why.) `vars` and `version_metadata` say the same thing in every environment, so they come down
  * verbatim. A `d1_databases` entry does not: it names one Cloudflare database by id, and carrying dev's
  * id into a stanza for `staging` would point staging at the database dev writes to. That is a *worse*
  * defect than the absent binding this module exists to fix — an absent binding fails loudly on the first
@@ -252,6 +252,25 @@ function seedValue(value: unknown): unknown {
     Object.entries(record).map(([key, entry]) => [key, Array.isArray(entry) ? [] : structuredClone(entry)]),
   );
 }
+
+/**
+ * **The non-inherited lists whose entries are the same in every environment — carried into a new stanza whole
+ * (#643).**
+ *
+ * {@link seedValue} empties every list, because a list's entries are almost always this environment's own
+ * resources, and carrying `dev`'s database into `staging` would be the quiet corruption it exists to prevent. A
+ * rate limiter is the exception, and it is one by the kit's own rule: `pithy add` derives a limiter's
+ * `namespace_id` from its binding name alone (`rateLimitNamespaceId`), identical in every environment, and its
+ * `simple` policy is the adopter's, stated once. Nothing in the entry names a resource an environment owns. So
+ * an emptied `ratelimits` was not caution — it was a feature stanza with no `AUTH_RATE_LIMITER`, and auth
+ * refusing every request on `Missing required bindings`.
+ *
+ * A name table rather than a shape rule, because no shape tells a limiter's `namespace_id` — a counter label —
+ * from a namespace's `id`. Every key here must also be one {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which
+ * `wranglerInheritance.test.ts` holds. `workflows` is deliberately not here: its entries name `dev`'s
+ * Workflows, and a scope that needs them writes its own (`feature/hosts.ts`).
+ */
+export const CARRIED_WHOLE: readonly string[] = ["ratelimits"];
 
 /** A config far enough to reach its stanzas. The caller casts back to whatever slice it cares about. */
 interface StanzaHost {
@@ -300,7 +319,9 @@ export function stanzaFor(config: unknown, env: string): Record<string, unknown>
   const existing = asRecord(host.env[env]);
   if (existing !== null) return existing;
   const seeded: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(topLevelKeysToRepeat(host))) seeded[key] = seedValue(value);
+  for (const [key, value] of Object.entries(topLevelKeysToRepeat(host))) {
+    seeded[key] = CARRIED_WHOLE.includes(key) ? value : seedValue(value);
+  }
   const vars = asRecord(seeded.vars);
   if (vars !== null && typeof vars[ENVIRONMENT_VAR] === "string") vars[ENVIRONMENT_VAR] = env;
   host.env[env] = seeded;

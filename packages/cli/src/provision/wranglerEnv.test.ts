@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { FeatureResource } from "../feature/manifest";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
-import { applyProvisionedEnv } from "./wranglerEnv";
+import { applyProvisionedEnv, bindFeatureHosts } from "./wranglerEnv";
 
 interface Stanza {
   name?: string;
@@ -43,9 +43,9 @@ describe("applyProvisionedEnv", () => {
   });
 
   const resources: FeatureResource[] = [
-    { kind: "d1", binding: "DB", name: "replay-f69-demo-db-d1", id: "uuid-1" },
-    { kind: "kv", binding: "CACHE", name: "replay-f69-demo-cache-kv", id: "ns-1" },
-    { kind: "r2", binding: "ASSETS", name: "replay-f69-demo-assets-r2", id: "bucket-1" },
+    { kind: "d1", binding: "DB", name: "replay-f69-demo--db-d1", id: "uuid-1" },
+    { kind: "kv", binding: "CACHE", name: "replay-f69-demo--cache-kv", id: "ns-1" },
+    { kind: "r2", binding: "ASSETS", name: "replay-f69-demo--assets-r2", id: "bucket-1" },
   ];
 
   /**
@@ -76,7 +76,7 @@ describe("applyProvisionedEnv", () => {
 
     expect(stanza?.d1_databases).toContainEqual({
       binding: "DB",
-      database_name: "replay-f69-demo-db-d1",
+      database_name: "replay-f69-demo--db-d1",
       database_id: "uuid-1",
     });
     expect(stanza?.kv_namespaces).toContainEqual({ binding: "CACHE", id: "ns-1" });
@@ -110,7 +110,7 @@ describe("applyProvisionedEnv", () => {
   test("is idempotent: re-running with a different id replaces rather than duplicates", async () => {
     await apply(feature);
     await apply(feature, {
-      resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo-db-d1", id: "uuid-2" }],
+      resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo--db-d1", id: "uuid-2" }],
     });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
@@ -119,26 +119,26 @@ describe("applyProvisionedEnv", () => {
   });
 
   /**
-   * `<project>-f<issue>-<slug>-<app>`, with the project once. This pinned `replay-f69-demo-replay-board`
+   * `<project>-f<issue>-<slug>-<app>`, with the project once. This pinned `replay-f69-demo--replay-board`
    * until #587 — the defect, locked in by the test that should have caught it.
    */
   test("names the Worker for the scope and points services at that scope's deployments", async () => {
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo--web" }] });
 
     const raw = await read(feature);
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
 
-    expect(stanza?.name).toBe("replay-f69-demo-board");
-    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web" }]);
+    expect(stanza?.name).toBe("replay-f69-demo--board");
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo--web" }]);
     expect(raw).toContain("// a starting comment");
   });
 
   test("retargets a service in place rather than duplicating it", async () => {
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web-v2" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo--web" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo--web-v2" }] });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
-    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web-v2" }]);
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo--web-v2" }]);
   });
 
   /**
@@ -152,7 +152,7 @@ describe("applyProvisionedEnv", () => {
         {
           binding: "SECRETS_ENCRYPTION_KEYS",
           store_id: "store-1",
-          secret_name: "replay-f69-demo-secrets-encryption-keys",
+          secret_name: "replay-f69-demo--secrets-encryption-keys",
         },
       ],
     });
@@ -161,7 +161,7 @@ describe("applyProvisionedEnv", () => {
         {
           binding: "SECRETS_ENCRYPTION_KEYS",
           store_id: "store-2",
-          secret_name: "replay-f69-demo-secrets-encryption-keys",
+          secret_name: "replay-f69-demo--secrets-encryption-keys",
         },
       ],
     });
@@ -171,7 +171,7 @@ describe("applyProvisionedEnv", () => {
       {
         binding: "SECRETS_ENCRYPTION_KEYS",
         store_id: "store-2",
-        secret_name: "replay-f69-demo-secrets-encryption-keys",
+        secret_name: "replay-f69-demo--secrets-encryption-keys",
       },
     ]);
   });
@@ -184,14 +184,14 @@ describe("applyProvisionedEnv", () => {
    */
   test("a feature's secrets do not cost it its name, its ids or its services", async () => {
     await apply(feature, {
-      services: [{ binding: "WEB", service: "replay-f69-demo-web" }],
-      secrets: [{ binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "replay-f69-demo-keys" }],
+      services: [{ binding: "WEB", service: "replay-f69-demo--web" }],
+      secrets: [{ binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "replay-f69-demo--keys" }],
     });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
-    expect(stanza?.name).toBe("replay-f69-demo-board");
+    expect(stanza?.name).toBe("replay-f69-demo--board");
     expect(stanza?.d1_databases?.[0]?.database_id).toBe("uuid-1");
-    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web" }]);
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo--web" }]);
     expect(stanza?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
   });
 
@@ -237,7 +237,7 @@ describe("applyProvisionedEnv", () => {
     await apply(feature, { administersItself: true });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
-    expect(stanza?.name).toBe("replay-f69-demo-board");
+    expect(stanza?.name).toBe("replay-f69-demo--board");
     expect(stanza?.services).toEqual([{ binding: "SELF", service: stanza?.name }]);
   });
 
@@ -255,7 +255,7 @@ describe("applyProvisionedEnv", () => {
     await apply(feature, { administersItself: true });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
-    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f69-demo-board" }]);
+    expect(stanza?.services).toEqual([{ binding: "SELF", service: "replay-f69-demo--board" }]);
   });
 
   /** Declared, never inferred: a project that says nothing gets nothing, and its stanza is untouched. */
@@ -268,12 +268,12 @@ describe("applyProvisionedEnv", () => {
 
   /** A capability's own service bindings keep their targets; the self entry joins them. */
   test("the self entry sits beside the service bindings a capability declares", async () => {
-    await apply(feature, { administersItself: true, services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
+    await apply(feature, { administersItself: true, services: [{ binding: "WEB", service: "replay-f69-demo--web" }] });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
     expect(stanza?.services).toEqual([
-      { binding: "WEB", service: "replay-f69-demo-web" },
-      { binding: "SELF", service: "replay-f69-demo-board" },
+      { binding: "WEB", service: "replay-f69-demo--web" },
+      { binding: "SELF", service: "replay-f69-demo--board" },
     ]);
   });
 
@@ -297,14 +297,14 @@ describe("applyProvisionedEnv", () => {
     );
 
     await apply(feature, {
-      resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo-db-d1", id: "new" }],
+      resources: [{ kind: "d1", binding: "DB", name: "replay-f69-demo--db-d1", id: "new" }],
     });
 
     const raw = await read(feature);
     expect(raw).toContain("// primary feature db"); // the in-array comment survived the write.
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
     expect(stanza?.d1_databases).toEqual([
-      { binding: "DB", database_name: "replay-f69-demo-db-d1", database_id: "new" },
+      { binding: "DB", database_name: "replay-f69-demo--db-d1", database_id: "new" },
     ]);
   });
 });
@@ -477,5 +477,323 @@ describe("a stanza applyProvisionedEnv creates", () => {
     expect((config as unknown as { env: Record<string, { vars?: Record<string, string> }> }).env.feature?.vars).toEqual(
       { ENVIRONMENT: "feature", PROJECT: "replay", WORKER: "board" },
     );
+  });
+});
+
+/**
+ * **A feature's generated stanza carries its own address (#643).**
+ *
+ * The Worker cannot look up the account's `workers.dev` subdomain, so provisioning does, derives
+ * `https://<script>.<subdomain>.workers.dev` through the one resolver, and stamps it as `vars.BASE_URL` — the
+ * var `originFor` reads inside a feature deployment. `replay` and `board`, so the script is neither.
+ */
+describe("the address applyProvisionedEnv stamps", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const feature = featureScope({ project: "replay", issue: "643", slug: "feature-address" });
+
+  const stanzaVars = async (path: string, key: string): Promise<Record<string, string> | undefined> =>
+    (parse(await readFile(path, "utf8")) as unknown as { env: Record<string, { vars?: Record<string, string> }> }).env[
+      key
+    ]?.vars;
+
+  const provision = (scope: typeof feature, subdomain: string | null) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+      subdomain,
+    });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envaddress-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+    // A hand-set top-level `BASE_URL`, production's: exactly what a feature stanza must not inherit as its address.
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a feature's is its script's workers.dev origin", async () => {
+    await provision(feature, "acme");
+
+    expect(await stanzaVars(featureConfigPath(dir), "feature")).toEqual({
+      ENVIRONMENT: "feature",
+      PROJECT: "replay",
+      WORKER: "board",
+      BASE_URL: "https://replay-f643-feature-address--board.acme.workers.dev",
+    });
+  });
+
+  test("an account with no subdomain gets no address, and never the inherited one", async () => {
+    await provision(feature, null);
+
+    expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
+  });
+
+  test("a top-level workers_dev: false, which wrangler inherits, stamps no workers.dev address (#643)", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        workers_dev: false,
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+
+    await provision(feature, "acme");
+
+    expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
+  });
+
+  /**
+   * **Finding 3: a top-level route never reaches a feature (#643).** wrangler inherits `routes` into a stanza that
+   * sets none, so a branch deploy took the project's custom domain, and with routes and no `workers_dev` it got no
+   * `workers.dev` address while provisioning stamped one. The feature stanza now states `routes: []` — its own,
+   * which wins — and its stamped address is the one wrangler will give it.
+   */
+  test("a top-level route is stripped from the feature stanza, and the workers.dev address is still stamped", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        routes: [{ pattern: "app.example.com", custom_domain: true }],
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+
+    await provision(feature, "acme");
+
+    const generated = parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+      env: { feature: { routes?: unknown[]; route?: unknown; vars?: Record<string, string> } };
+    };
+    // As wrangler resolves it: the stanza's own `routes` wins over the top level's, so the feature has none.
+    expect(generated.env.feature.routes).toEqual([]);
+    expect(generated.env.feature.route).toBeUndefined();
+    expect(generated.env.feature.vars?.BASE_URL).toBe("https://replay-f643-feature-address--board.acme.workers.dev");
+  });
+
+  test("a top-level route is stripped with no subdomain to stamp from, too", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", route: "app.example.com" }));
+
+    await provision(feature, null);
+
+    const generated = parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+      env: { feature: { routes?: unknown[] } };
+    };
+    expect(generated.env.feature.routes).toEqual([]);
+  });
+
+  test("a declared environment's stanza keeps what the tracked file says about routes", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", routes: ["app.example.com"] }));
+
+    await provision(environmentScope("replay", "staging"), "acme");
+
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: { staging: { routes?: unknown[] } };
+    };
+    expect(tracked.env.staging.routes).toBeUndefined();
+  });
+
+  test("a declared environment is never stamped from workers.dev (#89)", async () => {
+    await provision(environmentScope("replay", "staging"), "acme");
+
+    expect((await stanzaVars(wranglerPath, "staging"))?.BASE_URL).toBe("https://app.example.com");
+  });
+});
+
+/**
+ * **F4 of #643's review: what a feature stanza gives up, and what it must carry.** Routes are stripped from a
+ * feature stanza — and the run is told which, whether they were inherited or declared under a tracked
+ * `env.feature`. Rate limiters are bound whether or not that stanza already exists, and every one of them gets
+ * the feature's own namespace: nothing is shared between a feature and any other environment.
+ */
+describe("a feature stanza's routes and rate limiters", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const identity = { project: "replay", issue: "643", slug: "feature-address" };
+  const feature = featureScope(identity);
+  const LIMITER = { name: "AUTH_RATE_LIMITER", namespace_id: "1001", simple: { limit: 10, period: 60 } };
+
+  const provision = (onRoutesDropped?: (routes: string[]) => void) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope: feature,
+      resources: [],
+      services: [],
+      secrets: [],
+      subdomain: "acme",
+      ...(onRoutesDropped ? { onRoutesDropped } : {}),
+    });
+  const generated = async () =>
+    (
+      parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+        env: { feature: { ratelimits?: { name: string; namespace_id: string }[]; routes?: unknown[] } };
+      }
+    ).env.feature;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envlimits-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("tells the operator which inherited routes it stripped", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", routes: ["app.example.com/*"] }));
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([["app.example.com/*"]]);
+    expect((await generated()).routes).toEqual([]);
+  });
+
+  test("tells the operator which routes a tracked env.feature declared, and strips them too", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        routes: ["app.example.com/*"],
+        env: { feature: { route: { pattern: "preview.example.com/*" }, routes: ["beta.example.com/*"] } },
+      }),
+    );
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([["preview.example.com/*", "beta.example.com/*"]]);
+    expect((await generated()).routes).toEqual([]);
+  });
+
+  test("says nothing when there was no route to strip", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([]);
+  });
+
+  test("copies the top level's limiter into a tracked env.feature that lacks it, in the feature's own namespace", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", ratelimits: [LIMITER], env: { feature: { vars: { A: "b" } } } }),
+    );
+    await provision();
+    const limits = (await generated()).ratelimits ?? [];
+    expect(limits.map((entry) => entry.name)).toEqual(["AUTH_RATE_LIMITER"]);
+    expect(limits[0]?.namespace_id).toBe("1000001001");
+    expect(limits[0]?.namespace_id).not.toBe(LIMITER.namespace_id);
+  });
+
+  test("never keeps the top level's namespace in a stanza it creates", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", ratelimits: [LIMITER] }));
+    await provision();
+    expect((await generated()).ratelimits?.map((entry) => entry.namespace_id)).toEqual(["1000001001"]);
+  });
+
+  test("renumbers a namespace a tracked env.feature declared, since every branch would share it", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: { feature: { ratelimits: [{ ...LIMITER, name: "FEATURE_LIMITER", namespace_id: "2002" }] } },
+      }),
+    );
+    await provision();
+    expect((await generated()).ratelimits?.map((entry) => [entry.name, entry.namespace_id])).toEqual([
+      ["FEATURE_LIMITER", "1000002002"],
+    ]);
+  });
+
+  test("gives two limiters two namespaces, each its own fixed one", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        ratelimits: [LIMITER, { ...LIMITER, name: "UPLOAD_LIMITER", namespace_id: "2002" }],
+      }),
+    );
+    await provision();
+    expect((await generated()).ratelimits?.map((entry) => [entry.name, entry.namespace_id])).toEqual([
+      ["AUTH_RATE_LIMITER", "1000001001"],
+      ["UPLOAD_LIMITER", "1000002002"],
+    ]);
+  });
+
+  test("refuses a limiter it cannot map, rather than keep the declared one", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", ratelimits: [{ ...LIMITER, namespace_id: "2000000001" }] }),
+    );
+    await expect(provision()).rejects.toThrow(/rate limiter AUTH_RATE_LIMITER declares namespace 2000000001/);
+  });
+});
+
+/**
+ * **F2 of #643's review: a host that failed to deploy leaves no binding to it.** The app Worker's entries into
+ * the kit hosts are written after the deploy, and only for the hosts that deployed — and a re-run whose host now
+ * fails takes back the entry an earlier run wrote.
+ */
+describe("bindFeatureHosts", () => {
+  let dir: string;
+  const EMAIL = {
+    binding: "EMAIL_SENDER",
+    name: "replay-f643-feature-address--email-send",
+    class_name: "EmailSendWorkflow",
+    script_name: "replay-f643-feature-address--email",
+  };
+  const MEDIA = {
+    binding: "MEDIA_IMAGE_TO_TEXT",
+    name: "replay-f643-feature-address--media-image-to-text",
+    class_name: "ImageToTextWorkflow",
+    script_name: "replay-f643-feature-address--media",
+  };
+  const OWN = { binding: "KEY_ROTATION", name: "replay-f643-feature-address--app-rotate", class_name: "Rotate" };
+
+  const workflows = async () =>
+    (
+      parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+        env: { feature: { workflows?: { binding: string }[]; vectorize?: { binding: string; index_name: string }[] } };
+      }
+    ).env.feature;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envhosts-"));
+    await mkdir(join(dir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(dir), JSON.stringify({ name: "board", env: { feature: { workflows: [OWN] } } }));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("binds only the hosts that deployed, and keeps the Worker's own entries", async () => {
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [EMAIL], indexes: [] });
+    expect((await workflows()).workflows?.map((entry) => entry.binding)).toEqual(["KEY_ROTATION", "EMAIL_SENDER"]);
+  });
+
+  test("takes back an entry an earlier run wrote when its host now fails", async () => {
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [EMAIL, MEDIA], indexes: [] });
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [MEDIA], indexes: [] });
+    expect((await workflows()).workflows?.map((entry) => entry.binding)).toEqual([
+      "KEY_ROTATION",
+      "MEDIA_IMAGE_TO_TEXT",
+    ]);
+  });
+
+  test("binds the feature's own indexes by binding", async () => {
+    const index = { binding: "VECTORIZE", name: "replay-f643-feature-address--vector-notes" };
+    await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
+    await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
+    expect((await workflows()).vectorize).toEqual([{ binding: "VECTORIZE", index_name: index.name }]);
   });
 });

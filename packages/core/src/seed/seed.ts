@@ -163,8 +163,10 @@ export interface SeedPrepareContext {
   /** The project name (the root `pithy.config.ts` `name`), for messages and per-project lookups. */
   project: string;
   /**
-   * Where this Worker answers locally — `http://localhost:8807` and the like. `null` outside `dev`, and
-   * `null` in a checkout that was never allocated a port block.
+   * Where this Worker answers — in `dev`, locally, `http://localhost:8807` and the like; off `dev`, its own
+   * address (#643): a declared environment's declared one, a feature's `https://<script>.<subdomain>.workers.dev`.
+   * `pithy seed --host` overrides it. `null` in a checkout that was never allocated a port block, and for a
+   * deployed Worker with no address at all.
    *
    * The one address a fixture cannot write down. A dev port is *allocated*, not configured: a checkout
    * reserves a block and pins one port per Worker into `.dev.config.json`, so `http://localhost:8787` is
@@ -181,15 +183,17 @@ export interface SeedPrepareContext {
    * moves. Identity must not.
    *
    * **`null` is an answer, never a guess.** A plain clone that has never run `pithy dev`, a Worker added
-   * after the block was pinned, or any environment but `dev` — a deployed environment's address is
-   * declared rather than allocated, and `pithy env` is what answers it. An invented origin would be
-   * indistinguishable from a real one, so a set that cannot work without one refuses and says so.
+   * after the block was pinned, or a deployed Worker that declares no address and has none to derive. An
+   * invented origin would be indistinguishable from a real one, so a set that cannot work without one
+   * refuses and says so.
    */
   origin: string | null;
   /**
    * Read one of this environment's secrets by name, or `undefined` when it is not set. Local dev resolves
-   * every secret from `.dev.vars`, so this answers there; a deployed environment's secrets are not on the
-   * operator's disk, and a set that needs one must therefore be `dev`-only.
+   * every secret from the dev secrets file, so this answers there; a deployed environment's secrets are not
+   * on the operator's disk, so there it refuses, and a set that needs one must be `dev`-only. A feature is a
+   * deployed environment here too (#643): its secrets exist only in its own Cloudflare stores, which the CLI
+   * can write and never read.
    */
   secret: (name: string) => Promise<string | undefined>;
   /**

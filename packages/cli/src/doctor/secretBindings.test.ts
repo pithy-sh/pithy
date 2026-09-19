@@ -306,6 +306,11 @@ function secretsStore(store: Store): SecretsStore {
     put: async (name, value) => {
       store.set(name, value);
     },
+    create: async (name, value) => {
+      if (store.has(name)) return "present" as const;
+      store.set(name, value);
+      return "created" as const;
+    },
     remove: async (name) => store.delete(name),
   };
 }
@@ -317,6 +322,12 @@ function d1(rows: Rows, env: string): SystemSecretsStore {
     has: async (name: string) => rows.has(key(name)),
     put: async (name: string, value: VersionedValue) => {
       rows.set(key(name), value);
+    },
+    // Insert-if-absent, as the real store's one statement is: a create never replaces a row.
+    create: async (name: string, value: VersionedValue) => {
+      if (rows.has(key(name))) return false;
+      rows.set(key(name), value);
+      return true;
     },
     delete: async (name: string) => {
       rows.delete(key(name));

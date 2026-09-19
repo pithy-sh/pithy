@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type {
   PreflightSecretDispatcher,
   SecretProbe,
@@ -32,6 +33,8 @@ export async function buildSecretDispatcher(
   accountId: string,
   apiToken: string,
   project: string,
+  /** A feature's own manager, when the writes are a feature's (#643) — see `WorkflowSecretDispatcher`. */
+  feature?: FeatureIdentity,
 ): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder> {
-  return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project);
+  return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project, feature);
 }

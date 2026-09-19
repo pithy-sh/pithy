@@ -100,25 +100,17 @@ describe("the secrets provision defers, and who can create them", () => {
   });
 
   /**
-   * **The defect, stated as the set it produced.** `--feature` used to name `pithy secrets provision`,
-   * which cannot create these for a branch. No command can, so the set is empty — and a future edit that
-   * invents one has to make it real before this passes again.
+   * **A branch has its own manager since #643**, and `pithy provision --feature` creates these through it. So a
+   * feature run defers them only when it had no Secrets Store to give the manager a key, and it says the run
+   * that creates them: the same one, with the store id set. It never names `pithy secrets provision`, which
+   * reaches only the declared environments.
    */
-  test("--feature names no command, because none can create them for a branch", () => {
+  test("--feature names its own run, with the store it lacked", () => {
     const mode = MODES[1];
     if (mode === undefined) throw new Error("no feature mode");
     const lines = pendingSecretLines(pendingSecrets(SHIPPED, mode));
-    expect(commandsNamed(lines)).toEqual([]);
-    expect(pendingSecrets(SHIPPED, mode).remedy).toBeNull();
-  });
-
-  /** A shortfall stated, not a blank. The line says nothing creates them and what that leaves behind. */
-  test("--feature states the shortfall rather than trailing off", () => {
-    const mode = MODES[1];
-    if (mode === undefined) throw new Error("no feature mode");
-    const advice = pendingSecretLines(pendingSecrets(SHIPPED, mode))[1] ?? "";
-    expect(advice).toMatch(/no command creates these/i);
-    expect(advice).toMatch(/without them/i);
+    expect(commandsNamed(lines)).toEqual(["pithy provision"]);
+    expect(lines[1]).toBe("Run pithy provision --feature with SECRETS_STORE_ID set to create them.");
   });
 
   /**

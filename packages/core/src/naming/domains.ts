@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { ENVIRONMENTS } from "./environment";
+import { type AmbientEnv, ambientEnv } from "../env/ambient";
+import { BASE_URL_VAR } from "../worker/identity";
+import { ENVIRONMENTS, FEATURE_ENVIRONMENT } from "./environment";
 
 /**
  * Where a Worker answers, declared once per Worker per environment.
@@ -38,6 +40,18 @@ import { ENVIRONMENTS } from "./environment";
 
 /** A hostname a Worker answers on. No scheme, no path, no port — wrangler's `routes` pattern is a host. */
 const HOSTNAME_PATTERN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
+
+/**
+ * Whether a string is a public hostname: dot-separated DNS labels, at least two, lowercase. No scheme, no
+ * port, no trailing dot, and nothing a URL parser decoded into one — `%2e%2e` is `..` once parsed, which is an
+ * empty label rather than a host (#643). `localhost` is not one: it has a single label, and it is this machine.
+ *
+ * The one test for "is this a host" that an origin read from a stamp and an origin typed on a command line
+ * both pass, so the two cannot accept different things.
+ */
+export function isPublicHostname(hostname: string): boolean {
+  return hostname.length <= 253 && HOSTNAME_PATTERN.test(hostname);
+}
 
 /** The environments a domain may be declared for — every managed one, never `dev`. */
 export const DOMAIN_ENVIRONMENTS = ENVIRONMENTS.filter((environment) => environment !== "dev");
@@ -135,8 +149,44 @@ export interface ResolvedOrigin {
   origin: string;
   /** The hostname alone: a route pattern, and what Turnstile binds a widget to. */
   hostname: string;
-  /** Whether `domains` declared it. `false` means {@link LOCAL_ORIGIN} was substituted. */
+  /**
+   * Whether `domains` declared it. `false` means {@link LOCAL_ORIGIN} was substituted, or — for a feature
+   * environment only — that the address is the `workers.dev` one provisioning stamped ({@link featureOrigin}).
+   */
   declared: boolean;
+}
+
+/**
+ * **A feature environment's origin: the `workers.dev` address provisioning stamped, or null (#643).**
+ *
+ * A feature Worker answers on `https://<script>.<account subdomain>.workers.dev`. Nothing can declare that —
+ * `domains` has no feature key, because a branch's hostname is composed from the branch — and the Worker cannot
+ * derive it either, because the subdomain is the account's and only the Cloudflare API knows it. So `pithy
+ * provision --feature` derives it, through the CLI's one address resolver, and stamps it as the feature
+ * stanza's {@link BASE_URL_VAR}. This is the one reader of that stamp.
+ *
+ * **Only a `workers.dev` https origin is accepted, and that is the guard rather than a tidiness check.** A
+ * feature stanza is generated from the Worker's top level, so a `BASE_URL` somebody set by hand up there
+ * arrives in the feature too — and it is another environment's origin, most likely production's. Honoring it
+ * would send a branch's magic links into production, which is the one thing {@link resolveOrigin} exists to
+ * make impossible. A feature's address is `workers.dev` by construction, so anything else is not one and
+ * resolves to nothing. No path, no port, no credentials: an origin, or null.
+ */
+export function featureOrigin(stamped: string | undefined): { origin: string; hostname: string } | null {
+  if (!stamped) return null;
+  let url: URL;
+  try {
+    url = new URL(stamped);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.port !== "" || url.username !== "" || url.password !== "") return null;
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return null;
+  // A script name and an account subdomain, at least: `workers.dev` alone, or `<sub>.workers.dev`, is not a Worker.
+  if (!url.hostname.endsWith(".workers.dev") || url.hostname.split(".").length < 4) return null;
+  // Every label a DNS label: the parser decodes `%2e%2e` into `..`, which ends in `.workers.dev` and is no host.
+  if (!isPublicHostname(url.hostname)) return null;
+  return { origin: url.origin, hostname: url.hostname };
 }
 
 /**
@@ -164,10 +214,21 @@ export interface ResolvedOrigin {
  * checks that stored value, so a per-environment issuer would make a connection minted in staging
  * unverifiable in production. That may be the better isolation, but it is a decision about trust rather
  * than about reachability, and a helper whose job is "where am I reachable" must not sweep it up.
+ *
+ * **`stamped` is a feature environment's `BASE_URL`, and is read for nothing else** — see {@link featureOrigin}.
  */
-export function resolveOrigin(environment: string | undefined, domains: WorkerDomains | undefined): ResolvedOrigin {
+export function resolveOrigin(
+  environment: string | undefined,
+  domains: WorkerDomains | undefined,
+  stamped?: string | undefined,
+): ResolvedOrigin {
   const domain = domainFor(domains, environment);
   if (domain) return { origin: baseUrlFor(domain), hostname: domain.pattern, declared: true };
+  // A feature environment, and only a feature environment, reads the address provisioning stamped. Every other
+  // environment ignores `stamped` outright: a declared one without a domain is unpublished, and `dev` resolves
+  // its address from the request.
+  const feature = environment === FEATURE_ENVIRONMENT ? featureOrigin(stamped) : null;
+  if (feature) return { ...feature, declared: false };
   return { origin: LOCAL_ORIGIN, hostname: "localhost", declared: false };
 }
 
@@ -188,7 +249,16 @@ export function resolveOrigin(environment: string | undefined, domains: WorkerDo
  * `AUTH_BASE_URL`, which is part of why `email` and `payments` were missed for days: the constant read
  * as auth's private business when it is the Worker's address, and every capability that needs an origin
  * needs this one.
+ *
+ * **A feature deployment is answered from its own vars (#643).** `env` is the ambient environment — inside a
+ * Worker, its own vars — and it is read for one thing: the `BASE_URL` a feature's provisioning stamped. So the
+ * same scaffolded line gives auth's base URL, email's links and payments' return URLs a feature's real
+ * `workers.dev` origin, rather than `http://localhost`, with nothing added to the adopter's config.
  */
-export function originFor(environment: string | undefined, domains: WorkerDomains | undefined): string {
-  return resolveOrigin(environment, domains).origin;
+export function originFor(
+  environment: string | undefined,
+  domains: WorkerDomains | undefined,
+  env: AmbientEnv = ambientEnv(),
+): string {
+  return resolveOrigin(environment, domains, env[BASE_URL_VAR]).origin;
 }

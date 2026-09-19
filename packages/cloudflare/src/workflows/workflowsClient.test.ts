@@ -9,11 +9,13 @@ import { CloudflareWorkflowsClient } from "./workflowsClient";
 const mockCreate = vi.fn();
 const mockGet = vi.fn();
 const mockWorkflowsList = vi.fn();
+const mockWorkflowsDelete = vi.fn();
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
     workflows = {
       list: mockWorkflowsList,
+      delete: mockWorkflowsDelete,
       instances: { create: mockCreate, get: mockGet },
     };
   },
@@ -157,5 +159,37 @@ describe("CloudflareWorkflowsClient", () => {
       expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_timeout", status: 504 }) }),
     );
     expect(mockGet).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * **Teardown's two calls (#643).** Cloudflare does not say whether deleting a script deletes its Workflows, so
+   * `pithy feature destroy` lists them by the script that hosts them and deletes each one itself.
+   */
+  test("listWorkflows reads each definition's name and hosting script, and refuses a shape it cannot read", async () => {
+    mockWorkflowsList.mockReturnValue(
+      (async function* () {
+        yield { id: "1", name: "acme-f1-a-email-send", script_name: "acme-f1-a-email", class_name: "X" };
+      })(),
+    );
+    expect(await client().listWorkflows()).toEqual([{ name: "acme-f1-a-email-send", script_name: "acme-f1-a-email" }]);
+
+    mockWorkflowsList.mockReturnValue(
+      (async function* () {
+        yield { id: "2", name: "no-script" };
+      })(),
+    );
+    await expect(client().listWorkflows()).rejects.toThrow();
+  });
+
+  test("deleteWorkflow deletes by name, and answers false for one already gone", async () => {
+    mockWorkflowsDelete.mockResolvedValueOnce({ status: "ok" });
+    expect(await client().deleteWorkflow("acme-f1-a-email-send")).toBe(true);
+    expect(mockWorkflowsDelete).toHaveBeenCalledWith("acme-f1-a-email-send", { account_id: "acc" });
+
+    mockWorkflowsDelete.mockRejectedValueOnce(notFound());
+    expect(await client().deleteWorkflow("acme-f1-a-email-send")).toBe(false);
+
+    mockWorkflowsDelete.mockRejectedValueOnce(Object.assign(new Error("Forbidden"), { status: 403 }));
+    await expect(client().deleteWorkflow("acme-f1-a-email-send")).rejects.toThrow();
   });
 });

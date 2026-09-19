@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { featureMarkerInProjectName } from "@pithy-sh/core/src/naming/feature";
 import {
   assertValidProjectName,
   isReservedProjectName,
@@ -730,6 +731,22 @@ function assertNotReserved(appName: string): void {
   });
 }
 
+/**
+ * **Refuse a new project whose name carries an `f<digits>` segment (#643).** It is the shape a feature's issue
+ * takes, so such a project could have no feature environments — another project's branch could compose its
+ * feature names. Creation only, like the reservation above: an existing project keeps working, `pithy doctor`
+ * says it can have no features, and `pithy provision --feature` refuses. Nothing is renamed.
+ */
+function assertNoFeatureMarker(appName: string): void {
+  const marker = featureMarkerInProjectName(appName);
+  if (marker === null) return;
+  throw new ValidationError({
+    message: `"${appName}" carries ${marker}, the shape a feature's issue takes. A project named that can have no feature environments.`,
+    action: "Pick a project name with no f and a number as one segment. Run pithy init again.",
+    detail: `A feature name is <project>-f<issue>-<slug>--<thing>, read from the first f<digits> segment.`,
+  });
+}
+
 /** The Worker `pithy init` scaffolds first. Every Worker lives in `apps/<name>/`; this is just the default one. */
 /**
  * The scaffolded app capability's name — which is also its **migration namespace**, and namespaces admit no
@@ -1015,6 +1032,7 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
   // the only fix — orphans everything already created. The one moment it costs nothing is this one.
   assertValidProjectName(options.appName);
   assertNotReserved(options.appName);
+  assertNoFeatureMarker(options.appName);
 
   // The declaration is checked with the names, before the directory exists: an environment name reaches
   // Cloudflare resource names verbatim, and `init` is the one moment a project can still be told no.

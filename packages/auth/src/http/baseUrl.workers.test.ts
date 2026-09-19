@@ -9,6 +9,7 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { originFor } from "@pithy-sh/core/src/naming/domains";
 import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
@@ -83,12 +84,16 @@ function appEnv(): Record<string, unknown> {
  * Compose the capability the way `createBackend` does — middleware in order, then routes — plus one
  * route of the adopter's own behind the zero-argument same-origin gate.
  */
-function compose(environment: string | undefined): Hono<PithyHonoEnv> {
+function compose(
+  environment: string | undefined,
+  baseURL: () => string = () => PRODUCTION_BASE_URL,
+): Hono<PithyHonoEnv> {
   if (environment === undefined) delete process.env.ENVIRONMENT;
   else process.env.ENVIRONMENT = environment;
 
   const emailCapability = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
-  const capability = auth({ baseURL: PRODUCTION_BASE_URL });
+  // Called after the environment is stamped, the way a Worker evaluates its `pithy.config.ts` at module scope.
+  const capability = auth({ baseURL: baseURL() });
   capability.compose?.({ capabilities: [emailCapability] });
 
   const app = new Hono<PithyHonoEnv>();
@@ -157,6 +162,7 @@ beforeEach(async () => {
 afterEach(() => {
   resetSharedSecrets();
   delete process.env.ENVIRONMENT;
+  delete process.env.BASE_URL;
 });
 
 test("a dev composition with an HTTPS baseURL reads the session the dev login minted", async () => {
@@ -223,4 +229,36 @@ test("production is untouched: the configured origin passes and the local one do
     appEnv(),
   );
   expect(refused.status).toBe(403);
+});
+
+/**
+ * **A feature deployment's base URL is its own `workers.dev` origin (#643), not `http://localhost`.**
+ *
+ * The config is the one `pithy init` scaffolds — `originFor(compositionEnvironment(), DOMAINS)` — and the
+ * feature stanza carries what `pithy provision --feature` stamps: `ENVIRONMENT=feature` and the derived
+ * `BASE_URL`. Nothing in the adopter's config names a feature, so this is the scaffolded line reading the
+ * stamp. Project `replay`, Worker `board`: two names, so a script composed from the wrong one cannot pass.
+ */
+test("a feature composition's base URL is the workers.dev origin its provisioning stamped", async () => {
+  const FEATURE_ORIGIN = "https://replay-f643-feature-address--board.acme.workers.dev";
+  process.env.BASE_URL = FEATURE_ORIGIN;
+  const DOMAINS = { prod: { pattern: "app.pithy.sh", zone: "pithy.sh" } };
+  const app = compose("feature", () => originFor(process.env.ENVIRONMENT, DOMAINS));
+
+  const allowed = await app.request(
+    `${FEATURE_ORIGIN}/organizations`,
+    { method: "POST", headers: { cookie: "session=t", origin: FEATURE_ORIGIN } },
+    appEnv(),
+  );
+  expect(allowed.status).toBe(200);
+
+  // Not the placeholder, and not production's either.
+  for (const origin of ["http://localhost", PRODUCTION_BASE_URL]) {
+    const refused = await app.request(
+      `${FEATURE_ORIGIN}/organizations`,
+      { method: "POST", headers: { cookie: "session=t", origin } },
+      appEnv(),
+    );
+    expect(refused.status, origin).toBe(403);
+  }
 });

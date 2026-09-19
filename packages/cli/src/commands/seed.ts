@@ -162,6 +162,11 @@ export default defineCommand({
       type: "string",
       description: `Unlock production non-interactively: "${PRODUCTION_CONFIRM_PHRASE}"`,
     },
+    host: {
+      type: "string",
+      description:
+        "The host a prepared set's origin is built from, e.g. preview.example.com. Defaults to the Worker's own address",
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
@@ -221,6 +226,9 @@ export default defineCommand({
         confirmReset: args["confirm-reset"],
         ...(destroyRetained !== undefined ? { destroyRetained } : {}),
         productionEnvironments: config.seed?.productionEnvironments,
+        // The origin a prepared set is handed. Absent, each Worker's own address: its pinned port in `dev`, its
+        // declared domain in a declared environment, its `workers.dev` origin on a feature (#643).
+        ...(args.host !== undefined ? { host: args.host } : {}),
         prompt: interactive ? productionPrompt() : undefined,
         promptReset: interactive ? resetPrompt(env) : undefined,
         audit: await buildSeedAudit(

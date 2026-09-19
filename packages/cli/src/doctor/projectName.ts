@@ -5,6 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
+import { featureMarkerInProjectName } from "@pithy-sh/core/src/naming/feature";
 import { assertValidProjectName, isValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
@@ -124,6 +125,12 @@ export interface ProjectNameCheck {
   project: string | null;
   /** Every declared resource name leading with a different project segment. Empty unless drifted or orphaned. */
   misnamed: MisnamedResource[];
+  /**
+   * The `f<digits>` segment the name carries, when it carries one (#643) — the shape a feature's issue takes, so
+   * this project can have no feature environments. Its staging and prod are unaffected, and nothing is renamed:
+   * a rename orphans every resource already provisioned, which is the adopter's call to make, not doctor's.
+   */
+  featureMarker?: string;
 }
 
 /** One resource name a Worker's `wrangler.jsonc` declares, with the environment and binding it belongs to. */
@@ -475,6 +482,17 @@ export async function checkProjectName(
   projectDir: string,
   options: CheckProjectNameOptions = {},
 ): Promise<ProjectNameCheck | null> {
+  const check = await checkProjectNameAgreement(projectDir, options);
+  if (check === null || check.state === "invalid" || check.project === null) return check;
+  const marker = featureMarkerInProjectName(check.project);
+  return marker === null ? check : { ...check, featureMarker: marker };
+}
+
+/** Whether the configured name and the names the Workers declare agree — {@link checkProjectName} without #643. */
+async function checkProjectNameAgreement(
+  projectDir: string,
+  options: CheckProjectNameOptions = {},
+): Promise<ProjectNameCheck | null> {
   let config: ProjectConfig;
   try {
     config = await loadProject(projectDir);
@@ -550,6 +568,13 @@ function projectNameProblem(name: string): string {
 
 /** The one-line report for `renderDoctorText`, and the `action` a failing state should prompt. */
 export function describeProjectName(check: ProjectNameCheck): string {
+  const verdict = describeNameAgreement(check);
+  if (check.featureMarker === undefined) return verdict;
+  return `${verdict}. No feature environments: the name carries ${check.featureMarker}, the shape a feature's issue takes, so another project's features could compose this one's feature names. Staging and prod are unaffected, and nothing is renamed — a rename orphans everything already provisioned`;
+}
+
+/** The name-agreement half of {@link describeProjectName}. */
+function describeNameAgreement(check: ProjectNameCheck): string {
   switch (check.state) {
     case "ok":
       return `${check.project} — every resource name matches`;

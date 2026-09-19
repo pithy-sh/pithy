@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { PithyError, ValidationError } from "../error/pithyError";
 import { MAX_ENVIRONMENT_NAME } from "../naming/environment";
+import { featureWorkerName } from "../naming/feature";
 import { MAX_CAPABILITY_JOB } from "../naming/limits";
 import { MAX_PROJECT_NAME, resourceName } from "../naming/resource";
 import {
@@ -276,5 +277,55 @@ describe("workflowKey", () => {
 
   it("rejects an invalid segment", () => {
     expect(() => workflowKey("media", "image_to_text")).toThrow(PithyError);
+  });
+});
+
+/**
+ * **A feature's host and its Workflows take the feature's head (#643).** Worker and Workflow names are
+ * account-wide, so `<project>-feature-email-send` would be one Workflow every open branch deployed over every
+ * other's. Handed the feature, both names are the feature's own, and match the feature's other Worker names.
+ */
+describe("host names for a feature", () => {
+  const feature = { project: "replay", issue: "643", slug: "feature-address" };
+
+  it("names the host Worker and each Workflow for the feature, never for the literal environment", () => {
+    expect(workflowHostName({ project: "replay", capability: "email", env: "feature", feature })).toBe(
+      "replay-f643-feature-address--email",
+    );
+    expect(workflowScriptName({ project: "replay", capability: "email", job: "send", env: "feature", feature })).toBe(
+      "replay-f643-feature-address--email-send",
+    );
+  });
+
+  it("is the name featureWorkerName composes, so a host and an app Worker of one feature share one shape", () => {
+    expect(workflowHostName({ project: "replay", capability: "email", env: "feature", feature })).toBe(
+      featureWorkerName(feature, "email"),
+    );
+  });
+
+  it("gives two features two names, where the environment alone gave them one", () => {
+    const other = { ...feature, issue: "644" };
+    const parts = { project: "replay", capability: "email", job: "send", env: "feature" };
+    expect(workflowScriptName({ ...parts, feature })).not.toBe(workflowScriptName({ ...parts, feature: other }));
+  });
+
+  it("refuses a slug that does not fit under the Workflow limit rather than truncating it (#643)", () => {
+    const long = { ...feature, slug: "a-very-long-feature-slug-that-would-not-otherwise-fit-anywhere" };
+    const parts = { project: "replay", capability: "email", job: "schedule", env: "feature", feature: long };
+    expect(() => workflowScriptName(parts)).toThrow("leaves room for at most 36");
+    const name = workflowScriptName({ ...parts, feature: { ...feature, slug: "a-shorter-slug" } });
+    expect(name.length).toBeLessThanOrEqual(MAX_WORKFLOW_NAME_BYTES);
+    expect(name.endsWith("-a-shorter-slug--email-schedule")).toBe(true);
+  });
+
+  it("refuses a feature of another project", () => {
+    expect(() =>
+      workflowHostName({
+        project: "replay",
+        capability: "email",
+        env: "feature",
+        feature: { ...feature, project: "acme" },
+      }),
+    ).toThrow(PithyError);
   });
 });

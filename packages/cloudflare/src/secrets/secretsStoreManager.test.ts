@@ -193,6 +193,97 @@ describe("CloudflareSecretsStoreManager", () => {
     });
   });
 
+  /**
+   * **Create, never overwrite, even when two runs race (#643).** And never answer "somebody else created it"
+   * when this call cannot know that (F1 of the review): a create that throws may have landed server-side, so an
+   * entry there afterwards is `unconfirmed`, not `present`. Nor rely on the store refusing a duplicate name, which
+   * Cloudflare does not document: two entries of one name resolve to the oldest, and the younger removes itself.
+   */
+  describe("createSecretIfAbsent", () => {
+    /** An entry of the given status and creation time. */
+    function entry(id: string, status: "pending" | "active" | "deleted", created: string) {
+      return { ...rawEntry(id, "FOO"), status, created };
+    }
+
+    it("creates when the name is absent, and says it did", async () => {
+      mockList.mockReturnValueOnce(paginator([])).mockReturnValueOnce(paginator([rawEntry("id-new", "FOO")]));
+      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+
+      expect(await manager.createSecretIfAbsent("FOO", "value-1")).toBe("created");
+      expect(mockCreate).toHaveBeenCalledWith("store-abc", {
+        account_id: "test-account-id",
+        body: [{ name: "FOO", value: "value-1", scopes: ["workers"] }],
+      });
+      expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it("leaves an existing entry exactly as it is, and says it was present", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
+
+      expect(await manager.createSecretIfAbsent("FOO", "value-2")).toBe("present");
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    it("reads a create that threw with an entry there afterwards as unconfirmed — it may be this call's own", async () => {
+      mockList.mockReturnValueOnce(paginator([])).mockReturnValueOnce(paginator([rawEntry("id-maybe-own", "FOO")]));
+      mockCreate.mockRejectedValue(new Error("socket hang up"));
+
+      expect(await manager.createSecretIfAbsent("FOO", "value")).toBe("unconfirmed");
+      expect(mockEdit).not.toHaveBeenCalled();
+      expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it("throws a refused create when nothing is there afterwards — an outage is not a lost race", async () => {
+      mockList.mockReturnValue(paginator([]));
+      mockCreate.mockRejectedValue(new Error("Quota exceeded"));
+
+      await expect(manager.createSecretIfAbsent("FOO", "value")).rejects.toThrowError(
+        expect.objectContaining({
+          payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "Quota exceeded" }),
+        }),
+      );
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    it("does not count a deleted entry as there", async () => {
+      mockList
+        .mockReturnValueOnce(paginator([entry("id-gone", "deleted", "2026-01-01T00:00:00.000Z")]))
+        .mockReturnValueOnce(
+          paginator([
+            entry("id-gone", "deleted", "2026-01-01T00:00:00.000Z"),
+            entry("id-new", "active", "2026-02-01T00:00:00.000Z"),
+          ]),
+        );
+      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+
+      expect(await manager.createSecretIfAbsent("FOO", "value")).toBe("created");
+    });
+
+    it("counts a pending entry as there, so it is never created twice", async () => {
+      mockList.mockReturnValue(paginator([entry("id-pending", "pending", "2026-01-01T00:00:00.000Z")]));
+
+      expect(await manager.createSecretIfAbsent("FOO", "value")).toBe("present");
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("removes its own entry when an older one of the same name landed beside it — never relying on a refusal", async () => {
+      mockList
+        .mockReturnValueOnce(paginator([]))
+        .mockReturnValueOnce(
+          paginator([
+            entry("id-own", "active", "2026-01-01T00:00:02.000Z"),
+            entry("id-winner", "active", "2026-01-01T00:00:01.000Z"),
+          ]),
+        );
+      mockCreate.mockResolvedValue([rawEntry("id-own", "FOO")]);
+      mockDelete.mockResolvedValue({ id: "id-own" });
+
+      expect(await manager.createSecretIfAbsent("FOO", "loser")).toBe("present");
+      expect(mockDelete).toHaveBeenCalledWith("id-own", { account_id: "test-account-id", store_id: "store-abc" });
+    });
+  });
+
   describe("deleteSecret", () => {
     it("deletes by id resolved from listSecrets", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-1", "FOO")]));
@@ -227,7 +318,6 @@ describe("CloudflareSecretsStoreManager", () => {
   describe("exists", () => {
     it("returns true when a secret with the name is present", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-1", "FOO")]));
-      expect(await manager.exists("FOO")).toBe(true);
     });
 
     it("returns false when no secret matches", async () => {

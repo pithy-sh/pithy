@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -34,6 +35,11 @@ export interface StorageConfigParams {
   project: string;
   /** The target environment. */
   env: ManagedEnvironment;
+  /**
+   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
+   */
+  feature?: FeatureIdentity;
   /** The app database id for this environment — where the `pithy_storage_*` tables live. */
   appDatabaseId: string;
   /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the R2 credentials. */
@@ -51,22 +57,29 @@ export function resolveStorageConfig(
   template: WorkflowHostTemplate,
   params: StorageConfigParams,
 ): WorkflowHostTemplate {
+  const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, storageConfig } = params;
 
   // Derived before the resolve rather than assigned after it: `resolveWorkflowHost` refuses to fill a
   // template that declares `workflows` without them, because the only unscoped name it could invent is
   // one a second project in the same account would collide with.
-  const derived = hostWorkflowsFor(storageWorkflowRegistry, { project, capability: STORAGE_CAPABILITY, env });
+  const derived = hostWorkflowsFor(storageWorkflowRegistry, {
+    project,
+    capability: STORAGE_CAPABILITY,
+    env,
+    ...(feature ? { feature } : {}),
+  });
 
   const resolved = resolveWorkflowHost(template, {
     project,
     capability: STORAGE_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     r2BucketNames: { STORAGE_BUCKET: resources.bucketName },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
-    masterKeySecretName: masterKeySecretName(project, env),
+    masterKeySecretName: masterKeySecretName(project, env, feature),
     vars: { STORAGE_CONFIG: JSON.stringify(storageConfig) },
     workflows: derived.workflows,
   });

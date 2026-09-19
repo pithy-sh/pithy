@@ -8,7 +8,8 @@ Load seed and test data into an environment from the same Zod schemas and codecs
 
 ```bash
 pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
-           [--confirm-production <phrase>] [--confirm-reset <phrase>] [--destroy-retained <n>] [--json]
+           [--confirm-production <phrase>] [--confirm-reset <phrase>] [--destroy-retained <n>] \
+           [--host <host>] [--json]
 ```
 
 ## Flags
@@ -24,6 +25,7 @@ pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
 | `--destroy-retained` | — | **DESTRUCTIVE.** Let `--redo` drop rows in retained tables. Must equal the row count the refusal printed |
 | `--yes` | `false` | Confirm a non-`dev` environment. Required for `staging` and `prod`; `dev` never needs it |
 | `--confirm-production <phrase>` | — | The non-interactive unlock for `prod` — see The production exception, below |
+| `--host <host>` | the Worker's own address | The host a prepared set's `origin` is built from — see Where a prepared set is pointed, below |
 
 ## What it does
 
@@ -32,6 +34,24 @@ pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
 ### While it runs
 
 Each write is named as it starts, one plain line each: `▸ Seeding things on DB for api...` for a D1 table, the same shape for a KV store, an R2 key and a media file, with the store it lands in and the Worker it is written through. A remote seed is a REST round trip per write, and this is how a slow one is told apart from a hung one. `--redo` narrates its reset first, in `pithy migrate`'s words. The report below still prints once, at the end, unchanged. `--json` prints none of it; a missing TTY prints all of it.
+
+### Where a prepared set is pointed
+
+A prepared set is handed the origin its Worker answers on (`context.origin`, `docs/SEED.md`). Each environment answers it from its own source:
+
+- `dev`: the port this checkout pinned in `.dev.config.json`.
+- A declared environment: its address, the way `pithy env` resolves it — the `domains` declaration, then the route, then `vars.BASE_URL`.
+- `feature`: `https://<script>.<subdomain>.workers.dev` — the feature Worker's script name under the account's `workers.dev` subdomain, which the run looks up once. Without an account to ask, it reads the address `pithy provision --feature` stamped.
+
+`--host` overrides all three: `--host preview.example.com`. A bare host takes the environment's scheme — `http` in `dev`, `https` everywhere else — and a full `http://` or `https://` origin is taken as written. One rule decides what a host is, and it refuses rather than repairs, before anything is written:
+
+- every label a DNS label, so an encoded host like `%2e%2e` is refused;
+- nothing after the host — a path, a query, a fragment, a trailing `/` — and no credentials;
+- off `dev`, no port and no `http`: a deployed Worker answers over https on the default port;
+- `localhost`, `127.0.0.1` and `*.localhost` in `dev` only;
+- as a URL parser reads it: a host `new URL` refuses — `xn--a.test` — is refused, and a spelling it rewrites is refused rather than taken, so `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `0` are the loopback they parse to. Off `dev`, loopback in any spelling, `0.0.0.0` and IPv6 `[::1]` are refused, and so is every IP address: a deployed Worker answers on a name.
+
+On a feature, a prepared set that asks for a secret is refused, as on `staging` and `prod`. A feature's secrets exist only in its own Secrets Store and `SECRETS` database, where `pithy provision --feature` created them and the Worker reads them; nothing reads them back to this machine. The dev secrets file is never opened: it belongs to `dev`. There is no dev login on a feature — a magic link is how anybody signs in to one.
 
 ### Idempotency
 

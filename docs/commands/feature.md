@@ -36,7 +36,7 @@ pithy feature prune [--dry-run] [--json]
 
 **The branch is cut from local `main`.** Not from `origin/main`: a repository holding unpushed work would otherwise start every feature *before* that work, and where the older tree still loads there is no symptom at all — just a branch rooted in the past, found at merge. When local `main` is behind its remote the run says so and carries on, because cutting from a `main` a few commits behind is usually fine and sometimes deliberate; being told is what stops it becoming a surprise. A repository with no local `main` cuts from `HEAD`.
 
-**`create`** validates the issue number and the slug at the boundary — before a branch or a worktree exists, so a refusal leaves nothing behind — then cuts the worktree and its `feature/<issue>-<slug>` branch, installs dependencies (named as it starts, `▸ Running bun install...`), reserves a port block, pins one port per Worker, and migrates and seeds the local `dev` backend. Port allocation is [`dev.md` §Per-feature ports](dev.md#per-feature-ports-run-many-worktrees-at-once) in full: a lock over the machine's `<config>/dev-ports.json`, the lowest free non-overlapping block across every checkout on the machine, and a per-worktree `.dev.config.json` that fixes each Worker's port for the life of the feature. Assignment is sticky and never probed at startup, which is what lets several worktrees run at once.
+**`create`** validates the issue number and the slug at the boundary — before a branch or a worktree exists, so a refusal leaves nothing behind — including that the slug fits every name the feature will compose. Feature names are never truncated, so a slug too long for any of them is refused with the project's maximum at that issue (see [`NAMING.md`](../NAMING.md#nothing-is-shared-with-a-feature)). Then it cuts the worktree and its `feature/<issue>-<slug>` branch, installs dependencies (named as it starts, `▸ Running bun install...`), reserves a port block, pins one port per Worker, and migrates and seeds the local `dev` backend. Port allocation is [`dev.md` §Per-feature ports](dev.md#per-feature-ports-run-many-worktrees-at-once) in full: a lock over the machine's `<config>/dev-ports.json`, the lowest free non-overlapping block across every checkout on the machine, and a per-worktree `.dev.config.json` that fixes each Worker's port for the life of the feature. Assignment is sticky and never probed at startup, which is what lets several worktrees run at once.
 
 **`sync`** makes the worktree's local environment ready, whatever state it is in, and covers the two everyday cases with one command: you added a Worker, or a colleague pushed the branch and you pulled it. None of that state is in git — the `.dev.config.json` and the port reservation are both machine-local — so a sync creates them on *your* machine, with your own free block. It reconciles ports through the same code `create` uses, then migrates and seeds the local backend. `create` and `sync` both name each database, migration and seeded store as they start, in `pithy migrate`'s and `pithy seed`'s words; `--json` prints none of it. Every step is idempotent, so running it when nothing is missing reports that nothing moved.
 
@@ -46,11 +46,17 @@ pithy feature prune [--dry-run] [--json]
 
 **The config it writes is a build artifact, and it is not written where source lives.** The ids go into `apps/<worker>/.wrangler/pithy/wrangler.feature.jsonc`, generated from the Worker's tracked `wrangler.jsonc` on every run — so the tracked file is never dirty, `git add -A` cannot reach the ids, and a feature abandoned without `destroy` strands nothing. `.wrangler/` has been in the scaffolded `.gitignore` since the first release and is ignored at any depth, so no existing project has anything to adopt. `migrate`, `seed` and `deploy` resolve the same path; `deploy` passes it to wrangler as `--config`. The consequence worth stating: `pithy env` reports what a Worker's tracked config declares, so a feature environment does not appear there.
 
-**It mints the feature's own master key, and binds it.** A feature environment used to get every resource except its secrets, so a Worker composing `secrets` deployed and failed on its first request with `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`. The key is the feature's own, under the feature's own entry name, and `destroy` deletes it — `pithy secrets deprovision` preserves a key unless asked, because losing it orphans every secret, and for an ephemeral environment that reasoning inverts. A `global` secret is not copied: it is one account-level value every environment binds, and a feature binds the project's.
+**It gives the feature its own secrets infrastructure, the way a declared environment gets one (#643).** A feature has its own `SECRETS` database, so it gets its own secrets manager too: its own master key and its own manager Worker, created through the provisioner `pithy secrets provision` uses and deployed with the feature's other kit Workers. **It holds no Cloudflare API token**: its manager hosts no rotation Workflow and runs no cron, so branch code never holds write access to the account's one Secrets Store, where production's master key lives. That manager then creates every secret the registry says may be generated — `auth-session-secret` among them — exactly as a declared environment's manager does: probed first, written with `create`, never over a value that is there. The feature's stores are the only copy, nothing depends on which run created the key, and a run that fails partway is finished by the next one. `destroy` deletes the key and the manager with the rest of the feature — `pithy secrets deprovision` preserves a key unless asked, because losing it orphans every secret, and for an ephemeral environment that reasoning inverts. A secret somebody else issues, like an OAuth client secret, is one the report names as unbound under the feature's own entry name.
 
-**A feature has no secrets manager, deliberately.** `ManagedEnvironment` is the set the project declared, and everything iterating it multiplies with it — most of all a manager Worker with its own D1 and rotation cron. One per open pull request is not a cost a branch should carry. So `pithy secrets create` targets a declared environment, never a feature: a secret a feature needs beyond its master key is one the report names as unbound, with the command that creates it.
+**It stands up every kit Worker the feature composes.** A magic link runs in email's send Workflow, an upload's sweep in storage's, a reconcile in payments' — each in a host Worker the capability owns. So a feature gets its own of every one it composes, the way a declared environment does: `<project>-f<issue>-<slug>-<capability>`, with Workflows named the same way, bound to the feature's own databases, buckets, indexes and keys, and its app Worker bound to each — but only once that host has deployed. They are deployed by `provision --feature`, redeployed by `pithy deploy --env feature` when they change, and deleted by `destroy`. The set is never listed: it is every host the kit's registry knows that the branch composes, so a capability that gains a host joins a feature with nothing else changed.
+
+**It shares nothing with any other environment.** The account and its one Secrets Store are the only things a feature cannot have its own of; everything inside them is split — a `global` secret's entry included. Its rate limiters' namespaces are the one exception: every feature shares them, and no staging or production config can. See [`provision.md`](provision.md).
+
+**It answers on its own `workers.dev` address and nothing else.** Its stanza states `routes: []`, because wrangler would otherwise hand it the top level's routes — a branch deploy taking the project's custom domain — and the run names the routes it gave up.
 
 **`destroy`** deletes the feature's Worker scripts, then its Cloudflare resources — each first from the worktree's manifest, then by recomputing every name the branch could have produced and deleting what still exists, with the capabilities composed for `feature`, the environment `provision --feature` composed them for — then frees the port block, prunes the worktree, and deletes the branch if it has been merged. That second pass is what catches a partly-failed `provision`.
+
+Every kit host the feature could have stood up is one of the scripts: `destroy` recomputes each name from the branch — for every host the registry knows, whatever the branch composes now, since a host deployed before its capability left the branch is still the feature's. **Their Workflows go first, explicitly**, found on the account by the exact name of the script that hosts them: Cloudflare documents that deleting a Workflow leaves its script alone, and says nothing of the reverse, so teardown does not rely on a script taking its Workflows with it. Then the feature's own Vectorize indexes, every store entry the feature named — a `global` secret's included. Its rate-limit namespaces are fixed per limiter and shared by every feature, so there is nothing of them to remove. There is no token to revoke. A feature provisioned by a release before the double hyphen in its names is destroyed with that release's CLI: its old names are exactly the ones another project could hold, so this one does not delete them.
 
 **Scripts go first, and only once the account confirms they are there.** Provisioning names each Worker's script in the config `pithy deploy` reads and records the name in the manifest, but it is the deploy that uploads it — so a Worker provisioned and never deployed has nothing to delete, and says nothing. Deleting the scripts before their resources means no reachable Worker is ever left bound to a database that is gone. **Each delete is forced.** Cloudflare refuses to delete a Worker another Worker still binds, and a feature's Workers bind each other — `apps/web` calling `apps/api` puts the callee first, and an unforced teardown failed on it every run. Every script it deletes is the feature's own and goes in the same pass. Forcing also removes the Durable Objects a script hosts, which are the feature's too; a Worker outside the feature that binds one of its Workers breaks, and the kit never writes such a binding. An account nothing vouches for is refused rather than asked: an empty script listing from it is not an absence, and a script found on it is somebody else's.
 
@@ -133,7 +139,7 @@ The payload for a feature's Cloudflare environment is [`provision.md`](provision
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli-api","id":"acme-f69-media-cli-api"},{"kind":"d1","name":"acme-f69-media-cli-db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
+{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"worktreePruned":true,"branchDeleted":false}
 ```
 
 | key | type | meaning |
@@ -185,6 +191,13 @@ Pass --issue <number>.
 ```
 Slug must be kebab-case (got "Media CLI").
 Use lowercase words joined by hyphens, e.g. media-cli.
+```
+
+**A slug too long for this project.** The maximum is the least room any name the feature composes leaves, here media's `media-audio-transcribe` Workflow, at this issue. Nothing is truncated, so nothing is created.
+
+```
+Slug "project-scope-resources-and-limits" is 34 characters. Feature slugs in acme stop at 31 characters at issue 95.
+Name the branch feature/95-<slug of 31 or fewer>. Feature names are never truncated.
 ```
 
 **Credentials missing on `destroy`.** Refused rather than silently skipped, because the alternative leaks every resource while reporting success.
@@ -257,8 +270,8 @@ Tear a feature down from inside its worktree, Workers first.
 
 ```
 $ pithy feature destroy
-Deleted acme-f69-media-cli-api.
-Deleted acme-f69-media-cli-db-d1.
+Deleted acme-f69-media-cli--api.
+Deleted acme-f69-media-cli--db-d1.
 Worktree pruned.
 Done.
 ```

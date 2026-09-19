@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError, ValidationError } from "../error/pithyError";
+import type { WorkflowHostNameParts } from "../workflow/naming";
 import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMarker } from "./environment";
 import {
   type FeatureIdentity,
@@ -171,11 +172,22 @@ export interface ProvisionScope {
   /**
    * This scope's CF Secrets Store entry name for a declared secret.
    *
-   * A `global` secret is the one name that does **not** take the scope's segment: it is a single
-   * account-level value every environment binds, so every scope resolves it to the project's
-   * `<project>-global-<secret>`. Scoping it would mint a second copy of a value defined as one.
+   * In a declared environment a `global` secret is the one name that does **not** take the scope's segment:
+   * it is a single account-level value every declared environment binds, so it resolves to the project's
+   * `<project>-global-<secret>`. A feature is the exception — it shares nothing with any other environment,
+   * so its entry for a `global` secret is its own (#643). See {@link featureScope}.
    */
   secretEntry(secret: string, secretScope: SecretNameScope): string;
+  /**
+   * What a capability's host Worker and its Workflows are named from in this scope — handed, with the
+   * capability, to `workflowHostName` and `workflowScriptName`. It is what an app Worker's cross-script
+   * `workflows` entry and the host's own config are both composed from (#643).
+   *
+   * On the scope for the reason every other name is: a declared environment composes
+   * `<project>-<env>-<capability>[-<job>]`, and a feature composes `<project>-f<issue>-<slug>-…`, because
+   * `<project>-feature-email-send` would be one Workflow every open branch deployed over every other's.
+   */
+  readonly workflowHost: Omit<WorkflowHostNameParts, "capability">;
 }
 
 /** The wrangler binding array a resource kind's name is composed for. */
@@ -331,6 +343,7 @@ export function environmentScope(project: string, environment: string): Provisio
     },
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
+    workflowHost: { project, env: environment },
   };
 }
 
@@ -341,14 +354,16 @@ export function environmentScope(project: string, environment: string): Provisio
  * Its stanza is {@link FEATURE_ENVIRONMENT} and nothing else, which is what makes a feature's resources
  * in a declared environment's stanza unexpressible rather than merely discouraged.
  *
- * **A feature takes a binding's {@link BindingNaming} and ignores it — and that is the asymmetry against
- * `secretEntry` one line below, which honors `global` here as everywhere.** A global *secret* is a value
- * defined once for the project, so a feature binds the project's copy rather than minting a second: it is
- * **read**. A global *database* is a resource a feature would **migrate** — `provisionFeature` runs
- * `pithy migrate` against everything it names — so honoring `global` here would point one branch's
- * schema changes at the project's live suppression list, and point teardown at it afterwards. A feature
- * owns every resource it names, exactly so that destroying the feature destroys them all; there is no
- * shared name to match and nothing for teardown to spare.
+ * **A feature takes a binding's {@link BindingNaming} and ignores it, and a secret's `global` scope with it.**
+ * A global *database* is a resource a feature would **migrate** — `provisionFeature` runs `pithy migrate`
+ * against everything it names — so honoring `global` would point one branch's schema changes at the project's
+ * live suppression list, and point teardown at it afterwards. A global *secret* went the other way until #643:
+ * a feature bound the project's copy. It no longer does. **Nothing is shared between a feature and any other
+ * feature, staging or prod** — the account and its one Secrets Store are the only containers that cannot be
+ * split, and every entry inside the store is split. So a feature names its own entry for a `global` secret
+ * too: a mintable one is minted for it, and a supplied one is reported missing under the feature's name rather
+ * than bound to the value every environment reads. A feature owns everything it names, exactly so that
+ * destroying the feature destroys it all; there is no shared name to match and nothing for teardown to spare.
  *
  * `resource` is ignored for the same reason it is moot: a feature's `<thing>` segment is the binding plus
  * the kind, and the whole name is recomputed on teardown rather than looked up, so nothing outside the
@@ -372,8 +387,10 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     // The directory, not the deploy name: the head already carries the project, and the deploy name
     // usually leads with it too, which composed `<project>-f<issue>-<slug>-<project>-<app>` (#587).
     worker: ({ app }) => featureWorkerName(identity, app),
-    secretEntry: (secret, secretScope) =>
-      secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
+    // Every entry the feature's, `global` included: see the docstring above.
+    secretEntry: (secret) => featureSecretEntryName(identity, secret),
+    // `env` is the stanza — what the host's `ENVIRONMENT` var says — and `feature` is what its names take.
+    workflowHost: { project: identity.project, env: FEATURE_ENVIRONMENT, feature: identity },
   };
 }
 
@@ -401,6 +418,14 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
  */
 export function featureWorkerScriptNames(identity: FeatureIdentity, worker: ProvisionWorkerNames): string[] {
   const current = featureScope(identity).worker(worker);
-  const beforeSingleProject = featureWorkerName(identity, worker.script);
+  let beforeSingleProject: string;
+  try {
+    beforeSingleProject = featureWorkerName(identity, worker.script);
+  } catch (error) {
+    // Too long to compose whole (#643). The release that deployed that shape fitted it with a hash instead, so no
+    // exact name here would reach it anyway; teardown reaches the current name, which always composes.
+    if (error instanceof ValidationError) return [current];
+    throw error;
+  }
   return current === beforeSingleProject ? [current] : [current, beforeSingleProject];
 }

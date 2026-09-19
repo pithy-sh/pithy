@@ -331,6 +331,15 @@ describe("scaffoldProject", () => {
     await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
   });
 
+  /** #643: `acme-f12-x` could have no features — another project's branch would compose its feature names. */
+  test("refuses a name carrying an f<digits> segment, and leaves nothing behind", async () => {
+    const target = join(dir, "marked");
+    await expect(scaffoldProject({ targetDir: target, appName: "acme-f12-x" })).rejects.toThrow(
+      "carries f12, the shape a feature's issue takes",
+    );
+    await expect(readFile(join(target, "package.json"), "utf8")).rejects.toThrow();
+  });
+
   test("the reservation is read after kebabing, so a spaced or capitalized variant is caught too", async () => {
     await expect(scaffoldProject({ targetDir: dir, appName: "Pithy Int Suite" })).rejects.toThrow(PithyError);
   });

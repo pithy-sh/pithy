@@ -171,6 +171,48 @@ describe("deploy command", () => {
  * **A deploy is a deploy (#537).** `pithy deploy` ships the adopter's Workers *and* the kit's, and the
  * two are separate named steps so CI reads separate exit codes and a failure names which half broke.
  */
+/**
+ * **A namespace in the feature range is refused by every deploy (#643)** — before either half runs, and in a
+ * project that never provisions a feature, because another project's feature can be allocated it.
+ */
+describe("the feature rate-limit range", () => {
+  test.each(["1031275746", "01031275746"])("a Worker declaring %s is refused before anything ships", async (id) => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-deploy-range-"));
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(
+      join(dir, "apps", "api", "wrangler.jsonc"),
+      JSON.stringify({ name: "other-api", env: { prod: { ratelimits: [{ name: "LIMIT", namespace_id: id }] } } }),
+    );
+    ran.apps = 0;
+    ran.kit.length = 0;
+    const written: string[] = [];
+    const capture = (chunk: unknown): boolean => {
+      written.push(String(chunk));
+      return true;
+    };
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(dir);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(capture as never);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(capture as never);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    try {
+      await deploy.run?.({
+        args: { env: "prod", json: true, apps: false, kit: false, force: false },
+        rawArgs: [],
+      } as never);
+    } finally {
+      exit.mockRestore();
+      stderr.mockRestore();
+      stdout.mockRestore();
+      cwd.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+    expect(written.join("")).toContain("other-api declares rate-limit namespace");
+    expect(written.join("")).toContain("in env.prod.");
+    expect(ran.apps).toBe(0);
+    expect(ran.kit).toEqual([]);
+  });
+});
+
 describe("deploySelection", () => {
   test("no selector is both halves — the whole project is what a deploy deploys", () => {
     expect(deploySelection({ apps: false, kit: false })).toEqual({ apps: true, kit: true });

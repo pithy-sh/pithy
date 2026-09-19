@@ -46,6 +46,11 @@ import {
 import type { EnvironmentMigrations, RemoteSkip } from "../doctor/environmentMigrations";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import {
+  checkFeatureRatelimitIds,
+  FEATURE_RATELIMIT_IDS_ACTION,
+  type FeatureRatelimitIdsCheck,
+} from "../doctor/featureRatelimitIds";
+import {
   buildProjectHealth,
   type MigrationHealth,
   type ProjectHealth,
@@ -267,6 +272,11 @@ export interface DoctorReport {
    * the check above: with no root config there is no declaration to hold a stanza to.
    */
   selfBinding: SelfBindingCheck | null;
+  /**
+   * Whether any Worker declares a rate-limit namespace in the range reserved for features (#643). `null` outside a
+   * readable project. **It fails the exit**: `provision` and `deploy` refuse the same stanza.
+   */
+  featureRatelimitIds: FeatureRatelimitIdsCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares (#241), and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -702,6 +712,8 @@ export interface DoctorReportOptions {
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
   /** Self-binding seam; defaults to {@link checkSelfBinding}. Reads files only — no account call. */
   checkSelfBinding?: (projectDir: string) => Promise<SelfBindingCheck>;
+  /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
+  checkFeatureRatelimitIds?: (projectDir: string) => Promise<FeatureRatelimitIdsCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -880,6 +892,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeSelfBinding = options.checkSelfBinding ?? checkSelfBinding;
+  const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1200,6 +1213,13 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         missing: [],
       })
     : null;
+  // Every Worker's rate limiters, held to the range features draw from (#643). Files only.
+  const featureRatelimitIds = inProject
+    ? await probed<FeatureRatelimitIdsCheck>(() => probeFeatureRatelimitIds(options.projectDir), {
+        state: "could-not-check",
+        findings: [],
+      })
+    : null;
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
   // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
   const environments = inProject
@@ -1345,6 +1365,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     selfBinding,
+    featureRatelimitIds,
     environments,
     environmentInheritance,
     turnstileSitekeys,
@@ -1417,6 +1438,8 @@ export function doctorExitCode(report: DoctorReport): number {
   // reason it gates — a 522 at runtime, which reads as somebody else's outage — and the remedy is the
   // `pithy provision` that was going to be run anyway. `could-not-check` establishes nothing.
   if (report.selfBinding?.state === "unbound") return 1;
+  // A namespace in the feature range is one `provision` and `deploy` refuse, established by the files (#643).
+  if (report.featureRatelimitIds?.state === "reserved") return 1;
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc
   // contradict each other about which environments this project has. Nothing about the account is
   // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
@@ -2713,6 +2736,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // request that hangs until Cloudflare calls it a 522, so a terse report here would be the toolchain
   // agreeing that nothing is wrong. `could-not-check` keeps its silence, like the block above.
   const selfBindingOk = !report.selfBinding || report.selfBinding.missing.length === 0;
+  const featureRatelimitIdsOk = report.featureRatelimitIds?.state !== "reserved";
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
@@ -2780,6 +2804,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     selfBindingOk &&
+    featureRatelimitIdsOk &&
     environmentsOk &&
     environmentInheritanceOk &&
     turnstileSitekeysOk &&
@@ -2953,6 +2978,17 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(selfBindingBlock(report.selfBinding));
   }
 
+  // A rate-limit namespace in the feature range (#643). The block is the finding.
+  if (report.featureRatelimitIds?.state === "reserved") {
+    blocks.push(
+      [
+        "Rate limiters:",
+        ...report.featureRatelimitIds.findings.map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${FEATURE_RATELIMIT_IDS_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -3097,6 +3133,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           state: report.projectName.state,
           project: report.projectName.project,
           misnamed: report.projectName.misnamed,
+          featureMarker: report.projectName.featureMarker ?? null,
           detail: describeProjectName(report.projectName),
         }
       : null,
@@ -3126,6 +3163,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       : null,
     // Same `null` discipline, and each unbound stanza carries its own sentence: `declared` is what tells a
     // consumer that an empty `missing` is a project with the binding rather than one that never asked.
+    featureRatelimitIds: report.featureRatelimitIds
+      ? { state: report.featureRatelimitIds.state, findings: report.featureRatelimitIds.findings }
+      : null,
     selfBinding: report.selfBinding
       ? {
           state: report.selfBinding.state,

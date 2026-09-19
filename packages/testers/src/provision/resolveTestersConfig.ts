@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { emailMessagesVars } from "@pithy-sh/email/src/provision/resolveEmailConfig";
@@ -64,6 +66,11 @@ export interface TestersConfigParams {
   readonly project: string;
   /** The target environment. */
   readonly env: ManagedEnvironment;
+  /**
+   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
+   */
+  feature?: FeatureIdentity;
   /** The app database id — where the `pithy_testers_*`, `pithy_auth_*` and `pithy_email_jobs` tables live. */
   readonly appDatabaseId: string;
   /**
@@ -93,20 +100,32 @@ export function resolveTestersConfig(
   template: WorkflowHostTemplate,
   params: TestersConfigParams,
 ): WorkflowHostTemplate {
+  const feature = params.feature;
   const { project, env, appDatabaseId, suppressionDatabaseId, testersConfig, email } = params;
 
   // Derived before the resolve: `resolveWorkflowHost` refuses a template that declares `workflows`
   // without them, because the only name it could invent unaided is one a second project would overwrite.
-  const derived = hostWorkflowsFor(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env });
+  const derived = hostWorkflowsFor(testersWorkflowRegistry, {
+    project,
+    capability: TESTERS_CAPABILITY,
+    env,
+    ...(feature ? { feature } : {}),
+  });
 
   const resolved = resolveWorkflowHost(template, {
     project,
     capability: TESTERS_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: { DB: appDatabaseId, EMAIL_SUPPRESSIONS: suppressionDatabaseId },
     // The suppression database is email's, and its name now carries the project. Left alone, the
     // template would print `pithy-email-suppressions` — a name no account holds.
-    databaseNames: { EMAIL_SUPPRESSIONS: suppressionDatabaseName(project) },
+    // A feature migrates and owns its own suppression list, named by its scope, as email's feature host binds it.
+    databaseNames: {
+      EMAIL_SUPPRESSIONS: feature
+        ? featureScope(feature).resource("EMAIL_SUPPRESSIONS", "d1", {})
+        : suppressionDatabaseName(project),
+    },
     workflows: derived.workflows,
     vars: {
       TESTERS_CONFIG: JSON.stringify(testersConfig),

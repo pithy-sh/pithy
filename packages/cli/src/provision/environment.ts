@@ -11,12 +11,15 @@ import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import type { BindingNaming, ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
+import type { MintedSecret } from "../capabilities/mintSecrets";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
 import type { FeatureResource, FeatureScript } from "../feature/manifest";
+import { assertNoDeclaredFeatureIds, readWorkerRatelimits } from "../feature/ratelimits";
 import { migrateProject } from "../migrations/run";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
+import type { KitWorkerDeploy } from "../project/deployKit";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -53,7 +56,7 @@ export type BackendRunner = (args: { env: string; projectDir: string }) => Promi
 // The migrate names its project for the same reason the seed below does, and one more: the stamp it
 // writes is what refuses a later run from another project. A fresh environment's D1 is brand new, so
 // this run is the one that adopts it — skip the name here and the database stays unowned for good.
-const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
+export const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
   // One config load, two facts, both from the project's own root config: the project the brand-new D1 is
   // stamped for, and the account it is created and migrated in. A provisioned environment is remote by
   // definition, so this is the account that decides *whose tenant* the schema lands in (#234).
@@ -285,6 +288,24 @@ export interface ProvisionReport {
    * would be N copies of one fact, and every consumer branch on a disagreement they cannot have.
    */
   committed: boolean;
+  /**
+   * **A feature's own `d1` secrets, created by the feature's own secrets manager (#643)** — the same
+   * `mintDeclaredSecrets` pass `pithy secrets provision` runs for a declared environment, against the manager
+   * provisioning just deployed for the feature. Present only on a feature run that minted through one. Names,
+   * never a value.
+   */
+  featureSecrets?: MintedSecret[];
+  /**
+   * **The kit Workers a feature run stood up for itself (#643)** — every host its capabilities own, one row each,
+   * as `pithy deploy` reports them. Present only on a feature run that deployed hosts.
+   */
+  hosts?: KitWorkerDeploy[];
+  /**
+   * **Route patterns a feature's stanzas gave up (#643)** — declared under a tracked `env.feature`, or inherited
+   * from the top level. A feature answers on its own `workers.dev` address only, so they are stripped, and said
+   * so. One entry per Worker that had any; absent on a run that stripped nothing.
+   */
+  routesDropped?: { worker: string; routes: string[] }[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */
@@ -384,6 +405,12 @@ export interface ProvisionEnvironmentOptions {
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
   /**
+   * Look up the account's `workers.dev` subdomain — the seam over `CloudflareWorkersManager.accountSubdomain()`.
+   * Asked at most once a run, and only for a scope whose config is generated (a feature): its answer is how a
+   * feature's stanza gets the `vars.BASE_URL` its Worker reads (#643). Omitted, nothing is stamped.
+   */
+  workersSubdomain?: () => Promise<string | null>;
+  /**
    * Worker-resolution seam (default: {@link resolveWorkers}), so tests fix the worker set. Each entry
    * carries that Worker's **own** capabilities, which is what lets the write step give a Worker only
    * the bindings it declares.
@@ -430,7 +457,7 @@ export function provisionWorkerNames(worker: Pick<ProvisionWorker, "name" | "dir
  * `apps/<name>/pithy.config.ts` — composed for the environment being provisioned, which is the one whose
  * resources, bindings and migrations this run writes (#595).
  */
-const defaultResolveWorkers = async (projectDir: string, environment: string): Promise<ProvisionWorker[]> =>
+export const defaultResolveWorkers = async (projectDir: string, environment: string): Promise<ProvisionWorker[]> =>
   (await resolveWorkersFor(environment, { projectDir })).map((worker) => ({
     name: worker.name,
     dir: worker.dir,
@@ -513,6 +540,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const workers = await (options.resolveWorkers
     ? options.resolveWorkers(options.projectDir)
     : defaultResolveWorkers(options.projectDir, scope.stanza));
+  // **No Worker may declare a rate-limit namespace in the feature range, for any environment (#643)** — checked
+  // before a resource is created. A feature of any project in the account can be allocated one.
+  assertNoDeclaredFeatureIds(await Promise.all(workers.map(readWorkerRatelimits)));
   const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,
@@ -599,6 +629,10 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // declared would put bindings in its wrangler config that it has no business holding.
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
+  const routesDropped: { worker: string; routes: string[] }[] = [];
+  // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
+  const subdomain =
+    !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
   for (const worker of workers) {
     // The same set the resource loop filtered on, read rather than recomputed. Resolving a Worker's
     // declines once and reading the answer twice is what keeps "created but not written" — and its
@@ -644,6 +678,8 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
       // more thing composed here.
       administersItself: options.administersItself,
+      ...(subdomain !== undefined ? { subdomain } : {}),
+      onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,
@@ -674,6 +710,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     manifestFaults,
     configs,
     committed: scope.source,
+    ...(routesDropped.length > 0 ? { routesDropped } : {}),
   };
 }
 

@@ -27,7 +27,7 @@ afterEach(async () => {
 const DB_RESOURCE: FeatureResource = {
   kind: "d1",
   binding: "DB",
-  name: "acme-f69-media-cli-db-d1",
+  name: "acme-f69-media-cli--db-d1",
   id: "11111111-1111-1111-1111-111111111111",
 };
 
@@ -61,7 +61,7 @@ describe("a manifest's scripts", () => {
     const path = manifestPath(dir);
     const manifest: FeatureManifest = {
       ...emptyManifest({ project: "acme", issue: "69", slug: "media-cli", env: "feature" }),
-      scripts: [{ app: "api", script: "acme-api", name: "acme-f69-media-cli-api" }],
+      scripts: [{ app: "api", script: "acme-api", name: "acme-f69-media-cli--api" }],
     };
 
     await writeManifest(path, manifest);

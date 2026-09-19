@@ -4,6 +4,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { isRotationDue } from "../rotation/keyRotation";
@@ -110,6 +111,9 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
 export default {
   /** Cron entry: trigger the at-rest rotation Workflow only when the interval has elapsed. */
   async scheduled(_controller: unknown, env: SecretsManagerEnv): Promise<void> {
+    // A feature's manager has no cron and no rotation Workflow (#643). Should a trigger reach one anyway, it
+    // rotates nothing: it holds no token to write the new key back with.
+    if (env.ENVIRONMENT === FEATURE_ENVIRONMENT) return;
     const config = await resolveEncryptionConfig(env);
     // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
     // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation

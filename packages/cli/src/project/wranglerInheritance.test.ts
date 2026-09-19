@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import {
+  CARRIED_WHOLE,
   describeUnrepeatedKey,
   NOT_INHERITED_BY_ENVIRONMENTS,
   stanzaFor,
@@ -280,6 +281,37 @@ describe("stanzaFor", () => {
       env: {} as Record<string, Record<string, unknown> | undefined>,
     };
     expect(stanzaFor(config, "prod").durable_objects).toEqual({ bindings: [] });
+  });
+
+  /**
+   * **A rate limiter is the same in every environment, so a new stanza carries it (#643).** Its `namespace_id`
+   * is derived from the binding name alone and its policy is the adopter's, so nothing in it is an environment's
+   * own resource. Emptied, a feature's generated stanza bound no `AUTH_RATE_LIMITER` and auth refused every
+   * request. Workflows are not carried: their entries name `dev`'s Workflows.
+   */
+  test("carries rate limiters whole, and still empties the Workflows, which name dev's", () => {
+    const limiter = { name: "AUTH_RATE_LIMITER", namespace_id: "3093", simple: { limit: 100, period: 60 } };
+    const config = {
+      ...starter(),
+      ratelimits: [limiter],
+      workflows: [
+        {
+          binding: "EMAIL_SENDER",
+          name: "acme-dev-email-send",
+          class_name: "EmailSendWorkflow",
+          script_name: "acme-dev-email",
+        },
+      ],
+    };
+    const stanza = stanzaFor(config, "feature");
+    expect(stanza.ratelimits).toEqual([limiter]);
+    expect(stanza.workflows).toEqual([]);
+    // A copy, not the top level's own array: an edit to one environment's limiter is not an edit to every one.
+    expect(stanza.ratelimits).not.toBe(config.ratelimits);
+  });
+
+  test("carries whole only keys an environment does not inherit — the rest need no carrying", () => {
+    for (const key of CARRIED_WHOLE) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
   });
 
   test("leaves a stanza that is already there exactly as it is", () => {

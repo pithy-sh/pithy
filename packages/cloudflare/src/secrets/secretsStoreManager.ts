@@ -26,6 +26,14 @@ export const CfSecretEntry = z
   .describe("A single Cloudflare Secrets Store secret's metadata (never its plaintext value).");
 export type CfSecretEntry = z.output<typeof CfSecretEntry>;
 
+/** What {@link CloudflareSecretsStoreManager.createSecretIfAbsent} did — see it for each value. */
+export type CreateSecretOutcome = "created" | "present" | "unconfirmed";
+
+/** The oldest of some entries by creation time, the smaller id breaking a tie — one answer whoever asks. */
+function oldestEntry(entries: readonly CfSecretEntry[]): CfSecretEntry | undefined {
+  return [...entries].sort((a, b) => a.created.getTime() - b.created.getTime() || a.id.localeCompare(b.id))[0];
+}
+
 /** Config for the Secrets Store manager: the shared client config plus the store it targets. */
 export interface SecretsStoreManagerConfig extends CloudflareManagerConfig {
   /** The CF Secrets Store id (the REST API addresses stores by id). */
@@ -89,6 +97,44 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
         scopes: [...DEFAULT_SCOPES],
       }),
     );
+  }
+
+  /**
+   * Create a secret only if no entry of that name is there, and say what happened — never "somebody else did"
+   * when this call cannot know that.
+   *
+   * - `created` — this call's create landed, and no older entry of the name exists beside it.
+   * - `present` — an entry of the name was there before this call, or appeared beside this one's and is older;
+   *   in the second case this call's own entry is deleted, so exactly one entry of the name remains.
+   * - `unconfirmed` — the create threw, and an entry of the name is there now. It may be this call's own, landed
+   *   server-side before the response was lost, or another run's. Nothing can tell which (F1 of #643's review), so
+   *   the answer says so rather than guess, and a caller must not make correctness depend on who created it.
+   *
+   * **Never an overwrite, even in a race (#643)**, and **never reliant on the store refusing a duplicate name**:
+   * Cloudflare does not document that it does. So after a create lands, the entries of that name are listed, and
+   * if another is older this one is the loser and removes itself. The oldest wins, deterministically, whichever
+   * run looks. A failure with no entry there afterwards — an outage, a refused token — is thrown as it came.
+   */
+  async createSecretIfAbsent(name: string, value: string): Promise<CreateSecretOutcome> {
+    if (await this.findByName(name)) return "present";
+    let ownId: string | undefined;
+    try {
+      ownId = await this.createSecret(name, value);
+    } catch (error) {
+      if (await this.findByName(name)) return "unconfirmed";
+      throw error;
+    }
+    const same = (await this.listSecrets()).filter((entry) => entry.name === name && entry.status !== "deleted");
+    const oldest = oldestEntry(same);
+    if (oldest === undefined || ownId === undefined || oldest.id === ownId) return "created";
+    // Another run's entry of the same name is older: it is the one that stands.
+    await cloudflareRequest(`delete duplicate secret ${name}`, () =>
+      this.getClient().secretsStore.stores.secrets.delete(ownId as string, {
+        account_id: this.accountId,
+        store_id: this.storeId,
+      }),
+    );
+    return "present";
   }
 
   /** Delete a secret by name. Resolves the id via `listSecrets`, then issues DELETE by id. */
@@ -160,18 +206,32 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
     return { storeId: this.storeId, accountId: this.accountId };
   }
 
-  /** Create a single secret with the default scopes. */
-  private async createSecret(name: string, value: string): Promise<void> {
-    await cloudflareRequest(`create secret ${name}`, () =>
-      this.getClient().secretsStore.stores.secrets.create(this.storeId, {
+  /** Create a single secret with the default scopes, and return the id Cloudflare gave it when it says one. */
+  private async createSecret(name: string, value: string): Promise<string | undefined> {
+    return cloudflareRequest(`create secret ${name}`, async () => {
+      const response: unknown = await this.getClient().secretsStore.stores.secrets.create(this.storeId, {
         account_id: this.accountId,
         body: [{ name, value, scopes: [...DEFAULT_SCOPES] }],
-      }),
-    );
+      });
+      // The SDK hands back a page of what was created. Read defensively: an id is a convenience here, and a
+      // response without one leaves `createSecretIfAbsent` answering `created` as it would have before.
+      const items = (response as { result?: unknown })?.result ?? response;
+      if (!Array.isArray(items)) return undefined;
+      for (const created of items as { id?: unknown; name?: unknown }[]) {
+        if (typeof created?.id === "string" && created.name === name) return created.id;
+      }
+      return undefined;
+    });
   }
 
+  /**
+   * The entry of this name, or `undefined`. **A `deleted` entry is not one** (#643): Cloudflare lists a secret's
+   * lifecycle status as `pending`, `active` or `deleted` without saying what each means, and a deleted entry is
+   * the one reading that cannot be "there". `pending` is taken as there, since creating over it would duplicate
+   * it. Of several entries of one name, the oldest, which is the one {@link createSecretIfAbsent} leaves standing.
+   */
   private async findByName(name: string): Promise<CfSecretEntry | undefined> {
     const all = await this.listSecrets();
-    return all.find((entry) => entry.name === name);
+    return oldestEntry(all.filter((entry) => entry.name === name && entry.status !== "deleted"));
   }
 }

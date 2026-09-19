@@ -48,4 +48,15 @@ describe("rotationConfigWriter", () => {
     const { manager } = fakeManager();
     expect(() => rotationConfigWriter(manager, "", "staging")).toThrow(PithyError);
   });
+
+  /**
+   * **A feature's manager never writes back (#643).** It holds no Cloudflare API token and rotates nothing, so
+   * branch code never holds write access to the account's one Secrets Store — production's master key included.
+   * Composed as an environment, it would also name `<project>-feature-…`, an entry every branch would write.
+   */
+  test("refuses a feature's manager outright", () => {
+    const { manager, putSecret } = fakeManager();
+    expect(() => rotationConfigWriter(manager, "acme", "feature")).toThrow("does not rotate its key");
+    expect(putSecret).not.toHaveBeenCalled();
+  });
 });

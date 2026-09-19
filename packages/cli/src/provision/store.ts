@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 
 /**
  * The account's one Secrets Store, as provisioning needs it.
@@ -17,6 +18,13 @@ export interface SecretsStore {
   exists(name: string): Promise<boolean>;
   /** Write a value under `name`. Overwrites in place; never deletes first. */
   put(name: string, value: string): Promise<void>;
+  /**
+   * Write a value under `name` only if nothing is there, never overwriting, so two runs racing to create one
+   * secret leave exactly one value (#643). `created` when this call made it, `present` when one was there
+   * already, `unconfirmed` when the create failed and an entry is there now — perhaps this call's own. A caller's
+   * correctness must never turn on which of those it got; see `createSecretIfAbsent`.
+   */
+  create(name: string, value: string): Promise<CreateSecretOutcome>;
   /** Delete an entry if it is there. Resolves `true` when something was removed. */
   remove(name: string): Promise<boolean>;
 }
@@ -28,6 +36,7 @@ export function cloudflareSecretsStore(clients: CloudflareClients, storeId: stri
     storeId,
     exists: (name) => store.exists(name),
     put: (name, value) => store.putSecret(name, value),
+    create: (name, value) => store.createSecretIfAbsent(name, value),
     remove: (name) => store.deleteSecretIfPresent(name),
   };
 }

@@ -102,7 +102,20 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
     });
   }
 
-  await deps.store.put(params.name, initialVersionedValue(params.value), params.valueType);
+  // **A `create` is one insert-if-absent, not the check above and then a write (#643).** Two runs that both
+  // found the name absent — two `pithy provision --feature` for one branch, both minting through its manager —
+  // used to both write, and the second crashed on the unique name. Now the second is told what the check would
+  // have told it had it looked a moment later, and the first value stands untouched.
+  if (params.mode === "create") {
+    if (!(await deps.store.create(params.name, initialVersionedValue(params.value), params.valueType))) {
+      throw new SecretAlreadyExistsError({
+        message: `Secret '${params.name}' already exists.`,
+        detail: `create '${params.name}': another writer created it first`,
+      });
+    }
+  } else {
+    await deps.store.put(params.name, initialVersionedValue(params.value), params.valueType);
+  }
 
   // Seed a rotation baseline for a brand-new rotatable secret so the cadence check never reports
   // it immediately overdue purely for lacking history.

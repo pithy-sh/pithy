@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
@@ -14,7 +15,7 @@ import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
 import { cloudflareEnv } from "../cloudflare/config";
 import { buildEnvInventory } from "../project/envInventory";
-import { cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
+import { cloudflareProvisioners, cloudflareWorkerScripts, cloudflareWorkflowDefinitions } from "../provision/resources";
 import { destroyFeature } from "./destroy";
 import { provisionFeature } from "./provision";
 
@@ -145,6 +146,10 @@ let projectDir: string | null = null;
 const clients = hasCreds ? new CloudflareClients({ accountId, apiToken }) : null;
 const provisioners = clients ? cloudflareProvisioners(clients, { accountId, confirmation: "pinned" }) : null;
 const scripts = clients ? cloudflareWorkerScripts(clients, { accountId, confirmation: "pinned" }) : null;
+// The Workflow half of teardown (#643), over the same account. A feature holds no token, so there is none to revoke.
+const workflows = hasCreds
+  ? cloudflareWorkflowDefinitions(new CloudflareWorkflowsClient({ accountId, apiToken }))
+  : { hostedBy: async () => [] as string[], delete: async () => {} };
 const capabilities = [shared, collabOnly];
 
 afterAll(async () => {
@@ -159,6 +164,7 @@ afterAll(async () => {
       env: ENV,
       provisioners,
       scripts,
+      workflows,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,
@@ -274,6 +280,7 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
       env: ENV,
       provisioners,
       scripts,
+      workflows,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,

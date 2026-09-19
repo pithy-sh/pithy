@@ -74,7 +74,11 @@ describe("one schema, two readers", () => {
     // Comments stripped first, for the reason `doctorDocs.test.ts` strips them: prose about a call is
     // not the call, and a pin that a doc comment can satisfy pins nothing. A `worker.ts` validating
     // against a differently-provisioned declaration while still *describing* this one would pass.
-    expect(code("workflows/worker.ts")).toContain("requireHostEnv(emailHostEnv");
+    // The boot check lives in `sendDeps.ts` since #643, so a Node test can drive a send through it; the
+    // Worker's entries reach it only through that module's `hostConfig`.
+    expect(code("workflows/sendDeps.ts")).toContain("requireHostEnv(emailHostEnv");
+    expect(code("workflows/worker.ts")).toContain('from "./sendDeps"');
+    expect(code("workflows/worker.ts")).not.toContain("requireHostEnv(");
     expect(code("provision/settingsCheck.ts")).toContain("checkHostEnv(emailHostEnv");
   });
 });

@@ -85,6 +85,44 @@ describe("SystemSecretsStore", () => {
     expect(value && currentValue(value)).toBe("kid-2");
   });
 
+  /**
+   * **Create is insert-if-absent, in one statement (#643).** Two writers racing for one name used to either
+   * crash on the unique name or leave the second one's value; now the first row stands, the second is told
+   * `false`, and nothing is ever updated.
+   */
+  test("create inserts once, and a second create leaves the first row exactly as it was", async () => {
+    const store = newStore();
+    expect(await store.create("auth-session-secret", initialVersionedValue("first"))).toBe(true);
+    const before = await env.SECRETS.prepare(
+      "select encrypted_value, iv from pithy_secrets_system_secrets where name = ?",
+    )
+      .bind("auth-session-secret")
+      .first();
+
+    expect(await store.create("auth-session-secret", initialVersionedValue("second"))).toBe(false);
+
+    expect(await store.getValue("auth-session-secret")).toEqual(initialVersionedValue("first"));
+    const after = await env.SECRETS.prepare(
+      "select encrypted_value, iv from pithy_secrets_system_secrets where name = ?",
+    )
+      .bind("auth-session-secret")
+      .first();
+    expect(after).toEqual(before);
+  });
+
+  test("concurrent creates for one name never crash, and exactly one of them wins", async () => {
+    const store = newStore();
+    const outcomes = await Promise.all(
+      ["a", "b", "c", "d"].map((value) => store.create("auth-session-secret", initialVersionedValue(value))),
+    );
+
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    const count = await env.SECRETS.prepare("select count(*) as n from pithy_secrets_system_secrets").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(1);
+  });
+
   test("delete removes the secret; has reflects it", async () => {
     const store = newStore();
     await store.put("k", initialVersionedValue("v"));

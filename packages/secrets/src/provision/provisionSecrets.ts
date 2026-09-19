@@ -3,8 +3,11 @@
 
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
+import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { generateKeyB64 } from "../rotation/keyRotation";
 import {
   type DeprovisionTarget,
@@ -32,7 +35,10 @@ import {
  * The worker still binds this entry under the fixed `SECRETS_ENCRYPTION_KEYS` **binding** name; only the
  * store entry is scoped (see the manager's resolved `wrangler.jsonc`).
  */
-export function masterKeySecretName(project: string, env: ManagedEnvironment): string {
+export function masterKeySecretName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
+  // A feature's own key, named for the feature (#643): `<project>-feature-…` would be one key every open branch
+  // shared. The scope composes it, the same call that names the entry the feature's app Worker binds.
+  if (feature) return featureScope(feature).secretEntry(MASTER_KEY_BINDING, "environment");
   return resourceNames(project).env(env).secretEntry("secrets-encryption-keys");
 }
 
@@ -55,6 +61,7 @@ export const MANAGER_CF_API_TOKEN_SECRET = "SECRETS_MANAGER_CF_API_TOKEN";
  * band; the manager registry stays keyed by the binding var (see `manager/managerRegistry`).
  */
 export function managerCfApiTokenSecretName(project: string): string {
+  // Never a feature's (#643): a feature's manager holds no Cloudflare API token, so there is no entry to name.
   return resourceNames(project).global.secretEntry(MANAGER_CF_API_TOKEN_SECRET);
 }
 

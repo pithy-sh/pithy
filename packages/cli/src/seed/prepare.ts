@@ -4,6 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { isPublicHostname } from "@pithy-sh/core/src/naming/domains";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { currentValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
@@ -186,6 +187,83 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
       detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from the dev secrets file`,
     });
   };
+}
+
+/**
+ * **The origin `--host` names, for a prepared set (#643).** A bare host — `preview.example.com` — takes the
+ * environment's scheme: `http` in `dev`, where Pithy runs no TLS, `https` everywhere else. A full `http://` or
+ * `https://` origin is taken as written, within the same rules.
+ *
+ * **One rule, stated here, and refused rather than repaired.** This is the origin a fixture builds links and
+ * identities against, and a near-miss would be indistinguishable from a real one — so nothing is normalized
+ * into shape:
+ *
+ * - The host is a public hostname by core's {@link isPublicHostname}, the same test a feature's stamped origin
+ *   passes. `%2e%2e` is refused before a URL parser can decode it into `..`.
+ * - Nothing follows the host: no path — a trailing `/` included — no `?`, no `#`, no credentials.
+ * - Off `dev`, no port and no `http`: a deployed Worker answers on `https` at the default port, and
+ *   `featureOrigin` refuses a stamp with a port for the same deployment.
+ * - **`localhost` is `dev`'s alone.** It is this machine, over `http`, on whatever port it was given. A
+ *   deployed environment is never there, so off `dev` it is refused — `127.0.0.1` and `*.localhost` with it —
+ *   rather than turned into an `https://localhost` nothing serves.
+ * - **As `new URL` reads it (#643).** A host is taken only in the spelling a URL parser gives back, so `127.1`,
+ *   `0x7f.0.0.1` and `0.0.0.0` are the loopback they parse to, never a hostname that happens to be digits; a host
+ *   the parser refuses is refused here; and no IP address is a deployed Worker's origin. IPv6 — bracketed — is
+ *   not a host character at all.
+ */
+export function seedHostOrigin(host: string, env: string): string {
+  const local = env === LOCAL_ENVIRONMENT;
+  const refuse = (action: string, why: string): ValidationError =>
+    new ValidationError({
+      message: `--host takes a host, like preview.example.com, not "${host}".`,
+      action,
+      detail: `seed --host "${host}" is refused: ${why}`,
+    });
+  const bare = "Pass the host alone, or an https origin with nothing after it.";
+
+  // Scheme, then an authority of host characters only. `%`, `@`, `\`, `/`, `?`, `#` and whitespace end the
+  // match, so an encoded host, credentials, and anything after the host are refused here, never parsed.
+  const match = /^(?:(https?):\/\/)?([a-z0-9.:-]+)$/i.exec(host);
+  const authority = match?.[2]?.toLowerCase();
+  const parts = authority === undefined ? null : /^([^:]+)(?::(\d{1,5}))?$/.exec(authority);
+  const hostname = parts?.[1];
+  if (!match || !parts || hostname === undefined) throw refuse(bare, "not a bare host or origin");
+  const port = parts[2];
+  const scheme = match[1]?.toLowerCase() ?? (local ? "http" : "https");
+
+  // **As a URL parser reads it, or not at all (#643).** `new URL` is what every consumer of this origin parses it
+  // with, and it reads `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `2130706433` all as `127.0.0.1`, and `0` as
+  // `0.0.0.0` — this machine, spelled so that no pattern here sees it. So a host is taken only in the spelling
+  // the parser gives back, and one the parser refuses outright — `xn--a.test`, an invalid punycode label — is
+  // not a host at all.
+  let canonical: string;
+  try {
+    canonical = new URL(`${scheme}://${hostname}`).hostname;
+  } catch {
+    throw refuse(bare, "a host new URL refuses");
+  }
+  if (canonical !== hostname) throw refuse(bare, `a spelling new URL reads as ${canonical}`);
+  // WHATWG's own test for an IPv4 host: the last label is a number. Canonical by now, so dotted decimal.
+  const address = /(^|\.)(\d+|0x[0-9a-f]*)$/.test(hostname);
+  const loopback =
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    (address && (hostname.startsWith("127.") || hostname.startsWith("0.")));
+  if (loopback && !local) {
+    throw refuse("localhost is this machine. Pass the host the deployment answers on.", "loopback outside dev");
+  }
+  // An address is not a Worker's origin: a deployment answers on a name. Loopback is `dev`'s, and only there.
+  if (address && !loopback) throw refuse(bare, "an IP address, not a hostname");
+  if (!loopback && !isPublicHostname(hostname)) throw refuse(bare, "not a hostname");
+  if (port !== undefined) {
+    if (!local) throw refuse("A deployed Worker answers on the default port. Drop the port.", "a port outside dev");
+    const number = Number(port);
+    if (number < 1 || number > 65_535) throw refuse("Pass a port from 1 to 65535.", "port out of range");
+  }
+  if (!local && scheme !== "https") {
+    throw refuse("A deployed environment is served over https. Pass the host alone.", "http outside dev");
+  }
+  return `${scheme}://${hostname}${port === undefined ? "" : `:${port}`}`;
 }
 
 /**

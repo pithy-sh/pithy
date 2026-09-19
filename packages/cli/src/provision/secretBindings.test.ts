@@ -84,9 +84,9 @@ describe("secretsStoreBindings", () => {
     });
 
     expect(bound.map((entry) => [entry.binding, entry.secret_name])).toEqual([
-      ["CONNECTION_KEY_ENCRYPTION_KEY", "replay-f239-secrets-connection-key-encryption-key"],
-      // `global` is one account-level value every environment binds — a feature binds it, not a copy.
-      ["RELEASE_INGEST_SECRET", "replay-global-release-ingest-secret"],
+      ["CONNECTION_KEY_ENCRYPTION_KEY", "replay-f239-secrets--connection-key-encryption-key"],
+      // A feature shares nothing with any other environment, so even a `global` secret is its own entry (#643).
+      ["RELEASE_INGEST_SECRET", "replay-f239-secrets--release-ingest-secret"],
     ]);
   });
 

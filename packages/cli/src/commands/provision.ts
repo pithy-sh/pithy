@@ -3,13 +3,20 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { isProvisionableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { storeSecretMinter } from "../capabilities/mintSecrets";
-import { cloudflareClients } from "../cloudflare/clients";
+import { mintReportLines, storeSecretMinter } from "../capabilities/mintSecrets";
+import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { CloudflareSecretsProvisioner } from "../capabilities/secretsProvisioner";
+import { cloudflareFeatureIndexes } from "../capabilities/vectorProvisioner";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
+import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -21,6 +28,7 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
+import { deployKitWorkers, summarizeKitDeploy } from "../project/deployKit";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
@@ -35,7 +43,12 @@ import {
 import { type ProvisionMode, requireProvisionMode } from "../provision/mode";
 import { type PendingSecrets, pendingSecretLines, pendingSecrets } from "../provision/pendingSecrets";
 import { formatProvisionPlan, manifestFaultLines, provisionPlan } from "../provision/plan";
-import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
+import {
+  AUDIT_DESTINATION_ENV,
+  cloudflareProvisioners,
+  type FeatureIndexes,
+  type ResourceProvisioners,
+} from "../provision/resources";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
@@ -100,6 +113,64 @@ async function buildStore(account: CloudflareAccountSelection | null): Promise<S
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken || !storeId) return null;
   return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
+}
+
+/**
+ * **A feature's secrets infrastructure, over the account (#643)** — the provisioner and the manager dispatcher
+ * `pithy secrets provision` uses, each bound to this feature, or `null` without the credentials and the store
+ * id they need. The provisioner mints the feature's own manager token and master key; the dispatcher reaches
+ * the feature's own manager, once `deployKitWorkers` has deployed it, to create its `d1` secrets.
+ */
+async function featureSecretsInfrastructure(
+  account: CloudflareAccountSelection | null,
+  identity: FeatureIdentity,
+  audit: CliAuditEmit,
+): Promise<{ secrets: CloudflareSecretsProvisioner; managers: SecretDispatcher & SecretProbe } | null> {
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const storeId = vars.SECRETS_STORE_ID ?? "";
+  if (!accountId || !apiToken || !storeId) return null;
+  const cf = await cloudflareClients({ accountId, apiToken });
+  const secrets = new CloudflareSecretsProvisioner({
+    cf,
+    account: { accountId, confirmation: cloudflareAccountConfirmation({ account }) },
+    project: identity.project,
+    storeId,
+    // A feature's manager is deployed with its other kit hosts, by `deployKitWorkers`, never by this.
+    deploy: async () => {
+      throw new ValidationError({
+        message: "A feature's secrets manager is deployed with its other kit Workers.",
+        detail: "featureSecretsInfrastructure: deployManager is not part of a feature run",
+      });
+    },
+    audit,
+    feature: identity,
+  });
+  return { secrets, managers: await buildSecretDispatcher(accountId, apiToken, identity.project, identity) };
+}
+
+/**
+ * **The feature's own indexes, over the account (#643)**, or `null` without credentials. Built for every run: an
+ * index is created only for a host whose registry entry declares one, so a project with none makes no call.
+ */
+export async function featureIndexSeam(
+  projectDir: string,
+  account: CloudflareAccountSelection | null,
+  project: string,
+): Promise<FeatureIndexes | null> {
+  const vars = cloudflareEnv({ account });
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) return null;
+  return cloudflareFeatureIndexes({
+    projectDir,
+    cf: await cloudflareClients({ accountId, apiToken }),
+    accountId,
+    apiToken,
+    project,
+    workflows: await cloudflareWorkflows({ accountId, apiToken }),
+  });
 }
 
 /**
@@ -415,11 +486,38 @@ export function writeReport(
       );
     }
   }
+  for (const line of featureRunLines(report)) process.stdout.write(`${line}\n`);
+  for (const row of report.hosts ?? []) process.stdout.write(`${summarizeKitDeploy(row)}\n`);
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
   // Before `Done.`, because it is the part of the job this command did not do. See `pendingSecrets`.
   for (const line of pendingSecretLines(options.pending)) process.stdout.write(`${line}\n`);
   process.stdout.write(`${formatDone()}\n`);
+}
+
+/**
+ * **A feature's run, in the lines only a feature run has (#643):** the routes its stanzas gave up, and the `d1`
+ * secrets its own manager accounted for — through `mintReportLines`, the renderer `pithy secrets provision`
+ * prints the same pass with. Names, never a value. Nothing for a run that has neither.
+ */
+export function featureRunLines(report: ProvisionReport): string[] {
+  const lines: string[] = [];
+  for (const dropped of report.routesDropped ?? []) {
+    lines.push(
+      `${dropped.worker}: ${dropped.routes.join(", ")} not routed to this feature. A feature answers on its own workers.dev address.`,
+    );
+  }
+  lines.push(...mintReportLines(report.featureSecrets ?? []));
+  return lines;
+}
+
+/**
+ * The `d1` secrets still pending after a feature run: the registry's list, less what the feature's own manager
+ * accounted for (#643). A run with no Secrets Store has no manager, and the shortfall reads as before.
+ */
+export function featurePendingSecrets(pending: PendingSecrets, report: ProvisionReport): PendingSecrets {
+  const accounted = new Set((report.featureSecrets ?? []).map((secret) => secret.name));
+  return { ...pending, names: pending.names.filter((name) => !accounted.has(name)) };
 }
 
 /**
@@ -559,6 +657,9 @@ async function provisionBranch(
   const account = await projectCloudflareAccount(projectDir);
   const provisioners = await requireProvisioners(account, "a feature environment");
   const store = await buildStore(account);
+  const audit = await buildAudit(projectDir, capabilities, account);
+  const infrastructure = store ? await featureSecretsInfrastructure(account, identity, audit) : null;
+  const indexes = await featureIndexSeam(projectDir, account, identity.project);
   const report = await provisionFeature({
     projectDir,
     capabilities,
@@ -567,13 +668,32 @@ async function provisionBranch(
     provisioners,
     administersItself: selfAdministering,
     resolveWorkers: workers,
+    // How each Worker's generated stanza learns the `workers.dev` origin it answers on (#643).
+    workersSubdomain: accountWorkersSubdomain(account),
+    // The feature's own manager token, master key and manager — the path a declared environment's take (#643).
+    ...(infrastructure ? infrastructure : {}),
+    // The Vectorize indexes a feature's hosts bind, created as `pithy vector provision` creates them (#643).
+    ...(indexes ? { indexes } : {}),
+    // Every kit host the feature composes, through the same resolver and gated deploy `pithy deploy` ships a
+    // declared environment's with, and named for this feature (#643).
+    deployHosts: () =>
+      deployKitWorkers({
+        projectDir,
+        project: identity.project,
+        env: scope.stanza,
+        account,
+        feature: identity,
+        ...(store ? { ids: { storeId: store.storeId } } : {}),
+        // What the host gate follows a bound id to: the feature's own, asked of the account by name (#643).
+        featureOwned: (feature, composed) => featureOwnedIds(provisioners, feature, composed),
+      }),
     ...(progress ? { onProgress: progress } : {}),
-    audit: await buildAudit(projectDir, capabilities, account),
+    audit,
   });
   writeReport(report, {
     json: options.json,
     seeded: true,
-    pending: deferredSecrets(capabilities, mode),
+    pending: featurePendingSecrets(deferredSecrets(capabilities, mode), report),
     registry: workerSecretRegistry(capabilities) ?? {},
     streamed: progress !== undefined,
   });

@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { parse } from "comment-json";
 import {
   deployHostWorker,
   kitPackageVersion,
@@ -14,14 +17,21 @@ import {
 } from "../capabilities/hostDeploy";
 import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from "../capabilities/hostRegistry";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
+import {
+  assertNoFeatureHostCollision,
+  type FeatureOwnedIds,
+  featureHostNameLeaks,
+  featureOwnedIds,
+} from "../feature/hosts";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { cloudflareProvisioners } from "../provision/resources";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
-import { type AddressStanza, resolveWorkerAddress } from "./workerAddress";
+import { type AddressStanza, inheritAddressKeys, resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers, type WorkerTarget } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -121,6 +131,25 @@ export interface DeployKitOptions {
   readVars?: ReadWorkerVars;
   /** Test seam: run one deploy. Defaults to `wrangler deploy --config`. */
   runDeploy?: RunHostDeploy;
+  /**
+   * **The feature being deployed, when `env` is `feature` (#643)** — `pithy deploy --env feature` reads it off
+   * the branch, and `pithy provision --feature` has it in hand. **Every** composed kit Worker is deployed for a
+   * feature, named for it; a host any of whose account-wide names is not the feature's fails rather than deploys
+   * under a name every branch would share (`feature/hosts.ts`). Absent on a feature, the pass refuses: it cannot
+   * say which feature's hosts these are.
+   */
+  feature?: FeatureIdentity;
+  /**
+   * The two account-scoped ids, when the caller already holds them — `pithy provision --feature` has the store
+   * it just wrote the feature's keys into. Each one absent here is read from the resolved credentials, as before.
+   */
+  ids?: { storeId?: string; accountId?: string };
+  /**
+   * **The D1 databases and KV namespaces the feature owns, id → name (#643)** — what the host gate follows a bound
+   * id to. Defaults to asking the account under the resolved credentials, by the feature's own names. With
+   * neither, the feature owns nothing a config could bind by id, and a host binding one is refused.
+   */
+  featureOwned?: (identity: FeatureIdentity, capabilities: readonly Capability[]) => Promise<FeatureOwnedIds>;
 }
 
 /** The `env.<name>` stanza slice this reads: the resource bindings, and whatever names an address. */
@@ -158,10 +187,16 @@ function isId(value: string | undefined): boolean {
  */
 async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza | undefined> {
   if (!isSourceEnvironment(env)) {
+    // **`env.feature`, never the whole file (#643).** The generated config is the tracked one with a feature
+    // stanza added, so its top level is `dev`'s: its ids are the local binding names and its address is
+    // nothing, and reading it had every kit Worker on a feature skipped for having no database. JSONC, as
+    // every config the kit writes is — comments survive generation, and `JSON.parse` would refuse them.
     const raw = await readOptionalFile(wranglerConfigPath(worker.dir, env));
     if (raw === null) return undefined;
     try {
-      return JSON.parse(raw) as KitStanza;
+      const config = parse(raw) as unknown as (KitStanza & { env?: Record<string, KitStanza | undefined> }) | null;
+      const stanza = config?.env?.[env];
+      return stanza ? { ...stanza, ...inheritAddressKeys(config, stanza, env) } : undefined;
     } catch {
       return undefined;
     }
@@ -272,6 +307,20 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   // and nothing else would ever say so.
   problems.push(...notes);
   if (hosts.length === 0) return;
+  // A feature's hosts are named for the feature, so a pass that does not know which feature cannot name one.
+  if (options.env === FEATURE_ENVIRONMENT && options.feature === undefined) {
+    problems.push(
+      "A feature's kit Workers are named for the feature. Run this from its feature/<issue>-<slug> branch.",
+    );
+    return;
+  }
+  // An app Worker named like a kit host would deploy over it, or it over the app (F3 of #643's review).
+  if (options.feature) {
+    assertNoFeatureHostCollision(
+      options.feature,
+      workers.map((worker) => ({ app: basename(worker.dir), script: worker.name })),
+    );
+  }
 
   const readTemplate = options.readTemplate ?? readHostTemplateDefault;
   const vars = cloudflareEnv({ account: options.account });
@@ -282,6 +331,25 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   // No credentials means no stamp can be read, which the gate treats as doubt and therefore deploys —
   // wrangler still authenticates on its own OAuth login, exactly as `pithy deploy` always could.
   const readVars = options.readVars ?? (credentials ? await workersVarsReader(credentials) : undefined);
+
+  // What a feature's hosts may bind by id: its own databases and namespaces, and nothing else (#643).
+  let owned: FeatureOwnedIds | undefined;
+  if (options.feature) {
+    const [first] = hosts;
+    const capabilities = first ? [first.composed, ...first.siblings] : [];
+    owned = options.featureOwned
+      ? await options.featureOwned(options.feature, capabilities)
+      : credentials
+        ? await featureOwnedIds(
+            cloudflareProvisioners(await cloudflareClients(credentials), {
+              accountId: credentials.accountId,
+              confirmation: cloudflareAccountConfirmation({ account: options.account }),
+            }),
+            options.feature,
+            capabilities,
+          )
+        : { d1: new Map(), kv: new Map() };
+  }
 
   const stanzas = new Map<string, KitStanza | undefined>();
   for (const worker of workers) stanzas.set(worker.dir, await stanzaFor(worker, options.env));
@@ -299,9 +367,10 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
       readVars,
       databaseIds,
       kvNamespaceIds,
+      ...(owned ? { owned } : {}),
       stanza: stanzas.get(host.sourceDir),
-      storeId: vars.SECRETS_STORE_ID,
-      accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+      storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
+      accountId: options.ids?.accountId ?? vars.CLOUDFLARE_ACCOUNT_ID,
     });
     rows.push(row);
     // **The row, as it settles (#578).** The `▸` line for the ones that actually upload comes from
@@ -381,6 +450,8 @@ async function deployOneKitWorker(input: {
   readVars: ReadWorkerVars | undefined;
   databaseIds: Record<string, string>;
   kvNamespaceIds: Record<string, string>;
+  /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to (#643). */
+  owned?: FeatureOwnedIds;
   stanza: KitStanza | undefined;
   storeId: string | undefined;
   accountId: string | undefined;
@@ -389,7 +460,8 @@ async function deployOneKitWorker(input: {
   const capability = host.capability;
   // No `--env`. A capability's provision spans every declared environment and none of the ones that host a
   // kit Worker declares the flag, which the CLI refuses (#594) — a skip naming it names a fix that fails.
-  const provision = `Run pithy ${capability} provision.`;
+  const provision =
+    options.env === FEATURE_ENVIRONMENT ? "Run pithy provision --feature." : `Run pithy ${capability} provision.`;
 
   if (!input.source) return skipped(capability, `No Worker in apps/ composes ${capability} any more.`);
   const baseUrl = await baseUrlFor(input.source, options.env, input.stanza);
@@ -445,9 +517,25 @@ async function deployOneKitWorker(input: {
       // the same config `pithy <capability> provision` does rather than schema defaults (#537).
       capability: host.composed,
       siblings: host.siblings,
+      ...(options.feature ? { feature: options.feature } : {}),
     });
   } catch (error) {
     return { capability, worker: null, outcome: "failed", reason: failureReason(error) };
+  }
+  // **A feature's host is named for the feature, or it is not deployed (#643).** A resolver that does not read
+  // the feature composes `<project>-feature-<capability>`: one Worker, and one set of Workflows, buckets and keys,
+  // that every open branch would deploy over every other's. Checked against every account-wide name the config
+  // carries, not a list of resolvers that honor the feature, so a host added to the registry is held to it too.
+  if (options.feature) {
+    const leaks = featureHostNameLeaks(config, options.feature, input.owned);
+    if (leaks.length > 0) {
+      return {
+        capability,
+        worker: null,
+        outcome: "failed",
+        reason: `${capability}'s Worker would bind what is not this feature's: ${leaks.join("; ")}. A feature's kit Worker binds only the feature's own.`,
+      };
+    }
   }
   const shortfall = readinessReason({ missingIds, missingVars, capability, env: options.env, provision });
   if (shortfall) return skipped(capability, shortfall);

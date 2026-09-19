@@ -82,6 +82,11 @@ function recordingStore(entries: Map<string, string>): SecretsStore {
     put: async (name, value) => {
       entries.set(name, value);
     },
+    create: async (name, value) => {
+      if (entries.has(name)) return "present" as const;
+      entries.set(name, value);
+      return "created" as const;
+    },
     remove: async (name) => entries.delete(name),
   };
 }

@@ -20,10 +20,10 @@ import {
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
 import type { DeployVerification, VerifyDeployResult } from "./verifyDeploy";
 import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
-import { type AddressStanza, resolveWorkerAddress } from "./workerAddress";
+import { readAddressStanza, resolveWorkerAddress } from "./workerAddress";
 import { parseWorkerManifest } from "./workerManifest";
 import { discoverWorkers, type WorkerTarget } from "./workers";
-import { readWranglerConfig, runWrangler } from "./wrangler";
+import { runWrangler } from "./wrangler";
 
 /** The `wrangler deploy` runner for one worker — injectable so tests exercise orchestration without wrangler. */
 export type RunDeploy = (target: WorkerTarget, args: string[]) => Promise<string>;
@@ -344,12 +344,10 @@ async function verifyWorkerDeploy(
     domains = undefined;
   }
 
-  let stanza: AddressStanza | undefined;
-  try {
-    stanza = ((await readWranglerConfig(worker.dir)) as { env?: Record<string, AddressStanza | undefined> }).env?.[env];
-  } catch {
-    stanza = undefined;
-  }
+  // Through the one stanza reader, never the tracked file directly (#643): a feature's stanza is in the
+  // generated config that was just deployed, and a top-level `workers_dev` wrangler inherits is read with it.
+  // Offline — a feature's address is the one provisioning stamped, so verifying asks the account nothing.
+  const stanza = await readAddressStanza(worker.dir, env);
 
   const address = resolveWorkerAddress({ environment: env, domains, stanza });
   if (!address) return null;

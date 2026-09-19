@@ -134,30 +134,30 @@ describe("cloudflareWorkerScripts", () => {
   }
 
   test("on an unconfirmed account it refuses, and asks nothing", async () => {
-    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const fake = fakeWorkers(["acme-f69-demo--api"]);
     const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-stranger", confirmation: "ambient" });
 
-    await expect(scripts.exists("acme-f69-demo-api")).rejects.toThrow(REFUSAL);
+    await expect(scripts.exists("acme-f69-demo--api")).rejects.toThrow(REFUSAL);
     expect(fake.getWorker).not.toHaveBeenCalled();
     expect(fake.deleteWorker).not.toHaveBeenCalled();
   });
 
   test("on a confirmed account it says whether a script of exactly that name is deployed", async () => {
-    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const fake = fakeWorkers(["acme-f69-demo--api"]);
     const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-ours", confirmation: "pinned" });
 
-    expect(await scripts.exists("acme-f69-demo-api")).toBe(true);
-    expect(await scripts.exists("acme-f69-demo-web")).toBe(false);
+    expect(await scripts.exists("acme-f69-demo--api")).toBe(true);
+    expect(await scripts.exists("acme-f69-demo--web")).toBe(false);
   });
 
   // A feature's Workers call each other, and Cloudflare refuses to delete a callee while its caller still
   // binds it. Every Worker teardown deletes is the feature's own and goes in the same pass, so it forces.
   test("delete removes the script by name, whatever still binds it", async () => {
-    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const fake = fakeWorkers(["acme-f69-demo--api"]);
     const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-ours", confirmation: "named" });
 
-    await scripts.delete("acme-f69-demo-api");
+    await scripts.delete("acme-f69-demo--api");
 
-    expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo-api", { force: true });
+    expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo--api", { force: true });
   });
 });

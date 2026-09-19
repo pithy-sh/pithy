@@ -79,7 +79,13 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 6. **Creates the secrets that have no decision in them.** A registry entry declares whether its value is *arbitrary* — a signing key, an ingest secret: any random string works, because nothing outside the project has to agree with it. Provisioning mints those and binds them in the same pass. It still stops for a *supplied* secret — an OAuth client secret, a payment rail's key — because a random string there authenticates against nothing. Absence is checked first, always: an existing value is never replaced, and replacing one is rotation, which is a separate and deliberate act. No minted value is printed, logged, or put in an audit event; the run reports that the secret was created and which entry it went to. A supplied secret gets the line that names the two commands that finish it — `SESSION_SIGNING_KEY has no store entry yet. Run pithy secrets create SESSION_SIGNING_KEY --env staging to supply its value, then pithy secrets provision to write the stanza.` — and an entry the kit *can* compose a value for, including `SECRETS_ENCRYPTION_KEYS`, gets the other one: `Run pithy secrets provision — it creates the store entries and writes the stanza.` Which of the two you get is one decision, taken in one place, and `pithy doctor` prints the same answer for the same finding.
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
 8. **Binds `SELF`, for a project that administers itself.** A Worker cannot fetch its own hostname: the subrequest loops back through the edge into the Worker it came from and hangs until Cloudflare answers 522, on a route that answers in a second and a half from outside. So a project whose root `pithy.config.ts` says `administersItself: true` gets one more `services` entry in every stanza this writes — `SELF`, pointing at the script that stanza deploys as — and the code calls itself with `env.SELF.fetch(request)`, dispatched inside the runtime with no edge hop. The binding name is `@pithy-sh/core`'s `SELF_BINDING`, so nothing has to agree a string by hand. It is written from the same `name` this step writes, so the two cannot disagree; a re-run retargets in place rather than duplicating; and a project that declares nothing gets no entry and no change to its stanza. **A feature environment is why this is the kit's job rather than a line you add yourself**: its stanza is generated on every `pithy provision --feature`, so a hand-written entry never survives to the deploy, and the script it would have to name is composed from the branch. It is deliberately absent from the report's `services` list, which is one flat set for the whole project: the self entry is per Worker, and N lines with no Worker beside them would say less than the `workers` lines above them already do. **The top-level stanza gets none, and that is the rule rather than an omission**: the 522 is an edge behavior, and `wrangler dev` serves a Worker fetching its own address as an ordinary local request, so a dev run needs no binding and a call site that wants one falls back to an ordinary `fetch` there. `pithy doctor` names a declared self-administering project whose declared stanza lacks it, or whose entry names a script that stanza does not deploy as.
-9. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest — the resources it created and the Worker script names it wrote — so `pithy feature destroy` deletes exactly what was created and deployed — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
+9. **Migrates**, and seeds when asked. A feature also records a manifest — the resources it created and the Worker script names it wrote — so `pithy feature destroy` deletes exactly what was created and deployed — the one thing a declared environment has no equivalent of, which is [`feature.md`](feature.md)'s subject.
+10. **Stands up every kit Worker a feature composes (#643).** A feature is an environment, and it runs what an environment runs: every host its capabilities own — email's sender, media's enrichment, storage's sweep, payments' reconcile, support's classifier, testers' daily pass, vector's reprocess, and the secrets manager. Each is deployed through the registry entry, resolver and gated deploy `pithy deploy` ships a declared environment's with, handed the feature, so every name it is called or binds is the feature's: `<project>-f<issue>-<slug>-<capability>`, its Workflows named the same way. A host any of whose names is not the feature's fails rather than deploys. The app Worker's `workflows` bindings into the hosts are written **after** the deploy, and only for the hosts that deployed, so a host that failed leaves no binding for the next `pithy deploy --env feature` to ship. Any host that does not deploy fails the run; the next run finishes it. An app Worker whose directory would give it a kit host's name — `apps/email`, `apps/secrets`, any of them — is refused before anything is created.
+11. **Shares nothing with any other environment.** The Cloudflare account and its one Secrets Store are the only containers a feature cannot have its own of, and everything inside them is split: its databases, namespaces, buckets and Vectorize indexes, its Workers and Workflows, and every store entry — a `global` secret's included. That holds against every other feature and environment of this project and of every other project in the account: a feature name is `<project>-f<issue>-<slug>--<thing>`, which nothing else composes (see [`NAMING.md`](../NAMING.md)). **Rate limiters are the one exception: features share them with each other, never with staging or production.** Cloudflare keys a limiter's counters by `namespace_id` across the account, so the top level's id would have a branch spend production's per-IP budget. Every `ratelimits` binding in a feature stanza, copied from the top level or declared under a tracked `env.feature`, gets its limiter's fixed feature namespace: the declared `namespace_id` plus 1000000000, so `1001` is `1000001001` in every feature of every project. An offset cannot collide, so distinct limiters keep distinct namespaces, and it lands in a range no environment may declare. A limiter that cannot be offset — no `namespace_id`, one not spelled in decimal digits, or one outside 1 through 999999999 — is refused before anything is created. Nothing account-wide is created for rate limiting.
+12. **Answers on its own `workers.dev` address and nothing else.** Its stanza states `routes: []`, so it never inherits the top level's custom domain, and the run says which routes it gave up — inherited or declared under a tracked `env.feature` — rather than dropping them silently.
+13. **Refuses a slug that does not fit.** Feature names are never truncated, so a branch whose slug does not fit every name the feature composes is refused before anything is created, naming the longest slug the project takes at that issue. See [`NAMING.md`](../NAMING.md#the-feature-branch-budget).
+
+**The feature range is reserved in every environment, and every project.** `pithy provision --env <any>` refuses a Worker that declares a `namespace_id` from 1000000000 through 1999999999, at the top level or in any stanza, before anything is created, whether or not the project has ever provisioned a feature: every feature of any project in the account binds its limiters in that range, and a declared id there would share counters with a branch. The id is read as the integer it spells, so `"01031275746"` is refused as `1031275746`. `pithy deploy` refuses the same, and `pithy doctor` reports it.
 
 ## While it runs
 
@@ -163,20 +169,38 @@ auth-session-secret: not created here — they need a deployed manager.
 Run pithy secrets provision to create them.
 ```
 
-`--feature` names none, because there is none:
+`--feature` creates them the way `pithy secrets provision` does, when the account has a Secrets Store (#643). A
+feature has its own `SECRETS` database, so it gets its own secrets manager: the run creates the feature's own
+master key, only if absent, through the provisioner `pithy secrets provision` uses, deploys the feature's manager
+with its other kit Workers, and then asks that manager to create every `d1` secret the registry says may be
+generated, through the same `mintDeclaredSecrets` pass. **No token.** A feature's manager binds no Cloudflare API
+token and rotates nothing, so branch code never holds write access to the account's Secrets Store. Nothing is
+pending:
+
+```
+auth-session-secret created in feature.
+```
+
+**The feature's own stores are the only copy, and the manager is the only writer.** The CLI never holds a
+value: the manager probes before anything is minted and writes with `create`, which never replaces a secret
+that is there, so a re-run from any machine changes nothing, and a probe that fails fails the run rather than
+reading as an absence. **Nothing depends on which run created the key.** The manager seals every row under
+whatever key the store holds, so a run that fails anywhere after the key exists — a migration, a host deploy, the
+mint itself — is finished by the next one. Two runs at once leave one value: the manager's `create` is a single
+insert-if-absent, and the loser is told the secret already exists.
+
+Without a Secrets Store there is no key to give a manager, and the shortfall names the run that would create them:
 
 ```
 auth-session-secret: not created here — they need a deployed manager.
-A branch gets no manager, and no command creates these for one. This environment comes up without them.
+Run pithy provision --feature with SECRETS_STORE_ID set to create them.
 ```
 
 A `cf-secrets-store` secret the registry calls arbitrary — the email link-signing key, since #596 — is not on that line in either mode. The account's Secrets Store answers whether the entry exists, so it is created and bound in the same pass (`secretBindings`), in the branch's own scope for a feature.
 
-`pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared and gets no manager, deliberately: a manager is a Worker with its own D1 and its own rotation cron, and one per open pull request is not a thing anybody wants. Running that command from a feature worktree does nothing for the branch. It used to be printed anyway, which cost an operator a command and taught them nothing.
+`pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared, so that command does nothing for one; `pithy provision --feature` is what gives a branch its manager.
 
-So this is a stated shortfall rather than an invented remedy. A feature environment comes up without its `d1` secrets, and every capability that reads one fails at its first request. The run warns and does not refuse: `--feature` runs per pull request in CI, and failing every one of them would not close the gap.
-
-`--json` carries the distinction as `pendingSecretsRemedy` — the command, or `null`.
+`--json` carries the distinction as `pendingSecretsRemedy` — the command that creates them.
 
 ## Production
 
@@ -214,7 +238,7 @@ $ pithy provision --env staging --yes --json
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set"}
 ```
 
 | key | type | meaning |
@@ -258,8 +282,13 @@ $ pithy provision --feature --json
 | `configs[].path` | `string` | The file written, relative to the project root |
 | `configs[].ids` | `number` | How many binding ids landed in it |
 | `committed` | `boolean` | Whether those files are committed. `true` for `--env`, `false` for `--feature` — the one field a pipeline reads to know it has nothing to commit |
-| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **cannot create**. Their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. The same set in both modes — it is a fact about the registry. Empty when the project declares none |
-| `pendingSecretsRemedy` | `string \| null` | The command that does create them, or `null` when no command does. `"pithy secrets provision"` for `--env`; **`null` for `--feature`**, because a branch gets no manager and nothing mints these for one. A pipeline branches on this rather than on the mode |
+| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **did not create**. For `--env`, their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. For `--feature`, every one the feature's own manager accounted for is left off. Empty when the project declares none |
+| `featureSecrets` | `object[]` | `--feature` with a Secrets Store only: each `d1` secret the feature's own manager accounted for, as `pithy secrets provision --json` reports `generated`. Names, never a value |
+| `featureSecrets[].name` | `string` | The secret's registry name |
+| `featureSecrets[].created` | `string[]` | `["feature"]` when this run created it; empty when it was already there |
+| `hosts` | `object[]` | `--feature` only: every kit Worker the feature stood up for itself, one row each, as `pithy deploy --json` reports `kit` |
+| `routesDropped` | `object[]` | `--feature` only, and only when there were any: each Worker's route patterns the feature stanza gave up, as `{ worker, routes }` |
+| `pendingSecretsRemedy` | `string \| null` | The command that does create them. `"pithy secrets provision"` for `--env`; `"pithy provision --feature with SECRETS_STORE_ID set"` for `--feature`, whose own run creates them once it has a Secrets Store. A pipeline branches on this rather than on the mode |
 
 ## Exit codes
 

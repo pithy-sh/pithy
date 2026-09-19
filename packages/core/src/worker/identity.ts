@@ -29,6 +29,16 @@ export const PROJECT_VAR = "PROJECT";
 export const ENVIRONMENT_VAR = "ENVIRONMENT";
 
 /**
+ * The var naming where a deployed Worker answers — `https://<host>`, no path, no trailing slash.
+ *
+ * Generated, never hand-set: `pithy worker sync` writes it from a declared domain, and `pithy provision
+ * --feature` writes a feature's from its `workers.dev` address (#643). It is the one statement of a feature's
+ * origin a running Worker can read, because the account's `workers.dev` subdomain is something only the
+ * Cloudflare API knows, and a Worker has no business calling it at module scope.
+ */
+export const BASE_URL_VAR = "BASE_URL";
+
+/**
  * The var carrying a Worker's **own** dev origin, from `pithy dev` to whatever launches that Worker.
  *
  * Not stamped into `wrangler.jsonc` like the three above, and that is the whole point of it. A dev port

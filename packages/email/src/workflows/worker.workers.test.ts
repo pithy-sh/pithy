@@ -6,7 +6,8 @@ import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
-import emailHost, { type EmailWorkerEnv } from "./worker";
+import type { EmailWorkerEnv } from "./sendDeps";
+import emailHost from "./worker";
 
 /**
  * The cron entry (pithy-sh/pithy#538).
