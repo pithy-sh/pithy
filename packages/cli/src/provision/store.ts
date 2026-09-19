@@ -17,6 +17,12 @@ export interface SecretsStore {
   exists(name: string): Promise<boolean>;
   /** Write a value under `name`. Overwrites in place; never deletes first. */
   put(name: string, value: string): Promise<void>;
+  /**
+   * Write a value under `name` only if nothing is there. Resolves `true` when this call created it, `false`
+   * when an entry was already there — including one another run created a moment ago. Never overwrites, so
+   * two runs racing to create one secret leave exactly one value, the winner's (#643).
+   */
+  create(name: string, value: string): Promise<boolean>;
   /** Delete an entry if it is there. Resolves `true` when something was removed. */
   remove(name: string): Promise<boolean>;
 }
@@ -28,6 +34,7 @@ export function cloudflareSecretsStore(clients: CloudflareClients, storeId: stri
     storeId,
     exists: (name) => store.exists(name),
     put: (name, value) => store.putSecret(name, value),
+    create: (name, value) => store.createSecretIfAbsent(name, value),
     remove: (name) => store.deleteSecretIfPresent(name),
   };
 }

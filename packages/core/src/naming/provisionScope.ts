@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError, ValidationError } from "../error/pithyError";
+import type { WorkflowHostNameParts } from "../workflow/naming";
 import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMarker } from "./environment";
 import {
   type FeatureIdentity,
@@ -176,6 +177,16 @@ export interface ProvisionScope {
    * `<project>-global-<secret>`. Scoping it would mint a second copy of a value defined as one.
    */
   secretEntry(secret: string, secretScope: SecretNameScope): string;
+  /**
+   * What a capability's host Worker and its Workflows are named from in this scope — handed, with the
+   * capability, to `workflowHostName` and `workflowScriptName`. It is what an app Worker's cross-script
+   * `workflows` entry and the host's own config are both composed from (#643).
+   *
+   * On the scope for the reason every other name is: a declared environment composes
+   * `<project>-<env>-<capability>[-<job>]`, and a feature composes `<project>-f<issue>-<slug>-…`, because
+   * `<project>-feature-email-send` would be one Workflow every open branch deployed over every other's.
+   */
+  readonly workflowHost: Omit<WorkflowHostNameParts, "capability">;
 }
 
 /** The wrangler binding array a resource kind's name is composed for. */
@@ -331,6 +342,7 @@ export function environmentScope(project: string, environment: string): Provisio
     },
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
+    workflowHost: { project, env: environment },
   };
 }
 
@@ -374,6 +386,8 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     worker: ({ app }) => featureWorkerName(identity, app),
     secretEntry: (secret, secretScope) =>
       secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
+    // `env` is the stanza — what the host's `ENVIRONMENT` var says — and `feature` is what its names take.
+    workflowHost: { project: identity.project, env: FEATURE_ENVIRONMENT, feature: identity },
   };
 }
 

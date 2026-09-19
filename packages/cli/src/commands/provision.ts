@@ -12,6 +12,7 @@ import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
+import { FEATURE_HOSTS } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -23,6 +24,7 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
+import { deployKitWorkers, summarizeKitDeploy } from "../project/deployKit";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
@@ -106,7 +108,7 @@ async function buildStore(account: CloudflareAccountSelection | null): Promise<S
 
 /**
  * A feature's `SECRETS` database by id, over the account's REST API — where `pithy provision --feature` seals
- * the feature's kept `d1` secrets (#643). Built only once a store was found, so the credentials are there.
+ * the feature's `d1` secrets (#643). Built only once a store was found, so the credentials are there.
  */
 async function remoteSecretsDatabase(
   account: CloudflareAccountSelection | null,
@@ -433,7 +435,7 @@ export function writeReport(
     }
   }
   for (const line of featureSecretLines(report)) process.stdout.write(`${line}\n`);
-  for (const line of regeneratedSecretLines(report)) process.stderr.write(`${line}\n`);
+  for (const row of report.hosts ?? []) process.stdout.write(`${summarizeKitDeploy(row)}\n`);
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
   // Before `Done.`, because it is the part of the job this command did not do. See `pendingSecrets`.
@@ -442,28 +444,22 @@ export function writeReport(
 }
 
 /**
- * **A feature's own secrets, in two sentences (#643).** What the feature's `SECRETS` database holds and where
- * the values are kept. Names and a path, never a value. Nothing for a run that kept none.
+ * **A feature's own `d1` secrets, in a sentence or two (#643).** What this run sealed into the feature's
+ * `SECRETS` database, and what it had to seal again. Names, never a value.
+ * Nothing for a run that sealed nothing.
  */
 export function featureSecretLines(report: ProvisionReport): string[] {
-  const kept = report.featureSecrets;
-  if (!kept) return [];
+  const secrets = report.featureSecrets;
+  if (!secrets) return [];
   const lines: string[] = [];
-  if (kept.written.length > 0) lines.push(`${kept.written.join(", ")} sealed into this feature's SECRETS database.`);
-  lines.push(`This feature's secrets are kept in ${kept.path}.`);
+  if (secrets.written.length > 0)
+    lines.push(`${secrets.written.join(", ")} sealed into this feature's SECRETS database.`);
+  if (secrets.resealed.length > 0) {
+    lines.push(
+      `${secrets.resealed.join(", ")} sealed again: the old rows were under a master key the store no longer holds.`,
+    );
+  }
   return lines;
-}
-
-/**
- * **A rotation is never silent (#643).** Values the deployment held that this run replaced, because the kept
- * copy was not on this machine. To stderr, like any line an operator must not miss in a piped run.
- */
-export function regeneratedSecretLines(report: ProvisionReport): string[] {
-  const regenerated = report.featureSecrets?.regenerated ?? [];
-  if (regenerated.length === 0) return [];
-  return [
-    `${regenerated.join(", ")}: generated again, because this machine did not keep them. Sessions and links signed with the old values stop working.`,
-  ];
 }
 
 /**
@@ -622,8 +618,20 @@ async function provisionBranch(
     resolveWorkers: workers,
     // How each Worker's generated stanza learns the `workers.dev` origin it answers on (#643).
     workersSubdomain: accountWorkersSubdomain(account),
-    // Where the feature's kept `d1` secrets are sealed: its own SECRETS database, over the account's REST API.
+    // Where the feature's `d1` secrets are sealed: its own SECRETS database, over the account's REST API.
     ...(store ? { secretsDatabase: await remoteSecretsDatabase(account) } : {}),
+    // The feature's own email host, through the same resolver and gated deploy `pithy deploy` ships a declared
+    // environment's with — narrowed to what a feature stands up, and named for this feature (#643).
+    deployHosts: () =>
+      deployKitWorkers({
+        projectDir,
+        project: identity.project,
+        env: scope.stanza,
+        account,
+        feature: identity,
+        only: FEATURE_HOSTS,
+        ...(store ? { ids: { storeId: store.storeId } } : {}),
+      }),
     ...(progress ? { onProgress: progress } : {}),
     audit: await buildAudit(projectDir, capabilities, account),
   });

@@ -5,7 +5,11 @@ import { dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
+import { parse } from "comment-json";
 import {
   deployHostWorker,
   kitPackageVersion,
@@ -21,7 +25,7 @@ import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
-import { type AddressStanza, resolveWorkerAddress } from "./workerAddress";
+import { type AddressStanza, inheritAddressKeys, resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers, type WorkerTarget } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -121,6 +125,23 @@ export interface DeployKitOptions {
   readVars?: ReadWorkerVars;
   /** Test seam: run one deploy. Defaults to `wrangler deploy --config`. */
   runDeploy?: RunHostDeploy;
+  /**
+   * **The feature being deployed, when `env` is `feature` (#643)** — `pithy deploy --env feature` reads it off
+   * the branch, and `pithy provision --feature` has it in hand. A kit Worker deployed for a branch takes the
+   * feature's names, and a host whose resolver composes none is skipped rather than deployed under a name every
+   * branch would share. Absent on a feature, the pass refuses: it cannot say which feature's hosts these are.
+   */
+  feature?: FeatureIdentity;
+  /**
+   * Only these capabilities' Workers. Absent, every composed one. `pithy provision --feature` narrows to the
+   * hosts a feature stands up.
+   */
+  only?: readonly string[];
+  /**
+   * The two account-scoped ids, when the caller already holds them — `pithy provision --feature` has the store
+   * it just wrote the feature's keys into. Each one absent here is read from the resolved credentials, as before.
+   */
+  ids?: { storeId?: string; accountId?: string };
 }
 
 /** The `env.<name>` stanza slice this reads: the resource bindings, and whatever names an address. */
@@ -158,10 +179,16 @@ function isId(value: string | undefined): boolean {
  */
 async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza | undefined> {
   if (!isSourceEnvironment(env)) {
+    // **`env.feature`, never the whole file (#643).** The generated config is the tracked one with a feature
+    // stanza added, so its top level is `dev`'s: its ids are the local binding names and its address is
+    // nothing, and reading it had every kit Worker on a feature skipped for having no database. JSONC, as
+    // every config the kit writes is — comments survive generation, and `JSON.parse` would refuse them.
     const raw = await readOptionalFile(wranglerConfigPath(worker.dir, env));
     if (raw === null) return undefined;
     try {
-      return JSON.parse(raw) as KitStanza;
+      const config = parse(raw) as unknown as (KitStanza & { env?: Record<string, KitStanza | undefined> }) | null;
+      const stanza = config?.env?.[env];
+      return stanza ? { ...stanza, ...inheritAddressKeys(config, stanza, env) } : undefined;
     } catch {
       return undefined;
     }
@@ -271,7 +298,16 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   // than the line `pithy dev` prints: the hosts that Worker composes are missing from the set below,
   // and nothing else would ever say so.
   problems.push(...notes);
-  if (hosts.length === 0) return;
+  const only = options.only;
+  const wanted = only === undefined ? hosts : hosts.filter((host) => only.includes(host.capability));
+  if (wanted.length === 0) return;
+  // A feature's hosts are named for the feature, so a pass that does not know which feature cannot name one.
+  if (options.env === FEATURE_ENVIRONMENT && options.feature === undefined) {
+    problems.push(
+      "A feature's kit Workers are named for the feature. Run this from its feature/<issue>-<slug> branch.",
+    );
+    return;
+  }
 
   const readTemplate = options.readTemplate ?? readHostTemplateDefault;
   const vars = cloudflareEnv({ account: options.account });
@@ -289,7 +325,7 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   const databaseIds = collectIds(declared, "d1");
   const kvNamespaceIds = collectIds(declared, "kv");
 
-  for (const host of hosts) {
+  for (const host of wanted) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
     const row = await deployOneKitWorker({
       host,
@@ -300,8 +336,8 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
       databaseIds,
       kvNamespaceIds,
       stanza: stanzas.get(host.sourceDir),
-      storeId: vars.SECRETS_STORE_ID,
-      accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+      storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
+      accountId: options.ids?.accountId ?? vars.CLOUDFLARE_ACCOUNT_ID,
     });
     rows.push(row);
     // **The row, as it settles (#578).** The `▸` line for the ones that actually upload comes from
@@ -389,7 +425,8 @@ async function deployOneKitWorker(input: {
   const capability = host.capability;
   // No `--env`. A capability's provision spans every declared environment and none of the ones that host a
   // kit Worker declares the flag, which the CLI refuses (#594) — a skip naming it names a fix that fails.
-  const provision = `Run pithy ${capability} provision.`;
+  const provision =
+    options.env === FEATURE_ENVIRONMENT ? "Run pithy provision --feature." : `Run pithy ${capability} provision.`;
 
   if (!input.source) return skipped(capability, `No Worker in apps/ composes ${capability} any more.`);
   const baseUrl = await baseUrlFor(input.source, options.env, input.stanza);
@@ -445,9 +482,28 @@ async function deployOneKitWorker(input: {
       // the same config `pithy <capability> provision` does rather than schema defaults (#537).
       capability: host.composed,
       siblings: host.siblings,
+      ...(options.feature ? { feature: options.feature } : {}),
     });
   } catch (error) {
     return { capability, worker: null, outcome: "failed", reason: failureReason(error) };
+  }
+  // **A feature's host is named for the feature, or it is not deployed (#643).** A resolver that does not read
+  // the feature composes `<project>-feature-<capability>`: one Worker, and one set of Workflows, that every
+  // open branch would deploy over every other's. Checked against the name, not a list of resolvers that
+  // honor it, so a resolver taught the feature later joins without a change here.
+  if (options.feature) {
+    const expected = workflowHostName({
+      project: options.project,
+      capability,
+      env: options.env,
+      feature: options.feature,
+    });
+    if (config.name !== expected) {
+      return skipped(
+        capability,
+        `A feature does not host ${capability}'s Worker yet: it would deploy as ${config.name}, which every branch shares.`,
+      );
+    }
   }
   const shortfall = readinessReason({ missingIds, missingVars, capability, env: options.env, provision });
   if (shortfall) return skipped(capability, shortfall);

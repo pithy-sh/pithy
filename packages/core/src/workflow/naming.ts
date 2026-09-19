@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "../error/pithyError";
+import { type FeatureIdentity, featureWorkerName, featureWorkflowName } from "../naming/feature";
 import { MAX_CAPABILITY_JOB, NAMESPACE_LIMITS } from "../naming/limits";
 import { assertValidProjectName, kebab } from "../naming/resource";
 import { NAME_SEGMENT } from "../naming/segment";
@@ -109,6 +110,21 @@ function head(project: string, env: string): string {
   return `${kebab(project)}-${env}`;
 }
 
+/**
+ * The feature a name is composed for, held to the project the parts name — two projects in one set of parts is
+ * a name composed for somebody else's feature.
+ */
+function featureOf(parts: WorkflowHostNameParts): FeatureIdentity {
+  const feature = parts.feature as FeatureIdentity;
+  if (feature.project !== parts.project) {
+    throw new InternalError({
+      message: "A feature's Workflow name was asked for with two different projects.",
+      detail: `parts name project "${parts.project}" and a feature of project "${feature.project}".`,
+    });
+  }
+  return feature;
+}
+
 /** The identity of a capability's deployment in one environment. */
 export interface WorkflowHostNameParts {
   /** The project name — the root `pithy.config.ts` `name`, resolved by `requireProjectName` and never guessed. */
@@ -117,6 +133,13 @@ export interface WorkflowHostNameParts {
   capability: string;
   /** The deployment environment (e.g. `staging`). */
   env: string;
+  /**
+   * **The feature this deployment is, when it is one (#643).** A feature's host Worker and Workflows take the
+   * feature's head — `<project>-f<issue>-<slug>-…` — not `<project>-feature-…`, which every open branch would
+   * share: Worker and Workflow names are account-wide, so a second branch's deploy would replace the first's.
+   * `env` stays `feature`, which is what the host's `ENVIRONMENT` var says; only the names change.
+   */
+  feature?: FeatureIdentity;
 }
 
 /** The identity of one durable job's Workflow in one environment. */
@@ -139,6 +162,7 @@ export function workflowScriptName(parts: WorkflowScriptNameParts): string {
   assertSegment(parts.capability, "capability");
   assertSegment(parts.job, "job");
   assertCapabilityJob(parts.capability, parts.job);
+  if (parts.feature) return featureWorkflowName(featureOf(parts), parts.capability, parts.job);
   return assertLength(`${head(parts.project, parts.env)}-${parts.capability}-${parts.job}`, MAX_WORKFLOW_NAME_BYTES);
 }
 
@@ -151,6 +175,7 @@ export function workflowScriptName(parts: WorkflowScriptNameParts): string {
  */
 export function workflowHostName(parts: WorkflowHostNameParts): string {
   assertSegment(parts.capability, "capability");
+  if (parts.feature) return featureWorkerName(featureOf(parts), parts.capability);
   return assertLength(`${head(parts.project, parts.env)}-${parts.capability}`, MAX_WORKER_NAME_BYTES);
 }
 

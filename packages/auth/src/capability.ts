@@ -387,8 +387,8 @@ export function auth(options: AuthOptions): AuthCapability {
     // The dev-login redirect goes on **first**, and the reason is `basePath`: it defaults to `/auth`,
     // but an adopter may mount auth at the root, and Better Auth's catch-all (`${basePath}/*`) returns
     // a Response, which ends the chain. Registered after it, `/__pithy/dev-login` would be a route the
-    // table shows and nothing ever reaches. It registers itself only in a `dev` or `feature` composition
-    // that is not CI — see `http/devLoginRoute.ts` for the two gates and why they are two.
+    // table shows and nothing ever reaches. It registers itself only in a `dev` composition that is not
+    // CI — see `http/devLoginRoute.ts` for the two gates and why they are two.
     routes: (app) => {
       registerDevLoginRoute(wiring)(app);
       createAuthRoutes(wiring)(app);

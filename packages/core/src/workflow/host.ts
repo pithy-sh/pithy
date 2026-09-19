@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "../error/pithyError";
+import type { FeatureIdentity } from "../naming/feature";
 import { ENVIRONMENT_VAR, PROJECT_VAR } from "../worker/identity";
 import { type WorkflowHostNameParts, workflowHostName, workflowScriptName } from "./naming";
 import type { WorkflowRegistry } from "./spec";
@@ -118,6 +119,12 @@ export interface WorkflowHostParams {
   capability: string;
   /** The target environment (`dev` | `staging` | `production`). */
   env: string;
+  /**
+   * The feature this host serves, when it serves one (#643). Its name then takes the feature's head —
+   * `<project>-f<issue>-<slug>-<capability>` — as the Workflows derived with the same parts do; `env` still
+   * says `feature`, and that is what the host's `ENVIRONMENT` var is stamped with.
+   */
+  feature?: FeatureIdentity;
   /** D1 binding name → database id. An unlisted binding keeps the template's id. */
   databaseIds?: Record<string, string>;
   /**
@@ -195,7 +202,12 @@ export function resolveWorkflowHost(template: WorkflowHostTemplate, params: Work
   const resolved = structuredClone(template);
   const remote = new Set(params.remoteBindings ?? []);
 
-  resolved.name = workflowHostName({ project: params.project, capability: params.capability, env: params.env });
+  resolved.name = workflowHostName({
+    project: params.project,
+    capability: params.capability,
+    env: params.env,
+    ...(params.feature ? { feature: params.feature } : {}),
+  });
 
   if (resolved.d1_databases) {
     resolved.d1_databases = resolved.d1_databases.map((entry) => ({
@@ -293,7 +305,7 @@ export function hostWorkflowsFor(
   registry: WorkflowRegistry,
   parts: WorkflowHostNameParts,
 ): { workflows: HostWorkflowBinding[]; crons: string[] } {
-  const { project, capability, env } = parts;
+  const { project, capability, env, feature } = parts;
   const owned = Object.values(registry).filter((entry) => entry.capability === capability);
   const workflows: HostWorkflowBinding[] = [];
   const crons: string[] = [];
@@ -307,7 +319,7 @@ export function hostWorkflowsFor(
     }
     workflows.push({
       binding: entry.spec.binding,
-      name: workflowScriptName({ project, capability, job: entry.job, env }),
+      name: workflowScriptName({ project, capability, job: entry.job, env, ...(feature ? { feature } : {}) }),
       class_name: entry.spec.className,
     });
     if (entry.spec.schedule) crons.push(entry.spec.schedule);

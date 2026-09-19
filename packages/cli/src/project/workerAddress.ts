@@ -47,10 +47,10 @@ import { wranglerConfigPath } from "../provision/featureConfig";
  *
  * A feature has no domain and never will: its hostname is composed from the branch. Its script name is its
  * `workers.dev` prefix, so `https://<script>.<account subdomain>.workers.dev` **is** its address — the only
- * one it has. So for `feature`, and only for `feature`, the order is: a route (should one ever exist), then
- * that derivation, from the stanza's `name` and the `subdomain` a caller looked up, then the address
- * provisioning stamped as `vars.BASE_URL` — which is the same derivation, written down for the callers that
- * have no account to ask. The stamp is read through core's `featureOrigin`, so a `BASE_URL` the feature
+ * one it has. So for `feature`, and only for `feature`, the order is: that derivation, from the stanza's `name`
+ * and the `subdomain` a caller looked up, then the address provisioning stamped as `vars.BASE_URL` — which is
+ * the same derivation, written down for the callers that have no account to ask. Never a route: a route on a
+ * feature is a domain another environment owns. The stamp is read through core's `featureOrigin`, so a `BASE_URL` the feature
  * inherited from the top level (production's, most likely) is never mistaken for the feature's own.
  *
  * ## Why the source is reported, not just the URL
@@ -168,18 +168,23 @@ export function resolveWorkerAddress(input: ResolveWorkerAddressInput): WorkerAd
 }
 
 /**
- * A feature environment's address: a route, then the derived `workers.dev` address, then the stamped one.
+ * A feature environment's address: its `workers.dev` one, when wrangler would give it one — derived, then stamped.
  * See the module comment for why a feature is the one environment `workers.dev` answers for.
+ *
+ * **Never a route (#643).** A feature's only address is the one composed from its branch. A route on its
+ * stanza is a custom domain some other environment owns — inherited from the top level, since wrangler carries
+ * `routes` into every environment that does not set its own — and a branch deploy that took it would be serving
+ * that domain. Provisioning writes `routes: []` into every feature stanza so it never does.
+ *
+ * **And only when wrangler gives one.** wrangler's own rule: `workers_dev` when stated, and otherwise on exactly
+ * when the Worker has no routes. A stanza that inherited routes and states no `workers_dev` deploys with no
+ * `workers.dev` address at all, so none is derived or read for it.
  */
 function resolveFeatureAddress(input: ResolveWorkerAddressInput): WorkerAddress | null {
   const stanza = input.stanza;
-  const pattern = routePattern(stanza?.routes?.[0]) ?? routePattern(stanza?.route);
-  const fromRoute = pattern ? toAddress(pattern, "route") : null;
-  if (fromRoute) return fromRoute;
-
-  // `workers_dev: false` is the adopter saying the Worker answers on no `workers.dev` address. Then the
-  // derivation names a hostname nothing serves, and so does any stamp of it.
-  if (stanza?.workers_dev === false) return null;
+  const routes = stanza?.routes ?? (stanza?.route === undefined ? [] : [stanza.route]);
+  const workersDev = stanza?.workers_dev ?? routes.length === 0;
+  if (workersDev !== true) return null;
 
   const derived = workersDevAddress(stanza?.name ?? "", input.subdomain ?? null);
   if (derived) return derived;
@@ -204,7 +209,7 @@ export async function readAddressStanza(workerDir: string, env: string): Promise
       | (AddressStanza & { env?: Record<string, AddressStanza | undefined> })
       | null;
     const stanza = config?.env?.[env];
-    return stanza ? inheritAddressKeys(config, stanza) : undefined;
+    return stanza ? inheritAddressKeys(config, stanza, env) : undefined;
   } catch {
     return undefined;
   }
@@ -214,16 +219,32 @@ export async function readAddressStanza(workerDir: string, env: string): Promise
  * A stanza as wrangler deploys it, for the keys an address depends on: its own, else the top level's where
  * wrangler inherits one.
  *
- * **`workers_dev` is inheritable, and that is the whole of it (#643).** wrangler carries a top-level
- * `workers_dev` into every environment that does not set its own, and provisioning never repeats it into a
- * generated stanza — so a stanza read alone said nothing, a feature derived a `workers.dev` address, and the
- * address stamped was one the deployed Worker never answers on. `routes`, `route` and `vars` are not
- * inherited, so they are not read from the top level here either.
+ * **`workers_dev` is inheritable (#643).** wrangler carries a top-level `workers_dev` into every environment
+ * that does not set its own, and provisioning never repeats it into a generated stanza — so a stanza read
+ * alone said nothing, a feature derived a `workers.dev` address, and the address stamped was one the deployed
+ * Worker never answers on.
+ *
+ * **So are `routes` and `route`, and for a feature that is read too.** wrangler inherits each of them into an
+ * environment that does not set it, and a top-level route on a feature stanza means both that the feature would
+ * take a custom domain and — with no `workers_dev` — that it gets no `workers.dev` address. A declared
+ * environment's address is read from its own stanza, as it always was: its `domains` declaration and its own
+ * routes are what it answers on, and #89 holds that nothing falls back from them. `vars` is never inherited.
  */
-export function inheritAddressKeys(top: AddressStanza | null | undefined, stanza: AddressStanza): AddressStanza {
-  if (Object.hasOwn(stanza, "workers_dev") || top === null || top === undefined) return stanza;
-  if (!Object.hasOwn(top, "workers_dev")) return stanza;
-  return { ...stanza, workers_dev: top.workers_dev };
+export function inheritAddressKeys(
+  top: AddressStanza | null | undefined,
+  stanza: AddressStanza,
+  env?: string,
+): AddressStanza {
+  if (top === null || top === undefined) return stanza;
+  const keys = env === FEATURE_ENVIRONMENT ? (["workers_dev", "routes", "route"] as const) : (["workers_dev"] as const);
+  const inherited: AddressStanza = { ...stanza };
+  let changed = false;
+  for (const key of keys) {
+    if (Object.hasOwn(stanza, key) || !Object.hasOwn(top, key)) continue;
+    Object.assign(inherited, { [key]: top[key] });
+    changed = true;
+  }
+  return changed ? inherited : stanza;
 }
 
 /**

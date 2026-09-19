@@ -134,6 +134,54 @@ describe("resolveEmailConfig", () => {
  * dead end: `resolveWorkflowHost` only ever *adds* the flag, so nothing downstream could ever turn it
  * off. Moving it here is what makes a documented config flag possible at all.
  */
+/**
+ * **A feature gets its own email host (#643), named and bound as the feature.** Worker and Workflow names are
+ * account-wide and a Secrets Store is flat, so a host resolved with `env: "feature"` alone would be one host
+ * every open branch deployed over, reading a master key no feature has. Handed the feature, every name is its own.
+ */
+describe("a feature's email host", () => {
+  const feature = { project: "acme", issue: "643", slug: "feature-address" };
+  const config = resolveEmailConfig(
+    {
+      ...template,
+      secrets_store_secrets: [
+        ...template.secrets_store_secrets,
+        { binding: "EMAIL_LINK_SIGNING_KEY", store_id: "<filled>", secret_name: "<filled>" },
+      ],
+    },
+    {
+      project: "acme",
+      env: "feature",
+      feature,
+      appDatabaseId: "app-1",
+      suppressionDatabaseId: "sup-1",
+      secretsDatabaseId: "sec-1",
+      storeId: "store-abc",
+      baseUrl: "https://acme-f643-feature-address-board.acme.workers.dev",
+      theme: defaultTheme,
+    },
+  );
+
+  test("names the Worker and both Workflows for the feature, and says it is a feature", () => {
+    expect(config.name).toBe("acme-f643-feature-address-email");
+    expect(config.workflows?.map((entry) => entry.name).sort()).toEqual([
+      "acme-f643-feature-address-email-schedule",
+      "acme-f643-feature-address-email-send",
+    ]);
+    expect(config.vars?.ENVIRONMENT).toBe("feature");
+  });
+
+  test("binds the feature's own master key, link key and suppression list — never a declared environment's", () => {
+    expect(config.secrets_store_secrets.map((entry) => entry.secret_name)).toEqual([
+      "acme-f643-feature-address-secrets-encryption-keys",
+      "acme-f643-feature-address-email-link-signing-key",
+    ]);
+    const suppressions = config.d1_databases.find((entry) => entry.binding === "EMAIL_SUPPRESSIONS");
+    expect(suppressions?.database_name).toBe("acme-f643-feature-address-email-suppressions-d1");
+    expect(suppressions?.database_id).toBe("sup-1");
+  });
+});
+
 describe("how mail leaves the host under pithy dev", () => {
   const base = {
     project: "acme",

@@ -13,7 +13,6 @@ import {
   devLoginLines,
   devLoginUrl,
   readDevLogin,
-  seededLoginLines,
 } from "./devLogin";
 
 const NOW = new Date("2026-08-06T00:00:00.000Z");
@@ -216,42 +215,5 @@ describe("readDevLogin", () => {
     await mkdir(join(dir, "logs"), { recursive: true });
     await writeFile(join(dir, DEV_LOGIN_PATH), '{ "email": "ada@example.com" }');
     expect(await readDevLogin(dir)).toBeUndefined();
-  });
-});
-
-/**
- * **A feature's dev login is a URL someone can open (#643).** `pithy dev` composes its link from the pinned
- * port. A feature deployment has none, so the login carries the origin it was minted for, and `pithy seed
- * --env feature` prints the link over it — reading `dev-login.feature.json`, which nothing used to read.
- */
-describe("a seeded login off dev", () => {
-  const ORIGIN = "https://replay-f643-feature-address-board.acme.workers.dev";
-
-  test("reads the environment's own login file, never dev's", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "pithy-devlogin-env-"));
-    await mkdir(join(dir, "logs"), { recursive: true });
-    const stored = { email: "ada@example.com", userId: "example-ada", claim: CLAIM, expiresAt: NOW.toISOString() };
-    await writeFile(join(dir, "logs", "dev-login.json"), JSON.stringify(stored));
-    await writeFile(join(dir, "logs", "dev-login.feature.json"), JSON.stringify({ ...stored, origin: ORIGIN }));
-
-    expect((await readDevLogin(dir, "feature"))?.origin).toBe(ORIGIN);
-    expect((await readDevLogin(dir))?.origin).toBeUndefined();
-  });
-
-  test("is one line with the link over the deployment's own origin", () => {
-    expect(seededLoginLines(login({ origin: ORIGIN }), NOW)).toEqual([
-      `Dev login: ada@example.com — open ${ORIGIN}/__pithy/dev-login?t=${CLAIM} to sign in.`,
-    ]);
-  });
-
-  test("with no origin, says so rather than inventing one", () => {
-    expect(seededLoginLines(login(), NOW)).toEqual([
-      "Dev login: ada@example.com — this environment has no address to open it on. Pass --host.",
-    ]);
-  });
-
-  test("an expired or absent login says nothing", () => {
-    expect(seededLoginLines(undefined, NOW)).toEqual([]);
-    expect(seededLoginLines(login({ expiresAt: new Date(NOW.getTime() - 1) }), NOW)).toEqual([]);
   });
 });

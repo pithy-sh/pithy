@@ -557,6 +557,55 @@ describe("the address applyProvisionedEnv stamps", () => {
     expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
   });
 
+  /**
+   * **Finding 3: a top-level route never reaches a feature (#643).** wrangler inherits `routes` into a stanza that
+   * sets none, so a branch deploy took the project's custom domain, and with routes and no `workers_dev` it got no
+   * `workers.dev` address while provisioning stamped one. The feature stanza now states `routes: []` — its own,
+   * which wins — and its stamped address is the one wrangler will give it.
+   */
+  test("a top-level route is stripped from the feature stanza, and the workers.dev address is still stamped", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        routes: [{ pattern: "app.example.com", custom_domain: true }],
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+
+    await provision(feature, "acme");
+
+    const generated = parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+      env: { feature: { routes?: unknown[]; route?: unknown; vars?: Record<string, string> } };
+    };
+    // As wrangler resolves it: the stanza's own `routes` wins over the top level's, so the feature has none.
+    expect(generated.env.feature.routes).toEqual([]);
+    expect(generated.env.feature.route).toBeUndefined();
+    expect(generated.env.feature.vars?.BASE_URL).toBe("https://replay-f643-feature-address-board.acme.workers.dev");
+  });
+
+  test("a top-level route is stripped with no subdomain to stamp from, too", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", route: "app.example.com" }));
+
+    await provision(feature, null);
+
+    const generated = parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+      env: { feature: { routes?: unknown[] } };
+    };
+    expect(generated.env.feature.routes).toEqual([]);
+  });
+
+  test("a declared environment's stanza keeps what the tracked file says about routes", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", routes: ["app.example.com"] }));
+
+    await provision(environmentScope("replay", "staging"), "acme");
+
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: { staging: { routes?: unknown[] } };
+    };
+    expect(tracked.env.staging.routes).toBeUndefined();
+  });
+
   test("a declared environment is never stamped from workers.dev (#89)", async () => {
     await provision(environmentScope("replay", "staging"), "acme");
 

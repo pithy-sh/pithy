@@ -568,3 +568,123 @@ describe("each capability settles as it is decided", () => {
     expect(events).toEqual([{ phase: "settled", line: summarizeKitDeploy(rows[0] as KitWorkerDeploy) }]);
   });
 });
+
+/**
+ * **A feature's kit Workers (#643).** A feature's ids are in the generated config under `.wrangler/`, in its
+ * `env.feature` stanza; the top level of that file is the tracked one's, which is `dev`'s. `stanzaFor` read the
+ * whole file, so every kit Worker on a feature found `dev`'s ids — the local binding names — or none. And a
+ * feature's host is named for the feature, never `<project>-feature-<capability>`, which every branch shares.
+ */
+describe("a feature's kit Workers", () => {
+  const FEATURE = { project: "acme", issue: "643", slug: "feature-address" };
+  const ORIGIN = "https://acme-f643-feature-address-api.acme.workers.dev";
+
+  /** The generated feature config provisioning writes: the tracked top level, and the feature's own stanza. */
+  async function writeFeatureApp(): Promise<string> {
+    const dir = join(projectDir, "apps", "api");
+    const generated = join(dir, ".wrangler", "pithy");
+    await mkdir(generated, { recursive: true });
+    await writeFile(join(dir, "wrangler.jsonc"), `${JSON.stringify({ name: "api" })}\n`);
+    await writeFile(
+      join(generated, "wrangler.feature.jsonc"),
+      // JSONC, as `writeJsonc` leaves it: a comment the generation carried over from the tracked file.
+      `// The generated feature config.\n${JSON.stringify(
+        {
+          name: "api",
+          d1_databases: [
+            { binding: "DB", database_id: "DB" },
+            { binding: "EMAIL_SUPPRESSIONS", database_id: "EMAIL_SUPPRESSIONS" },
+            { binding: "SECRETS", database_id: "SECRETS" },
+          ],
+          env: {
+            feature: {
+              name: "acme-f643-feature-address-api",
+              routes: [],
+              d1_databases: [
+                { binding: "DB", database_id: "feature-db" },
+                { binding: "EMAIL_SUPPRESSIONS", database_id: "feature-sup" },
+                { binding: "SECRETS", database_id: "feature-sec" },
+              ],
+              vars: { ENVIRONMENT: "feature", BASE_URL: ORIGIN },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return dir;
+  }
+
+  function deployFeature(dir: string, feature: typeof FEATURE | undefined, composes: Capability[] = [EMAIL]) {
+    return deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "feature",
+      account: null,
+      ...(feature ? { feature } : {}),
+      workers: [{ name: "api", dir, hasWrangler: true }],
+      capabilitiesFor: async () => composes,
+      readTemplate: async () => structuredClone(template),
+      readVars: async () => null,
+      runDeploy: async (args) => {
+        const { readFile } = await import("node:fs/promises");
+        const { configFromArgs } = await import("./effectiveConfig");
+        deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
+      },
+    });
+  }
+
+  test("reads env.feature from the generated config, and names the host for the feature", async () => {
+    const report = await deployFeature(await writeFeatureApp(), FEATURE);
+
+    expect(report.problems).toEqual([]);
+    expect(report.workers.map((row) => [row.worker, row.outcome])).toEqual([
+      ["acme-f643-feature-address-email", "deployed"],
+    ]);
+    const config = deployed[0];
+    expect(config?.d1_databases?.map((entry) => entry.database_id)).toEqual([
+      "feature-db",
+      "feature-sup",
+      "feature-sec",
+    ]);
+    expect(config?.vars?.BASE_URL).toBe(ORIGIN);
+    expect(config?.vars?.ENVIRONMENT).toBe("feature");
+    expect(config?.secrets_store_secrets?.[0]?.secret_name).toBe("acme-f643-feature-address-secrets-encryption-keys");
+  });
+
+  test("refuses a feature pass that does not know which feature it is — deploying nothing", async () => {
+    const report = await deployFeature(await writeFeatureApp(), undefined);
+
+    expect(report.problems).toEqual([
+      "A feature's kit Workers are named for the feature. Run this from its feature/<issue>-<slug> branch.",
+    ]);
+    expect(deployed).toEqual([]);
+  });
+
+  test("skips a host whose resolver composes no feature names, rather than deploy one every branch shares", async () => {
+    const report = await deployFeature(await writeFeatureApp(), FEATURE, [EMAIL, media({})]);
+
+    const row = report.workers.find((candidate) => candidate.capability === "media");
+    expect(row?.outcome).toBe("skipped");
+    expect(row?.reason).toContain("A feature does not host media's Worker yet");
+    expect(deployed.map((config) => config.name)).toEqual(["acme-f643-feature-address-email"]);
+  });
+
+  test("narrowed with only, a capability outside it is not in the set", async () => {
+    const report = await deployKitWorkers({
+      projectDir,
+      project: "acme",
+      env: "feature",
+      account: null,
+      feature: FEATURE,
+      only: ["email"],
+      workers: [{ name: "api", dir: await writeFeatureApp(), hasWrangler: true }],
+      capabilitiesFor: async () => [EMAIL, media({})],
+      readTemplate: async () => structuredClone(template),
+      readVars: async () => null,
+      runDeploy: async () => {},
+    });
+    expect(report.workers.map((row) => row.capability)).toEqual(["email"]);
+  });
+});

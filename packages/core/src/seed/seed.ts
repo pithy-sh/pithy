@@ -190,10 +190,10 @@ export interface SeedPrepareContext {
   origin: string | null;
   /**
    * Read one of this environment's secrets by name, or `undefined` when it is not set. Local dev resolves
-   * every secret from the dev secrets file, so this answers there; a declared environment's secrets are not
-   * on the operator's disk, so there it refuses, and a set that needs one must be `dev`-only. A feature's are
-   * generated for the run (#643): a secret whose registry entry declares a `devValue` gets one fresh value per
-   * run, and any other answers `undefined`.
+   * every secret from the dev secrets file, so this answers there; a deployed environment's secrets are not
+   * on the operator's disk, so there it refuses, and a set that needs one must be `dev`-only. A feature is a
+   * deployed environment here too (#643): its secrets exist only in its own Cloudflare stores, which the CLI
+   * can write and never read.
    */
   secret: (name: string) => Promise<string | undefined>;
   /**

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { readProjectLedger } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning } from "../project/deploy";
@@ -248,6 +250,9 @@ export default defineCommand({
             env: env as string,
             account,
             force: args.force,
+            // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
+            // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
+            ...(await featureOf(projectDir, env as string)),
           })
         : null;
       const kitFailed = kit !== null && kitDeployFailed(kit);
@@ -292,3 +297,10 @@ export default defineCommand({
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
+
+/** The feature a `--env feature` deploy is, read off the branch — or nothing, which the kit pass refuses by name. */
+async function featureOf(projectDir: string, env: string): Promise<{ feature?: FeatureIdentity }> {
+  if (env !== FEATURE_ENVIRONMENT) return {};
+  const feature = await branchIdentityWithoutWorkers(projectDir).catch(() => undefined);
+  return feature ? { feature } : {};
+}

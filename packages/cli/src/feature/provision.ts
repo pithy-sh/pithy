@@ -8,14 +8,14 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import { featureScope, featureWorkerScriptNames } from "@pithy-sh/core/src/naming/provisionScope";
+import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
-import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { SECRETS_D1_BINDING } from "../devSecrets/store";
-import type { StatePathOptions } from "../notifier/state";
+import { type KitDeployReport, kitDeployFailed, summarizeKitDeploy } from "../project/deployKit";
 import {
   type BackendRunner,
   defaultMigrate,
@@ -35,6 +35,7 @@ import {
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import type { SecretsStore } from "../provision/store";
 import { provisionableBindings } from "./bindings";
+import { FEATURE_HOSTS, hostedWorkflowEntries } from "./hosts";
 import {
   emptyManifest,
   type FeatureManifest,
@@ -45,12 +46,10 @@ import {
   writeManifest,
 } from "./manifest";
 import {
-  forgetFeatureSecrets,
-  type KeptFeatureSecrets,
-  keepFeatureSecrets,
-  keptPayload,
-  keptSecretNames,
+  ensureFeatureMasterKey,
+  type FeatureMasterKey,
   type SealedFeatureSecrets,
+  type SealPatience,
   sealFeatureSecrets,
 } from "./secrets";
 
@@ -154,13 +153,23 @@ export interface ProvisionFeatureOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
-   * The feature's `SECRETS` database, by id — the REST-backed D1 in a real run (#643). It is where every kept
-   * `d1` secret is sealed, because that database is what the deployed Worker reads them from. Omitted, nothing
-   * is sealed and the `d1` secrets stay pending, as they were before a feature kept any.
+   * The feature's `SECRETS` database, by id — the REST-backed D1 in a real run (#643). It is where the run
+   * that created the master key seals every mintable `d1` secret, because that database is what the deployed
+   * Worker reads them from. Omitted, nothing is sealed and the `d1` secrets stay pending.
    */
   secretsDatabase?: (databaseId: string) => D1Database;
-  /** Where the config directory is — the kept secrets file's home. Defaults to the real one; tests pass their own. */
-  paths?: StatePathOptions;
+  /**
+   * How long a run that did not create the master key waits for the one that did to seal the rows, before it
+   * refuses. Defaults to a minute; tests shorten it.
+   */
+  sealPatience?: SealPatience;
+  /**
+   * **Stand up the feature's own kit hosts (#643)** — its email host, so the magic links and codes its app
+   * Worker dispatches have a Workflow to run in. `deployKitWorkers` narrowed to {@link FEATURE_HOSTS} and handed
+   * this feature, in a real run: the resolver and the gated deploy a declared environment's hosts go through.
+   * Called once the feature's configs are written, migrated and sealed. Omitted, no host is deployed.
+   */
+  deployHosts?: () => Promise<KitDeployReport>;
 }
 
 /**
@@ -196,64 +205,29 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   // The consequence is stated where an operator meets it — a feature has no manager, so
   // `pithy secrets create` targets a declared environment, never a branch.
   const store = options.store;
-  // **The feature's own secrets, generated once and kept (#643)**, before a single one is sent anywhere. See
-  // `./secrets.ts` for where they live and why. Only with a store to hold the master key: without one no `d1`
-  // secret can be sealed, and the run says so as it always did.
+  // **Created once, in the feature's own stores, and never overwritten (#643).** See `./secrets.ts`: the
+  // store's create-if-absent decides which run creates the key, and only that run seals the `d1` secrets under
+  // it. Nothing is kept on this machine — the stores are the only copy.
   const registry = workerSecretRegistry(options.capabilities);
-  const kept: KeptFeatureSecrets | null =
-    store && registry
-      ? await keepFeatureSecrets({
-          registry,
-          identity: options.identity,
-          ...(options.paths !== undefined ? { paths: options.paths } : {}),
-        })
-      : null;
-  const regenerated = new Set<string>();
-  const audit = options.audit ?? (async () => {});
-  if (store && kept && registry) {
-    for (const name of keptSecretNames(registry)) {
-      const entry = registry[name];
-      const payload = keptPayload(kept, registry, name);
-      if (entry?.backend !== "cf-secrets-store" || !payload) continue;
-      const secretName = scope.secretEntry(name, "environment");
-      const present = await store.exists(secretName);
-      if (!present && name === MASTER_KEY_BINDING) {
-        // The master key is written here; every other absent entry is minted by the binding pass below, from
-        // the same kept value, so its report line still says the run created it.
-        await store.put(secretName, payload.text);
-      } else if (present && kept.generated.includes(name)) {
-        // The deployment holds a value this machine never kept. Replaced, so the store and the kept copy agree —
-        // and reported, because everything signed with the old value stops verifying.
-        await store.put(secretName, payload.text);
-        regenerated.add(name);
-        await audit({
-          environment: scope.stanza,
-          action: "secrets/set",
-          outcome: "success",
-          severity: "warning",
-          resourceType: "secret",
-          resourceId: secretName,
-          metadata: { name: secretName, kind: "regenerated", feature: options.identity.slug },
-        });
-      }
-    }
-  } else if (store) {
-    const masterKey = scope.secretEntry(MASTER_KEY_BINDING, "environment");
-    if (!(await store.exists(masterKey))) {
-      await store.put(masterKey, JSON.stringify(await initialMasterKeyConfig()));
-    }
-  }
+  const masterEntry = scope.secretEntry(MASTER_KEY_BINDING, "environment");
+  const master: FeatureMasterKey | null = store ? await ensureFeatureMasterKey({ store, entry: masterEntry }) : null;
 
   // Sealed straight after the schema lands and before the seed, so a fixture that fails still leaves a
-  // deployment that signs people in. Idempotent: a row already holding the kept value is left alone.
+  // deployment that signs people in. Idempotent: a row already there is left alone.
   let sealed: SealedFeatureSecrets | null = null;
   const migrate = options.migrate ?? defaultMigrate;
   const migrateAndSeal: BackendRunner = async (args) => {
     await migrate(args);
-    if (!kept || !registry || !options.secretsDatabase) return;
+    if (!master || !registry || !options.secretsDatabase) return;
     const databaseId = await featureSecretsDatabaseId(path, options.identity);
     if (databaseId === null) return;
-    sealed = await sealFeatureSecrets({ kept, registry, database: options.secretsDatabase(databaseId) });
+    sealed = await sealFeatureSecrets({
+      master,
+      registry,
+      database: options.secretsDatabase(databaseId),
+      masterEntry,
+      ...(options.sealPatience !== undefined ? { patience: options.sealPatience } : {}),
+    });
   };
 
   const report = await provisionEnvironment({
@@ -289,6 +263,8 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
     ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
     ...(options.resolveWorkers !== undefined ? { resolveWorkers: options.resolveWorkers } : {}),
+    // The app Worker's way into the hosts this feature stands up: `EMAIL_SENDER` into its own email host.
+    hostedWorkflows: (capabilities) => hostedWorkflowEntries(capabilities, scope),
     ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
     ...(store
       ? {
@@ -303,12 +279,13 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               // feature environment", and one that needed three follow-up commands per branch was not
               // that. Every secret the registry declares mintable is created here, in the branch's own
               // scope, so nothing is shared with a declared environment and nothing is left to do.
+              //
+              // Through the store's create-if-absent (#643): absence is checked first, and a run that loses
+              // a race for the same entry leaves the winner's value where it is rather than writing over it.
               mint: storeSecretMinter({
-                store,
+                store: { put: async (name, value) => void (await store.create(name, value)) },
                 environment: scope.stanza,
                 ...(options.audit !== undefined ? { audit: options.audit } : {}),
-                // The kept value, never a fresh one: the seed signs with what this entry holds (#643).
-                stated: (secret) => (kept && Object.hasOwn(kept.values, secret) ? kept.values[secret] : undefined),
               }),
             }),
         }
@@ -319,18 +296,21 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     auditMetadata: { feature: options.identity.slug, issue: options.identity.issue },
   });
 
-  if (!kept) return report;
   const done = sealed as SealedFeatureSecrets | null;
-  for (const name of done?.replaced ?? []) if (kept.generated.includes(name)) regenerated.add(name);
-  return {
-    ...report,
-    featureSecrets: {
-      path: kept.path,
-      sealed: done?.sealed ?? [],
-      written: done?.written ?? [],
-      regenerated: [...regenerated].sort(),
-    },
-  };
+  const secrets = done === null ? report : { ...report, featureSecrets: done };
+  if (!options.deployHosts) return secrets;
+
+  // After the configs, the schema and the secrets: a host deployed before them binds ids nothing wrote yet.
+  const hosts = await options.deployHosts();
+  if (kitDeployFailed(hosts)) {
+    const reasons = [...hosts.problems, ...hosts.workers.map(summarizeKitDeploy)];
+    throw new ValidationError({
+      message: "This feature's email host did not deploy, so nothing it sends can be delivered.",
+      action: reasons.join(" "),
+      detail: `feature ${options.identity.project}-f${options.identity.issue}-${options.identity.slug}: ${reasons.join("; ")}`,
+    });
+  }
+  return { ...secrets, hosts: hosts.workers };
 }
 
 /**
@@ -423,8 +403,6 @@ export interface DeprovisionFeatureOptions {
   store?: SecretsStore;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
-  /** Where the config directory is — the kept secrets file's home. Defaults to the real one. */
-  paths?: StatePathOptions;
 }
 
 /**
@@ -505,6 +483,14 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
         await removeScript(name);
       }
     }
+    // The kit hosts this feature stood up for itself — its email host (#643) — by the name provisioning
+    // deployed them under, recomputed rather than read. Whatever the branch composes now: a host deployed
+    // before email was removed from it is still the feature's, and an exact name reaches nobody else's. Their
+    // Workflows go with the script, as a declared environment's do when `pithy email deprovision` deletes its host.
+    const hostScope = featureScope(options.identity);
+    for (const capability of FEATURE_HOSTS) {
+      await removeScript(workflowHostName({ ...hostScope.workflowHost, capability }));
+    }
 
     for (const resource of manifest?.resources ?? []) {
       // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
@@ -550,8 +536,5 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   // The manifest is removed only on a clean pass. It is the record of what is left to delete, and a
   // teardown that failed partway is precisely when a re-run needs it.
   await rm(path, { force: true });
-  // And the values it kept (#643). The deployment that held them is gone, and a kept credential for nothing is
-  // one more file with a key in it.
-  await forgetFeatureSecrets(options.identity, options.paths);
   return { deleted };
 }

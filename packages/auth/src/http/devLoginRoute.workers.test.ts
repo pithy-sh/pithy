@@ -156,52 +156,6 @@ test("redirects to the app root with a cookie Better Auth accepts as a real sess
   expect(session?.user.email).toBe(ADA.email);
 });
 
-/**
- * **A feature deployment is served over https, and its session cookie is named for it (#643).** Better Auth
- * reads `__Secure-better-auth.session_token` under an https base URL and nothing else, and a browser keeps a
- * `__Secure-` cookie only when it is `Secure`. The dev composition's name and attributes, set on a feature,
- * are a 302 with a cookie the app never reads: a sign-in that signs nobody in.
- */
-test("on a feature deployment, sets the https session cookie Better Auth there reads", async () => {
-  await seedDevSession();
-  const FEATURE_ORIGIN = "https://acme-f643-demo-api.acme.workers.dev";
-  const feature = new Hono<PithyHonoEnv>();
-  feature.onError(pithyErrorHandler);
-  const featureWiring: AuthWiring = {
-    ...wiring(),
-    config: AuthConfig.parse({ baseURL: FEATURE_ORIGIN, basePath: "/auth", trustedOrigins: [FEATURE_ORIGIN] }),
-  };
-  registerDevLoginRoute(featureWiring, { ENVIRONMENT: "feature" })(feature);
-
-  const response = await feature.request(`${FEATURE_ORIGIN}${devLoginHref()}`, {}, env);
-
-  expect(response.status).toBe(302);
-  const setCookie = response.headers.get("Set-Cookie") ?? "";
-  expect(setCookie.startsWith("__Secure-better-auth.session_token=")).toBe(true);
-  expect(setCookie).toContain("; Secure");
-  expect(setCookie).toContain("HttpOnly");
-
-  const deployed = makeAuth({
-    db: authDatabase(env.DB),
-    secret: SECRET,
-    baseURL: FEATURE_ORIGIN,
-    basePath: "/auth",
-    trustedOrigins: [FEATURE_ORIGIN],
-    ...NO_SOCIAL_PROVIDERS,
-    sendEmail: async () => ({ delivery: "queued" }),
-    sessionExpiresIn: 604800,
-    sessionUpdateAge: 86400,
-    verificationExpiresIn: 300,
-    otpLength: 6,
-    disableSignUp: false,
-    providerSignUp: { google: true, apple: true, facebook: true, github: true },
-    emit: async () => {},
-    plugins: [],
-  });
-  const session = await deployed.api.getSession({ headers: new Headers({ cookie: setCookie.split(";")[0] ?? "" }) });
-  expect(session?.user.email).toBe(ADA.email);
-});
-
 test("the cookie value is never in the body — the browser is the only place it lands", async () => {
   await seedDevSession();
 

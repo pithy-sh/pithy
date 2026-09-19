@@ -306,6 +306,11 @@ function secretsStore(store: Store): SecretsStore {
     put: async (name, value) => {
       store.set(name, value);
     },
+    create: async (name, value) => {
+      if (store.has(name)) return false;
+      store.set(name, value);
+      return true;
+    },
     remove: async (name) => store.delete(name),
   };
 }

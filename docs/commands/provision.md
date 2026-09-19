@@ -80,6 +80,7 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
 8. **Binds `SELF`, for a project that administers itself.** A Worker cannot fetch its own hostname: the subrequest loops back through the edge into the Worker it came from and hangs until Cloudflare answers 522, on a route that answers in a second and a half from outside. So a project whose root `pithy.config.ts` says `administersItself: true` gets one more `services` entry in every stanza this writes — `SELF`, pointing at the script that stanza deploys as — and the code calls itself with `env.SELF.fetch(request)`, dispatched inside the runtime with no edge hop. The binding name is `@pithy-sh/core`'s `SELF_BINDING`, so nothing has to agree a string by hand. It is written from the same `name` this step writes, so the two cannot disagree; a re-run retargets in place rather than duplicating; and a project that declares nothing gets no entry and no change to its stanza. **A feature environment is why this is the kit's job rather than a line you add yourself**: its stanza is generated on every `pithy provision --feature`, so a hand-written entry never survives to the deploy, and the script it would have to name is composed from the branch. It is deliberately absent from the report's `services` list, which is one flat set for the whole project: the self entry is per Worker, and N lines with no Worker beside them would say less than the `workers` lines above them already do. **The top-level stanza gets none, and that is the rule rather than an omission**: the 522 is an edge behavior, and `wrangler dev` serves a Worker fetching its own address as an ordinary local request, so a dev run needs no binding and a call site that wants one falls back to an ordinary `fetch` there. `pithy doctor` names a declared self-administering project whose declared stanza lacks it, or whose entry names a script that stanza does not deploy as.
 9. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest — the resources it created and the Worker script names it wrote — so `pithy feature destroy` deletes exactly what was created and deployed — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
+10. **Gives a feature what a declared environment gets from other commands (#643).** Its stanza states `routes: []`, so it never inherits the top level's custom domain, and it is stamped with its own `workers.dev` address. It carries the top level's rate limiters — a limiter's `namespace_id` is the same in every environment — so auth has its `AUTH_RATE_LIMITER`. It binds `EMAIL_SENDER` to the feature's own email host, and once the schema is up and the secrets are sealed, the run deploys that host the way `pithy deploy` ships a declared environment's: `<project>-f<issue>-<slug>-email`, its Workflows named the same way, bound to the feature's own databases and keys. A host that does not deploy fails the run, because a feature whose mail cannot leave signs nobody in.
 
 ## While it runs
 
@@ -164,24 +165,33 @@ Run pithy secrets provision to create them.
 ```
 
 `--feature` creates them itself, when the account has a Secrets Store (#643). A branch gets no manager, so the
-run does the manager's one job for it: it generates the feature's own values once, keeps them on this machine,
-and seals each `d1` secret into the feature's own `SECRETS` database under the feature's own master key — the
-database and key the deployed Worker reads. Nothing is pending, and the run says where the values are kept:
+run does the manager's one job for it: it creates the feature's own master key, and seals each `d1` secret into
+the feature's own `SECRETS` database under it — the database and key the deployed Worker reads. Nothing is
+pending:
 
 ```
 auth-session-secret sealed into this feature's SECRETS database.
-This feature's secrets are kept in ~/.config/pithy/replay/features/f251-one-command.secrets.jsonc.
 ```
 
-The file is keyed by project and feature, mode 600, outside every checkout, and is never the dev secrets file.
-It is what makes the values stable: a re-run changes nothing, and `pithy seed --env feature` signs with the
-value the Worker checks. When it is gone — a fresh CI runner, another machine — the run cannot read the values
-back out of the deployment, so it generates them again and says so on stderr, because everything signed with
-the old ones stops working:
+**The feature's own stores are the only copy.** Nothing is kept on the machine that ran it, because nothing
+needs a value back: the Worker is the one reader. So a run from any machine — a laptop, a CI runner, the laptop
+again — creates only what is absent and never overwrites what is there, and a re-run changes nothing. Two runs at
+once leave one value: the master key is created with the store's create-if-absent, only the run that created it
+seals, and it seals with an insert that leaves a row already there alone. A run that did not create the key reads
+which rows exist — names only — and a read that fails fails the run rather than being taken for an absence.
+
+**One case the stores cannot answer, and the run says so.** A master key that exists beside a `d1` secret that
+does not — a capability that declared a new secret after the feature was provisioned, or a run that created the
+key and died before sealing. The key cannot be read back, so nothing can seal the missing row under it. The run
+waits a minute in case another provision of the branch is sealing it, then refuses:
 
 ```
-SECRETS_ENCRYPTION_KEYS, auth-session-secret: generated again, because this machine did not keep them. Sessions and links signed with the old values stop working.
+This feature's master key exists and auth-session-secret does not. Nothing can seal it: the key cannot be read back.
+If another pithy provision --feature is running for this branch, let it finish and run this again. Otherwise delete the Secrets Store entry replay-f251-one-command-secrets-encryption-keys and run pithy provision --feature again. That starts this feature's secrets over, and signs everyone out of it.
 ```
+
+With that entry gone, the next run creates a new key, seals the missing secret, and seals again the rows nothing
+could open any more — and says so.
 
 Without a Secrets Store there is no master key to seal under, and the shortfall is stated as it always was:
 
@@ -279,11 +289,11 @@ $ pithy provision --feature --json
 | `configs[].ids` | `number` | How many binding ids landed in it |
 | `committed` | `boolean` | Whether those files are committed. `true` for `--env`, `false` for `--feature` — the one field a pipeline reads to know it has nothing to commit |
 | `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **did not create**. For `--env`, their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. For `--feature`, every one it sealed into the feature's own database is left off. Empty when the project declares none |
-| `featureSecrets` | `object` | `--feature` with a Secrets Store only: the feature's own secrets. Names and a path, never a value |
-| `featureSecrets.path` | `string` | The file on this machine the values are kept in |
+| `featureSecrets` | `object` | `--feature` with a Secrets Store only: the feature's own `d1` secrets. Names, never a value |
 | `featureSecrets.sealed` | `string[]` | Every `d1` secret the feature's `SECRETS` database holds after this run |
 | `featureSecrets.written` | `string[]` | Of those, the ones this run wrote. Empty on a re-run |
-| `featureSecrets.regenerated` | `string[]` | Values the deployment held that this run replaced with new ones, because the kept file was not on this machine |
+| `featureSecrets.resealed` | `string[]` | Rows this run sealed again under a master key it had just created, because they were sealed under one the store no longer holds |
+| `hosts` | `object[]` | `--feature` only: the kit Workers the feature stood up for itself — its email host — one row each, as `pithy deploy --json` reports `kit` |
 | `pendingSecretsRemedy` | `string \| null` | The command that does create them, or `null` when no command does. `"pithy secrets provision"` for `--env`; **`null` for `--feature`**, because a branch gets no manager and nothing mints these for one. A pipeline branches on this rather than on the mode |
 
 ## Exit codes

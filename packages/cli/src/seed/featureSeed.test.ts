@@ -8,9 +8,8 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { defineSeed, type SeedPrepareContext } from "@pithy-sh/core/src/seed/seed";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { devSecretsFile } from "../devSecrets/location";
-import { featureSecretsPath } from "../feature/secrets";
 import type { WorkerScope } from "../migrations/run";
 import { featureConfigPath } from "../provision/featureConfig";
 import { seedHostOrigin } from "./prepare";
@@ -30,8 +29,6 @@ import { seedProject } from "./run";
 const PROJECT = "replay";
 const SCRIPT = "replay-f643-feature-address-board";
 const FEATURE_ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
-/** The feature this checkout is, as its branch names it — the key its kept secrets are filed under. */
-const FEATURE = { project: PROJECT, issue: "643", slug: "feature-address" };
 
 /** A secret the registry can mint, one it cannot, as auth and an OAuth provider declare them. */
 const REGISTRY = defineSecretRegistry({
@@ -61,7 +58,8 @@ function capturing(
         environments: ["dev", "staging", "feature"],
         prepare: async (context) => {
           const secrets: Record<string, string | undefined> = {};
-          if (context.env !== "staging") {
+          // A deployed environment's secrets are never on this machine, so only `dev` asks (#159, #643).
+          if (context.env === "dev") {
             for (const secret of ["auth-session-secret", "auth-github-credentials"]) {
               secrets[secret] = await context.secret(secret);
             }
@@ -76,17 +74,7 @@ function capturing(
 
 describe("pithy seed on a feature environment", () => {
   const made: string[] = [];
-  // What `pithy provision --feature` kept for this feature: the values every set on a feature is handed.
-  beforeEach(async () => {
-    const kept = featureSecretsPath(FEATURE);
-    await mkdir(dirname(kept), { recursive: true });
-    await writeFile(
-      kept,
-      JSON.stringify({ "auth-session-secret": { currentVersion: "1", versions: { "1": "KEPT-AT-PROVISION" } } }),
-    );
-  });
   afterEach(async () => {
-    await rm(featureSecretsPath(FEATURE), { force: true });
     await Promise.all(made.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
@@ -119,7 +107,6 @@ describe("pithy seed on a feature environment", () => {
       projectDir: target.dir,
       env: "feature",
       yes: true,
-      featureIdentity: async () => FEATURE,
       workers: [target.worker([capturing(seen, ["first", "second"])])],
       workersSubdomain: async () => {
         lookups += 1;
@@ -141,7 +128,6 @@ describe("pithy seed on a feature environment", () => {
       projectDir: target.dir,
       env: "feature",
       yes: true,
-      featureIdentity: async () => FEATURE,
       host: "preview.example.com",
       workers: [target.worker([capturing(seen)])],
       workersSubdomain: async () => {
@@ -162,7 +148,6 @@ describe("pithy seed on a feature environment", () => {
       projectDir: target.dir,
       env: "feature",
       yes: true,
-      featureIdentity: async () => FEATURE,
       workers: [target.worker([capturing(seen)])],
       workersSubdomain: async () => null,
     });
@@ -180,7 +165,6 @@ describe("pithy seed on a feature environment", () => {
       projectDir: target.dir,
       env: "feature",
       yes: true,
-      featureIdentity: async () => FEATURE,
       workers: [target.worker([capturing(seen)])],
       workersSubdomain: async () => null,
     });
@@ -237,7 +221,6 @@ describe("pithy seed on a feature environment", () => {
           projectDir: target.dir,
           env: "feature",
           yes: true,
-          featureIdentity: async () => FEATURE,
           host,
           workers: [target.worker([capturing([])])],
           workersSubdomain: async () => "acme",
@@ -250,75 +233,58 @@ describe("pithy seed on a feature environment", () => {
   });
 
   /**
-   * **A feature's seed secrets are its own, and never the dev secrets file's (#643, and #159 unchanged).**
+   * **A feature's secrets are read by nobody but its own Worker (#643), and #159 is unchanged.**
    *
-   * The dev file is planted with a sentinel and made unreadable. A run that so much as opens it fails with
-   * `EACCES`; a run that reads it some other way hands the set the sentinel. Neither may happen. What the set
-   * is handed is the value `pithy provision --feature` kept — the one the deployment holds — never a fresh one.
+   * They exist only in the feature's own Secrets Store and `SECRETS` database, which the CLI writes and cannot
+   * read. So a set that asks for one on a feature gets the refusal every deployed environment gives, and the dev
+   * secrets file — planted with a sentinel and made unreadable — is never opened: a run that so much as opened it
+   * would fail with `EACCES` instead of the refusal.
    */
-  test("hands a prepared set the feature's kept values, and never opens the dev secrets file", async () => {
+  test("a set that asks for a secret on a feature is refused, and the dev secrets file is never opened", async () => {
     const target = await project();
     const path = devSecretsFile(PROJECT);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(
       path,
-      JSON.stringify({
-        "auth-session-secret": { currentVersion: "1", versions: { "1": "DEV-SENTINEL" } },
-        "auth-github-credentials": { currentVersion: "1", versions: { "1": "DEV-SENTINEL" } },
-      }),
+      JSON.stringify({ "auth-session-secret": { currentVersion: "1", versions: { "1": "DEV-SENTINEL" } } }),
     );
     await chmod(path, 0o000);
-    const keptPath = featureSecretsPath(FEATURE);
-    await mkdir(dirname(keptPath), { recursive: true });
-    await writeFile(
-      keptPath,
-      JSON.stringify({ "auth-session-secret": { currentVersion: "1", versions: { "1": "KEPT-AT-PROVISION" } } }),
-    );
-    const seen: { context: SeedPrepareContext; secrets: Record<string, string | undefined> }[] = [];
+    const asking = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      secretRegistry: REGISTRY,
+      seeds: [
+        defineSeed({
+          name: "asks",
+          order: 1000,
+          environments: ["dev", "feature"],
+          prepare: async (context) => {
+            await context.secret("auth-session-secret");
+            return {};
+          },
+        }),
+      ],
+    });
 
     try {
-      for (let run = 0; run < 2; run += 1) {
-        await seedProject({
+      await expect(
+        seedProject({
           account: null,
           project: PROJECT,
           projectDir: target.dir,
           env: "feature",
           yes: true,
-          workers: [target.worker([capturing(seen, ["first", "second"])])],
+          workers: [target.worker([asking])],
           workersSubdomain: async () => "acme",
-          featureIdentity: async () => FEATURE,
-        });
-      }
+        }),
+      ).rejects.toSatisfy(
+        (error) =>
+          error instanceof PithyError &&
+          error.payload.message === 'Refusing to read the dev secret "auth-session-secret" while seeding feature.',
+      );
     } finally {
       await chmod(path, 0o600);
-      await rm(keptPath, { force: true });
     }
-
-    // Every set, on every run, the one kept value: two sets or two runs signing with two keys would disagree.
-    expect(seen.map((entry) => entry.secrets["auth-session-secret"])).toEqual(Array(4).fill("KEPT-AT-PROVISION"));
-    // A secret nothing may invent — an OAuth credential — is absent rather than made up or borrowed.
-    expect(seen[0]?.secrets["auth-github-credentials"]).toBeUndefined();
-  });
-
-  test("with no kept values on this machine, a set that asks for a secret is refused, naming provision", async () => {
-    const target = await project();
-    await expect(
-      seedProject({
-        account: null,
-        project: PROJECT,
-        projectDir: target.dir,
-        env: "feature",
-        yes: true,
-        workers: [target.worker([capturing([])])],
-        workersSubdomain: async () => "acme",
-        featureIdentity: async () => ({ ...FEATURE, slug: "never-provisioned" }),
-      }),
-    ).rejects.toSatisfy(
-      (error) =>
-        error instanceof PithyError &&
-        error.payload.message === "This feature's secrets are not on this machine." &&
-        (error.payload.action ?? "").includes("pithy provision --feature"),
-    );
   });
 });
 
@@ -394,6 +360,55 @@ describe("seedHostOrigin", () => {
     for (const host of ["localhost", "https://localhost", "localhost:9999", "app.localhost", "127.0.0.1"]) {
       expect(refused(host, "feature"), host).toBe(true);
     }
+  });
+
+  /**
+   * **Finding 5: loopback in every spelling, off `dev` (#643).** Reproduced: `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and
+   * `0.0.0.0` passed, because each is dot-separated labels a hostname pattern accepts — and a URL parser reads
+   * every one of them as this machine. IPv6 loopback is refused with them.
+   */
+  test("off dev, loopback is refused in every spelling a URL parser reads as this machine", () => {
+    for (const host of [
+      "127.1",
+      "127.0.1",
+      "0177.0.0.1",
+      "0x7f.0.0.1",
+      "0x7f000001",
+      "2130706433",
+      "127.255.255.254",
+      "0.0.0.0",
+      "0",
+      "https://0.0.0.0",
+      "[::1]",
+      "https://[::1]",
+      "[0:0:0:0:0:0:0:1]",
+      "[::ffff:127.0.0.1]",
+      "[::]",
+      "LOCALHOST",
+      "localhost.",
+    ]) {
+      expect(refused(host, "feature"), host).toBe(true);
+      expect(refused(host, "staging"), host).toBe(true);
+    }
+  });
+
+  test("refuses a host new URL rejects, everywhere — xn--a.test is not a hostname", () => {
+    for (const env of ["dev", "feature"]) {
+      for (const host of ["xn--a.test", "https://xn--a.test", "a.xn--.test"]) {
+        expect(refused(host, env), `${env} ${host}`).toBe(true);
+      }
+    }
+  });
+
+  test("an address, not a host: no IP literal is a deployed Worker's origin", () => {
+    for (const host of ["93.184.216.34", "https://93.184.216.34", "1.1"]) {
+      expect(refused(host, "feature"), host).toBe(true);
+    }
+  });
+
+  test("in dev, loopback is taken only as it is spelled canonically", () => {
+    expect(seedHostOrigin("127.0.0.1", "dev")).toBe("http://127.0.0.1");
+    for (const host of ["127.1", "0x7f.0.0.1", "0177.0.0.1"]) expect(refused(host, "dev"), host).toBe(true);
   });
 
   test("in dev, a port out of range is refused", () => {

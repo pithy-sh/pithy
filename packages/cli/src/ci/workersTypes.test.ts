@@ -124,7 +124,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/cli": 14,
   "packages/cloudflare": 2,
   "packages/core": 13,
-  "packages/email": 8,
+  "packages/email": 9,
   "packages/leaderboard": 5,
   "packages/ledger": 4,
   "packages/matchmaking": 8,

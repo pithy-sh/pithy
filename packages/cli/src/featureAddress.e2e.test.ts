@@ -44,8 +44,11 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
 
 const SCRIPT = "replay-f643-feature-address-board";
 const FEATURE_ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
-/** What a set asking for a secret is told on a feature this machine kept none for: this account has no store. */
-const NOT_KEPT = "This feature's secrets are not on this machine.";
+/**
+ * What a set asking for a secret is told on a feature: what every deployed environment says. A feature's secrets
+ * are only in its own Cloudflare stores, which the CLI never reads (#643), and the dev file is dev's alone (#159).
+ */
+const REFUSED = 'Refusing to read the dev secret "probe-signing-key" while seeding feature.';
 
 /**
  * A prepared set that writes down what the run handed it: the origin, and whether a mintable secret arrived.
@@ -67,8 +70,8 @@ export const originProbe = defineCapability({
       order: 1000,
       environments: ["feature"],
       prepare: async (context) => {
-        // A feature's secrets are the ones provision kept (#643). With no Secrets Store there are none, and the
-        // read is refused rather than answered with a value the deployment does not hold.
+        // A feature's secrets live only in its own stores (#643), so the read is refused, never answered with a
+        // value the deployment does not hold.
         let secretLength: number | string | null = null;
         try {
           secretLength = (await context.secret("probe-signing-key"))?.length ?? null;
@@ -202,10 +205,15 @@ describe("a feature deployment's address, with the real binary", () => {
     expect(generated.env.feature.vars.ENVIRONMENT).toBe("feature");
 
     // Provisioning seeds a feature, and the prepared set saw the same address.
-    expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: NOT_KEPT });
+    expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: REFUSED });
   }, 120_000);
 
-  test("seed --env feature runs auth's dev-session set, and never opens the dev secrets file", async () => {
+  /**
+   * **No dev login on a feature (#643).** A magic link is how anybody signs in to a feature deployment, so auth's
+   * dev-session set composes into `dev` alone — and the seed, which never needs a feature's secret, never opens
+   * the dev secrets file to look for one.
+   */
+  test("seed --env feature skips auth's dev-session set, and never opens the dev secrets file", async () => {
     const added = await cli(["add", "auth", "--with-prerequisites", "--worker", "board", "--json"]);
     expect(added.code).toBe(0);
 
@@ -223,9 +231,9 @@ describe("a feature deployment's address, with the real binary", () => {
         workers: { worker: string; sets: { name: string }[]; skippedByEnv: string[] }[];
       };
       const board = report.workers[0];
-      expect(board?.sets.map((set) => set.name)).toContain("9999_auth_dev-session");
-      expect(board?.skippedByEnv).not.toContain("9999_auth_dev-session");
-      expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: NOT_KEPT });
+      expect(board?.sets.map((set) => set.name)).not.toContain("9999_auth_dev-session");
+      expect(board?.skippedByEnv).toContain("9999_auth_dev-session");
+      expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: REFUSED });
     } finally {
       await chmod(secrets, 0o600);
     }

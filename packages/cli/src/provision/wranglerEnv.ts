@@ -7,6 +7,7 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
+import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -53,6 +54,7 @@ interface EnvBindings {
   r2_buckets?: BindingEntry[];
   services?: ServiceEntry[];
   secrets_store_secrets?: SecretStoreBinding[];
+  workflows?: HostedWorkflowEntry[];
 }
 
 /**
@@ -183,19 +185,36 @@ export async function applySecretBindings(
 }
 
 /**
+ * **A feature's stanza states no route (#643).** `routes: []`, written, because wrangler inherits a top-level
+ * `routes` (or `route`) into every environment that does not set its own. Inherited, a branch deploy would take
+ * the project's custom domain — whatever production or `dev` routes to — and with routes and no `workers_dev`,
+ * wrangler gives it no `workers.dev` address at all, so the address stamped for it would answer nothing. An empty
+ * list is the stanza's own and wins over the top level's, and with no routes wrangler's default is `workers.dev`
+ * on. A top-level `workers_dev: false` is still honored: the adopter said no `workers.dev`, so the feature gets no
+ * address rather than one nothing serves.
+ *
+ * Stripped rather than refused: a feature's only address is the one composed from its branch, so a route is
+ * never something a feature stanza should carry, and a project with a top-level route must still be able to
+ * provision a branch.
+ */
+function stripFeatureRoutes(stanza: EnvBindings): void {
+  delete stanza.route;
+  stanza.routes = [];
+}
+
+/**
  * Stamp a feature stanza's `vars.BASE_URL` with its derived `workers.dev` address, or remove the one it
  * inherited when there is none to derive.
  *
- * Derived from everything but `vars`: the stanza's own `BASE_URL` is what is being written, and the one it
- * holds now was copied from the top level, so reading it would be a feature adopting whatever the tracked
- * file said.
+ * Derived from everything but `vars`: the stanza's own `BASE_URL` is what is being written, and the one it holds
+ * now was copied from the top level, so reading it would be a feature adopting whatever the tracked file said.
  */
 function stampFeatureAddress(stanza: EnvBindings, top: Record<string, unknown>, subdomain: string | null): void {
   const { vars: _inherited, ...address } = stanza;
-  // As wrangler will deploy it: a top-level `workers_dev: false` it inherits means no `workers.dev` address.
+  // As wrangler will deploy it: what the stanza says, and what it inherits from the top level.
   const resolved = resolveWorkerAddress({
     environment: FEATURE_ENVIRONMENT,
-    stanza: inheritAddressKeys(top, address),
+    stanza: inheritAddressKeys(top, address, FEATURE_ENVIRONMENT),
     subdomain,
   });
   if (resolved) {
@@ -263,6 +282,14 @@ export async function applyProvisionedEnv(options: {
    * origin, and a feature must never answer to it.
    */
   subdomain?: string | null;
+  /**
+   * Cross-script `workflows` entries into the kit hosts this scope stands up — for a feature, email's
+   * `EMAIL_SENDER` into the feature's own email host (#643). Upserted by binding, like every other list here.
+   *
+   * A new stanza starts its `workflows` empty ({@link stanzaFor}), because the top level's entries name `dev`'s
+   * Workflows; these are the scope's own. Omitted or empty, the stanza's `workflows` are left as they are.
+   */
+  workflows?: readonly HostedWorkflowEntry[];
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -276,7 +303,10 @@ export async function applyProvisionedEnv(options: {
     stanza.name = options.scope.worker(options.worker, stanza.name);
     // A feature's address, from the name just settled. Never a declared environment's: its address is
     // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
-    if (!options.scope.source && options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
+    if (!options.scope.source) {
+      stripFeatureRoutes(stanza);
+      if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
+    }
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
@@ -300,5 +330,13 @@ export async function applyProvisionedEnv(options: {
       }
     }
     if (options.secrets.length > 0) upsertSecretBindings(stanza, options.secrets);
+    if (options.workflows && options.workflows.length > 0) {
+      stanza.workflows ??= [];
+      for (const entry of options.workflows) {
+        const existing = stanza.workflows.find((candidate) => candidate.binding === entry.binding);
+        if (existing) Object.assign(existing, entry);
+        else stanza.workflows.push({ ...entry });
+      }
+    }
   });
 }

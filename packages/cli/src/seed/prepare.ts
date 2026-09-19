@@ -9,7 +9,7 @@ import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { currentValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { devSecretPayload, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { readDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
@@ -190,52 +190,6 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
 }
 
 /**
- * **A feature environment's seed secrets: the values `pithy provision --feature` generated and kept (#643).**
- *
- * `pithy seed --env feature` gets no {@link devSecretReader} — that one refuses every environment but `dev`, and
- * #159 stays exactly as written. A feature's secrets are its own: generated once, at provision, sealed into the
- * feature's deployment, and kept in one file keyed by project and feature (`feature/secrets.ts`). This reads
- * that file and nothing else, so a claim the seed signs is one the deployed Worker verifies — the same value,
- * not a second one generated to look like it.
- *
- * **It never generates.** A value the deployment does not hold signs a dev login nobody can open, which is the
- * defect this replaced: a fresh random value per run, kept nowhere. A name the file does not hold — an OAuth
- * credential somebody else issues — is `undefined`, and a set that needs it refuses in its own words. No file
- * at all is refused here, naming the command that makes one.
- *
- * **Why not the seed data.** A seed set's data is a capability module: committed, bundled into the Worker, and
- * identical for every branch. A secret stated there is a committed credential shared by every feature.
- *
- * Read once per run, lazily: a run with no prepared set that asks for a secret never opens the file.
- */
-export function featureSecretReader(options: {
-  /** The run's aggregate registry: the authority on whether a name is a secret at all. */
-  registry: SecretRegistry;
-  /** The feature's kept values, or `null` when this machine holds none. `feature/secrets.ts`'s `readFeatureSecrets`. */
-  read: () => Promise<{ path: string; values: DevSecretsFile } | null>;
-}): (name: string) => Promise<string | undefined> {
-  let pending: Promise<{ path: string; values: DevSecretsFile } | null> | undefined;
-  return async (name: string) => {
-    // `Object.hasOwn`, for the reason `devSecretReader` gives: `constructor` is not a secret.
-    if (!Object.hasOwn(options.registry, name)) return undefined;
-    const entry = options.registry[name];
-    if (!entry) return undefined;
-    pending ??= options.read();
-    const kept = await pending;
-    if (kept === null) {
-      throw new ValidationError({
-        message: "This feature's secrets are not on this machine.",
-        action:
-          "Run pithy provision --feature from this worktree, on an account with a Secrets Store. It generates them once and keeps them.",
-        detail: `feature seed asked for secret '${name}' and no kept feature secrets file exists`,
-      });
-    }
-    if (!Object.hasOwn(kept.values, name)) return undefined;
-    return devSecretPayload(entry, name, kept.values[name], kept.path).value;
-  };
-}
-
-/**
  * **The origin `--host` names, for a prepared set (#643).** A bare host — `preview.example.com` — takes the
  * environment's scheme: `http` in `dev`, where Pithy runs no TLS, `https` everywhere else. A full `http://` or
  * `https://` origin is taken as written, within the same rules.
@@ -252,6 +206,10 @@ export function featureSecretReader(options: {
  * - **`localhost` is `dev`'s alone.** It is this machine, over `http`, on whatever port it was given. A
  *   deployed environment is never there, so off `dev` it is refused — `127.0.0.1` and `*.localhost` with it —
  *   rather than turned into an `https://localhost` nothing serves.
+ * - **As `new URL` reads it (#643).** A host is taken only in the spelling a URL parser gives back, so `127.1`,
+ *   `0x7f.0.0.1` and `0.0.0.0` are the loopback they parse to, never a hostname that happens to be digits; a host
+ *   the parser refuses is refused here; and no IP address is a deployed Worker's origin. IPv6 — bracketed — is
+ *   not a host character at all.
  */
 export function seedHostOrigin(host: string, env: string): string {
   const local = env === LOCAL_ENVIRONMENT;
@@ -273,10 +231,29 @@ export function seedHostOrigin(host: string, env: string): string {
   const port = parts[2];
   const scheme = match[1]?.toLowerCase() ?? (local ? "http" : "https");
 
-  const loopback = hostname === "localhost" || hostname.endsWith(".localhost") || /^127(\.\d{1,3}){3}$/.test(hostname);
+  // **As a URL parser reads it, or not at all (#643).** `new URL` is what every consumer of this origin parses it
+  // with, and it reads `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `2130706433` all as `127.0.0.1`, and `0` as
+  // `0.0.0.0` — this machine, spelled so that no pattern here sees it. So a host is taken only in the spelling
+  // the parser gives back, and one the parser refuses outright — `xn--a.test`, an invalid punycode label — is
+  // not a host at all.
+  let canonical: string;
+  try {
+    canonical = new URL(`${scheme}://${hostname}`).hostname;
+  } catch {
+    throw refuse(bare, "a host new URL refuses");
+  }
+  if (canonical !== hostname) throw refuse(bare, `a spelling new URL reads as ${canonical}`);
+  // WHATWG's own test for an IPv4 host: the last label is a number. Canonical by now, so dotted decimal.
+  const address = /(^|\.)(\d+|0x[0-9a-f]*)$/.test(hostname);
+  const loopback =
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    (address && (hostname.startsWith("127.") || hostname.startsWith("0.")));
   if (loopback && !local) {
     throw refuse("localhost is this machine. Pass the host the deployment answers on.", "loopback outside dev");
   }
+  // An address is not a Worker's origin: a deployment answers on a name. Loopback is `dev`'s, and only there.
+  if (address && !loopback) throw refuse(bare, "an IP address, not a hostname");
   if (!loopback && !isPublicHostname(hostname)) throw refuse(bare, "not a hostname");
   if (port !== undefined) {
     if (!local) throw refuse("A deployed Worker answers on the default port. Drop the port.", "a port outside dev");

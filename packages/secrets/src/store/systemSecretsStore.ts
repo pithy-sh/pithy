@@ -92,6 +92,25 @@ async function readRow(
 }
 
 /**
+ * Which of `names` have a row in a `SECRETS` database — **names only**, read without the master key and
+ * without opening a single value.
+ *
+ * For a provisioning run that holds no master key and must still know what is there: a feature's run that
+ * did not create the key cannot open a row, and must not have to in order to learn that one is missing
+ * (#643). A failed read **throws**; it is never an empty answer, because "the read failed" read as "nothing
+ * is stored" is how a provisioning run decides to write over what is there.
+ */
+export async function storedSecretNames(database: SecretsStoreEnv["SECRETS"], names: string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  const db = createDatabase(database, secretsTables);
+  for (const chunk of chunkByBoundParameters(names, 0)) {
+    const rows = await db.selectFrom("pithySecretsSystemSecrets").select("name").where("name", "in", chunk).execute();
+    for (const row of rows) found.add(row.name);
+  }
+  return found;
+}
+
+/**
  * The D1-backed encrypted store for `d1`-backed secrets, ported from the CMS `SystemSecretsStore`
  * with Pithy's universal value envelope layered on. Every secret's plaintext is a
  * `{ currentVersion, versions }` envelope (`crypto/versionedValue`), sealed in one AES-256-GCM
@@ -208,6 +227,27 @@ export class SystemSecretsStore {
       .insertInto("pithySecretsSystemSecrets")
       .values({ name, encryptedValue, iv, keyVersion, valueType, createdAt: now, updatedAt: now })
       .execute();
+  }
+
+  /**
+   * Seal `value` and insert it **only if no row of that name exists** — one statement, so two writers racing
+   * for one name leave exactly one row, the first one's. Resolves `true` when this call inserted it and
+   * `false` when a row was already there, which is left exactly as it was.
+   *
+   * {@link put} is check-then-write: two writers that both see a name absent both insert, and the second
+   * fails on the unique name with `UNIQUE constraint failed` (#643). The conflict clause makes that the
+   * answer `false` instead of a crash, and it never becomes an update — creating a value and replacing one
+   * are different acts, and only the first happens here.
+   */
+  async create(name: string, value: VersionedValue, valueType: SecretValueType = "text"): Promise<boolean> {
+    const { encryptedValue, iv, keyVersion } = await encryptValue(this.#config, name, encodeVersionedValue(value));
+    const now = SQLiteDate.encode(new Date());
+    const result = await this.#db
+      .insertInto("pithySecretsSystemSecrets")
+      .values({ name, encryptedValue, iv, keyVersion, valueType, createdAt: now, updatedAt: now })
+      .onConflict((conflict) => conflict.column("name").doNothing())
+      .executeTakeFirst();
+    return Number(result.numInsertedOrUpdatedRows ?? 0n) > 0;
   }
 
   /** Remove a secret. A no-op if it does not exist. */

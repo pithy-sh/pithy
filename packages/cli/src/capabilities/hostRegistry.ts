@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
@@ -74,8 +75,15 @@ export interface HostResolveContext {
   projectDir: string;
   /** The project name — the leading segment of every name the resolution derives. Never guessed. */
   project: string;
-  /** The environment being resolved. `dev` for a local host; a managed name for a deploy. */
+  /** The environment being resolved. `dev` for a local host; a managed name for a deploy; `feature` for a branch. */
   env: string;
+  /**
+   * **The feature being resolved for, when `env` is `feature` (#643).** A host deployed for a branch takes the
+   * feature's names — its script, its Workflows, its store entries — because every one of those namespaces is
+   * account-wide and `<project>-feature-<capability>` would be one host every open branch shared. A resolver
+   * that does not read this composes the environment's names, and `pithy deploy` refuses its row for it.
+   */
+  feature?: FeatureIdentity;
   /** The app Worker's origin for this environment — what callback links are built against. */
   baseUrl: string;
   /**
@@ -321,6 +329,8 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // false for exactly as long as it did not (pithy-sh/pithy#441).
         messages: composed.hostCatalogs(),
         devDelivery: context.simulateDelivery ? "simulator" : composed.emailConfig.devDelivery,
+        // A branch's own host: its names, its keys, its suppression list (#643).
+        ...(context.feature ? { feature: context.feature } : {}),
       });
     },
     async delivery(capability, projectDir) {

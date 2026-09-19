@@ -193,6 +193,52 @@ describe("CloudflareSecretsStoreManager", () => {
     });
   });
 
+  /**
+   * **Create, never overwrite, even when two runs race (#643).** The loser of a race sees the name absent,
+   * sends its create, and is refused because the winner's landed first. That refusal is "somebody else
+   * created it" — and only when the entry is then there. Edit is never reached, on any path.
+   */
+  describe("createSecretIfAbsent", () => {
+    it("creates when the name is absent, and says it did", async () => {
+      mockList.mockReturnValue(paginator([]));
+      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+
+      expect(await manager.createSecretIfAbsent("FOO", "value-1")).toBe(true);
+      expect(mockCreate).toHaveBeenCalledWith("store-abc", {
+        account_id: "test-account-id",
+        body: [{ name: "FOO", value: "value-1", scopes: ["workers"] }],
+      });
+    });
+
+    it("leaves an existing entry exactly as it is, and says it did not create one", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
+
+      expect(await manager.createSecretIfAbsent("FOO", "value-2")).toBe(false);
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    it("reads a refused create as a lost race when the entry is there afterwards", async () => {
+      mockList.mockReturnValueOnce(paginator([])).mockReturnValueOnce(paginator([rawEntry("id-winner", "FOO")]));
+      mockCreate.mockRejectedValue(new Error("secret name already exists"));
+
+      expect(await manager.createSecretIfAbsent("FOO", "loser")).toBe(false);
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    it("throws a refused create when nothing is there afterwards — an outage is not a lost race", async () => {
+      mockList.mockReturnValue(paginator([]));
+      mockCreate.mockRejectedValue(new Error("Quota exceeded"));
+
+      await expect(manager.createSecretIfAbsent("FOO", "value")).rejects.toThrowError(
+        expect.objectContaining({
+          payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "Quota exceeded" }),
+        }),
+      );
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("deleteSecret", () => {
     it("deletes by id resolved from listSecrets", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-1", "FOO")]));

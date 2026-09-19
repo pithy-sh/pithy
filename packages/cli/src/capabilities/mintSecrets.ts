@@ -57,12 +57,6 @@ export function storeSecretMinter(options: {
   environment: string;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
-  /**
-   * A value already chosen for a secret, as the dev secrets file would state it — a feature's kept value
-   * (#643). Given one, that is what the entry receives, so the store and the copy the seed signs with agree.
-   * `undefined` for a name it does not hold, which is minted as before.
-   */
-  stated?: (secret: string) => unknown;
 }): MintStoreSecret {
   const audit = options.audit ?? (async () => {});
   return async ({ secret, binding, secretName, entry }) => {
@@ -80,7 +74,7 @@ export function storeSecretMinter(options: {
     // dev secrets file states for the same secret, byte for byte. `initialDevSecret` composes the entry
     // the file would hold; reading it back is the one materialization every destination shares (#323).
     // This wrote an envelope unconditionally, which is the defect that wave was about, at a new producer.
-    const stated = options.stated?.(secret) ?? initialDevSecret(entry, mintSecretValue(entry.devValue));
+    const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
     await options.store.put(secretName, devSecretPayload(entry, secretName, stated).text);
     // The name, the entry, the environment. Never the value, and nothing derived from it.
     await audit({

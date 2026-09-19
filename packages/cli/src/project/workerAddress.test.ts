@@ -7,7 +7,13 @@ import { join } from "node:path";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { afterEach, describe, expect, it } from "vitest";
 import { featureConfigPath } from "../provision/featureConfig";
-import { describeAddressSource, readAddressStanza, resolveWorkerAddress, workersDevAddress } from "./workerAddress";
+import {
+  describeAddressSource,
+  inheritAddressKeys,
+  readAddressStanza,
+  resolveWorkerAddress,
+  workersDevAddress,
+} from "./workerAddress";
 
 const DOMAINS = WorkerDomains.parse({
   staging: { pattern: "staging.api.example.com", zone: "example.com" },
@@ -147,14 +153,49 @@ describe("resolveWorkerAddress for a feature environment", () => {
     ).toBeNull();
   });
 
-  it("still lets a route win where one exists", () => {
+  /**
+   * **Finding 3: a route on a feature is a domain another environment owns (#643).** wrangler inherits a top-level
+   * `routes` into every environment that sets none, and with routes and no `workers_dev` it gives the Worker no
+   * `workers.dev` address. So a feature never answers on a route, and gets a `workers.dev` address only when
+   * wrangler would give it one.
+   */
+  it("never takes a route: with routes and no workers_dev, wrangler gives no workers.dev address, so none", () => {
+    for (const stanza of [
+      { name: SCRIPT, routes: ["app.example.com"] },
+      { name: SCRIPT, routes: [{ pattern: "app.example.com", custom_domain: true }] },
+      { name: SCRIPT, route: "app.example.com" },
+      { name: SCRIPT, routes: ["app.example.com"], vars: { BASE_URL: ORIGIN } },
+    ]) {
+      expect(
+        resolveWorkerAddress({ environment: "feature", stanza, subdomain: "acme" }),
+        JSON.stringify(stanza),
+      ).toBeNull();
+    }
+  });
+
+  it("with routes and workers_dev on, answers on workers.dev — never the route", () => {
     expect(
       resolveWorkerAddress({
         environment: "feature",
-        stanza: { name: SCRIPT, routes: ["preview.example.com"] },
+        stanza: { name: SCRIPT, routes: ["app.example.com"], workers_dev: true },
         subdomain: "acme",
       }),
-    ).toEqual({ url: "https://preview.example.com", source: "route", hostname: "preview.example.com" });
+    ).toEqual({ url: ORIGIN, source: "workers.dev", hostname: new URL(ORIGIN).hostname });
+  });
+
+  it("an empty routes list is no routes: workers.dev is on by wrangler's default", () => {
+    expect(
+      resolveWorkerAddress({ environment: "feature", stanza: { name: SCRIPT, routes: [] }, subdomain: "acme" })?.url,
+    ).toBe(ORIGIN);
+  });
+
+  it("reads a feature stanza's inherited routes, as wrangler deploys it", () => {
+    const top = { routes: [{ pattern: "app.example.com", custom_domain: true }] };
+    expect(inheritAddressKeys(top, { name: SCRIPT }, "feature").routes).toEqual(top.routes);
+    // Its own list wins, as wrangler's does — including an empty one.
+    expect(inheritAddressKeys(top, { name: SCRIPT, routes: [] }, "feature").routes).toEqual([]);
+    // A declared environment's address is read from its own stanza, as it always was (#89).
+    expect(inheritAddressKeys(top, { name: "replay-staging-board" }, "staging").routes).toBeUndefined();
   });
 
   it("derives nothing when workers.dev is turned off for the Worker", () => {

@@ -167,3 +167,24 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
 export function featureWorkerName(identity: FeatureIdentity, app: string): string {
   return composeFeatureName(head(identity), kebab(identity.slug), kebab(app), "", NAMESPACE_LIMITS.worker.maxLength);
 }
+
+/**
+ * The deployed name of one of a feature's **Workflows** — `<project>-f<issue>-<slug>-<capability>-<job>` (#643).
+ *
+ * A Workflow name is account-wide, like a Worker's, so a feature's email host cannot run
+ * `<project>-feature-email-send`: every open branch would deploy the same Workflow over every other's. It takes
+ * the feature's head instead, exactly as its host Worker does ({@link featureWorkerName}), so the Worker and the
+ * Workflows it hosts are recognizably one feature's and teardown recomputes both from the identity.
+ *
+ * Held to the **Workflow** limit ({@link NAMESPACE_LIMITS.workflow}), and fitted the way every feature name is:
+ * the slug gives way first, then the `<capability>-<job>` tail, deterministically.
+ */
+export function featureWorkflowName(identity: FeatureIdentity, capability: string, job: string): string {
+  return composeFeatureName(
+    head(identity),
+    kebab(identity.slug),
+    `${kebab(capability)}-${kebab(job)}`,
+    "",
+    NAMESPACE_LIMITS.workflow.maxLength,
+  );
+}

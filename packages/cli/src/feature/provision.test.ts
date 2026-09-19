@@ -752,6 +752,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           storeId: "store-1",
           exists: async (name: string) => entries.has(name),
           put: async (name: string, value: string) => void entries.set(name, value),
+          create: async (name: string, value: string) => !entries.has(name) && Boolean(entries.set(name, value)),
           remove: async (name: string) => entries.delete(name),
         },
       };
@@ -1189,6 +1190,30 @@ describe("a feature's Worker scripts", () => {
     ]);
   });
 
+  /**
+   * **The feature's own email host goes with the feature (#643).** Provisioning deploys it under a name composed
+   * from the branch, so teardown recomputes that name and deletes it — whatever the branch composes now, since a
+   * host deployed before email was removed is still this feature's — and never another branch's host or a
+   * declared environment's.
+   */
+  test("destroy deletes the feature's email host by the name provisioning deployed it under", async () => {
+    const { provisioners } = fakeProvisioners();
+    const scripts = fakeScripts(["acme-f69-demo-email", "acme-f70-demo-email", "acme-staging-email"]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers: [],
+    });
+
+    expect(scripts.deletes).toEqual(["acme-f69-demo-email"]);
+    expect(report.deleted).toContainEqual({ kind: "worker", name: "acme-f69-demo-email", id: "acme-f69-demo-email" });
+  });
+
   test("destroy deletes each deployed script after confirming it is there, and reports each", async () => {
     const { provisioners } = fakeProvisioners();
     await provision(provisioners);
@@ -1432,6 +1457,8 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
       storeId: "store-1",
       exists: async (name: string) => holding("secret").has(name),
       put: async (name: string, value: string) => void holding("secret").set(name, value),
+      create: async (name: string, value: string) =>
+        !holding("secret").has(name) && Boolean(holding("secret").set(name, value)),
       remove: async (name: string) => holding("secret").delete(name),
     };
     /** Each deployed script's `services` targets, as its deploy uploaded them. */

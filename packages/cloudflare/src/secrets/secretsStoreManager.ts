@@ -91,6 +91,27 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
     );
   }
 
+  /**
+   * Create a secret only if no entry of that name is there. Resolves `true` when this call created it and
+   * `false` when one was already there — whoever wrote it, and whenever.
+   *
+   * **Never an overwrite, even in a race (#643).** {@link putSecret} is check-then-edit, so two runs that
+   * both see a name absent both write, and the second value silently replaces the first. For a master key
+   * that is every row sealed under the first one made unreadable. Here the loser's create fails, and a
+   * failure is read as "somebody else created it" only when the entry is then there: anything else — an
+   * outage, a refused token — is thrown as it came.
+   */
+  async createSecretIfAbsent(name: string, value: string): Promise<boolean> {
+    if (await this.findByName(name)) return false;
+    try {
+      await this.createSecret(name, value);
+      return true;
+    } catch (error) {
+      if (await this.findByName(name)) return false;
+      throw error;
+    }
+  }
+
   /** Delete a secret by name. Resolves the id via `listSecrets`, then issues DELETE by id. */
   async deleteSecret(name: string): Promise<void> {
     const existing = await this.findByName(name);

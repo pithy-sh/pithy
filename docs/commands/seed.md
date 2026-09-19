@@ -48,11 +48,10 @@ A prepared set is handed the origin its Worker answers on (`context.origin`, `do
 - every label a DNS label, so an encoded host like `%2e%2e` is refused;
 - nothing after the host — a path, a query, a fragment, a trailing `/` — and no credentials;
 - off `dev`, no port and no `http`: a deployed Worker answers over https on the default port;
-- `localhost`, `127.0.0.1` and `*.localhost` in `dev` only.
+- `localhost`, `127.0.0.1` and `*.localhost` in `dev` only;
+- as a URL parser reads it: a host `new URL` refuses — `xn--a.test` — is refused, and a spelling it rewrites is refused rather than taken, so `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `0` are the loopback they parse to. Off `dev`, loopback in any spelling, `0.0.0.0` and IPv6 `[::1]` are refused, and so is every IP address: a deployed Worker answers on a name.
 
-On a feature, a prepared set's secrets are the ones `pithy provision --feature` kept for it — the values the deployment holds, so a claim the seed signs is one the Worker verifies. A secret nobody may invent is `undefined`; with nothing kept on this machine, a set that asks for a secret is refused, naming `pithy provision --feature`. The dev secrets file is never opened: it belongs to `dev`, and `staging` and `prod` still refuse a set that asks for one.
-
-When the run mints a dev login off `dev`, it prints the link to open, over the origin the login was minted for: `Dev login: ada@example.com — open https://<script>.<subdomain>.workers.dev/__pithy/dev-login?t=… to sign in.` The link carries the claim, so it is printed in human output only, never under `--json`.
+On a feature, a prepared set that asks for a secret is refused, as on `staging` and `prod`. A feature's secrets exist only in its own Secrets Store and `SECRETS` database, where `pithy provision --feature` created them and the Worker reads them; nothing reads them back to this machine. The dev secrets file is never opened: it belongs to `dev`. There is no dev login on a feature — a magic link is how anybody signs in to one.
 
 ### Idempotency
 

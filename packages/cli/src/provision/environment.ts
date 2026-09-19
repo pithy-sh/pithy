@@ -13,10 +13,12 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
+import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource, FeatureScript } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
+import type { KitWorkerDeploy } from "../project/deployKit";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -286,25 +288,25 @@ export interface ProvisionReport {
    */
   committed: boolean;
   /**
-   * **A feature's own secrets, generated once and kept (#643)** — present only on a feature run that had a
-   * Secrets Store and a composed secrets capability to keep them for. Names and a path, never a value.
+   * **A feature's own `d1` secrets, sealed into its own `SECRETS` database (#643)** — present only on a feature
+   * run that had a Secrets Store, a composed secrets capability and a database to seal into. Names, never a value.
    */
   featureSecrets?: FeatureSecretsReport;
+  /**
+   * **The kit Workers a feature run stood up for itself (#643)** — its email host, one row each, as
+   * `pithy deploy` reports them. Present only on a feature run that deployed hosts.
+   */
+  hosts?: KitWorkerDeploy[];
 }
 
-/** What a feature run did with the feature's own secrets. See `feature/secrets.ts`. */
+/** What a feature run did with the feature's own `d1` secrets. See `feature/secrets.ts`. */
 export interface FeatureSecretsReport {
-  /** The file on this machine the values are kept in, and the seed signs with. */
-  path: string;
-  /** Every `d1` secret the feature's `SECRETS` database holds after this run, written now or already there. */
+  /** Every mintable `d1` secret the feature's `SECRETS` database holds after this run. */
   sealed: string[];
   /** Of those, the ones this run wrote. Empty on a re-run. */
   written: string[];
-  /**
-   * Values the deployment already held that this run **replaced** with newly generated ones, because the kept
-   * copy was not on this machine. Everything signed with the old ones stops verifying, so it is never silent.
-   */
-  regenerated: string[];
+  /** Rows replaced because they were sealed under a master key the store no longer holds, so nothing could open them. */
+  resealed: string[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */
@@ -409,6 +411,12 @@ export interface ProvisionEnvironmentOptions {
    * feature's stanza gets the `vars.BASE_URL` its Worker reads (#643). Omitted, nothing is stamped.
    */
   workersSubdomain?: () => Promise<string | null>;
+  /**
+   * The cross-script `workflows` entries one Worker needs into the kit hosts this scope stands up — a feature's
+   * own email host (#643). Called per Worker with that Worker's own capabilities. Omitted, none are written: a
+   * declared environment's come from `pithy add` and `pithy <capability> provision`.
+   */
+  hostedWorkflows?: (capabilities: Capability[]) => HostedWorkflowEntry[];
   /**
    * Worker-resolution seam (default: {@link resolveWorkers}), so tests fix the worker set. Each entry
    * carries that Worker's **own** capabilities, which is what lets the write step give a Worker only
@@ -674,6 +682,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // more thing composed here.
       administersItself: options.administersItself,
       ...(subdomain !== undefined ? { subdomain } : {}),
+      ...(options.hostedWorkflows ? { workflows: options.hostedWorkflows(worker.capabilities) } : {}),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,

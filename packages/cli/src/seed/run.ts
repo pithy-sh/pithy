@@ -10,21 +10,17 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { seedKvGroup } from "@pithy-sh/core/src/seed/writeKv";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
-import { branchIdentityWithoutWorkers } from "../feature/identity";
-import { readFeatureSecrets } from "../feature/secrets";
 import {
   previewReset,
   type ResetPreviewEntry,
@@ -50,7 +46,7 @@ import {
 } from "./drivers";
 import { type MediaFs, type MediaUploader, type SeedMediaResult, seedMediaItem } from "./media";
 import { buildDryRunPlan, type SeedPlanMediaAction, type SeedPlanSet } from "./plan";
-import { devSecretReader, featureSecretReader, readDevPreferences, seedHostOrigin, writeSeedArtifact } from "./prepare";
+import { devSecretReader, readDevPreferences, seedHostOrigin, writeSeedArtifact } from "./prepare";
 import { buildSeedPlan } from "./registry";
 import { assertResetConfirmed, assertSeedConfirmed, assertSetAllowedForEnv } from "./safety";
 
@@ -186,11 +182,6 @@ export interface SeedProjectOptions {
    * on a feature environment is handed an origin and `host` named none.
    */
   workersSubdomain?: () => Promise<string | null>;
-  /**
-   * Seam: which feature this checkout is, for a feature run's secrets (#643). Defaults to the branch, exactly as
-   * `pithy provision --feature` derives it, so the seed reads the values that run kept and no other feature's.
-   */
-  featureIdentity?: () => Promise<FeatureIdentity>;
 }
 
 /** One Worker's slice of a seed run: what its own capabilities' fixtures wrote, and what they didn't. */
@@ -664,23 +655,6 @@ interface PreparedRun {
   writeArtifact: (artifact: SeedArtifact) => Promise<void>;
 }
 
-/**
- * The environment's own secret reader: the dev secrets file in `dev` and nowhere else (#159), the values
- * `pithy provision --feature` kept on a feature (#643), and the refusal everywhere else.
- */
-function environmentSecretReader(
-  options: SeedProjectOptions,
-  registry: SecretRegistry,
-): (name: string) => Promise<string | undefined> {
-  if (options.env === FEATURE_ENVIRONMENT) {
-    // The feature this checkout is, from its branch, as `pithy provision --feature` named it — the key its kept
-    // secrets are filed under. Asked only when a set asks for a secret.
-    const identity = options.featureIdentity ?? (() => branchIdentityWithoutWorkers(options.projectDir));
-    return featureSecretReader({ registry, read: async () => readFeatureSecrets(await identity()) });
-  }
-  return devSecretReader({ project: options.project, env: options.env, registry });
-}
-
 /** Bind the prepared-set seams to this run, defaulting each to the real machine. */
 function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWorker[]): PreparedRun {
   const read = options.preferences ?? (() => readDevPreferences(options.project));
@@ -748,8 +722,8 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
     // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything unless
     // this says `dev` (#159). The rule is inside the reader — this only tells it where the rows are going.
-    // A feature is never handed that reader at all: `featureSecretReader` reads the feature's own kept file,
-    // keyed by project and feature, so the dev secrets file is not something it could open (#643).
+    // A feature gets that refusal too (#643): its secrets live only in its own Cloudflare stores, which the
+    // CLI can write and never read, and no set that composes into a feature asks for one.
     //
     // The registry is the whole fan-out's, in one `aggregateSecretRegistries` call, because the seam is
     // the run's and not one Worker's: a set deduped onto another Worker must resolve the same secret it
@@ -759,10 +733,11 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     // there is no answer to hand them.
     secret:
       options.secret ??
-      environmentSecretReader(
-        options,
-        aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
-      ),
+      devSecretReader({
+        project: options.project,
+        env: options.env,
+        registry: aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
+      }),
     writeArtifact:
       options.writeArtifact ??
       (async (artifact) => {

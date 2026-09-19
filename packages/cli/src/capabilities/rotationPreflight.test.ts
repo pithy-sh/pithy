@@ -159,6 +159,12 @@ function store(journal: Journal, entries: Map<string, string>): SecretsStore {
       journal.push("store:put");
       entries.set(name, value);
     },
+    create: async (name, value) => {
+      journal.push("store:create");
+      if (entries.has(name)) return false;
+      entries.set(name, value);
+      return true;
+    },
     remove: async (name) => {
       journal.push("store:remove");
       return entries.delete(name);

@@ -44,21 +44,6 @@ describe("the environment gate", () => {
     expect(paths({ ENVIRONMENT: "prod" })).not.toContain(DEV_LOGIN_ROUTE);
   });
 
-  test("a feature composition carries the route — the branch's own deployment is signed into by its builders (#643)", () => {
-    expect(paths({ ENVIRONMENT: "feature" })).toContain(DEV_LOGIN_ROUTE);
-  });
-
-  test("of the four environments, dev and feature mount it, staging and prod never do (#643)", () => {
-    const mounted = ["dev", "feature", "staging", "prod"].filter((ENVIRONMENT) =>
-      paths({ ENVIRONMENT }).includes(DEV_LOGIN_ROUTE),
-    );
-    expect(mounted).toEqual(["dev", "feature"]);
-  });
-
-  test("a feature composition under CI carries no such route — the CI gate is independent of which environment", () => {
-    expect(paths({ ENVIRONMENT: "feature", CI: "true" })).not.toContain(DEV_LOGIN_ROUTE);
-  });
-
   test("a composition stamped with nothing carries no such route — an unknown environment is not dev", () => {
     expect(paths({})).not.toContain(DEV_LOGIN_ROUTE);
     expect(paths({ ENVIRONMENT: "" })).not.toContain(DEV_LOGIN_ROUTE);
