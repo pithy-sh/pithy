@@ -129,7 +129,8 @@ export {
   type OpenPaymentsLedgerOptions,
   openPaymentsLedger,
   type PaymentsLedger,
-  type PaymentsLedgerLoader,
+  type PaymentsLedgerOpener,
+  type PaymentsLedgerPeer,
 } from "./grants/ledgerSeam";
 export { PAYMENTS_RECONCILE_KEY, triggerPaymentsReconcile } from "./http/dispatch";
 export { requireAuth } from "./http/guards";

@@ -167,6 +167,55 @@ describe("runWrangler", () => {
   });
 
   /**
+   * **wrangler's own reason is on screen, not only in its log file** (#645). A failed deploy printed
+   * `wrangler deploy failed.` and nothing else; the one line that said why — `Could not resolve
+   * "@pithy-sh/ledger/src/ledger"` — was in `~/.wrangler/logs`. The error block is lifted into the message,
+   * under the failure line, colors stripped; the banner and the log-path footer are not errors and stay out.
+   * The real wrangler, failing a real bundle, is `deployKit.test.ts`; this is the shape, pinned.
+   */
+  test("a failure carries wrangler's own error block in the message, and nothing around it", async () => {
+    const printed = [
+      "",
+      " \u26c5\ufe0f wrangler 4.125.0",
+      "\u2500\u2500\u2500\u2500",
+      "",
+      "\u001b[31m\u2718 \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mBuild failed with 1 error:\u001b[0m",
+      "",
+      '  \u001b[31m\u2718 \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mCould not resolve "@pithy-sh/ledger/src/ledger"\u001b[0m',
+      "",
+      "      src/grants/ledgerSeam.ts:104:60:",
+      "",
+      "",
+      '\ud83e\udeb5  Logs were written to "/home/someone/.wrangler/logs/wrangler.log"',
+      "",
+    ].join("\n");
+    const error = (await runWrangler(
+      await standIn(`process.stderr.write(${JSON.stringify(printed)}); process.exit(1)`),
+      { account: null, bin: NODE },
+    ).catch((e: unknown) => e)) as PithyError;
+
+    const [failure, ...block] = error.payload.message.split("\n");
+    expect(failure).toMatch(/ failed\.$/);
+    expect(block).toEqual([
+      "  \u2718 [ERROR] Build failed with 1 error:",
+      "",
+      '    \u2718 [ERROR] Could not resolve "@pithy-sh/ledger/src/ledger"',
+      "",
+      "        src/grants/ledgerSeam.ts:104:60:",
+    ]);
+    // Everything wrangler said is still in `detail`, for the log.
+    expect(error.payload.detail).toContain("Logs were written to");
+  });
+
+  test("a failure with no error block keeps the one-line message it always had", async () => {
+    const error = (await runWrangler(await standIn("console.error('boom'); process.exit(1)"), {
+      account: null,
+      bin: NODE,
+    }).catch((e: unknown) => e)) as PithyError;
+    expect(error.payload.message.split("\n")).toHaveLength(1);
+  });
+
+  /**
    * **Which program `pithy` spawns to reach wrangler, and why it is a question at all — #474.**
    *
    * It was `bun x wrangler`, unconditionally, so every command that touches Cloudflare required Bun on

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import type { Kysely } from "kysely";
@@ -51,6 +52,8 @@ function deps(clock: () => Date, overrides: Partial<DurableDailyPassDeps> = {}):
     enqueue: undefined,
     suppressionD1: undefined,
     log: noopLogger,
+    // Composed beside auth, as the generated host entry hands it over (#645).
+    auth: authPeer,
     optOutLinkFor: undefined,
     linkFor: undefined,
     ...overrides,

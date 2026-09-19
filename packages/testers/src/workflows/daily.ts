@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { messageOf } from "@pithy-sh/core/src/error/pithyError";
@@ -86,6 +87,14 @@ export interface DailyPassDeps {
   readonly linkFor: ((kind: NudgeKind, member: TestersMember) => string | undefined) | undefined;
   /** The tester's own way out, carried on every nudge this pass sends. */
   readonly optOutLinkFor: ((member: TestersMember) => string) | undefined;
+  /**
+   * `auth()`'s surface, when the project composes auth — how the pass sees whether a tester has used the app.
+   * The host is handed it by its generated entry (#645); `undefined`, every tester reads `unobservable`.
+   *
+   * Required, and `undefined` stated rather than left out: this is the value the pass's snapshot is built on,
+   * and a caller that forgot it recorded a day of nobody observed for a project that composes auth.
+   */
+  readonly auth: AuthPeer | undefined;
 }
 
 /** What one cohort's pass did. Returned so the Workflow can log it and a test can assert it. */
@@ -295,7 +304,7 @@ export async function runCohortPass(deps: DailyPassDeps, cohortId: string): Prom
     });
   }
 
-  const reading = await readCohort(deps.db, deps.d1, cohort, deps.config, deps.now, deps.log);
+  const reading = await readCohort(deps.db, deps.d1, cohort, deps.config, deps.now, deps.log, deps.auth);
 
   // 1. Reconcile deliverability against the suppression list — the only place that fact actually lives.
   //    Comparing `activity.observability === "unreachable"` here would compare the flag with itself:

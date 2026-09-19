@@ -11,7 +11,7 @@ import {
   leaderboard,
   needsRankWorker,
 } from "./capability";
-import { LeaderboardConfig } from "./config/config";
+import { LeaderboardBoard, LeaderboardConfig } from "./config/config";
 
 const boards = [{ key: "b1", direction: "desc" as const }];
 
@@ -22,6 +22,14 @@ describe("leaderboard()", () => {
 
   it("requires only the app D1 binding", () => {
     expect(leaderboard({ boards }).requiredBindings).toEqual([{ type: "d1", name: "DB", optional: false }]);
+  });
+
+  it("carries its peer surface, the one way multiplayer publishes to it (#645)", () => {
+    // Multiplayer no longer imports this package, so what its `compose` hook finds here is the contract: the
+    // board schema and the entry store a result is submitted through, the same ones the routes use.
+    const { leaderboardPeer } = leaderboard({ boards });
+    expect(leaderboardPeer.LeaderboardBoard).toBe(LeaderboardBoard);
+    expect(typeof leaderboardPeer.entryStore).toBe("function");
   });
 
   it("declares no peer capabilities — auth is a seam, not a dependency", () => {

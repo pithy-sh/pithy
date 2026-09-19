@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ControlPlaneConfig } from "@pithy-sh/core/src/controlPlane/config/config";
@@ -130,6 +131,8 @@ function makeApp(scopes: readonly ControlPlaneScope[], config = CONFIG, log: Log
     config,
     now: () => NOW,
     newId: () => `id-${++sequence}`,
+    // Composed beside auth, as `testers()`'s `compose` hook would have found it (#645).
+    auth: () => authPeer,
     enqueue: () => async (input) => {
       sent.push({ to: input.to, payload: input.payload as Record<string, unknown> });
       return { jobId: `job-${sent.length}`, status: "pending" };

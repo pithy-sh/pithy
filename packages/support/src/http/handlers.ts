@@ -13,7 +13,12 @@ import type { SupportAttachment } from "../data/attachment";
 import type { SupportCategories } from "../data/categories";
 import type { SupportDatabase } from "../data/tables";
 import { SupportClassificationError, SupportNotFoundError } from "../error/errors";
-import { resolveSenderContext, resolveSubmitterAccount, resolveSubmitterContext } from "../link/sender";
+import {
+  resolveSenderContext,
+  resolveSubmitterAccount,
+  resolveSubmitterContext,
+  type SenderPeers,
+} from "../link/sender";
 import { sendReply } from "../reply/send";
 import type { SupportReplySnippets } from "../reply/snippets";
 import { repliesForCategory } from "../reply/snippets";
@@ -75,6 +80,8 @@ export interface HandlerDeps {
   enqueue?: Parameters<typeof sendReply>[0]["enqueue"];
   /** Start a classification for a message. Resolves to whether an instance actually started. */
   dispatchClassify: (messageId: string) => Promise<boolean>;
+  /** The optional peers the sender link reads through, as `compose` found them. Empty when none is composed. */
+  peers: SenderPeers;
   /** The audit seam. */
   emit: AuditEmit;
   /** The request logger. */
@@ -155,10 +162,14 @@ export async function readConversation(deps: HandlerDeps, threadId: string): Pro
     // the `email` column exactly, so an account stored with capitals by some other route would resolve
     // to nobody — turning the one link that *is* certain into the one the console shows as unknown.
     detail.thread.accountLinkSource === "session" && detail.thread.userId
-      ? resolveSubmitterContext(deps.d1, detail.thread.userId, deps.now())
-      : resolveSenderContext(deps.d1, detail.thread.fromAddress, deps.now(), {
-          authenticated: detail.thread.senderAuthenticated,
-        }),
+      ? resolveSubmitterContext(deps.d1, detail.thread.userId, deps.now(), deps.peers)
+      : resolveSenderContext(
+          deps.d1,
+          detail.thread.fromAddress,
+          deps.now(),
+          { authenticated: detail.thread.senderAuthenticated },
+          deps.peers,
+        ),
   ]);
 
   return {
@@ -343,7 +354,7 @@ export async function submitFeedbackRequest(
       categories: deps.categories,
       bucket: deps.bucket,
       fts: deps.fts,
-      resolveAccount: (id) => resolveSubmitterAccount(deps.d1, id),
+      resolveAccount: (id) => resolveSubmitterAccount(deps.d1, id, deps.peers),
       dispatchClassify: deps.dispatchClassify,
       emit: deps.emit,
       log: deps.log,

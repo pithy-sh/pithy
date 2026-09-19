@@ -8,6 +8,7 @@ import { messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { composeCapabilities } from "../capabilities/compose";
+import { hostEntryFile, hostEntrySource } from "../capabilities/hostEntry";
 import {
   HOST_WORKERS,
   type HostDeliveryIdentity,
@@ -318,6 +319,14 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
       const config = forLocalDev(resolved, options.projectDir, host.spec.entry);
       const path = join(host.worker.dir, "wrangler.jsonc");
       await mkdir(dirname(path), { recursive: true });
+      // The peers the project composes, handed to a host that composes nothing — the same generated entry a
+      // deploy ships, so a local pass credits and reads exactly what a deployed one does (#645).
+      const entry = hostEntrySource(options.projectDir, host.spec, host.composed, host.siblings);
+      if (entry !== undefined) {
+        const entryPath = join(host.worker.dir, hostEntryFile(LOCAL_ENVIRONMENT));
+        await writeFileAtomic(entryPath, entry);
+        config.main = entryPath;
+      }
       await writeFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`);
     } catch (error) {
       notes.push(`${host.capability}: its host worker could not be resolved, so it will not run.`);

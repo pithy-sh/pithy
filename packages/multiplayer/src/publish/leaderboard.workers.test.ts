@@ -7,6 +7,7 @@ import { LeaderboardBoard } from "@pithy-sh/leaderboard/src/config/config";
 import { leaderboardDatabase } from "@pithy-sh/leaderboard/src/data/tables";
 import { entryStore } from "@pithy-sh/leaderboard/src/entry/store";
 import { leaderboard_0001_entries } from "@pithy-sh/leaderboard/src/migrations/0001_entries";
+import { leaderboardPeer } from "@pithy-sh/leaderboard/src/peer";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { MultiplayerLeaderboard } from "../config/config";
@@ -35,53 +36,92 @@ const readScore = async (userId: string): Promise<number | undefined> =>
 
 describe("publishResultToLeaderboard", () => {
   test("awards the winner win points and the loser loss points", async () => {
-    await publishResultToLeaderboard(env.DB, config, {
-      members: ["alice", "bob"],
-      winnerUserId: "alice",
-      draw: false,
-      at: AT,
-    });
+    await publishResultToLeaderboard(
+      env.DB,
+      config,
+      {
+        members: ["alice", "bob"],
+        winnerUserId: "alice",
+        draw: false,
+        at: AT,
+      },
+      leaderboardPeer,
+    );
     expect(await readScore("alice")).toBe(3);
     expect(await readScore("bob")).toBe(0);
   });
 
   test("awards both players draw points on a draw", async () => {
-    await publishResultToLeaderboard(env.DB, config, {
-      members: ["alice", "bob"],
-      winnerUserId: null,
-      draw: true,
-      at: AT,
-    });
+    await publishResultToLeaderboard(
+      env.DB,
+      config,
+      {
+        members: ["alice", "bob"],
+        winnerUserId: null,
+        draw: true,
+        at: AT,
+      },
+      leaderboardPeer,
+    );
     expect(await readScore("alice")).toBe(1);
     expect(await readScore("bob")).toBe(1);
   });
 
   test("a sum board accumulates points across sessions", async () => {
-    await publishResultToLeaderboard(env.DB, config, {
-      members: ["alice", "bob"],
-      winnerUserId: "alice",
-      draw: false,
-      at: AT,
-    });
-    await publishResultToLeaderboard(env.DB, config, {
-      members: ["alice", "bob"],
-      winnerUserId: "alice",
-      draw: false,
-      at: AT,
-    });
+    await publishResultToLeaderboard(
+      env.DB,
+      config,
+      {
+        members: ["alice", "bob"],
+        winnerUserId: "alice",
+        draw: false,
+        at: AT,
+      },
+      leaderboardPeer,
+    );
+    await publishResultToLeaderboard(
+      env.DB,
+      config,
+      {
+        members: ["alice", "bob"],
+        winnerUserId: "alice",
+        draw: false,
+        at: AT,
+      },
+      leaderboardPeer,
+    );
     expect(await readScore("alice")).toBe(6);
     expect(await readScore("bob")).toBe(0);
   });
 
   test("the published entry is a real leaderboard entry the board ranks", async () => {
-    await publishResultToLeaderboard(env.DB, config, {
-      members: ["alice", "bob"],
-      winnerUserId: "alice",
-      draw: false,
-      at: AT,
-    });
+    await publishResultToLeaderboard(
+      env.DB,
+      config,
+      {
+        members: ["alice", "bob"],
+        winnerUserId: "alice",
+        draw: false,
+        at: AT,
+      },
+      leaderboardPeer,
+    );
     const entry = await entryStore(leaderboardDatabase(env.DB)).get(board.key, "all", "alice");
     expect(entry?.userId).toBe("alice");
     expect(entry?.visible).toBe(true);
+  });
+
+  test("with no leaderboard composed, it refuses and writes nothing", async () => {
+    // The session catches this and logs it (#645): a result must not fail over a board nobody composed, and
+    // it must not vanish without a trace either.
+    await expect(
+      publishResultToLeaderboard(
+        env.DB,
+        config,
+        { members: ["alice", "bob"], winnerUserId: "alice", draw: false, at: AT },
+        undefined,
+      ),
+    ).rejects.toThrow("This game publishes to a leaderboard, and no leaderboard is composed.");
+    expect(await readScore("alice")).toBeUndefined();
   });
 });

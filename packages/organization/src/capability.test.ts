@@ -60,6 +60,14 @@ const academy = defineRoles({
 /** The options every test that does not care about the rest passes. */
 const BASE = { roles: dashboard, baseUrl: "https://app.example.test" } as const;
 
+/** An email capability as organization recognizes one: its config, and the enqueue an invitation goes through. */
+const EMAIL = {
+  name: "email",
+  requiredBindings: [],
+  emailConfig: {},
+  enqueue: async () => ({ jobId: "job-1", status: "pending" }),
+} as unknown as Capability;
+
 /** The dashboard's transfer: `owner` is unassignable, and a former owner falls back to `admin`. */
 const TRANSFER = { confers: "owner", demotesTo: "admin" } as const;
 
@@ -201,9 +209,12 @@ describe("composing alongside Better Auth's organization() plugin", () => {
     };
   }
 
-  /** Run the composition the way `createBackend` does. */
+  /**
+   * Run the composition the way `createBackend` does — beside an email capability, which the default config
+   * mails invitations through and which a Worker without one is refused over (see the block below).
+   */
   function compose(capability: Capability, alongside: readonly Capability[]): void {
-    capability.compose?.({ capabilities: [...alongside, capability] });
+    capability.compose?.({ capabilities: [EMAIL, ...alongside, capability] });
   }
 
   test("is refused, naming both", () => {
@@ -377,5 +388,40 @@ describe("a catalog nobody could found an account with", () => {
 
   test("and a catalog that leaves one composes", () => {
     expect(() => organization({ roles: dashboard })).not.toThrow();
+  });
+});
+
+/**
+ * **Invitations the config says to mail are refused at assembly without email in the Worker** (#645 review).
+ *
+ * `sendInvitationEmail` defaults to true, and the invite route mails through the email capability composed beside
+ * it. Without one, the first invitation anybody made was refused, and nothing before that said so — the same
+ * silence as an email composed in another Worker, which this Worker's route cannot reach either.
+ */
+describe("the email an invitation is mailed through", () => {
+  const assemble = (config: Parameters<typeof organization>[0], alongside: readonly Capability[]) => {
+    const capability = organization(config);
+    try {
+      capability.compose?.({ capabilities: [...alongside, capability] });
+      return undefined;
+    } catch (error) {
+      return (error as PithyError).payload;
+    }
+  };
+
+  test("mailing invitations with no email in this Worker is refused, naming email and both fixes", () => {
+    const said = assemble(BASE, []);
+    expect(said?.message).toBe("No email is composed in this Worker, and invitations are mailed through it.");
+    expect(said?.action).toBe(
+      "Compose `email(...)` in this Worker, or turn invitation mail off with `sendInvitationEmail: false` and deliver the link yourself.",
+    );
+  });
+
+  test("with email beside it, it composes", () => {
+    expect(assemble(BASE, [EMAIL])).toBeUndefined();
+  });
+
+  test("a project that delivers the link itself needs no email", () => {
+    expect(assemble({ ...BASE, sendInvitationEmail: false }, [])).toBeUndefined();
   });
 });

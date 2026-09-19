@@ -11,6 +11,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
+import type { HostPeerSeam } from "./hostEntry";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -194,6 +195,12 @@ export interface HostWorkerSpec {
    * host that binds none — every resource it binds is then one the generic feature provisioning names.
    */
   featureIndexes?(capability: Capability, projectDir: string, feature: FeatureIdentity): Promise<FeatureIndex[]>;
+  /**
+   * The optional peers this host can be handed, and which of them a composition hands it (#645). Absent for a
+   * host that reaches no optional peer. See `hostEntry.ts` for why a host is handed a peer rather than
+   * importing it, and how.
+   */
+  readonly peers?: HostPeerSeam;
 }
 
 /** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry, in the project's copy. */
@@ -318,6 +325,45 @@ async function testersSendingIdentity(context: HostResolveContext) {
     messages: sibling.hostCatalogs(),
   };
 }
+
+/**
+ * **Whether a catalog credits a balance** — any product with a `grants.ledger` clause. Read structurally off the
+ * composed object: the CLI holds `@pithy-sh/payments` by type alone, and this is one field of its config.
+ */
+export function catalogCreditsBalance(capability: Capability): boolean {
+  const config = (capability as { paymentsConfig?: { products?: Record<string, { grants?: { ledger?: unknown } }> } })
+    .paymentsConfig;
+  return Object.values(config?.products ?? {}).some((product) => product.grants?.ledger !== undefined);
+}
+
+/**
+ * The payments host's peers: the ledger, handed over when the catalog credits a balance.
+ *
+ * Keyed on the catalog, not on whether a ledger happens to be composed. `payments()` refuses a crediting
+ * catalog with no ledger at assembly, so the two agree on every project that runs; and where they would not,
+ * an entry naming a ledger the project never installed fails this deploy by name, which is better than a host
+ * that deploys and then fails every credit a pass repairs.
+ */
+export const PAYMENTS_HOST_PEERS: HostPeerSeam = {
+  provide: "@pithy-sh/payments/src/workflows/hostPeers",
+  needed: (capability) =>
+    catalogCreditsBalance(capability)
+      ? [{ capability: "ledger", module: "@pithy-sh/ledger/src/peer", export: "ledgerPeer" }]
+      : [],
+};
+
+/**
+ * The testers host's peers: auth, handed over when the project composes it, so the pass can see activity. The
+ * kit's auth by its shape (`authConfig`), so an adopter's own capability that happens to be called `auth` is not
+ * mistaken for a package the project may never have installed.
+ */
+export const TESTERS_HOST_PEERS: HostPeerSeam = {
+  provide: "@pithy-sh/testers/src/workflows/hostPeers",
+  needed: (_capability, siblings) =>
+    siblings.some((sibling) => sibling.name === "auth" && "authConfig" in sibling)
+      ? [{ capability: "auth", module: "@pithy-sh/auth/src/peer", export: "authPeer" }]
+      : [],
+};
 
 /**
  * Every capability that ships a host Worker, and how one environment's config is filled.
@@ -472,6 +518,9 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     capability: "payments",
     entry: "@pithy-sh/payments/src/workflows/worker",
     package: "@pithy-sh/payments",
+    // A reconcile pass that repairs a purchase whose product credits a balance owes the credit, and this host
+    // composes nothing to find a ledger in — so it is handed one, exactly when the catalog asks for it.
+    peers: PAYMENTS_HOST_PEERS,
     async resolve(template, context) {
       const [{ resolvePaymentsConfig }, { isPaymentsCapability }] = await load(
         "payments",
@@ -534,6 +583,8 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
   },
   {
     capability: "testers",
+    // The daily pass reads whether each tester has used the app, through auth when the project composes it.
+    peers: TESTERS_HOST_PEERS,
     entry: "@pithy-sh/testers/src/workflows/worker",
     package: "@pithy-sh/testers",
     async resolve(template, context) {

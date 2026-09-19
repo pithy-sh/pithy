@@ -7,6 +7,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
+import { ledgerPeer } from "@pithy-sh/ledger/src/peer";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
@@ -870,7 +871,7 @@ describe("reconcilePayments — the default fulfillment path", () => {
         {
           apple: fakeRail("apple", async (purchase) => refreshedFrom(purchase, { expiresAt: new Date(T0 + 31 * DAY) })),
         },
-        { config: COINS },
+        { config: COINS, ledgerPeer },
       ),
       syncStep,
     );
@@ -902,12 +903,49 @@ describe("reconcilePayments — the default fulfillment path", () => {
     const rail = () =>
       fakeRail("apple", async (purchase) => refreshedFrom(purchase, { expiresAt: new Date(T0 + 31 * DAY) }));
 
-    await reconcilePayments(deps({ apple: rail() }, { config: COINS }), syncStep);
-    await reconcilePayments(deps({ apple: rail() }, { config: COINS }), syncStep);
+    await reconcilePayments(deps({ apple: rail() }, { config: COINS, ledgerPeer }), syncStep);
+    await reconcilePayments(deps({ apple: rail() }, { config: COINS, ledgerPeer }), syncStep);
 
     // A webhook that also delivered this renewal would have credited against the same ref, and the ledger's
     // UNIQUE (ref) is what makes the second attempt free rather than a double payout.
     expect((await balance()).balance).toBe(100);
+  });
+
+  test("a host handed no ledger counts the credit as failed — never as a repair that paid", async () => {
+    // The host composes nothing, so it credits only when its generated entry handed it the ledger (#645). A
+    // host deployed without one must say the credit did not land, where a human reads the tally, rather than
+    // report a clean repair over a balance that never moved.
+    await projectPurchase(
+      env.DB,
+      {
+        rail: "apple",
+        providerTransactionId: "txn-1",
+        providerProductId: "com.acme.pro.monthly",
+        subjectType: "user",
+        subjectId: "ada",
+        status: "active",
+        environment: "production",
+        purchasedAt: new Date(T0 - 30 * DAY),
+        expiresAt: new Date(T0 + DAY),
+        originalTransactionId: "orig-1",
+        providerEventAt: new Date(T0 - 30 * DAY),
+        payload: {},
+      },
+      { config: COINS, environment: "production", now: new Date(T0 - 30 * DAY) },
+    );
+    const report = await reconcilePayments(
+      deps(
+        {
+          apple: fakeRail("apple", async (purchase) => refreshedFrom(purchase, { expiresAt: new Date(T0 + 31 * DAY) })),
+        },
+        { config: COINS },
+      ),
+      syncStep,
+    );
+
+    expect(report.failed).toBe(1);
+    expect(report.drifted).toBe(0);
+    expect((await balance()).balance).toBe(0);
   });
 });
 

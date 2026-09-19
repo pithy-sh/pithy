@@ -14,6 +14,7 @@ import {
   LedgerInsufficientFundsError,
   LedgerInvalidAmountError,
 } from "./error/errors";
+import { openLedger } from "./ledger";
 
 const currencies = [{ code: "chips", name: "Casino Chips" }];
 
@@ -36,6 +37,12 @@ describe("ledger()", () => {
 
   it("declares no peer capabilities — auth is a seam, not a dependency", () => {
     expect(ledger({ currencies }).dependsOn ?? []).toEqual([]);
+  });
+
+  it("carries its peer surface, the one way payments and multiplayer reach it (#645)", () => {
+    // Neither imports this package any more, so what `compose` finds here is the whole contract: the real
+    // primitive, the same function the package's own entrypoint exports.
+    expect(ledger({ currencies }).ledgerPeer.openLedger).toBe(openLedger);
   });
 
   it("prefixes every table it provides with pithy_ledger_", () => {

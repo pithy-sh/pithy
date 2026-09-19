@@ -9,13 +9,13 @@ import type { PaymentsPurchase } from "../data/purchase";
 import type { PurchaseStatus } from "../data/status";
 import type { PurchaseProjection } from "../projection/writer";
 import { type ClawbackOutcome, clawbackGrants } from "./clawback";
-import { ledgerAccountId, openPaymentsLedger, type PaymentsLedger } from "./ledgerSeam";
+import { ledgerAccountId, openPaymentsLedger, type PaymentsLedger, type PaymentsLedgerPeer } from "./ledgerSeam";
 
 /**
  * Fulfillment: turning a projected purchase into the balance a `grants` clause promised.
  *
- * This is deliberately **not** in the projection writer. The writer stays pure D1 so its tests resolve no
- * optional package, and the credit is a separate step its caller runs on what it returned — a route, or any
+ * This is deliberately **not** in the projection writer. The writer stays pure D1 so its tests need no ledger,
+ * and the credit is a separate step its caller runs on what it returned — a route, or any
  * other caller holding a projection. Nothing is lost by the separation, because the credit's idempotency has
  * never rested on call ordering: it rests on the ledger's `UNIQUE (ref)`.
  *
@@ -93,8 +93,14 @@ export interface GrantOptions {
 export interface FulfillPurchaseOptions extends GrantOptions {
   /** The audit seam. Defaults to core's no-op, so a caller with no recorder composed needs no branch. */
   emit?: AuditEmit;
-  /** An already-open ledger. Absent in production — the guarded import supplies one only when it is needed. */
+  /** An already-open ledger. Absent in production, where {@link ledgerPeer} opens one only when it is needed. */
   ledger?: PaymentsLedger;
+  /**
+   * The ledger the composition handed over — `ledger()`'s `ledgerPeer`, found by `payments()`'s `compose` hook,
+   * or handed to the reconcile host by its generated entry. Undefined when no ledger is composed, which is
+   * only a fault for a product that credits one.
+   */
+  ledgerPeer?: PaymentsLedgerPeer;
   /** The clock the ledger stamps its rows with. Injected so a fulfillment is deterministic under test. */
   now?: () => number;
 }
@@ -156,9 +162,9 @@ export async function applyGrants(
  * Fulfill one projected purchase in both directions: credit what it bought, and reverse what a refund took
  * back where the catalog asks for it.
  *
- * The ledger is opened **lazily, and only when the catalog names a currency**. That laziness is the whole
- * reason the optional peer stays optional: a project selling nothing but features never resolves the import,
- * so it neither installs `@pithy-sh/ledger` nor carries it in a Worker bundle.
+ * The ledger is opened **only when the catalog names a currency**, and only from what the composition handed
+ * over. A project selling nothing but features never composes one, never installs `@pithy-sh/ledger`, and —
+ * because nothing here names the package — never carries a specifier a bundler would have to resolve (#645).
  *
  * A refused clawback is recorded here rather than thrown. It is the one fulfillment fact no other table
  * holds — a successful credit or debit is already a ledger row, keyed by a ref that names the purchase — so
@@ -172,7 +178,7 @@ export async function fulfillPurchase(
   const { purchase } = projection;
   if (ledgerGrantFor(options.config, purchase.productId) === undefined) return { granted: [], clawedBack: [] };
 
-  const ledger = options.ledger ?? (await openPaymentsLedger(d1, { now: options.now }));
+  const ledger = options.ledger ?? openPaymentsLedger(d1, { peer: options.ledgerPeer, now: options.now });
   const granted = await applyGrants(ledger, projection, options);
   const clawedBack = await clawbackGrants(ledger, projection, options);
 

@@ -15,6 +15,7 @@ import { MatchmakingInviteForbiddenError, MatchmakingInviteNotFoundError } from 
 import { friendStore } from "../friends/store";
 import { resolveInvitee } from "../invite/resolve";
 import { type InviteStore, inviteStore } from "../invite/store";
+import type { MatchmakingPeers } from "../peers";
 import type { MatchmakingPresence } from "../presence/durableObject";
 import { PRESENCE_USER_HEADER, type PresenceEvent } from "../presence/protocol";
 import type { MatchmakingQueue } from "../queue/durableObject";
@@ -44,6 +45,11 @@ import { FriendParams, GameParams, InviteBody, InviteParams, RoomCodeParams } fr
 export interface MatchmakingRoutesOptions {
   config: MatchmakingConfig;
   basePath?: string;
+  /**
+   * The optional peers, read per request — `matchmaking()` hands the slot its `compose` hook fills, because
+   * `compose` runs after this factory. Never imported (#645): see `peers.ts`.
+   */
+  peers?: () => MatchmakingPeers;
 }
 
 export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
@@ -89,7 +95,7 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
             detail: `Game "${game.key}" needs ${game.players} players; a direct invite seats only two.`,
           });
         }
-        const inviteeId = await resolveInvitee(dbBinding(c), c.req.valid("json"));
+        const inviteeId = await resolveInvitee(dbBinding(c), c.req.valid("json"), options.peers?.().auth);
         const invite = await inviteStore(matchmakingDatabase(dbBinding(c))).create({
           id: crypto.randomUUID(),
           gameKey: game.key,
@@ -190,7 +196,9 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
     // --- Open queue ---
     app.post(`${base}/games/:game/queue`, requireAuth(), zValidator("param", GameParams, validationHook), async (c) => {
       const game = resolveMatchmakingGame(config, c.req.valid("param").game);
-      const skill = game.skillPool ? await readSkill(dbBinding(c), game.skillPool, userId(c)) : null;
+      const skill = game.skillPool
+        ? await readSkill(dbBinding(c), game.skillPool, userId(c), options.peers?.().rating)
+        : null;
       const status = await callRpc(() =>
         queueStub(c, game.key).enqueue({
           userId: userId(c),

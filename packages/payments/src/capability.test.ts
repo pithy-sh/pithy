@@ -702,6 +702,21 @@ describe("payments().compose", () => {
     const detail = composeDetail(payments(GRANTING_CATALOG), []);
     expect(detail).toContain("@pithy-sh/ledger");
     expect(detail).toContain("coins_100");
+    expect(() => compose(payments(GRANTING_CATALOG), [])).toThrow(
+      'No ledger is composed in this Worker, and product "coins_100" credits a balance through one.',
+    );
+  });
+
+  test("refuses a composed ledger too old to carry the surface a credit goes through", () => {
+    // Payments no longer imports the ledger (#645), so a ledger released before its `ledgerPeer` existed is
+    // composed and cannot be called. Refused at assembly, by name, rather than at the first paid purchase.
+    const { ledgerPeer: _surface, ...old } = ledger({ currencies: [{ code: "coins", name: "Coins" }] });
+    expect(() => compose(payments(GRANTING_CATALOG), [old as Capability])).toThrow(
+      "The composed ledger is too old for payments to credit a balance.",
+    );
+    expect(() =>
+      compose(payments(GRANTING_CATALOG), [ledger({ currencies: [{ code: "coins", name: "Coins" }] })]),
+    ).not.toThrow();
   });
 
   test("needs no ledger when nothing in the catalog grants a balance", () => {

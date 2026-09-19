@@ -24,6 +24,7 @@ import { authSecretsRegistry, inapplicableProviderSecrets } from "./instance/sec
 import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { AUTH_MIGRATIONS } from "./migrations/set";
+import { type AuthPeer, authPeer } from "./peer";
 import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -205,6 +206,12 @@ export type AuthOptions = AuthConfigInput & {
 /** The auth capability, with its resolved config attached for inspection. */
 export interface AuthCapability extends Capability {
   authConfig: AuthConfig;
+  /**
+   * What a capability composed beside this one reads an account through — `matchmaking`, `support`,
+   * `testers`. Found in their `compose` hooks, so none of them imports this package and a project without
+   * auth bundles them (#645). See `peer.ts`.
+   */
+  authPeer: AuthPeer;
 }
 
 /**
@@ -402,7 +409,7 @@ export function auth(options: AuthOptions): AuthCapability {
     seeds: [authExampleSeed, authDevSessionSeed],
   });
 
-  return Object.assign(capability, { authConfig: resolved });
+  return Object.assign(capability, { authConfig: resolved, authPeer });
 }
 
 /** Type guard: is this capability the auth capability? */

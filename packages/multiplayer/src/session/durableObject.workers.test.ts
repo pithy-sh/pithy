@@ -5,14 +5,26 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
+import { ledger } from "@pithy-sh/ledger/src/capability";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { MULTIPLAYER_MIGRATION_ORDER } from "../capability";
+import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
 import { resultStore } from "../data/store";
 import { multiplayerDatabase } from "../data/tables";
 import { multiplayer_0001_results } from "../migrations/0001_results";
 import type { MultiplayerSession } from "./durableObject";
 import type { GameSnapshot } from "./state";
+
+// The composition an adopter's `createEntrypoint` performs at load (#645): every capability's `compose` hook over
+// the whole set. It is what hands the session its ledger and its leaderboard, which the session never imports;
+// the Durable Object runs in this isolate, so it reads what this composed.
+const composed = [
+  ledger({ currencies: [{ code: "chips", name: "Chips" }] }),
+  leaderboard({ boards: [{ key: "wins", direction: "desc", aggregation: "sum" }] }),
+  multiplayer({ games: [{ key: "tic-tac-toe", kind: "connect-n", rules: { rows: 3, cols: 3, connect: 3 } }] }),
+];
+for (const capability of composed) capability.compose?.({ capabilities: composed });
 
 function provider(): MigrationProvider {
   const registry = createMigrationRegistry([

@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { fromZodError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { hostEntrySource } from "../capabilities/hostEntry";
+import { hostWorkerFor } from "../capabilities/hostRegistry";
 import {
   CloudflarePaymentsProvisioner,
   loadPayments,
@@ -191,6 +194,7 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
   // a sibling's (#590 review). `reconcile` resolves no Worker: it dispatches into an already-deployed
   // Workflow, and resolving one would be a new way for a support query to fail.
   let appWorker: ResolvedWorker | undefined;
+  let composed: Capability | undefined;
   let paymentsConfig: Awaited<ReturnType<typeof loadProjectPaymentsConfig>>;
   if (source.kind === "worker") {
     const { isPaymentsCapability } = await loadPayments(projectDir);
@@ -201,6 +205,7 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
       is: isPaymentsCapability,
     });
     appWorker = resolved.worker;
+    composed = resolved.capability;
     paymentsConfig = resolved.capability.paymentsConfig;
   } else {
     paymentsConfig = await loadProjectPaymentsConfig(projectDir);
@@ -242,6 +247,12 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
       apiToken,
       storeId,
       paymentsConfig,
+      // The ledger, handed to the reconcile host when the catalog credits a balance — asked only when a deploy
+      // runs, which is only ever from a resolved Worker (#645).
+      hostEntry: () => {
+        const spec = hostWorkerFor("payments");
+        return spec && composed ? hostEntrySource(projectDir, spec, composed, []) : undefined;
+      },
       resolveEnv: buildResolveEnv(appReadiness, cf, project, account),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),

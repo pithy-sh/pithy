@@ -3,6 +3,7 @@
 
 import { env } from "cloudflare:test";
 import { auth_0001_init } from "@pithy-sh/auth/src/migrations/0001_init";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
@@ -61,7 +62,7 @@ function makeApp(now: Date) {
     c.set("log", noopLogger);
     await next();
   });
-  registerTestersRoutes({ config: CONFIG, now: () => now, newId: () => `id-${++sequence}` })(app);
+  registerTestersRoutes({ config: CONFIG, now: () => now, newId: () => `id-${++sequence}`, auth: () => authPeer })(app);
   return {
     /**
      * A request carrying the Worker `env`.
@@ -330,7 +331,12 @@ describe("the request's own logger reaches the activity read", () => {
       );
       await next();
     });
-    registerTestersRoutes({ config: CONFIG, now: () => DAY_ONE, newId: () => `id-${++sequence}` })(app);
+    registerTestersRoutes({
+      config: CONFIG,
+      now: () => DAY_ONE,
+      newId: () => `id-${++sequence}`,
+      auth: () => authPeer,
+    })(app);
 
     const response = await app.request("/testers/status", undefined, env);
 
@@ -360,7 +366,7 @@ describe("without a DB binding", () => {
       c.set("log", noopLogger);
       await next();
     });
-    registerTestersRoutes({ config: CONFIG })(app);
+    registerTestersRoutes({ config: CONFIG, auth: () => authPeer })(app);
 
     const response = await app.request(`/testers/confirm/${"a".repeat(43)}`, undefined, {});
     expect(response.status).toBe(500);

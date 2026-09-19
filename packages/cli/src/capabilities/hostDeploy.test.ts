@@ -107,7 +107,7 @@ describe("deployHostWorker", () => {
       capability: "email",
       worker: "acme-prod-email",
       outcome: "deployed",
-      reason: "acme-prod-email is not deployed.",
+      reason: "It was not on the account.",
     });
     expect(deploys[0]?.config.vars?.[DEPLOY_STAMP_VAR]).toBe(CURRENT);
     // The stamp ships inside the config wrangler deploys, so the bundle and its claim are one atomic
@@ -147,7 +147,7 @@ describe("deployHostWorker", () => {
     test("a Worker carrying no stamp — deployed before this gate existed", async () => {
       const outcome = await run({ vars: { BASE_URL: "https://acme.example" } });
       expect(outcome.outcome).toBe("deployed");
-      expect(outcome.reason).toBe("acme-prod-email carries no deploy stamp.");
+      expect(outcome.reason).toBe("It carried no deploy stamp.");
     });
 
     test("an unreachable account, with what it said carried into the reason", async () => {
@@ -158,22 +158,20 @@ describe("deployHostWorker", () => {
       });
       expect(outcome.outcome).toBe("deployed");
       expect(outcome.reason).toBe(
-        "acme-prod-email's deploy stamp could not be read. Cloudflare request failed: get vars for 'acme-prod-email'.",
+        "Its deploy stamp could not be read. Cloudflare request failed: get vars for 'acme-prod-email'.",
       );
     });
 
     test("no Cloudflare client at all — undeclared and unchanged are not the same fact", async () => {
       const outcome = await run({ readVars: undefined });
       expect(outcome.outcome).toBe("deployed");
-      expect(outcome.reason).toBe(
-        "acme-prod-email's deploy stamp could not be read. No Cloudflare client was available to read it.",
-      );
+      expect(outcome.reason).toBe("Its deploy stamp could not be read. No Cloudflare client was available to read it.");
     });
 
     test("a stamp in a shape this release cannot read", async () => {
       const outcome = await run({ vars: { [DEPLOY_STAMP_VAR]: "who-knows" } });
       expect(outcome.outcome).toBe("deployed");
-      expect(outcome.reason).toBe("acme-prod-email's deploy stamp is not one this release can read.");
+      expect(outcome.reason).toBe("Its deploy stamp was not one this release can read.");
     });
 
     test("a package version nobody could read deploys, and deliberately writes no stamp", async () => {

@@ -10,6 +10,8 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
 import { catalogsFromEnv } from "@pithy-sh/email/src/templates/messages";
 import { i18n } from "@pithy-sh/i18n/src/capability";
+import { ledger } from "@pithy-sh/ledger/src/capability";
+import { payments } from "@pithy-sh/payments/src/capability";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
@@ -214,6 +216,76 @@ describe("materializeHostConfigs", () => {
     await rm(projectDir, { recursive: true, force: true });
     expect(result.failed).toEqual(["email"]);
     expect(result.notes[0]).toBe("email: its host worker could not be resolved, so it will not run.");
+  });
+});
+
+/**
+ * **The local reconcile host is handed the ledger, exactly as the deployed one is** (#645).
+ *
+ * The payments host composes nothing and may not import the ledger, so a deploy hands it over through a
+ * generated entry. `pithy dev` runs the same host, and a local pass that repaired a coin pack must be able to
+ * credit it — so the dev config names the same generated entry, written beside it.
+ */
+describe("a local host handed the peers the project composes", () => {
+  const GRANTING = {
+    billingSubject: "user" as const,
+    rails: { apple: true },
+    products: {
+      coins_100: {
+        type: "consumable" as const,
+        name: "100 coins",
+        grants: { ledger: { currency: "coins", amount: 100 } },
+        apple: { productId: "com.acme.coins100" },
+      },
+    },
+  };
+
+  async function materialize(composed: Capability, siblings: Capability[]) {
+    const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
+    await linkKitPackages(projectDir, ["payments", "ledger"]);
+    const hosts = (await discover({ "/proj/apps/api": ["payments"] })).hosts.map((host) => ({
+      ...host,
+      composed,
+      siblings,
+      worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.capability) },
+    }));
+    const result = await materializeHostConfigs({
+      projectDir,
+      project: "acme",
+      baseUrl: "http://localhost:8787",
+      hosts,
+    });
+    const written = parse(
+      await readFile(join(hostWorkerDir(projectDir, "payments"), "wrangler.jsonc"), "utf8"),
+    ) as unknown as WorkflowHostTemplate;
+    const entry = written.main.endsWith(".pithy-host.dev.ts") ? await readFile(written.main, "utf8") : null;
+    await rm(projectDir, { recursive: true, force: true });
+    return { result, written, entry };
+  }
+
+  test("a catalog that credits a balance runs its local host from an entry that hands it the ledger", async () => {
+    const ledgerCapability = ledger({ currencies: [{ code: "coins", name: "Coins" }] });
+    const { result, written, entry } = await materialize(payments(GRANTING), [ledgerCapability]);
+    expect(result).toEqual({ notes: [], failed: [] });
+    expect(isAbsolute(written.main)).toBe(true);
+    // Beside the dev config, under the ignored `.wrangler/` — never inside the installed package.
+    expect(written.main.endsWith(join(".wrangler", "pithy", "hosts", "payments", ".pithy-host.dev.ts"))).toBe(true);
+    expect(entry).toContain('providePeers({ "ledger": peer0 });');
+    expect(entry).toMatch(/export \* from ".*payments\/src\/workflows\/worker\.ts";/);
+  });
+
+  test("a catalog that credits nothing runs the host's own worker, and writes no entry", async () => {
+    const { written, entry } = await materialize(
+      payments({
+        ...GRANTING,
+        products: {
+          pro: { type: "non_consumable", name: "Pro", entitlements: ["pro"], apple: { productId: "com.acme.pro" } },
+        },
+      }),
+      [],
+    );
+    expect(written.main.endsWith("worker.ts")).toBe(true);
+    expect(entry).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@
 
 import { env } from "cloudflare:test";
 import { auth_0001_init } from "@pithy-sh/auth/src/migrations/0001_init";
+import { authPeer } from "@pithy-sh/auth/src/peer";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createLogger } from "@pithy-sh/core/src/logger/logger";
 import type { LogRecord } from "@pithy-sh/core/src/logger/record";
@@ -29,7 +30,8 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 const SINCE = new Date("2026-06-03T00:00:00.000Z");
 const ACTIVE_SINCE = new Date("2026-06-07T00:00:00.000Z");
 
-const OPTIONS = { since: SINCE, activeSince: ACTIVE_SINCE, unreachable: new Set<string>() };
+// Composed beside auth, as `testers()`'s `compose` hook would have found it (#645).
+const OPTIONS = { since: SINCE, activeSince: ACTIVE_SINCE, unreachable: new Set<string>(), auth: authPeer };
 
 /** Insert a user, since the whole join keys on the address. */
 async function user(id: string, email: string) {
@@ -209,6 +211,18 @@ describe("addresses", () => {
 
   test("an empty request is an empty answer rather than a query", async () => {
     expect((await resolveActivity(env.DB, [], OPTIONS)).size).toBe(0);
+  });
+
+  test("with no auth composed, a tester the auth tables would call active still reads unobservable", async () => {
+    // Auth arrives from the composition, never an import (#645). A project without it has no sign-in, and
+    // the honest reading of every tester there is `unobservable` — the rows below, which read `observed`
+    // and `active` through auth, are never asked about.
+    await user("u1", "ada@example.test");
+    await session("s1", "u1", new Date("2026-06-08T00:00:00.000Z"), new Date("2026-06-09T00:00:00.000Z"));
+    const withoutAuth = { ...OPTIONS, auth: undefined };
+    const reading = (await resolveActivity(env.DB, ["ada@example.test"], withoutAuth)).get("ada@example.test");
+    expect(reading?.observability).toBe("unobservable");
+    expect(reading?.userId).toBeNull();
   });
 });
 

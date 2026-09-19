@@ -14,6 +14,7 @@ import { testersDatabase } from "../data/tables";
 import { buildNudgeEnqueue, type NudgeEnqueueEnv } from "../nudge/enqueueSeam";
 import type { EnqueueNudge } from "../nudge/send";
 import type { CohortPassResult } from "./daily";
+import { hostPeers } from "./hostPeers";
 import { runDurableDailyPass } from "./pass";
 import { testersWorkflowRetry } from "./retryPolicy";
 import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from "./specs";
@@ -85,6 +86,9 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
         linkFor: linkForKind,
         optOutLinkFor: (member: TestersMember) => optOutUrl(config, member.optInToken),
         suppressionD1: this.env.EMAIL_SUPPRESSIONS,
+        // Handed over by the generated entry when the project composes auth, undefined otherwise — this host
+        // composes nothing, so it cannot find auth for itself. See `hostPeers.ts`.
+        auth: hostPeers.auth,
       },
       // Under `testersWorkflowRetry`, whose record is empty and says so: the pass is D1, core answers
       // for D1, and a closed cohort or a deleted member is a decision rather than an outage. Contained

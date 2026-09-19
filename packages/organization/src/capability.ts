@@ -6,7 +6,6 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
-import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 import { organizationTables } from "./data/tables";
@@ -62,6 +61,22 @@ const ORGANIZATION_DATABASE_NAME = "app" as const;
  */
 const BETTER_AUTH_PLUGIN_KIND = "better-auth-plugin";
 const BETTER_AUTH_ORGANIZATION_PLUGIN_ID = "organization";
+
+/**
+ * The composed email capability, recognized by its shape rather than by `@pithy-sh/email`'s own
+ * `isEmailCapability` (#645).
+ *
+ * Email is an **optional** peer here, and importing the guard — a value — made it a required one at bundle
+ * time: wrangler's esbuild resolves every specifier it finds, so a project that delivers its invitations its
+ * own way and never installed `@pithy-sh/email` could not bundle organization at all. The `EmailCapability`
+ * type is erased before any bundler sees it; this predicate is the same two lines the guard holds, and a
+ * composition without email simply finds nothing.
+ */
+function composedEmail(capabilities: readonly Capability[]): EmailCapability | undefined {
+  return capabilities.find(
+    (capability): capability is EmailCapability => capability.name === "email" && "emailConfig" in capability,
+  );
+}
 
 /**
  * Refuse a Worker that composes this capability **and** Better Auth's `organization()` plugin.
@@ -230,7 +245,18 @@ export function organization<const Power extends string = never, const Role exte
       // The refusal first, so a Worker holding two membership models never gets as far as wiring mail
       // for one of them.
       refuseSecondMembershipModel(capabilities);
-      const email = capabilities.find(isEmailCapability);
+      const email = composedEmail(capabilities);
+      // An invitation the config says to mail, in a Worker with no email to mail it through, used to be found
+      // out by the first person to invite someone. Refused here instead, by name (#645 review).
+      if (resolved.sendInvitationEmail && email === undefined) {
+        throw new ValidationError({
+          message: "No email is composed in this Worker, and invitations are mailed through it.",
+          action:
+            "Compose `email(...)` in this Worker, or turn invitation mail off with `sendInvitationEmail: false` and deliver the link yourself.",
+          detail:
+            "`sendInvitationEmail` defaults to true. The invite route mails through the email capability composed beside it, and without one every invitation would be refused as it was made.",
+        });
+      }
       wiring.enqueue = email?.enqueue;
     },
     requiredBindings,

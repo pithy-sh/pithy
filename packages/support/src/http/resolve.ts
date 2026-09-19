@@ -100,6 +100,9 @@ export function makeResolveDeps(wiring: SupportWiring): (c: Context<PithyHonoEnv
         ? (input) => wiring.enqueueEmail?.(env as never, input) as Promise<{ jobId: string }>
         : undefined,
       dispatchClassify: makeClassifyDispatcher(env as unknown as Record<string, unknown>, log),
+      // What `compose` found — auth and payments, each only when composed. Read per request, because
+      // `compose` runs after the factory built this closure.
+      peers: wiring.peers,
       emit: c.var.emit,
       log,
       newId: () => crypto.randomUUID(),

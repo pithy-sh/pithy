@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { LeaderboardBoard } from "@pithy-sh/leaderboard/src/config/config";
-import { leaderboardDatabase } from "@pithy-sh/leaderboard/src/data/tables";
-import { entryStore } from "@pithy-sh/leaderboard/src/entry/store";
-import { ALL_TIME_WINDOW, windowKeyAt } from "@pithy-sh/leaderboard/src/window/schedule";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { LeaderboardPeer } from "@pithy-sh/leaderboard/src/peer";
 import type { MultiplayerLeaderboard } from "../config/config";
 
 /** What resolution hands the publisher — who played, who won, and when. */
@@ -21,8 +19,8 @@ export interface PublishInput {
 }
 
 /**
- * Publish a resolved session's result to a `@pithy-sh/leaderboard` board — one-way, and only ever loaded
- * by dynamic import from the DO so leaderboard stays an optional peer.
+ * Publish a resolved session's result to a `@pithy-sh/leaderboard` board — one-way, through the surface the
+ * composition handed over, so leaderboard stays an optional peer that nothing here imports (#645).
  *
  * This is the composition seam the capability exists to demonstrate: a session's authority ends at its
  * result, and that result flows *into* the leaderboard's own submit path — the same `INSERT … ON CONFLICT`
@@ -38,7 +36,17 @@ export async function publishResultToLeaderboard(
   d1: D1Database,
   config: MultiplayerLeaderboard,
   input: PublishInput,
+  peer: LeaderboardPeer | undefined,
 ): Promise<void> {
+  if (peer === undefined) {
+    throw new InternalError({
+      message: "This game publishes to a leaderboard, and no leaderboard is composed.",
+      action:
+        "Add `leaderboard(...)` to this Worker's capabilities in pithy.config.ts, or drop the game's `leaderboard` block.",
+      detail: `Board "${config.board}" was configured on the game and multiplayer() found no leaderboard among the composed capabilities.`,
+    });
+  }
+  const { ALL_TIME_WINDOW, LeaderboardBoard, entryStore, leaderboardDatabase, windowKeyAt } = peer;
   const board = LeaderboardBoard.parse({
     key: config.board,
     direction: config.direction,

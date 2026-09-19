@@ -12,8 +12,10 @@ import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages"
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { hostEntrySource } from "../capabilities/hostEntry";
+import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
-import { loadTesters } from "../capabilities/testersLoader";
+import { loadTesters, testersAuth } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -214,6 +216,9 @@ async function openTesters(requested: string) {
     d1: driver.d1("DB"),
     db: modules.testersDatabase(driver.d1("DB")),
     config: capability.testersConfig,
+    // What the activity read sees through: the project's composed auth, exactly as the daily-pass host is
+    // handed it. Every reader below takes it, and `readCohort` requires it (#645 review).
+    auth: testersAuth(projectDir, projectCapabilities(workers)),
     modules,
     enqueue: await buildEnqueue(projectDir, workers, driver.d1("DB")),
   };
@@ -455,6 +460,12 @@ async function buildProvisioner(projectDir: string, worker?: string) {
       apiToken,
       testersConfig: testers.testersConfig,
       email,
+      // Auth, handed to the daily-pass host when the project composes it — asked only when a deploy runs (#645).
+      hostEntry: () => {
+        const spec = hostWorkerFor("testers");
+        const siblings = capabilities.filter((capability) => capability !== testers);
+        return spec ? hostEntrySource(projectDir, spec, testers, siblings) : undefined;
+      },
       resolveEnv: buildResolveEnv(appReadiness, project, cf, account),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
@@ -685,13 +696,13 @@ const list = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules } = await openTesters(args.env);
+      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
       try {
         const now = new Date();
         const cohorts = await modules.listCohorts(db);
         const rows = [];
         for (const cohort of cohorts) {
-          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
+          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
           rows.push({
             id: cohort.id,
             name: cohort.name,
@@ -821,14 +832,14 @@ const roster = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules } = await openTesters(args.env);
+      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
       try {
         const now = new Date();
         const cohort = await modules.resolveCohortRef(
           db,
           required(args.cohort, "a cohort", "pithy testers status closed-test"),
         );
-        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
+        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
         const view = modules.toCohortView(
           reading,
           config,
@@ -878,14 +889,14 @@ const status = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules } = await openTesters(args.env);
+      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
       try {
         const now = new Date();
         const cohort = await modules.resolveCohortRef(
           db,
           required(args.cohort, "a cohort", "pithy testers status closed-test"),
         );
-        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json));
+        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
         const days = wholeNumber(args["trend-days"], "--trend-days", 30);
         const snapshots = await modules.listSnapshots(db, cohort.id, days);
         const view = modules.toCohortView(
@@ -1022,7 +1033,7 @@ const run = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules, enqueue } = await openTesters(args.env);
+      const { db, d1, config, driver, modules, enqueue, auth } = await openTesters(args.env);
       try {
         // Real sends. The CLI needs no sending domain of its own: `enqueueEmail` writes a row into
         // `pithy_email_jobs`, and the email worker that already exists for any project using auth
@@ -1042,6 +1053,9 @@ const run = defineCommand({
           // deliverability flags alone rather than inferring a bounce from a table it cannot read.
           suppressionD1: undefined,
           optOutLinkFor: (member: { optInToken: string }) => modules.optOutUrl(config, member.optInToken),
+          // The snapshot this pass writes counts who was observed, so it is built on the project's auth or it
+          // is a day of nobody observed. Required by the pass for that reason (#645 review).
+          auth,
           linkFor: args["skip-nudges"]
             ? undefined
             : (kind: "confirm" | "store" | "inactive" | "closing", member: { optInToken: string }) =>

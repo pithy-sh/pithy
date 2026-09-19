@@ -127,7 +127,8 @@ const OPTIONAL_PEERS: Record<string, string> = {
   "packages/multiplayer:@pithy-sh/ledger": "Game effects post to the ledger when it is composed.",
   "packages/organization:@pithy-sh/email":
     "An invitation is mailed through email when email is composed; a project that delivers the link its own way sets sendInvitationEmail: false and everything else still runs.",
-  "packages/payments:@pithy-sh/ledger": "Grants write through the ledger seam when the ledger is composed.",
+  "packages/payments:@pithy-sh/ledger":
+    "Grants credit through the ledger's peer surface when the ledger is composed, and payments names the package nowhere.",
   "packages/support:@pithy-sh/auth": "A magic link is sent through auth when auth is composed.",
   "packages/support:@pithy-sh/payments": "A ticket links to a subscription when payments is composed.",
   "packages/testers:@pithy-sh/auth": "Tester activity resolves against auth when auth is composed.",
@@ -226,6 +227,11 @@ describe("a kit package another package imports is a peer of it", () => {
         if (!peers.includes(name)) faults.push(`${directory} imports ${name} and does not peer it`);
       }
       for (const name of peers) {
+        // An optional peer may be named nowhere at all: it reaches the package through the composition, never
+        // through a specifier (#645, `optionalPeerImports.test.ts`), and `payments` → `ledger` is exactly that.
+        // It stays declared because the peer range is still the contract between the two releases. The
+        // optional set is pinned below, so this cannot become the way a stray required peer hides.
+        if (OPTIONAL_PEERS[`${directory}:${name}`] !== undefined) continue;
         if (!imported.includes(name)) faults.push(`${directory} peers ${name} and imports it from no shipped source`);
       }
     }

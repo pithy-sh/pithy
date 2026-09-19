@@ -6,19 +6,30 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 
 /**
- * The single point of contact between `@pithy-sh/payments` and `@pithy-sh/ledger`.
+ * The single point of contact between `@pithy-sh/payments` and `@pithy-sh/ledger` — and it imports nothing
+ * from it.
  *
  * The ledger is an **optional peer**: most catalogs sell features, not currency, and a project that never
- * declares a `grants` clause must neither install the package nor pay for it in its Worker bundle. So the
- * import is dynamic and it lives in exactly one file — grep `@pithy-sh/ledger` in this package and you find
- * this line and nothing else. Everything downstream depends on {@link PaymentsLedger}, a structural
- * two-method view, which is also what keeps the grant modules testable without resolving an optional package.
+ * declares a `grants` clause must neither install the package nor carry it in a Worker bundle. This file used
+ * to reach it with `import("@pithy-sh/ledger/src/ledger")` behind a `try`, which is optional at runtime and
+ * required at bundle time — wrangler's esbuild resolves a literal specifier whether or not the branch holding
+ * it ever runs, so every project composing payments without the ledger could not deploy its payments host at
+ * all (#645). The unit test here injected a loader, so it proved the runtime half and never met the bundler.
+ *
+ * **So the ledger is handed to payments, never fetched by it.** `ledger()` carries its peer surface as
+ * `ledgerPeer`; `payments()`'s `compose` hook finds it among the composed capabilities and keeps it for the
+ * routes, and the reconcile host — which composes nothing — is handed it by the entry `pithy` generates when
+ * the catalog credits a balance. Everything downstream depends on {@link PaymentsLedgerPeer} and
+ * {@link PaymentsLedger}, structural views, so no module in this package names `@pithy-sh/ledger` at all —
+ * not even for a type, which would put an optional package on the typecheck path of every module that touches
+ * fulfillment. `optionalPeerImports.test.ts` holds the whole kit to that.
  *
  * **An absent ledger is an error, never a skip.** A catalog with a `grants` clause has told us a purchase
  * credits a balance; quietly not crediting it is a support ticket that arrives weeks later as "I paid and got
  * no coins". The normal place this is caught is far earlier — `payments()`'s `compose` hook refuses at
  * assembly when a `grants` product is composed without the ledger, so a deploy fails rather than a purchase.
- * This throw is the backstop for a caller that reached fulfillment some other way, and it names the fix.
+ * The throw in {@link openPaymentsLedger} is the backstop for a caller that reached fulfillment some other way,
+ * and it names the fix.
  */
 
 /**
@@ -95,47 +106,46 @@ export function ledgerAccountId(subject: PaymentsSubject): string {
   return subject.subjectId;
 }
 
-/** How the ledger module is reached. Injectable so the absent-package path is a test rather than a hope. */
-export type PaymentsLedgerLoader = () => Promise<{
-  openLedger: (d1: D1Database, now?: () => number) => PaymentsLedger;
-}>;
+/** How a ledger is opened over a D1: `@pithy-sh/ledger`'s own `openLedger`, as payments sees it. */
+export type PaymentsLedgerOpener = (d1: D1Database, now?: () => number) => PaymentsLedger;
 
-/** The real loader — the only `@pithy-sh/ledger` import in the package. */
-const loadLedgerModule: PaymentsLedgerLoader = () => import("@pithy-sh/ledger/src/ledger");
+/**
+ * The slice of `@pithy-sh/ledger`'s peer surface payments calls — its `ledgerPeer`, structurally.
+ *
+ * Structural for {@link PaymentsLedger}'s reason: a type imported from the optional package would put it on
+ * the typecheck path of every module that touches fulfillment. The ledger's own `ledgerPeer` satisfies it, and
+ * `capability.test.ts` composes the real one to prove that stays true.
+ */
+export interface PaymentsLedgerPeer {
+  /** Open the ledger against a D1 binding, stamping rows with `now`. */
+  openLedger: PaymentsLedgerOpener;
+}
 
 /** What {@link openPaymentsLedger} accepts beyond the binding. */
 export interface OpenPaymentsLedgerOptions {
-  /** Override the module loader. Tests only; production always resolves the real package. */
-  load?: PaymentsLedgerLoader;
+  /** The ledger the composition handed over, or undefined when none is composed. */
+  peer?: PaymentsLedgerPeer;
   /** The clock the ledger stamps its rows with. Injected so a fulfillment is deterministic under test. */
   now?: () => number;
 }
 
 /**
- * Open the ledger against the app database, or explain what is missing.
+ * Open the ledger the composition handed over against the app database, or explain what is missing.
  *
  * The ledger's tables live in the same D1 as payments' own — both capabilities bind `DB` — so there is no
  * second database to reach and no configuration to resolve. That is also why the two write independently and
  * a credit is idempotent on its `ref` rather than on being in the purchase's transaction: D1 has no
  * cross-statement transaction a caller can hold open across two packages.
  */
-export async function openPaymentsLedger(
-  d1: D1Database,
-  options: OpenPaymentsLedgerOptions = {},
-): Promise<PaymentsLedger> {
-  const load = options.load ?? loadLedgerModule;
-  let module: { openLedger: (d1: D1Database, now?: () => number) => PaymentsLedger };
-  try {
-    module = await load();
-  } catch (cause) {
-    throw new InternalError(
-      {
-        message: "This purchase credits a balance, and the ledger is not installed.",
-        action: "Install @pithy-sh/ledger and compose ledger(...), or drop the `grants` clause from the product.",
-        detail: `Loading @pithy-sh/ledger failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      },
-      { cause },
-    );
+export function openPaymentsLedger(d1: D1Database, options: OpenPaymentsLedgerOptions = {}): PaymentsLedger {
+  if (options.peer === undefined) {
+    throw new InternalError({
+      message: "This purchase credits a balance, and no ledger is composed.",
+      action:
+        "Add `ledger(...)` to this Worker's capabilities in pithy.config.ts, or drop the `grants` clause from the product.",
+      detail:
+        "fulfillPurchase reached a product with a grants.ledger clause and was handed no ledger peer. payments() refuses that composition at assembly, so this caller reached fulfillment some other way, or a host was deployed without the entry that hands it the ledger.",
+    });
   }
-  return module.openLedger(d1, options.now);
+  return options.peer.openLedger(d1, options.now);
 }

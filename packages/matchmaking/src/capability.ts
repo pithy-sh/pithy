@@ -9,6 +9,7 @@ import { matchmakingTables } from "./data/tables";
 import { registerMatchmakingRoutes } from "./http/routes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { matchmaking_0001_matchmaking } from "./migrations/0001_matchmaking";
+import { type MatchmakingPeers, matchmakingPeers } from "./peers";
 import { matchmakingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -35,8 +36,8 @@ export interface MatchmakingCapability extends Capability {
  * Optional peers, all reached as seams (never hard `dependsOn`): `@pithy-sh/auth` (identity — reads
  * `c.var.auth`, resolves invite targets), `@pithy-sh/rating` (skill for queue bucketing), and
  * `@pithy-sh/multiplayer` (the `SESSIONS` binding, read at runtime to mint sessions). Absent any of them,
- * matchmaking degrades: denied without auth, region-only queue without rating, session-minting disabled
- * without multiplayer.
+ * matchmaking degrades: denied without auth, session-minting disabled without multiplayer. A game with a
+ * `skillPool` is refused at assembly without rating, rather than bucketing by region alone and saying nothing.
  */
 export function matchmaking(options: MatchmakingOptions = { games: [] }): MatchmakingCapability {
   const { basePath, ...configInput } = options;
@@ -60,6 +61,9 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
       classModule: "@pithy-sh/matchmaking/src/presence/durableObject",
     },
   ];
+
+  // Filled once by `compose`, which runs after this factory — so the routes are handed a reader, not a value.
+  let peers: MatchmakingPeers = {};
 
   const capability = defineCapability({
     name: "matchmaking",
@@ -87,7 +91,13 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
         },
       },
     },
-    routes: registerMatchmakingRoutes({ config: resolved, basePath }),
+    // The optional peers — auth for an invite, rating for a skill bucket — found among the composed
+    // capabilities rather than imported (#645), and refused here when the config needs one this Worker cannot
+    // reach. See `peers.ts`.
+    compose: ({ capabilities }) => {
+      peers = matchmakingPeers(capabilities, resolved);
+    },
+    routes: registerMatchmakingRoutes({ config: resolved, basePath, peers: () => peers }),
     seeds: [matchmakingExampleSeed],
   });
 

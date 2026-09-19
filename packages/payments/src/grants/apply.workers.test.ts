@@ -6,6 +6,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
+import { ledgerPeer } from "@pithy-sh/ledger/src/peer";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
@@ -238,9 +239,9 @@ describe("applyGrants", () => {
 });
 
 describe("fulfillPurchase", () => {
-  test("opens no ledger at all for a catalog with no grants clause", async () => {
-    // The optional peer must not be resolved by a project that never asked for it. Nothing is injected here,
-    // so a load would reach the real import; the assertion is that the report is empty and nothing was written.
+  test("needs no ledger at all for a catalog with no grants clause", async () => {
+    // A project that never composed a ledger is handed none, and a product that credits nothing must not care:
+    // no peer is passed here, and the assertion is that the report is empty and nothing was written.
     const report = await fulfillPurchase(env.DB, await project(event({ providerProductId: "com.acme.removeads" })), {
       config: CONFIG,
     });
@@ -248,8 +249,17 @@ describe("fulfillPurchase", () => {
     expect(await transactionRows()).toEqual([]);
   });
 
-  test("credits through the real guarded import when the catalog does ask", async () => {
-    const report = await fulfillPurchase(env.DB, await project(), { config: CONFIG });
+  test("a product that credits, handed no ledger, refuses rather than skipping the credit", async () => {
+    // `payments()` refuses this composition at assembly; this is the backstop for a caller that got here some
+    // other way. A skip would be a paid purchase with no coins and nothing anywhere to read.
+    await expect(fulfillPurchase(env.DB, await project(), { config: CONFIG })).rejects.toThrow(
+      "This purchase credits a balance, and no ledger is composed.",
+    );
+    expect(await transactionRows()).toEqual([]);
+  });
+
+  test("credits through the ledger the composition hands over when the catalog does ask", async () => {
+    const report = await fulfillPurchase(env.DB, await project(), { config: CONFIG, ledgerPeer });
     expect(report.granted).toHaveLength(1);
     expect((await balance(ADA)).balance).toBe(100);
   });
@@ -346,7 +356,7 @@ describe("a subscription whose money and state are separate rows", () => {
     projectPurchase(env.DB, input, { config: LS_CONFIG, environment: "production", now: new Date(T0 + SECOND) });
 
   const fulfillLs = async (input: ProviderEventInput) =>
-    await fulfillPurchase(env.DB, await projectLs(input), { config: LS_CONFIG });
+    await fulfillPurchase(env.DB, await projectLs(input), { config: LS_CONFIG, ledgerPeer });
 
   /** One billing period's invoice row. Born `expired`: a closed window that took money. */
   const invoice = (id: string, at: number, overrides: Partial<ProviderEventInput> = {}): ProviderEventInput =>

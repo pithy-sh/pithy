@@ -15,6 +15,7 @@ import { kitImport } from "../project/kitResolve";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
 import { startStep } from "../terminal/progress";
+import { hostEntryFile } from "./hostEntry";
 
 /**
  * **The one path a kit Worker is deployed through, and therefore the one place the gate lives.**
@@ -87,6 +88,12 @@ export interface HostDeployOptions {
   config: WorkflowHostTemplate;
   /** The installed package's worker directory — where the temp config is written, so `main` resolves. */
   dir: string;
+  /**
+   * The generated entry this host is deployed from, when the project composes a peer it can be handed —
+   * `hostEntrySource`'s answer (#645). Written beside the temp config as {@link hostEntryFile}, named as the
+   * config's `main`, and removed with it. Absent, the host deploys from its own `worker.ts`.
+   */
+  entry?: string;
   /** The environment. Names the temp config, and nothing else here. */
   env: string;
   /** Read the deployed Worker's vars. Omitted, nothing is known and the Worker deploys. */
@@ -210,7 +217,12 @@ function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
  */
 export async function deployHostWorker(options: HostDeployOptions): Promise<HostDeployOutcome> {
   const worker = options.config.name;
-  const stamped = options.version === null ? options.config : stampConfig(options.config, options.version);
+  // The generated entry is `main` before the stamp is taken, so a host that starts or stops being handed a peer
+  // is a changed config and redeploys rather than being skipped as current.
+  const entryPath = options.entry === undefined ? undefined : join(options.dir, hostEntryFile(options.env));
+  const config =
+    entryPath === undefined ? options.config : { ...options.config, main: `./${hostEntryFile(options.env)}` };
+  const stamped = options.version === null ? config : stampConfig(config, options.version);
   const current = stamped.vars?.[DEPLOY_STAMP_VAR];
 
   const verdict =
@@ -254,9 +266,11 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
   startStep(worker);
   await writeFile(configPath, `${JSON.stringify(stamped, null, 2)}\n`);
   try {
+    if (entryPath !== undefined) await writeFile(entryPath, options.entry as string);
     await run(args, options.dir);
   } finally {
     await unlink(configPath).catch(() => {});
+    if (entryPath !== undefined) await unlink(entryPath).catch(() => {});
   }
   return { capability: options.capability, worker, outcome: "deployed", reason: verdict.reason };
 }

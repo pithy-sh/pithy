@@ -3,22 +3,27 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ledgerPeer } from "@pithy-sh/ledger/src/peer";
 import { describe, expect, test } from "vitest";
 import { ledgerAccountId, openPaymentsLedger } from "./ledgerSeam";
 
 /**
- * The one place payments reaches another capability. What matters here is not that the import works — it is
- * what happens when it does not, because that is the difference between a project that is told its catalog
- * needs a package and one whose coin packs quietly stop crediting.
+ * The one place payments reaches another capability. What matters here is not that a ledger opens — it is what
+ * happens when none was handed over, because that is the difference between a project that is told its catalog
+ * needs a ledger and one whose coin packs quietly stop crediting.
+ *
+ * Nothing here loads a module. The ledger arrives from the composition (#645), so the absent case is simply an
+ * absent peer; the bundler half — that a project without the package can build payments at all — is
+ * `workflows/hostBundle.test.ts`, which runs wrangler.
  */
 
 /** Enough of a D1 binding for Kysely to be constructed against. Nothing here executes a query. */
 const d1 = {} as D1Database;
 
-/** The refusal a failing loader produces, as the payload-carrying error it must be. */
-async function refusal(cause: Error): Promise<PithyError> {
+/** The refusal an absent peer produces, as the payload-carrying error it must be. */
+function refusal(): PithyError {
   try {
-    await openPaymentsLedger(d1, { load: () => Promise.reject(cause) });
+    openPaymentsLedger(d1, {});
   } catch (error) {
     if (error instanceof PithyError) return error;
     throw error;
@@ -27,26 +32,35 @@ async function refusal(cause: Error): Promise<PithyError> {
 }
 
 describe("openPaymentsLedger", () => {
-  test("resolves the real @pithy-sh/ledger through the guarded import", async () => {
-    const ledger = await openPaymentsLedger(d1);
+  test("opens the ledger through the peer surface @pithy-sh/ledger's capability carries", () => {
+    // The real `ledgerPeer`, so the structural `PaymentsLedgerPeer` is held to the ledger's actual shape.
+    const ledger = openPaymentsLedger(d1, { peer: ledgerPeer });
     expect(typeof ledger.credit).toBe("function");
     expect(typeof ledger.debit).toBe("function");
   });
 
-  test("an absent ledger is a wiring failure with a named fix, not a silent skip", async () => {
-    const error = await refusal(new Error("Cannot find package '@pithy-sh/ledger'"));
-    expect(error.payload.code).toBe("core/internal");
-    // The action must name the package and the config clause that asked for it — an operator reading this
-    // has a catalog with a `grants` block and no idea which package supplies it.
-    expect(error.payload.action).toContain("@pithy-sh/ledger");
-    expect(error.payload.action).toContain("grants");
+  test("hands the clock through to the ledger it opens", () => {
+    const seen: (() => number)[] = [];
+    const now = () => 42;
+    openPaymentsLedger(d1, {
+      peer: {
+        openLedger: (_d1, clock) => {
+          if (clock) seen.push(clock);
+          return { credit: async () => undefined, debit: async () => undefined };
+        },
+      },
+      now,
+    });
+    expect(seen).toEqual([now]);
   });
 
-  test("the loader's own failure travels as the cause, so the module error survives", async () => {
-    const cause = new Error("resolution exploded");
-    const error = await refusal(cause);
-    expect(error.cause).toBe(cause);
-    expect(error.payload.detail).toContain("resolution exploded");
+  test("an absent ledger is a wiring failure with a named fix, not a silent skip", () => {
+    const error = refusal();
+    expect(error.payload.code).toBe("core/internal");
+    // The action must name the capability and the config clause that asked for it — an operator reading this
+    // has a catalog with a `grants` block and no idea what supplies it.
+    expect(error.payload.action).toContain("ledger(...)");
+    expect(error.payload.action).toContain("grants");
   });
 });
 

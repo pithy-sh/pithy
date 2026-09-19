@@ -17,6 +17,7 @@ import {
   webhookEventState,
 } from "../data/webhookEvent";
 import { fulfillPurchase } from "../grants/apply";
+import type { PaymentsLedgerPeer } from "../grants/ledgerSeam";
 import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, resolveNotificationOwner } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
@@ -128,6 +129,8 @@ export interface PaddleSweepDeps {
   transport?: PaddleHttpFetch;
   /** Fulfillment for a swept purchase. Defaults to {@link fulfillPurchase}, and is safe to repeat. */
   fulfill?: (d1: D1Database, projection: Parameters<typeof fulfillPurchase>[1]) => Promise<unknown>;
+  /** The ledger the default {@link fulfill} credits through, when the host was handed one. See `grants/ledgerSeam.ts`. */
+  ledgerPeer?: PaymentsLedgerPeer;
   /** How many pages one sweep may walk. A bound on the work, so a first pass finishes. */
   maxPages?: number;
 }
@@ -482,7 +485,9 @@ async function repairOrphans(deps: PaddleSweepDeps, at: Date): Promise<void> {
     },
     fulfill: async (projection) => {
       const fulfill =
-        deps.fulfill ?? ((d1, value) => fulfillPurchase(d1, value, { config: deps.config, now: () => at.getTime() }));
+        deps.fulfill ??
+        ((d1, value) =>
+          fulfillPurchase(d1, value, { config: deps.config, ledgerPeer: deps.ledgerPeer, now: () => at.getTime() }));
       await fulfill(deps.d1, projection);
     },
   });
@@ -679,7 +684,9 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         // credit its coins would leave the entitlement right and the balance wrong, and nothing else would
         // ever fix it — the renewal this sweep discovered is the one the webhook lost.
         const fulfill =
-          deps.fulfill ?? ((d1, value) => fulfillPurchase(d1, value, { config: deps.config, now: () => at.getTime() }));
+          deps.fulfill ??
+          ((d1, value) =>
+            fulfillPurchase(d1, value, { config: deps.config, ledgerPeer: deps.ledgerPeer, now: () => at.getTime() }));
         await fulfill(deps.d1, projection);
         await complete(deps.d1, id, at);
         report.projected += 1;
