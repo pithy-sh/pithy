@@ -3,7 +3,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vitest";
 import {
   comparePatterns,
   matchPath,
@@ -12,6 +12,7 @@ import {
   type PathParameters,
   Router,
   replace,
+  routeTable,
   type ScreenProps,
   updateSearch,
   useSearch,
@@ -146,6 +147,15 @@ describe("matchPath", () => {
 describe("Router", () => {
   // React refuses `act` unless the environment says it is a test one, the same as `signIn.test.tsx`.
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+  // The table settles only once every template screen has been imported, and whichever test rendered
+  // first paid for that inside its own 10s deadline. Beside the rest of this package's files on a busy
+  // machine, the import alone outran it: six runs in eight failed (#641). Loaded once here, with room,
+  // so the deadline below measures the router. `routeTable()` caches one promise, so every render
+  // reuses exactly this table.
+  beforeAll(async () => {
+    await routeTable();
+  }, 120_000);
 
   /** Render the router at `path`, waiting out the suspended route table. */
   async function renderAt(path: string): Promise<string> {
