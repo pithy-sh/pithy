@@ -625,15 +625,9 @@ describe("a feature stanza's routes and rate limiters", () => {
   const identity = { project: "replay", issue: "643", slug: "feature-address" };
   const feature = featureScope(identity);
   const LIMITER = { name: "AUTH_RATE_LIMITER", namespace_id: "1001", simple: { limit: 10, period: 60 } };
-  /** What `allocateFeatureRatelimits` handed this feature, by limiter: the ids the stanza must take. */
-  const ALLOCATED = new Map([
-    ["ns-1001", "1000000101"],
-    ["ns-2002", "1000000202"],
-  ]);
 
   const provision = (onRoutesDropped?: (routes: string[]) => void) =>
     applyProvisionedEnv({
-      ratelimitIds: ALLOCATED,
       administersItself: false,
       workerDir: dir,
       worker: BOARD,
@@ -697,14 +691,14 @@ describe("a feature stanza's routes and rate limiters", () => {
     await provision();
     const limits = (await generated()).ratelimits ?? [];
     expect(limits.map((entry) => entry.name)).toEqual(["AUTH_RATE_LIMITER"]);
-    expect(limits[0]?.namespace_id).toBe("1000000101");
+    expect(limits[0]?.namespace_id).toBe("1000001001");
     expect(limits[0]?.namespace_id).not.toBe(LIMITER.namespace_id);
   });
 
   test("never keeps the top level's namespace in a stanza it creates", async () => {
     await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", ratelimits: [LIMITER] }));
     await provision();
-    expect((await generated()).ratelimits?.map((entry) => entry.namespace_id)).toEqual(["1000000101"]);
+    expect((await generated()).ratelimits?.map((entry) => entry.namespace_id)).toEqual(["1000001001"]);
   });
 
   test("renumbers a namespace a tracked env.feature declared, since every branch would share it", async () => {
@@ -717,11 +711,11 @@ describe("a feature stanza's routes and rate limiters", () => {
     );
     await provision();
     expect((await generated()).ratelimits?.map((entry) => [entry.name, entry.namespace_id])).toEqual([
-      ["FEATURE_LIMITER", "1000000202"],
+      ["FEATURE_LIMITER", "1000002002"],
     ]);
   });
 
-  test("gives two limiters two namespaces, each its own allocation", async () => {
+  test("gives two limiters two namespaces, each its own fixed one", async () => {
     await writeFile(
       wranglerPath,
       JSON.stringify({
@@ -731,17 +725,17 @@ describe("a feature stanza's routes and rate limiters", () => {
     );
     await provision();
     expect((await generated()).ratelimits?.map((entry) => [entry.name, entry.namespace_id])).toEqual([
-      ["AUTH_RATE_LIMITER", "1000000101"],
-      ["UPLOAD_LIMITER", "1000000202"],
+      ["AUTH_RATE_LIMITER", "1000001001"],
+      ["UPLOAD_LIMITER", "1000002002"],
     ]);
   });
 
-  test("refuses a limiter nothing allocated a namespace for, rather than keep the declared one", async () => {
+  test("refuses a limiter it cannot map, rather than keep the declared one", async () => {
     await writeFile(
       wranglerPath,
-      JSON.stringify({ name: "replay-board", ratelimits: [{ ...LIMITER, namespace_id: "3003" }] }),
+      JSON.stringify({ name: "replay-board", ratelimits: [{ ...LIMITER, namespace_id: "2000000001" }] }),
     );
-    await expect(provision()).rejects.toThrow(/no namespace of its own/);
+    await expect(provision()).rejects.toThrow(/rate limiter AUTH_RATE_LIMITER declares namespace 2000000001/);
   });
 });
 

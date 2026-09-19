@@ -12,7 +12,6 @@ import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
 import { type DeprovisionedResource, deletedBeforeFailure, deprovisionFeature } from "./provision";
-import type { RatelimitRegistry } from "./ratelimits";
 import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
@@ -83,8 +82,6 @@ export type RemoteTeardown =
       workflows: WorkflowDefinitions;
       /** The feature's own Vectorize indexes, deleted by recomputed name (#643). */
       indexes?: FeatureIndexes;
-      /** The account's feature registry: the feature's rate-limit claims are deleted from it (#643). */
-      ratelimits?: RatelimitRegistry;
     }
   | {
       /** Absent: remote teardown is skipped (e.g. `--local-only`, or no CF credentials). */
@@ -95,8 +92,6 @@ export type RemoteTeardown =
       workflows?: undefined;
       /** Absent with `provisioners`. */
       indexes?: undefined;
-      /** Absent with `provisioners`. */
-      ratelimits?: undefined;
     };
 
 /** Options for {@link destroyFeature}. */
@@ -159,7 +154,6 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
         scripts: options.scripts,
         workflows: options.workflows,
         ...(options.indexes ? { indexes: options.indexes } : {}),
-        ...(options.ratelimits ? { ratelimits: options.ratelimits } : {}),
         workers: options.workers,
         ...(options.store !== undefined ? { store: options.store } : {}),
         ...(options.audit !== undefined ? { audit: options.audit } : {}),

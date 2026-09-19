@@ -19,12 +19,6 @@ import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
-import {
-  accountRatelimitRegistry,
-  d1Executor,
-  lazyRatelimitRegistry,
-  type RatelimitRegistry,
-} from "../feature/ratelimits";
 import { resolveWorkersFor } from "../project/composeFor";
 import {
   administersItself,
@@ -218,30 +212,6 @@ function confirmPrompt(env: string): () => Promise<string> {
 }
 
 /** Refuse a run with no credentials, naming the environment it was for. */
-/**
- * **The account's feature registry (#643)** — where a feature's rate limiters claim namespaces. Opened on first
- * use, created if absent when `create` says so, and found through the same confirmed-account provisioner every
- * other D1 is. `null` without credentials.
- */
-export async function featureRatelimitRegistry(
-  account: CloudflareAccountSelection | null,
-  provisioners: ResourceProvisioners,
-  create: boolean,
-): Promise<RatelimitRegistry | null> {
-  const vars = cloudflareEnv({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) return null;
-  return lazyRatelimitRegistry(async () => {
-    const clients = await cloudflareClients({ accountId, apiToken });
-    return accountRatelimitRegistry({
-      d1: provisioners.d1,
-      execute: (databaseId) => d1Executor((sql, params) => clients.d1(databaseId).executeQuery(sql, params)),
-      create,
-    });
-  });
-}
-
 async function requireProvisioners(
   account: CloudflareAccountSelection | null,
   target: string,
@@ -690,12 +660,10 @@ async function provisionBranch(
   const audit = await buildAudit(projectDir, capabilities, account);
   const infrastructure = store ? await featureSecretsInfrastructure(account, identity, audit) : null;
   const indexes = await featureIndexSeam(projectDir, account, identity.project);
-  const ratelimits = await featureRatelimitRegistry(account, provisioners, true);
   const report = await provisionFeature({
     projectDir,
     capabilities,
     ...(store ? { store } : {}),
-    ...(ratelimits ? { ratelimits } : {}),
     identity,
     provisioners,
     administersItself: selfAdministering,

@@ -14,7 +14,6 @@ import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type Remote
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { portsRegistryPath } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
-import { accountRatelimitRegistry, d1Executor, lazyRatelimitRegistry } from "../feature/ratelimits";
 import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
@@ -65,14 +64,6 @@ async function buildTeardown(
   const provisioners = cloudflareProvisioners(clients, confirmed);
   return {
     provisioners,
-    // The feature's rate-limit claims, found in the account's registry and never created by a teardown (#643).
-    ratelimits: lazyRatelimitRegistry(() =>
-      accountRatelimitRegistry({
-        d1: provisioners.d1,
-        execute: (databaseId) => d1Executor((sql, params) => clients.d1(databaseId).executeQuery(sql, params)),
-        create: false,
-      }),
-    ),
     scripts: cloudflareWorkerScripts(clients, confirmed),
     // Every kit host's Workflows, deleted by name (#643). No token: a feature's manager holds none.
     workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),

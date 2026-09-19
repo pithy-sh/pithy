@@ -11,8 +11,8 @@ import {
 /**
  * **Does any Worker declare a rate-limit namespace in the range reserved for features (#643)?**
  *
- * Feature namespaces are allocated from {@link FEATURE_RATELIMIT_MIN} through {@link FEATURE_RATELIMIT_MAX} for
- * every project in the account, so a declared id there can be handed to some branch, and the two share counters.
+ * Every feature of every project in the account binds its limiters from {@link FEATURE_RATELIMIT_MIN} through
+ * {@link FEATURE_RATELIMIT_MAX}, so a declared id there shares counters with a branch.
  * `pithy provision` and `pithy deploy` refuse it; this says so first, from the files alone. Every tracked
  * `wrangler.jsonc`, every stanza, and the id read as the integer it spells.
  *

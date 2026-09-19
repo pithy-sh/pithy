@@ -3,7 +3,6 @@
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
@@ -25,15 +24,15 @@ import type { ResourceProvisioner, ResourceProvisioners } from "../provision/res
 import type { SecretsStore } from "../provision/store";
 import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./hosts";
 import { provisionFeature } from "./provision";
-import { isFeatureRatelimitId, sqlRatelimitRegistry } from "./ratelimits";
 
 /**
  * **The isolation gate (#643): nothing a feature binds is anybody else's.**
  *
  * The maintainer's invariant, as a test: a feature shares nothing with any other feature, with staging, or with
  * production. The Cloudflare account and its one Secrets Store are the only containers that cannot be split, and
- * everything inside them — every database, namespace, bucket, index, Worker, Workflow, rate-limit namespace and
- * store entry — is the feature's own.
+ * everything inside them — every database, namespace, bucket, index, Worker, Workflow and store entry — is the
+ * feature's own. **One exception, by decision:** a rate-limit namespace is shared by every feature and never by a
+ * declared environment — each limiter's is fixed, the same in every feature, and in the range no config declares.
  *
  * A project composing **every host-owning capability the registry knows** is provisioned for a feature, through
  * the real `provisionFeature` and the real kit-host pass (`deployKitWorkers`, resolving each host's committed
@@ -64,6 +63,14 @@ const OWN = `${PROJECT}-f643-feature-address--`;
 const isOurs = (name: string): boolean => name.startsWith(OWN);
 const TOP_LIMITER = { name: "AUTH_RATE_LIMITER", namespace_id: "1001", simple: { limit: 20, period: 60 } };
 const PROD_LIMITER = { ...TOP_LIMITER, namespace_id: "2001" };
+/**
+ * **The feature namespace each limiter must bind, stated here and not borrowed from `featureNamespaceId`**: the
+ * limiter's top-level namespace plus 1000000000, inside the range no staging or production config may declare.
+ * Every feature binds it, so sharing it with another feature is allowed; binding anything else is a finding.
+ */
+const FEATURE_LIMITERS: ReadonlyMap<string, string> = new Map([
+  [TOP_LIMITER.name, String(1_000_000_000 + Number(TOP_LIMITER.namespace_id))],
+]);
 
 /** Every host-owning capability the registry knows, configured. The gate below checks this covers the registry. */
 const COMPOSED: Record<string, Capability> = {
@@ -147,16 +154,6 @@ function account() {
     },
     remove: async (name) => entries.delete(name),
   };
-  // The account's feature registry, on the engine D1 runs: every rate-limit claim is a row (#643).
-  const registryDb = new DatabaseSync(":memory:");
-  const ratelimits = sqlRatelimitRegistry(async (sql, params) => {
-    const statement = registryDb.prepare(sql);
-    if (/SELECT|RETURNING/i.test(sql)) return statement.all(...params);
-    statement.run(...params);
-    return [];
-  });
-  const claimRows = (): { namespace_id: number; project: string; issue: string; slug: string; limiter: string }[] =>
-    registryDb.prepare("SELECT * FROM ratelimit_claims").all() as never;
   const cf = {
     secrets: () => ({
       exists: async (name: string) => entries.has(name),
@@ -167,7 +164,7 @@ function account() {
       throw new Error("a feature's provisioning reached for an account token");
     },
   } as unknown as CloudflareClients;
-  return { names, provisioners, store, entries, cf, ratelimits, claimRows };
+  return { names, provisioners, store, entries, cf };
 }
 
 /** One config's bindings, as a deploy reads them. */
@@ -205,7 +202,7 @@ const NOT_A_RESOURCE = new Set([
  * that is neither a known non-resource nor a binding this walk can follow is itself a finding, so nothing can
  * slip past unclassified. `ids` follows a D1 or KV id to the name the stand-in account created it under.
  */
-function shared(config: Config, ids: ReadonlyMap<string, string>, claims: ReadonlyMap<string, string>): string[] {
+function shared(config: Config, ids: ReadonlyMap<string, string>): string[] {
   const findings: string[] = [];
   const own = (what: string, name: unknown): void => {
     if (typeof name !== "string" || !isOurs(name)) findings.push(`${what}: ${String(name)}`);
@@ -250,14 +247,13 @@ function shared(config: Config, ids: ReadonlyMap<string, string>, claims: Readon
         for (const entry of list(value)) own(`store entry ${entry.binding}`, entry.secret_name);
         break;
       case "ratelimits":
-        // A namespace is the feature's when the store's claim on it is: an id in the reserved range, claimed in
-        // the account's one Secrets Store under the feature's own name, and by nothing else.
+        // A namespace is allowed when it is the fixed feature namespace of the limiter the entry binds — shared
+        // with every other feature, by decision — and nothing else: not the top level's, not production's, not
+        // another limiter's.
         for (const entry of list(value)) {
           const id = String(entry.namespace_id);
-          const owner = claims.get(id);
-          if (!isFeatureRatelimitId(id) || owner === undefined || !isOurs(owner)) {
+          if (id !== FEATURE_LIMITERS.get(String(entry.name)))
             findings.push(`ratelimit ${entry.name}: namespace ${id}`);
-          }
         }
         break;
       case "durable_objects":
@@ -293,7 +289,6 @@ async function provisioned() {
     identity,
     provisioners: stand.provisioners,
     store: stand.store,
-    ratelimits: stand.ratelimits,
     administersItself: false,
     resolveWorkers: async () => [{ name: "replay-app", dir: appDir, capabilities }],
     migrate: async () => {},
@@ -335,19 +330,6 @@ async function provisioned() {
   return { stand, hosts, report, stanza: generated.env.feature };
 }
 
-/**
- * Every rate-limit claim in the account's feature registry, id → the feature that holds it, spelled as that
- * feature's names begin (`<project>-f<issue>-<slug>--`), so {@link isOurs} reads it exactly.
- */
-function claimsOf(stand: {
-  claimRows: () => { namespace_id: number; project: string; issue: string; slug: string }[];
-}) {
-  const claims = new Map<string, string>();
-  for (const row of stand.claimRows())
-    claims.set(String(row.namespace_id), `${row.project}-f${row.issue}-${row.slug}--`);
-  return claims;
-}
-
 describe("a feature composing every host-owning capability", () => {
   let result: Awaited<ReturnType<typeof provisioned>>;
 
@@ -374,12 +356,12 @@ describe("a feature composing every host-owning capability", () => {
   });
 
   test("the feature's app stanza binds nothing anybody else has", () => {
-    expect(shared(result.stanza, result.stand.names, claimsOf(result.stand))).toEqual([]);
+    expect(shared(result.stanza, result.stand.names)).toEqual([]);
   });
 
   test("no feature host binds anything anybody else has", () => {
     for (const config of result.hosts) {
-      expect({ host: config.name, shared: shared(config, result.stand.names, claimsOf(result.stand)) }).toEqual({
+      expect({ host: config.name, shared: shared(config, result.stand.names) }).toEqual({
         host: config.name,
         shared: [],
       });
@@ -403,7 +385,7 @@ describe("a feature composing every host-owning capability", () => {
 
   /**
    * **The gate can fail.** The defects it exists for, planted back into a copy of what provisioning wrote, and the
-   * walk names each one: the top level's rate-limit namespace, a store entry bound to the project's `global` copy,
+   * walk names each one: the top level's rate-limit namespace (bound in a feature, it is production's), a store entry bound to the project's `global` copy,
    * a same-issue sibling's host and Workflow (a prefix check passed both), another project's, production's D1 and
    * KV by id, production's service and queue, and a binding kind the walk has never seen.
    */
@@ -436,7 +418,7 @@ describe("a feature composing every host-owning capability", () => {
     planted.queues = { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] };
     planted.hyperdrive = [{ binding: "PG", id: "shared" }];
     // Sorted: which key the walk meets first is the stanza's order, and not what is being proven.
-    expect(shared(planted, result.stand.names, claimsOf(result.stand)).sort()).toEqual(
+    expect(shared(planted, result.stand.names).sort()).toEqual(
       [
         "d1 DB: unknown id prod-db-id",
         `ratelimit AUTH_RATE_LIMITER: namespace ${TOP_LIMITER.namespace_id}`,
@@ -493,15 +475,29 @@ describe("a feature composing every host-owning capability", () => {
     ]);
   });
 
-  test("every rate-limit namespace the feature binds is claimed for it, and none is anyone else's", () => {
-    const claims = claimsOf(result.stand);
-    const bound = (result.stanza.ratelimits as { name: string; namespace_id: string }[]).map(
-      (entry) => entry.namespace_id,
-    );
-    expect(bound.length).toBeGreaterThan(0);
-    for (const id of bound) expect(claims.get(id)).toBe(OWN);
-    expect(result.stand.claimRows().map((row) => row.limiter)).toEqual(["ns-1001"]);
-    // Claims are metadata in the registry, never Secrets Store entries: the store's 100 secrets are for secrets.
+  /**
+   * **Shared with every feature, never with a declared environment (#643).** The feature binds its limiter's fixed
+   * namespace, which is in the reserved range and is neither the top level's nor production's. And the walk still
+   * fails the ids it exists for: production's, and another limiter's feature namespace.
+   */
+  test("every rate-limit namespace the feature binds is its limiter's fixed one, and never a declared one", () => {
+    const bound = (result.stanza.ratelimits as { name: string; namespace_id: string }[]).map((entry) => [
+      entry.name,
+      entry.namespace_id,
+    ]);
+    expect(bound).toEqual([["AUTH_RATE_LIMITER", "1000001001"]]);
+    expect(["1001", "2001"]).not.toContain("1000001001");
+    for (const [id, finding] of [
+      [PROD_LIMITER.namespace_id, "ratelimit AUTH_RATE_LIMITER: namespace 2001"],
+      ["1000002001", "ratelimit AUTH_RATE_LIMITER: namespace 1000002001"],
+    ] as const) {
+      const planted = structuredClone(result.stanza) as Config & { ratelimits: { namespace_id: string }[] };
+      const [limiter] = planted.ratelimits;
+      if (limiter) limiter.namespace_id = id;
+      expect(shared(planted, result.stand.names)).toEqual([finding]);
+    }
+    // Nothing account-wide was made for rate limiting: no registry, no store entry.
     expect([...result.stand.entries.keys()].filter((name) => name.includes("ratelimit"))).toEqual([]);
+    expect([...result.stand.names.values()].filter((name) => name.includes("registry"))).toEqual([]);
   });
 });

@@ -17,7 +17,6 @@ import { runAdd } from "./capabilities/flow";
 import { CloudflareSecretsProvisioner } from "./capabilities/secretsProvisioner";
 import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./feature/hosts";
 import { deprovisionFeature, provisionFeature } from "./feature/provision";
-import { sqlRatelimitRegistry } from "./feature/ratelimits";
 import { migrateProject } from "./migrations/run";
 import { resolveWorkersFor } from "./project/composeFor";
 import { loadWorkerConfig } from "./project/config";
@@ -152,19 +151,8 @@ async function standInAccount() {
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",
-    d1Databases: { ...Object.fromEntries(D1_POOL.map((id) => [id, id])), REGISTRY: "REGISTRY" },
+    d1Databases: Object.fromEntries(D1_POOL.map((id) => [id, id])),
   });
-  // The account's feature registry, on Miniflare's D1: every rate-limit claim is a row there (#643).
-  const registryDb = (await miniflare.getD1Database("REGISTRY")) as unknown as D1Database;
-  const ratelimits = sqlRatelimitRegistry(
-    async (sql, params) =>
-      (
-        await registryDb
-          .prepare(sql)
-          .bind(...params)
-          .all()
-      ).results,
-  );
   const databases = new Map<string, D1Database>();
   for (const id of D1_POOL) databases.set(id, (await miniflare.getD1Database(id)) as unknown as D1Database);
   const database = (id: string): D1Database => {
@@ -205,7 +193,7 @@ async function standInAccount() {
   const provisioners = { d1, kv: provisioner([]), r2: provisioner(null) } as unknown as ResourceProvisioners;
   /** Every script `wrangler deploy` was handed, by name — what the account now runs. */
   const hosts = new Map<string, Stanza>();
-  return { miniflare, database, entries, store, cf, provisioners, hosts, ratelimits, registryDb };
+  return { miniflare, database, entries, store, cf, provisioners, hosts };
 }
 
 type Account = Awaited<ReturnType<typeof standInAccount>>;
@@ -238,7 +226,6 @@ async function provision(account: Account, faults: Faults = {}) {
     identity,
     provisioners: account.provisioners,
     store: account.store,
-    ratelimits: account.ratelimits,
     administersItself: false,
     workersSubdomain: async () => "acme",
     migrate: async ({ env, projectDir }) => {
@@ -493,7 +480,6 @@ describe("a feature deployment, after provision and deploy", () => {
         provisioners: account.provisioners,
         workers: [{ name: `${PROJECT}-${WORKER}`, dir: workerDir }],
         store: account.store,
-        ratelimits: account.ratelimits,
         scripts: {
           exists: async (name) => account.hosts.has(name) || name === SCRIPT,
           delete: async (name) => void account.hosts.delete(name),
@@ -510,8 +496,6 @@ describe("a feature deployment, after provision and deploy", () => {
         expect.arrayContaining([SCRIPT, ...expected]),
       );
       expect([...account.entries.keys()]).toEqual([]);
-      // Its rate-limit claims too: the registry holds nothing of the feature's once it is gone (#643).
-      expect((await account.registryDb.prepare("SELECT * FROM ratelimit_claims").all()).results).toEqual([]);
     } finally {
       await account.miniflare.dispose();
     }

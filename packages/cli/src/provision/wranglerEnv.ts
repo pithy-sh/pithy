@@ -3,14 +3,13 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
-import { limiterKey } from "../feature/ratelimits";
+import { featureNamespaceId } from "../feature/ratelimits";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -233,17 +232,13 @@ interface RatelimitEntry {
  * creates — so a tracked `env.feature` without them deployed a Worker with no `AUTH_RATE_LIMITER`, and auth
  * refused every request. Each top-level entry the stanza does not already bind by name is copied.
  *
- * **And every entry is then given the feature's own `namespace_id`**, the copied ones and any declared under a
- * tracked `env.feature` alike: the id allocated for its limiter by `allocateFeatureRatelimits`, which no other
- * feature, environment or project can hold (`feature/ratelimits.ts`). Keyed by the limiter the entry was declared
- * as, read before it is renumbered, so a limiter two Workers share in production is one here, and two are two.
- * A limiter with no allocation is refused: nothing else is a namespace this feature owns.
+ * **And every entry is then given the feature namespace for its limiter**, the copied ones and any declared under
+ * a tracked `env.feature` alike: `featureNamespaceId`, the declared namespace offset into the range reserved for
+ * features, which no staging or production config may declare (`feature/ratelimits.ts`). Every feature binds the
+ * same id for the same limiter; a limiter two Workers share in production is one here, and two are two. A limiter
+ * that cannot map is refused rather than keep an id another environment holds.
  */
-function featureRatelimits(
-  stanza: Record<string, unknown>,
-  top: Record<string, unknown>,
-  ids: ReadonlyMap<string, string>,
-): void {
+function featureRatelimits(stanza: Record<string, unknown>, top: Record<string, unknown>): void {
   const declared = Array.isArray(top.ratelimits) ? (top.ratelimits as RatelimitEntry[]) : [];
   const own = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
   const bound = new Set(own.map((entry) => entry.name));
@@ -254,18 +249,7 @@ function featureRatelimits(
     else stanza.ratelimits = missing.map((entry) => structuredClone(entry));
   }
   const entries = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
-  for (const entry of entries) {
-    const limiter = limiterKey(entry);
-    const id = ids.get(limiter);
-    if (id === undefined) {
-      throw new InternalError({
-        message: `This feature's rate limiter ${String(entry.name)} has no namespace of its own.`,
-        action: "Run pithy provision --feature again.",
-        detail: `limiter ${limiter} was not allocated before the stanza was written`,
-      });
-    }
-    entry.namespace_id = id;
-  }
+  for (const entry of entries) entry.namespace_id = featureNamespaceId(entry);
 }
 
 /**
@@ -353,12 +337,6 @@ export async function applyProvisionedEnv(options: {
    * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
   onRoutesDropped?: (routes: string[]) => void;
-  /**
-   * **This feature's own rate-limit namespaces, by limiter (#643)** — `allocateFeatureRatelimits`' answer, read
-   * for a feature scope only. Every `ratelimits` entry the feature stanza binds takes the id its limiter was
-   * allocated; one with none is refused.
-   */
-  ratelimitIds?: ReadonlyMap<string, string>;
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -375,7 +353,7 @@ export async function applyProvisionedEnv(options: {
     if (!options.scope.source) {
       const dropped = stripFeatureRoutes(stanza, top);
       if (dropped.length > 0) options.onRoutesDropped?.(dropped);
-      featureRatelimits(stanza as Record<string, unknown>, top, options.ratelimitIds ?? new Map());
+      featureRatelimits(stanza as Record<string, unknown>, top);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     for (const resource of options.resources) {
