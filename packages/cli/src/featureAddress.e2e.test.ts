@@ -44,6 +44,8 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
 
 const SCRIPT = "replay-f643-feature-address-board";
 const FEATURE_ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
+/** What a set asking for a secret is told on a feature this machine kept none for: this account has no store. */
+const NOT_KEPT = "This feature's secrets are not on this machine.";
 
 /**
  * A prepared set that writes down what the run handed it: the origin, and whether a mintable secret arrived.
@@ -65,8 +67,15 @@ export const originProbe = defineCapability({
       order: 1000,
       environments: ["feature"],
       prepare: async (context) => {
-        const secret = await context.secret("probe-signing-key");
-        const contents = JSON.stringify({ env: context.env, origin: context.origin, secretLength: secret?.length ?? null });
+        // A feature's secrets are the ones provision kept (#643). With no Secrets Store there are none, and the
+        // read is refused rather than answered with a value the deployment does not hold.
+        let secretLength: number | string | null = null;
+        try {
+          secretLength = (await context.secret("probe-signing-key"))?.length ?? null;
+        } catch (error) {
+          secretLength = (error as { payload?: { message?: string } }).payload?.message ?? String(error);
+        }
+        const contents = JSON.stringify({ env: context.env, origin: context.origin, secretLength });
         return { artifacts: [{ file: "origin-probe.json", contents: \`\${contents}\\n\` }] };
       },
     }),
@@ -124,7 +133,7 @@ async function cli(args: string[]): Promise<{ code: number; stdout: string; stde
 }
 
 /** What the probe set was handed on the last run. */
-async function probe(): Promise<{ env: string; origin: string | null; secretLength: number | null }> {
+async function probe(): Promise<{ env: string; origin: string | null; secretLength: number | string | null }> {
   return JSON.parse(await readFile(join(app, "logs", "origin-probe.json"), "utf8"));
 }
 
@@ -193,7 +202,7 @@ describe("a feature deployment's address, with the real binary", () => {
     expect(generated.env.feature.vars.ENVIRONMENT).toBe("feature");
 
     // Provisioning seeds a feature, and the prepared set saw the same address.
-    expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: 43 });
+    expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: NOT_KEPT });
   }, 120_000);
 
   test("seed --env feature runs auth's dev-session set, and never opens the dev secrets file", async () => {
@@ -216,7 +225,7 @@ describe("a feature deployment's address, with the real binary", () => {
       const board = report.workers[0];
       expect(board?.sets.map((set) => set.name)).toContain("9999_auth_dev-session");
       expect(board?.skippedByEnv).not.toContain("9999_auth_dev-session");
-      expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: 43 });
+      expect(await probe()).toEqual({ env: "feature", origin: FEATURE_ORIGIN, secretLength: NOT_KEPT });
     } finally {
       await chmod(secrets, 0o600);
     }

@@ -53,7 +53,7 @@ export type BackendRunner = (args: { env: string; projectDir: string }) => Promi
 // The migrate names its project for the same reason the seed below does, and one more: the stamp it
 // writes is what refuses a later run from another project. A fresh environment's D1 is brand new, so
 // this run is the one that adopts it — skip the name here and the database stays unowned for good.
-const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
+export const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
   // One config load, two facts, both from the project's own root config: the project the brand-new D1 is
   // stamped for, and the account it is created and migrated in. A provisioned environment is remote by
   // definition, so this is the account that decides *whose tenant* the schema lands in (#234).
@@ -285,6 +285,26 @@ export interface ProvisionReport {
    * would be N copies of one fact, and every consumer branch on a disagreement they cannot have.
    */
   committed: boolean;
+  /**
+   * **A feature's own secrets, generated once and kept (#643)** — present only on a feature run that had a
+   * Secrets Store and a composed secrets capability to keep them for. Names and a path, never a value.
+   */
+  featureSecrets?: FeatureSecretsReport;
+}
+
+/** What a feature run did with the feature's own secrets. See `feature/secrets.ts`. */
+export interface FeatureSecretsReport {
+  /** The file on this machine the values are kept in, and the seed signs with. */
+  path: string;
+  /** Every `d1` secret the feature's `SECRETS` database holds after this run, written now or already there. */
+  sealed: string[];
+  /** Of those, the ones this run wrote. Empty on a re-run. */
+  written: string[];
+  /**
+   * Values the deployment already held that this run **replaced** with newly generated ones, because the kept
+   * copy was not on this machine. Everything signed with the old ones stops verifying, so it is never silent.
+   */
+  regenerated: string[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */

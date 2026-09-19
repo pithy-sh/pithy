@@ -41,6 +41,18 @@ import { ENVIRONMENTS, FEATURE_ENVIRONMENT } from "./environment";
 /** A hostname a Worker answers on. No scheme, no path, no port — wrangler's `routes` pattern is a host. */
 const HOSTNAME_PATTERN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
 
+/**
+ * Whether a string is a public hostname: dot-separated DNS labels, at least two, lowercase. No scheme, no
+ * port, no trailing dot, and nothing a URL parser decoded into one — `%2e%2e` is `..` once parsed, which is an
+ * empty label rather than a host (#643). `localhost` is not one: it has a single label, and it is this machine.
+ *
+ * The one test for "is this a host" that an origin read from a stamp and an origin typed on a command line
+ * both pass, so the two cannot accept different things.
+ */
+export function isPublicHostname(hostname: string): boolean {
+  return hostname.length <= 253 && HOSTNAME_PATTERN.test(hostname);
+}
+
 /** The environments a domain may be declared for — every managed one, never `dev`. */
 export const DOMAIN_ENVIRONMENTS = ENVIRONMENTS.filter((environment) => environment !== "dev");
 
@@ -172,6 +184,8 @@ export function featureOrigin(stamped: string | undefined): { origin: string; ho
   if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return null;
   // A script name and an account subdomain, at least: `workers.dev` alone, or `<sub>.workers.dev`, is not a Worker.
   if (!url.hostname.endsWith(".workers.dev") || url.hostname.split(".").length < 4) return null;
+  // Every label a DNS label: the parser decodes `%2e%2e` into `..`, which ends in `.workers.dev` and is no host.
+  if (!isPublicHostname(url.hostname)) return null;
   return { origin: url.origin, hostname: url.hostname };
 }
 

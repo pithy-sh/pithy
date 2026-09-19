@@ -43,9 +43,16 @@ A prepared set is handed the origin its Worker answers on (`context.origin`, `do
 - A declared environment: its address, the way `pithy env` resolves it — the `domains` declaration, then the route, then `vars.BASE_URL`.
 - `feature`: `https://<script>.<subdomain>.workers.dev` — the feature Worker's script name under the account's `workers.dev` subdomain, which the run looks up once. Without an account to ask, it reads the address `pithy provision --feature` stamped.
 
-`--host` overrides all three: `--host preview.example.com`. A bare host takes the environment's scheme — `http` in `dev`, `https` everywhere else — and a full `http://` or `https://` origin is taken as written. A path, a query or any other scheme is refused before anything is written.
+`--host` overrides all three: `--host preview.example.com`. A bare host takes the environment's scheme — `http` in `dev`, `https` everywhere else — and a full `http://` or `https://` origin is taken as written. One rule decides what a host is, and it refuses rather than repairs, before anything is written:
 
-On a feature, a prepared set's secrets are generated for the run from each secret's registry declaration, one value per name. The dev secrets file is never opened: it belongs to `dev`, and `staging` and `prod` still refuse a set that asks for one.
+- every label a DNS label, so an encoded host like `%2e%2e` is refused;
+- nothing after the host — a path, a query, a fragment, a trailing `/` — and no credentials;
+- off `dev`, no port and no `http`: a deployed Worker answers over https on the default port;
+- `localhost`, `127.0.0.1` and `*.localhost` in `dev` only.
+
+On a feature, a prepared set's secrets are the ones `pithy provision --feature` kept for it — the values the deployment holds, so a claim the seed signs is one the Worker verifies. A secret nobody may invent is `undefined`; with nothing kept on this machine, a set that asks for a secret is refused, naming `pithy provision --feature`. The dev secrets file is never opened: it belongs to `dev`, and `staging` and `prod` still refuse a set that asks for one.
+
+When the run mints a dev login off `dev`, it prints the link to open, over the origin the login was minted for: `Dev login: ada@example.com — open https://<script>.<subdomain>.workers.dev/__pithy/dev-login?t=… to sign in.` The link carries the claim, so it is printed in human output only, never under `--json`.
 
 ### Idempotency
 

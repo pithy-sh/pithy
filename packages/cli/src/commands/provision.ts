@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -101,6 +102,21 @@ async function buildStore(account: CloudflareAccountSelection | null): Promise<S
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken || !storeId) return null;
   return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
+}
+
+/**
+ * A feature's `SECRETS` database by id, over the account's REST API — where `pithy provision --feature` seals
+ * the feature's kept `d1` secrets (#643). Built only once a store was found, so the credentials are there.
+ */
+async function remoteSecretsDatabase(
+  account: CloudflareAccountSelection | null,
+): Promise<(databaseId: string) => D1Database> {
+  const vars = cloudflareEnv({ account });
+  const clients = await cloudflareClients({
+    accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "",
+    apiToken: vars.CLOUDFLARE_API_TOKEN ?? "",
+  });
+  return (databaseId) => clients.d1(databaseId) as unknown as D1Database;
 }
 
 /**
@@ -416,11 +432,47 @@ export function writeReport(
       );
     }
   }
+  for (const line of featureSecretLines(report)) process.stdout.write(`${line}\n`);
+  for (const line of regeneratedSecretLines(report)) process.stderr.write(`${line}\n`);
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
   // Before `Done.`, because it is the part of the job this command did not do. See `pendingSecrets`.
   for (const line of pendingSecretLines(options.pending)) process.stdout.write(`${line}\n`);
   process.stdout.write(`${formatDone()}\n`);
+}
+
+/**
+ * **A feature's own secrets, in two sentences (#643).** What the feature's `SECRETS` database holds and where
+ * the values are kept. Names and a path, never a value. Nothing for a run that kept none.
+ */
+export function featureSecretLines(report: ProvisionReport): string[] {
+  const kept = report.featureSecrets;
+  if (!kept) return [];
+  const lines: string[] = [];
+  if (kept.written.length > 0) lines.push(`${kept.written.join(", ")} sealed into this feature's SECRETS database.`);
+  lines.push(`This feature's secrets are kept in ${kept.path}.`);
+  return lines;
+}
+
+/**
+ * **A rotation is never silent (#643).** Values the deployment held that this run replaced, because the kept
+ * copy was not on this machine. To stderr, like any line an operator must not miss in a piped run.
+ */
+export function regeneratedSecretLines(report: ProvisionReport): string[] {
+  const regenerated = report.featureSecrets?.regenerated ?? [];
+  if (regenerated.length === 0) return [];
+  return [
+    `${regenerated.join(", ")}: generated again, because this machine did not keep them. Sessions and links signed with the old values stop working.`,
+  ];
+}
+
+/**
+ * The `d1` secrets still pending after a feature run: the registry's list, less what the run sealed into the
+ * feature's own database (#643). A run with no Secrets Store seals nothing, and the shortfall reads as before.
+ */
+export function featurePendingSecrets(pending: PendingSecrets, report: ProvisionReport): PendingSecrets {
+  const sealed = new Set(report.featureSecrets?.sealed ?? []);
+  return { ...pending, names: pending.names.filter((name) => !sealed.has(name)) };
 }
 
 /**
@@ -570,13 +622,15 @@ async function provisionBranch(
     resolveWorkers: workers,
     // How each Worker's generated stanza learns the `workers.dev` origin it answers on (#643).
     workersSubdomain: accountWorkersSubdomain(account),
+    // Where the feature's kept `d1` secrets are sealed: its own SECRETS database, over the account's REST API.
+    ...(store ? { secretsDatabase: await remoteSecretsDatabase(account) } : {}),
     ...(progress ? { onProgress: progress } : {}),
     audit: await buildAudit(projectDir, capabilities, account),
   });
   writeReport(report, {
     json: options.json,
     seeded: true,
-    pending: deferredSecrets(capabilities, mode),
+    pending: featurePendingSecrets(deferredSecrets(capabilities, mode), report),
     registry: workerSecretRegistry(capabilities) ?? {},
     streamed: progress !== undefined,
   });

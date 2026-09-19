@@ -34,6 +34,16 @@ export const DEV_LOGIN_FILE = "dev-login.json";
 export const DEV_LOGIN_PATH = `${SEED_ARTIFACT_DIR}/${DEV_LOGIN_FILE}`;
 
 /**
+ * The login file for one environment: {@link DEV_LOGIN_FILE} in `dev`, which `pithy dev` reads, and one named
+ * for the environment anywhere else — `dev-login.feature.json` — so seeding a feature deployment from its
+ * worktree never overwrites the local login (#643). Stated here because the set that writes it and the command
+ * that reads it are in two packages that must not import each other.
+ */
+export function devLoginFileFor(env: string): string {
+  return env === "dev" ? DEV_LOGIN_FILE : `dev-login.${env}.json`;
+}
+
+/**
  * The dev-login **route**: where a `dev` composition serves the seeded session as a `Set-Cookie` and a
  * redirect, so signing in is a URL rather than a value pasted into a browser console.
  *
@@ -45,9 +55,9 @@ export const DEV_LOGIN_PATH = `${SEED_ARTIFACT_DIR}/${DEV_LOGIN_FILE}`;
  * anything the kit serves that is not part of a capability's public surface lives under this prefix, so
  * a route added here can never collide with an application path someone already shipped.
  *
- * Registered **only** in a `dev` composition, and never under CI. It mints an authenticated session for
- * whoever presents a claim this project's own secret signed, which is the whole risk of the feature and
- * the reason its gates live at registration rather than inside the handler.
+ * Registered **only** in a `dev` composition and on a feature deployment (#643), and never under CI. It mints
+ * an authenticated session for whoever presents a claim this project's own secret signed, which is the whole
+ * risk of the feature and the reason its gates live at registration rather than inside the handler.
  */
 export const DEV_LOGIN_ROUTE = "/__pithy/dev-login";
 
@@ -68,6 +78,12 @@ export const DevLogin = z
         "The signed, URI-encoded claim naming the user to sign in as. A live credential for the local database — never logged, never committed, never in an error payload. **Not a session:** it names a user and the route mints a session against it, so revoking a session leaves it working.",
       ),
     expiresAt: JsonDate.describe("When the claim stops being accepted. ISO-8601 text on disk; a `Date` in app code."),
+    origin: z
+      .string()
+      .optional()
+      .describe(
+        "The origin the login was minted for, when the seed had one — a feature deployment's `workers.dev` origin, so `pithy seed` can print a link to open (#643). Absent in `dev`, where `pithy dev` composes the link from the port it started.",
+      ),
   })
   .describe("A seeded dev login: the signed claim for one seeded user, written to `logs/dev-login.json`.");
 export type DevLogin = z.output<typeof DevLogin>;

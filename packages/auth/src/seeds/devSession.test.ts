@@ -75,6 +75,18 @@ describe("the dev-session seed set", () => {
     expect(prepared.artifacts?.[0]?.file).not.toBe(DEV_LOGIN_FILE);
   });
 
+  /**
+   * **The login carries where it opens (#643).** Nothing read `context.origin`, so a feature's login was a claim
+   * with no address — a URL nobody could compose off `dev`, where there is no pinned port to find one from.
+   */
+  test("records the origin it was minted for, so a feature's login is a URL someone can open", async () => {
+    const origin = "https://replay-f643-feature-address-board.acme.workers.dev";
+    const prepared = await prepare(context({ env: "feature", origin }));
+
+    const written = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+    expect(written.origin).toBe(origin);
+  });
+
   test("sorts after every set that could create the user it signs in as", () => {
     expect(authDevSessionSeed.order).toBe(MAX_SEED_ORDER);
   });

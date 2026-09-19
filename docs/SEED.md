@@ -158,7 +158,7 @@ The context is deliberately narrow: `env`, `project`, `origin` — where this Wo
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
-- `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only — with one exception: on a `feature`, a secret whose registry entry declares a `devValue` is generated for the run, one value per name, and any other answers `undefined`. The dev secrets file is never opened for anything but `dev`.
+- `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A declared environment's secrets are not on the operator's disk, so a set that needs one must not list `staging` or `prod`. A `feature` is the exception: `pithy provision --feature` generates the feature's own secrets once and keeps them in `<config>/<project>/features/f<issue>-<slug>.secrets.jsonc`, and a feature's `secret` reads that file — the same values the deployment holds. A secret nobody may invent answers `undefined`, and with no kept file the read is refused. The dev secrets file is never opened for anything but `dev`.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
 
 ### Where this Worker answers: `context.origin`
@@ -215,6 +215,8 @@ Name **any user this run seeds** — one of your app's own, or one of the exampl
 
 No file, no session — the default stays "there is no way in but a magic link". A file naming a user this run does not create fails, listing the emails it does seed, rather than quietly seeding nothing.
 
+**On a feature deployment too.** The set runs on `feature` as well as `dev`, and writes `logs/dev-login.feature.json` so it never overwrites the local login. It signs with the secret `pithy provision --feature` kept for the feature — the one the deployed Worker checks — and records the origin it was minted for, so `pithy seed --env feature` prints a link to open. The route answers on a feature deployment, never on `staging` or `prod`. `auth`'s example cast seeds on a feature as well, so with `includeExamples` on there is someone to sign in as.
+
 The cookie is signed the way Better Auth signs its own, and its token is derived from a fingerprint of the auth secret. That makes it deterministic across reseeds — the same cookie keeps working in every worktree once each is seeded — while rotating the secret invalidates every previously seeded cookie for free.
 
 **The file is a live credential** for your local database. It lives under `logs/`, which the starter template gitignores. Do not move it, and do not commit it.
@@ -255,7 +257,7 @@ export default definePithyConfig({
 });
 ```
 
-With `includeExamples` off (the default), example sets are not merely skipped — they are absent from the registry entirely, so `pithy seed --dry-run` never even lists them. An example set never targets `production` regardless of this setting; it is a dev/staging convenience, not a production data source.
+With `includeExamples` off (the default), example sets are not merely skipped — they are absent from the registry entirely, so `pithy seed --dry-run` never even lists them. An example set never targets `production` regardless of this setting; it is a convenience for `dev`, `staging` and — for `auth`'s cast — a feature deployment, not a production data source.
 
 ### A connected cast, not scattered rows
 

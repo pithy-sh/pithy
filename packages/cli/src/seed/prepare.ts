@@ -4,13 +4,13 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { isPublicHostname } from "@pithy-sh/core/src/naming/domains";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
 import type { SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { currentValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
-import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { devSecretPayload, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
-import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { readDevSecrets } from "../devSecrets/file";
 import { devSecretsFile } from "../devSecrets/location";
 import { projectConfigDir, type StatePathOptions, stateDir } from "../notifier/state";
@@ -190,85 +190,103 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
 }
 
 /**
- * **A feature environment's seed secrets: generated for it, never read from anywhere (#643).**
+ * **A feature environment's seed secrets: the values `pithy provision --feature` generated and kept (#643).**
  *
  * `pithy seed --env feature` gets no {@link devSecretReader} — that one refuses every environment but `dev`, and
- * #159 stays exactly as written. What a feature gets instead is decided by the one thing the kit already knows
- * about each secret: whether its registry entry says a value may be invented (`devValue`, through
- * `isMintableSecret`). If it may, the run mints one, from the same declaration and through the same
- * materialization `pithy provision` uses to create that secret in a feature's own scope (`storeSecretMinter`,
- * #321), so a prepared set holds a value of exactly the shape the Worker would. If it may not — an OAuth client
- * secret, an issued API token — the answer is `undefined`, and a set that needs it refuses in its own words.
+ * #159 stays exactly as written. A feature's secrets are its own: generated once, at provision, sealed into the
+ * feature's deployment, and kept in one file keyed by project and feature (`feature/secrets.ts`). This reads
+ * that file and nothing else, so a claim the seed signs is one the deployed Worker verifies — the same value,
+ * not a second one generated to look like it.
  *
- * **Why generated, and not supplied by the seed data.** A seed set's data is a capability module: committed,
- * bundled into the Worker, and identical for every branch and every environment the set allows. A secret
- * stated there is a committed credential, and one value shared by every feature — the opposite of the
- * feature's own. The registry is what states which secrets are arbitrary, and arbitrary is exactly what can be
- * generated per environment without asking anybody.
+ * **It never generates.** A value the deployment does not hold signs a dev login nobody can open, which is the
+ * defect this replaced: a fresh random value per run, kept nowhere. A name the file does not hold — an OAuth
+ * credential somebody else issues — is `undefined`, and a set that needs it refuses in its own words. No file
+ * at all is refused here, naming the command that makes one.
  *
- * **One value per name per run**, memoized here: two sets in one fan-out that sign with two different keys
- * would disagree with each other, and the rule is the one `devSecretReader` holds for the file it reads.
+ * **Why not the seed data.** A seed set's data is a capability module: committed, bundled into the Worker, and
+ * identical for every branch. A secret stated there is a committed credential shared by every feature.
  *
- * **It takes no project and no config directory, so it cannot open the dev secrets file** — there is no path
- * in scope to open. That is the structural half of the rule, as `env` is for {@link devSecretReader}.
+ * Read once per run, lazily: a run with no prepared set that asks for a secret never opens the file.
  */
 export function featureSecretReader(options: {
-  /** The run's aggregate registry: the authority on whether a name is a secret, and whether it may be minted. */
+  /** The run's aggregate registry: the authority on whether a name is a secret at all. */
   registry: SecretRegistry;
+  /** The feature's kept values, or `null` when this machine holds none. `feature/secrets.ts`'s `readFeatureSecrets`. */
+  read: () => Promise<{ path: string; values: DevSecretsFile } | null>;
 }): (name: string) => Promise<string | undefined> {
-  const minted = new Map<string, string>();
+  let pending: Promise<{ path: string; values: DevSecretsFile } | null> | undefined;
   return async (name: string) => {
     // `Object.hasOwn`, for the reason `devSecretReader` gives: `constructor` is not a secret.
     if (!Object.hasOwn(options.registry, name)) return undefined;
     const entry = options.registry[name];
-    if (!entry || !isMintableSecret(entry) || entry.devValue === undefined) return undefined;
-    let value = minted.get(name);
-    if (value === undefined) {
-      const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
-      value = devSecretPayload(entry, name, stated, GENERATED_SOURCE).value;
-      minted.set(name, value);
+    if (!entry) return undefined;
+    pending ??= options.read();
+    const kept = await pending;
+    if (kept === null) {
+      throw new ValidationError({
+        message: "This feature's secrets are not on this machine.",
+        action:
+          "Run pithy provision --feature from this worktree, on an account with a Secrets Store. It generates them once and keeps them.",
+        detail: `feature seed asked for secret '${name}' and no kept feature secrets file exists`,
+      });
     }
-    return value;
+    if (!Object.hasOwn(kept.values, name)) return undefined;
+    return devSecretPayload(entry, name, kept.values[name], kept.path).value;
   };
 }
 
-/** What a generated value's refusals name as its source, where a file path would otherwise go. Never a value. */
-const GENERATED_SOURCE = "a value generated for this seed run";
-
 /**
- * **The origin `--host` names, for a prepared set (#643).** A bare host — `preview.example.com`,
- * `localhost:9999` — takes the environment's scheme: `http` in `dev`, where Pithy runs no TLS, `https`
- * everywhere else. A full `http://` or `https://` origin is taken as written. Anything carrying a path, a
- * query, credentials, or another scheme is refused: this is an origin a fixture builds links and identities
- * against, and a near-miss would be indistinguishable from a real one.
+ * **The origin `--host` names, for a prepared set (#643).** A bare host — `preview.example.com` — takes the
+ * environment's scheme: `http` in `dev`, where Pithy runs no TLS, `https` everywhere else. A full `http://` or
+ * `https://` origin is taken as written, within the same rules.
+ *
+ * **One rule, stated here, and refused rather than repaired.** This is the origin a fixture builds links and
+ * identities against, and a near-miss would be indistinguishable from a real one — so nothing is normalized
+ * into shape:
+ *
+ * - The host is a public hostname by core's {@link isPublicHostname}, the same test a feature's stamped origin
+ *   passes. `%2e%2e` is refused before a URL parser can decode it into `..`.
+ * - Nothing follows the host: no path — a trailing `/` included — no `?`, no `#`, no credentials.
+ * - Off `dev`, no port and no `http`: a deployed Worker answers on `https` at the default port, and
+ *   `featureOrigin` refuses a stamp with a port for the same deployment.
+ * - **`localhost` is `dev`'s alone.** It is this machine, over `http`, on whatever port it was given. A
+ *   deployed environment is never there, so off `dev` it is refused — `127.0.0.1` and `*.localhost` with it —
+ *   rather than turned into an `https://localhost` nothing serves.
  */
 export function seedHostOrigin(host: string, env: string): string {
-  const explicit = /^https?:\/\//i.test(host);
-  const scheme = env === LOCAL_ENVIRONMENT ? "http:" : "https:";
-  let url: URL | null = null;
-  try {
-    url = new URL(explicit ? host : `${scheme}//${host}`);
-  } catch {
-    url = null;
-  }
-  const bare =
-    url !== null &&
-    url.hostname !== "" &&
-    url.username === "" &&
-    url.password === "" &&
-    url.pathname === "/" &&
-    url.search === "" &&
-    url.hash === "" &&
-    // A bare host must not have smuggled a path the URL parser normalized away, like `a.test/.`.
-    (explicit || !/[/?#@\s]/.test(host));
-  if (!url || !bare) {
-    throw new ValidationError({
+  const local = env === LOCAL_ENVIRONMENT;
+  const refuse = (action: string, why: string): ValidationError =>
+    new ValidationError({
       message: `--host takes a host, like preview.example.com, not "${host}".`,
-      action: "Pass the host alone, or an http(s) origin with no path.",
-      detail: `seed --host "${host}" is not a bare host or origin`,
+      action,
+      detail: `seed --host "${host}" is refused: ${why}`,
     });
+  const bare = "Pass the host alone, or an https origin with nothing after it.";
+
+  // Scheme, then an authority of host characters only. `%`, `@`, `\`, `/`, `?`, `#` and whitespace end the
+  // match, so an encoded host, credentials, and anything after the host are refused here, never parsed.
+  const match = /^(?:(https?):\/\/)?([a-z0-9.:-]+)$/i.exec(host);
+  const authority = match?.[2]?.toLowerCase();
+  const parts = authority === undefined ? null : /^([^:]+)(?::(\d{1,5}))?$/.exec(authority);
+  const hostname = parts?.[1];
+  if (!match || !parts || hostname === undefined) throw refuse(bare, "not a bare host or origin");
+  const port = parts[2];
+  const scheme = match[1]?.toLowerCase() ?? (local ? "http" : "https");
+
+  const loopback = hostname === "localhost" || hostname.endsWith(".localhost") || /^127(\.\d{1,3}){3}$/.test(hostname);
+  if (loopback && !local) {
+    throw refuse("localhost is this machine. Pass the host the deployment answers on.", "loopback outside dev");
   }
-  return url.origin;
+  if (!loopback && !isPublicHostname(hostname)) throw refuse(bare, "not a hostname");
+  if (port !== undefined) {
+    if (!local) throw refuse("A deployed Worker answers on the default port. Drop the port.", "a port outside dev");
+    const number = Number(port);
+    if (number < 1 || number > 65_535) throw refuse("Pass a port from 1 to 65535.", "port out of range");
+  }
+  if (!local && scheme !== "https") {
+    throw refuse("A deployed environment is served over https. Pass the host alone.", "http outside dev");
+  }
+  return `${scheme}://${hostname}${port === undefined ? "" : `:${port}`}`;
 }
 
 /**

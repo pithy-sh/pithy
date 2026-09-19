@@ -18,13 +18,14 @@ const AUTH_EXAMPLE_SEED_ORDER = 100;
  * `Account`/`Session`/password rows: these are the users, not a signed-in session, and Pithy is
  * passwordless-only regardless. `emailVerified` is true so a seeded identity behaves exactly like a
  * user who has completed magic-link/OTP verification. Composed in only when the project turns on
- * `seed.includeExamples` (`pithy.config.ts`), and only for `dev` and `staging` — an example fixture
- * never targets production, regardless of that setting.
+ * `seed.includeExamples` (`pithy.config.ts`), and only for `dev`, `staging` and a feature deployment — an
+ * example fixture never targets production, regardless of that setting. A feature is here because it is
+ * created empty and throwaway, and its dev login signs in only as a user its own seed run creates (#643).
  */
 export const authExampleSeed: SeedSet = defineSeed({
   name: "example",
   order: AUTH_EXAMPLE_SEED_ORDER,
-  environments: ["dev", "staging"],
+  environments: ["dev", "staging", "feature"],
   example: true,
   d1: [
     d1SeedGroup(

@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { devLoginFileFor } from "@pithy-sh/core/src/seed/devLogin";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { readDevLogin, seededLoginLines } from "../dev/devLogin";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { writeSeedArtifact } from "../seed/prepare";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -207,8 +210,14 @@ export default defineCommand({
       // the fixtures below are the rest of the run and they are worth doing.
       if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = 1;
 
+      // Which artifacts this run wrote, so a login is printed only when this run minted it — never a stale one.
+      const written: string[] = [];
       const report = await seedProject({
         projectDir,
+        writeArtifact: async (artifact) => {
+          await writeSeedArtifact(projectDir, artifact);
+          written.push(artifact.file);
+        },
         // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
         // this name is the owner stamped into their metadata — the only handle a later sweep has on them.
         project: requireProjectName(config),
@@ -245,5 +254,13 @@ export default defineCommand({
       }
 
       process.stdout.write(`${renderSeedText(report)}\n`);
+      // **A link to open, off `dev` (#643).** `pithy dev` prints the local login on its banner; nothing printed a
+      // feature deployment's, so its login was a file nobody read. Human output only: `--json` lands in CI logs,
+      // and the link carries a claim.
+      if (env !== "dev" && written.includes(devLoginFileFor(env))) {
+        for (const line of seededLoginLines(await readDevLogin(projectDir, env), new Date())) {
+          process.stdout.write(`${line}\n`);
+        }
+      }
     }),
 });

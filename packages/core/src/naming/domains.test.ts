@@ -129,6 +129,24 @@ describe("a feature environment's origin", () => {
     }
   });
 
+  /**
+   * **A stamp whose hostname is not one (#643).** The URL parser decodes `%2e%2e` into `..`, so
+   * `https://%2e%2e.acme.workers.dev` has four dot-separated parts and ends in `.workers.dev` — and is no
+   * Worker's address. Every label must be a DNS label.
+   */
+  test("refuses a stamp whose hostname has an empty, encoded or malformed label", () => {
+    for (const stamped of [
+      "https://%2e%2e.acme.workers.dev",
+      "https://a.%2e%2e.acme.workers.dev",
+      "https://a..acme.workers.dev",
+      "https://a_b.acme.workers.dev",
+      "https://-a.acme.workers.dev",
+      "https://a.acme.workers.dev.",
+    ]) {
+      expect(originFor("feature", undefined, { BASE_URL: stamped }), stamped).toBe(LOCAL_ORIGIN);
+    }
+  });
+
   test("is never read for any other environment", () => {
     for (const env of ["dev", "staging", "prod", undefined]) {
       expect(originFor(env, undefined, { BASE_URL: FEATURE_ORIGIN })).toBe(LOCAL_ORIGIN);

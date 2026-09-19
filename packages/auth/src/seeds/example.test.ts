@@ -12,9 +12,11 @@ describe("authExampleSeed", () => {
     expect(authExampleSeed.example).toBe(true);
   });
 
-  it("never lists production — an example fixture is dev/staging only", () => {
+  it("never lists production — an example fixture is for dev, staging and a feature deployment only", () => {
     expect(authExampleSeed.environments).not.toContain("production");
-    expect(authExampleSeed.environments).toEqual(["dev", "staging"]);
+    expect(authExampleSeed.environments).not.toContain("prod");
+    // A feature deployment is created empty, and its dev login signs in only as a user its own run seeds (#643).
+    expect(authExampleSeed.environments).toEqual(["dev", "staging", "feature"]);
   });
 
   it("seeds the canonical demo identities into the app database", () => {

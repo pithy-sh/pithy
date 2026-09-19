@@ -775,6 +775,77 @@ describe("deployProject refuses a configuration that is not the requested enviro
   });
 });
 
+/**
+ * **`pithy deploy --env feature` verifies what it just deployed (#643).** A feature's stanza lives in the
+ * generated config, never in the tracked `wrangler.jsonc`, so a verification that read the tracked file found
+ * no stanza, no address, and never probed. It reads the generated config the way `readAddressStanza` does.
+ */
+describe("a feature deploy's verification", () => {
+  let dir: string;
+  statesItsOwnEnvironment();
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-deploy-verify-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const SCRIPT = "replay-f643-feature-address-board";
+  const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
+
+  /** Worker `board`: a tracked config with no feature stanza, and the generated one provisioning wrote. */
+  async function provisioned(top: Record<string, unknown> = {}): Promise<void> {
+    const at = join(dir, "apps", "board");
+    await mkdir(join(at, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(join(at, "wrangler.jsonc"), JSON.stringify({ name: "replay-board", ...top }));
+    await writeFile(
+      join(at, ".wrangler", "pithy", "wrangler.feature.jsonc"),
+      JSON.stringify({
+        name: "replay-board",
+        ...top,
+        env: { feature: { name: SCRIPT, vars: { ENVIRONMENT: "feature", BASE_URL: ORIGIN } } },
+      }),
+    );
+  }
+
+  test("probes the feature's own workers.dev origin for the version just shipped", async () => {
+    await provisioned();
+    const probed: { url: string; expectedVersion: string }[] = [];
+
+    const results = await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "feature",
+      runDeploy: async () => wranglerOutput(SCRIPT, "v1"),
+      verifyDeploy: async (probe) => {
+        probed.push(probe);
+        return { status: "verified", observed: ["v1"], attempts: 1, detail: "served v1" };
+      },
+    });
+
+    expect(probed).toEqual([{ url: ORIGIN, expectedVersion: "v1" }]);
+    expect(results[0]).toMatchObject({ ok: true, verification: "verified" });
+  });
+
+  test("a feature with no workers.dev address, by an inherited workers_dev: false, is not probed", async () => {
+    await provisioned({ workers_dev: false });
+    const probed: string[] = [];
+
+    await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "feature",
+      runDeploy: async () => wranglerOutput(SCRIPT, "v1"),
+      verifyDeploy: async (probe) => {
+        probed.push(probe.url);
+        return { status: "verified", observed: ["v1"], attempts: 1, detail: "served v1" };
+      },
+    });
+
+    expect(probed).toEqual([]);
+  });
+});
+
 describe("uiBuildEnvironment", () => {
   test("names the wrangler stanza as well as the runtime environment — two variables, two jobs", () => {
     expect(uiBuildEnvironment("staging", "/p/apps/web")).toEqual({ ENVIRONMENT: "staging", CLOUDFLARE_ENV: "staging" });

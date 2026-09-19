@@ -3,7 +3,13 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_PATH, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import {
+  DEV_LOGIN_CLAIM_PARAM,
+  DEV_LOGIN_ROUTE,
+  DevLogin,
+  devLoginFileFor,
+  SEED_ARTIFACT_DIR,
+} from "@pithy-sh/core/src/seed/devLogin";
 
 /**
  * The `pithy dev` end of the dev login: say that there is one, and how to use it — **without ever
@@ -76,10 +82,16 @@ export interface DevLoginKeyAction {
   lines: string[];
 }
 
-/** Read the seeded dev login, or `undefined` when there is none. Validated — an unreadable file is no login. */
-export async function readDevLogin(projectDir: string): Promise<DevLogin | undefined> {
+/**
+ * Read the seeded dev login, or `undefined` when there is none. Validated — an unreadable file is no login.
+ *
+ * `dev`'s by default, which is what `pithy dev` reads. Another environment's is its own file (#643): a feature's
+ * is `dev-login.feature.json`, and `pithy seed --env feature` reads that one and never dev's.
+ */
+export async function readDevLogin(projectDir: string, env = "dev"): Promise<DevLogin | undefined> {
   try {
-    const parsed = DevLogin.safeParse(JSON.parse(await readFile(join(projectDir, DEV_LOGIN_PATH), "utf8")));
+    const path = join(projectDir, SEED_ARTIFACT_DIR, devLoginFileFor(env));
+    const parsed = DevLogin.safeParse(JSON.parse(await readFile(path, "utf8")));
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
@@ -188,4 +200,20 @@ export function devLoginKeyAction(
   // More than one worker carries the route, and they are separate origins — a cookie set on one signs
   // nobody into the other. There is no defensible guess, so the choice is printed.
   return { lines: ["More than one worker composes auth. Open the one you want:", ...choices(targets, login.claim)] };
+}
+
+/**
+ * **What `pithy seed` says about a login it just minted off `dev` (#643).** One line, with the link over the
+ * origin the login was minted for — a feature deployment's `workers.dev` origin — so a person has a URL to open.
+ *
+ * The claim is in that URL, as it is in `pithy dev`'s non-interactive banner: the URL is the one place it has to
+ * be. With no origin there is nothing to open it on, and the line says so rather than inventing one.
+ */
+export function seededLoginLines(login: DevLogin | undefined, now: Date): string[] {
+  const live = usable(login, now);
+  if (!live) return [];
+  if (live.origin === undefined) {
+    return [`Dev login: ${live.email} — this environment has no address to open it on. Pass --host.`];
+  }
+  return [`Dev login: ${live.email} — open ${devLoginUrl(live.origin, live.claim)} to sign in.`];
 }

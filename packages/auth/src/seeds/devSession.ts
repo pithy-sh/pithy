@@ -4,7 +4,7 @@
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
-import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_PATH, DevLogin, devLoginFileFor } from "@pithy-sh/core/src/seed/devLogin";
 import { defineSeed, type SeedPreparation, type SeedPrepareContext, type SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { DEV_PROTOCOL, sessionCookieName } from "../http/baseUrl";
@@ -313,14 +313,6 @@ function requireUser(preferences: unknown, users: readonly SeededUser[]): Seeded
 }
 
 /**
- * The file a login is written to: `dev-login.json` in `dev`, which `pithy dev` reads, and one named for the
- * environment anywhere else, so a feature's login never lands on top of the local one.
- */
-function devLoginFileFor(env: string): string {
-  return env === "dev" ? DEV_LOGIN_FILE : `dev-login.${env}.json`;
-}
-
-/**
  * The dev-login seed set. Composed by the auth capability; runs only in `dev` and on a feature deployment, only
  * for a user this same run creates, and only when the developer has opted in with a `dev.json`.
  */
@@ -348,12 +340,16 @@ export const authDevSessionSeed: SeedSet = defineSeed({
     }
 
     const minted = await mintDevLogin({ user, secret });
+    // Where it opens, when this run knows (#643): off `dev` there is no pinned port to compose a link from, so
+    // the login carries its deployment's origin and `pithy seed` prints the link over it.
+    const login =
+      context.origin !== null && context.env !== "dev" ? { ...minted.login, origin: context.origin } : minted.login;
     // **No `d1` — `#572`.** This set writes a file and nothing else now. Nothing reaches
     // `pithy_auth_sessions` until somebody opens the link and the route mints a session for them, which
     // is what makes signing out of the app harmless to the way back in.
     return {
       artifacts: [
-        { file: devLoginFileFor(context.env), contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` },
+        { file: devLoginFileFor(context.env), contents: `${JSON.stringify(DevLogin.encode(login), null, 2)}\n` },
       ],
     };
   },

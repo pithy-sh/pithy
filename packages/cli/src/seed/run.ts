@@ -10,6 +10,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
@@ -22,6 +23,8 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
+import { branchIdentityWithoutWorkers } from "../feature/identity";
+import { readFeatureSecrets } from "../feature/secrets";
 import {
   previewReset,
   type ResetPreviewEntry,
@@ -183,6 +186,11 @@ export interface SeedProjectOptions {
    * on a feature environment is handed an origin and `host` named none.
    */
   workersSubdomain?: () => Promise<string | null>;
+  /**
+   * Seam: which feature this checkout is, for a feature run's secrets (#643). Defaults to the branch, exactly as
+   * `pithy provision --feature` derives it, so the seed reads the values that run kept and no other feature's.
+   */
+  featureIdentity?: () => Promise<FeatureIdentity>;
 }
 
 /** One Worker's slice of a seed run: what its own capabilities' fixtures wrote, and what they didn't. */
@@ -657,14 +665,19 @@ interface PreparedRun {
 }
 
 /**
- * The environment's own secret reader: the dev secrets file in `dev` and nowhere else (#159), values generated
- * for the run on a feature (#643), and the refusal everywhere else.
+ * The environment's own secret reader: the dev secrets file in `dev` and nowhere else (#159), the values
+ * `pithy provision --feature` kept on a feature (#643), and the refusal everywhere else.
  */
 function environmentSecretReader(
   options: SeedProjectOptions,
   registry: SecretRegistry,
 ): (name: string) => Promise<string | undefined> {
-  if (options.env === FEATURE_ENVIRONMENT) return featureSecretReader({ registry });
+  if (options.env === FEATURE_ENVIRONMENT) {
+    // The feature this checkout is, from its branch, as `pithy provision --feature` named it — the key its kept
+    // secrets are filed under. Asked only when a set asks for a secret.
+    const identity = options.featureIdentity ?? (() => branchIdentityWithoutWorkers(options.projectDir));
+    return featureSecretReader({ registry, read: async () => readFeatureSecrets(await identity()) });
+  }
   return devSecretReader({ project: options.project, env: options.env, registry });
 }
 
@@ -735,8 +748,8 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
     // The run's environment, not a claim about it: `devSecretReader` refuses to resolve anything unless
     // this says `dev` (#159). The rule is inside the reader — this only tells it where the rows are going.
-    // A feature is never handed that reader at all: `featureSecretReader` takes no project and no path, so
-    // the dev secrets file is not something it could open (#643).
+    // A feature is never handed that reader at all: `featureSecretReader` reads the feature's own kept file,
+    // keyed by project and feature, so the dev secrets file is not something it could open (#643).
     //
     // The registry is the whole fan-out's, in one `aggregateSecretRegistries` call, because the seam is
     // the run's and not one Worker's: a set deduped onto another Worker must resolve the same secret it

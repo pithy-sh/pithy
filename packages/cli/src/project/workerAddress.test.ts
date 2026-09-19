@@ -199,6 +199,40 @@ describe("readAddressStanza", () => {
     expect(await readAddressStanza(dir, "prod")).toBeUndefined();
   });
 
+  /**
+   * **wrangler inherits a top-level `workers_dev` into every environment (#643).** A generated feature stanza
+   * never repeats it, so reading the stanza alone saw no `false`, derived a workers.dev address, and stamped one
+   * nothing answers on.
+   */
+  it("carries a top-level workers_dev: false into the stanza it reads, so a feature has no workers.dev address", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-address-stanza-"));
+    made.push(dir);
+    await mkdir(join(dir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(
+      featureConfigPath(dir),
+      JSON.stringify({ workers_dev: false, env: { feature: { name: "replay-f643-x-board" } } }),
+    );
+
+    const stanza = await readAddressStanza(dir, "feature");
+    expect(stanza?.workers_dev).toBe(false);
+    expect(resolveWorkerAddress({ environment: "feature", stanza, subdomain: "acme" })).toBeNull();
+  });
+
+  it("lets the stanza's own workers_dev win over the top level's, as wrangler does", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-address-stanza-"));
+    made.push(dir);
+    await mkdir(join(dir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(
+      featureConfigPath(dir),
+      JSON.stringify({ workers_dev: false, env: { feature: { name: "replay-f643-x-board", workers_dev: true } } }),
+    );
+
+    const stanza = await readAddressStanza(dir, "feature");
+    expect(resolveWorkerAddress({ environment: "feature", stanza, subdomain: "acme" })?.url).toBe(
+      "https://replay-f643-x-board.acme.workers.dev",
+    );
+  });
+
   it("is undefined, not a throw, where there is no config at all", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pithy-address-stanza-"));
     made.push(dir);

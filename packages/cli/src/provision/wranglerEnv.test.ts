@@ -542,6 +542,21 @@ describe("the address applyProvisionedEnv stamps", () => {
     expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
   });
 
+  test("a top-level workers_dev: false, which wrangler inherits, stamps no workers.dev address (#643)", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        workers_dev: false,
+        vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board", BASE_URL: "https://app.example.com" },
+      }),
+    );
+
+    await provision(feature, "acme");
+
+    expect((await stanzaVars(featureConfigPath(dir), "feature"))?.BASE_URL).toBeUndefined();
+  });
+
   test("a declared environment is never stamped from workers.dev (#89)", async () => {
     await provision(environmentScope("replay", "staging"), "acme");
 

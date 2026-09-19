@@ -200,13 +200,30 @@ function resolveFeatureAddress(input: ResolveWorkerAddressInput): WorkerAddress 
  */
 export async function readAddressStanza(workerDir: string, env: string): Promise<AddressStanza | undefined> {
   try {
-    const config = parse(await readFile(wranglerConfigPath(workerDir, env), "utf8")) as {
-      env?: Record<string, AddressStanza | undefined>;
-    } | null;
-    return config?.env?.[env] ?? undefined;
+    const config = parse(await readFile(wranglerConfigPath(workerDir, env), "utf8")) as
+      | (AddressStanza & { env?: Record<string, AddressStanza | undefined> })
+      | null;
+    const stanza = config?.env?.[env];
+    return stanza ? inheritAddressKeys(config, stanza) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A stanza as wrangler deploys it, for the keys an address depends on: its own, else the top level's where
+ * wrangler inherits one.
+ *
+ * **`workers_dev` is inheritable, and that is the whole of it (#643).** wrangler carries a top-level
+ * `workers_dev` into every environment that does not set its own, and provisioning never repeats it into a
+ * generated stanza — so a stanza read alone said nothing, a feature derived a `workers.dev` address, and the
+ * address stamped was one the deployed Worker never answers on. `routes`, `route` and `vars` are not
+ * inherited, so they are not read from the top level here either.
+ */
+export function inheritAddressKeys(top: AddressStanza | null | undefined, stanza: AddressStanza): AddressStanza {
+  if (Object.hasOwn(stanza, "workers_dev") || top === null || top === undefined) return stanza;
+  if (!Object.hasOwn(top, "workers_dev")) return stanza;
+  return { ...stanza, workers_dev: top.workers_dev };
 }
 
 /**

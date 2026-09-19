@@ -7,6 +7,7 @@ import { type AmbientEnv, ambientEnv, compositionEnvironment } from "@pithy-sh/c
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
@@ -15,8 +16,12 @@ import type { AuthWiring } from "../capability";
 import { Session } from "../data/betterAuth";
 import { authDatabase } from "../data/tables";
 import { resolveSessionSecret } from "../instance/secrets";
-import { DEV_SESSION_COOKIE_NAME, signCookieValue, verifyDevLoginClaim } from "../seeds/devSession";
+import { signCookieValue, verifyDevLoginClaim } from "../seeds/devSession";
+import { baseURLResolver, type ResolveBaseURL, sessionCookieName } from "./baseUrl";
 import { resolveDb } from "./resolve";
+
+/** The environments a composition mounts the dev-login route in. Everything else — `staging`, `prod` — never. */
+export const DEV_LOGIN_ENVIRONMENTS: readonly string[] = [LOCAL_ENVIRONMENT, FEATURE_ENVIRONMENT];
 
 /**
  * `GET /__pithy/dev-login` — the seeded session, as a redirect that signs the browser in.
@@ -33,8 +38,13 @@ import { resolveDb } from "./resolve";
  * This route mints an authenticated session with **no credential presented**. That is the entire risk of
  * the feature, so it is refused twice, independently:
  *
- * 1. The composition's environment is not `dev`.
+ * 1. The composition's environment is neither `dev` nor `feature`.
  * 2. `CI` is set to any non-blank value — even in a `dev` composition.
+ *
+ * **`feature` is the one deployed environment it mounts on (#643).** A feature deployment is throwaway, owned
+ * by one branch, and signed into by the people building it — and without the route, the login its seed writes
+ * has nowhere to land. `staging` and `prod` never mount it: they are the list {@link DEV_LOGIN_ENVIRONMENTS}
+ * leaves out, not a list it names, so a new environment is refused until somebody adds it here on purpose.
  *
  * Neither implies the other. CI runs `dev` compositions constantly (integration suites, packaging
  * checks, `pithy dev` itself), and a developer's laptop is not CI, so "not `dev`" does not cover CI and
@@ -59,14 +69,18 @@ export function registerDevLoginRoute(
   env: AmbientEnv = ambientEnv(),
 ): (app: Hono<PithyHonoEnv>) => void {
   return (app) => {
-    // Gate one: the composition's environment. `undefined` — nothing stamped `ENVIRONMENT` — is not `dev`.
-    if (compositionEnvironment(env) !== "dev") return;
+    // Gate one: the composition's environment. `undefined` — nothing stamped `ENVIRONMENT` — is neither.
+    const environment = compositionEnvironment(env);
+    if (environment === undefined || !DEV_LOGIN_ENVIRONMENTS.includes(environment)) return;
     // Gate two: continuous integration, independently. A `dev` composition in CI gets no route either.
     if (isContinuousIntegration(env)) return;
+    // Which cookie a signed-in browser carries is the composition's, not this route's: `http` in `dev`, the
+    // deployed origin's `https` on a feature (#643). Resolved from the same environment, once, here.
+    const resolveBase = baseURLResolver(wiring.config.baseURL, env);
     // The claim is read here rather than inside the handler: `c.req.valid` is typed off the chain it was
     // declared on, and a handler taking a bare `Context` has no validator to read from.
     app.get(DEV_LOGIN_ROUTE, zValidator("query", DevLoginQuery, validationHook), (c) =>
-      serveDevLogin(c, wiring, c.req.valid("query")[DEV_LOGIN_CLAIM_PARAM]),
+      serveDevLogin(c, wiring, resolveBase, c.req.valid("query")[DEV_LOGIN_CLAIM_PARAM]),
     );
   };
 }
@@ -122,6 +136,7 @@ const DevLoginQuery = z
 async function serveDevLogin(
   c: Context<PithyHonoEnv>,
   wiring: AuthWiring,
+  resolveBase: ResolveBaseURL,
   presented: string | undefined,
 ): Promise<Response> {
   if (!presented) throw noSeededSession();
@@ -172,12 +187,15 @@ async function serveDevLogin(
     .execute();
 
   const value = await signCookieValue(token, secret);
-  // The attributes Better Auth's own session cookie carries in a `dev` composition: `HttpOnly` (a
-  // session token has no business in `document.cookie`, which is also the habit this route retires),
-  // `SameSite=Lax`, root path. No `Secure` — a `dev` base URL is `http://localhost`, and a `Secure`
-  // cookie there is one the browser accepts and never sends back.
+  // The attributes Better Auth's own session cookie carries in this composition: `HttpOnly` (a session token
+  // has no business in `document.cookie`, which is also the habit this route retires), `SameSite=Lax`, root
+  // path — and the name and `Secure` the base URL's scheme decides. A `dev` base URL is `http://localhost`,
+  // where a `Secure` cookie is accepted and never sent back. A feature's is its `https` workers.dev origin,
+  // where Better Auth reads only the `__Secure-` name and a browser keeps that name only when `Secure` (#643).
+  const protocol = new URL(resolveBase(c.req.raw)).protocol;
+  const secure = protocol === "https:" ? "; Secure" : "";
   const maxAge = Math.floor((expiresAt.getTime() - now.getTime()) / 1000);
-  const cookie = `${DEV_SESSION_COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
+  const cookie = `${sessionCookieName(protocol)}=${value}; Path=/; HttpOnly${secure}; SameSite=Lax; Max-Age=${maxAge}`;
   // 302 to the app root rather than 200 with a page: the developer asked to be signed in, not to read a
   // confirmation, and a redirect leaves the address bar on the app instead of on this route.
   return c.body(null, 302, { "Set-Cookie": cookie, Location: "/" });

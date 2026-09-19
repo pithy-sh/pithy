@@ -168,6 +168,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "doctor/turnstileSitekeys.ts": ["@pithy-sh/turnstile"],
   "feature/destroy.ts": ["@pithy-sh/secrets"],
   "feature/provision.ts": ["@pithy-sh/secrets"],
+  "feature/secrets.ts": ["@pithy-sh/secrets"],
   "migrations/run.ts": ["@pithy-sh/secrets"],
   "project/environment.ts": ["@pithy-sh/secrets"],
   "project/environmentReadiness.ts": ["@pithy-sh/secrets"],

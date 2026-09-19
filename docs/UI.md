@@ -472,7 +472,7 @@ Three rules the derivation follows:
 
 ### Why every environment
 
-A capability may decide at registration whether to mount a route at all. `@pithy-sh/auth` does: `/__pithy/dev-login` exists only in a `dev` composition, because it mints a session with no credential presented and has no business in a route table that ships.
+A capability may decide at registration whether to mount a route at all. `@pithy-sh/auth` does: `/__pithy/dev-login` exists only in a `dev` or `feature` composition, because it mints a session with no credential presented and has no business in a route table that ships.
 
 Compose the Worker once — under whatever environment the command happens to be run in — and you get the route table of *that* environment while calling it the Worker's. That is how `/__pithy/dev-login` was left off every generated allowlist: `pithy ui sync` was not a `dev` composition, so the route did not exist to be found, and `--check` reported `every route reaches the worker` while `pithy dev`'s sign-in URL landed on the SPA's 404.
 

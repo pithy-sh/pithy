@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { rm } from "node:fs/promises";
+import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
@@ -13,8 +14,11 @@ import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisio
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
+import { SECRETS_D1_BINDING } from "../devSecrets/store";
+import type { StatePathOptions } from "../notifier/state";
 import {
   type BackendRunner,
+  defaultMigrate,
   type ProvisionProgress,
   type ProvisionReport,
   type ProvisionWorker,
@@ -40,6 +44,15 @@ import {
   readManifest,
   writeManifest,
 } from "./manifest";
+import {
+  forgetFeatureSecrets,
+  type KeptFeatureSecrets,
+  keepFeatureSecrets,
+  keptPayload,
+  keptSecretNames,
+  type SealedFeatureSecrets,
+  sealFeatureSecrets,
+} from "./secrets";
 
 /**
  * `pithy provision --feature` — one branch's ephemeral Cloudflare environment.
@@ -140,6 +153,14 @@ export interface ProvisionFeatureOptions {
   store?: SecretsStore;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * The feature's `SECRETS` database, by id — the REST-backed D1 in a real run (#643). It is where every kept
+   * `d1` secret is sealed, because that database is what the deployed Worker reads them from. Omitted, nothing
+   * is sealed and the `d1` secrets stay pending, as they were before a feature kept any.
+   */
+  secretsDatabase?: (databaseId: string) => D1Database;
+  /** Where the config directory is — the kept secrets file's home. Defaults to the real one; tests pass their own. */
+  paths?: StatePathOptions;
 }
 
 /**
@@ -175,12 +196,65 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   // The consequence is stated where an operator meets it — a feature has no manager, so
   // `pithy secrets create` targets a declared environment, never a branch.
   const store = options.store;
-  if (store) {
+  // **The feature's own secrets, generated once and kept (#643)**, before a single one is sent anywhere. See
+  // `./secrets.ts` for where they live and why. Only with a store to hold the master key: without one no `d1`
+  // secret can be sealed, and the run says so as it always did.
+  const registry = workerSecretRegistry(options.capabilities);
+  const kept: KeptFeatureSecrets | null =
+    store && registry
+      ? await keepFeatureSecrets({
+          registry,
+          identity: options.identity,
+          ...(options.paths !== undefined ? { paths: options.paths } : {}),
+        })
+      : null;
+  const regenerated = new Set<string>();
+  const audit = options.audit ?? (async () => {});
+  if (store && kept && registry) {
+    for (const name of keptSecretNames(registry)) {
+      const entry = registry[name];
+      const payload = keptPayload(kept, registry, name);
+      if (entry?.backend !== "cf-secrets-store" || !payload) continue;
+      const secretName = scope.secretEntry(name, "environment");
+      const present = await store.exists(secretName);
+      if (!present && name === MASTER_KEY_BINDING) {
+        // The master key is written here; every other absent entry is minted by the binding pass below, from
+        // the same kept value, so its report line still says the run created it.
+        await store.put(secretName, payload.text);
+      } else if (present && kept.generated.includes(name)) {
+        // The deployment holds a value this machine never kept. Replaced, so the store and the kept copy agree —
+        // and reported, because everything signed with the old value stops verifying.
+        await store.put(secretName, payload.text);
+        regenerated.add(name);
+        await audit({
+          environment: scope.stanza,
+          action: "secrets/set",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "secret",
+          resourceId: secretName,
+          metadata: { name: secretName, kind: "regenerated", feature: options.identity.slug },
+        });
+      }
+    }
+  } else if (store) {
     const masterKey = scope.secretEntry(MASTER_KEY_BINDING, "environment");
     if (!(await store.exists(masterKey))) {
       await store.put(masterKey, JSON.stringify(await initialMasterKeyConfig()));
     }
   }
+
+  // Sealed straight after the schema lands and before the seed, so a fixture that fails still leaves a
+  // deployment that signs people in. Idempotent: a row already holding the kept value is left alone.
+  let sealed: SealedFeatureSecrets | null = null;
+  const migrate = options.migrate ?? defaultMigrate;
+  const migrateAndSeal: BackendRunner = async (args) => {
+    await migrate(args);
+    if (!kept || !registry || !options.secretsDatabase) return;
+    const databaseId = await featureSecretsDatabaseId(path, options.identity);
+    if (databaseId === null) return;
+    sealed = await sealFeatureSecrets({ kept, registry, database: options.secretsDatabase(databaseId) });
+  };
 
   const report = await provisionEnvironment({
     projectDir: options.projectDir,
@@ -211,7 +285,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
         await writeManifest(path, manifest);
       },
     },
-    ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
+    migrate: migrateAndSeal,
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
     ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
     ...(options.resolveWorkers !== undefined ? { resolveWorkers: options.resolveWorkers } : {}),
@@ -233,6 +307,8 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
                 store,
                 environment: scope.stanza,
                 ...(options.audit !== undefined ? { audit: options.audit } : {}),
+                // The kept value, never a fresh one: the seed signs with what this entry holds (#643).
+                stated: (secret) => (kept && Object.hasOwn(kept.values, secret) ? kept.values[secret] : undefined),
               }),
             }),
         }
@@ -243,7 +319,32 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     auditMetadata: { feature: options.identity.slug, issue: options.identity.issue },
   });
 
-  return report;
+  if (!kept) return report;
+  const done = sealed as SealedFeatureSecrets | null;
+  for (const name of done?.replaced ?? []) if (kept.generated.includes(name)) regenerated.add(name);
+  return {
+    ...report,
+    featureSecrets: {
+      path: kept.path,
+      sealed: done?.sealed ?? [],
+      written: done?.written ?? [],
+      regenerated: [...regenerated].sort(),
+    },
+  };
+}
+
+/**
+ * The feature's `SECRETS` database id, from the manifest this run just wrote — only an entry this feature
+ * could have created, for the reason every other read of that file gives. `null` when there is none: a
+ * project whose Workers compose no secrets capability, or one that declined the binding.
+ */
+async function featureSecretsDatabaseId(path: string, identity: FeatureIdentity): Promise<string | null> {
+  const manifest = await readManifest(path);
+  const resource = (manifest?.resources ?? []).find(
+    (candidate) =>
+      candidate.kind === "d1" && candidate.binding === SECRETS_D1_BINDING && isOwnedByFeature(identity, candidate),
+  );
+  return resource?.id ?? null;
 }
 
 /** One deleted resource in the teardown report — a Cloudflare resource, or a Worker script. */
@@ -322,6 +423,8 @@ export interface DeprovisionFeatureOptions {
   store?: SecretsStore;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /** Where the config directory is — the kept secrets file's home. Defaults to the real one. */
+  paths?: StatePathOptions;
 }
 
 /**
@@ -447,5 +550,8 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   // The manifest is removed only on a clean pass. It is the record of what is left to delete, and a
   // teardown that failed partway is precisely when a re-run needs it.
   await rm(path, { force: true });
+  // And the values it kept (#643). The deployment that held them is gone, and a kept credential for nothing is
+  // one more file with a key in it.
+  await forgetFeatureSecrets(options.identity, options.paths);
   return { deleted };
 }

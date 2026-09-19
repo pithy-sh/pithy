@@ -163,7 +163,27 @@ auth-session-secret: not created here — they need a deployed manager.
 Run pithy secrets provision to create them.
 ```
 
-`--feature` names none, because there is none:
+`--feature` creates them itself, when the account has a Secrets Store (#643). A branch gets no manager, so the
+run does the manager's one job for it: it generates the feature's own values once, keeps them on this machine,
+and seals each `d1` secret into the feature's own `SECRETS` database under the feature's own master key — the
+database and key the deployed Worker reads. Nothing is pending, and the run says where the values are kept:
+
+```
+auth-session-secret sealed into this feature's SECRETS database.
+This feature's secrets are kept in ~/.config/pithy/replay/features/f251-one-command.secrets.jsonc.
+```
+
+The file is keyed by project and feature, mode 600, outside every checkout, and is never the dev secrets file.
+It is what makes the values stable: a re-run changes nothing, and `pithy seed --env feature` signs with the
+value the Worker checks. When it is gone — a fresh CI runner, another machine — the run cannot read the values
+back out of the deployment, so it generates them again and says so on stderr, because everything signed with
+the old ones stops working:
+
+```
+SECRETS_ENCRYPTION_KEYS, auth-session-secret: generated again, because this machine did not keep them. Sessions and links signed with the old values stop working.
+```
+
+Without a Secrets Store there is no master key to seal under, and the shortfall is stated as it always was:
 
 ```
 auth-session-secret: not created here — they need a deployed manager.
@@ -174,7 +194,7 @@ A `cf-secrets-store` secret the registry calls arbitrary — the email link-sign
 
 `pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared and gets no manager, deliberately: a manager is a Worker with its own D1 and its own rotation cron, and one per open pull request is not a thing anybody wants. Running that command from a feature worktree does nothing for the branch. It used to be printed anyway, which cost an operator a command and taught them nothing.
 
-So this is a stated shortfall rather than an invented remedy. A feature environment comes up without its `d1` secrets, and every capability that reads one fails at its first request. The run warns and does not refuse: `--feature` runs per pull request in CI, and failing every one of them would not close the gap.
+With no Secrets Store, a feature environment comes up without its `d1` secrets, and every capability that reads one fails at its first request. The run warns and does not refuse: `--feature` runs per pull request in CI, and failing every one of them would not close the gap.
 
 `--json` carries the distinction as `pendingSecretsRemedy` — the command, or `null`.
 
@@ -258,7 +278,12 @@ $ pithy provision --feature --json
 | `configs[].path` | `string` | The file written, relative to the project root |
 | `configs[].ids` | `number` | How many binding ids landed in it |
 | `committed` | `boolean` | Whether those files are committed. `true` for `--env`, `false` for `--feature` — the one field a pipeline reads to know it has nothing to commit |
-| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **cannot create**. Their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. The same set in both modes — it is a fact about the registry. Empty when the project declares none |
+| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **did not create**. For `--env`, their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. For `--feature`, every one it sealed into the feature's own database is left off. Empty when the project declares none |
+| `featureSecrets` | `object` | `--feature` with a Secrets Store only: the feature's own secrets. Names and a path, never a value |
+| `featureSecrets.path` | `string` | The file on this machine the values are kept in |
+| `featureSecrets.sealed` | `string[]` | Every `d1` secret the feature's `SECRETS` database holds after this run |
+| `featureSecrets.written` | `string[]` | Of those, the ones this run wrote. Empty on a re-run |
+| `featureSecrets.regenerated` | `string[]` | Values the deployment held that this run replaced with new ones, because the kept file was not on this machine |
 | `pendingSecretsRemedy` | `string \| null` | The command that does create them, or `null` when no command does. `"pithy secrets provision"` for `--env`; **`null` for `--feature`**, because a branch gets no manager and nothing mints these for one. A pipeline branches on this rather than on the mode |
 
 ## Exit codes

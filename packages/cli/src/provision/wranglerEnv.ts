@@ -9,7 +9,7 @@ import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
-import { resolveWorkerAddress } from "../project/workerAddress";
+import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
@@ -124,7 +124,7 @@ async function editStanza(
    * run never commits back" a property of the code rather than a note in a runbook.
    */
   source: boolean,
-  mutate: (stanza: EnvBindings) => void,
+  mutate: (stanza: EnvBindings, top: Record<string, unknown>) => void,
 ): Promise<string> {
   const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
   const config = parse(raw) as unknown as Record<string, unknown>;
@@ -135,7 +135,7 @@ async function editStanza(
   // empty stanza is what shipped every feature deploy with no `vars` at all.
   const stanza = stanzaFor(config, stanzaKey) as EnvBindings;
 
-  mutate(stanza);
+  mutate(stanza, config);
 
   // One resolver for "which file?", shared with what the command reports (#251). A run states where it
   // wrote and whether that file is committed; a report computing the path a second time is a sentence
@@ -190,9 +190,14 @@ export async function applySecretBindings(
  * holds now was copied from the top level, so reading it would be a feature adopting whatever the tracked
  * file said.
  */
-function stampFeatureAddress(stanza: EnvBindings, subdomain: string | null): void {
+function stampFeatureAddress(stanza: EnvBindings, top: Record<string, unknown>, subdomain: string | null): void {
   const { vars: _inherited, ...address } = stanza;
-  const resolved = resolveWorkerAddress({ environment: FEATURE_ENVIRONMENT, stanza: address, subdomain });
+  // As wrangler will deploy it: a top-level `workers_dev: false` it inherits means no `workers.dev` address.
+  const resolved = resolveWorkerAddress({
+    environment: FEATURE_ENVIRONMENT,
+    stanza: inheritAddressKeys(top, address),
+    subdomain,
+  });
   if (resolved) {
     stanza.vars ??= {};
     stanza.vars[BASE_URL_VAR] = resolved.url;
@@ -263,7 +268,7 @@ export async function applyProvisionedEnv(options: {
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
   // from a stanza with no name, no ids and no services, and kept only the secrets. The Worker deployed
   // as wrangler's `<script>-feature` — a script nothing records and teardown never deletes.
-  return editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+  return editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza, top) => {
     // The scope decides, and it is handed what the stanza already says (#580). A declared environment
     // reads a name it finds and composes one only when there is none; a feature ignores it, because a
     // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
@@ -271,7 +276,7 @@ export async function applyProvisionedEnv(options: {
     stanza.name = options.scope.worker(options.worker, stanza.name);
     // A feature's address, from the name just settled. Never a declared environment's: its address is
     // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
-    if (!options.scope.source && options.subdomain !== undefined) stampFeatureAddress(stanza, options.subdomain);
+    if (!options.scope.source && options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
