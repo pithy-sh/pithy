@@ -55,6 +55,15 @@ export const WorkflowInstance = z
   .describe("A Cloudflare Workflow instance's status, as returned by the instance-detail endpoint.");
 export type WorkflowInstance = z.output<typeof WorkflowInstance>;
 
+/** One deployed Workflow definition — its name and the script that hosts it — from the account's list. */
+export const WorkflowDefinition = z
+  .object({
+    name: z.string().describe("The Workflow's account-wide name, e.g. `acme-prod-email-send`."),
+    script_name: z.string().describe("The Worker script whose exported class runs the Workflow."),
+  })
+  .describe("A Workflow definition on the account, as far as teardown needs one: what it is called and who hosts it.");
+export type WorkflowDefinition = z.output<typeof WorkflowDefinition>;
+
 /** Terminal states a poll stops on. */
 const TERMINAL: ReadonlySet<WorkflowInstanceStatus> = new Set(["complete", "errored", "terminated"]);
 
@@ -91,6 +100,39 @@ export class CloudflareWorkflowsClient extends CloudflareManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Every Workflow definition on the account, validated at the wire boundary. What `pithy feature destroy` reads
+   * to find the Workflows a feature's scripts host, by exact script name (#643).
+   */
+  async listWorkflows(): Promise<WorkflowDefinition[]> {
+    return cloudflareRequest("list Workflows", async () => {
+      const out: WorkflowDefinition[] = [];
+      for await (const workflow of this.getClient().workflows.list({ account_id: this.accountId })) {
+        const parsed = WorkflowDefinition.safeParse(workflow);
+        if (!parsed.success) throw new CloudflareInvalidResponseError({ detail: "list Workflows: unexpected shape" });
+        out.push(parsed.data);
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Delete a Workflow definition by name, resolving `false` when there was none (#643). Cloudflare's own
+   * reference says this deletes the Workflow and leaves the Worker script alone; whether deleting the script
+   * deletes its Workflows it does not say, so teardown deletes them explicitly rather than rely on either.
+   */
+  async deleteWorkflow(workflowName: string): Promise<boolean> {
+    return cloudflareRequest(`delete Workflow ${workflowName}`, async () => {
+      try {
+        await this.getClient().workflows.delete(workflowName, { account_id: this.accountId });
+        return true;
+      } catch (error) {
+        if (isNotFoundError(error)) return false;
+        throw error;
+      }
+    });
   }
 
   /** Create (trigger) a Workflow instance and return its id. */

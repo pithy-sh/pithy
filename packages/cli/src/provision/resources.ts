@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
+import type { FeatureIndex } from "../capabilities/hostRegistry";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 
 /**
@@ -118,6 +120,43 @@ export interface WorkerScripts {
 }
 
 /**
+ * **The account's Workflow definitions, as teardown needs them (#643).** A feature's scripts host Workflows —
+ * every kit host does — and Cloudflare does not say whether deleting a script deletes the Workflows it hosts, so
+ * teardown finds them by their hosting script's exact name and deletes each one itself.
+ */
+export interface WorkflowDefinitions {
+  /** The name of every Workflow whose hosting script is exactly one of these. */
+  hostedBy(scripts: ReadonlySet<string>): Promise<string[]>;
+  /** Delete a Workflow by name. One already gone is not an error. */
+  delete(name: string): Promise<void>;
+}
+
+/**
+ * **The account's API tokens, as feature teardown needs them (#643):** a feature's secrets manager holds a token
+ * of its own, named for the feature, and teardown revokes it by that exact name.
+ */
+export interface FeatureApiTokens {
+  /** Delete every account token of exactly this name. Resolves how many went; none is not an error. */
+  deleteByName(name: string): Promise<number>;
+}
+
+/** The default {@link WorkflowDefinitions}, over the account's Workflows REST client. */
+export function cloudflareWorkflowDefinitions(
+  workflows: Pick<CloudflareWorkflowsClient, "listWorkflows" | "deleteWorkflow">,
+): WorkflowDefinitions {
+  return {
+    hostedBy: async (scripts) =>
+      (await workflows.listWorkflows()).filter((one) => scripts.has(one.script_name)).map((one) => one.name),
+    delete: async (name) => void (await workflows.deleteWorkflow(name)),
+  };
+}
+
+/** The default {@link FeatureApiTokens}, over the account's token manager. */
+export function cloudflareFeatureApiTokens(clients: CloudflareClients): FeatureApiTokens {
+  return { deleteByName: (name) => clients.accountTokens().deleteTokensByName(name) };
+}
+
+/**
  * The default {@link WorkerScripts}, over the account's Workers manager. The account travels with the
  * clients for the reason it does in {@link cloudflareProvisioners} (#378): what vouches for it is what
  * makes a listing's answer one a delete may act on.
@@ -171,7 +210,7 @@ export const AUDIT_DESTINATION_ENV = "dev";
  * Everything feature teardown deletes and reports, by kind: the resources provisioning creates, and the
  * Worker scripts it names for deploy (#592).
  */
-export type TeardownKind = FeatureResourceKind | "worker";
+export type TeardownKind = FeatureResourceKind | "worker" | "workflow" | "api_token" | "vectorize";
 
 /** The resource kind recorded on a provisioning audit event. */
 export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
@@ -180,4 +219,21 @@ export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   r2: "cf_r2",
   // The type every capability deprovisioner already records a removed Worker under.
   worker: "cf_worker",
+  // A Workflow definition a feature's scripts hosted, deleted by name (#643).
+  workflow: "cf_workflow",
+  // A feature manager's own account API token (#643).
+  api_token: "cf_api_token",
+  // A feature's own Vectorize index (#643).
+  vectorize: "cf_vectorize",
 };
+
+/**
+ * **The indexes a feature creates for itself (#643)** — see `FeatureIndex` in `capabilities/hostRegistry.ts`.
+ * `ensure` creates one only when absent and refuses one of another shape; `remove` deletes one if it is there.
+ */
+export interface FeatureIndexes {
+  /** Create the index, and its metadata indexes, if absent. */
+  ensure(index: FeatureIndex): Promise<void>;
+  /** Delete the index by name. Resolves whether one was there. */
+  remove(name: string): Promise<boolean>;
+}

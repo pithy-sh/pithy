@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { featureRatelimitNamespaceId } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { FeatureResource } from "../feature/manifest";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
-import { applyProvisionedEnv } from "./wranglerEnv";
+import { applyProvisionedEnv, bindFeatureHosts } from "./wranglerEnv";
 
 interface Stanza {
   name?: string;
@@ -610,5 +611,189 @@ describe("the address applyProvisionedEnv stamps", () => {
     await provision(environmentScope("replay", "staging"), "acme");
 
     expect((await stanzaVars(wranglerPath, "staging"))?.BASE_URL).toBe("https://app.example.com");
+  });
+});
+
+/**
+ * **F4 of #643's review: what a feature stanza gives up, and what it must carry.** Routes are stripped from a
+ * feature stanza — and the run is told which, whether they were inherited or declared under a tracked
+ * `env.feature`. Rate limiters are bound whether or not that stanza already exists, and every one of them gets
+ * the feature's own namespace: nothing is shared between a feature and any other environment.
+ */
+describe("a feature stanza's routes and rate limiters", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const identity = { project: "replay", issue: "643", slug: "feature-address" };
+  const feature = featureScope(identity);
+  const LIMITER = { name: "AUTH_RATE_LIMITER", namespace_id: "1001", simple: { limit: 10, period: 60 } };
+
+  const provision = (onRoutesDropped?: (routes: string[]) => void) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope: feature,
+      resources: [],
+      services: [],
+      secrets: [],
+      subdomain: "acme",
+      ...(onRoutesDropped ? { onRoutesDropped } : {}),
+    });
+  const generated = async () =>
+    (
+      parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+        env: { feature: { ratelimits?: { name: string; namespace_id: string }[]; routes?: unknown[] } };
+      }
+    ).env.feature;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envlimits-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("tells the operator which inherited routes it stripped", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", routes: ["app.example.com/*"] }));
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([["app.example.com/*"]]);
+    expect((await generated()).routes).toEqual([]);
+  });
+
+  test("tells the operator which routes a tracked env.feature declared, and strips them too", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        routes: ["app.example.com/*"],
+        env: { feature: { route: { pattern: "preview.example.com/*" }, routes: ["beta.example.com/*"] } },
+      }),
+    );
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([["preview.example.com/*", "beta.example.com/*"]]);
+    expect((await generated()).routes).toEqual([]);
+  });
+
+  test("says nothing when there was no route to strip", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    const dropped: string[][] = [];
+    await provision((routes) => dropped.push(routes));
+    expect(dropped).toEqual([]);
+  });
+
+  test("copies the top level's limiter into a tracked env.feature that lacks it, in the feature's own namespace", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", ratelimits: [LIMITER], env: { feature: { vars: { A: "b" } } } }),
+    );
+    await provision();
+    const limits = (await generated()).ratelimits ?? [];
+    expect(limits.map((entry) => entry.name)).toEqual(["AUTH_RATE_LIMITER"]);
+    expect(limits[0]?.namespace_id).toBe(featureRatelimitNamespaceId(identity, 0));
+    expect(limits[0]?.namespace_id).not.toBe(LIMITER.namespace_id);
+  });
+
+  test("never keeps the top level's namespace in a stanza it creates", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", ratelimits: [LIMITER] }));
+    await provision();
+    expect((await generated()).ratelimits?.map((entry) => entry.namespace_id)).toEqual([
+      featureRatelimitNamespaceId(identity, 0),
+    ]);
+  });
+
+  test("renumbers a namespace a tracked env.feature declared, since every branch would share it", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: { feature: { ratelimits: [{ ...LIMITER, name: "FEATURE_LIMITER", namespace_id: "2002" }] } },
+      }),
+    );
+    await provision();
+    expect((await generated()).ratelimits?.map((entry) => [entry.name, entry.namespace_id])).toEqual([
+      ["FEATURE_LIMITER", featureRatelimitNamespaceId(identity, 0)],
+    ]);
+  });
+
+  test("refuses a derived namespace the tracked config already uses", async () => {
+    const taken = featureRatelimitNamespaceId(identity, 0);
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        ratelimits: [LIMITER],
+        env: { prod: { ratelimits: [{ ...LIMITER, namespace_id: taken }] } },
+      }),
+    );
+    await expect(provision()).rejects.toThrow(/already uses/);
+  });
+
+  test("two features, and two issues, never share a namespace", () => {
+    const other = featureRatelimitNamespaceId({ ...identity, issue: "644" }, 0);
+    expect(featureRatelimitNamespaceId(identity, 0)).not.toBe(other);
+    expect(featureRatelimitNamespaceId(identity, 0)).not.toBe(featureRatelimitNamespaceId(identity, 1));
+    expect(Number(featureRatelimitNamespaceId({ ...identity, issue: "999999" }, 9))).toBeLessThan(2 ** 31);
+  });
+});
+
+/**
+ * **F2 of #643's review: a host that failed to deploy leaves no binding to it.** The app Worker's entries into
+ * the kit hosts are written after the deploy, and only for the hosts that deployed — and a re-run whose host now
+ * fails takes back the entry an earlier run wrote.
+ */
+describe("bindFeatureHosts", () => {
+  let dir: string;
+  const EMAIL = {
+    binding: "EMAIL_SENDER",
+    name: "replay-f643-feature-address-email-send",
+    class_name: "EmailSendWorkflow",
+    script_name: "replay-f643-feature-address-email",
+  };
+  const MEDIA = {
+    binding: "MEDIA_IMAGE_TO_TEXT",
+    name: "replay-f643-feature-address-media-image-to-text",
+    class_name: "ImageToTextWorkflow",
+    script_name: "replay-f643-feature-address-media",
+  };
+  const OWN = { binding: "KEY_ROTATION", name: "replay-f643-feature-address-app-rotate", class_name: "Rotate" };
+
+  const workflows = async () =>
+    (
+      parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+        env: { feature: { workflows?: { binding: string }[]; vectorize?: { binding: string; index_name: string }[] } };
+      }
+    ).env.feature;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envhosts-"));
+    await mkdir(join(dir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(dir), JSON.stringify({ name: "board", env: { feature: { workflows: [OWN] } } }));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("binds only the hosts that deployed, and keeps the Worker's own entries", async () => {
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [EMAIL], indexes: [] });
+    expect((await workflows()).workflows?.map((entry) => entry.binding)).toEqual(["KEY_ROTATION", "EMAIL_SENDER"]);
+  });
+
+  test("takes back an entry an earlier run wrote when its host now fails", async () => {
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [EMAIL, MEDIA], indexes: [] });
+    await bindFeatureHosts({ workerDir: dir, hosted: [EMAIL, MEDIA], bound: [MEDIA], indexes: [] });
+    expect((await workflows()).workflows?.map((entry) => entry.binding)).toEqual([
+      "KEY_ROTATION",
+      "MEDIA_IMAGE_TO_TEXT",
+    ]);
+  });
+
+  test("binds the feature's own indexes by binding", async () => {
+    const index = { binding: "VECTORIZE", name: "replay-f643-feature-address-vector-notes" };
+    await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
+    await bindFeatureHosts({ workerDir: dir, hosted: [], bound: [], indexes: [index] });
+    expect((await workflows()).vectorize).toEqual([{ binding: "VECTORIZE", index_name: index.name }]);
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { SupportConfig } from "../config/config";
@@ -35,6 +36,11 @@ export interface SupportConfigParams {
   project: string;
   /** The target environment. */
   env: ManagedEnvironment;
+  /**
+   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
+   */
+  feature?: FeatureIdentity;
   /** The app database id for this environment — where the support tables live. */
   appDatabaseId: string;
   /**
@@ -52,16 +58,23 @@ export function resolveSupportConfig(
   template: WorkflowHostTemplate,
   params: SupportConfigParams,
 ): WorkflowHostTemplate {
+  const feature = params.feature;
   const { project, env } = params;
   return resolveWorkflowHost(template, {
     project,
     capability: SUPPORT_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: { DB: params.appDatabaseId },
     remoteBindings: ["AI"],
     vars: { SUPPORT_CONFIG: JSON.stringify(params.supportConfig) },
     // The classification Workflow, derived from support's own specs. A Workflow name is
     // account-scoped, so it has to carry the project, and only the registry knows the job.
-    workflows: hostWorkflowsFor(supportWorkflowRegistry, { project, capability: SUPPORT_CAPABILITY, env }).workflows,
+    workflows: hostWorkflowsFor(supportWorkflowRegistry, {
+      project,
+      capability: SUPPORT_CAPABILITY,
+      env,
+      ...(feature ? { feature } : {}),
+    }).workflows,
   });
 }

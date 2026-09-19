@@ -662,29 +662,42 @@ describe("a feature's kit Workers", () => {
     expect(deployed).toEqual([]);
   });
 
-  test("skips a host whose resolver composes no feature names, rather than deploy one every branch shares", async () => {
+  /**
+   * **Every composed host, not email's alone (#643).** Media joins a feature the way email does — the same
+   * registry entry, handed the feature — so its Worker, its Workflows and its bucket are the feature's own.
+   */
+  test("deploys every composed host for the feature, each named for it", async () => {
     const report = await deployFeature(await writeFeatureApp(), FEATURE, [EMAIL, media({})]);
 
-    const row = report.workers.find((candidate) => candidate.capability === "media");
-    expect(row?.outcome).toBe("skipped");
-    expect(row?.reason).toContain("A feature does not host media's Worker yet");
-    expect(deployed.map((config) => config.name)).toEqual(["acme-f643-feature-address-email"]);
+    expect(report.problems).toEqual([]);
+    expect(report.workers.map((row) => [row.capability, row.worker, row.outcome])).toEqual([
+      ["email", "acme-f643-feature-address-email", "deployed"],
+      ["media", "acme-f643-feature-address-media", "deployed"],
+    ]);
+    const mediaHost = deployed.find((config) => config.name === "acme-f643-feature-address-media");
+    for (const workflow of mediaHost?.workflows ?? []) expect(workflow.name.startsWith("acme-f643-")).toBe(true);
   });
 
-  test("narrowed with only, a capability outside it is not in the set", async () => {
+  /** F3 of the review: an app Worker whose feature name is a kit host's is refused, deploying nothing. */
+  test("refuses an app Worker named like a kit host, deploying nothing", async () => {
+    const dir = await writeFeatureApp();
     const report = await deployKitWorkers({
       projectDir,
       project: "acme",
       env: "feature",
       account: null,
       feature: FEATURE,
-      only: ["email"],
-      workers: [{ name: "api", dir: await writeFeatureApp(), hasWrangler: true }],
-      capabilitiesFor: async () => [EMAIL, media({})],
+      workers: [
+        { name: "api", dir, hasWrangler: true },
+        { name: "acme-payments", dir: join(projectDir, "apps", "payments"), hasWrangler: true },
+      ],
+      capabilitiesFor: async (workerDir) => (workerDir === dir ? [EMAIL] : []),
       readTemplate: async () => structuredClone(template),
       readVars: async () => null,
       runDeploy: async () => {},
     });
-    expect(report.workers.map((row) => row.capability)).toEqual(["email"]);
+    expect(report.problems.join(" ")).toContain("the name this feature's payments host takes");
+    expect(report.workers).toEqual([]);
+    expect(deployed).toEqual([]);
   });
 });

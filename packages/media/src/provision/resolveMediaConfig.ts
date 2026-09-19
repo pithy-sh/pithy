@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -35,6 +36,11 @@ export interface MediaConfigParams {
   project: string;
   /** The target environment. */
   env: ManagedEnvironment;
+  /**
+   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
+   */
+  feature?: FeatureIdentity;
   /** The app database id for this environment — where media records and hashes live. */
   appDatabaseId: string;
   /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the storage credentials. */
@@ -56,6 +62,7 @@ export interface MediaConfigParams {
  * that binds a namespace which does not exist fails opaquely at the worker's first request.
  */
 export function resolveMediaConfig(template: WorkflowHostTemplate, params: MediaConfigParams): WorkflowHostTemplate {
+  const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, mediaConfig } = params;
   const kvNamespaceId = resources.kvNamespaceId;
 
@@ -63,16 +70,22 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     project,
     capability: MEDIA_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     ...(kvNamespaceId ? { kvNamespaceIds: { MEDIA: kvNamespaceId } } : { omitKvBindings: ["MEDIA"] }),
     r2BucketNames: { MEDIA_BUCKET: resources.bucketName },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
-    masterKeySecretName: masterKeySecretName(project, env),
+    masterKeySecretName: masterKeySecretName(project, env, feature),
     vars: { MEDIA_CONFIG: JSON.stringify(mediaConfig) },
     // The four enrichment Workflows, derived from the specs rather than from the template's own block.
     // A Workflow name is account-scoped, so the template's `pithy-media-image-to-text` cannot be made
     // project-scoped by suffixing — only the registry knows both the project and the job.
-    workflows: hostWorkflowsFor(mediaWorkflowRegistry, { project, capability: MEDIA_CAPABILITY, env }).workflows,
+    workflows: hostWorkflowsFor(mediaWorkflowRegistry, {
+      project,
+      capability: MEDIA_CAPABILITY,
+      env,
+      ...(feature ? { feature } : {}),
+    }).workflows,
   });
 }

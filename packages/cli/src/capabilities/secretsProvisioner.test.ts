@@ -33,6 +33,7 @@ function fakeCf() {
   const deleteDatabase = vi.fn();
   const exists = vi.fn();
   const putSecret = vi.fn();
+  const createSecretIfAbsent = vi.fn(async () => "created");
   const deleteSecret = vi.fn();
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
@@ -41,7 +42,7 @@ function fakeCf() {
   const deleteTokensByName = vi.fn();
   const cf = {
     d1Provisioner: () => ({ findDatabaseByName, createDatabase, deleteDatabase }),
-    secrets: () => ({ exists, putSecret, deleteSecret }),
+    secrets: () => ({ exists, putSecret, createSecretIfAbsent, deleteSecret }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
     accountTokens: () => ({ rollToken, deleteTokensByName }),
     d1: () => EMPTY_D1,
@@ -53,6 +54,7 @@ function fakeCf() {
     deleteDatabase,
     exists,
     putSecret,
+    createSecretIfAbsent,
     deleteSecret,
     getWorker,
     deleteWorker,
@@ -117,25 +119,49 @@ describe("CloudflareSecretsProvisioner", () => {
     expect(createDatabase).not.toHaveBeenCalled();
   });
 
-  test("ensureMasterKey mints the env key only when absent", async () => {
-    const { cf, exists, putSecret } = fakeCf();
+  test("ensureMasterKey mints the env key only when absent, and never by overwriting", async () => {
+    const { cf, exists, putSecret, createSecretIfAbsent } = fakeCf();
     exists.mockResolvedValue(false);
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     expect(await provisioner.ensureMasterKey("prod")).toEqual({ storeId: "store-1" });
-    expect(putSecret).toHaveBeenCalledWith(
+    expect(createSecretIfAbsent).toHaveBeenCalledWith(
       masterKeySecretName(PROJECT, "prod"),
       expect.stringContaining("currentVersion"),
     );
+    expect(putSecret).not.toHaveBeenCalled();
   });
 
   test("ensureMasterKey leaves an existing key untouched", async () => {
-    const { cf, exists, putSecret } = fakeCf();
+    const { cf, exists, putSecret, createSecretIfAbsent } = fakeCf();
     exists.mockResolvedValue(true);
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     await provisioner.ensureMasterKey("staging");
     expect(putSecret).not.toHaveBeenCalled();
+    expect(createSecretIfAbsent).not.toHaveBeenCalled();
+  });
+
+  /**
+   * **A feature's own key and token (#643).** The same provisioner, handed a feature, names the feature's own
+   * master-key entry and mints the feature's own manager token — nothing in the store is shared with another
+   * environment.
+   */
+  test("for a feature, mints the feature's own master key and manager token", async () => {
+    const feature = { project: PROJECT, issue: "643", slug: "feature-address" };
+    const { cf, exists, putSecret, createSecretIfAbsent, rollToken } = fakeCf();
+    exists.mockResolvedValue(false);
+    rollToken.mockResolvedValue({ id: "tk", value: "token-value" });
+    const provisioner = new CloudflareSecretsProvisioner({ ...provisionerOptions(cf), feature });
+
+    await provisioner.ensureMasterKey("feature");
+    await provisioner.ensureManagerToken();
+    expect(createSecretIfAbsent).toHaveBeenCalledWith(
+      `${PROJECT}-f643-feature-address-secrets-encryption-keys`,
+      expect.stringContaining("currentVersion"),
+    );
+    expect(rollToken.mock.calls[0]?.[0]).toBe(`${PROJECT}-f643-feature-address-secrets-manager`);
+    expect(putSecret.mock.calls[0]?.[0]).toBe(`${PROJECT}-f643-feature-address-secrets-manager-cf-api-token`);
   });
 
   test("deployManager delegates to the injected deploy step", async () => {
@@ -252,6 +278,11 @@ describe("two projects sharing one Cloudflare account", () => {
       secrets: () => ({
         exists: async (name: string) => store.has(name),
         putSecret: async (name: string, value: string) => void store.set(name, value),
+        createSecretIfAbsent: async (name: string, value: string) => {
+          if (store.has(name)) return "present";
+          store.set(name, value);
+          return "created";
+        },
         deleteSecret: async (name: string) => void store.delete(name),
       }),
       accountTokens: () => ({

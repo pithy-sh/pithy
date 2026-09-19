@@ -63,6 +63,13 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
    * reproduce that name inside the Worker to write the new key set back where the binding reads it.
    */
   PROJECT: string;
+  /**
+   * The feature this manager serves — its issue and slug — stamped only on a feature's manager (#643). Its
+   * master-key entry is named for the feature, so the rotation write-back needs both to find it.
+   */
+  FEATURE_ISSUE?: string;
+  /** The feature's slug, beside {@link FEATURE_ISSUE}. */
+  FEATURE_SLUG?: string;
   /** Rotation cadence in days; defaults to 30. Sourced from the `rotationIntervalDays` config option. */
   ROTATION_INTERVAL_DAYS?: string;
 }
@@ -101,7 +108,10 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
     // another attempt, and ciphertext that will not decrypt under the bound key set is not.
     await runRotationWorkflow(
       this.env,
-      rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT),
+      rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT, {
+        issue: this.env.FEATURE_ISSUE,
+        slug: this.env.FEATURE_SLUG,
+      }),
       classifiedSteps(step, secretsWorkflowRetry, NonRetryableError),
     );
   }

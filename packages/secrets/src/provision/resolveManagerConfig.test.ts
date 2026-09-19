@@ -201,6 +201,47 @@ describe("resolveManagerConfig", () => {
   });
 });
 
+/**
+ * **A feature's own manager (#643).** Every kit Worker a project composes is provisioned for a feature, the
+ * secrets manager included — and nothing it is called or binds is shared with another environment: its Worker,
+ * both Workflows, its master key, its CF API token and its database are all the feature's.
+ */
+describe("resolveManagerConfig for a feature", () => {
+  const feature = { project: "acme", issue: "643", slug: "feature-address" };
+
+  test("names everything for the feature, and stamps which feature for the rotation write-back", () => {
+    const resolved = resolveManagerConfig(template(), {
+      env: "feature",
+      databaseId: "feature-secrets-db",
+      storeId: "store-abc",
+      accountId: "acct-9",
+      project: "acme",
+      feature,
+    });
+
+    expect(resolved.name).toBe("acme-f643-feature-address-secrets");
+    expect(resolved.d1_databases).toEqual([
+      { binding: "SECRETS", database_name: "acme-f643-feature-address-secrets-d1", database_id: "feature-secrets-db" },
+    ]);
+    expect(resolved.secrets_store_secrets.map((entry) => entry.secret_name)).toEqual([
+      "acme-f643-feature-address-secrets-encryption-keys",
+      "acme-f643-feature-address-secrets-manager-cf-api-token",
+    ]);
+    expect(resolved.workflows.map((workflow) => workflow.name)).toEqual([
+      "acme-f643-feature-address-secrets-write",
+      "acme-f643-feature-address-secrets-rotate",
+    ]);
+    expect(resolved.vars).toMatchObject({
+      ENVIRONMENT: "feature",
+      PROJECT: "acme",
+      FEATURE_ISSUE: "643",
+      FEATURE_SLUG: "feature-address",
+    });
+    expect(managerCfApiTokenSecretName("acme", feature)).not.toBe(managerCfApiTokenSecretName("acme"));
+    expect(masterKeySecretName("acme", "feature", feature)).toBe(resolved.secrets_store_secrets[0]?.secret_name);
+  });
+});
+
 describe("the committed manager template", () => {
   test("declares the PROJECT var the resolver stamps", async () => {
     // `template()` above is a hand-written mirror, so it cannot catch the template itself falling behind.

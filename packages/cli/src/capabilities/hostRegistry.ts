@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
@@ -158,6 +159,24 @@ export interface HostDeliveryIdentity {
   fromAddress?: string;
 }
 
+/**
+ * **One index a host binds that a feature must create for itself (#643)** — a Vectorize index, which the generic
+ * feature provisioning (D1, KV, R2) has no kind for, because an index is created with a shape. Named for the
+ * feature, bound by the host and the app Worker under the same binding, and deleted with the feature.
+ */
+export interface FeatureIndex {
+  /** The binding both the host and the app Worker read the index through, e.g. `VECTORIZE`. */
+  binding: string;
+  /** The feature's own index name. */
+  name: string;
+  /** The vector width the index is created with. Fixed at creation. */
+  dimensions: number;
+  /** The distance metric the index is created with. Fixed at creation. */
+  metric: "cosine" | "euclidean" | "dot-product";
+  /** The metadata indexes to create on it, as `pithy vector provision` does. */
+  metadata: readonly { propertyName: string; indexType: string }[];
+}
+
 /** One capability's host Worker: where its template and entry live, and how a context resolves it. */
 export interface HostWorkerSpec {
   /** The capability's name — the key a composed `Capability` is matched against, and the host's label. */
@@ -170,6 +189,11 @@ export interface HostWorkerSpec {
   resolve(template: WorkflowHostTemplate, context: HostResolveContext): Promise<WorkflowHostTemplate>;
   /** What this host would send from a developer's machine, or `undefined` when it sends nothing. */
   delivery?(capability: Capability, projectDir: string): Promise<HostDeliveryIdentity | undefined>;
+  /**
+   * The indexes this host binds that a feature creates for itself (#643), named for the feature. Absent for a
+   * host that binds none — every resource it binds is then one the generic feature provisioning names.
+   */
+  featureIndexes?(capability: Capability, projectDir: string, feature: FeatureIdentity): Promise<FeatureIndex[]>;
 }
 
 /** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry, in the project's copy. */
@@ -200,11 +224,30 @@ async function load<T>(capability: string, pkg: string, projectDir: string, impo
   }
 }
 
+/**
+ * **The feature a resolution is for, spread into every resolver's params the same way (#643).** Every kit host a
+ * feature composes is deployed for it, so every entry below hands this on — and `pithy deploy` refuses a feature
+ * host any of whose names is not the feature's, so an entry that forgot would fail rather than deploy a Worker
+ * every branch shares. See `feature/hosts.ts`.
+ */
+function featureOf(context: HostResolveContext): { feature?: FeatureIdentity } {
+  return context.feature ? { feature: context.feature } : {};
+}
+
+/**
+ * The bucket an R2 binding names in this resolution: the capability's own namer for a declared environment, and
+ * the feature's own bucket — the one `pithy provision --feature` created for the same binding — for a feature.
+ */
+function bucketName(context: HostResolveContext, binding: string, own: () => string): string {
+  return context.feature ? featureScope(context.feature).resource(binding, "r2", {}) : own();
+}
+
 /** The three ids every host that reads a secret needs, mapped off the context in one place. */
 function shared(context: HostResolveContext) {
   return {
     project: context.project,
     env: context.env,
+    ...featureOf(context),
     appDatabaseId: context.databaseId("DB"),
     secretsDatabaseId: context.databaseId("SECRETS"),
     // Asked for, so the four hosts that bind the store are the four that ask. Whether an unanswerable
@@ -329,8 +372,6 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // false for exactly as long as it did not (pithy-sh/pithy#441).
         messages: composed.hostCatalogs(),
         devDelivery: context.simulateDelivery ? "simulator" : composed.emailConfig.devDelivery,
-        // A branch's own host: its names, its keys, its suppression list (#643).
-        ...(context.feature ? { feature: context.feature } : {}),
       });
     },
     async delivery(capability, projectDir) {
@@ -376,7 +417,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
           // `resourceNames(project).env(env).r2("MEDIA")` stood here, and the same shortcut in the
           // vector entry composed `<project>-<env>-<index>` against the provisioner's
           // `<project>-<env>-vector-<index>` — a deployed Worker bound to an index nobody created.
-          bucketName: mediaBucketName(context.project, context.env),
+          bucketName: bucketName(context, "MEDIA_BUCKET", () => mediaBucketName(context.project, context.env)),
           // Records live in D1 by default, and in that mode the KV binding is dropped rather than
           // pointed at a namespace nothing created. `recordStore` decides — **the adopter's, not the
           // schema's**: this branch read `MediaConfig.parse({})`, so a project storing records in KV
@@ -420,7 +461,9 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveStorageConfig(template, {
         ...shared(context),
         // The capability's own namer, for the reason the media entry states.
-        resources: { bucketName: storageBucketName(context.project, context.env) },
+        resources: {
+          bucketName: bucketName(context, "STORAGE_BUCKET", () => storageBucketName(context.project, context.env)),
+        },
         storageConfig: ownCapability(context, "storage", "@pithy-sh/storage", isStorageCapability).storageConfig,
       });
     },
@@ -483,6 +526,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveSupportConfig(template, {
         project: context.project,
         env: context.env,
+        ...featureOf(context),
         appDatabaseId: context.databaseId("DB"),
         supportConfig: ownCapability(context, "support", "@pithy-sh/support", isSupportCapability).supportConfig,
       });
@@ -512,6 +556,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveTestersConfig(template, {
         project: context.project,
         env: context.env,
+        ...featureOf(context),
         appDatabaseId: context.databaseId("DB"),
         suppressionDatabaseId: context.databaseId("EMAIL_SUPPRESSIONS"),
         testersConfig: ownCapability(context, "testers", "@pithy-sh/testers", isTestersCapability).testersConfig,
@@ -551,16 +596,48 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       return resolveVectorConfig(template, {
         project: context.project,
         env: context.env,
+        ...featureOf(context),
         appDatabaseId: context.databaseId("DB"),
         // `vectorIndexName`, which is what `pithy vector provision` creates the index by. The local
         // `resourceNames(project).env(env).vectorizeIndex(index)` that stood here omitted the
         // capability segment the namer adds, so this path bound `acme-prod-notes` while provisioning
         // created `acme-prod-vector-notes` — an index nothing had made, and a search that fails.
         indexNames: Object.fromEntries(
-          Object.keys(config.indexes).map((index) => [index, vectorIndexName(context.project, index, context.env)]),
+          Object.keys(config.indexes).map((index) => [
+            index,
+            vectorIndexName(context.project, index, context.env, context.feature),
+          ]),
         ),
         config,
       });
+    },
+    async featureIndexes(capability, projectDir, feature) {
+      const [{ vectorIndexName }, { isVectorCapability }, { metadataIndexes }] = await load(
+        "vector",
+        "@pithy-sh/vector",
+        projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/vector/src/provision/provisionVector")>(
+              projectDir,
+              "@pithy-sh/vector/src/provision/provisionVector",
+            ),
+            kitImport<typeof import("@pithy-sh/vector/src/capability")>(projectDir, "@pithy-sh/vector/src/capability"),
+            kitImport<typeof import("@pithy-sh/vector/src/index/metadata")>(
+              projectDir,
+              "@pithy-sh/vector/src/index/metadata",
+            ),
+          ]),
+      );
+      if (!isVectorCapability(capability)) return [];
+      // The same names the resolver above binds the host to, and the shape `pithy vector provision` creates with.
+      return Object.entries(capability.vectorConfig.indexes).map(([index, config]) => ({
+        binding: config.binding,
+        name: vectorIndexName(feature.project, index, "feature", feature),
+        dimensions: config.dimensions,
+        metric: config.metric,
+        metadata: config.metadata ? metadataIndexes(config.metadata) : [],
+      }));
     },
   },
   {
@@ -580,6 +657,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         databaseId: context.databaseId("SECRETS"),
         storeId: context.storeId(),
         accountId: context.accountId(),
+        ...featureOf(context),
       });
     },
   },

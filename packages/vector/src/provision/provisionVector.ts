@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type FeatureIdentity, featureVectorizeIndexName } from "@pithy-sh/core/src/naming/feature";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { VectorConfig } from "../config/config";
 import type { MetadataIndexReport } from "../index/drift";
@@ -52,7 +53,9 @@ import { VECTOR_CAPABILITY } from "../workflows/specs";
  * validates the project once and the environment once, so `production` is refused here rather than
  * standing up a fourth environment nothing else knows about.
  */
-export function vectorIndexName(project: string, index: string, env: string): string {
+export function vectorIndexName(project: string, index: string, env: string, feature?: FeatureIdentity): string {
+  // A feature's own index (#643): `<project>-feature-vector-<index>` would be one index every branch shared.
+  if (feature) return featureVectorizeIndexName(feature, `${VECTOR_CAPABILITY}-${index}`);
   const scope = resourceNames(project).env(env);
   try {
     return scope.vectorizeIndex(`${VECTOR_CAPABILITY}-${index}`);

@@ -92,25 +92,6 @@ async function readRow(
 }
 
 /**
- * Which of `names` have a row in a `SECRETS` database — **names only**, read without the master key and
- * without opening a single value.
- *
- * For a provisioning run that holds no master key and must still know what is there: a feature's run that
- * did not create the key cannot open a row, and must not have to in order to learn that one is missing
- * (#643). A failed read **throws**; it is never an empty answer, because "the read failed" read as "nothing
- * is stored" is how a provisioning run decides to write over what is there.
- */
-export async function storedSecretNames(database: SecretsStoreEnv["SECRETS"], names: string[]): Promise<Set<string>> {
-  const found = new Set<string>();
-  const db = createDatabase(database, secretsTables);
-  for (const chunk of chunkByBoundParameters(names, 0)) {
-    const rows = await db.selectFrom("pithySecretsSystemSecrets").select("name").where("name", "in", chunk).execute();
-    for (const row of rows) found.add(row.name);
-  }
-  return found;
-}
-
-/**
  * The D1-backed encrypted store for `d1`-backed secrets, ported from the CMS `SystemSecretsStore`
  * with Pithy's universal value envelope layered on. Every secret's plaintext is a
  * `{ currentVersion, versions }` envelope (`crypto/versionedValue`), sealed in one AES-256-GCM

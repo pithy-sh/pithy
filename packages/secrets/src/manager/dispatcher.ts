@@ -3,7 +3,9 @@
 
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { InternalError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import type {
   PreflightSecretDispatcher,
   SecretProbe,
@@ -37,7 +39,10 @@ export const SECRETS_CAPABILITY = "secrets";
  * Workflow name is a running instance's address, so a silently reshaped one loses whatever was in
  * flight — and this particular name is also the contract every CLI dispatch resolves against.
  */
-export function secretsWriteWorkflowName(project: string, env: ManagedEnvironment): string {
+export function secretsWriteWorkflowName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
+  // A feature's manager is the feature's own (#643), and its Workflows take the feature's names like every other
+  // kit host's, through the one composer they share.
+  if (feature) return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "write", env, feature });
   return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "write");
 }
 
@@ -47,7 +52,8 @@ export function secretsWriteWorkflowName(project: string, env: ManagedEnvironmen
  * named here beside the write Workflow because both are the same account-scoped namespace and the
  * manager's resolved `wrangler.jsonc` declares them together.
  */
-export function secretsRotateWorkflowName(project: string, env: ManagedEnvironment): string {
+export function secretsRotateWorkflowName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
+  if (feature) return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate", env, feature });
   return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate");
 }
 
@@ -63,12 +69,24 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
  * project provisioned the account last.
  */
 export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, SecretProbe, SecretRotationRecorder {
-  readonly #client: CloudflareWorkflowsClient;
+  readonly #client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">;
   readonly #project: string;
+  readonly #feature: FeatureIdentity | undefined;
 
-  constructor(client: CloudflareWorkflowsClient, project: string) {
+  /**
+   * `feature` binds the dispatcher to one feature's own manager (#643): a feature is provisioned a manager of its
+   * own, and its writes reach that manager's write Workflow, named for the feature, rather than one every branch
+   * would share. Bound at construction for the reason the project is — never a per-call choice.
+   */
+  constructor(client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">, project: string, feature?: FeatureIdentity) {
     this.#client = client;
     this.#project = project;
+    this.#feature = feature;
+  }
+
+  /** The write Workflow one environment's manager runs — this feature's, when the dispatcher is bound to one. */
+  #writeWorkflow(env: ManagedEnvironment): string {
+    return secretsWriteWorkflowName(this.#project, env, this.#feature);
   }
 
   /**
@@ -87,7 +105,7 @@ export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, Secr
    */
   async dispatch(request: SecretWriteRequest): Promise<void> {
     this.#requireD1(request, "dispatch");
-    await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+    await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
       mode: request.mode,
       name: request.name,
       value: request.value,
@@ -161,7 +179,7 @@ export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, Secr
    * provisioning mint a second value over a live one. A shape nobody expected stops the run instead.
    */
   async probe(request: SecretProbeRequest): Promise<boolean> {
-    const output = await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+    const output = await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
       mode: "probe",
       name: request.name,
     });
@@ -185,7 +203,7 @@ export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, Secr
    * and a row that never closes reads as a rotation still running long after it finished.
    */
   async openRotation(request: SecretRotationOpenRequest): Promise<number> {
-    const output = await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+    const output = await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
       mode: "rotation-open",
       name: request.name,
       trigger: request.trigger,
@@ -204,7 +222,7 @@ export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, Secr
 
   /** Close a row this dispatcher opened in the same environment. */
   async closeRotation(request: SecretRotationCloseRequest): Promise<void> {
-    await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+    await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
       mode: "rotation-close",
       rotationId: request.rotationId,
       closure: request.closure,

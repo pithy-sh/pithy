@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { parse } from "comment-json";
 import {
   deployHostWorker,
@@ -20,6 +19,7 @@ import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from ".
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
+import { assertNoFeatureHostCollision, featureHostNameLeaks } from "../feature/hosts";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
@@ -127,16 +127,12 @@ export interface DeployKitOptions {
   runDeploy?: RunHostDeploy;
   /**
    * **The feature being deployed, when `env` is `feature` (#643)** — `pithy deploy --env feature` reads it off
-   * the branch, and `pithy provision --feature` has it in hand. A kit Worker deployed for a branch takes the
-   * feature's names, and a host whose resolver composes none is skipped rather than deployed under a name every
-   * branch would share. Absent on a feature, the pass refuses: it cannot say which feature's hosts these are.
+   * the branch, and `pithy provision --feature` has it in hand. **Every** composed kit Worker is deployed for a
+   * feature, named for it; a host any of whose account-wide names is not the feature's fails rather than deploys
+   * under a name every branch would share (`feature/hosts.ts`). Absent on a feature, the pass refuses: it cannot
+   * say which feature's hosts these are.
    */
   feature?: FeatureIdentity;
-  /**
-   * Only these capabilities' Workers. Absent, every composed one. `pithy provision --feature` narrows to the
-   * hosts a feature stands up.
-   */
-  only?: readonly string[];
   /**
    * The two account-scoped ids, when the caller already holds them — `pithy provision --feature` has the store
    * it just wrote the feature's keys into. Each one absent here is read from the resolved credentials, as before.
@@ -298,15 +294,20 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   // than the line `pithy dev` prints: the hosts that Worker composes are missing from the set below,
   // and nothing else would ever say so.
   problems.push(...notes);
-  const only = options.only;
-  const wanted = only === undefined ? hosts : hosts.filter((host) => only.includes(host.capability));
-  if (wanted.length === 0) return;
+  if (hosts.length === 0) return;
   // A feature's hosts are named for the feature, so a pass that does not know which feature cannot name one.
   if (options.env === FEATURE_ENVIRONMENT && options.feature === undefined) {
     problems.push(
       "A feature's kit Workers are named for the feature. Run this from its feature/<issue>-<slug> branch.",
     );
     return;
+  }
+  // An app Worker named like a kit host would deploy over it, or it over the app (F3 of #643's review).
+  if (options.feature) {
+    assertNoFeatureHostCollision(
+      options.feature,
+      workers.map((worker) => ({ app: basename(worker.dir), script: worker.name })),
+    );
   }
 
   const readTemplate = options.readTemplate ?? readHostTemplateDefault;
@@ -325,7 +326,7 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
   const databaseIds = collectIds(declared, "d1");
   const kvNamespaceIds = collectIds(declared, "kv");
 
-  for (const host of wanted) {
+  for (const host of hosts) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
     const row = await deployOneKitWorker({
       host,
@@ -488,21 +489,18 @@ async function deployOneKitWorker(input: {
     return { capability, worker: null, outcome: "failed", reason: failureReason(error) };
   }
   // **A feature's host is named for the feature, or it is not deployed (#643).** A resolver that does not read
-  // the feature composes `<project>-feature-<capability>`: one Worker, and one set of Workflows, that every
-  // open branch would deploy over every other's. Checked against the name, not a list of resolvers that
-  // honor it, so a resolver taught the feature later joins without a change here.
+  // the feature composes `<project>-feature-<capability>`: one Worker, and one set of Workflows, buckets and keys,
+  // that every open branch would deploy over every other's. Checked against every account-wide name the config
+  // carries, not a list of resolvers that honor the feature, so a host added to the registry is held to it too.
   if (options.feature) {
-    const expected = workflowHostName({
-      project: options.project,
-      capability,
-      env: options.env,
-      feature: options.feature,
-    });
-    if (config.name !== expected) {
-      return skipped(
+    const leaks = featureHostNameLeaks(config, options.feature);
+    if (leaks.length > 0) {
+      return {
         capability,
-        `A feature does not host ${capability}'s Worker yet: it would deploy as ${config.name}, which every branch shares.`,
-      );
+        worker: null,
+        outcome: "failed",
+        reason: `${capability}'s Worker would deploy with names every branch shares: ${leaks.join(", ")}. A feature's kit Worker takes the feature's names.`,
+      };
     }
   }
   const shortfall = readinessReason({ missingIds, missingVars, capability, env: options.env, provision });

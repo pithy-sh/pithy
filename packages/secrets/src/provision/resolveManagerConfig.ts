@@ -3,7 +3,10 @@
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { SECRETS_CAPABILITY, secretsRotateWorkflowName, secretsWriteWorkflowName } from "../manager/dispatcher";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
 import { managerCfApiTokenSecretName, masterKeySecretName } from "./provisionSecrets";
@@ -40,6 +43,14 @@ export interface ManagerConfigParams {
    * rotation writes its new key set back to the entry this worker actually binds.
    */
   project: string;
+  /**
+   * **The feature this manager serves, when it serves one (#643).** A feature is provisioned its own manager, the
+   * same way a declared environment is, and everything it is called or binds takes the feature's names: the
+   * Worker and both Workflows (`<project>-f<issue>-<slug>-secrets[-<job>]`), the feature's own master key entry,
+   * the feature's own CF API token entry, and the feature's own `SECRETS` database. `env` is then `feature`,
+   * which is what its `ENVIRONMENT` var says. Nothing it binds is shared with another environment.
+   */
+  feature?: FeatureIdentity;
 }
 
 /**
@@ -59,7 +70,9 @@ export interface ManagerConfigParams {
  * numbers used to share. The database takes the same string deliberately: the manager and its D1 are
  * one unit, and a D1 name is the looser of the two limits, so the tighter one governs both.
  */
-export function managerWorkerName(project: string, env: ManagedEnvironment): string {
+export function managerWorkerName(project: string, env: ManagedEnvironment, feature?: FeatureIdentity): string {
+  // A feature's manager is named the way every feature host is, by the one host composer (#643).
+  if (feature) return workflowHostName({ project, capability: SECRETS_CAPABILITY, env, feature });
   return resourceNames(project).env(env).worker(SECRETS_CAPABILITY);
 }
 
@@ -72,12 +85,17 @@ export function managerWorkerName(project: string, env: ManagedEnvironment): str
  * and the template's literal is documentation. An unrecognized binding is an authoring bug: it would
  * deploy a Workflow under a name nothing dispatches to, so it fails loudly here.
  */
-function managerWorkflowName(binding: string, project: string, env: ManagedEnvironment): string {
+function managerWorkflowName(
+  binding: string,
+  project: string,
+  env: ManagedEnvironment,
+  feature: FeatureIdentity | undefined,
+): string {
   switch (binding) {
     case "SECRETS_WRITE":
-      return secretsWriteWorkflowName(project, env);
+      return secretsWriteWorkflowName(project, env, feature);
     case "AT_REST_ROTATION":
-      return secretsRotateWorkflowName(project, env);
+      return secretsRotateWorkflowName(project, env, feature);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Workflow provisioning cannot name.",
@@ -103,12 +121,18 @@ export function resolveManagerConfig(
   template: ManagerWranglerTemplate,
   params: ManagerConfigParams,
 ): ManagerWranglerTemplate {
-  const { env, databaseId, storeId, accountId, project } = params;
-  const name = managerWorkerName(project, env);
+  const { env, databaseId, storeId, accountId, project, feature } = params;
+  const name = managerWorkerName(project, env, feature);
   const resolved: ManagerWranglerTemplate = structuredClone(template);
 
   resolved.name = name;
-  resolved.d1_databases = resolved.d1_databases.map((db) => ({ ...db, database_name: name, database_id: databaseId }));
+  // A declared environment's manager and its D1 share one name. A feature's D1 is the one the feature's own
+  // provisioning created for its `SECRETS` binding, named by the feature's scope (#643).
+  resolved.d1_databases = resolved.d1_databases.map((db) => ({
+    ...db,
+    database_name: feature ? featureScope(feature).resource(db.binding, "d1", {}) : name,
+    database_id: databaseId,
+  }));
   // Both secrets live in the one account-wide store, so every entry gets `storeId` — and **every**
   // entry name is resolved here, never passed through. The template's literals are placeholders: an
   // entry name provisioning did not write is an entry the worker cannot bind, so an unrecognized
@@ -116,17 +140,22 @@ export function resolveManagerConfig(
   resolved.secrets_store_secrets = resolved.secrets_store_secrets.map((entry) => ({
     ...entry,
     store_id: storeId,
-    secret_name: managerStoreEntryName(entry.binding, project, env),
+    secret_name: managerStoreEntryName(entry.binding, project, env, feature),
   }));
   // The write Workflow's name is the CLI's dispatch target (<project>-<env>-secrets-write). Both are
   // composed from the binding, so two projects' managers are addressable separately in one account.
-  resolved.workflows = resolved.workflows.map((wf) => ({ ...wf, name: managerWorkflowName(wf.binding, project, env) }));
+  resolved.workflows = resolved.workflows.map((wf) => ({
+    ...wf,
+    name: managerWorkflowName(wf.binding, project, env, feature),
+  }));
   resolved.vars = {
     ...resolved.vars,
     CLOUDFLARE_ACCOUNT_ID: accountId,
     SECRETS_STORE_ID: storeId,
     ENVIRONMENT: env,
     PROJECT: project,
+    // Which feature, so the rotation write-back names the feature's own key entry (#643).
+    ...(feature ? { FEATURE_ISSUE: feature.issue, FEATURE_SLUG: feature.slug } : {}),
   };
 
   return resolved;
@@ -137,12 +166,17 @@ export function resolveManagerConfig(
  * per-environment; the CF API token is `global`. Both are project-scoped, because the account has
  * one flat Secrets Store and the name is the only partition in it.
  */
-function managerStoreEntryName(binding: string, project: string, env: ManagedEnvironment): string {
+function managerStoreEntryName(
+  binding: string,
+  project: string,
+  env: ManagedEnvironment,
+  feature: FeatureIdentity | undefined,
+): string {
   switch (binding) {
     case "SECRETS_ENCRYPTION_KEYS":
-      return masterKeySecretName(project, env);
+      return masterKeySecretName(project, env, feature);
     case "CLOUDFLARE_API_TOKEN":
-      return managerCfApiTokenSecretName(project);
+      return managerCfApiTokenSecretName(project, feature);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Secrets Store binding provisioning never writes.",

@@ -10,6 +10,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRetainedTables } from "@pithy-sh/secrets/src/data/tables";
@@ -89,6 +90,14 @@ export interface CloudflareSecretsProvisionerOptions {
   deploy: DeployManager;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * **The feature this provisions for, when it provisions for one (#643).** A feature is given its own secrets
+   * infrastructure by this same provisioner, and every name it touches is then the feature's: its own master-key
+   * entry, and its own manager token — an account token and a store entry of the feature's own, because nothing
+   * in the store is shared between a feature and any other environment. Absent, the project's declared
+   * environments are what it provisions, as it always was.
+   */
+  feature?: FeatureIdentity;
 }
 
 /**
@@ -121,6 +130,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #storeId: string;
   readonly #deploy: DeployManager;
   readonly #audit: CliAuditEmit;
+  readonly #feature: FeatureIdentity | undefined;
 
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
@@ -129,6 +139,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     this.#storeId = options.storeId;
     this.#deploy = options.deploy;
     this.#audit = options.audit ?? (async () => {});
+    this.#feature = options.feature;
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the managers. */
@@ -149,13 +160,20 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * mint fails here, before any resource is created, with an actionable error.
    */
   async ensureManagerToken(): Promise<void> {
-    const entry = managerCfApiTokenSecretName(this.#project);
+    const entry = managerCfApiTokenSecretName(this.#project, this.#feature);
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(entry)) return;
     const minted = await this.#cf
       .accountTokens()
-      .rollToken(managerCfApiTokenName(this.#project), await managerTokenPermissions(this.#account.accountId));
-    await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
+      .rollToken(
+        managerCfApiTokenName(this.#project, this.#feature),
+        await managerTokenPermissions(this.#account.accountId),
+      );
+    await writeManagerCfApiToken(
+      this.#cf,
+      { storeId: this.#storeId, project: this.#project, ...(this.#feature ? { feature: this.#feature } : {}) },
+      minted.value,
+    );
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
       environment: "global",
@@ -199,10 +217,15 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * not own — silently coupling two projects until one of them tears down and orphans both.
    */
   async ensureMasterKey(env: ManagedEnvironment): Promise<{ storeId: string }> {
-    const name = masterKeySecretName(this.#project, env);
+    const name = masterKeySecretName(this.#project, env, this.#feature);
     const store = this.#cf.secrets(this.#storeId);
-    if (!(await store.exists(name))) {
-      await store.putSecret(name, JSON.stringify(await initialMasterKeyConfig()));
+    // Asked before any key material is generated, so a re-run makes none; created only if still absent, so two
+    // runs racing never write one key over the other (#643). Which run created it is never what anything below
+    // depends on: the manager seals every row, under whatever key the store holds.
+    if (
+      !(await store.exists(name)) &&
+      (await store.createSecretIfAbsent(name, JSON.stringify(await initialMasterKeyConfig()))) !== "present"
+    ) {
       await this.#audit({
         environment: env,
         action: "secrets/set",
@@ -243,12 +266,15 @@ function managerDir(projectDir: string): string {
  */
 export async function writeManagerCfApiToken(
   cf: CloudflareClients,
-  target: { storeId: string; project: string },
+  target: { storeId: string; project: string; feature?: FeatureIdentity },
   apiToken: string,
 ): Promise<void> {
   await cf
     .secrets(target.storeId)
-    .putSecret(managerCfApiTokenSecretName(target.project), encodeVersionedValue(initialVersionedValue(apiToken)));
+    .putSecret(
+      managerCfApiTokenSecretName(target.project, target.feature),
+      encodeVersionedValue(initialVersionedValue(apiToken)),
+    );
 }
 
 /**

@@ -6,7 +6,8 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { cloudflareClients } from "../cloudflare/clients";
+import { cloudflareFeatureIndexes } from "../capabilities/vectorProvisioner";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
@@ -19,7 +20,13 @@ import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
-import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
+import {
+  AUDIT_DESTINATION_ENV,
+  cloudflareFeatureApiTokens,
+  cloudflareProvisioners,
+  cloudflareWorkerScripts,
+  cloudflareWorkflowDefinitions,
+} from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -41,7 +48,11 @@ const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
  * teardown cannot be addressed to two different accounts, and neither can be built without the other
  * (#592).
  */
-async function buildTeardown(account: CloudflareAccountSelection | null): Promise<Required<RemoteTeardown> | null> {
+async function buildTeardown(
+  account: CloudflareAccountSelection | null,
+  projectDir: string,
+  project: string,
+): Promise<Required<RemoteTeardown> | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -53,6 +64,17 @@ async function buildTeardown(account: CloudflareAccountSelection | null): Promis
   return {
     provisioners: cloudflareProvisioners(clients, confirmed),
     scripts: cloudflareWorkerScripts(clients, confirmed),
+    // Every kit host's Workflows, deleted by name, and the feature manager's own token (#643).
+    workflows: cloudflareWorkflowDefinitions(await cloudflareWorkflows({ accountId, apiToken })),
+    tokens: cloudflareFeatureApiTokens(clients),
+    indexes: cloudflareFeatureIndexes({
+      projectDir,
+      cf: clients,
+      accountId,
+      apiToken,
+      project,
+      workflows: await cloudflareWorkflows({ accountId, apiToken }),
+    }),
   };
 }
 
@@ -305,7 +327,7 @@ const destroy = defineCommand({
         });
       }
       const account = await projectCloudflareAccount(projectDir);
-      const teardown = await buildTeardown(account);
+      const teardown = await buildTeardown(account, projectDir, identity.project);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
       // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the

@@ -273,14 +273,17 @@ describe("featureScope", () => {
    * reasoning inverts — nothing outlives it — so the key is the feature's and goes with it. Which
    * means it must be named the feature's, or teardown would delete an environment's.
    */
-  it("gives a feature its own environment-scoped secret entries, and shares the global ones", () => {
+  it("gives a feature its own secret entries, a global secret's included", () => {
     const scope = featureScope(identity);
     expect(scope.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")).toBe(
       "replay-f241-environments-secrets-encryption-keys",
     );
-    // A `global` secret is one account-level value every environment binds. A feature binds the
-    // project's, so feature-scoping it would mint a second copy of a value that is meant to be one.
-    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-global-stripe-api-key");
+    // Nothing is shared between a feature and any other environment (#643): a `global` secret is one value
+    // for every declared environment, and a feature has its own entry for it rather than binding theirs.
+    expect(scope.secretEntry("STRIPE_API_KEY", "global")).toBe("replay-f241-environments-stripe-api-key");
+    expect(environmentScope("replay", "prod").secretEntry("STRIPE_API_KEY", "global")).toBe(
+      "replay-global-stripe-api-key",
+    );
   });
 
   it("cannot collide with a deployed environment's secret entries either", () => {

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -34,6 +35,11 @@ export interface PaymentsConfigParams {
   project: string;
   /** The target environment. */
   env: ManagedEnvironment;
+  /**
+   * **The feature this host serves, when it serves one (#643).** Its Worker, its Workflows and every store
+   * entry it binds then take the feature's names, as every feature host's do; `env` is `feature`.
+   */
+  feature?: FeatureIdentity;
   /** The app database id for this environment — where the `pithy_payments_*` tables live. */
   appDatabaseId: string;
   /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the rails' credentials. */
@@ -60,21 +66,28 @@ export function resolvePaymentsConfig(
   template: WorkflowHostTemplate,
   params: PaymentsConfigParams,
 ): WorkflowHostTemplate {
+  const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, paymentsConfig } = params;
 
   // Derived before the resolve rather than assigned after it: `resolveWorkflowHost` refuses to fill a
   // template that declares `workflows` without them, because the only name it could invent unaided is an
   // unscoped one a second project in the same account would overwrite.
-  const derived = hostWorkflowsFor(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env });
+  const derived = hostWorkflowsFor(paymentsWorkflowRegistry, {
+    project,
+    capability: PAYMENTS_CAPABILITY,
+    env,
+    ...(feature ? { feature } : {}),
+  });
 
   const resolved = resolveWorkflowHost(template, {
     project,
     capability: PAYMENTS_CAPABILITY,
     env,
+    ...(feature ? { feature } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
-    masterKeySecretName: masterKeySecretName(project, env),
+    masterKeySecretName: masterKeySecretName(project, env, feature),
     workflows: derived.workflows,
     // The catalog travels whole: the pass has to map a refreshed store SKU back to a product before it can
     // project it, and the rails' toggles decide which stores it may ask at all. Nothing sensitive is in it —

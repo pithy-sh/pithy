@@ -127,6 +127,8 @@ describe("createFeature → destroyFeature round-trip", () => {
       env: "feature",
       provisioners: emptyProvisioners,
       scripts: { exists: async () => false, delete: async () => {} },
+      workflows: { hostedBy: async () => [], delete: async () => {} },
+      tokens: { deleteByName: async () => 0 },
       git,
       registryPath,
     });

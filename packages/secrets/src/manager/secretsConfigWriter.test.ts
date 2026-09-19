@@ -48,4 +48,21 @@ describe("rotationConfigWriter", () => {
     const { manager } = fakeManager();
     expect(() => rotationConfigWriter(manager, "", "staging")).toThrow(PithyError);
   });
+
+  /**
+   * **A feature's manager writes back to the feature's own key (#643).** Composed as an environment, `feature`
+   * would name `<project>-feature-secrets-encryption-keys` — an entry nothing binds, and one every branch would
+   * write. So a feature manager needs its stamped feature, and without it the write-back is refused.
+   */
+  test("a feature's manager writes back to the feature's own entry", async () => {
+    const { manager, putSecret } = fakeManager();
+    await rotationConfigWriter(manager, "acme", "feature", { issue: "643", slug: "feature-address" }).write("f");
+    expect(putSecret).toHaveBeenCalledWith("acme-f643-feature-address-secrets-encryption-keys", "f");
+  });
+
+  test("refuses a feature manager that does not say which feature it serves", () => {
+    const { manager } = fakeManager();
+    expect(() => rotationConfigWriter(manager, "acme", "feature")).toThrow(PithyError);
+    expect(() => rotationConfigWriter(manager, "acme", "feature", { issue: "643" })).toThrow(PithyError);
+  });
 });

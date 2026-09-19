@@ -3,16 +3,19 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { type FeatureIdentity, featureRatelimitNamespaceId } from "@pithy-sh/core/src/naming/feature";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
 import { stanzaFor } from "../project/wranglerInheritance";
-import { absolutizePaths, provisionConfigPath } from "./featureConfig";
+import { absolutizePaths, featureConfigPath, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
 
 /**
@@ -197,9 +200,90 @@ export async function applySecretBindings(
  * never something a feature stanza should carry, and a project with a top-level route must still be able to
  * provision a branch.
  */
-function stripFeatureRoutes(stanza: EnvBindings): void {
+function stripFeatureRoutes(stanza: EnvBindings, top: Record<string, unknown>): string[] {
+  // What wrangler would have deployed the feature on, said back to the operator before it goes (F4 of #643's
+  // review): a route declared on purpose under a tracked `env.feature` must not vanish without a word. The
+  // stanza's own when it has one, else the top level's it would inherit.
+  const own = stanza.route !== undefined || stanza.routes !== undefined;
+  const dropped = routePatterns(own ? stanza : (top as EnvBindings));
   delete stanza.route;
   stanza.routes = [];
+  return dropped;
+}
+
+/** The patterns a stanza routes, in the two shapes wrangler takes: `route` and `routes`, strings or objects. */
+function routePatterns(stanza: EnvBindings): string[] {
+  const entries = [...(stanza.route !== undefined ? [stanza.route] : []), ...(stanza.routes ?? [])];
+  return entries.flatMap((entry) => {
+    const pattern = typeof entry === "string" ? entry : entry?.pattern;
+    return typeof pattern === "string" && pattern !== "" ? [pattern] : [];
+  });
+}
+
+/** One `ratelimits` entry, as far as this reads one: its binding name, and whatever else it carries. */
+interface RatelimitEntry {
+  name?: string;
+  [field: string]: unknown;
+}
+
+/**
+ * **A feature binds every rate limiter the top level declares, each in a namespace of its own (#643).**
+ *
+ * Wrangler does not inherit `ratelimits` into an environment, and `stanzaFor` copies them only into a stanza it
+ * creates — so a tracked `env.feature` without them deployed a Worker with no `AUTH_RATE_LIMITER`, and auth
+ * refused every request. Each top-level entry the stanza does not already bind by name is copied.
+ *
+ * **And every entry is then given the feature's own `namespace_id`**, the copied ones and any declared under a
+ * tracked `env.feature` alike. Cloudflare keys a limiter's counters by that id across the account, so a copied id
+ * spent production's per-IP budget, and an id declared for `env.feature` is one every open branch would spend
+ * together. Nothing is shared between a feature and anything else: see `featureRatelimitNamespaceId`. The slot
+ * is the binding's place among the stanza's limiters by name, so a re-run renumbers identically. A derived id the
+ * tracked config already uses anywhere is refused rather than taken.
+ */
+function featureRatelimits(
+  stanza: Record<string, unknown>,
+  top: Record<string, unknown>,
+  identity: FeatureIdentity,
+): void {
+  const declared = Array.isArray(top.ratelimits) ? (top.ratelimits as RatelimitEntry[]) : [];
+  const own = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
+  const bound = new Set(own.map((entry) => entry.name));
+  const missing = declared.filter((entry) => typeof entry.name === "string" && !bound.has(entry.name));
+  // In place when the array is there, so comment-json keeps the adopter's comments on it.
+  if (missing.length > 0) {
+    if (Array.isArray(stanza.ratelimits)) own.push(...missing.map((entry) => structuredClone(entry)));
+    else stanza.ratelimits = missing.map((entry) => structuredClone(entry));
+  }
+  const entries = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
+  if (entries.length === 0) return;
+  const names = [...new Set(entries.map((entry) => String(entry.name)))].sort();
+  const taken = trackedNamespaceIds(top);
+  for (const entry of entries) {
+    const id = featureRatelimitNamespaceId(identity, names.indexOf(String(entry.name)));
+    if (taken.has(id)) {
+      throw new ValidationError({
+        message: `This feature's rate limiter ${String(entry.name)} would take namespace ${id}, which the tracked config already uses.`,
+        action: "Give that limiter another namespace_id in wrangler.jsonc. A feature's counters are its own.",
+        detail: `feature ${identity.project}-f${identity.issue}-${identity.slug}: namespace_id ${id} is declared in the tracked wrangler.jsonc`,
+      });
+    }
+    entry.namespace_id = id;
+  }
+}
+
+/** Every `ratelimits` `namespace_id` the tracked config declares: its top level, and every `env.<name>` but the feature's. */
+function trackedNamespaceIds(top: Record<string, unknown>): Set<string> {
+  const ids = new Set<string>();
+  const collect = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const entry of value as RatelimitEntry[]) {
+      if (entry.namespace_id !== undefined) ids.add(String(entry.namespace_id));
+    }
+  };
+  collect(top.ratelimits);
+  const envs = (top.env ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  for (const [name, stanza] of Object.entries(envs)) if (name !== FEATURE_ENVIRONMENT) collect(stanza?.ratelimits);
+  return ids;
 }
 
 /**
@@ -283,13 +367,10 @@ export async function applyProvisionedEnv(options: {
    */
   subdomain?: string | null;
   /**
-   * Cross-script `workflows` entries into the kit hosts this scope stands up — for a feature, email's
-   * `EMAIL_SENDER` into the feature's own email host (#643). Upserted by binding, like every other list here.
-   *
-   * A new stanza starts its `workflows` empty ({@link stanzaFor}), because the top level's entries name `dev`'s
-   * Workflows; these are the scope's own. Omitted or empty, the stanza's `workflows` are left as they are.
+   * Told the route patterns a feature stanza gave up (#643) — the ones it declared, or would have inherited. A
+   * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
-  workflows?: readonly HostedWorkflowEntry[];
+  onRoutesDropped?: (routes: string[]) => void;
 }): Promise<string> {
   // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
   // every edit, so this was two edits for as long as the secrets were a second one: the second started
@@ -304,7 +385,10 @@ export async function applyProvisionedEnv(options: {
     // A feature's address, from the name just settled. Never a declared environment's: its address is
     // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
     if (!options.scope.source) {
-      stripFeatureRoutes(stanza);
+      const dropped = stripFeatureRoutes(stanza, top);
+      if (dropped.length > 0) options.onRoutesDropped?.(dropped);
+      const feature = options.scope.workflowHost.feature;
+      if (feature) featureRatelimits(stanza as Record<string, unknown>, top, feature);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     for (const resource of options.resources) {
@@ -330,13 +414,58 @@ export async function applyProvisionedEnv(options: {
       }
     }
     if (options.secrets.length > 0) upsertSecretBindings(stanza, options.secrets);
-    if (options.workflows && options.workflows.length > 0) {
-      stanza.workflows ??= [];
-      for (const entry of options.workflows) {
-        const existing = stanza.workflows.find((candidate) => candidate.binding === entry.binding);
-        if (existing) Object.assign(existing, entry);
-        else stanza.workflows.push({ ...entry });
-      }
-    }
   });
+}
+
+/**
+ * **Bind a feature's app Worker to the kit hosts that deployed, and to no other (#643, F2 of the review)** — and
+ * to the indexes the feature created for it.
+ *
+ * Written after the hosts' deploy rather than with the stanza, so a host that failed to deploy leaves no binding
+ * to it: the next `pithy deploy --env feature` would otherwise ship an app Worker bound to a Workflow on a script
+ * that does not exist. Every entry in `hosted` — each one this Worker declares into any kit host — is removed
+ * first, and then the entries of the hosts that deployed are written back, so a re-run whose host now fails takes
+ * the binding a previous run wrote with it. Each index is upserted by binding, as the feature's own.
+ *
+ * An edit of the **generated** config in place, not a regeneration from the tracked file: that is what the stanza
+ * write above does, and a second regeneration would drop everything the first one wrote (#592). Nothing is
+ * written for a Worker whose generated config does not exist yet.
+ */
+export async function bindFeatureHosts(options: {
+  /** The Worker's directory. Its generated feature config is the file edited. */
+  workerDir: string;
+  /** Every entry this Worker declares into a kit host, deployed or not — what is cleared. */
+  hosted: readonly HostedWorkflowEntry[];
+  /** The entries whose host deployed — what is written. A subset of {@link hosted}. */
+  bound: readonly HostedWorkflowEntry[];
+  /** The feature's own indexes this Worker binds, by binding. */
+  indexes: readonly { binding: string; name: string }[];
+}): Promise<void> {
+  const path = featureConfigPath(options.workerDir);
+  const raw = await readOptionalFile(path);
+  if (raw === null) return;
+  const config = parse(raw) as unknown as Record<string, unknown>;
+  const stanza = stanzaFor(config, FEATURE_ENVIRONMENT) as EnvBindings & {
+    vectorize?: { binding: string; index_name: string }[];
+  };
+  const cleared = new Set(options.hosted.map((entry) => entry.binding));
+  const kept = (stanza.workflows ?? []).filter((entry) => !cleared.has(entry.binding));
+  const next = [
+    ...kept,
+    ...options.bound.map(({ binding, name, class_name, script_name }) => ({ binding, name, class_name, script_name })),
+  ];
+  if (stanza.workflows) {
+    // In place, so comment-json keeps the array's comments.
+    stanza.workflows.length = 0;
+    stanza.workflows.push(...next);
+  } else if (next.length > 0) {
+    stanza.workflows = next;
+  }
+  for (const index of options.indexes) {
+    stanza.vectorize ??= [];
+    const existing = stanza.vectorize.find((entry) => entry.binding === index.binding);
+    if (existing) existing.index_name = index.name;
+    else stanza.vectorize.push({ binding: index.binding, index_name: index.name });
+  }
+  await writeJsonc(path, config);
 }

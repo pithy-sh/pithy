@@ -15,23 +15,13 @@ import type { ProvisionMode } from "./mode";
  *
  * **What it then named as the fix was true for one mode only (#330).** The line said *run
  * `pithy secrets provision`* whichever mode had been typed. That command iterates the environments the
- * project **declares** and deploys a manager into each. A branch is not declared and gets no manager —
- * deliberately, by #241: a manager is a Worker with its own D1 and its own rotation cron, and one per
- * open pull request is not a thing anybody wants. So for `--feature` the command does nothing at all,
- * and the operator who ran it learned nothing, which is the exact dead end this area exists to remove.
+ * project **declares** and deploys a manager into each, and a branch is not declared.
  *
- * **There is no remedy for a feature environment, and that is the sentence rather than a better
- * command.** Every route to one was checked before this was written:
- *
- * - `pithy secrets provision` spans `projectEnvironments` — the declared set. A branch is never in it.
- * - Giving it a `--feature` mode would deploy a manager per branch, which is the design #241 refused.
- * - The CLI cannot write the row itself. The master key is put into the account's Secrets Store and read
- *   back by nothing: the store is write-only to this side, which is the premise the whole design rests on.
- * - `seedDevSecrets` writes rows directly, but into a *local* Miniflare D1 from a local file. There is no
- *   remote equivalent, and inventing one here would be a second writer for the sealed store.
- *
- * So a shortfall is stated. A branch's environment comes up without these secrets, and an operator is
- * told that in the run that made it rather than by the first request that needs one.
+ * **A branch has a manager of its own since #643.** Every kit Worker a feature composes is provisioned for it,
+ * the secrets manager included, and `pithy provision --feature` creates these secrets through it exactly as
+ * `pithy secrets provision` does for a declared environment. So a feature run defers one only when it had no
+ * Secrets Store to put a manager's key in — no `SECRETS_STORE_ID` on this machine — and the remedy is the
+ * same run with one.
  *
  * **It warns; it does not refuse.** `pithy provision --feature` runs per pull request, in CI, and
  * refusing every one of them for a gap the command cannot close would break the pipeline without moving
@@ -64,7 +54,7 @@ export interface PendingSecrets {
  */
 const PENDING_SECRET_REMEDY: Record<ProvisionMode["kind"], string | null> = {
   environment: "pithy secrets provision",
-  feature: null,
+  feature: "pithy provision --feature with SECRETS_STORE_ID set",
 };
 
 /**

@@ -4,6 +4,12 @@
 "@pithy-sh/email": patch
 "@pithy-sh/secrets": patch
 "@pithy-sh/cloudflare": patch
+"@pithy-sh/media": patch
+"@pithy-sh/storage": patch
+"@pithy-sh/payments": patch
+"@pithy-sh/support": patch
+"@pithy-sh/testers": patch
+"@pithy-sh/vector": patch
 ---
 
 A feature deployment has an address. A feature Worker answers on `https://<script>.<subdomain>.workers.dev`, and `pithy provision --feature` now derives that from the Worker's script name and the account's `workers.dev` subdomain, through the same resolver staging and prod use, and stamps it as the feature stanza's `vars.BASE_URL`. `originFor` reads that stamp inside a feature deployment, so the scaffolded `PUBLIC_ORIGIN` — and with it auth's base URL, email's links and payments' return URLs — is the feature's own origin instead of `http://localhost`. Only a `workers.dev` https origin is read, so a `BASE_URL` a feature inherits from the top level is never taken for its own. A declared environment never falls back to `workers.dev`. `pithy dashboard connect --env feature` registers the same address.
@@ -12,9 +18,13 @@ A feature answers on that address and nothing else. Its generated stanza states 
 
 A feature deployment sends a magic link, and the link signs the person in.
 
-- `pithy provision --feature` creates the feature's own master key and seals every arbitrary `d1` secret — `auth-session-secret` among them — into the feature's own `SECRETS` database, where the Worker reads it. The feature's own stores are the only copy; nothing is kept on the machine that ran it. A run from any machine creates only what is absent and never overwrites: the master key through the Secrets Store's create-if-absent, rows through an insert that leaves one already there alone, so two runs at once leave one value. A read that fails fails the run. A master key that exists beside a missing `d1` secret cannot be sealed under, so after waiting for any concurrent run the command refuses by name and says how to start the feature's secrets over.
-- Each feature gets its own email host, `<project>-f<issue>-<slug>-email`, with Workflows named the same way, bound to the feature's own databases and keys. `pithy provision --feature` deploys it through the same resolver and gated deploy `pithy deploy` ships a declared environment's with, and binds the app Worker's `EMAIL_SENDER` to it. `pithy deploy --env feature` redeploys it when it changes and skips, by name, any kit Worker a feature does not host yet. `pithy feature destroy` deletes it.
-- A new `env.<name>` stanza carries the top level's rate limiters whole — a limiter's `namespace_id` is the same in every environment — so a feature binds `AUTH_RATE_LIMITER`.
+- **Every kit Worker a feature composes is provisioned for it**, not email's alone: the secrets manager, email, media, storage, payments, support, testers and vector — whatever the registry names that the branch composes. Each is deployed through the registry entry, resolver and gated deploy `pithy deploy` ships a declared environment's with, handed the feature, so its script, its Workflows, its buckets, its Vectorize indexes and its store entries are `<project>-f<issue>-<slug>-…`. A vector host's indexes are created for the feature with their declared shape and bound on its app Worker. A host any of whose account-wide names is not the feature's fails rather than deploys. `pithy deploy --env feature` redeploys them; `pithy feature destroy` deletes every one, and every Workflow they host, explicitly and first.
+- **A feature's secrets are created the way staging's and prod's are.** It gets its own manager token, master key and secrets manager, through the provisioner `pithy secrets provision` uses, and the manager creates every generated `d1` secret through the same `mintDeclaredSecrets` pass: probed first, written with `create`, never over a value that is there. The CLI never holds a value, nothing depends on which run created the key, and a run that fails anywhere after the key exists is finished by the next one. The feature-only sealing path is gone. A manager's `create` is now one insert-if-absent, so two concurrent runs leave one value and the loser is told it exists.
+- **Nothing is shared between a feature and any other environment.** Every store entry is the feature's own, a `global` secret's included, and so is its manager's CF API token. Every rate limiter in a feature stanza — copied from the top level, or declared under a tracked `env.feature` — gets a `namespace_id` of the feature's own, so a branch no longer spends production's per-IP budget; an id the tracked config already uses is refused.
+- **The app Worker is bound only to the hosts that deployed.** The bindings are written after the deploy, so a host that failed leaves none for the next deploy to ship, and a re-run whose host now fails takes back the one an earlier run wrote.
+- **An app Worker whose directory would give it a kit host's feature name** — `apps/email`, `apps/secrets`, any registry host — is refused before anything is created.
+- The routes a feature stanza gives up are named in the run's output, whether inherited or declared under a tracked `env.feature`. Rate limiters reach a tracked `env.feature` too, not only a stanza the run creates.
+- `createSecretIfAbsent` answers `created`, `present` or `unconfirmed` — a create that threw with an entry there afterwards may have been its own, and it no longer says otherwise. An entry Cloudflare lists as `deleted` is not counted as there, and a duplicate name is resolved to the oldest entry rather than trusted to be refused.
 - `pithy deploy`'s kit pass reads a feature's ids from the generated config's `env.feature`, not its top level.
 
 The dev login stays `dev`'s alone: no route, no seed and no link on a feature, where a magic link is how anybody signs in. A feature's seed is refused a secret, as `staging` and `prod` are, and never opens the dev secrets file.

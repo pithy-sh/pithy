@@ -13,6 +13,7 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { CloudflareSecretsProvisioner } from "../capabilities/secretsProvisioner";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { ProvisionWorker } from "../provision/environment";
 import { featureConfigPath } from "../provision/featureConfig";
@@ -61,7 +62,22 @@ function fakeProvisioners() {
  * The script half of teardown, for a case that is not about scripts: an account with none deployed, and a
  * project whose Workers the case does not resolve. The cases that are about scripts are below.
  */
-const noScripts = { scripts: { exists: async () => false, delete: async () => {} }, workers: [] };
+const noScripts = {
+  scripts: { exists: async () => false, delete: async () => {} },
+  workers: [],
+  ...noWorkflows(),
+};
+
+/**
+ * The Workflow and token halves of teardown (#643), for a case not about them: an account hosting no Workflow and
+ * holding no feature token.
+ */
+function noWorkflows() {
+  return {
+    workflows: { hostedBy: async () => [] as string[], delete: async () => {} },
+    tokens: { deleteByName: async () => 0 },
+  };
+}
 
 /** A capability declaring one D1, one KV, and one R2 binding — the provisionable set under test. */
 function appCapability() {
@@ -130,6 +146,31 @@ describe("provisionFeature / deprovisionFeature", () => {
       seed: async ({ env }: { env: string }) => void calls.seed.push(env),
     };
   }
+
+  /**
+   * **F3 of #643's review: an app Worker can never take a kit host's name.** A feature names each Worker by its
+   * directory, and `apps/email` composes exactly the name email's feature host deploys under. Refused before a
+   * single resource is created — for every host the registry knows, not only email's.
+   */
+  test.each(["email", "secrets", "payments", "vector"])(
+    "refuses an app Worker in apps/%s before creating anything",
+    async (app) => {
+      const { stores, provisioners } = fakeProvisioners();
+      await expect(
+        provisionFeature({
+          administersItself: false,
+          projectDir: dir,
+          capabilities,
+          identity,
+          provisioners,
+          resolveWorkers: async () => [{ name: `acme-${app}`, dir: join(dir, "apps", app), capabilities }],
+          migrate: async () => {},
+          seed: async () => {},
+        }),
+      ).rejects.toThrow(`the name this feature's ${app} host takes`);
+      expect([...stores.d1.keys(), ...stores.kv.keys(), ...stores.r2.keys()]).toEqual([]);
+    },
+  );
 
   test("fresh provision creates every resource, records the manifest, writes wrangler ids, migrates + seeds", async () => {
     const { stores, provisioners } = fakeProvisioners();
@@ -752,13 +793,46 @@ describe("provisionFeature / deprovisionFeature", () => {
           storeId: "store-1",
           exists: async (name: string) => entries.has(name),
           put: async (name: string, value: string) => void entries.set(name, value),
-          create: async (name: string, value: string) => !entries.has(name) && Boolean(entries.set(name, value)),
+          create: async (name: string, value: string) => {
+            if (entries.has(name)) return "present" as const;
+            entries.set(name, value);
+            return "created" as const;
+          },
           remove: async (name: string) => entries.delete(name),
         },
       };
     }
 
     const withSecrets = [secrets({ registry: {} })];
+
+    /**
+     * **The feature's secrets infrastructure, through the provisioner `pithy secrets provision` uses (#643)** —
+     * the real `CloudflareSecretsProvisioner`, handed the feature, over a Cloudflare that is only this store.
+     */
+    function featureSecretsOver(entries: Map<string, string>) {
+      const cf = {
+        secrets: () => ({
+          exists: async (name: string) => entries.has(name),
+          putSecret: async (name: string, value: string) => void entries.set(name, value),
+          createSecretIfAbsent: async (name: string, value: string) => {
+            if (entries.has(name)) return "present";
+            entries.set(name, value);
+            return "created";
+          },
+        }),
+        accountTokens: () => ({ rollToken: async (name: string) => ({ id: `tk-${name}`, value: `token-${name}` }) }),
+      } as unknown as CloudflareClients;
+      return new CloudflareSecretsProvisioner({
+        cf,
+        account: { accountId: "acct-1", confirmation: "pinned" },
+        project: identity.project,
+        storeId: "store-1",
+        deploy: async () => {
+          throw new Error("a feature's manager deploys with its kit hosts");
+        },
+        feature: identity,
+      });
+    }
 
     test("mints the feature's own master key and binds it in every Worker that declares it", async () => {
       const { provisioners } = fakeProvisioners();
@@ -771,17 +845,19 @@ describe("provisionFeature / deprovisionFeature", () => {
         identity,
         provisioners,
         store,
+        secrets: featureSecretsOver(entries),
         resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withSecrets }],
         migrate: async () => {},
         seed: async () => {},
       });
 
       const entry = "acme-f69-demo-secrets-encryption-keys";
-      // Its own key, under its own name — never staging's, which teardown would then delete.
-      expect([...entries.keys()]).toEqual([entry]);
+      // Its own key and its own manager token, under its own names — never staging's, which teardown would then
+      // delete, and never the project's `global` token, which every declared manager binds (#643).
+      expect([...entries.keys()].sort()).toEqual([entry, "acme-f69-demo-secrets-manager-cf-api-token"]);
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
-      // `devValue` and the #321 minter never touches it. `provisionFeature` writes it itself, above.
+      // `devValue` and the #321 minter never touches it. The secrets provisioner creates it, above.
       expect(report.secretBindings).toEqual([
         { secret: "SECRETS_ENCRYPTION_KEYS", binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
       ]);
@@ -823,6 +899,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         identity,
         provisioners,
         store,
+        secrets: featureSecretsOver(entries),
         resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: kebab }],
         migrate: async () => {},
         seed: async () => {},
@@ -855,6 +932,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         identity,
         provisioners,
         store,
+        secrets: featureSecretsOver(entries),
         resolveWorkers: async () => [],
         migrate: async () => {},
         seed: async () => {},
@@ -881,6 +959,7 @@ describe("provisionFeature / deprovisionFeature", () => {
         identity,
         provisioners,
         store,
+        secrets: featureSecretsOver(entries),
         resolveWorkers: async () => [],
         migrate: async () => {},
         seed: async () => {},
@@ -938,6 +1017,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           identity,
           provisioners,
           store,
+          secrets: featureSecretsOver(entries),
           resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
           migrate: async () => {},
           seed: async () => {},
@@ -981,6 +1061,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           identity,
           provisioners,
           store,
+          secrets: featureSecretsOver(entries),
           resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
           migrate: async () => {},
           seed: async () => {},
@@ -1009,6 +1090,7 @@ describe("provisionFeature / deprovisionFeature", () => {
           identity,
           provisioners,
           store,
+          secrets: featureSecretsOver(entries),
           resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
           migrate: async () => {},
           seed: async () => {},
@@ -1207,6 +1289,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers: [],
     });
 
@@ -1227,6 +1310,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers,
     });
 
@@ -1261,6 +1345,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers,
     });
 
@@ -1294,6 +1379,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers,
     });
 
@@ -1314,6 +1400,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers: workers.filter((worker) => worker.name !== "acme-web"),
     });
 
@@ -1337,6 +1424,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: scripts.seam,
+      ...noWorkflows(),
       workers: [],
     });
 
@@ -1368,6 +1456,7 @@ describe("a feature's Worker scripts", () => {
       env: "feature",
       provisioners,
       scripts: fakeScripts(["acme-f69-demo-api"]).seam,
+      ...noWorkflows(),
       workers,
       audit: async (event) => void events.push(event),
     });
@@ -1457,8 +1546,11 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
       storeId: "store-1",
       exists: async (name: string) => holding("secret").has(name),
       put: async (name: string, value: string) => void holding("secret").set(name, value),
-      create: async (name: string, value: string) =>
-        !holding("secret").has(name) && Boolean(holding("secret").set(name, value)),
+      create: async (name: string, value: string) => {
+        if (holding("secret").has(name)) return "present" as const;
+        holding("secret").set(name, value);
+        return "created" as const;
+      },
       remove: async (name: string) => holding("secret").delete(name),
     };
     /** Each deployed script's `services` targets, as its deploy uploaded them. */
@@ -1563,6 +1655,7 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
       provisioners: account.provisioners,
       store: account.store,
       scripts: account.scripts,
+      ...noWorkflows(),
       workers,
     });
 

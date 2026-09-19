@@ -68,6 +68,17 @@ function head(identity: FeatureIdentity): string {
 }
 
 /**
+ * **The prefix every name one feature composes starts with** — `<project>-f<issue>-`, dash included (#643).
+ *
+ * Whatever a feature names — a resource, a Worker, a Workflow, a store entry — begins with this, and nothing
+ * another feature or a declared environment names does. So it is how a check that must not trust a resolver
+ * asks "is this name the feature's?" without recomposing every kind of name a resolver might produce.
+ */
+export function featureNamePrefix(identity: FeatureIdentity): string {
+  return `${head(identity)}-`;
+}
+
+/**
  * Fit `<head>-<slug>-<tail><fixed>` into `budget`, truncating the slug first and the tail only if the
  * tail is what is eating the name. `fixed` is never touched — it carries the kind suffix, which is the
  * only thing telling a `DB` bucket from a `DB` database.
@@ -133,8 +144,8 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
  * no documented Cloudflare cap, and holding it to the strictest kind's would hash
  * `secrets-encryption-keys` down to nothing for no reason.
  *
- * A `global` secret is not named here at all: it is one account-level value every environment binds,
- * so a feature binds the project's `<project>-global-<secret>` rather than minting a second copy.
+ * A `global` secret is named here too since #643: a feature shares nothing with any other environment, so
+ * its entry for a global secret is its own rather than the project's `<project>-global-<secret>`.
  */
 export function featureSecretEntryName(identity: FeatureIdentity, secret: string): string {
   return composeFeatureName(
@@ -187,4 +198,63 @@ export function featureWorkflowName(identity: FeatureIdentity, capability: strin
     "",
     NAMESPACE_LIMITS.workflow.maxLength,
   );
+}
+
+/**
+ * The name of one of a feature's **Vectorize indexes** — `<project>-f<issue>-<slug>-<thing>` (#643).
+ *
+ * An index name is account-wide, so a feature's vector host cannot bind `<project>-feature-vector-<index>`: every
+ * open branch would read and write one index. Held to the Vectorize limit and fitted the way every feature name
+ * is, so teardown recomputes it from the identity.
+ */
+export function featureVectorizeIndexName(identity: FeatureIdentity, thing: string): string {
+  return composeFeatureName(
+    head(identity),
+    kebab(identity.slug),
+    kebab(thing),
+    "",
+    NAMESPACE_LIMITS.vectorizeIndex.maxLength,
+  );
+}
+
+/** How many rate limiters one feature Worker can give a namespace of its own: one decimal digit of slot. */
+export const MAX_FEATURE_RATELIMITS = 10;
+
+/**
+ * **A feature's own rate-limit `namespace_id` for its `slot`-th limiter** — never staging's, prod's, the top
+ * level's, or a sibling feature's (#643).
+ *
+ * Cloudflare keys a rate limiter's counters by `namespace_id` across the whole account, so a feature Worker bound
+ * to the top level's namespace spends production's per-IP budget, and two branches spend each other's. So every
+ * `ratelimits` binding in a feature stanza is renumbered here: `1`, the issue in six digits, two digits of the
+ * project and slug, and the slot — ten digits, under 2^31, and exact in the issue, so two open features of one
+ * project with different issues can never share one. Two branches for **one** issue share one only if their
+ * project-and-slug digits agree as well. The leading `1` keeps the id clear of the small hand-picked ids adopters
+ * write, and `pithy provision --feature` still refuses an id the tracked config already uses, so a collision with
+ * a declared environment is refused rather than assumed away.
+ */
+export function featureRatelimitNamespaceId(identity: FeatureIdentity, slot: number): string {
+  assertValidProjectName(identity.project);
+  if (!/^[0-9]+$/.test(identity.issue) || identity.issue.length > MAX_ISSUE_DIGITS) {
+    throw new ValidationError({
+      message: `A feature's issue number is at most ${MAX_ISSUE_DIGITS} digits.`,
+      detail: `featureRatelimitNamespaceId: issue "${identity.issue}"`,
+    });
+  }
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_FEATURE_RATELIMITS) {
+    throw new ValidationError({
+      message: `A feature Worker can bind at most ${MAX_FEATURE_RATELIMITS} rate limiters.`,
+      action: "Bind fewer rate limiters in this Worker.",
+      detail: `featureRatelimitNamespaceId: slot ${slot}`,
+    });
+  }
+  // FNV-1a over the project and the slug: stable across runs and machines, so a branch keeps its namespace, and
+  // its counters, across every re-provision.
+  let hash = 0x811c9dc5;
+  for (const char of `${identity.project}/${identity.slug}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const mix = String(hash % 100).padStart(2, "0");
+  return `1${identity.issue.padStart(MAX_ISSUE_DIGITS, "0")}${mix}${slot}`;
 }

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
-import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { masterKeySecretName } from "../provision/provisionSecrets";
 import { ManagedEnvironment } from "../scope";
 import type { ConfigWriter } from "./configWriter";
@@ -48,6 +49,13 @@ export function rotationConfigWriter(
   manager: CloudflareSecretsStoreManager,
   project: string,
   environment: string,
+  /**
+   * **A feature manager's feature, from its `FEATURE_ISSUE` and `FEATURE_SLUG` vars (#643).** A feature's key
+   * entry is named for the feature, so a feature manager writing back to `<project>-feature-…` would persist its
+   * new key where nothing binds it — and where every other branch's manager would too. So `feature` without
+   * both is refused, never composed as an environment.
+   */
+  feature?: { issue?: string; slug?: string },
 ): SecretsStoreConfigWriter {
   const parsed = ManagedEnvironment.safeParse(environment);
   if (!parsed.success) {
@@ -56,6 +64,17 @@ export function rotationConfigWriter(
       action: "Redeploy the manager with `pithy secrets provision`, which stamps it.",
       detail: `rotation write-back: ENVIRONMENT=${environment}`,
     });
+  }
+  if (parsed.data === FEATURE_ENVIRONMENT) {
+    if (!feature?.issue || !feature.slug) {
+      throw new ValidationError({
+        message: "This feature's secrets manager does not say which feature it serves.",
+        action: "Redeploy it with pithy provision --feature, which stamps FEATURE_ISSUE and FEATURE_SLUG.",
+        detail: `rotation write-back: ENVIRONMENT=feature, FEATURE_ISSUE=${feature?.issue ?? ""}, FEATURE_SLUG=${feature?.slug ?? ""}`,
+      });
+    }
+    const identity = { project, issue: feature.issue, slug: feature.slug };
+    return new SecretsStoreConfigWriter(manager, masterKeySecretName(project, parsed.data, identity));
   }
   return new SecretsStoreConfigWriter(manager, masterKeySecretName(project, parsed.data));
 }

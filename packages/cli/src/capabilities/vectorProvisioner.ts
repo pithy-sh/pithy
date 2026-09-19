@@ -11,6 +11,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
+import type { FeatureIndexes } from "../provision/resources";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -271,4 +272,42 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       ...(options.filter ? { filter: options.filter } : {}),
     });
   }
+}
+
+/**
+ * **A feature's own Vectorize indexes, created the way `pithy vector provision` creates an environment's (#643)** —
+ * through {@link CloudflareVectorProvisioner}'s own `ensureIndex` and `ensureMetadataIndexes`, so a feature's
+ * index has the declared shape and every declared metadata index before anything writes a vector to it. Only
+ * those two steps and the delete are used: the vector host itself deploys with the feature's other kit Workers.
+ */
+export function cloudflareFeatureIndexes(options: {
+  projectDir: string;
+  cf: CloudflareClients;
+  accountId: string;
+  apiToken: string;
+  project: string;
+  workflows: CloudflareWorkflowsClient;
+}): FeatureIndexes {
+  const provisioner = new CloudflareVectorProvisioner({
+    ...options,
+    // Read only by the deploy and reprocess steps, which a feature never runs through this provisioner.
+    config: { indexes: {} } as unknown as VectorConfig,
+    resolveEnv: async () => {
+      throw new InternalError({
+        message: "A feature's vector host is deployed with its other kit Workers.",
+        detail: "cloudflareFeatureIndexes: resolveEnv is not part of a feature run",
+      });
+    },
+  });
+  return {
+    ensure: async (index) => {
+      await provisioner.ensureIndex(index.name, { dimensions: index.dimensions, metric: index.metric });
+      await provisioner.ensureMetadataIndexes(index.name, index.metadata as MetadataIndexDescriptor[]);
+    },
+    remove: async (name) => {
+      if (!(await options.cf.vectorizeProvisioner().findIndexByName(name))) return false;
+      await provisioner.deleteIndex(name);
+      return true;
+    },
+  };
 }
