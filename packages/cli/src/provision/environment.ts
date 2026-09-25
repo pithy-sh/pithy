@@ -355,9 +355,11 @@ export interface ProvisionWorker {
   /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
   capabilities: Capability[];
   /**
-   * That Worker's own `pithy.config.ts`. Only `declinedBindings` is read from it — a binding this Worker
-   * declines gets no resource created for it, because the decline said the resource is not wanted.
-   * Optional: the resolver is a seam, and a caller with no config to give is a Worker declining nothing.
+   * That Worker's own `pithy.config.ts`. Two fields are read from it: `declinedBindings` — a binding this
+   * Worker declines gets no resource created for it, because the decline said the resource is not wanted —
+   * and `app`, the capability whose Workflows a feature's stanza is derived from (#650). Optional: the
+   * resolver is a seam, and a caller with no config to give is a Worker declining nothing and declaring no
+   * jobs.
    */
   config?: WorkerConfig;
 }
@@ -678,6 +680,11 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
       // more thing composed here.
       administersItself: options.administersItself,
+      // **This Worker's own app capability, so a feature's stanza binds the Workflows it declares (#650).**
+      // Off the Worker's own `pithy.config.ts`, never inferred from the capability list: `allCapabilities`
+      // appends the app to the libraries and the array cannot say which one it was, so a guess here would
+      // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
+      ...(worker.config?.app ? { app: worker.config.app } : {}),
       ...(subdomain !== undefined ? { subdomain } : {}),
       onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.

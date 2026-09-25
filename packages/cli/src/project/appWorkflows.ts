@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
+import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { stringify } from "comment-json";
 import { incompleteBindings } from "./appBindings";
@@ -51,8 +52,16 @@ export interface AppWorkflowPlan {
   crons: string[];
 }
 
-/** The identity an app-declared Workflow's name is composed from. */
-export interface AppWorkflowNameParts {
+/**
+ * The identity an app-declared Workflow's name is composed from — **the scope's own
+ * {@link ProvisionScope.workflowHost}, for any environment a project has (#650).**
+ *
+ * `Omit<WorkflowHostNameParts, "capability">` rather than two hand-written fields, because that is exactly
+ * what a {@link ProvisionScope} carries: a caller with a scope passes `scope.workflowHost` and cannot
+ * supply an environment and a naming scheme that disagree. A caller naming a declared environment passes
+ * `{ project, env }`, which is what it always passed.
+ */
+export interface AppWorkflowNameParts extends Omit<WorkflowHostNameParts, "capability"> {
   /**
    * The project name — the root `pithy.config.ts` `name`, from `requireProjectName` and never guessed.
    * Workflow names are account-scoped, so a guessed project deploys under a name another project owns.
@@ -76,6 +85,10 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
     project: parts.project,
     capability: app.name,
     env: parts.env,
+    // **A feature's names are the feature's own (#650).** `env` stays `feature` — that is what the Worker's
+    // `ENVIRONMENT` var says — and only the names change, exactly as they do for a kit host's Workflows.
+    // Carried rather than branched on, so the app's jobs and a capability's are named by one function.
+    ...(parts.feature ? { feature: parts.feature } : {}),
   });
   return {
     workflows: workflows.map(({ binding, name, class_name }) => ({ binding, name, class_name })),
@@ -203,6 +216,24 @@ function setCrons(stanza: WorkflowStanza, crons: string[]): void {
 }
 
 /**
+ * **Write one scope's plan into one stanza — the single application of {@link planAppWorkflows}'s answer
+ * (#650).**
+ *
+ * Two files carry an app's own Workflow table and they are written by two commands: the tracked
+ * `wrangler.jsonc`, by `pithy worker sync` through {@link reconcileAppWorkflows}, and the generated
+ * `.wrangler/pithy/wrangler.feature.jsonc`, by `pithy provision --feature` through
+ * `provision/wranglerEnv.ts`. What goes *in* them is one derivation and one application, so a feature's
+ * table and a declared environment's cannot come to mean different things by "the app's own".
+ *
+ * Nothing is validated here: `reconcileAppWorkflows` checks the whole stanza against wrangler's own
+ * requirements after it writes, and the feature writer's config is checked by the isolation gates.
+ */
+export function applyAppWorkflows(stanza: WorkflowStanza, plan: AppWorkflowPlan): void {
+  replaceOwnWorkflows(stanza, plan);
+  setCrons(stanza, plan.crons);
+}
+
+/**
  * Reconcile the app capability's declared Workflows and cron schedule into the Worker's `wrangler.jsonc` —
  * the seam behind `pithy worker sync`.
  *
@@ -234,8 +265,7 @@ export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOption
     const stanza = stanzaFor(config, target) as WorkflowStanza;
     const stanzaBefore = stringify(stanza);
 
-    replaceOwnWorkflows(stanza, plan);
-    setCrons(stanza, plan.crons);
+    applyAppWorkflows(stanza, plan);
 
     // Never write a config wrangler will not load. A hand-edited entry that lost a field lands here too,
     // which is the right place to hear about it — before the next deploy.

@@ -4,9 +4,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type FeatureIdentity, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
+import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import type { FeatureResource } from "../feature/manifest";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
@@ -736,6 +740,233 @@ describe("a feature stanza's routes and rate limiters", () => {
       JSON.stringify({ name: "replay-board", ratelimits: [{ ...LIMITER, namespace_id: "2000000001" }] }),
     );
     await expect(provision()).rejects.toThrow(/rate limiter AUTH_RATE_LIMITER declares namespace 2000000001/);
+  });
+});
+
+/**
+ * **The app's own same-script bindings in a feature's stanza (#650).**
+ *
+ * A feature deployment answered 500 on every request — `Missing required bindings: workflow:CONNECTION_ROTATION,
+ * workflow:ROTATION_SWEEP` — because the generated stanza carried the kit hosts' Workflows and none of the app's
+ * own. Staging and prod carry theirs, written by `pithy worker sync` into the tracked file; the feature's stanza
+ * is regenerated from that file on every run and `stanzaFor` empties every binding array it seeds, so nothing
+ * put them back. A Durable Object namespace the app declares went the same way, for the same reason.
+ */
+describe("a feature stanza's app-owned bindings", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const identity: FeatureIdentity = { project: "replay", issue: "650", slug: "app-workflows" };
+  const feature = featureScope(identity);
+
+  /** The dashboard's real shape, reduced: two Workflows whose classes are exported by the app's own main. */
+  const app = defineCapability({
+    name: "board",
+    requiredBindings: [],
+    workflows: {
+      rotate: {
+        binding: "CONNECTION_ROTATION",
+        params: z.object({}),
+        className: "ConnectionRotationWorkflow",
+        schedule: "0 4 * * *",
+      },
+      sweep: { binding: "ROTATION_SWEEP", params: z.object({}), className: "RotationSweepWorkflow" },
+    },
+  });
+
+  interface FeatureStanza {
+    workflows?: { binding: string; name: string; class_name: string; script_name?: string }[];
+    durable_objects?: { bindings?: { name: string; class_name: string; script_name?: string }[] };
+    triggers?: { crons?: string[] };
+  }
+
+  const provision = (scope = feature, extra: Partial<Parameters<typeof applyProvisionedEnv>[0]> = {}) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+      app,
+      ...extra,
+    });
+
+  const generated = async (): Promise<FeatureStanza> =>
+    (parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as { env: Record<string, FeatureStanza> }).env
+      .feature as FeatureStanza;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envapp-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("carries every Workflow the app declares, feature-named and same-script", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", main: "src/index.ts" }));
+    await provision();
+    expect((await generated()).workflows).toEqual([
+      {
+        binding: "CONNECTION_ROTATION",
+        name: "replay-f650-app-workflows--board-rotate",
+        class_name: "ConnectionRotationWorkflow",
+      },
+      {
+        binding: "ROTATION_SWEEP",
+        name: "replay-f650-app-workflows--board-sweep",
+        class_name: "RotationSweepWorkflow",
+      },
+    ]);
+  });
+
+  test("every name it writes is this feature's own, and within the Workflow limit", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    const entries = (await generated()).workflows ?? [];
+    // Not vacuously: an empty table would satisfy every clause below, and an empty table is the defect.
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      expect(isFeatureOwnedName(identity, entry.name)).toBe(true);
+      expect(entry.name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.workflow.maxLength);
+      // Same-script: the class is exported by this Worker's own main, so there is no host to point at.
+      expect(entry.script_name).toBeUndefined();
+    }
+  });
+
+  test("never writes dev's names, which a carried-whole table would have", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        workflows: [
+          { binding: "CONNECTION_ROTATION", name: "replay-dev-board-rotate", class_name: "ConnectionRotationWorkflow" },
+          { binding: "ROTATION_SWEEP", name: "replay-dev-board-sweep", class_name: "RotationSweepWorkflow" },
+        ],
+      }),
+    );
+    await provision();
+    const names = ((await generated()).workflows ?? []).map((entry) => entry.name);
+    expect(names).toHaveLength(2);
+    expect(names.some((name) => name.includes("-dev-"))).toBe(false);
+  });
+
+  test("replaces a stale app-owned entry a tracked env.feature declared, and keeps a host's", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: {
+          feature: {
+            workflows: [
+              {
+                binding: "EMAIL_SENDER",
+                name: "replay-f650-app-workflows--email-send",
+                class_name: "EmailSendWorkflow",
+                script_name: "replay-f650-app-workflows--email",
+              },
+              { binding: "GONE", name: "replay-dev-board-gone", class_name: "GoneWorkflow" },
+            ],
+          },
+        },
+      }),
+    );
+    await provision();
+    expect(((await generated()).workflows ?? []).map((entry) => entry.binding)).toEqual([
+      "EMAIL_SENDER",
+      "CONNECTION_ROTATION",
+      "ROTATION_SWEEP",
+    ]);
+  });
+
+  test("carries the same-script Durable Object namespaces the top level declares", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room" }] },
+      }),
+    );
+    await provision();
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "Room" }]);
+  });
+
+  test("leaves a cross-script Durable Object alone — it names another environment's script", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: {
+          bindings: [
+            { name: "ROOM", class_name: "Room" },
+            { name: "LOBBY", class_name: "Lobby", script_name: "replay-prod-lobby" },
+          ],
+        },
+      }),
+    );
+    await provision();
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "Room" }]);
+  });
+
+  test("a Durable Object a tracked env.feature already binds is the adopter's, and is not duplicated", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room" }] },
+        env: { feature: { durable_objects: { bindings: [{ name: "ROOM", class_name: "BranchRoom" }] } } },
+      }),
+    );
+    await provision();
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "BranchRoom" }]);
+  });
+
+  test("a project that declares no Durable Object gets no key at all — wrangler reads an empty one as a declaration", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    expect((await generated()).durable_objects).toBeUndefined();
+  });
+
+  /**
+   * **The acceptance criterion that keeps this fix inside the feature.** A declared environment's table is
+   * `pithy worker sync`'s, written into the tracked file and reviewed in a pull request; provisioning writing
+   * it too would be a second writer of one fact. So the same project's staging stanza is byte-identical with
+   * the app handed in and without it.
+   */
+  test("a declared environment's stanza is byte-identical, app capability or not", async () => {
+    const tracked = JSON.stringify({ name: "replay-board", main: "src/index.ts" });
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "staging"));
+    const withApp = await readFile(wranglerPath, "utf8");
+
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "staging"), { app: undefined });
+    expect(await readFile(wranglerPath, "utf8")).toBe(withApp);
+    expect(withApp).not.toContain("CONNECTION_ROTATION");
+  });
+
+  test("and so is prod's", async () => {
+    const tracked = JSON.stringify({ name: "replay-board", durable_objects: { bindings: [] } });
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "prod"));
+    const withApp = await readFile(wranglerPath, "utf8");
+
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "prod"), { app: undefined });
+    expect(await readFile(wranglerPath, "utf8")).toBe(withApp);
+  });
+
+  test("a Worker with no app capability writes no workflows key at all", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision(feature, { app: undefined });
+    expect((await generated()).workflows).toBeUndefined();
+  });
+
+  test("the app's cron schedule is stated in the stanza rather than left to inheritance", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    expect((await generated()).triggers?.crons).toEqual(["0 4 * * *"]);
   });
 });
 

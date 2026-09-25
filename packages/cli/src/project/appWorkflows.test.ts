@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { type FeatureIdentity, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -98,6 +100,51 @@ describe("planAppWorkflows", () => {
     const staging = planAppWorkflows(appCapability(), { project: PROJECT, env: "staging" });
     const prod = planAppWorkflows(appCapability(), { project: PROJECT, env: "prod" });
     expect(staging.workflows[0]?.name).not.toBe(prod.workflows[0]?.name);
+  });
+
+  /**
+   * **A feature is an environment, and the app's own Workflows take its names (#650).**
+   *
+   * `<project>-feature-<capability>-<job>` would be one Workflow every open branch deployed over every
+   * other's — Workflow names are account-wide. The feature's own head is what `featureScope.workflowHost`
+   * carries, so the one derivation composes it for a feature exactly as it does for staging.
+   */
+  test("a feature's names are the feature's own, and parse back to it", () => {
+    const identity: FeatureIdentity = { project: PROJECT, issue: "69", slug: "demo" };
+    const plan = planAppWorkflows(appCapability(), featureScope(identity).workflowHost);
+    expect(plan.workflows).toEqual([
+      { binding: "KEY_ROTATION", name: "acme-f69-demo--dashboard-key-rotation", class_name: "KeyRotationWorkflow" },
+      { binding: "REINDEX", name: "acme-f69-demo--dashboard-reindex", class_name: "ReindexWorkflow" },
+    ]);
+    // Owned, not merely prefixed: parsed back to this project, issue and slug, which is what teardown asks.
+    for (const entry of plan.workflows) expect(isFeatureOwnedName(identity, entry.name)).toBe(true);
+  });
+
+  test("two branches of one issue never compose one Workflow name", () => {
+    const one = planAppWorkflows(
+      appCapability(),
+      featureScope({ project: PROJECT, issue: "69", slug: "a" }).workflowHost,
+    );
+    const two = planAppWorkflows(
+      appCapability(),
+      featureScope({ project: PROJECT, issue: "69", slug: "b" }).workflowHost,
+    );
+    expect(one.workflows[0]?.name).not.toBe(two.workflows[0]?.name);
+  });
+
+  /**
+   * A feature name is never truncated: a fitted slug was a short hash, and a hash is a slug some sibling branch
+   * can have whole. So a name that does not fit is refused here, at the derivation, rather than deployed under a
+   * string two features could compose. `assertFeatureSlugFits` says it once for the whole branch; this is the
+   * backstop behind it.
+   */
+  test("a name that will not fit the Workflow limit is refused, never truncated", () => {
+    expect(() =>
+      planAppWorkflows(
+        appCapability(),
+        featureScope({ project: PROJECT, issue: "69", slug: "a".repeat(40) }).workflowHost,
+      ),
+    ).toThrow(PithyError);
   });
 
   test("a capability with no workflows plans nothing", () => {

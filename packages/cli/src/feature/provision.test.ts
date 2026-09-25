@@ -7,11 +7,18 @@ import { join, sep } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { type FeatureIdentity, featureResourceName, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
+import {
+  type FeatureIdentity,
+  featureResourceName,
+  featureWorkerName,
+  isFeatureOwnedName,
+} from "@pithy-sh/core/src/naming/feature";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { CloudflareSecretsProvisioner } from "../capabilities/secretsProvisioner";
 import { sourceFiles } from "../ci/sourceFiles";
@@ -1675,5 +1682,183 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
     expect(recorded.length).toBeGreaterThan(0);
     const deletedNames = report.deleted.map((entry) => entry.name);
     for (const entry of recorded) expect(deletedNames).toContain(entry.name);
+  });
+});
+
+/**
+ * **#650: a feature deployment had none of the app's own Workflows, so it answered 500.**
+ *
+ * `pithy provision --feature` derived a feature name for every kit host's Workflow and nothing for the ones the
+ * adopter declares in their own `pithy.config.ts`, whose classes are exported by their own Worker. Staging and
+ * prod carry theirs — `pithy worker sync` writes them into the tracked `wrangler.jsonc` — and the feature's
+ * stanza is regenerated from that file on every run with every binding array emptied, so a branch deployed with
+ * no `CONNECTION_ROTATION` and no `ROTATION_SWEEP` and failed `validateBindings` on the first request,
+ * `/health` included.
+ *
+ * The proof is the whole way through: the real provisioning run, the config it generated, and a Worker composed
+ * from **that file's** bindings answering a request. A test that read the stanza and stopped would pass on a
+ * table of plausible-looking strings that no Worker could boot on.
+ */
+describe("a feature deployment serves a request (#650)", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "650", slug: "app-workflows" };
+
+  /** The adopter's own app capability: two Workflows whose classes are exported by this Worker's own `main`. */
+  const board = defineCapability({
+    name: "board",
+    requiredBindings: [{ type: "kv", name: "CACHE" }],
+    workflows: {
+      rotate: {
+        binding: "CONNECTION_ROTATION",
+        params: z.object({}),
+        className: "ConnectionRotationWorkflow",
+        schedule: "0 4 * * *",
+      },
+      sweep: { binding: "ROTATION_SWEEP", params: z.object({}), className: "RotationSweepWorkflow" },
+    },
+  });
+
+  /**
+   * A kit host's capability, named for a registry entry so `hostedWorkflowEntries` treats it as one. Composed
+   * beside the app so the two kinds of `workflows` entry meet in one stanza, which is where the fix could most
+   * easily take the other's entries with it.
+   */
+  const emailHost = defineCapability({
+    name: "email",
+    requiredBindings: [{ type: "workflow", name: "EMAIL_SENDER", job: "send", className: "EmailSendWorkflow" }],
+    workflows: {
+      send: { binding: "EMAIL_SENDER", params: z.object({}), className: "EmailSendWorkflow" },
+    },
+  });
+
+  const capabilities = [emailHost, board];
+
+  /** The generated feature stanza, read back off disk — the only source of the bindings below. */
+  interface GeneratedStanza {
+    vars?: Record<string, unknown>;
+    workflows?: { binding: string; name: string; class_name: string; script_name?: string }[];
+    kv_namespaces?: { binding: string; id: string }[];
+    durable_objects?: { bindings?: { name: string }[] };
+    ratelimits?: { name: string }[];
+    triggers?: { crons?: string[] };
+  }
+
+  const generated = async (): Promise<GeneratedStanza> =>
+    (
+      parse(await readFile(featureConfigPath(join(dir, "apps", "board")), "utf8")) as unknown as {
+        env: Record<string, GeneratedStanza>;
+      }
+    ).env.feature as GeneratedStanza;
+
+  /**
+   * The Worker's `env`, built from the generated stanza and from nothing else — every binding the config
+   * declares, under the name the config gives it. A binding the file does not carry is a binding the deployed
+   * Worker does not have, which is exactly what the 500 was.
+   */
+  function envFromStanza(stanza: GeneratedStanza): Record<string, unknown> {
+    const env: Record<string, unknown> = { ...stanza.vars };
+    for (const entry of stanza.workflows ?? []) env[entry.binding] = { create: async () => ({}) };
+    for (const entry of stanza.kv_namespaces ?? []) env[entry.binding] = {};
+    for (const entry of stanza.durable_objects?.bindings ?? []) env[entry.name] = {};
+    for (const entry of stanza.ratelimits ?? []) env[entry.name] = {};
+    return env;
+  }
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-650-"));
+    await mkdir(join(dir, "apps", "board"), { recursive: true });
+    await writeFile(
+      join(dir, "apps", "board", "wrangler.jsonc"),
+      JSON.stringify({ name: "acme-board", main: "src/index.ts", kv_namespaces: [{ binding: "CACHE" }] }),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** One real provisioning run over stubbed Cloudflare, with the kit host deploying as it would. */
+  async function provision(): Promise<void> {
+    const { provisioners } = fakeProvisioners();
+    await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities,
+      identity,
+      provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "acme-board",
+          dir: join(dir, "apps", "board"),
+          capabilities,
+          // The Worker's own `pithy.config.ts`: the libraries it composes, and its app.
+          config: { capabilities: [emailHost], app: board },
+        },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+      deployHosts: async () => ({
+        workers: [{ capability: "email", worker: "acme-f650-app-workflows--email", outcome: "deployed", reason: "" }],
+        problems: [],
+      }),
+    });
+  }
+
+  test("the generated stanza carries the app's own Workflows beside the kit host's", async () => {
+    await provision();
+    expect((await generated()).workflows).toEqual([
+      {
+        binding: "CONNECTION_ROTATION",
+        name: "acme-f650-app-workflows--board-rotate",
+        class_name: "ConnectionRotationWorkflow",
+      },
+      {
+        binding: "ROTATION_SWEEP",
+        name: "acme-f650-app-workflows--board-sweep",
+        class_name: "RotationSweepWorkflow",
+      },
+      {
+        binding: "EMAIL_SENDER",
+        name: "acme-f650-app-workflows--email-send",
+        class_name: "EmailSendWorkflow",
+        script_name: "acme-f650-app-workflows--email",
+      },
+    ]);
+  });
+
+  test("every Workflow name it wrote is this feature's own", async () => {
+    await provision();
+    const entries = (await generated()).workflows ?? [];
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) expect(isFeatureOwnedName(identity, entry.name)).toBe(true);
+  });
+
+  /**
+   * **The end of it: a Worker composed from the generated config answers.** `createBackend` derives a
+   * `workflow` binding spec from every registered job, so a stanza missing one fails `validateBindings` on the
+   * first request with the 500 this issue was opened on.
+   */
+  test("the Worker composed from that stanza serves /health", async () => {
+    await provision();
+    const worker = createBackend({ capabilities: [emailHost], app: board });
+    const res = await worker.request("/health", {}, envFromStanza(await generated()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "ok" });
+  });
+
+  /**
+   * Non-vacuity, and the failure as the adopter met it: take the app's own entries back out of the very config
+   * the run wrote, and the same Worker answers 500 naming both bindings. So the request above passes because
+   * the stanza carries them, not because nothing was ever checked.
+   */
+  test("and answers 500 naming both bindings when the stanza is stripped of them", async () => {
+    await provision();
+    const stanza = await generated();
+    const worker = createBackend({ capabilities: [emailHost], app: board });
+    const stripped = { ...stanza, workflows: (stanza.workflows ?? []).filter((e) => e.script_name !== undefined) };
+    const res = await worker.request("/health", {}, envFromStanza(stripped));
+    expect(res.status).toBe(500);
+    expect(await res.text()).toMatch(
+      /Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP/,
+    );
   });
 });

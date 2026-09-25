@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -99,7 +99,35 @@ beforeAll(async () => {
       migrate: async () => [],
     });
   }
+  await declareAppWorkflow();
 }, 240_000);
+
+/**
+ * **The adopter declares a Workflow of their own, in the app capability the scaffold wrote (#650).**
+ *
+ * Every other job in this project belongs to a kit capability and runs in that capability's host Worker. This one
+ * is the adopter's: its class is exported by `apps/board`'s own `main`, so the binding is same-script and nothing
+ * provisions a host for it. That is the case a feature deployment had no binding for — the app Worker shipped
+ * without it and answered `Missing required bindings: workflow:CONNECTION_ROTATION` on every request, so the
+ * sign-in below never got as far as asking for a link.
+ *
+ * Written into the scaffolded config rather than declared in this file, because the whole point is that
+ * `loadWorkerConfig` reads it back off disk the way the deployed Worker's `main` imports it.
+ */
+async function declareAppWorkflow(): Promise<void> {
+  const path = join(workerDir, "pithy.config.ts");
+  const source = await readFile(path, "utf8");
+  const declaration = `  requiredBindings: [],
+  workflows: {
+    rotate: {
+      binding: "CONNECTION_ROTATION",
+      params: z.object({}),
+      className: "ConnectionRotationWorkflow",
+    },
+  },`;
+  if (!source.includes("  requiredBindings: [],")) throw new Error("the scaffolded app capability changed shape");
+  await writeFile(path, `import { z } from "zod";\n${source.replace("  requiredBindings: [],", declaration)}`, "utf8");
+}
 
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -463,6 +491,17 @@ describe("a feature deployment, after provision and deploy", () => {
       expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
       expect(manager?.workflows?.map((entry) => entry.class_name)).toEqual(["SecretsWriteWorkflow"]);
       expect(manager?.triggers?.crons ?? []).toEqual([]);
+
+      // **The app's own Workflow is in the stanza the deployment reads, named for this feature (#650).** The
+      // sign-in below is what proves it is enough: the Worker validates every required binding on its first
+      // request, and this one is derived from the adopter's `pithy.config.ts` rather than from any kit host.
+      const stanza = await featureStanza();
+      expect(stanza.workflows?.find((entry) => entry.binding === "CONNECTION_ROTATION")).toEqual({
+        binding: "CONNECTION_ROTATION",
+        name: "replay-f643-feature-address--board-rotate",
+        class_name: "ConnectionRotationWorkflow",
+      });
+      expect(isFeatureOwnedName(identity, "replay-f643-feature-address--board-rotate")).toBe(true);
 
       await signsIn(account);
 

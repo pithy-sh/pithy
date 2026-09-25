@@ -3,6 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
@@ -10,6 +11,7 @@ import { parse } from "comment-json";
 import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { featureNamespaceId } from "../feature/ratelimits";
+import { type AppOwnedWorkflow, applyAppWorkflows, planAppWorkflows } from "../project/appWorkflows";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -44,6 +46,16 @@ export interface ServiceEntry {
   service: string;
 }
 
+/** One `durable_objects.bindings` entry: the namespace binding, its class, and the script holding it. */
+interface DurableObjectEntry {
+  /** The binding name the Worker env exposes, e.g. `ROOM`. */
+  name: string;
+  /** The exported `DurableObject` subclass. */
+  class_name: string;
+  /** The Worker the class lives in. **Absent is same-script** — this Worker's own `main`. */
+  script_name?: string;
+}
+
 /** The env stanza slice provisioning writes: the Worker's own name, its binding arrays, and its services. */
 interface EnvBindings {
   name?: string;
@@ -56,7 +68,13 @@ interface EnvBindings {
   r2_buckets?: BindingEntry[];
   services?: ServiceEntry[];
   secrets_store_secrets?: SecretStoreBinding[];
-  workflows?: HostedWorkflowEntry[];
+  /**
+   * Both shapes: a kit host's cross-script entry ({@link HostedWorkflowEntry}) and the app's own same-script
+   * one ({@link AppOwnedWorkflow}), which is exactly how `appWorkflows.ts` tells them apart (#650).
+   */
+  workflows?: (AppOwnedWorkflow & { script_name?: string })[];
+  durable_objects?: { bindings?: DurableObjectEntry[] };
+  triggers?: { crons?: string[] };
 }
 
 /**
@@ -253,6 +271,41 @@ function featureRatelimits(stanza: Record<string, unknown>, top: Record<string, 
 }
 
 /**
+ * **A feature binds every same-script Durable Object namespace the top level declares (#650).**
+ *
+ * The second kind the feature stanza lost, and it is lost the same way the Workflows were: `durable_objects` is
+ * one of the keys an environment does not inherit, `stanzaFor` empties the lists in a stanza it seeds, and
+ * nothing puts a feature's back. A Worker composing `multiplayer` therefore deployed with no `ROOM` and answered
+ * `Missing required bindings: durable_object:ROOM` on every request.
+ *
+ * **Copied, not derived, and that is the whole difference from the Workflows beside it.** A same-script entry is
+ * `{ name, class_name }` — a binding name and a class in this Worker's own `main`. It names no Cloudflare
+ * resource, so it is identical in dev, staging and a branch, and there is nothing for a feature to rename. What
+ * the adopter wrote is what the feature binds, whether `pithy add` wrote it or they did.
+ *
+ * **An entry carrying a `script_name` is left where it is.** That one reaches a class in *another* Worker, named
+ * for another environment, and a feature has no derivation for it — binding it would point a branch at
+ * production's namespace, which is worse than the absent binding this exists to fix. `featureHostNameLeaks`
+ * reads the same field the same way.
+ *
+ * A binding the stanza already declares is the adopter's: a tracked `env.feature` saying `ROOM` is a different
+ * class is a decision, and nothing here writes over it.
+ */
+function featureDurableObjects(stanza: EnvBindings, top: Record<string, unknown>): void {
+  const declared = (top as EnvBindings).durable_objects?.bindings ?? [];
+  const sameScript = declared.filter((entry) => entry.script_name === undefined);
+  if (sameScript.length === 0) return;
+  const own = stanza.durable_objects?.bindings;
+  const bound = new Set((own ?? []).map((entry) => entry.name));
+  const missing = sameScript.filter((entry) => !bound.has(entry.name)).map((entry) => structuredClone(entry));
+  if (missing.length === 0) return;
+  // In place where the array is there, so comment-json keeps the adopter's comments on it.
+  if (own) own.push(...missing);
+  else if (stanza.durable_objects) stanza.durable_objects.bindings = missing;
+  else stanza.durable_objects = { bindings: missing };
+}
+
+/**
  * Stamp a feature stanza's `vars.BASE_URL` with its derived `workers.dev` address, or remove the one it
  * inherited when there is none to derive.
  *
@@ -333,6 +386,26 @@ export async function applyProvisionedEnv(options: {
    */
   subdomain?: string | null;
   /**
+   * **This Worker's own app capability — what its `workflows` table is derived from (#650).**
+   *
+   * A feature's stanza is regenerated from the tracked file on every run and every binding array it seeds is
+   * emptied, so the app's own Workflows had to be re-derived for it or the Worker deployed with none: the
+   * feature answered `Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP` on
+   * every request, `/health` included. The names come from {@link planAppWorkflows} against
+   * `scope.workflowHost` — the same derivation `pithy worker sync` writes staging's and prod's with, handed
+   * the scope rather than an environment string, so a feature's table and a declared environment's cannot
+   * come to mean different things by "the app's own".
+   *
+   * **Read for a feature scope only.** A declared environment's table lives in the tracked `wrangler.jsonc`,
+   * written by `pithy worker sync` and reviewed in a pull request; provisioning writing it too would be a
+   * second writer of one fact, and `project/workflows.ts` is the reader that already refuses a deploy whose
+   * stanza disagrees with the declaration. Passing it for a declared environment changes nothing.
+   *
+   * Omitted for a Worker that declares no `app` in its `pithy.config.ts`, which writes no `workflows` key at
+   * all — wrangler reads an empty one as a declaration.
+   */
+  app?: Capability;
+  /**
    * Told the route patterns a feature stanza gave up (#643) — the ones it declared, or would have inherited. A
    * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
@@ -354,6 +427,10 @@ export async function applyProvisionedEnv(options: {
       const dropped = stripFeatureRoutes(stanza, top);
       if (dropped.length > 0) options.onRoutesDropped?.(dropped);
       featureRatelimits(stanza as Record<string, unknown>, top);
+      featureDurableObjects(stanza, top);
+      // The app's own Workflows, named for this scope — see `app` above for why only here, and
+      // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from (#650).
+      if (options.app) applyAppWorkflows(stanza, planAppWorkflows(options.app, options.scope.workflowHost));
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     for (const resource of options.resources) {
