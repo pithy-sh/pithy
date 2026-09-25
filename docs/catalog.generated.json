@@ -522,6 +522,16 @@
       ]
     },
     {
+      "path": "secrets verify",
+      "flags": [
+        "--env",
+        "--sweep",
+        "--no-sweep",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "seed",
       "flags": [
         "--env",

@@ -93,6 +93,13 @@ const SHIPPED_DELEGATES = [
   "packages/email/src/workflows/sendBatch.ts#runSendBatch",
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",
+  // #647. The at-rest rotation's two read-back helpers. Each is handed the step runner because each is a
+  // *sequence* of steps rather than one: the binding confirm sleeps between separate `step.do` reads, so the
+  // wait is journalled and survives the instance being evicted during it. That shape is precisely what this
+  // gate exists to range over — the retry lives in the driver, so a clock read beside it would be read on
+  // every resume.
+  "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughBinding",
+  "packages/secrets/src/rotation/atRestKeyRotation.ts#confirmedThroughStamp",
   "packages/secrets/src/rotation/atRestKeyRotation.ts#runAtRestKeyRotation",
   "packages/testers/src/workflows/pass.ts#runDurableDailyPass",
   "packages/vector/src/workflows/reprocess.ts#reprocessIndex",
@@ -226,6 +233,73 @@ describe("the rule, proved against fixtures before it is trusted against the tre
       }
     `);
     expect(drivers).toEqual([{ file: "fixture.ts", name: "runIt", kind: "delegate" }]);
+  });
+
+  test("a step runner that grew a second durable primitive is still one", () => {
+    // `#647`. The at-rest key rotation's read-back has to wait across a journal boundary, so its seam
+    // declares a `sleep` beside its `do`. A rule keyed on "exactly one member" would have stopped
+    // recognizing it — dropping the drivers behind it out of this gate on the day they needed it most.
+    const { drivers } = analyze(`
+      export interface PausingStep {
+        do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+        sleep(name: string, durationMs: number): Promise<void>;
+      }
+      export async function runIt(deps: D, step: PausingStep): Promise<void> {
+        await step.do("work", async () => {});
+      }
+    `);
+    expect(drivers).toEqual([{ file: "fixture.ts", name: "runIt", kind: "delegate" }]);
+  });
+
+  test("and one that inherits its `do` rather than declaring it — which is the shape core hands back", () => {
+    // `DurableStepLike extends WorkflowStepLike` is exactly this, and it is the type any new delegate
+    // would naturally take, because it is what `classifiedSteps` returns. A matcher reading own members
+    // only would let that delegate out of the population without a word.
+    const { drivers } = analyze(`
+      export interface BaseStep {
+        do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+      }
+      export interface PausingStep extends BaseStep {
+        sleep(name: string, durationMs: number): Promise<void>;
+      }
+      export async function runIt(deps: D, step: PausingStep): Promise<void> {
+        await step.do("work", async () => {});
+      }
+    `);
+    expect(drivers).toEqual([{ file: "fixture.ts", name: "runIt", kind: "delegate" }]);
+  });
+
+  test("an interface that merely has a `do` on it is not the platform's journal", () => {
+    // The question is whether a parameter *is* the journal, not whether it happens to spell one method
+    // the same way. A body clock sits in this fixture, so a rule that had widened to "anything with a
+    // `do`" would report a finding here rather than nothing.
+    const { drivers, findings } = analyze(`
+      export interface Chore {
+        do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+        undo(name: string): Promise<void>;
+      }
+      export async function runIt(deps: D, step: Chore): Promise<void> {
+        const now = new Date();
+        await step.do("work", async () => write(now));
+      }
+    `);
+    expect(drivers).toEqual([]);
+    expect(findings).toEqual([]);
+  });
+
+  test("inheritance carries the seam only from something that is one", () => {
+    const { drivers } = analyze(`
+      export interface Chore {
+        undo(name: string): Promise<void>;
+      }
+      export interface PausingChore extends Chore {
+        sleep(name: string, durationMs: number): Promise<void>;
+      }
+      export async function runIt(deps: D, step: PausingChore): Promise<void> {
+        await step.do("work", async () => {});
+      }
+    `);
+    expect(drivers).toEqual([]);
   });
 
   test("an entropy source is caught by the same rule as a clock, with nothing added to catch it", () => {

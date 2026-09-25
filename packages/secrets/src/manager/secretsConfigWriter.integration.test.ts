@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { loadIntegrationCreds, uniqueName } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { describe, expect, test } from "vitest";
+import type { EncryptionConfig } from "../crypto/envelope";
 import { SecretsStoreConfigWriter } from "./secretsConfigWriter";
 
 /**
@@ -43,16 +44,36 @@ describe.skipIf(!hasCreds)("SecretsStoreConfigWriter — LIVE CF Secrets Store",
       storeId: vars.SECRETS_STORE_ID ?? "",
     });
     const writer = new SecretsStoreConfigWriter(manager, TEST_SECRET);
+    const first: EncryptionConfig = {
+      currentVersion: "1",
+      versions: { "1": "x" },
+      lastRotatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const second: EncryptionConfig = {
+      currentVersion: "2",
+      versions: { "1": "x", "2": "y" },
+      lastRotatedAt: "2026-02-01T00:00:00.000Z",
+    };
     try {
-      await writer.write(
-        JSON.stringify({ currentVersion: "1", versions: { "1": "x" }, lastRotatedAt: "2026-01-01T00:00:00.000Z" }),
-      );
+      // **The writer never creates (`#647`), so the entry has to be established first.** That is the fix
+      // itself: the create branch is what turned a misnamed write-back into a silent orphan holding live
+      // key material, and this refusal is what a rotation now meets instead of a 200.
+      await expect(writer.write(first, { rotationId: 1, at: new Date("2026-01-01T00:00:00.000Z") })).rejects.toThrow();
+      expect(await manager.exists(TEST_SECRET)).toBe(false);
+
+      await manager.createSecretIfAbsent(TEST_SECRET, JSON.stringify(first));
       expect(await manager.exists(TEST_SECRET)).toBe(true);
+
       // Overwrite in place — the entry is edited, never deleted first, so it stays bound throughout.
-      await writer.write(
-        JSON.stringify({ currentVersion: "2", versions: { "2": "y" }, lastRotatedAt: "2026-02-01T00:00:00.000Z" }),
-      );
+      await writer.write(second, { rotationId: 2, at: new Date("2026-02-01T00:00:00.000Z") });
       expect(await manager.exists(TEST_SECRET)).toBe(true);
+
+      // And the one thing REST can read back about a value it will not serve: the stamp this pass wrote,
+      // naming the pointer, the live key versions and the rotation row — and no byte of any key.
+      const facts = await writer.inspect();
+      expect(facts?.name).toBe(TEST_SECRET);
+      expect(facts?.stamp).toMatchObject({ currentVersion: "2", versions: ["1", "2"], rotationId: 2 });
+      expect(JSON.stringify(facts)).not.toContain('"y"');
     } finally {
       // `deleteSecretIfPresent`, not `deleteSecret(...).catch(() => {})`. The bare catch swallowed an
       // auth failure and an outage along with the harmless already-gone case, so a leaked store entry

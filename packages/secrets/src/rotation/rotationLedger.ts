@@ -99,7 +99,7 @@ export type RotationClosure = z.output<typeof RotationClosure>;
  * into this column, and the exceptions reaching that catch come from decryption, envelope decoding and
  * config parsing — the paths whose message text can carry key material.
  */
-export type RotationFailureCode = RotationFailureReason | "at-rest-incomplete";
+export type RotationFailureCode = RotationFailureReason | "at-rest-incomplete" | "at-rest-unconfirmed";
 
 /** The sentence written into a failed row's `error_message`. Fixed text, chosen by a code, never composed from an exception. */
 const FAILURE_TEXT: Record<RotationFailureCode, string> = {
@@ -107,7 +107,67 @@ const FAILURE_TEXT: Record<RotationFailureCode, string> = {
   "not-recorded": "rolled at the issuer, and not recorded here",
   "not-rotated": "not rotated: nothing was rolled and nothing was written",
   "at-rest-incomplete": "the at-rest key rotation did not finish",
+  // `#647`. Its own sentence because the operator's next move is unlike the one above it: nothing is
+  // broken and nothing needs re-running, and what wants looking at is which store entry the write
+  // reached. It names no entry and no version — the throw carries those in a `PithyError`'s `detail`,
+  // and this column is the one a failure site writes.
+  "at-rest-unconfirmed": "the at-rest key rotation could not confirm its write through the binding",
 };
+
+/**
+ * The code behind a sentence, or `null` for anything this release did not write.
+ *
+ * **Derived from {@link FAILURE_TEXT}, so the two cannot drift.** The rotation row is the only durable
+ * record of *why* a pass stopped, and the cron has to read it: a pass that could not confirm its write
+ * must not be started again tomorrow (see {@link rotationBackedOff}). Adding a column for the code would
+ * be a second answer to a question this table already answers, and the sentence is a closed set chosen
+ * by {@link rotationFailureText} — so the reverse is a lookup rather than a parse.
+ */
+export function rotationFailureCodeOf(text: string | null | undefined): RotationFailureCode | null {
+  if (text === null || text === undefined) return null;
+  for (const [code, sentence] of Object.entries(FAILURE_TEXT)) {
+    if (sentence === text) return code as RotationFailureCode;
+  }
+  return null;
+}
+
+/**
+ * How long the cron leaves a structurally failed at-rest pass alone.
+ *
+ * **An abort has to have a cadence consequence, or the bound is only per-instance (`#647`).** A pass that
+ * cannot confirm its write through the binding deliberately leaves `lastRotatedAt` untouched — which is
+ * right for the store, since nothing rotated — and the manager's cron fires nightly. So without this the
+ * same pass starts again every night at 03:00, mints a fresh key, and edits the same entry the binding
+ * does not read, forever. A week is long enough that an operator sees the failed row before the next
+ * attempt, and short enough that a fixed deployment rotates on its own.
+ */
+export const UNCONFIRMED_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The last closed rotation row for a name, as much of it as a cadence decision needs. */
+export interface ClosedRotation {
+  /** How it closed. Only `failed` is interesting here; a `success` never holds a pass back. */
+  status: "in_progress" | "success" | "failed";
+  /** When it closed, or `null` for a row nothing ever closed. */
+  completedAt: Date | null;
+  /** The fixed sentence a code wrote, which {@link rotationFailureCodeOf} reads back. */
+  errorMessage: string | null;
+}
+
+/**
+ * Whether the at-rest cron should stand down because the last pass could not confirm its write.
+ *
+ * Only `at-rest-unconfirmed` holds a pass back, and only inside {@link UNCONFIRMED_BACKOFF_MS}. Every
+ * other failure — a batch that would not decrypt, a write the API refused — is worth another attempt on
+ * the ordinary cadence, because none of them writes a key to an address nothing reads.
+ *
+ * A row with no `completedAt` never holds anything back: it is a pass that is still open or was never
+ * closed, and *that* is the single-flight guard's question rather than this one.
+ */
+export function rotationBackedOff(last: ClosedRotation | null, now: Date): boolean {
+  if (last === null || last.status !== "failed" || last.completedAt === null) return false;
+  if (rotationFailureCodeOf(last.errorMessage) !== "at-rest-unconfirmed") return false;
+  return now.getTime() - last.completedAt.getTime() < UNCONFIRMED_BACKOFF_MS;
+}
 
 /**
  * The failure sentence for a code.

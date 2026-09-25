@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import {
   CloudflareInvalidResponseError,
-  CloudflareRequestError,
   cloudflareApiErrors,
   cloudflareRefusal,
   cloudflareRequest,
@@ -350,12 +350,19 @@ export class CloudflareBuildsManager extends CloudflareManager {
 }
 
 /**
- * Whether a thrown `CloudflareRequestError` carries the given CF error code. Reads the `[cf-codes:…]`
+ * Whether a thrown Cloudflare refusal carries the given CF error code. Reads the `[cf-codes:…]`
  * marker `call()` pins to the front of `detail` (stable across the 2000-char truncation); falls back
  * to a substring scan for errors raised without the structured marker.
+ *
+ * **Narrowed on `PithyError`, not on one subclass of it (#647).** This read used to require a
+ * `CloudflareRequestError`, which was true of every refusal for as long as `cloudflareRefusal` composed
+ * exactly one class. It no longer does: a 429 or a 5xx is now an `UpstreamError`, so that narrowing
+ * would have silently stopped seeing a CF error code the moment Cloudflare answered one under a status
+ * that retries. The code lives in `detail`, which every `PithyError` carries, so the payload is what to
+ * read and the class is not.
  */
 function hasErrorCode(error: unknown, code: number): boolean {
-  if (!(error instanceof CloudflareRequestError)) return false;
+  if (!(error instanceof PithyError)) return false;
   const detail = error.payload.detail ?? "";
   const marker = detail.match(/^\[cf-codes:([\d,]+)\]/);
   if (marker?.[1]) return marker[1].split(",").includes(String(code));

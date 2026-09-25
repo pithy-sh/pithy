@@ -92,6 +92,26 @@ async function readRow(
 }
 
 /**
+ * **Does this row open? — and nothing else.**
+ *
+ * The verification sweep (`admin/verifyStore.ts`) is deliberately registry-blind: it walks every row of
+ * `pithy_secrets_system_secrets`, keyspace members included, whose stored names are caller-supplied. So
+ * it is the first read path in the kit that would materialize plaintext for rows no registry names, and a
+ * docstring saying "never bind `value`" is the wrong guard for that — the next edit that wants a sample of
+ * what failed would have the plaintext already in scope.
+ *
+ * A boolean is what it gets instead. {@link readRow} stays private, so there is exactly one copy of the
+ * `catch` that must never bind its error (#386), and the plaintext is *unreachable* from the sweep rather
+ * than merely unread.
+ */
+export async function storedRowOpens(
+  config: EncryptionConfig,
+  row: { name: string; encryptedValue: string; iv: string; keyVersion: number },
+): Promise<boolean> {
+  return (await readRow(config, row)).state === "readable";
+}
+
+/**
  * The D1-backed encrypted store for `d1`-backed secrets, ported from the CMS `SystemSecretsStore`
  * with Pithy's universal value envelope layered on. Every secret's plaintext is a
  * `{ currentVersion, versions }` envelope (`crypto/versionedValue`), sealed in one AES-256-GCM

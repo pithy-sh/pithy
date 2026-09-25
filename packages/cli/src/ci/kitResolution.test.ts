@@ -89,6 +89,8 @@ const CLI_OWNED: Record<string, string> = {
   "commands/init.ts": "`pithy init` runs before the project exists — there is no project to resolve from.",
   "seed/drivers.ts": "The CF REST client again. `persistRoot` is the project root and still must not be used.",
   "capabilities/secretsProvisioner.ts": "Token policy for a token the CLI mints, from the CLI's own client.",
+  "capabilities/storeEntryCensus.ts":
+    "Token profile policy, from the CLI's own client, and reached by import() only to keep the ~300 ms SDK off every pithy secrets command's import graph (#482).",
 };
 
 /**
@@ -146,6 +148,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "capabilities/secretsDispatcher.ts": ["@pithy-sh/secrets"],
   "capabilities/secretsProvisioner.ts": ["@pithy-sh/secrets"],
   "capabilities/storageProvisioner.ts": ["@pithy-sh/secrets"],
+  "capabilities/storeEntryCensus.ts": ["@pithy-sh/secrets"],
   "capabilities/storeSecretWrites.ts": ["@pithy-sh/secrets"],
   "capabilities/turnstileProvisioner.ts": ["@pithy-sh/secrets", "@pithy-sh/turnstile"],
   "capabilities/turnstileSitekeys.ts": ["@pithy-sh/turnstile"],

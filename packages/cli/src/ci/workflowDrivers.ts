@@ -45,8 +45,10 @@
  *
  * The population is discovered, never declared: a driver is the `run` of a class extending
  * `WorkflowEntrypoint`, or any function taking a parameter typed as a step runner — and a step runner is
- * itself discovered, as any interface in the tree whose one member is `do(name, callback)`. A capability
- * that adds a Workflow tomorrow is analyzed tomorrow, with nothing to remember.
+ * itself discovered, as any interface in the tree that reaches a `do(name, callback)` with nothing beside
+ * it but another durable primitive (`sleep`, `sleepUntil`, `waitForEvent`), whether it declares that `do`
+ * or inherits it. A capability that adds a Workflow tomorrow is analyzed tomorrow, with nothing to
+ * remember. See {@link STEP_PRIMITIVES}.
  *
  * ## A second rule, off the same walk (#426)
  *
@@ -219,19 +221,90 @@ function memberPath(node: Node): string | undefined {
 }
 
 /**
- * Is this interface a step runner?
+ * The names a step runner's members may carry.
  *
- * Structurally: one member, called `do`, taking a name and a callback. That is the whole of the seam every
- * package declares for itself — `ReconcileStep`, `ReprocessStep`, `StepRunner` — and it is how a fourth one
- * added tomorrow is recognized without being written down here.
+ * `do` is what makes an interface one; the rest are the other durable primitives Cloudflare's own
+ * `WorkflowStep` offers beside it. A closed set rather than "anything alongside a `do`", because the
+ * question being answered is whether a parameter **is the platform's journal**. An interface that merely
+ * happens to spell one method the same way is not one, and widening the rule to admit it would put its
+ * body under a determinism gate that has nothing to say about it.
  */
-function isStepRunnerInterface(node: Node): boolean {
-  if (node.type !== "TSInterfaceDeclaration" || !isNode(node.body)) return false;
+const STEP_PRIMITIVES = new Set(["do", "sleep", "sleepUntil", "waitForEvent"]);
+
+/** What one interface declaration says about being a step runner, before its heritage is resolved. */
+interface StepRunnerClaim {
+  /** It declares a `do(name, callback)` of its own. */
+  readonly declaresDo: boolean;
+  /** The plain names it extends. Resolved against the whole tree, since a base may live in another file. */
+  readonly inherits: string[];
+}
+
+/**
+ * What this interface claims, or `undefined` when a member rules it out.
+ *
+ * **It reads the names, and it used to count them (`#647`).** The at-rest key rotation's seam grew a
+ * `sleep`, for a read-back that has to wait across a journal boundary, and a rule keyed on "exactly one
+ * member" would have stopped recognizing it — dropping the two drivers behind it out of this gate on the
+ * day they started needing it most.
+ */
+function stepRunnerClaim(node: Node): StepRunnerClaim | undefined {
+  if (node.type !== "TSInterfaceDeclaration" || !isNode(node.body)) return undefined;
   const members = Array.isArray(node.body.body) ? node.body.body.filter(isNode) : [];
-  if (members.length !== 1) return false;
-  const member = members[0] as Node;
-  if (member.type !== "TSMethodSignature") return false;
-  return nameOf(member.key) === "do" && Array.isArray(member.params);
+  let declaresDo = false;
+  for (const member of members) {
+    if (member.type !== "TSMethodSignature") return undefined;
+    const name = nameOf(member.key);
+    if (name === undefined || !STEP_PRIMITIVES.has(name)) return undefined;
+    if (name === "do" && Array.isArray(member.params)) declaresDo = true;
+  }
+  const inherits: string[] = [];
+  const heritage = Array.isArray(node.extends) ? node.extends.filter(isNode) : [];
+  for (const entry of heritage) {
+    const name = isNode(entry.expression) ? nameOf(entry.expression) : undefined;
+    if (name !== undefined) inherits.push(name);
+  }
+  return { declaresDo, inherits };
+}
+
+/**
+ * Every step-runner name in the tree, following `extends` to a fixed point.
+ *
+ * **Inheritance is followed because the kit now hands one back.** `classifiedSteps` returns a
+ * `DurableStepLike`, whose own member list is `[sleep]` and whose `do` comes from the interface it
+ * extends — so it is the type the next delegate anyone writes will naturally take, and a matcher reading
+ * own members only would let that delegate out of this gate without a word. A base is looked up across
+ * the whole tree rather than within one file, because it need not be declared beside its subtype.
+ *
+ * Names are flat, as they were before: two files declaring the same interface name are one entry, and a
+ * name counts if **any** declaration of it qualifies. A parameter's type annotation is a name and nothing
+ * else here — this walk does not resolve imports — so that is the resolution this gate can honestly do.
+ */
+function stepRunnerNames(programs: readonly { readonly program: Node }[]): Set<string> {
+  const claims = new Map<string, StepRunnerClaim[]>();
+  for (const { program } of programs) {
+    const visit = (node: Node): void => {
+      const claim = stepRunnerClaim(node);
+      const name = claim === undefined ? undefined : nameOf(node.id);
+      if (claim !== undefined && name !== undefined) claims.set(name, [...(claims.get(name) ?? []), claim]);
+      for (const child of children(node)) visit(child);
+    };
+    visit(program);
+  }
+
+  const runners = new Set<string>();
+  for (const [name, declared] of claims) {
+    if (declared.some((claim) => claim.declaresDo)) runners.add(name);
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [name, declared] of claims) {
+      if (runners.has(name)) continue;
+      if (!declared.some((claim) => claim.inherits.some((base) => runners.has(base)))) continue;
+      runners.add(name);
+      grew = true;
+    }
+  }
+  return runners;
 }
 
 /** The type name a parameter is annotated with, if it is a plain reference. */
@@ -411,18 +484,8 @@ export function analyzeDrivers(sources: readonly DriverSource[], parseModule: Pa
   const programs: { source: DriverSource; program: Node }[] = [];
   for (const source of sources) programs.push({ source, program: parseModule(source.text) });
 
-  // Pass one: every step-runner interface in the tree, by name.
-  const stepRunners = new Set<string>();
-  for (const { program } of programs) {
-    const visit = (node: Node): void => {
-      if (isStepRunnerInterface(node)) {
-        const name = nameOf(node.id);
-        if (name !== undefined) stepRunners.add(name);
-      }
-      for (const child of children(node)) visit(child);
-    };
-    visit(program);
-  }
+  // Pass one: every step-runner interface in the tree, by name, heritage resolved.
+  const stepRunners = stepRunnerNames(programs);
 
   const entrypoints: string[] = [];
   const hosts: WorkflowHostModule[] = [];

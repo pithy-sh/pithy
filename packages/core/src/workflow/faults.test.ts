@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { ConflictError, RateLimitError, UpstreamError, UpstreamTimeoutError } from "../error/pithyError";
-import { classifiedSteps, classifyWorkflowFault, type WorkflowRetryPolicy } from "./faults";
+import { classifiedSteps, classifyWorkflowFault, type WorkflowRetryPolicy, type WorkflowStepLike } from "./faults";
 
 /** A policy with one retryable code, so both dispositions are exercised against a real statement. */
 const policy: WorkflowRetryPolicy = {
@@ -168,6 +168,58 @@ describe("classifiedSteps", () => {
       }),
     ).rejects.toBeInstanceOf(Terminal);
     expect(seen).toEqual(["write:NonRetryableError"]);
+  });
+});
+
+/** A step runner that can pause, recording every wait as `name:durationMs`. */
+function pausingStep(): WorkflowStepLike & { sleeps: string[] } {
+  const sleeps: string[] = [];
+  return {
+    sleeps,
+    do: <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
+    sleep: async (name: string, durationMs: number): Promise<void> => {
+      sleeps.push(`${name}:${durationMs}`);
+    },
+  };
+}
+
+describe("a classified runner can also pause", () => {
+  test("a sleep reaches the runner underneath, with the name and the duration it was given", async () => {
+    const step = pausingStep();
+
+    await classifiedSteps(step, policy, Terminal).sleep("wait-for-propagation", 15_000);
+
+    expect(step.sleeps).toEqual(["wait-for-propagation:15000"]);
+  });
+
+  test("a sleep that raises is forwarded untouched — a pause raises no fault to classify", async () => {
+    // `core/conflict` is terminal under `policy`, so a classifier wrapped round the pause would hand
+    // back a `Terminal` here. What comes out is the throw itself, which is the whole claim.
+    const raised = new ConflictError({ message: "Already there.", detail: "d" });
+    const step: WorkflowStepLike = {
+      do: <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
+      sleep: async (): Promise<void> => {
+        throw raised;
+      },
+    };
+
+    await expect(classifiedSteps(step, policy, Terminal).sleep("wait", 1)).rejects.toBe(raised);
+  });
+
+  test("a runner that cannot pause is refused from inside a step, so the refusal is terminal", async () => {
+    // The refusal has to be raised through `do`, or it is a throw the engine never classifies and is
+    // free to re-drive — which is the unbounded loop the caller spends its sleeps to avoid.
+    const step = retryingStep(5);
+
+    const thrown = await classifiedSteps(step, policy, Terminal)
+      .sleep("wait-for-propagation", 15_000)
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(Terminal);
+    expect((thrown as Error).message).toBe(
+      "core/internal: This Workflow step runner cannot pause.\nGive the step runner a `sleep`; the platform's own `WorkflowStep` always has one.",
+    );
+    expect(step.attempts).toBe(1);
   });
 });
 

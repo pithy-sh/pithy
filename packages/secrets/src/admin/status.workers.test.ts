@@ -4,10 +4,10 @@
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { beforeEach, describe, expect, test } from "vitest";
+import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { defineSecretRegistry } from "../registry";
-import { AT_REST_ROTATION_NAME } from "../rotation/atRestKeyRotation";
 import { RotationTracker } from "../store/rotationTracker";
 import {
   readSecretRotations,

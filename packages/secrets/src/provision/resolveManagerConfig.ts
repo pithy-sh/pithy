@@ -61,6 +61,18 @@ export interface ManagerConfigParams {
    * needs rotating; the CLI creates it once, with its own credentials, and teardown deletes it.
    */
   feature?: FeatureIdentity;
+  /**
+   * The at-rest rotation cadence in days, from the composed capability's `rotationIntervalDays`.
+   *
+   * **Stamped because two readers grade against it and only one of them was getting it (#647 review).** The
+   * manager's cron asks `isRotationDue(lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? 30))`, and the
+   * capability's `lastAtRestRotation` health key calls a pass stale when it succeeded longer than two of
+   * these ago. The template shipped a literal `30` and nothing ever replaced it, so a project configuring a
+   * shorter cadence got a health key grading against its own number and a cron running on the template's:
+   * the key reported `stale` on a schedule that was working, which is precisely the noise that gets a health
+   * key ignored. Omitted, the template's own value stands and both readers agree on it as before.
+   */
+  rotationIntervalDays?: number;
 }
 
 /**
@@ -131,7 +143,7 @@ export function resolveManagerConfig(
   template: ManagerWranglerTemplate,
   params: ManagerConfigParams,
 ): ManagerWranglerTemplate {
-  const { env, databaseId, storeId, accountId, project, feature } = params;
+  const { env, databaseId, storeId, accountId, project, feature, rotationIntervalDays } = params;
   const name = managerWorkerName(project, env, feature);
   const resolved: ManagerWranglerTemplate = structuredClone(template);
 
@@ -172,6 +184,9 @@ export function resolveManagerConfig(
     SECRETS_STORE_ID: storeId,
     ENVIRONMENT: env,
     PROJECT: project,
+    // A var is a string on the wire, and the cron reads it through `Number()`. Left out, the template's own
+    // value stands — see `ManagerConfigParams.rotationIntervalDays` for why it is stamped at all.
+    ...(rotationIntervalDays === undefined ? {} : { ROTATION_INTERVAL_DAYS: String(rotationIntervalDays) }),
   };
 
   return resolved;

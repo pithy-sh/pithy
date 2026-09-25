@@ -54,6 +54,21 @@ describe("defineSecretRegistry", () => {
     ).toThrow(InternalError);
   });
 
+  test("refuses the name the at-rest rotation records its own passes under", () => {
+    // **A shared key space, not a naming preference (#647).** `pithy_secrets_rotations` is keyed by name for
+    // every secret alike, so a declared secret of this name shares its rows with the whole-store key rotation.
+    // Deleting that secret runs `purgeHistory`, which would take every at-rest pass ever recorded with it —
+    // the rows `lastAtRestRotation` reads to say whether the master key is still rotating. Delete the guard in
+    // registry.ts and this goes green.
+    expect(() =>
+      defineSecretRegistry(
+        asRegistry({
+          __at_rest_key_rotation__: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+        }),
+      ),
+    ).toThrow(InternalError);
+  });
+
   test("rejects an unknown scope", () => {
     expect(() =>
       defineSecretRegistry(

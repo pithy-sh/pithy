@@ -450,3 +450,108 @@ describe("what a refusal keeps when it does not fit", () => {
     expect(said.message).not.toMatch(/https:\/\/developers\.cloudflare\.com\/api\/\d*…/);
   });
 });
+
+/**
+ * **A refusal and a transient failure are not the same event, and the only reader that acts on the
+ * difference is a retry policy.**
+ *
+ * Every non-timeout failure used to arrive as `cloudflare/request_failed`, which `@pithy-sh/secrets`'
+ * `secretsWorkflowRetry` treats as terminal — so "transient failures retry" was false for every
+ * Cloudflare call in the kit. A 503 on the master-key write ended the rotation instance permanently,
+ * in the one state where ending is expensive. CLAUDE.md §Errors names the pair to reach for: a failure
+ * in something we do not control is `core/upstream_failed`, never a code that says we broke.
+ *
+ * Keyed on the status at the raise site, because that is the only place it is still in hand — and kept
+ * out of the retry policy deliberately: a policy that retried the whole `cloudflare/*` family would
+ * loop a revoked token forever. 4xx is Cloudflare answering and refusing, so it stays terminal.
+ */
+describe("a Cloudflare failure is classified by the status it answered under", () => {
+  const UNAVAILABLE = `{"success":false,"errors":[{"code":10001,"message":"Service unavailable"}]}`;
+
+  it.each([500, 502, 503, 529])("%s is core/upstream_failed — the same call may well succeed", async (status) => {
+    const payload = await refusalOf("Secrets Store edit secret", apiError(status, UNAVAILABLE));
+
+    expect(payload.code).toBe("core/upstream_failed");
+    expect(payload.status).toBe(502);
+  });
+
+  it("429 is core/upstream_failed too — rate limiting is the transient failure by definition", async () => {
+    const payload = await refusalOf(
+      "Secrets Store edit secret",
+      apiError(429, `{"success":false,"errors":[{"code":10000,"message":"More than 1200 requests per five minutes"}]}`),
+    );
+
+    expect(payload.code).toBe("core/upstream_failed");
+    expect(payload.status).toBe(502);
+  });
+
+  it.each([400, 401, 403, 404, 409, 422])("%s stays cloudflare/request_failed — terminal", async (status) => {
+    const payload = await refusalOf("Secrets Store edit secret", apiError(status, UNAVAILABLE));
+
+    expect(payload.code).toBe("cloudflare/request_failed");
+    expect(payload.status).toBe(502);
+  });
+
+  it("a throw that never reached Cloudflare stays terminal, because nothing says it would answer next time", async () => {
+    const payload = await refusalOf("Secrets Store edit secret", new Error("ECONNREFUSED"));
+
+    expect(payload.code).toBe("cloudflare/request_failed");
+  });
+
+  it("a connection that did not hold is transient, though it carries no status", async () => {
+    // The half of "no status" worth another attempt: Cloudflare never answered, so nothing was refused.
+    // A reset during the at-rest master-key write used to end the rotation instance permanently.
+    const reset = Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+
+    expect((await refusalOf("Secrets Store edit secret", reset)).code).toBe("core/upstream_failed");
+  });
+
+  it("the SDK's own connection error is transient, matched by name across two copies of the SDK", async () => {
+    const connection = Object.assign(new Error("Connection error."), { name: "APIConnectionError" });
+
+    expect((await refusalOf("Secrets Store edit secret", connection)).code).toBe("core/upstream_failed");
+  });
+
+  it("a bare Error whose text merely mentions a socket code is still terminal", async () => {
+    // The line between "the network faltered" and "our own code threw". A defect that retried on the
+    // Workflow's cadence forever, silently, is worse than a rotation that stops and is reported. Only a
+    // real `code`/`name` property crosses; a message does not.
+    const ourBug = new Error("ECONNRESET appeared in this message but nothing set a code");
+
+    expect((await refusalOf("Secrets Store edit secret", ourBug)).code).toBe("cloudflare/request_failed");
+  });
+
+  it("504 is still the timeout — the transient branch never takes a status the timeout branch claimed", async () => {
+    const payload = await refusalOf("Secrets Store edit secret", apiError(504, "{}"));
+
+    expect(payload.code).toBe("core/upstream_timeout");
+    expect(payload.status).toBe(504);
+  });
+
+  // The class changes; the words do not. An operator reading a 503 gets Cloudflare's own code and
+  // sentence exactly as they get it from a 403, and a translating client still gets `apiAnswer`.
+  it("carries Cloudflare's own answer across the transient path unchanged", async () => {
+    const payload = await refusalOf("Secrets Store edit secret", apiError(503, UNAVAILABLE));
+
+    expect(payload.message).toBe(
+      "Cloudflare request failed: Secrets Store edit secret. Cloudflare said: 10001 Service unavailable",
+    );
+    expect(payload.params?.apiAnswer).toBe(": 10001 Service unavailable");
+    expect(payload.detail).toContain('"success":false');
+  });
+
+  // The raw-`fetch` managers compose through `cloudflareRefusal` directly and hand it the status they
+  // read off the response. They get the same classification, or the composer is two classifications.
+  it("classifies a refusal composed directly by a raw-`fetch` manager on the same rule", () => {
+    const composed = (status: number) =>
+      cloudflareRefusal({
+        problem: `Cloudflare Builds returned ${status}.`,
+        apiErrors: [],
+        status,
+        detail: "raw",
+      }).payload;
+
+    expect(composed(503).code).toBe("core/upstream_failed");
+    expect(composed(403).code).toBe("cloudflare/request_failed");
+  });
+});

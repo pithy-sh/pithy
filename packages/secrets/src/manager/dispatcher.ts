@@ -6,6 +6,7 @@ import { InternalError, UpstreamError } from "@pithy-sh/core/src/error/pithyErro
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import type { StoreVerification } from "../admin/verifyStore";
 import type {
   PreflightSecretDispatcher,
   SecretProbe,
@@ -13,6 +14,8 @@ import type {
   SecretRotationCloseRequest,
   SecretRotationOpenRequest,
   SecretRotationRecorder,
+  SecretStoreVerifier,
+  SecretStoreVerifyRequest,
   SecretWriteRequest,
 } from "../cli/dispatch";
 import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
@@ -68,7 +71,9 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
  * the environment quietly invited a caller to supply an unscoped name that resolves to whichever
  * project provisioned the account last.
  */
-export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, SecretProbe, SecretRotationRecorder {
+export class WorkflowSecretDispatcher
+  implements PreflightSecretDispatcher, SecretProbe, SecretRotationRecorder, SecretStoreVerifier
+{
   readonly #client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">;
   readonly #project: string;
   readonly #feature: FeatureIdentity | undefined;
@@ -192,6 +197,35 @@ export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, Secr
       });
     }
     return parsed.data.outcome === "present";
+  }
+
+  /**
+   * Ask one environment's manager to open every row of its store and report what opened.
+   *
+   * The same Workflow again, and for the third time the same reason: the master key that decrypts those
+   * rows never leaves that Worker, so the process that can answer is the one that holds it. Sending it
+   * here rather than to a Workflow of its own also means a caller cannot verify one project's manager
+   * while writing to another's — the name comes from {@link secretsWriteWorkflowName} and is never
+   * recomposed at a call site.
+   *
+   * The output is **decoded, never trusted**, like the probe's. An unread `verification` would default to
+   * absent, and absent has no honest reading here: zeroed counts are what a clean, empty store looks like,
+   * so a shape nobody expected would report an unverifiable store as a verified one. It stops the run.
+   */
+  async verifyStore(request: SecretStoreVerifyRequest): Promise<StoreVerification> {
+    const output = await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
+      mode: "verify",
+      ...(request.batchSize === undefined ? {} : { batchSize: request.batchSize }),
+    });
+    const parsed = WriteWorkflowResult.safeParse(output);
+    if (!parsed.success || parsed.data.outcome !== "verified" || parsed.data.verification === undefined) {
+      throw new UpstreamError({
+        message: `The ${request.env} secrets manager gave no usable account of its store.`,
+        action: "Redeploy the manager with pithy secrets provision, then run this again.",
+        detail: `verify in ${request.env}: unexpected write-workflow output`,
+      });
+    }
+    return parsed.data.verification;
   }
 
   /**

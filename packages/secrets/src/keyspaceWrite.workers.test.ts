@@ -10,12 +10,12 @@ import type { EncryptionConfig } from "./crypto/envelope";
 import { secretsTables } from "./data/tables";
 import type { SecretsStoreEnv } from "./env/bindings";
 import { SecretAlreadyExistsError, SecretCryptoError, SecretNotFoundError } from "./error/errors";
-import type { ConfigWriter } from "./manager/configWriter";
 import { secrets_0001_init } from "./migrations/0001_init";
 import { defineSecretRegistry } from "./registry";
 import { runAtRestKeyRotation, type StepRunner } from "./rotation/atRestKeyRotation";
 import { secretsStore } from "./secretsStore";
 import { RotationTracker } from "./store/rotationTracker";
+import { StubConfigStore } from "./test-utils/stubConfigWriter";
 
 /**
  * The request-path keyspace write, against a real D1 and the real envelope — the runtime the feature
@@ -266,7 +266,7 @@ describe("a member written this way is bound to its own name", () => {
 
 describe("at-rest key rotation picks these rows up", () => {
   /** A synchronous step runner — runs each callback immediately (no durable replay in tests). */
-  const syncStep: StepRunner = { do: (_name, fn) => fn() };
+  const syncStep: StepRunner = { do: (_name, fn) => fn(), sleep: async () => undefined };
 
   test("members written on the request path are re-encrypted like every other row", async () => {
     // The failure this asserts against is silent: a member the cron never visits stays on a key that
@@ -278,34 +278,34 @@ describe("at-rest key rotation picks these rows up", () => {
     await secrets.putKeyed("CONNECTION_SIGNING_KEY", "conn_b", { privateKey: "bravo-private-key" });
     await secrets.putKeyed("TENANT_API_KEY", "tenant_a", "tenant-api-key");
 
-    const writes: string[] = [];
-    const configWriter: ConfigWriter = {
-      write: async (value) => {
-        writes.push(value);
-      },
-    };
+    // The store entry and the binding, joined — which is the thing `#647` says nothing joined. One
+    // canonical double for every suite that stubs this seam (D6).
+    const store = new StubConfigStore({ bound: config });
     const result = await runAtRestKeyRotation(
       {
         db: createDatabase(env.SECRETS, secretsTables),
         config,
-        configWriter,
+        configWriter: store.writer,
+        configReader: store.reader,
         tracker: RotationTracker.fromD1(env.SECRETS),
       },
       syncStep,
-      { now: new Date("2026-02-01T00:00:00.000Z") },
+      { now: new Date("2026-02-01T00:00:00.000Z"), readBackDelayMs: 0 },
     );
 
-    // Three members, three rows re-encrypted, and the old key pruned because none was left behind.
-    expect(result).toMatchObject({ rotated: 3, failed: 0, newCurrentVersion: 2, pruned: true });
+    // Three members, three rows re-encrypted. Nothing is pruned in the pass that rotated: the superseded
+    // key survives a generation, so a row that failed here has a second pass to be moved by.
+    expect(result).toMatchObject({ rotated: 3, failed: 0, newCurrentVersion: 2, pruned: false });
     expect((await row("CONNECTION_SIGNING_KEY/conn_a"))?.keyVersion).toBe(2);
     expect((await row("CONNECTION_SIGNING_KEY/conn_b"))?.keyVersion).toBe(2);
     expect((await row("TENANT_API_KEY/tenant_a"))?.keyVersion).toBe(2);
 
-    // And they still open — under the pruned config, which no longer holds the key they were sealed
-    // with. Every version of the rotated member survives the re-encryption too.
-    const pruned = JSON.parse(writes[writes.length - 1] ?? "{}") as EncryptionConfig;
-    expect(Object.keys(pruned.versions)).toEqual(["2"]);
-    const after = await accessor(pruned);
+    // And they still open — under the config the rotation left bound, which holds both keys. Every
+    // version of the rotated member survives the re-encryption too.
+    const left = store.boundConfig;
+    expect(left.currentVersion).toBe("2");
+    expect(Object.keys(left.versions).sort()).toEqual(["1", "2"]);
+    const after = await accessor(left);
     expect(await after.getKeyedVersions("CONNECTION_SIGNING_KEY", "conn_a")).toEqual({
       currentVersion: "2",
       versions: { "1": { privateKey: "alpha-private-key" }, "2": { privateKey: "alpha-second-key" } },

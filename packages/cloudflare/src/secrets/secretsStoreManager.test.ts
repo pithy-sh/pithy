@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { clientError } from "@pithy-sh/core/src/error/client";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CfSecretEntry, CloudflareSecretsStoreManager } from "./secretsStoreManager";
@@ -25,8 +26,23 @@ vi.mock("cloudflare", () => ({
   },
 }));
 
+/**
+ * One raw SDK list entry, as the wire hands it over. `comment` is declared optional rather than read
+ * off {@link rawEntry}'s return type, because the absent key is the case worth driving: Cloudflare
+ * returns no `comment` at all for an entry nothing annotated, and `undefined` is not `""`.
+ */
+interface RawEntry {
+  id: string;
+  name: string;
+  status: string;
+  store_id: string;
+  created: string;
+  modified: string;
+  comment?: string;
+}
+
 /** A complete raw SDK list entry (the wire shape `CfSecretEntry` decodes). */
-function rawEntry(id: string, name: string) {
+function rawEntry(id: string, name: string, extra: Partial<Omit<RawEntry, "id" | "name">> = {}): RawEntry {
   return {
     id,
     name,
@@ -34,11 +50,12 @@ function rawEntry(id: string, name: string) {
     store_id: "store-abc",
     created: "2026-01-01T00:00:00.000Z",
     modified: "2026-01-02T00:00:00.000Z",
+    ...extra,
   };
 }
 
 /** Build a mock SDK paginator yielding the given entries, optionally throwing after them. */
-function paginator(entries: ReturnType<typeof rawEntry>[], throwAfter?: Error) {
+function paginator(entries: RawEntry[], throwAfter?: Error) {
   return {
     [Symbol.asyncIterator]: async function* () {
       for (const entry of entries) yield entry;
@@ -76,6 +93,32 @@ describe("CloudflareSecretsStoreManager", () => {
   });
 
   describe("CfSecretEntry codec", () => {
+    it("decodes the explicit null Cloudflare really sends for an unannotated entry", () => {
+      // **Found against a real store, and every mock in this file had missed it (#647).** The live list
+      // returns `comment: null` for an entry nothing annotated — not an absent key. Declared `.optional()`
+      // alone, this parse failed, `decodeResponse` raised `cloudflare/invalid_response`, and because
+      // `entriesNamed` is what `updateExistingSecret` resolves a name through, the rotation's edit-only
+      // write died on the first real store it touched. Every store has an unannotated entry in it.
+      //
+      // Drop `.nullable()` from CfSecretEntry.comment and this goes red.
+      const wire = { ...rawEntry("id-null", "FOO"), comment: null };
+
+      const decoded = CfSecretEntry.parse(wire);
+
+      expect(decoded.comment).toBeNull();
+    });
+
+    it("survives a list in which only some entries are annotated", () => {
+      // The shape of a real store: one entry this kit wrote a stamp on, beside an adopter's own secret
+      // that nothing ever annotated. The batch must not fail because of the second one.
+      const entries = [
+        { ...rawEntry("id-a", "ANNOTATED"), comment: "pithy:rotation:r3" },
+        { ...rawEntry("id-b", "PLAIN"), comment: null },
+      ].map((wire) => CfSecretEntry.parse(wire));
+
+      expect(entries.map((entry) => entry.comment)).toEqual(["pithy:rotation:r3", null]);
+    });
+
     it("round-trips the ISO-string dates through JsonDate", () => {
       const wire = rawEntry("id-1", "FOO");
       const decoded = CfSecretEntry.parse(wire);
@@ -84,6 +127,23 @@ describe("CloudflareSecretsStoreManager", () => {
       const encoded = CfSecretEntry.encode(decoded);
       expect(encoded.created).toBe(wire.created);
       expect(encoded.modified).toBe(wire.modified);
+    });
+
+    /**
+     * **`comment` is the only thing about a value REST can read back.** Cloudflare never returns a
+     * secret's plaintext — values are bind-only by design — so a writer that wants to prove its write
+     * reached the entry it addressed has this field and nothing else. It crosses the boundary in both
+     * directions, and an entry Cloudflare returns without one decodes to `undefined` rather than `""`:
+     * *unannotated* and *annotated with nothing* are different facts to a fail-closed reader.
+     */
+    it("carries the comment across the wire boundary in both directions", () => {
+      const decoded = CfSecretEntry.parse(rawEntry("id-1", "FOO", { comment: "config v7" }));
+      expect(decoded.comment).toBe("config v7");
+      expect(CfSecretEntry.encode(decoded).comment).toBe("config v7");
+    });
+
+    it("leaves the comment undefined when Cloudflare returns none", () => {
+      expect(CfSecretEntry.parse(rawEntry("id-1", "FOO")).comment).toBeUndefined();
     });
   });
 
@@ -102,7 +162,7 @@ describe("CloudflareSecretsStoreManager", () => {
     });
 
     it("throws cloudflare/invalid_response when an entry has the wrong shape", async () => {
-      mockList.mockReturnValue(paginator([{ id: "id-1" } as ReturnType<typeof rawEntry>]));
+      mockList.mockReturnValue(paginator([{ id: "id-1" } as RawEntry]));
       await expect(manager.listSecrets()).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/invalid_response" }) }),
       );
@@ -146,6 +206,30 @@ describe("CloudflareSecretsStoreManager", () => {
       });
       expect(mockDelete).not.toHaveBeenCalled();
       expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    // The comment is a plain string here and nothing more: this client knows no payload shape, because
+    // the only writer that needs one is `@pithy-sh/secrets`, and the codec belongs where it is read.
+    it("carries a comment into the create body", async () => {
+      mockList.mockReturnValue(paginator([]));
+      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+
+      await manager.putSecret("FOO", "value-1", "minted by provisioning");
+
+      expect(mockCreate).toHaveBeenCalledWith("store-abc", {
+        account_id: "test-account-id",
+        body: [{ name: "FOO", value: "value-1", scopes: ["workers"], comment: "minted by provisioning" }],
+      });
+    });
+
+    it("carries a comment into the edit params", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
+      mockEdit.mockResolvedValue({ id: "id-existing" });
+
+      await manager.putSecret("FOO", "value-2", "rotated");
+
+      expect(mockEdit.mock.calls).toHaveLength(1);
+      expect(mockEdit.mock.calls[0]?.[1]).toMatchObject({ comment: "rotated" });
     });
 
     it("wraps a create failure as cloudflare/request_failed", async () => {
@@ -217,6 +301,18 @@ describe("CloudflareSecretsStoreManager", () => {
       expect(mockDelete).not.toHaveBeenCalled();
     });
 
+    it("carries a comment into the create body", async () => {
+      mockList.mockReturnValueOnce(paginator([])).mockReturnValueOnce(paginator([rawEntry("id-new", "FOO")]));
+      mockCreate.mockResolvedValue([rawEntry("id-new", "FOO")]);
+
+      await manager.createSecretIfAbsent("FOO", "value-1", "established");
+
+      expect(mockCreate).toHaveBeenCalledWith("store-abc", {
+        account_id: "test-account-id",
+        body: [{ name: "FOO", value: "value-1", scopes: ["workers"], comment: "established" }],
+      });
+    });
+
     it("leaves an existing entry exactly as it is, and says it was present", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-existing", "FOO")]));
 
@@ -284,6 +380,158 @@ describe("CloudflareSecretsStoreManager", () => {
     });
   });
 
+  /**
+   * **The verb that refuses to create, and the reason it had to exist.**
+   *
+   * `putSecret` upserts. A write addressed to a name nothing reads — a composed name gone stale, a
+   * misspelled binding, an environment segment that never got substituted — finds no entry, creates
+   * one, and answers 200. The caller hears success; the value it meant to replace is untouched and
+   * still bound; an orphan entry nobody reads holds live key material. That is how a sibling codebase
+   * lost an environment's secrets, with nothing returning an error anywhere. Here the absence is a
+   * refusal, raised before anything is written.
+   */
+  describe("updateExistingSecret", () => {
+    it("edits the entry of that name in place, returns its id, and never creates", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "SECRETS_CONFIG")]));
+      mockEdit.mockResolvedValue({ id: "id-existing" });
+
+      expect(await manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2")).toBe("id-existing");
+
+      expect(mockEdit).toHaveBeenCalledWith("id-existing", {
+        account_id: "test-account-id",
+        store_id: "store-abc",
+        value: "envelope-2",
+        scopes: ["workers"],
+      });
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockDelete).not.toHaveBeenCalled();
+    });
+
+    it("throws core/not_found and writes nothing when no entry carries the name", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-other", "SOMETHING_ELSE")]));
+
+      await expect(manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "core/not_found" }) }),
+      );
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    // A deleted entry is not one to write to (#643) — writing to it would be a write nothing resolves,
+    // which is the whole failure this verb exists to refuse.
+    it("does not count a deleted entry as one to update", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-gone", "SECRETS_CONFIG", { status: "deleted" })]));
+
+      await expect(manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "core/not_found" }) }),
+      );
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(mockEdit).not.toHaveBeenCalled();
+    });
+
+    // Two entries of one name is exactly what a misnamed write leaves behind. Editing the older of them
+    // is a coin toss over which value the binding goes on serving, so the ambiguity is reported instead.
+    it("throws core/conflict and writes nothing when two live entries carry the name", async () => {
+      mockList.mockReturnValue(
+        paginator([
+          rawEntry("id-one", "SECRETS_CONFIG", { created: "2026-01-01T00:00:01.000Z" }),
+          rawEntry("id-two", "SECRETS_CONFIG", { created: "2026-01-01T00:00:02.000Z" }),
+        ]),
+      );
+
+      await expect(manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "core/conflict" }) }),
+      );
+      expect(mockEdit).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("counts only the live entries when it decides the name is ambiguous", async () => {
+      mockList.mockReturnValue(
+        paginator([
+          rawEntry("id-gone", "SECRETS_CONFIG", { status: "deleted", created: "2026-01-01T00:00:01.000Z" }),
+          rawEntry("id-live", "SECRETS_CONFIG", { created: "2026-01-01T00:00:02.000Z" }),
+        ]),
+      );
+      mockEdit.mockResolvedValue({ id: "id-live" });
+
+      expect(await manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2")).toBe("id-live");
+    });
+
+    it("sets the comment when one is given, and sends no comment field at all when none is", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "SECRETS_CONFIG")]));
+      mockEdit.mockResolvedValue({ id: "id-existing" });
+
+      await manager.updateExistingSecret("SECRETS_CONFIG", "envelope-2", "v7");
+      await manager.updateExistingSecret("SECRETS_CONFIG", "envelope-3");
+
+      expect(mockEdit.mock.calls).toHaveLength(2);
+      expect(mockEdit.mock.calls[0]?.[1]).toMatchObject({ comment: "v7" });
+      expect(mockEdit.mock.calls[1]?.[1]).not.toHaveProperty("comment");
+    });
+
+    /**
+     * #386: a failure's own text, and anything derived from key material, reaches no client. `detail`
+     * is the throw site's and carries the upstream text verbatim — that is what it is for. Nothing a
+     * client is handed does, and `clientError` is the one boundary that decides it (#344), so the whole
+     * projection is what is asserted rather than two fields of the payload.
+     */
+    it("keeps the value out of everything a client is handed, even when the upstream echoes it", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-existing", "SECRETS_CONFIG")]));
+      mockEdit.mockRejectedValue(new Error("rejected value new-envelope"));
+
+      let thrown: unknown;
+      try {
+        await manager.updateExistingSecret("SECRETS_CONFIG", "new-envelope");
+      } catch (error) {
+        thrown = error;
+      }
+
+      if (!(thrown instanceof PithyError)) throw new Error("updateExistingSecret resolved; expected it to refuse.");
+      expect(thrown.payload.code).toBe("cloudflare/request_failed");
+      expect(thrown.payload.detail).toContain("new-envelope");
+      expect(JSON.stringify(clientError(thrown.payload))).not.toContain("new-envelope");
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * **The plural is the point.** Cloudflare does not document that the store refuses a duplicate name,
+   * and #643 established that it does not — so "the entry named X" is a claim rather than a given. A
+   * caller whose correctness depends on it asserts `length === 1` here and says what it wants done when
+   * that is false. Every verb in this manager resolves a name through this one answer.
+   */
+  describe("entriesNamed", () => {
+    it("returns every live entry of the name, oldest first", async () => {
+      mockList.mockReturnValue(
+        paginator([
+          rawEntry("id-young", "FOO", { created: "2026-02-01T00:00:00.000Z" }),
+          rawEntry("id-old", "FOO", { created: "2026-01-01T00:00:00.000Z" }),
+        ]),
+      );
+
+      expect((await manager.entriesNamed("FOO")).map((entry) => entry.id)).toEqual(["id-old", "id-young"]);
+    });
+
+    it("leaves out a deleted entry, and another name's", async () => {
+      mockList.mockReturnValue(
+        paginator([
+          rawEntry("id-live", "FOO"),
+          rawEntry("id-gone", "FOO", { status: "deleted" }),
+          rawEntry("id-other", "BAR"),
+        ]),
+      );
+
+      expect((await manager.entriesNamed("FOO")).map((entry) => entry.id)).toEqual(["id-live"]);
+    });
+
+    it("answers [] for a name nothing in the store carries", async () => {
+      mockList.mockReturnValue(paginator([rawEntry("id-other", "BAR")]));
+
+      expect(await manager.entriesNamed("FOO")).toEqual([]);
+    });
+  });
+
   describe("deleteSecret", () => {
     it("deletes by id resolved from listSecrets", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-1", "FOO")]));
@@ -318,6 +566,7 @@ describe("CloudflareSecretsStoreManager", () => {
   describe("exists", () => {
     it("returns true when a secret with the name is present", async () => {
       mockList.mockReturnValue(paginator([rawEntry("id-1", "FOO")]));
+      expect(await manager.exists("FOO")).toBe(true);
     });
 
     it("returns false when no secret matches", async () => {

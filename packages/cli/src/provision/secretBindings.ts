@@ -78,6 +78,25 @@ export function boundSecretNames(registry: SecretRegistry): string[] {
 }
 
 /**
+ * **One composition of a store secret's entry name, for provisioning and for anything that has to
+ * recompute it.**
+ *
+ * The cast is the reason this is a function. `SecretRegistryEntry.scope` is `@pithy-sh/secrets`'
+ * `SecretScope` and `ProvisionScope.secretEntry` takes core's `SecretNameScope`; they are two literal
+ * unions declared independently, which agree today and are asserted to agree here. Written twice, the
+ * day they stop agreeing is the day the verification census composes a name provisioning does not — and
+ * the symptom of that is a live entry reported as an orphan, which is a report an operator deletes on.
+ * So it exists once.
+ */
+export function secretStoreEntryName(
+  scope: ProvisionScope,
+  secret: string,
+  entry: Pick<SecretRegistryEntry, "scope">,
+): string {
+  return scope.secretEntry(secret, entry.scope as SecretNameScope);
+}
+
+/**
  * Each binding a registry's store secrets are read through, and the registry key it was derived from.
  * `defineSecretRegistry` refuses two keys that derive one binding, so the map is exact.
  */
@@ -168,7 +187,7 @@ export async function secretsStoreBindings(options: {
   for (const secret of boundSecretNames(options.registry)) {
     const entry = options.registry[secret] as SecretRegistry[string];
     const binding = secretBindingName(secret);
-    const secretName = options.scope.secretEntry(secret, entry.scope as SecretNameScope);
+    const secretName = secretStoreEntryName(options.scope, secret, entry);
     let present = await options.exists(secretName);
     if (!present && options.mint && isMintableSecret(entry)) {
       await options.mint({ secret, binding, secretName, entry });

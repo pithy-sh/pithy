@@ -161,7 +161,12 @@ describe("what is not a timeout stays a 502", () => {
     expect((thrown as { cause?: { cause?: { code?: unknown } } }).cause?.cause?.code).toBe("ECONNREFUSED");
 
     const payload = await refusalOf("KV get for key 'session:1'", () => Promise.reject(thrown));
-    expect(payload.code).toBe("cloudflare/request_failed");
+    // Not a timeout — this file's thesis — and 502 either way, which is what that thesis asserts. The code
+    // is `core/upstream_failed` because the connection was refused rather than answered: Cloudflare never
+    // said no, so the next attempt may succeed, and a rotation that ends permanently on a refused socket is
+    // the failure #647's review found. This case is the live proof of that classification, since the shape
+    // above is the real SDK's, produced against a real closed port rather than hand-built.
+    expect(payload.code).toBe("core/upstream_failed");
     expect(payload.status).toBe(502);
   }, 20000);
 
@@ -187,7 +192,10 @@ describe("what is not a timeout stays a 502", () => {
     });
     const payload = await refusalOf("Workers script upload", () => Promise.reject(answered));
 
-    expect(payload.code).toBe("cloudflare/request_failed");
+    // `core/upstream_failed`, not `core/upstream_timeout`: the 500 is Cloudflare's own answer, and the
+    // status it answered under is what classifies it. The distinction this case exists for is between
+    // "answered" and "nobody answered", and it is still the one being asserted.
+    expect(payload.code).toBe("core/upstream_failed");
     expect(payload.status).toBe(502);
   });
 });

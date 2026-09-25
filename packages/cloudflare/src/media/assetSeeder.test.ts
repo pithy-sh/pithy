@@ -143,12 +143,14 @@ describe("uploadStreamBytes", () => {
     );
   });
 
-  it("throws cloudflare/request_failed when the byte upload is rejected", async () => {
+  // A 500 from the upload endpoint is the transient half of the upstream pair — the same POST may well
+  // succeed next time — so it is `core/upstream_failed`. A 4xx here would stay `cloudflare/request_failed`.
+  it("throws core/upstream_failed when the byte upload is rejected with a 500", async () => {
     createDirectUpload.mockResolvedValue({ uid: "vid-4", uploadURL: "https://up" });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "boom" }));
 
     await expect(uploadStreamBytes(streamManager, new Uint8Array([1]), { owner })).rejects.toThrowError(
-      expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_failed" }) }),
     );
   });
 

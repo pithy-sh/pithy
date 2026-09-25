@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { PithyError, UpstreamTimeoutError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, UpstreamError, UpstreamTimeoutError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 import { MAX_WORKFLOW_STEP_TEXT } from "@pithy-sh/core/src/workflow/stepMessage";
 import type { z } from "zod";
@@ -196,7 +196,7 @@ const ACCOUNT_PERMISSIONS: Record<string, string> = {
 };
 
 /**
- * Run a Cloudflare SDK call and turn any failure into a `CloudflareRequestError`, preserving the
+ * Run a Cloudflare SDK call and turn any failure into a typed refusal, preserving the
  * original error as `cause` and its message as internal `detail`. `operation` names the call for
  * the audit trail (`"KV get for key 'x'"`). A `PithyError` already in flight (e.g. a
  * not-configured guard) passes through untouched — only foreign throws get wrapped.
@@ -267,8 +267,11 @@ export async function cloudflareRequest<T>(
  * translating client can render them under the error code. "Add this grant, then re-run" names a
  * console the operator is sitting in front of, so it is an `action`. The raw body stays `detail`.
  *
- * The code stays `cloudflare/request_failed` at 502: a dedicated sibling of `core/upstream_failed`,
- * already the upstream class CLAUDE.md asks for, and pinned by `core`'s payload test.
+ * **The code is keyed on the status, because a retry policy reads it and nothing else can.** See
+ * {@link isTransientStatus}. A refusal Cloudflare answered with a 4xx stays `cloudflare/request_failed`
+ * at 502 — a dedicated sibling of `core/upstream_failed`, already the upstream class CLAUDE.md asks
+ * for, and pinned by `core`'s payload test. The words are composed the same way either side of that
+ * branch, so only the two machine-readable fields differ.
  *
  * **The message is one line, and that is a kit-wide rule this had to learn the hard way.** Round one
  * of #534 made it a small document — problem line, `errors[]` indented beneath, action last — which
@@ -299,20 +302,81 @@ export function cloudflareRefusal(args: {
   detail: string;
   /** The original throw. */
   cause?: unknown;
-}): CloudflareRequestError {
+}): PithyError {
   // Sliced here for `permissionAction`; `cloudflareSaid` bounds what it is given for itself, so a call
   // site reaching it directly cannot exceed the same limit by arriving from somewhere else.
   const shown = args.apiErrors.slice(0, MAX_API_ERRORS);
   const said = cloudflareSaid(args.problem, shown);
-  return new CloudflareRequestError(
-    {
-      message: said.message,
-      action: permissionAction(shown, args.status, args.permission),
-      params: said.params,
-      detail: args.detail,
-    },
-    { cause: args.cause },
-  );
+  const refusal = {
+    message: said.message,
+    action: permissionAction(shown, args.status, args.permission),
+    params: said.params,
+    detail: args.detail,
+  };
+  if (isTransientStatus(args.status) || isConnectionFailure(args.cause)) {
+    return new UpstreamError(refusal, { cause: args.cause });
+  }
+  return new CloudflareRequestError(refusal, { cause: args.cause });
+}
+
+/**
+ * Whether the status Cloudflare answered under means "ask again" rather than "this request is wrong".
+ *
+ * **The classification lives here because here is where the status is still in hand.** Everything a
+ * refusal crosses afterwards — a durable step record, a `--json` line, a retry policy — sees the
+ * `code` and nothing else, so a fault that is worth retrying has to say so in the code at the moment
+ * it is raised. `@pithy-sh/secrets`' `secretsWorkflowRetry` lists `core/upstream_failed` and
+ * `core/upstream_timeout` and treats everything absent as terminal; with every non-timeout failure
+ * arriving as `cloudflare/request_failed`, a 503 on the at-rest master-key write ended the rotation
+ * instance permanently, in the one state where ending it is expensive.
+ *
+ * **It is keyed here and not relaxed in the policy, and the difference is a revoked token.** Making
+ * the whole `cloudflare/*` family retryable would loop a 403 forever at whatever cadence the Workflow
+ * sleeps on, and nothing would ever say why. 4xx is Cloudflare answering and refusing — the same call
+ * refuses again — so it stays terminal, and CLAUDE.md §Errors is what says the other half belongs to
+ * the upstream pair: a failure in something we do not control is never a code that says we broke.
+ *
+ * 5xx is every server-side status, Cloudflare's own `52x` family included; `429` is rate limiting,
+ * which is the transient failure by definition. The timeout statuses never reach here — `isTimeout`
+ * claims 408, 504 and 524 first, and they are the 504 half of the same pair.
+ *
+ * **A statusless failure is not covered here, and deliberately so (#647 review).** A connection that reset
+ * mid-write is genuinely transient and ending a rotation on one is expensive — but "carries no status" is
+ * far wider than "the network faltered". A `TypeError` raised in our own request builder carries no status
+ * either, and a predicate that called it transient would retry a code defect on the Workflow's own cadence,
+ * forever, silently. `errors.test.ts` pins that: a throw that never reached Cloudflare stays terminal.
+ * {@link isConnectionFailure} names the narrow case instead, the way {@link statesTimeout} already does.
+ */
+function isTransientStatus(status: number | undefined): boolean {
+  return status !== undefined && (status === 429 || status >= 500);
+}
+
+/**
+ * The producer names for "the connection did not hold", as distinct from "out of time" and from a defect
+ * in our own code.
+ *
+ * Duck-typed by name and `code`, for the reason {@link TIMEOUT_NAMES} gives: the SDK is one producer and
+ * `fetch` is another, and an `instanceof` across two copies of the SDK answers false.
+ */
+const CONNECTION_NAMES = new Set(["APIConnectionError", "FetchError"]);
+const CONNECTION_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET"]);
+
+/**
+ * Whether a failure is a connection that did not hold — a reset, a refused socket, a name that would not
+ * resolve. Cloudflare never answered, so nothing was refused, and the next attempt may well succeed.
+ *
+ * Narrow on purpose. This is the half of "no status" that is genuinely worth another attempt; everything
+ * else with no status stays terminal, so a defect in our own code still stops rather than looping.
+ */
+function isConnectionFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === "object"; depth++) {
+    const { name, code } = current as { name?: unknown; code?: unknown };
+    if (typeof name === "string" && CONNECTION_NAMES.has(name)) return true;
+    if (typeof code === "string" && CONNECTION_CODES.has(code)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**

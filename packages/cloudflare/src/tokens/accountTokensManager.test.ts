@@ -158,11 +158,16 @@ describe("CloudflareAccountTokensManager", () => {
     expect((error as CloudflareNotConfiguredError).payload.action).toMatch(/Account API Tokens Write/);
   });
 
-  it("mintToken wraps a non-auth failure as a request error", async () => {
+  // Rate limiting is the transient half of the upstream pair: the same mint may well succeed next
+  // time, so the code says so. What this case has always asserted is that a non-auth failure is not
+  // swallowed into the not-configured diagnosis one branch above it.
+  it("mintToken wraps a rate-limited failure as core/upstream_failed", async () => {
     mockCreate.mockRejectedValue(Object.assign(new Error("rate limited"), { status: 429 }));
     await expect(
       manager.mintToken("t", [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") }]),
-    ).rejects.toBeInstanceOf(CloudflareRequestError);
+    ).rejects.toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_failed" }) }),
+    );
   });
 
   it("mintToken renders Cloudflare's own answer on a 401 — the status the token bootstrap fails under", async () => {
@@ -299,7 +304,11 @@ describe("CloudflareAccountTokensManager", () => {
 
   it("getTokenName still throws on a non-authorization failure", async () => {
     mockTokenGet.mockRejectedValue(Object.assign(new Error("rate limited"), { status: 429 }));
-    await expect(manager.getTokenName("tk-self")).rejects.toBeInstanceOf(CloudflareRequestError);
+    // The load-bearing half is that it throws rather than answering `null`: `getTokenName` swallows a
+    // 403 by design, and swallowing a rate limit too would report a live token as one we cannot name.
+    await expect(manager.getTokenName("tk-self")).rejects.toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_failed" }) }),
+    );
   });
 
   it("findTokenByName returns the matching token, or null", async () => {

@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { isErrorCode } from "@pithy-sh/core/src/error/extend";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -11,12 +12,13 @@ import {
   type PreflightSecretDispatcher,
   type SecretProbe,
   type SecretRotationRecorder,
+  type SecretStoreVerifier,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { canonicalGlobalEnvironment, type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
@@ -53,7 +55,18 @@ import {
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
 import { readSecretValue } from "../capabilities/secretValue";
+import { projectTokenStoreEntries, storeEntryCensus } from "../capabilities/storeEntryCensus";
 import { storeSecretWriter } from "../capabilities/storeSecretWrites";
+import {
+  firstUnreachable,
+  runSecretsVerification,
+  sweepStoreEntries,
+  type VerificationReport,
+  verificationExitCode,
+  verificationJson,
+  verificationReportLines,
+  verificationVerdict,
+} from "../capabilities/verifySecrets";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
@@ -86,16 +99,31 @@ import {
  * name, not just the alphabetically-first Worker's. A Worker that does not compose `secrets` simply
  * contributes nothing; when no Worker does, the capability's own actionable error is what surfaces.
  */
-async function projectSecrets(projectDir: string): Promise<{ registry: SecretRegistry; branches: SecretBranches }> {
+async function projectSecrets(
+  projectDir: string,
+): Promise<{ registry: SecretRegistry; branches: SecretBranches; complete: boolean }> {
   const workers = await resolveWorkers({ projectDir });
   const registries: SecretRegistry[] = [];
   let branches: SecretBranches = {};
   let absent: unknown;
+  let unreadable = false;
   for (const worker of workers) {
     try {
       registries.push(resolveSecretRegistry(worker.config));
     } catch (error) {
       absent = error;
+      // **Two different facts, and only one of them is incompleteness (#647 review).** A Worker that does
+      // not compose `secrets` throws `core/not_found` here, and that is the ordinary shape of a project —
+      // a frontend, an API Worker, anything with no secrets of its own. It contributes nothing and leaves
+      // the merge whole. A Worker whose config would not *load* is the other fact: names it declared are
+      // missing from the merge, so anything reasoning about what the project does not declare must hold
+      // its answer.
+      //
+      // Collapsing the two disabled half of `pithy secrets verify`. Every multi-Worker project has a
+      // Worker without `secrets`, so `complete` was permanently false, `sweepStoreEntries` suppressed
+      // `orphans` and `keyMaterial`, and the command reported `withheld` and exit 0 forever — the orphan
+      // detector silent in exactly the projects it was built for.
+      if (!(error instanceof PithyError && isErrorCode(error.payload, "core/not_found"))) unreadable = true;
       continue;
     }
     // Only from a Worker whose registry resolved: a capability's branch declaration is about the secret
@@ -108,6 +136,11 @@ async function projectSecrets(projectDir: string): Promise<{ registry: SecretReg
   return {
     registry: registries.length === 1 ? first : (Object.assign({}, ...registries) as SecretRegistry),
     branches,
+    // **Whether the merge is every Worker's.** A skipped Worker is right for a listing — the other
+    // Workers' secrets are still worth showing — and wrong for anything that reasons about what the
+    // project does *not* declare: every secret the skipped Worker named would look like a store entry
+    // nothing accounts for. `pithy secrets verify` withholds its orphan verdict on this.
+    complete: !unreadable,
   };
 }
 
@@ -171,7 +204,7 @@ const DRY_RUN_DISPATCHER: SecretRotationDispatcher = {
  */
 async function buildDispatcher(
   projectDir: string,
-): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder> {
+): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder & SecretStoreVerifier> {
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
@@ -714,6 +747,118 @@ const edit = defineCommand({
     }),
 });
 
+/**
+ * `pithy secrets verify` — does every stored secret still open, and does anything sit in the store that
+ * nothing accounts for.
+ *
+ * **Two detectors, one command, because they fail together.** A misaddressed envelope write leaves both
+ * halves behind at once: the store entry the binding reads no longer holds what it should, and the value
+ * that should have gone into it sits under a name nothing composes. Reporting one without the other
+ * hands an operator half a picture at the hour they have least patience for one.
+ *
+ * Neither half writes anything, and the orphan half never deletes. An entry this project cannot account
+ * for is *reported*; what to do about it is a decision with the account in front of you.
+ *
+ * `--no-sweep` skips the store listing, for a run that has the manager's credentials and not the store's.
+ * Everything else is defaults: no prompt on any path, `--json` on the same facts the terminal gets, and
+ * an exit code a cron can branch on (`capabilities/verifySecrets.ts`).
+ */
+const verify = defineCommand({
+  meta: { name: "verify", description: "Check every stored secret still opens, and what the store holds" },
+  args: {
+    env: {
+      type: "string",
+      description: `Verify one environment instead of every declared one: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts`,
+    },
+    sweep: {
+      type: "boolean",
+      default: true,
+      description: "Also list the account's Secrets Store and report entries no composed name accounts for",
+    },
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const environments = await projectEnvironments(projectDir);
+      const targets = args.env
+        ? [requireManagedEnvironment(args.env, environments)]
+        : managedEnvironments(environments);
+
+      const report: VerificationReport = {
+        environments: await runSecretsVerification({
+          verifier: await buildDispatcher(projectDir),
+          environments: targets,
+        }),
+        // The credentials the sweep needs are resolved inside it, so `--no-sweep` pays for none of them.
+        ...(args.sweep ? await storeSweep(projectDir, environments) : { sweep: null, notSwept: null }),
+      };
+
+      if (args.json) process.stdout.write(`${formatJsonLine(verificationJson(report))}\n`);
+      else for (const line of verificationReportLines(report)) process.stdout.write(`${line}\n`);
+
+      // **The finding decides, and it decides before the fault does.** One flaky environment beside one
+      // broken store must not exit 1 — that is the code a cron retries, and this is the state no retry
+      // fixes. Only a run that found nothing rethrows, and only then does the exit status belong to
+      // whatever went wrong.
+      const verdict = verificationVerdict(report);
+      if (verdict === "failed" || verdict === "key-unreadable") {
+        process.exitCode = verificationExitCode(verdict);
+        return;
+      }
+      const unreachable = firstUnreachable(report);
+      if (unreachable !== undefined) throw unreachable;
+      if (args.json) return;
+      process.stdout.write(`${formatDone()}\n`);
+    }),
+});
+
+/**
+ * The store half: list the account's Secrets Store and classify every entry against what this project
+ * composes.
+ *
+ * Everything it needs is resolved inside, and a failure to resolve any of it is a **withheld** sweep
+ * rather than a failed command. A project with no Secrets Store id still gets its per-environment
+ * verification, which is the half that does not need one.
+ */
+async function storeSweep(
+  projectDir: string,
+  environments: DeclaredEnvironments | readonly string[],
+): Promise<Pick<VerificationReport, "sweep" | "notSwept">> {
+  try {
+    const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
+      requireStore: true,
+    });
+    const project = requireProjectName(await loadProject(projectDir));
+    const managed = managedEnvironments(environments);
+    const { registry, complete } = await projectSecrets(projectDir);
+    const cf = await cloudflareClients({ accountId, apiToken });
+    // A `deleted` entry is not in the store (#643). Classifying one would report debris that Cloudflare
+    // has already removed.
+    const entries = (await cf.secrets(storeId).listSecrets())
+      .filter((entry) => entry.status !== "deleted")
+      .map((entry) => entry.name);
+    const census = storeEntryCensus({
+      project,
+      environments: managed,
+      registry,
+      registryComplete: complete,
+      tokenEntries: await projectTokenStoreEntries({ project, environments: managed, projectDir }),
+    });
+    return { sweep: sweepStoreEntries(entries, census), notSwept: null };
+  } catch (error) {
+    // **Only a failure that says what it is degrades to `withheld` (#647 review).** This catch was
+    // unqualified, so a defect in the census — a `TypeError`, a naming call with the wrong argument —
+    // came out as "The account's Secrets Store could not be listed", verdict `withheld`, exit 0. A kit bug
+    // silently disabling half of this command is the failure shape the whole issue is about, one level up.
+    // A `PithyError` is a stated condition an operator can act on; anything else is ours and stays loud.
+    if (!(error instanceof PithyError)) throw error;
+    // The operator's own sentence. A sweep that did not happen says so; it never reads as one that found
+    // nothing.
+    return { sweep: null, notSwept: error.payload.message };
+  }
+}
+
 const provision = defineCommand({
   meta: { name: "provision", description: "Provision the per-environment secrets infrastructure" },
   args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
@@ -938,5 +1083,5 @@ const deprovision = defineCommand({
 
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rotate, rm, ls, edit, provision, deprovision },
+  subCommands: { create, update, rotate, rm, ls, edit, verify, provision, deprovision },
 });

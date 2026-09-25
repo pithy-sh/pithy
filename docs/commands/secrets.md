@@ -13,6 +13,7 @@ pithy secrets rotate <name> [--env <env>] [--dry-run] [--json]
 pithy secrets rm <name> [--env <env>] [--json]
 pithy secrets ls [--all] [--json]
 pithy secrets edit [--json]
+pithy secrets verify [--env <env>] [--no-sweep] [--json]
 pithy secrets provision [--json]
 pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 ```
@@ -30,6 +31,8 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 | `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
 | `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | `deprovision` | `--destroy-retained <n>` | **Destructive.** Delete a vault that still holds rows. `<n>` must equal the count the refusal printed. |
+| `verify` | `--env <env>` | Verify one environment instead of every declared one. |
+| `verify` | `--no-sweep` | Skip the Secrets Store listing and verify the stores alone. Sweeping is the default. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
 `--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are.
@@ -255,9 +258,65 @@ A different number refuses too. The count is taken again at the delete itself, s
 
 Credentials for every subcommand above that reaches an account come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account — account-scoped, not per project. `provision` and `deprovision` additionally need `SECRETS_STORE_ID`, which `pithy add secrets` records. `PITHY_OFFLINE` refuses ambient credentials outright, so an offline run of a Cloudflare-touching subcommand fails rather than reaching an account nobody named.
 
+## `verify`
+
+**Does every stored secret still open, and does anything sit in the account's Secrets Store that nothing accounts for.** Two detectors, one command, because a misaddressed write leaves both halves behind at once: the entry a binding reads no longer holds what it should, and the value that should have gone into it sits under a name nothing composes.
+
+It writes nothing and it deletes nothing. An entry this project cannot account for is reported; what to do about it is a decision taken with the account in front of you.
+
+The first half runs **inside the manager Worker**, because the master key that opens those rows never leaves it. Every row of `pithy_secrets_system_secrets` is decrypted, and what comes back is counts and key versions — never a secret's name, never a value, never what a decrypt failure said.
+
+```
+staging: 14 of 14 rows opened. Key versions 3 (14 rows).
+prod: 12 of 14 rows opened. Key versions 2 (2 rows), 3 (12 rows).
+2 stored rows would not open.
+Rows reference key version 2, which SECRETS_ENCRYPTION_KEYS does not hold.
+Find out what removed that key version before changing anything. Restoring it is the repair, and it is the one value a wrong edit makes unrecoverable.
+Store: 9 accounted, 3 another project's.
+```
+
+The second half lists the store and classifies every entry against the names this project composes, through the same functions provisioning composes them with. An entry with no project segment is the shape the failure this command exists for produces — a bare `SECRETS_ENCRYPTION_KEYS` beside `<project>-<env>-secrets-encryption-keys`, holding the key that should have gone into it:
+
+```
+Unscoped entry: SECRETS_ENCRYPTION_KEYS. Something wrote a name it composed itself.
+An unscoped name says nothing about which project wrote it. Find out before removing one.
+```
+
+**A false orphan is the expensive mistake here, not a missed one**, so the classification refuses to guess. An entry outside `<project>-` belongs to a sibling project in the same account: it is counted and never named. An entry whose scope segment this checkout does not declare is reported as an unrecognized scope rather than as debris — `pithy.config.ts` differs between branches. An entry named like a master key is never an orphan under any circumstances, because deleting one makes an environment's whole database permanently undecryptable. And when the answer cannot be completed — a Worker whose registry will not load, token profiles that will not resolve — the orphan verdict is **withheld** and says so, rather than turning every secret that Worker declared into a finding. The unscoped check still runs: it does not depend on the count being complete, and a project whose provisioning is untidy is exactly the one that may be holding the entry.
+
+### Exit codes
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `0` | Verified, or withheld. Nothing was found. | Nothing. Under `--json`, `verdict` says which of the two. |
+| `1` | The command could not run — an environment's manager did not answer. | Run it again. |
+| `4` | A finding: a row that will not open, a key version rows reference and the config does not hold, a pointer the key set does not hold, or an entry nothing accounts for. | Somebody has to look. Retrying changes nothing. |
+| `5` | `SECRETS_ENCRYPTION_KEYS` will not resolve for an environment. Nothing in that store can be read. | Check what the binding resolves to. This is the one state no retry ever fixes, which is why it is not `1`. |
+
+**A finding outranks a fault.** One unreachable environment beside one broken store exits `4`, not `1` — the unreachable environment keeps its own line, and the finding decides the status. `1` is the code a cron retries, and masking a finding behind it is how a broken store gets retried nightly forever.
+
 ## `--json`
 
 One line on stdout. A failure is one `{"error": …}` line on stderr and a non-zero exit.
+
+### `secrets verify`
+
+```json
+{"command":"secrets verify","verdict":"failed","verified":false,"exitCode":4,"environments":[{"env":"prod","state":"verified","verification":{"keySet":"resolved","rows":14,"readable":12,"unreadable":2,"keyVersions":[{"keyVersion":2,"rows":2},{"keyVersion":3,"rows":12}],"heldVersions":[3],"currentVersion":3,"currentVersionHeld":true,"missingVersions":[2],"rotationInProgress":false}}],"sweep":{"counts":{"accounted":9,"unscoped":1,"orphan":0,"key-material":0,"unknown-scope":0,"feature":0,"foreign":3},"unscoped":["SECRETS_ENCRYPTION_KEYS"],"orphans":[],"keyMaterial":[],"unknownScope":[],"withheld":null}}
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `verdict` | string | `"verified"`, `"withheld"`, `"failed"` or `"key-unreadable"`. The field to key a gate on. |
+| `verified` | boolean | `true` only for `"verified"`. A withheld run asserted nothing about the store and must never read as a clean one. |
+| `exitCode` | number | The status this run exits with — 0, 4 or 5. Stated so a caller reading the line need not also read `$?`. |
+| `environments[].state` | string | `"verified"` when that environment's manager answered, whatever it said; `"unreachable"` when it did not. |
+| `environments[].verification` | object | Present only when it answered. `keySet` is `"resolved"` or `"unreadable"`; an `"unreadable"` one carries `rows`, `keyVersions` and `rotationInProgress` alone, because nothing was opened. |
+| `sweep` | object | Present only when a sweep ran. `counts` is complete; the name arrays carry only what this project may name. |
+| `sweep.withheld` | string \| null | Why the orphan verdict was not computed. Non-null means `orphans`, `keyMaterial` and `unknownScope` are empty by policy rather than by finding. |
+| `notSwept` | string | Present only when a sweep was asked for and could not run. |
+
+Nothing on either stream carries a secret's name, a value, or what a decrypt failure said.
 
 ### `secrets create` · `secrets update` · `secrets rm`
 
