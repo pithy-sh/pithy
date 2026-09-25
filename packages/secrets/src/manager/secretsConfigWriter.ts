@@ -1,34 +1,108 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
-import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type {
+  CfSecretEntry,
+  CloudflareSecretsStoreManager,
+} from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { EncryptionConfig } from "../crypto/envelope";
 import { masterKeySecretName } from "../provision/provisionSecrets";
 import { ManagedEnvironment } from "../scope";
-import type { ConfigWriter } from "./configWriter";
+import { configStamp, decodeConfigStamp, encodeConfigStamp, type RotationPass } from "./configStamp";
+import type { ConfigEntryFacts, ConfigWriter } from "./configWriter";
 
 /**
- * The real {@link ConfigWriter}: writes the master-key config back to CF Secrets Store over REST
- * during at-rest rotation (the binding itself is read-only). `putSecret` updates the entry in place,
- * so a failed write leaves the prior config bound and decryptable — losing this config would make
- * every stored secret undecryptable. This is the one write to CF Secrets Store that cannot run
+ * The real {@link ConfigWriter}: edits the master-key config in CF Secrets Store over REST during
+ * at-rest rotation (the binding itself is read-only), stamps the pass's provenance in the entry's
+ * comment, and reads that comment back. This is the one write to CF Secrets Store that cannot run
  * locally, so it is exercised by the integration suite, not the local one.
+ *
+ * ## Edit-only, and why that is the fix rather than a nicety
+ *
+ * `putSecret` **upserts**: it looks the name up and, on a miss, creates. So a misnamed write-back
+ * returned HTTP 200 and left an orphan entry in the store — the rotation believed it had persisted the
+ * new key set, every row was re-encrypted under it, and the binding kept serving the old one. That is an
+ * environment's secrets gone, silently, with a 200 in the log and a visible orphan nobody was looking at.
+ *
+ * So this writer never creates. `updateExistingSecret` resolves the entry **by the composed name the
+ * binding resolves** and edits it by id, which is an endpoint that cannot create; a name with no entry is
+ * `core/not_found`, and a name with several is `core/conflict`, both raised before anything is written.
+ * Both are terminal under `secretsWorkflowRetry`, which is right: neither resolves by waiting, and a cron
+ * retrying either forever would rewrite the wrong entry on every pass.
  *
  * `secretName` has no default on purpose: there is no safe unscoped entry name to fall back to, and a
  * default here would be a silent write to somebody else's key entry.
  */
 export class SecretsStoreConfigWriter implements ConfigWriter {
   readonly #manager: CloudflareSecretsStoreManager;
-  readonly #secretName: string;
+  readonly entryName: string;
 
   constructor(manager: CloudflareSecretsStoreManager, secretName: string) {
     this.#manager = manager;
-    this.#secretName = secretName;
+    this.entryName = secretName;
   }
 
-  async write(value: string): Promise<void> {
-    await this.#manager.putSecret(this.#secretName, value);
+  async write(config: EncryptionConfig, pass: RotationPass): Promise<void> {
+    // **Validated before it is serialized, and serialized from what validated.** This is the one entry in
+    // the kit whose corruption is a whole environment unable to decrypt anything, and the value crossing
+    // this boundary had never been parsed. A config that will not parse is refused before any REST call.
+    //
+    // Not `fromZodError`, deliberately (`#386`): Zod's rendering carries the input it refused, and the
+    // input here is the key set. Which field refused is the whole of what an operator needs.
+    const validated = EncryptionConfig.safeParse(config);
+    if (!validated.success) {
+      throw new ValidationError({
+        message: "The master key configuration this rotation would persist is not well formed.",
+        action: "Nothing to run. The previous key stays current and the next scheduled pass starts over.",
+        detail: `rotation write-back refused at: ${validated.error.issues
+          .map((issue) => issue.path.join(".") || "(root)")
+          .join(", ")}`,
+      });
+    }
+    const serialized = JSON.stringify(validated.data);
+    // Derived here, from the very bytes about to leave, so the comment is a claim about the value beside
+    // it rather than about what a caller could repeat. A stamp that will not compose is *no* comment,
+    // never a refusal: the comment verifies, the value is the key.
+    const stamp = configStamp(config, pass);
+    const comment = stamp === null ? null : encodeConfigStamp(stamp);
+    if (comment === null) {
+      await this.#manager.updateExistingSecret(this.entryName, serialized);
+      return;
+    }
+    // Value and comment leave in one request, so the stamp accompanies the bytes it describes.
+    await this.#manager.updateExistingSecret(this.entryName, serialized, comment);
+  }
+
+  async inspect(): Promise<ConfigEntryFacts | null> {
+    const target = await this.#target();
+    if (!target) return null;
+    return {
+      name: target.name,
+      id: target.id,
+      modifiedAt: target.modified,
+      stamp: decodeConfigStamp(target.comment),
+    };
+  }
+
+  /**
+   * The one entry this writer may inspect, or `undefined` when there is none.
+   *
+   * **Several live entries of one name is a refusal, not a choice**, and it is the same refusal
+   * `updateExistingSecret` raises on the write path — stated on both, because an inspection that quietly
+   * picked the oldest would report facts about an entry the binding may not be reading. Which entry a
+   * *binding* resolves is not a fact REST carries, so an operator settles it in the dashboard.
+   */
+  async #target(): Promise<CfSecretEntry | undefined> {
+    const entries = await this.#manager.entriesNamed(this.entryName);
+    if (entries.length <= 1) return entries[0];
+    throw new ConflictError({
+      message: `The Secrets Store holds ${entries.length} entries named '${this.entryName}'.`,
+      action:
+        "Delete the newer duplicates in the Cloudflare dashboard — provisioning leaves the oldest entry standing, and that is the one bound. Compare the created times, not the names.",
+      detail: `rotation write-back: entries ${entries.map((entry) => entry.id).join(", ")} share the name '${this.entryName}'`,
+    });
   }
 }
 
@@ -39,11 +113,11 @@ export class SecretsStoreConfigWriter implements ConfigWriter {
  * external config, so the environment is validated here via `ManagedEnvironment.parse` and the project
  * by the naming facade `masterKeySecretName` composes through (which refuses an empty or illegal one).
  *
- * Getting either wrong is not a failed write — it is a successful write to the wrong entry. The
- * rotation would re-encrypt every row under a fresh key, persist that key where nothing binds it, and
- * leave the old key bound: every secret in the store becomes undecryptable, silently, at the next read.
- * With an unscoped name in a shared account it would be worse still — a rotation would land on another
- * project's key entry and take their store down too.
+ * Getting either wrong *was* not a failed write but a successful write to the wrong entry, because the
+ * underlying put upserted. It is a refusal now (see {@link SecretsStoreConfigWriter}), and this
+ * validation stays in front of it: refusing at the first pass is cheaper than refusing after a name was
+ * composed from a var nobody stamped, and the name is still the only thing separating this project's key
+ * from another's in one account-wide store.
  */
 export function rotationConfigWriter(
   manager: CloudflareSecretsStoreManager,

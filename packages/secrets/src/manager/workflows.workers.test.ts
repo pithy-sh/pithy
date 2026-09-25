@@ -4,24 +4,20 @@
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { beforeEach, describe, expect, test } from "vitest";
+import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { secretsTables } from "../data/tables";
-import type { SecretsStoreEnv } from "../env/bindings";
+import { resolveEncryptionConfig, type SecretsStoreEnv } from "../env/bindings";
 import { secrets_0001_init } from "../migrations/0001_init";
 import type { StepRunner } from "../rotation/atRestKeyRotation";
+import { RotationTracker } from "../store/rotationTracker";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
-import type { ConfigWriter } from "./configWriter";
+import { StubConfigStore } from "../test-utils/stubConfigWriter";
 import { runRotationWorkflow } from "./rotationWorkflow";
+import manager, { type SecretsManagerEnv } from "./worker";
 import { runWriteWorkflow, type WriteWorkflowPayload } from "./writeWorkflow";
 
 /** A synchronous step runner (no durable replay in tests). */
-const syncStep: StepRunner = { do: (_name, fn) => fn() };
-
-class StubWriter implements ConfigWriter {
-  readonly writes: string[] = [];
-  async write(value: string): Promise<void> {
-    this.writes.push(value);
-  }
-}
+const syncStep: StepRunner = { do: (_name, fn) => fn(), sleep: async () => undefined };
 
 /** The manager env — `SECRETS` D1 + the `SECRETS_ENCRYPTION_KEYS` string binding from Miniflare. */
 function managerEnv(): SecretsStoreEnv {
@@ -229,7 +225,7 @@ describe("runWriteWorkflow — the rotation ledger", () => {
 });
 
 describe("runRotationWorkflow — at-rest rotation runs locally; only the write-back is stubbed", () => {
-  test("rotates the key, re-encrypts the store, prunes, and records success", async () => {
+  test("rotates the key, re-encrypts the store, and records success", async () => {
     await runWriteWorkflow(managerEnv(), {
       mode: "create",
       name: "a",
@@ -237,13 +233,111 @@ describe("runRotationWorkflow — at-rest rotation runs locally; only the write-
       valueType: "text",
       rotatable: false,
     });
-    const writer = new StubWriter();
+    const bound = await resolveEncryptionConfig(managerEnv());
+    const store = new StubConfigStore({ bound });
 
-    const result = await runRotationWorkflow(managerEnv(), writer, syncStep);
+    const result = await runRotationWorkflow(managerEnv(), store.writer, syncStep, store.reader);
 
-    expect(result).toMatchObject({ newCurrentVersion: 2, rotated: 1, failed: 0, pruned: true });
-    // The only CF-Secrets-Store writes — the merged config then the pruned config — were captured.
-    expect(writer.writes).toHaveLength(2);
+    // Two write-backs: the staged key set under the unchanged pointer, then the promoted envelope.
+    // Nothing is pruned in the pass that rotated — the superseded key survives a generation.
+    expect(result).toMatchObject({ newCurrentVersion: 2, rotated: 1, failed: 0, pruned: false });
+    expect(store.writes.map((write) => write.config.currentVersion)).toEqual(["1", "2"]);
     expect(await latestRotationStatus()).toBe("success");
+  });
+
+  /**
+   * **The default reader is the Worker's own binding, and that is the whole point of `#647`.**
+   *
+   * Under Miniflare `SECRETS_ENCRYPTION_KEYS` is a fixed string, so a write can never come back through
+   * it — which is exactly the shape of the production failure this seam exists to catch, and it means a
+   * caller that passes no reader gets the real one and is correctly refused. Fails if `runRotationWorkflow`
+   * ever defaults the read-back to something that can answer its own write.
+   */
+  test("with no reader supplied it reads the real binding, and refuses a write that cannot come back", async () => {
+    await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "a",
+      value: "va",
+      valueType: "text",
+      rotatable: false,
+    });
+    const store = new StubConfigStore({ bound: await resolveEncryptionConfig(managerEnv()) });
+
+    await expect(
+      runRotationWorkflow(managerEnv(), store.writer, { do: syncStep.do, sleep: async () => undefined }),
+    ).rejects.toThrow("did not come back through the binding");
+
+    // The staged write and nothing else, and no row moved off the old key.
+    expect(store.writes).toHaveLength(1);
+    expect(await latestRotationStatus()).toBe("failed");
+  });
+});
+
+/**
+ * **The cron's two guards (`#647`).**
+ *
+ * The rotation Workflow is started by `scheduled()`, and both of the things that keep a pass from
+ * destroying a store live there rather than in the pass: the deterministic instance id that makes two
+ * concurrent passes impossible, and the backoff that stops a structurally failed pass being re-driven
+ * every night at 03:00 forever.
+ */
+describe("the manager cron", () => {
+  function cronEnv(overrides: Partial<SecretsManagerEnv> = {}): SecretsManagerEnv {
+    return {
+      SECRETS: env.SECRETS,
+      SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
+      ENVIRONMENT: "staging",
+      PROJECT: "acme",
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+      CLOUDFLARE_API_TOKEN: "token",
+      SECRETS_STORE_ID: "store",
+      AT_REST_ROTATION: { create: async () => undefined },
+      ...overrides,
+    } as unknown as SecretsManagerEnv;
+  }
+
+  /** Every `create` the cron made, with the id it composed. */
+  function recordingBinding(): {
+    created: ({ id?: string } | undefined)[];
+    create: SecretsManagerEnv["AT_REST_ROTATION"];
+  } {
+    const created: ({ id?: string } | undefined)[] = [];
+    return { created, create: { create: async (options) => void created.push(options) } };
+  }
+
+  test("starts the rotation under a deterministic instance id", async () => {
+    const binding = recordingBinding();
+    await manager.scheduled(null, cronEnv({ AT_REST_ROTATION: binding.create }));
+    // The bound config's `lastRotatedAt` is the fixture's, decades of days ago, so the pass is due.
+    expect(binding.created).toHaveLength(1);
+    expect(binding.created[0]?.id).toMatch(/^at-rest-1-\d{4}-\d{2}-\d{2}$/);
+  });
+
+  /**
+   * Fails if the backoff is removed: `lastRotatedAt` is deliberately not advanced by a pass that could
+   * not confirm its write, so without this the cron mints a fresh key and rewrites the same orphan entry
+   * every night, forever.
+   */
+  test("stands down after a pass that could not confirm its write", async () => {
+    const tracker = RotationTracker.fromD1(env.SECRETS);
+    const id = await tracker.startRotation(AT_REST_ROTATION_NAME, "cron", "wf");
+    await tracker.markFailure(id, "at-rest-unconfirmed");
+
+    const binding = recordingBinding();
+    await manager.scheduled(null, cronEnv({ AT_REST_ROTATION: binding.create }));
+
+    expect(binding.created).toEqual([]);
+  });
+
+  /** And only that failure holds it back — an ordinary one is worth another attempt on the usual cadence. */
+  test("an ordinary failure does not hold the next pass back", async () => {
+    const tracker = RotationTracker.fromD1(env.SECRETS);
+    const id = await tracker.startRotation(AT_REST_ROTATION_NAME, "cron", "wf");
+    await tracker.markFailure(id, "at-rest-incomplete");
+
+    const binding = recordingBinding();
+    await manager.scheduled(null, cronEnv({ AT_REST_ROTATION: binding.create }));
+
+    expect(binding.created).toHaveLength(1);
   });
 });

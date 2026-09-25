@@ -3,6 +3,7 @@
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import type { StoreVerification } from "../admin/verifyStore";
 import type { RotationTrigger } from "../data/secretRotations";
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
 import type { RotationClosure } from "../rotation/rotationLedger";
@@ -185,6 +186,32 @@ export interface SecretProbeRequest {
  */
 export interface SecretProbe {
   probe(request: SecretProbeRequest): Promise<boolean>;
+}
+
+/** One store verification, asked of one environment's manager. Carries no name and no value. */
+export interface SecretStoreVerifyRequest {
+  /** Which environment's store. The store is per environment, like the master key that opens it. */
+  env: ManagedEnvironment;
+  /** Rows per statement of the sweep. Defaults to the Worker's 100. */
+  batchSize?: number;
+}
+
+/**
+ * **The other read seam, and it is deliberately its own.**
+ *
+ * {@link SecretProbe} answers a bit about one name; this answers counts about a whole store. They are
+ * separate for the reason the probe is separate from the writer: a caller that asked for counts and got a
+ * bit would report a healthy store, and a caller that asked for a bit and got counts could not compile.
+ * One contract per question.
+ *
+ * Only the manager can answer it, because the master key never leaves the manager Worker — the same
+ * constraint that puts the probe and the rotation ledger on the same Workflow.
+ *
+ * It resolves to counts and key versions. There is no shape of request that would make it resolve to a
+ * secret's name or a secret's value, and {@link StoreVerification} has no field that could carry either.
+ */
+export interface SecretStoreVerifier {
+  verifyStore(request: SecretStoreVerifyRequest): Promise<StoreVerification>;
 }
 
 /** Open one rotation row, in one environment's manager, before anything is rolled. */

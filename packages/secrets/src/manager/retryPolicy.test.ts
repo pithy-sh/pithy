@@ -84,4 +84,36 @@ describe("the at-rest rotation's retry classification", () => {
 
     expect(classifyWorkflowFault(thrown, secretsWorkflowRetry).disposition).toBe("terminal");
   });
+
+  /**
+   * **Both halves of the status split, driven rather than read (`#647`).**
+   *
+   * The classification is keyed on the HTTP status at the raise site, because a retry policy sees only
+   * the `code` and a durable step record carries nothing else. Each case below is a real throw through
+   * the real `cloudflareRequest` wrapper and the real classifier.
+   *
+   * The pairing is the point. A 5xx or a 429 on the master-key write-back is worth another attempt — the
+   * at-rest rotation is the only caller that talks to Cloudflare, and ending its instance on a transient
+   * 503 is expensive in the one place it is expensive. A 401 or a 403 is a token that was revoked or
+   * under-scoped, and retrying it loops a nightly cron forever with nothing ever saying why. Fails if
+   * either half moves: if `cloudflare/request_failed` is added to the policy, the auth cases go green
+   * on "retry"; if the status keying is dropped, the transient ones go red.
+   */
+  it.each([
+    { status: 429, label: "rate limited", disposition: "retry", code: "core/upstream_failed" },
+    { status: 500, label: "internal error", disposition: "retry", code: "core/upstream_failed" },
+    { status: 503, label: "unavailable", disposition: "retry", code: "core/upstream_failed" },
+    { status: 401, label: "unauthorized", disposition: "terminal", code: "cloudflare/request_failed" },
+    { status: 403, label: "forbidden", disposition: "terminal", code: "cloudflare/request_failed" },
+    { status: 404, label: "no such store", disposition: "terminal", code: "cloudflare/request_failed" },
+  ])("a $status ($label) is $disposition", async ({ status, disposition, code }) => {
+    const answered = Object.assign(new Error(`${status}`), { status });
+    const thrown = await cloudflareRequest("Secrets Store write-back", () => Promise.reject(answered)).catch(
+      (error: unknown) => error,
+    );
+
+    const fault = classifyWorkflowFault(thrown, secretsWorkflowRetry);
+    expect(fault.disposition).toBe(disposition);
+    expect(fault.code).toBe(code);
+  });
 });

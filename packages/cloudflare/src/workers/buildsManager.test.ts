@@ -103,7 +103,9 @@ describe("CloudflareBuildsManager", () => {
       );
     });
 
-    it("wraps a non-2xx status as request_failed", async () => {
+    // A 500 is the transient half of the upstream pair, so the code says "ask again" rather than
+    // "this request is wrong". A 4xx from the same path stays `cloudflare/request_failed`.
+    it("wraps a 5xx status as core/upstream_failed", async () => {
       fetchMock.mockResolvedValue(errorResponse(500, 10000, "boom"));
       await expect(
         manager.createRepoConnection({
@@ -114,7 +116,7 @@ describe("CloudflareBuildsManager", () => {
           providerAccountName: "n",
         }),
       ).rejects.toThrowError(
-        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+        expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_failed" }) }),
       );
     });
 
@@ -327,7 +329,7 @@ describe("CloudflareBuildsManager", () => {
     it("re-throws other request failures", async () => {
       fetchMock.mockResolvedValue(errorResponse(500, 10000, "boom"));
       await expect(manager.listTriggersByScript("hex-1")).rejects.toThrowError(
-        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+        expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_failed" }) }),
       );
     });
   });

@@ -5,6 +5,7 @@ import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
 import { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { AT_REST_ROTATION_NAME } from "./data/secretRotations";
 import { isBindingName, secretBindingName } from "./env/bindingName";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
@@ -335,6 +336,20 @@ export function isProvisionableSecret(name: string, entry: SecretRegistryEntry):
  * which can tell a mistake from a fact. So the mistakes are refused where the author is.
  */
 function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): void {
+  // **The rotation ledger's sentinel is not a name a secret may take (#647).** The whole-store at-rest key
+  // rotation records its passes in `pithy_secrets_rotations` under `AT_REST_ROTATION_NAME`, and that table
+  // is keyed by name for every secret alike. A registry that declared a secret of that name would share a
+  // key space with it: deleting the secret purges its rotation history, and `purgeHistory` would take every
+  // at-rest pass ever recorded with it — the rows the new `lastAtRestRotation` health key reads to say
+  // whether the master key is still rotating. The `__` fences it off from anything an adopter would choose,
+  // so this refuses a collision rather than a preference, and it is refused where the author is.
+  if (name === AT_REST_ROTATION_NAME) {
+    throw new InternalError({
+      message: `secret registry: entry "${name}" uses the name the at-rest key rotation records itself under.`,
+      action: "Rename the secret. Names beginning `__` are reserved for the rotation ledger's own rows.",
+      detail: "secret registry: a declared name collided with AT_REST_ROTATION_NAME",
+    });
+  }
   // The tag and the code must agree, and neither is derivable from the other (#322), so both are checked
   // against each other here — where the author is — rather than at a rotation that finds a rotator on a
   // secret nothing was ever going to call one for. See `SecretRegistryEntryBase.rotator`.

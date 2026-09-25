@@ -702,12 +702,25 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
           "@pithy-sh/secrets/src/provision/resolveManagerConfig",
         ),
       );
+      const { isSecretsCapability } = await load("secrets", "@pithy-sh/secrets", context.projectDir, () =>
+        kitImport<typeof import("@pithy-sh/secrets/src/capability")>(
+          context.projectDir,
+          "@pithy-sh/secrets/src/capability",
+        ),
+      );
       return resolveManagerConfig(template as Parameters<typeof resolveManagerConfig>[0], {
         project: context.project,
         env: context.env,
         databaseId: context.databaseId("SECRETS"),
         storeId: context.storeId(),
         accountId: context.accountId(),
+        // **The cadence the project configured, not the template's literal (#647 review).** The manager's
+        // cron and the capability's `lastAtRestRotation` health key both grade against this number, and only
+        // the health key was reading the configured one — so a project on a shorter cadence got `stale` on a
+        // schedule that was working. Read off the composed capability, which is where every other host
+        // resolution reads its own configuration.
+        rotationIntervalDays: ownCapability(context, "secrets", "@pithy-sh/secrets", isSecretsCapability)
+          .rotationIntervalDays,
         ...featureOf(context),
       });
     },

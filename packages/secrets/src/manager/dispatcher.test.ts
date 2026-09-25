@@ -293,3 +293,83 @@ describe("preflight", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("WorkflowSecretDispatcher.verifyStore", () => {
+  /** A resolved verification, as the manager Workflow returns one. Counts only. */
+  const CLEAN = {
+    keySet: "resolved" as const,
+    rows: 2,
+    readable: 2,
+    unreadable: 0,
+    keyVersions: [{ keyVersion: 1, rows: 2 }],
+    heldVersions: [1],
+    currentVersion: 1,
+    currentVersionHeld: true,
+    missingVersions: [],
+    rotationInProgress: false,
+  };
+
+  test("asks this project's manager Workflow for the env, and carries no name", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "verified", verification: CLEAN });
+
+    const verification = await new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod" });
+
+    expect(dispatchAndPoll).toHaveBeenCalledWith("acme-prod-secrets-write", { mode: "verify" });
+    expect(verification).toEqual(CLEAN);
+  });
+
+  test("forwards a batch size only when one was asked for", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "verified", verification: CLEAN });
+
+    await new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod", batchSize: 25 });
+
+    expect(dispatchAndPoll).toHaveBeenCalledWith("acme-prod-secrets-write", { mode: "verify", batchSize: 25 });
+  });
+
+  test("a feature's dispatcher verifies that feature's own manager", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "verified", verification: CLEAN });
+
+    await new WorkflowSecretDispatcher(client, "acme", { project: "acme", issue: "647", slug: "demo" }).verifyStore({
+      env: "prod",
+    });
+
+    expect(dispatchAndPoll).toHaveBeenCalledWith(
+      secretsWriteWorkflowName("acme", "prod", { project: "acme", issue: "647", slug: "demo" }),
+      {
+        mode: "verify",
+      },
+    );
+  });
+
+  test("an answer with no verification stops the run rather than reading as a clean store", async () => {
+    // Zeroed counts are exactly what a clean, empty store looks like. An unread field defaulting to
+    // absent would therefore report an unverifiable store as a verified one.
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "verified" });
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod" })).rejects.toThrow(
+      /no usable account of its store/,
+    );
+  });
+
+  test("a verification of a shape nobody expected is the same stop", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "verified", verification: { keySet: "maybe", rows: 2 } });
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod" })).rejects.toThrow(
+      /no usable account of its store/,
+    );
+  });
+
+  test("an outcome that is not `verified` is the same stop", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "present", verification: CLEAN });
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").verifyStore({ env: "prod" })).rejects.toThrow(
+      /no usable account of its store/,
+    );
+  });
+});

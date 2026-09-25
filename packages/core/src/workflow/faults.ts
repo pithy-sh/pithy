@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { d1TransientFault } from "../data/withD1Retry";
-import { PithyError } from "../error/pithyError";
+import { InternalError, PithyError } from "../error/pithyError";
 import { encodeWorkflowStepMessage } from "./stepMessage";
 
 /**
@@ -153,10 +153,43 @@ export function classifyWorkflowFault(error: unknown, policy: WorkflowRetryPolic
   };
 }
 
-/** The half of a Workflow step this kit uses: run a named body, or serve its journalled result. */
+/**
+ * The half of a Workflow step this kit uses: run a named body, or serve its journalled result.
+ *
+ * **`sleep` is optional here and required on what {@link classifiedSteps} hands back, and the asymmetry
+ * is the truth rather than a convenience.** The platform's own `WorkflowStep` always offers one. What
+ * does not are this kit's hand-written test doubles, which exist to exercise the classification and
+ * nothing else — and demanding a primitive the classifier never classifies would cost every one of them
+ * a line of noise. Handing an optional one back instead would push a null check into the one caller that
+ * genuinely pauses.
+ */
 export interface WorkflowStepLike {
   /** Run a named step, or return its journalled result if this instance already completed it. */
   do<T>(name: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Pause the instance for `durationMs` and resume it afterwards — possibly in a fresh isolate, which
+   * is the whole reason a caller reaches for it rather than for a timer. Absent only on a test double.
+   */
+  sleep?(name: string, durationMs: number): Promise<void>;
+}
+
+/**
+ * A step runner that can pause — what {@link classifiedSteps} hands back, always.
+ *
+ * The durable pause is why this type exists rather than being a convenience over the one above. A `sleep`
+ * is journalled, so a wait survives the instance being evicted during it; a `setTimeout` inside one step
+ * burns that step's wall clock and dies with the instance holding it.
+ *
+ * **It was introduced on a stronger claim, and the claim did not survive contact (pithy-sh/pithy#647).** The
+ * argument was that a Secrets Store binding answers the same for its isolate's whole life, so only a resume
+ * into a fresh isolate could ever see a write land. Measured against a real store on 2026-09-25, that is
+ * false: a binding refreshes inside a live isolate roughly 1.3-1.5s after the REST write, proved by holding
+ * two isolates warm through a write and watching each serve the old value before it and the new one after,
+ * over 328 samples. The durability argument above is the true one and is sufficient on its own.
+ */
+export interface DurableStepLike extends WorkflowStepLike {
+  /** Pause the instance for `durationMs`, then resume. */
+  sleep(name: string, durationMs: number): Promise<void>;
 }
 
 /**
@@ -189,8 +222,8 @@ export function classifiedSteps(
   step: WorkflowStepLike,
   policy: WorkflowRetryPolicy,
   terminalError: TerminalErrorConstructor,
-): WorkflowStepLike {
-  return {
+): DurableStepLike {
+  const runner: DurableStepLike = {
     do<T>(name: string, fn: () => Promise<T>): Promise<T> {
       return step.do(name, async () => {
         try {
@@ -215,5 +248,29 @@ export function classifiedSteps(
         }
       });
     },
+    /**
+     * Forwarded, and deliberately unclassified. A pause raises no fault of the capability's — the
+     * instance either resumes or it is gone — so there is nothing here for a policy to decide.
+     *
+     * A runner that cannot pause is refused, and the refusal is raised **through `do`** rather than
+     * thrown from here. A throw from here is a throw the engine never classifies, so it is free to
+     * re-drive the instance — and re-driving is the unbounded loop the caller is spending its sleeps to
+     * avoid. Going through `do` makes the refusal terminal on its first attempt, like every other
+     * answer that cannot change.
+     */
+    sleep(name: string, durationMs: number): Promise<void> {
+      const pause = step.sleep;
+      if (pause === undefined) {
+        return runner.do<void>(`${name}/cannot-pause`, async () => {
+          throw new InternalError({
+            message: "This Workflow step runner cannot pause.",
+            action: "Give the step runner a `sleep`; the platform's own `WorkflowStep` always has one.",
+            detail: `step '${name}' asked to pause ${durationMs}ms through a runner that declares no sleep`,
+          });
+        });
+      }
+      return pause.call(step, name, durationMs);
+    },
   };
+  return runner;
 }

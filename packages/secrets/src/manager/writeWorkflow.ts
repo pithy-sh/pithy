@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { StoreVerification, verifyStoredSecrets } from "../admin/verifyStore";
 import { currentValue } from "../crypto/versionedValue";
 import { RotationTrigger } from "../data/secretRotations";
 import type { SecretsStoreEnv } from "../env/bindings";
@@ -20,7 +21,8 @@ export type WriteWorkflowPayload =
       /** Test-only: verify the write decrypts back to the input. Only a boolean is returned, never a value. */
       audit?: boolean;
     })
-  | RotationLedgerCommand;
+  | RotationLedgerCommand
+  | StoreVerifyCommand;
 
 /**
  * **The rotation ledger, dispatched.** A `pithy secrets rotate` opens a row before it rolls and closes it
@@ -60,6 +62,33 @@ function isRotationLedgerCommand(payload: WriteWorkflowPayload): payload is Rota
 }
 
 /**
+ * **`pithy secrets verify`, dispatched — the one read that has to happen where the key is.**
+ *
+ * The CLI cannot decrypt anything: the master key is worker-only, by design and permanently. So asking
+ * whether a store still opens is a question only the manager can answer, and it arrives on the Workflow
+ * `probe` and the rotation ledger already ride — the same reason they do. Nothing is written; see
+ * {@link verifyStoredSecrets}.
+ */
+export const StoreVerifyCommand = z
+  .object({
+    mode: z.literal("verify").describe("Open every stored row and report what opened. Writes nothing."),
+    batchSize: z
+      .number()
+      .int()
+      .positive()
+      .max(1000)
+      .optional()
+      .describe("Rows per statement of the sweep. Defaults to 100; capped so one dispatch cannot ask for the table."),
+  })
+  .describe("One store-verification call dispatched to an environment's manager. Carries no name and no value.");
+export type StoreVerifyCommand = z.output<typeof StoreVerifyCommand>;
+
+/** Whether a dispatched payload is a verification rather than a write or a ledger call. */
+function isStoreVerifyCommand(payload: WriteWorkflowPayload): payload is StoreVerifyCommand {
+  return payload.mode === "verify";
+}
+
+/**
  * Everything one instance of this Workflow can report.
  *
  * Wider than {@link WriteSecretOutcome} because the Workflow does more than the write core does: it also
@@ -67,9 +96,9 @@ function isRotationLedgerCommand(payload: WriteWorkflowPayload): payload is Rota
  * the write core's own enum rather than restated, so a member added there cannot go missing here.
  */
 export const WriteWorkflowOutcome = z
-  .enum([...WriteSecretOutcome.options, "opened", "closed"])
+  .enum([...WriteSecretOutcome.options, "opened", "closed", "verified"])
   .describe(
-    "What one management Workflow instance did: a write outcome, or a rotation row `opened` or `closed`. Never a value.",
+    "What one management Workflow instance did: a write outcome, a rotation row `opened` or `closed`, or a store `verified`. Never a value.",
   );
 export type WriteWorkflowOutcome = z.output<typeof WriteWorkflowOutcome>;
 
@@ -98,6 +127,9 @@ export const WriteWorkflowResult = z
       .describe(
         "Test-only: whether the stored secret decrypted back to the dispatched value. The value itself never leaves the worker.",
       ),
+    verification: StoreVerification.optional().describe(
+      "What a `verify` found: counts, key versions, and whether the master key resolved. Present only on a verification, and integers only.",
+    ),
   })
   .describe(
     "One management write Workflow instance's output: what it did, and nothing that could reconstruct a value.",
@@ -134,6 +166,10 @@ async function runRotationLedgerCommand(
  * the master key (resolved by `SystemSecretsStore.fromEnv` from the worker-only binding) never
  * leaves the worker. Tested against Miniflare with the `SECRETS_ENCRYPTION_KEYS` string binding.
  *
+ * **Verification.** `{ mode: "verify" }` is answered before the store is opened, beside the ledger calls
+ * and for a sharper version of their reason: it has to survive a master key that will not resolve, which
+ * is exactly the state it exists to report. It writes nothing. See `admin/verifyStore.ts`.
+ *
  * **Audit (test-only round-trip check).** With `payload.audit` on a create/update, after the write
  * the workflow opens a *fresh* store (re-resolves the key, re-reads D1), decrypts the secret, and
  * compares it to the dispatched value — returning only `{ audited: boolean }`. The plaintext is
@@ -148,6 +184,14 @@ export async function runWriteWorkflow(
   // opened — which is also what lets a rotation record itself in an environment whose store is refusing.
   if (isRotationLedgerCommand(payload))
     return await runRotationLedgerCommand(env, RotationLedgerCommand.parse(payload));
+
+  // Parsed for the reason the ledger call is: the payload crosses the Workflows REST API from another
+  // process. `batchSize` reaches a `LIMIT`, so an unvalidated one is a caller choosing how much of
+  // somebody's table one dispatch reads.
+  if (isStoreVerifyCommand(payload)) {
+    const command = StoreVerifyCommand.parse(payload);
+    return { outcome: "verified", verification: await verifyStoredSecrets(env, { batchSize: command.batchSize }) };
+  }
 
   const store = await SystemSecretsStore.fromEnv(env);
   const tracker = RotationTracker.fromD1(env.SECRETS);

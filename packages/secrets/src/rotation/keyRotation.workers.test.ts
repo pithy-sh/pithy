@@ -9,7 +9,7 @@ import { initialVersionedValue } from "../crypto/versionedValue";
 import { secretsTables } from "../data/tables";
 import { secrets_0001_init } from "../migrations/0001_init";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
-import { countOnOldKeys, reencryptBatch } from "./keyRotation";
+import { countOnKeyVersions, promoteStagedKey, reencryptBatch, stageNextKey } from "./keyRotation";
 
 function keyB64(): string {
   const key = crypto.getRandomValues(new Uint8Array(32));
@@ -38,12 +38,13 @@ describe("key re-encryption", () => {
   test("reencryptBatch rolls rows from the old key to the current key; values still decrypt", async () => {
     await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
     await new SystemSecretsStore(db(), v1).put("b", initialVersionedValue("vb"));
-    expect(await countOnOldKeys(db(), v2)).toBe(2);
+    expect(await countOnKeyVersions(db(), ["1"])).toBe(2);
 
     const result = await reencryptBatch(db(), v2);
 
     expect(result).toMatchObject({ rotated: 2, failed: 0 });
-    expect(await countOnOldKeys(db(), v2)).toBe(0);
+    expect(await countOnKeyVersions(db(), ["1"])).toBe(0);
+    expect(await countOnKeyVersions(db(), ["2"])).toBe(2);
     // The row is now keyVersion 2; it decrypts under the new key, value unchanged.
     expect(await new SystemSecretsStore(db(), v2).getValue("a")).toEqual({
       currentVersion: "1",
@@ -51,8 +52,8 @@ describe("key re-encryption", () => {
     });
   });
 
-  test("countOnOldKeys is zero for an empty store, and reencryptBatch is a no-op", async () => {
-    expect(await countOnOldKeys(db(), v2)).toBe(0);
+  test("countOnKeyVersions is zero for an empty store, and reencryptBatch is a no-op", async () => {
+    expect(await countOnKeyVersions(db(), ["1", "2"])).toBe(0);
     // `toEqual` and not `toMatchObject`: the result is two counts, and a third field describing a failure
     // is what `#386` removed. An `errors` array arriving back fails here.
     expect(await reencryptBatch(db(), v2)).toEqual({ rotated: 0, failed: 0 });
@@ -86,5 +87,71 @@ describe("key re-encryption", () => {
     // Nothing the failure said came back. There is no field for it, and no field appeared.
     expect(Object.keys(result).sort()).toEqual(["failed", "rotated"]);
     expect(JSON.stringify(result)).not.toContain("99");
+  });
+});
+
+describe("the staged envelope is a silent no-op, which is why the pass is never handed one", () => {
+  /**
+   * **The trap, at the site that springs it (`#647`).**
+   *
+   * `reencryptBatch` selects rows whose `keyVersion` is not `currentVersion`. The staged envelope still
+   * points at N, and every row is already on N — so the select is empty, the batch returns two zeroes, and
+   * the pass reads exactly like a store that was already rotated. Every row then stays on the old key while
+   * the ledger says the rotation succeeded.
+   *
+   * This is what a pass-level assertion of "rows ended up on `currentVersion`" cannot see: under the defect
+   * the rows *are* on the staged envelope's `currentVersion`, because they never left it. So the property
+   * is asserted here, over the two envelopes side by side, where the difference is a count and not a label.
+   */
+  test("the staged envelope re-encrypts nothing and the promoted envelope re-encrypts the row", async () => {
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+    const staged = await stageNextKey(v1, new Date("2026-02-01T00:00:00.000Z"));
+
+    // Handed the staged envelope: nothing selected, nothing rolled, nothing said.
+    expect(await reencryptBatch(db(), staged.staged)).toEqual({ rotated: 0, failed: 0 });
+    expect(await countOnKeyVersions(db(), ["1"])).toBe(1);
+    expect(await countOnKeyVersions(db(), [staged.nextVersion])).toBe(0);
+
+    // Handed the promoted envelope: the same row, the same key set, one row rolled.
+    const promoted = promoteStagedKey(staged);
+    expect(await reencryptBatch(db(), promoted)).toEqual({ rotated: 1, failed: 0 });
+    expect(await countOnKeyVersions(db(), ["1"])).toBe(0);
+    expect(await countOnKeyVersions(db(), [staged.nextVersion])).toBe(1);
+    expect(await new SystemSecretsStore(db(), promoted).getValue("a")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "va" },
+    });
+  });
+});
+
+describe("countOnKeyVersions", () => {
+  test("counts the versions it was handed, not every version that is not current", async () => {
+    // The gate asks about the versions **about to be deleted**. Those were the same question while a prune
+    // dropped everything but the pointer; they stopped being the same question when the prune began
+    // deferring a generation, and a row on the previous key is now perfectly healthy.
+    await new SystemSecretsStore(db(), v1).put("old", initialVersionedValue("vold"));
+    await new SystemSecretsStore(db(), v2).put("new", initialVersionedValue("vnew"));
+
+    expect(await countOnKeyVersions(db(), ["1"])).toBe(1);
+    expect(await countOnKeyVersions(db(), ["2"])).toBe(1);
+    expect(await countOnKeyVersions(db(), ["1", "2"])).toBe(2);
+    expect(await countOnKeyVersions(db(), ["3"])).toBe(0);
+  });
+
+  test("an empty version list counts nothing, over a store that is not empty", async () => {
+    // The empty retirement set is the ordinary case for the pass that rotated, so this runs every month —
+    // and "no versions" must mean none rather than all. The store holds a row, so an implementation that
+    // fell back to a total, or inverted the predicate, answers 1 here.
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+
+    expect(await countOnKeyVersions(db(), [])).toBe(0);
+  });
+
+  test("a version that is not an integer is refused rather than counted as none", async () => {
+    // `Number("two")` is `NaN`, and a `NaN` in this list silently under-counts — which passes the prune
+    // gate and deletes a key rows are still sealed under. There is no safe answer, so it is refused.
+    await new SystemSecretsStore(db(), v1).put("a", initialVersionedValue("va"));
+
+    await expect(countOnKeyVersions(db(), ["1", "two"])).rejects.toThrowError(/version/);
   });
 });

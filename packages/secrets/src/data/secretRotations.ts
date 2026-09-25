@@ -47,3 +47,19 @@ export const SecretRotation = z
   })
   .describe("One append-only rotation audit row in the per-environment secrets D1 (`pithy_secrets_rotations`).");
 export type SecretRotation = z.output<typeof SecretRotation>;
+
+/**
+ * The sentinel name a whole-store at-rest key rotation is recorded under in `pithy_secrets_rotations`.
+ *
+ * **A ledger fact, and so it lives with the ledger (#647).** It used to sit in
+ * `rotation/atRestKeyRotation.ts`, beside the one function that writes rows under it, which read as the
+ * obvious home for exactly as long as writing was the only thing anyone did with it. Three readers now
+ * ask about it and none of them rotates anything: the status listing hides the sentinel from a per-secret
+ * view, the health key reports the last pass's outcome, and `pithy secrets verify` names it. A name three
+ * readers resolve through the module that performs the write is a dependency on the writer for a fact
+ * about the table, which is what puts the admin surface one import away from the rotation body.
+ *
+ * It is not a secret name and no registry declares it. The `__` fences it off from any name an adopter
+ * could choose, so a per-secret query that filters it out cannot be filtering out somebody's real secret.
+ */
+export const AT_REST_ROTATION_NAME = "__at_rest_key_rotation__";

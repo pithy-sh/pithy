@@ -6,10 +6,14 @@ import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
+import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
+import { atRestInstanceId } from "../rotation/atRestKeyRotation";
 import { isRotationDue } from "../rotation/keyRotation";
+import { rotationBackedOff } from "../rotation/rotationLedger";
 import type { ManagedEnvironment } from "../scope";
 import { configureSharedSecrets, sharedSecretsStore } from "../sharedSecretsStore";
+import { RotationTracker } from "../store/rotationTracker";
 import { managerRegistry } from "./managerRegistry";
 import { secretsWorkflowRetry } from "./retryPolicy";
 import { runRotationWorkflow } from "./rotationWorkflow";
@@ -39,8 +43,17 @@ configureSharedSecrets({ registry: managerRegistry });
 
 /** The manager worker's env: the secrets D1 + key binding, the rotation Workflow binding, CF creds for the write-back. */
 export interface SecretsManagerEnv extends SecretsStoreEnv {
-  /** The at-rest rotation Workflow binding, triggered by the cron. */
-  AT_REST_ROTATION: { create(): Promise<unknown> };
+  /**
+   * The at-rest rotation Workflow binding, triggered by the cron.
+   *
+   * `create` takes an id, and the cron always passes one: two overlapping passes silently destroy a store,
+   * and Cloudflare refusing a duplicate instance id costs the second trigger nothing to find that out. It
+   * is the cheap half. The id carries a UTC day, so two triggers either side of midnight compose two of
+   * them — what makes a second pass impossible rather than unlikely is `RotationTracker.claimRotation`,
+   * which opens this pass's ledger row only where the sentinel holds no open one. See
+   * {@link atRestInstanceId}.
+   */
+  AT_REST_ROTATION: { create(options?: { id?: string }): Promise<unknown> };
   /**
    * The scoped CF API token for the at-rest config write-back — the only live-CF write. A
    * `cf-secrets-store` binding read via `sharedSecretsStore(env, managerRegistry).get("CLOUDFLARE_API_TOKEN")`,
@@ -82,9 +95,19 @@ export class SecretsWriteWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, 
   }
 }
 
+/**
+ * Whether a `create` was refused because an instance of that id already exists — the deterministic-id guard
+ * working, rather than a fault. Matched on the message, because the platform surfaces it as a plain refusal
+ * and an `instanceof` across two copies of the runtime types answers false.
+ */
+function isDuplicateInstance(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists|duplicate/i.test(message);
+}
+
 /** The at-rest key-rotation Workflow — re-encrypts the store under a fresh master key. */
 export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, unknown> {
-  override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
+  override async run(event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
     // Build the manager's secret accessor once; read the CF API token at the point of need. Every
     // place a secret is consumed is a visible `secrets.get(...)` call site (grep-able), never hidden
     // behind a wrapper.
@@ -104,6 +127,11 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
       this.env,
       rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT),
       classifiedSteps(step, secretsWorkflowRetry, NonRetryableError),
+      undefined,
+      // The pass's own identity, from the platform rather than recomposed. `RotationTracker.claimRotation`
+      // hands an open row back to the holder that opened it, and that reclaim is only sound if a holder
+      // string names exactly one pass — see `AtRestRotationOptions.rotatedBy`.
+      event.instanceId,
     );
   }
 }
@@ -115,13 +143,36 @@ export default {
     // rotates nothing: it holds no token to write the new key back with.
     if (env.ENVIRONMENT === FEATURE_ENVIRONMENT) return;
     const config = await resolveEncryptionConfig(env);
+    // **A structurally failed pass has a cadence consequence (#647).** A pass that could not confirm its
+    // write through the binding leaves `lastRotatedAt` untouched — right for the store, since nothing
+    // rotated — so without this the same pass starts again every night, mints a fresh key, and edits the
+    // same entry the binding does not read, forever. The ledger is what remembers; `rotationBackedOff`
+    // is what decides.
+    const tracker = RotationTracker.fromD1(env.SECRETS);
+    const now = new Date();
+    if (rotationBackedOff(await tracker.lastClosed(AT_REST_ROTATION_NAME), now)) return;
     // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
     // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation
     // never come due, silently, on every tick — and keeping the two in one expression is what
     // `cli/src/ci/environmentNumbers.test.ts` reads to prove no raw `Number(env.…)` reaches a
     // comparison unchecked (#521).
-    if (isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS))) {
-      await env.AT_REST_ROTATION.create();
+    if (
+      isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS), now)
+    ) {
+      // A deterministic id, so two triggers over one pointer on one day are one pass. See
+      // `atRestInstanceId` for what two concurrent passes do to a store.
+      //
+      // **The refusal it produces is the success case, so it is swallowed (#647 review).** Cron delivery is
+      // at-least-once, and a redelivered tick inside one UTC day over one pointer composes the same id;
+      // Cloudflare then rejects the `create`, which would fail the whole `scheduled()` invocation over a
+      // guard doing precisely its job. The pass that already exists is the one we wanted. Only this
+      // rejection is swallowed — anything else still leaves the handler, because a manager that cannot
+      // start a rotation at all is a fact somebody needs.
+      try {
+        await env.AT_REST_ROTATION.create({ id: atRestInstanceId(config.currentVersion, now) });
+      } catch (error) {
+        if (!isDuplicateInstance(error)) throw error;
+      }
     }
   },
 };

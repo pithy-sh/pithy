@@ -606,6 +606,8 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Decides whether a command that names no one environment audits from the composition for none; a command that names its environment in actedOn composes for it through projectCapabilitySetFor.",
   "capabilities/secretApplicability.ts":
     "Resolves once, unstamped, only to learn which Worker directories exist; every environment's answer is composed through composeFor.",
+  "capabilities/storeEntryCensus.ts":
+    "Resolves once, unstamped, only to read the token profiles each capability declares; a profile's secret name and scope are one project-wide declaration, and the store entries composed from them carry the environment as a segment rather than reading one from a composition.",
   "capabilities/turnstileSitekeys.ts":
     "Reads back the one sitekeys map a pithy.config.ts holds for every environment, composed once for none after writing it; a config that computes a sitekey from its environment is checked for none, which is a limit of this entry.",
   "commands/email.ts":
@@ -667,6 +669,8 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy vector command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "capabilities/secretApplicability.ts#projectSecretApplicability":
     "Returns which secrets each environment reaches, each composed through composeFor; the raw resolve only finds the Worker directories.",
+  "capabilities/storeEntryCensus.ts#projectTokenStoreEntries":
+    "Returns the Secrets Store entry names the project's token profiles write to, as strings, or null when they cannot be resolved; no composition leaves it.",
   "capabilities/turnstileSitekeys.ts#assertTurnstileSitekeysWritable":
     "Returns nothing; it refuses when the sitekeys map cannot be written.",
   "capabilities/turnstileSitekeys.ts#writeTurnstileSitekeys":

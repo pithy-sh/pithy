@@ -147,6 +147,12 @@ export interface SecretsCapability extends Capability {
  */
 export function secrets(config: SecretsConfig): SecretsCapability {
   const ttlSeconds = config.secretsCacheTtlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
+  // Resolved once, here, for the same reason `mountPath` is: two consumers, and a default applied twice
+  // is a default that can be applied differently. The health key grades the last at-rest pass against
+  // this cadence, and `SecretsCapability.rotationIntervalDays` is what the CLI writes into the manager
+  // Worker's `ROTATION_INTERVAL_DAYS` var — so a project reporting "the rotation stopped" and a cron
+  // deciding "it is time to rotate" are reading one number.
+  const rotationIntervalDays = config.rotationIntervalDays ?? DEFAULT_ROTATION_INTERVAL_DAYS;
   // The capability's own secret, merged under the adopter's so a project that declares nothing still has
   // a routable master key — and so an adopter who deliberately overrides the entry keeps that power.
   //
@@ -202,7 +208,10 @@ export function secrets(config: SecretsConfig): SecretsCapability {
     // renders "3 need rotating" beside the rail from the read it already made, instead of spending a
     // credential per screen load to ask (#317). Behind the same scope as the listing it summarizes, and
     // over the same combined registry, so a secret whose freshness can be seen is one this counts.
-    health: secretsHealth(() => reported.current),
+    //
+    // And one outcome beside it: how the last whole-store at-rest key rotation ended, graded against the
+    // cadence above so a cron that stopped firing stops reading as healthy (#647).
+    health: secretsHealth(() => reported.current, rotationIntervalDays),
     // At worker startup, merge every capability's secret-registry slice into one combined registry and
     // back the shared per-invocation accessor from it — so all secrets resolve in one batch, shared
     // across capabilities, with this capability's configured TTL.
@@ -216,7 +225,7 @@ export function secrets(config: SecretsConfig): SecretsCapability {
   });
   return Object.assign(capability, {
     secretRegistry: registry,
-    rotationIntervalDays: config.rotationIntervalDays ?? DEFAULT_ROTATION_INTERVAL_DAYS,
+    rotationIntervalDays,
     secretsCacheTtlSeconds: ttlSeconds,
   });
 }

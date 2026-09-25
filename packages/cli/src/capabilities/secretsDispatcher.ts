@@ -6,6 +6,7 @@ import type {
   PreflightSecretDispatcher,
   SecretProbe,
   SecretRotationRecorder,
+  SecretStoreVerifier,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { cloudflareWorkflows } from "../cloudflare/clients";
@@ -25,6 +26,9 @@ import { cloudflareWorkflows } from "../cloudflare/clients";
  * (`#379`). All three contracts land on the same Workflow, so the same one object answers them, and a
  * caller cannot end up probing or recording against one project's manager while writing to another's.
  *
+ * It is the {@link SecretStoreVerifier} too — `pithy secrets verify` asks the same Workflow, because the
+ * master key that opens those rows never leaves that Worker either.
+ *
  * And it is a {@link PreflightSecretDispatcher}: the refusals a `d1` write owns — no manager to reach, an
  * `update` of a secret that is not there — are askable before a rotator is called, over the same Workflow
  * and the same store (#517).
@@ -35,6 +39,6 @@ export async function buildSecretDispatcher(
   project: string,
   /** A feature's own manager, when the writes are a feature's (#643) — see `WorkflowSecretDispatcher`. */
   feature?: FeatureIdentity,
-): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder> {
+): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder & SecretStoreVerifier> {
   return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project, feature);
 }
