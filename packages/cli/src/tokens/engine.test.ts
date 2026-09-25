@@ -4,7 +4,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AccountTokenSummary, MintedAccountToken } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
+import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
+import type {
+  AccountTokenSummary,
+  MintedAccountToken,
+  TokenPermission,
+} from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import { resolveProfile, resolveTokenProfiles } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -30,21 +35,27 @@ function fakeControl(overrides: Partial<AccountTokenControl> = {}): AccountToken
   rolled: string[];
   deletedById: string[];
   deletedByName: string[];
+  policies: TokenPermission[][];
 } {
   const state = {
     minted: [] as string[],
     rolled: [] as string[],
     deletedById: [] as string[],
     deletedByName: [] as string[],
+    // Every policy set handed to Cloudflare, mint or roll — the token's actual scope, which is the
+    // thing #651 was wrong about and the only thing worth asserting on.
+    policies: [] as TokenPermission[][],
   };
   return {
     ...state,
-    mintToken: vi.fn(async (name: string): Promise<MintedAccountToken> => {
+    mintToken: vi.fn(async (name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> => {
       state.minted.push(name);
+      state.policies.push(permissions);
       return { id: `new-${name}`, value: `value-${name}`, name };
     }),
-    rollToken: vi.fn(async (name: string): Promise<MintedAccountToken> => {
+    rollToken: vi.fn(async (name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> => {
       state.rolled.push(name);
+      state.policies.push(permissions);
       return { id: `rolled-${name}`, value: `value-${name}`, name };
     }),
     findTokenByName: vi.fn(async (): Promise<AccountTokenSummary | null> => null),
@@ -243,7 +254,15 @@ describe("listProfileTokens", () => {
     });
     const list = await listProfileTokens(engineWith(".", tokens), "staging");
     expect(list).toEqual([
-      { profile: "ci-system", env: "staging", name: "acme-staging-ci-system", tokenId: "t1", status: "active" },
+      {
+        profile: "ci-system",
+        env: "staging",
+        name: "acme-staging-ci-system",
+        tokenId: "t1",
+        status: "active",
+        // No declared domain in this fixture, so there is no route to attach and no zone to scope.
+        routeScope: "not-required",
+      },
     ]);
     expect(JSON.stringify(list)).not.toContain("value");
   });
@@ -287,7 +306,9 @@ describe("listProfileTokens", () => {
     });
 
     const list = await listProfileTokens(engineWith(".", tokens, { profiles: resolveTokenProfiles([cap]) }), "staging");
-    expect(list).toEqual([{ profile: long, env: "staging", name: wireName, tokenId: "t1", status: "active" }]);
+    expect(list).toEqual([
+      { profile: long, env: "staging", name: wireName, tokenId: "t1", status: "active", routeScope: "not-required" },
+    ]);
   });
 });
 
@@ -382,5 +403,194 @@ describe("which operations read the profile registry", () => {
     await expect(mintProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/capability set is unknown/);
     await expect(rotateProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/capability set is unknown/);
     await expect(listProfileTokens(engine, "prod")).rejects.toThrow(/capability set is unknown/);
+  });
+});
+
+/**
+ * #651 — the CI token and the route it could not attach.
+ *
+ * `pithy deploy` of an environment with a declared domain ends in `POST /zones/<zone>/workers/routes`.
+ * The `ci-system` token carried one account-scoped policy and no zone resource, so that call answered
+ * "No access to the specified resource" and no CI deploy of a custom domain could ever work.
+ *
+ * Asserted on the policy sets handed to Cloudflare, because that is the token.
+ */
+describe("mintProfileToken — route zones", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-routezones-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A route-zone resolver over a fixed answer, counted. */
+  function zonesResolving(zoneIds: string[]) {
+    return vi.fn(async () =>
+      zoneIds.map((zoneId, index) => ({
+        worker: `w${index}`,
+        domain: `staging.w${index}.example.com`,
+        zone: "example.com",
+        zoneId,
+      })),
+    );
+  }
+
+  test("a project declaring a domain mints ci-system with the route group scoped to that zone", async () => {
+    const tokens = fakeControl();
+    await mintProfileToken(engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }), "ci-system", "staging");
+
+    expect(tokens.policies[0]).toEqual([
+      {
+        permissionGroupNames: [
+          "Workers Scripts Write",
+          "D1 Read",
+          "D1 Write",
+          "Secrets Store Read",
+          "Secrets Store Write",
+        ],
+        resources: { "com.cloudflare.api.account.acct-1": "*" },
+      },
+      {
+        permissionGroupNames: ["Workers Routes Write"],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+  });
+
+  test("two Workers on one zone name it once; two zones are both named", async () => {
+    const tokens = fakeControl();
+    await mintProfileToken(
+      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a", "zone-b", "zone-a"]) }),
+      "ci-system",
+      "staging",
+    );
+    expect(tokens.policies[0]?.[1]?.resources).toEqual({
+      "com.cloudflare.api.account.zone.zone-a": "*",
+      "com.cloudflare.api.account.zone.zone-b": "*",
+    });
+  });
+
+  test("the route policy grants routes on a zone and nothing that alters one", async () => {
+    const tokens = fakeControl();
+    await mintProfileToken(engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }), "ci-system", "staging");
+    const names = (tokens.policies[0] ?? []).flatMap((policy) => policy.permissionGroupNames);
+    expect(names.filter((name) => name.startsWith("Zone "))).toEqual([]);
+    // And no policy is account-wide except the account one.
+    const zonePolicies = (tokens.policies[0] ?? []).filter((policy) =>
+      policy.permissionGroupNames.includes("Workers Routes Write"),
+    );
+    for (const policy of zonePolicies) {
+      for (const key of Object.keys(policy.resources)) {
+        expect(key.startsWith("com.cloudflare.api.account.zone.")).toBe(true);
+      }
+    }
+  });
+
+  test("a project declaring no domain mints exactly what it minted before", async () => {
+    const withNone = fakeControl();
+    await mintProfileToken(engineWith(dir, withNone, { routeZones: vi.fn(async () => []) }), "ci-system", "staging");
+    const unaware = fakeControl();
+    await mintProfileToken(engineWith(dir, unaware), "ci-system", "staging");
+
+    expect(withNone.policies[0]).toHaveLength(1);
+    expect(withNone.policies[0]).toEqual(unaware.policies[0]);
+  });
+
+  test("an unresolvable zone fails the mint before any token is written, and audits the failure", async () => {
+    const tokens = fakeControl();
+    const audited: TokenAuditEvent[] = [];
+    const engine = engineWith(dir, tokens, {
+      audit: async (e) => void audited.push(e),
+      routeZones: vi.fn(async () => {
+        throw new CloudflareNotConfiguredError({
+          message: "This account holds no zone `other.com`.",
+          action: "Add the zone, or fix `domains`.",
+        });
+      }),
+    });
+
+    await expect(mintProfileToken(engine, "ci-system", "staging")).rejects.toBeInstanceOf(CloudflareNotConfiguredError);
+    // Nothing was minted or rolled — the whole point of resolving before the write.
+    expect(tokens.rolled).toEqual([]);
+    expect(tokens.minted).toEqual([]);
+    expect(audited[0]).toMatchObject({ action: "cloudflare/token_minted", outcome: "failure" });
+  });
+
+  test("a worker-consumer profile gets no route policy — it does not deploy", async () => {
+    const tokens = fakeControl();
+    const routeZones = zonesResolving(["zone-a"]);
+    await mintProfileToken(
+      engineWith(dir, tokens, { routeZones, putSecret: vi.fn(async () => {}) }),
+      "secrets",
+      "prod",
+    );
+    expect(tokens.policies[0]).toHaveLength(1);
+    expect(routeZones).not.toHaveBeenCalled();
+  });
+
+  test("rotate carries the same route scope as mint", async () => {
+    const tokens = fakeControl();
+    await rotateProfileToken(
+      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
+      "ci-system",
+      "staging",
+    );
+    expect(tokens.policies[0]?.[1]).toEqual({
+      permissionGroupNames: ["Workers Routes Write"],
+      resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+    });
+  });
+});
+
+describe("listProfileTokens — route scope", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-routescope-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const routeZones = vi.fn(async () => [
+    { worker: "api", domain: "staging.api.example.com", zone: "example.com", zoneId: "zone-a" },
+  ]);
+
+  function listing(policies?: AccountTokenSummary["policies"]) {
+    return fakeControl({
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => [
+          { id: "t1", name: "acme-staging-ci-system", status: "active", ...(policies ? { policies } : {}) },
+        ],
+      ),
+    });
+  }
+
+  test("a token minted before route scoping reads as stale, so doctor and the operator can see it", async () => {
+    // The whole record is the token's own policies. A `ci-system` token with only the account policy is
+    // one minted before #651, and it will fail the next deploy of a domain.
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
+    expect(rows[0]).toMatchObject({ profile: "ci-system", routeScope: "stale" });
+  });
+
+  test("a token carrying every required zone reads as scoped", async () => {
+    const tokens = listing([
+      { resources: { "com.cloudflare.api.account.acct-1": "*" } },
+      { resources: { "com.cloudflare.api.account.zone.zone-a": "*" } },
+    ]);
+    const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
+    expect(rows[0]?.routeScope).toBe("scoped");
+  });
+
+  test("a project declaring no domain needs no route scope", async () => {
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones: vi.fn(async () => []) }), "staging");
+    expect(rows[0]?.routeScope).toBe("not-required");
+  });
+
+  test("a token whose policies Cloudflare did not return says unknown rather than stale", async () => {
+    const rows = await listProfileTokens(engineWith(dir, listing(), { routeZones }), "staging");
+    expect(rows[0]?.routeScope).toBe("unknown");
   });
 });

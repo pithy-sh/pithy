@@ -31,6 +31,10 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       SECRETS_STORE_ID: ${{ secrets.SECRETS_STORE_ID }}
+      # The zone the route-scoped CI token test attaches a throwaway Workers route to (#651). A zone
+      # NAME, not an id — `docs/FIXTURES.md#workers-route-zone`. Unset and that suite reports absent in
+      # the estate report and skips, which leaves the one deploy step CI could not make uncovered.
+      WORKERS_ROUTE_ZONE: ${{ secrets.WORKERS_ROUTE_ZONE }}
       # Opt in to the deploy E2E (provision → write/rotate/audit → teardown). The `live-deploy` fixture;
       # see docs/FIXTURES.md. An unset GitHub secret above exports as "", which the fixture reports as
       # malformed rather than absent — read the estate report at the top of the run before trusting a

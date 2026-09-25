@@ -277,3 +277,31 @@ is whatever Cloudflare assigned you — **Workers & Pages → Subdomain** says w
 **The account has no widget today**, and creating one needs a token with Turnstile Sites Write — the
 read-only path returns an empty list and says nothing about why. So this fixture reports `absent` until
 somebody makes it in the console, which is exactly what the report is for.
+
+## workers-route-zone
+
+`WORKERS_ROUTE_ZONE`
+
+One zone on the account, named the way a Worker's `domains` declaration names it — the registrable
+domain, `example.com`, not a zone id. Unlocks the route-scoped CI token round trip (#651).
+
+**What it proves.** `pithy token mint ci-system` now puts a second, zone-scoped policy on the token —
+Workers Routes Write, on exactly the zones the project's declared domains sit in — because
+`pithy deploy` of an environment with a custom domain ends in `POST /zones/<zone>/workers/routes` and the
+account-scoped token could not make that call. Nothing local can prove the grant is the right one: the
+permission-group name, its scope, and whether Cloudflare accepts an account policy and a zone policy on
+one token are all facts about the account. So the suite mints both shapes — the token as it was, and the
+token as it is — deploys a throwaway Worker under the minted credential, and attaches a real route with
+each. The old shape must be refused and the new one must work, or the fix is not a fix.
+
+**It already exists on the maintainer account.** Any of `pithy-sh.com`, `pithy.run`, `pithysh.com` will
+do. Set the **name**, not the id — the resolver looks a declared zone up by name against the account's
+own list, and naming it here exercises that lookup.
+
+Do not use `pithy.sh`: its apex MX is Google Workspace and it carries real mail.
+
+**Nothing is served.** A Workers route is not a DNS record, so the throwaway `pithy-int-…/<zone>/*`
+pattern resolves nowhere. The route, the script, and both tokens are deleted in the suite's teardown.
+
+**The token needs more than the account scopes.** Workers Routes: Edit on the zone, plus Account API
+Tokens: Edit — the suite mints and deletes real account tokens.

@@ -9,15 +9,18 @@ import type {
 } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
+  CI_SYSTEM_PROFILE,
   type ProfileOverride,
   profilePermissions,
   resolveProfile,
+  routePermissions,
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
+import { type ResolvedRouteZone, routeZoneIds } from "./routeZones";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
@@ -78,6 +81,19 @@ export interface TokenEngine {
   audit?: TokenAudit;
   /** Resolves an adopter's `pithy.config.ts` override for a profile. */
   override?: (profile: string) => ProfileOverride | undefined;
+  /**
+   * The zones this environment's declared domains sit in, resolved against the account (#651).
+   *
+   * Only the `ci-system` token gets them, because only CI deploys: the route write
+   * (`POST /zones/<zone>/workers/routes`) is the last step of `pithy deploy` for an environment with a
+   * declared domain, and a token with no zone resource cannot make it. A resolver that answers `[]` —
+   * or is absent, as it is in every caller that does not deploy — mints exactly the account-scoped
+   * token this engine minted before route scoping existed.
+   *
+   * It may **throw**, and a throw here fails the mint. That is the design: a zone the account does not
+   * hold cannot be scoped, and a token minted without it passes every local check and fails in CI.
+   */
+  routeZones?: () => Promise<ResolvedRouteZone[]>;
 }
 
 /** Per-call overrides (CLI flags) that win over the profile default and the config override. */
@@ -184,6 +200,25 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
 }
 
 /**
+ * The whole policy set a profile's token carries: its own account-scoped policy, plus — for `ci-system`
+ * alone — the zone-scoped route policy the project's declared domains require (#651).
+ *
+ * The zones resolve **before** any Cloudflare write, so an unresolvable one fails the mint rather than
+ * producing a credential that deploys green and cannot attach a route. Every other profile is a
+ * worker-consumer credential that never deploys, so its resolver is never called at all.
+ */
+async function tokenPolicies(
+  engine: TokenEngine,
+  profileName: string,
+  profile: TokenProfile,
+): Promise<TokenPermission[]> {
+  const account = profilePermissions(profile, engine.accountId);
+  if (profileName !== CI_SYSTEM_PROFILE) return account;
+  const zones = (await engine.routeZones?.()) ?? [];
+  return [...account, ...routePermissions(routeZoneIds(zones))];
+}
+
+/**
  * Mint the profile's token for an environment and return a usable value. **Rolls in place**: the token
  * name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's
  * *current* permissions — so adding a capability's `ciPermissions` (or an override) takes effect on the
@@ -206,7 +241,7 @@ export async function mintProfileToken(
   const name = tokenName(engine.project, env, profileName);
 
   try {
-    const minted = await engine.tokens.rollToken(name, profilePermissions(profile, engine.accountId));
+    const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,
@@ -230,6 +265,26 @@ export async function mintProfileToken(
   }
 }
 
+/**
+ * Whether a live token is scoped to the zones this environment's declared domains need (#651).
+ *
+ * **The token's own policies are the record.** A `ci-system` token minted before zone-scoped routes
+ * carries one account policy and no zone resource, and it will fail the next deploy of a custom domain —
+ * so an adopter needs to be told before that deploy, and told what to run. Nothing local can say it: a
+ * mint writes a value, not a scope, and reading the token record needs `API Tokens Read`, which these
+ * least-privilege tokens deliberately do not carry. The policy set on the account's own token list is
+ * the one answer available, and this is it.
+ */
+export type RouteScope =
+  /** This environment declares no domain, so there is no route to attach and no zone to scope. */
+  | "not-required"
+  /** Every zone this environment's domains need is on the token. */
+  | "scoped"
+  /** A zone this environment's domains need is **not** on the token — it predates route scoping. */
+  | "stale"
+  /** The token's policies did not come back, so nothing can be claimed either way. */
+  | "unknown";
+
 /** One row of `pithy token list`: a minted token's identity, never its value. */
 export interface TokenListItem {
   profile: string;
@@ -237,7 +292,26 @@ export interface TokenListItem {
   name: string;
   tokenId: string;
   status?: string;
+  /** Whether this token can attach the routes this environment's declared domains need. */
+  routeScope: RouteScope;
 }
+
+/** Read a live token's zone coverage against the zones this environment needs. */
+function routeScopeOf(token: AccountTokenSummary, requiredZoneIds: readonly string[]): RouteScope {
+  if (requiredZoneIds.length === 0) return "not-required";
+  if (token.policies === undefined) return "unknown";
+  const scoped = new Set(
+    token.policies.flatMap((policy) =>
+      Object.keys(policy.resources)
+        .filter((key) => key.startsWith(ZONE_RESOURCE_PREFIX))
+        .map((key) => key.slice(ZONE_RESOURCE_PREFIX.length)),
+    ),
+  );
+  return requiredZoneIds.every((zoneId) => scoped.has(zoneId)) ? "scoped" : "stale";
+}
+
+/** The resource-key prefix a zone-scoped policy is written under. */
+const ZONE_RESOURCE_PREFIX = "com.cloudflare.api.account.zone.";
 
 /**
  * List **this project's** minted tokens for an environment — identities only, never values.
@@ -260,11 +334,18 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
     byName.set(tokenName(engine.project, env, profile), profile);
   }
   const all = await engine.tokens.listTokens();
+  // Resolved once for the whole listing, and only if something in it is a `ci-system` token — a project
+  // with no CI token minted yet has no reason to read the account's zones.
+  const requiredZoneIds = all.some((token) => byName.get(token.name) === CI_SYSTEM_PROFILE)
+    ? routeZoneIds((await engine.routeZones?.()) ?? [])
+    : [];
   return all.flatMap((token) => {
     if (!token.name.startsWith(prefix)) return [];
     const profile = byName.get(token.name);
     if (!profile) return [];
-    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status }];
+    // Only the CI credential deploys, so only it needs a route scope. Everything else is `not-required`.
+    const routeScope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requiredZoneIds) : "not-required";
+    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope }];
   });
 }
 
@@ -292,7 +373,7 @@ export async function rotateProfileToken(
   try {
     // Snapshot the prior token id(s) before creating the replacement, so we delete exactly what predates it.
     const priorIds = (await engine.tokens.listTokens()).filter((token) => token.name === name).map((token) => token.id);
-    const minted = await engine.tokens.mintToken(name, profilePermissions(profile, engine.accountId));
+    const minted = await engine.tokens.mintToken(name, await tokenPolicies(engine, profileName, profile));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,

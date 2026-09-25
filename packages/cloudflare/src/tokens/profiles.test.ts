@@ -4,13 +4,14 @@
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
-import { accountResource } from "./accountTokensManager";
+import { accountResource, zoneResources } from "./accountTokensManager";
 import {
   CI_SYSTEM_PROFILE,
   permissionsForKeys,
   profilePermissions,
   resolveProfile,
   resolveTokenProfiles,
+  routePermissions,
   type TokenProfileSeamInput,
   tokenSecretName,
 } from "./profiles";
@@ -140,5 +141,78 @@ describe("permissions helpers", () => {
 
   test("tokenSecretName is CF_TOKEN_<PROFILE>", () => {
     expect(tokenSecretName("ci-system")).toBe("CF_TOKEN_CI_SYSTEM");
+  });
+});
+
+describe("routePermissions", () => {
+  test("scopes the Workers Routes group to exactly the zones it is given", () => {
+    expect(routePermissions(["z1", "z2"])).toEqual([
+      {
+        permissionGroupNames: ["Workers Routes Write"],
+        resources: {
+          "com.cloudflare.api.account.zone.z1": "*",
+          "com.cloudflare.api.account.zone.z2": "*",
+        },
+      },
+    ]);
+  });
+
+  test("no zones, no policy — a project with no declared domain attaches no route", () => {
+    expect(routePermissions([])).toEqual([]);
+  });
+
+  test("never account-wide, and never every zone on the account", () => {
+    const resources = routePermissions(["z1"])[0]?.resources ?? {};
+    for (const key of Object.keys(resources)) {
+      expect(key.startsWith("com.cloudflare.api.account.zone.")).toBe(true);
+    }
+    expect(resources).not.toHaveProperty("com.cloudflare.api.account.zone.*");
+    expect(resources).toEqual(zoneResources(["z1"]));
+  });
+
+  test("grants routes on a zone and nothing that alters the zone", () => {
+    expect(routePermissions(["z1"])[0]?.permissionGroupNames).not.toContain("Zone Write");
+  });
+});
+
+describe("zone-scoped keys in a profile", () => {
+  test("ci-system declares none, so its one policy stays account-scoped", () => {
+    const profile = resolveProfile(resolveTokenProfiles([]), CI_SYSTEM_PROFILE);
+    expect(profile.permissions).not.toContain("routes:write");
+    expect(profilePermissions(profile, "acct-1")).toEqual([
+      {
+        permissionGroupNames: [
+          "Workers Scripts Write",
+          "D1 Read",
+          "D1 Write",
+          "Secrets Store Read",
+          "Secrets Store Write",
+        ],
+        resources: accountResource("acct-1"),
+      },
+    ]);
+  });
+
+  test("a zone-scoped key named by hand is refused — zones come from the declared domains", () => {
+    // Handing a zone-level group the account resource mints a token Cloudflare accepts and then refuses
+    // the call on. The one silent mis-scope this whole change exists to make impossible.
+    const profile = {
+      ...resolveProfile(resolveTokenProfiles([]), CI_SYSTEM_PROFILE),
+      permissions: ["routes:write" as const],
+    };
+    const failure = (() => {
+      try {
+        profilePermissions(profile, "acct-1");
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.message).toMatch(/routes:write/);
+    expect((failure as PithyError).payload.action).toMatch(/domains/);
+  });
+
+  test("permissionsForKeys refuses one too — the --permission flag reaches it", () => {
+    expect(() => permissionsForKeys(["routes:write"], "acct-1")).toThrow(/routes:write/);
   });
 });

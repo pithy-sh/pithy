@@ -4,6 +4,7 @@
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
+  CI_SYSTEM_PROFILE,
   resolveTokenProfiles,
   TOKEN_STORES,
   type TokenProfile,
@@ -36,8 +37,10 @@ import {
   rotateProfileToken,
   type TokenAudit,
   type TokenEngine,
+  type TokenListItem,
   type TokenResult,
 } from "../tokens/engine";
+import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
 
 // `resolveAppDatabaseId` used to be this file's own copy of the app-database lookup, before
 // `createCliAudit` centralized it. Re-exported under its original name — same behavior, same
@@ -247,7 +250,31 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
     // The set itself when it is unknowable, so the emitter says which worker rather than falling silent.
     audit: await buildAudit(capabilitySetOf(workerSet), cf, projectDir, env, apiToken),
     override: tokenOverrideResolver(config),
+    /*
+      The zones the `ci-system` token may attach a route to (#651), from *this* environment's
+      composition — `workers` is already composed for `env`, which is the reading that can answer which
+      domain this environment declares. Lazy, so a project with no domain makes no zone call and mints
+      exactly what it minted before.
+    */
+    routeZones: () => resolveRouteZones(declaredRouteZones(workers, env), cf.zones()),
   };
+}
+
+/**
+ * The one line `pithy token list` adds for a CI token that predates zone-scoped routes (#651), or
+ * nothing.
+ *
+ * Its own sentence rather than a column, because it is not a fact about the listing — it is the next
+ * deploy of a custom domain failing, and the remedy is one command. Said once for the listing, since
+ * every stale row has the same remedy.
+ */
+export function routeScopeNotice(tokens: readonly TokenListItem[], env: string): string | null {
+  const stale = tokens.filter((token) => token.routeScope === "stale");
+  if (stale.length === 0) return null;
+  return (
+    `${stale.map((token) => token.profile).join(", ")}: minted before this project's domains were scoped, so a deploy cannot attach its route.\n` +
+    `Run: pithy token mint ${stale[0]?.profile ?? CI_SYSTEM_PROFILE} --env ${env}\n`
+  );
 }
 
 const profileArg = {
@@ -306,6 +333,8 @@ const list = defineCommand({
       process.stdout.write(
         `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
       );
+      const notice = routeScopeNotice(tokens, env);
+      if (notice) process.stdout.write(notice);
     }),
 });
 

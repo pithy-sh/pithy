@@ -34,14 +34,43 @@ export const PERMISSION_GROUPS = {
   // so `pithy init` and `pithy worker add` can offer the account's real zones instead of asking someone
   // to paste an id off a dashboard page.
   "zone:read": ["Zone Read"],
+  // *Attaching* the route, which is the other half of the sentence above and the half nothing could do
+  // (#651). `pithy deploy` of an environment with a declared domain calls
+  // `POST /zones/<zone>/workers/routes`, and no group in this catalog reached it — a `ci-system` token
+  // met "No access to the specified resource" on the first CI deploy that served a custom domain.
+  //
+  // **Zone-scoped**, and therefore listed in {@link ZONE_SCOPED_PERMISSIONS}: Cloudflare publishes this
+  // group under `com.cloudflare.api.account.zone`, so a token carrying it needs a *zone* resource, and
+  // the account resource every other key here uses grants it nothing. Which zones is not a choice —
+  // it is the project's declared `domains`, resolved at mint time.
+  //
+  // Still not a group that can alter a zone. "Workers Routes Write" writes routes on a zone; changing
+  // the zone itself would be "Zone Write", which this catalog does not have and will not get.
+  "routes:write": ["Workers Routes Write"],
 } as const;
 
 /** A known permission key — one of {@link PERMISSION_GROUPS}'s keys. */
 export type PermissionKey = keyof typeof PERMISSION_GROUPS;
 
+/**
+ * The keys whose Cloudflare permission group is **zone-scoped**: a policy carrying one must name zone
+ * resources (`com.cloudflare.api.account.zone.<id>`), never the account resource.
+ *
+ * A minted token's resources are account-scoped by default, which is why this distinction has to be
+ * stated rather than inferred: hand a zone-level group the account resource and Cloudflare accepts the
+ * token and refuses the call, which is exactly the failure #651 opened with. The zones themselves are
+ * never picked by hand — they are the zones the project's declared domains sit in.
+ */
+export const ZONE_SCOPED_PERMISSIONS: readonly PermissionKey[] = ["routes:write"];
+
 /** Narrow an arbitrary string to a {@link PermissionKey}. */
 export function isPermissionKey(key: string): key is PermissionKey {
   return key in PERMISSION_GROUPS;
+}
+
+/** Whether a key's permission group is zone-scoped — see {@link ZONE_SCOPED_PERMISSIONS}. */
+export function isZoneScopedPermission(key: string): boolean {
+  return (ZONE_SCOPED_PERMISSIONS as readonly string[]).includes(key);
 }
 
 /**

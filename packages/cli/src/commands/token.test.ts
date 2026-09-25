@@ -12,6 +12,7 @@ import {
   parseStore,
   publicToken,
   resolveAppDatabaseId,
+  routeScopeNotice,
   tokenProfiles,
 } from "./token";
 
@@ -138,5 +139,31 @@ describe("tokenProfiles", () => {
 
   test("a healthy set resolves to its profiles", () => {
     expect(Object.keys(tokenProfiles([worker()]))).toContain("ci-system");
+  });
+});
+
+describe("routeScopeNotice", () => {
+  const row = (profile: string, routeScope: "not-required" | "scoped" | "stale" | "unknown") => ({
+    profile,
+    env: "staging",
+    name: `acme-staging-${profile}`,
+    tokenId: "t1",
+    routeScope,
+  });
+
+  test("names the stale profile and the one command that fixes it", () => {
+    // #651: a `ci-system` token minted before zone-scoped routes deploys green until the deploy reaches
+    // `POST /zones/<zone>/workers/routes`. The listing is where an adopter can still be told.
+    const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
+    expect(notice).toContain("ci-system");
+    expect(notice).toContain("pithy token mint ci-system --env staging");
+  });
+
+  test("says nothing when every token is scoped, needs no scope, or could not be read", () => {
+    expect(routeScopeNotice([row("ci-system", "scoped")], "staging")).toBeNull();
+    expect(routeScopeNotice([row("ci-system", "not-required")], "staging")).toBeNull();
+    // Unknown is not stale: claiming a token is wrong on a policy set that never came back would send
+    // an adopter to roll a working credential.
+    expect(routeScopeNotice([row("ci-system", "unknown")], "staging")).toBeNull();
   });
 });

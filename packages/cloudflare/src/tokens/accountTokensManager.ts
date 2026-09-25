@@ -57,6 +57,23 @@ export function accountResource(accountId: string): Record<string, string> {
 }
 
 /**
+ * The resource scope for a **zone-level** policy: one `com.cloudflare.api.account.zone.<id>` key per
+ * zone, each `"*"`.
+ *
+ * Every zone is named individually, and that is the point (#651). Cloudflare also spells "every zone in
+ * this account" — `{ "com.cloudflare.api.account.<id>": { "com.cloudflare.api.account.zone.*": "*" } }` —
+ * and a `ci-system` token must never carry it: the credential a pipeline runs under gets the zones the
+ * project's own declared domains sit in and no others, so an account holding a customer's zone beside
+ * this project's is not one compromise away from both. De-duped, because two environments and two
+ * Workers routinely share one zone.
+ */
+export function zoneResources(zoneIds: readonly string[]): Record<string, string> {
+  const resources: Record<string, string> = {};
+  for (const zoneId of zoneIds) resources[`com.cloudflare.api.account.zone.${zoneId}`] = "*";
+  return resources;
+}
+
+/**
  * A permission group available to account-owned tokens, as returned by the permission-groups list.
  * Only the id and name matter for resolution — the manager maps a requested name to its id.
  */
@@ -88,11 +105,28 @@ export type MintedAccountToken = z.output<typeof MintedAccountToken>;
  * returns a token's secret after creation — so this is only enough to find a token by name and
  * address it for deletion.
  */
+export const AccountTokenPolicy = z
+  .object({
+    resources: z
+      .record(z.string(), z.unknown())
+      .describe(
+        "The resource scope keys this policy applies to — `com.cloudflare.api.account.<id>` for an account policy, `com.cloudflare.api.account.zone.<id>` for a zone one. Read to tell what a live token is scoped to; the values are not interpreted.",
+      ),
+  })
+  .describe("One access policy on an existing token, narrowed to the resources it applies to.");
+export type AccountTokenPolicy = z.output<typeof AccountTokenPolicy>;
+
 export const AccountTokenSummary = z
   .object({
     id: z.string().describe("The CF-assigned token id, used to address the token for deletion."),
     name: z.string().describe("The token name, the key callers match on for idempotent re-mint."),
     status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
+    policies: z
+      .array(AccountTokenPolicy)
+      .optional()
+      .describe(
+        "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these tokens deliberately lack). Optional because absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
+      ),
   })
   .describe("An existing account-owned API token's metadata (never its secret value).");
 export type AccountTokenSummary = z.output<typeof AccountTokenSummary>;

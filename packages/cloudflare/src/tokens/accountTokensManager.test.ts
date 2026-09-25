@@ -5,7 +5,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { renderTerminal } from "@pithy-sh/core/src/error/terminal";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareNotConfiguredError, CloudflareRequestError } from "../client/errors";
-import { accountResource, CloudflareAccountTokensManager } from "./accountTokensManager";
+import { accountResource, CloudflareAccountTokensManager, zoneResources } from "./accountTokensManager";
 
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
@@ -44,11 +44,26 @@ const PERMISSION_GROUPS = [
   { id: "pg-read", name: "Secrets Store Read", scopes: ["com.cloudflare.api.account"] },
   { id: "pg-write", name: "Secrets Store Write", scopes: ["com.cloudflare.api.account"] },
   { id: "pg-other", name: "DNS Read", scopes: ["com.cloudflare.api.account.zone"] },
+  { id: "pg-routes", name: "Workers Routes Write", scopes: ["com.cloudflare.api.account.zone"] },
+  { id: "pg-zone-write", name: "Zone Write", scopes: ["com.cloudflare.api.account.zone"] },
 ];
 
 describe("accountResource", () => {
   it("builds the whole-account resource scope", () => {
     expect(accountResource("acct-1")).toEqual({ "com.cloudflare.api.account.acct-1": "*" });
+  });
+});
+
+describe("zoneResources", () => {
+  it("names each zone individually — never the account, never every zone", () => {
+    expect(zoneResources(["z1", "z2"])).toEqual({
+      "com.cloudflare.api.account.zone.z1": "*",
+      "com.cloudflare.api.account.zone.z2": "*",
+    });
+  });
+
+  it("de-dupes zones so two domains on one zone name it once", () => {
+    expect(zoneResources(["z1", "z1"])).toEqual({ "com.cloudflare.api.account.zone.z1": "*" });
   });
 });
 
@@ -73,6 +88,8 @@ describe("CloudflareAccountTokensManager", () => {
       { id: "pg-read", name: "Secrets Store Read" },
       { id: "pg-write", name: "Secrets Store Write" },
       { id: "pg-other", name: "DNS Read" },
+      { id: "pg-routes", name: "Workers Routes Write" },
+      { id: "pg-zone-write", name: "Zone Write" },
     ]);
   });
 
@@ -140,6 +157,39 @@ describe("CloudflareAccountTokensManager", () => {
         },
       ],
     });
+  });
+
+  it("mintToken carries an account policy and a zone policy on one token, each resolved to its own ids", async () => {
+    // #651: a minted token's resources are account-scoped, so the zone-level Workers Routes group needs
+    // a *zone* resource beside the account one. Cloudflare allows both on one token — "Each token can
+    // contain multiple policies" — and this is the shape `pithy token mint ci-system` sends.
+    mockCreate.mockResolvedValue({ id: "tk-1", value: "v", name: "acme-staging-ci-system", status: "active" });
+
+    await manager.mintToken("acme-staging-ci-system", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["z1"]) },
+    ]);
+
+    const policies = mockCreate.mock.calls[0]?.[0]?.policies;
+    // Asserted on the ids the account resolved them to, not on the names that went in.
+    expect(policies).toEqual([
+      {
+        effect: "allow",
+        permission_groups: [{ id: "pg-read" }],
+        resources: { "com.cloudflare.api.account.acct-1": "*" },
+      },
+      {
+        effect: "allow",
+        permission_groups: [{ id: "pg-routes" }],
+        resources: { "com.cloudflare.api.account.zone.z1": "*" },
+      },
+    ]);
+    // The token can write routes on the zone and cannot touch the zone: "Zone Write" exists in this
+    // account's catalog and no policy resolved to it.
+    const ids = policies.flatMap((policy: { permission_groups: { id: string }[] }) =>
+      policy.permission_groups.map((group) => group.id),
+    );
+    expect(ids).not.toContain("pg-zone-write");
   });
 
   it("mintToken decodes loudly when the create response has no value", async () => {

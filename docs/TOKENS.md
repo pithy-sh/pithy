@@ -60,6 +60,25 @@ ciPermissions: ["kv:write"]
 
 `pithy token mint ci-system` mints `base ∪ (every capability's ciPermissions)`. Add a capability and the CI token grows to match — no hand-editing of scopes. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per mint with `--permission`.
 
+### Your declared domains, and the route CI attaches
+
+A Worker that declares `domains` answers on a custom domain, and `pithy deploy` attaches that route on the zone — `POST /zones/<zone>/workers/routes`. Cloudflare publishes that grant, **Workers Routes Write**, at *zone* scope, and a minted token's resources are account-scoped, so the account policy every other permission rides on grants it nothing.
+
+So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
+
+You declare nothing extra. The zones come from `domains` in each Worker's `pithy.config.ts`, composed for the environment you are minting for, and resolved by name against your account at mint time. Two consequences worth knowing:
+
+- **A zone your account does not hold fails the mint**, naming the domain and the zone. That is deliberate: a token minted without it passes every check here and fails in CI, hours later, with an error that names a zone id and nothing else.
+- **The bootstrap token needs this grant too**, by the delegation rule above: Workers Routes → Edit on those zones, alongside its account permissions.
+
+A project that declares no domain mints exactly what it minted before. No new permission for a project that needs none.
+
+**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy — one re-mint, which rolls the value in place:
+
+```bash
+pithy token mint ci-system --env prod
+```
+
 ## Worker-consumer tokens
 
 Some tokens are read by a deployed Worker, not by CI — the secrets manager's runtime credential is the example. A capability declares one as a token profile next to its secret registry:

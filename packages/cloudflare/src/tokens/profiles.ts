@@ -3,8 +3,14 @@
 
 import type { Capability, TokenProfileSeam } from "@pithy-sh/core/src/capability/capability";
 import { CloudflareNotConfiguredError } from "../client/errors";
-import { accountResource, type TokenPermission } from "./accountTokensManager";
-import { isPermissionKey, type PermissionKey, resolvePermissionKeys } from "./permissions";
+import { accountResource, type TokenPermission, zoneResources } from "./accountTokensManager";
+import {
+  isPermissionKey,
+  isZoneScopedPermission,
+  PERMISSION_GROUPS,
+  type PermissionKey,
+  resolvePermissionKeys,
+} from "./permissions";
 
 /**
  * Where a minted token's value is written.
@@ -221,9 +227,49 @@ export function resolveProfile(
   };
 }
 
+/**
+ * Refuse a zone-scoped key anywhere a policy is being built **account-scoped**.
+ *
+ * A zone-level permission group handed the account resource is the quiet failure (#651): Cloudflare
+ * mints the token without complaint and then answers "No access to the specified resource" at the call,
+ * which is a CI failure hours later with nothing in it naming the scope. Which zones a token gets is
+ * never a typed choice — it is the project's declared `domains`, resolved at mint time — so a key naming
+ * one in a profile or behind `--permission` is a mistake, and this is where it is caught.
+ */
+function assertAccountScoped(keys: readonly string[], where: string): void {
+  const zoneScoped = keys.filter(isZoneScopedPermission);
+  if (zoneScoped.length === 0) return;
+  throw new CloudflareNotConfiguredError({
+    message: `${where} names zone-scoped permission(s): ${zoneScoped.join(", ")}.`,
+    action:
+      "A zone permission is not chosen by hand — declare the Worker's `domains` in pithy.config.ts and the mint scopes the token to those zones. Remove the key.",
+    detail: `build token policy: ${zoneScoped.join(", ")} cannot take the account resource`,
+  });
+}
+
 /** Build the account-scoped {@link TokenPermission}s for a set of permission keys — the mint input. */
 export function permissionsForKeys(keys: PermissionKey[], accountId: string): TokenPermission[] {
+  assertAccountScoped(keys, "This token");
   return [{ permissionGroupNames: resolvePermissionKeys(keys), resources: accountResource(accountId) }];
+}
+
+/**
+ * The **zone-scoped** policy a project's declared domains require: Workers Routes Write on exactly those
+ * zones, and nothing else.
+ *
+ * This is the second policy on the `ci-system` token, beside the account-scoped one every profile
+ * builds. It exists because `pithy deploy` of an environment with a declared domain calls
+ * `POST /zones/<zone>/workers/routes`, the one deploy step the CI credential could not make (#651) — and
+ * it is a policy of its own rather than a permission on the profile because its resources are zones,
+ * which a profile cannot name: they are resolved from the domains at mint time.
+ *
+ * **Empty for an empty zone list, deliberately.** A project that declares no domain attaches no route,
+ * so it mints exactly the token it minted before this existed. No new permission for a project that
+ * needs none.
+ */
+export function routePermissions(zoneIds: readonly string[]): TokenPermission[] {
+  if (zoneIds.length === 0) return [];
+  return [{ permissionGroupNames: [...PERMISSION_GROUPS["routes:write"]], resources: zoneResources(zoneIds) }];
 }
 
 /**
@@ -232,6 +278,7 @@ export function permissionsForKeys(keys: PermissionKey[], accountId: string): To
  * explicit resources). One policy per profile — a token carries exactly the access its profile declares.
  */
 export function profilePermissions(profile: TokenProfile, accountId: string): TokenPermission[] {
+  assertAccountScoped(profile.permissions, `Token profile "${profile.name}"`);
   const resources =
     profile.resources && profile.resources !== "account" ? profile.resources : accountResource(accountId);
   return [{ permissionGroupNames: resolvePermissionKeys(profile.permissions), resources }];
