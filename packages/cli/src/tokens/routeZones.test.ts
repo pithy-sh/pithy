@@ -100,6 +100,41 @@ describe("resolveRouteZones", () => {
   });
 });
 
+describe("resolveRouteZones — a zone that cannot carry a custom domain", () => {
+  test("a zone that is not active fails the mint, naming the zone and its status", async () => {
+    // `ZoneInfo.status` says it in its own `.describe()`: a non-active zone cannot carry a custom
+    // domain yet. Scoping a token to one mints a credential whose deploy fails anyway, which is the
+    // outcome this refusal exists to prevent — the absent zone was only half of it.
+    const failure = await resolveRouteZones(
+      [{ worker: "api", domain: "staging.api.example.com", zone: "example.com" }],
+      directory([{ id: "zone-pending", name: "example.com", status: "pending" }]),
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(CloudflareNotConfiguredError);
+    const payload = (failure as CloudflareNotConfiguredError).payload;
+    expect(payload.message).toContain("example.com");
+    expect(payload.message).toContain("pending");
+  });
+
+  test("two zones of one name are a refusal, not a last-wins pick", async () => {
+    // Every other ambiguity here refuses — an unknown permission-group name, a name mapping to two
+    // ids. A zone name mapping to two zones is the same fact about the same kind of lookup, and
+    // picking one silently scopes the CI token to whichever the account listed second.
+    const failure = await resolveRouteZones(
+      [{ worker: "api", domain: "staging.api.example.com", zone: "example.com" }],
+      directory([
+        { id: "zone-first", name: "example.com", status: "active" },
+        { id: "zone-second", name: "example.com", status: "moved" },
+      ]),
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(CloudflareNotConfiguredError);
+    expect((failure as CloudflareNotConfiguredError).payload.message).toMatch(/example\.com/);
+    expect((failure as CloudflareNotConfiguredError).payload.detail).toContain("zone-first");
+    expect((failure as CloudflareNotConfiguredError).payload.detail).toContain("zone-second");
+  });
+});
+
 describe("routeZoneIds", () => {
   test("is de-duped and stable, so one declaration order cannot mint a different policy", () => {
     expect(

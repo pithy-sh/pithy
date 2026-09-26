@@ -44,10 +44,19 @@ function fakeControl(overrides: Partial<AccountTokenControl> = {}): AccountToken
     deletedByName: [] as string[],
     // Every policy set handed to Cloudflare, mint or roll — the token's actual scope, which is the
     // thing #651 was wrong about and the only thing worth asserting on.
+    //
+    // **Recording a roll's permissions is a true statement about the real control plane, and was not
+    // always.** `rollToken` used to roll the value and drop the policy set on the floor, so this fake
+    // recorded a scope change Cloudflare never saw and every assertion here passed over the defect. The
+    // fake is not what fixed that — `accountTokensManager.test.ts` now holds the real manager to
+    // applying the policies through `accounts.tokens.update` against a mocked SDK, and this fake is
+    // only allowed to model the contract that file proves.
     policies: [] as TokenPermission[][],
   };
   return {
     ...state,
+    // `Workers Routes Write` is the only name the engine resolves; anything else is a caller's bug.
+    resolvePermissionGroups: vi.fn(async (names: string[]) => names.map((name) => ({ id: `pg:${name}` }))),
     mintToken: vi.fn(async (name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> => {
       state.minted.push(name);
       state.policies.push(permissions);
@@ -517,6 +526,49 @@ describe("mintProfileToken — route zones", () => {
     expect(audited[0]).toMatchObject({ action: "cloudflare/token_minted", outcome: "failure" });
   });
 
+  test("an explicit --permission narrowing means exactly what it says — no route policy rides along", async () => {
+    // The route policy is part of the profile's *default* set, not a rider on every mint. An operator
+    // narrowing `ci-system` by hand is making a statement about what this credential may do, and
+    // silently adding a zone grant to it would make `--permission` a suggestion.
+    const tokens = fakeControl();
+    const routeZones = zonesResolving(["zone-a"]);
+    await mintProfileToken(engineWith(dir, tokens, { routeZones }), "ci-system", "staging", {
+      permissions: ["d1:read"],
+    });
+    expect(tokens.policies[0]).toEqual([
+      { permissionGroupNames: ["D1 Read"], resources: { "com.cloudflare.api.account.acct-1": "*" } },
+    ]);
+    // And the zones are never even resolved: an override cannot fail a mint on a zone it will not use.
+    expect(routeZones).not.toHaveBeenCalled();
+  });
+
+  test("a pithy.config.ts override narrows the same way a flag does", async () => {
+    const tokens = fakeControl();
+    await mintProfileToken(
+      engineWith(dir, tokens, {
+        routeZones: zonesResolving(["zone-a"]),
+        override: (profile) => (profile === "ci-system" ? { permissions: ["d1:read"] } : undefined),
+      }),
+      "ci-system",
+      "staging",
+    );
+    expect(tokens.policies[0]).toHaveLength(1);
+  });
+
+  test("an override of something other than the permissions keeps the route policy", async () => {
+    // `--store` says nothing about scope, so it must not narrow one.
+    const tokens = fakeControl();
+    await mintProfileToken(
+      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
+      "ci-system",
+      "staging",
+      {
+        store: "ephemeral",
+      },
+    );
+    expect(tokens.policies[0]).toHaveLength(2);
+  });
+
   test("a worker-consumer profile gets no route policy — it does not deploy", async () => {
     const tokens = fakeControl();
     const routeZones = zonesResolving(["zone-a"]);
@@ -569,22 +621,29 @@ describe("listProfileTokens — route scope", () => {
   test("a token minted before route scoping reads as stale, so doctor and the operator can see it", async () => {
     // The whole record is the token's own policies. A `ci-system` token with only the account policy is
     // one minted before #651, and it will fail the next deploy of a domain.
-    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const tokens = listing([
+      { permission_groups: [{ id: "pg:D1 Read" }], resources: { "com.cloudflare.api.account.acct-1": "*" } },
+    ]);
     const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
     expect(rows[0]).toMatchObject({ profile: "ci-system", routeScope: "stale" });
   });
 
   test("a token carrying every required zone reads as scoped", async () => {
     const tokens = listing([
-      { resources: { "com.cloudflare.api.account.acct-1": "*" } },
-      { resources: { "com.cloudflare.api.account.zone.zone-a": "*" } },
+      { permission_groups: [{ id: "pg:D1 Read" }], resources: { "com.cloudflare.api.account.acct-1": "*" } },
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
     ]);
     const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
     expect(rows[0]?.routeScope).toBe("scoped");
   });
 
   test("a project declaring no domain needs no route scope", async () => {
-    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const tokens = listing([
+      { permission_groups: [{ id: "pg:D1 Read" }], resources: { "com.cloudflare.api.account.acct-1": "*" } },
+    ]);
     const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones: vi.fn(async () => []) }), "staging");
     expect(rows[0]?.routeScope).toBe("not-required");
   });
@@ -592,5 +651,140 @@ describe("listProfileTokens — route scope", () => {
   test("a token whose policies Cloudflare did not return says unknown rather than stale", async () => {
     const rows = await listProfileTokens(engineWith(dir, listing(), { routeZones }), "staging");
     expect(rows[0]?.routeScope).toBe("unknown");
+  });
+
+  test("a zone-scoped policy that is not a route grant is not coverage", async () => {
+    // The shape: a pre-#651 token somebody hand-widened in the dashboard with a zone-scoped read on the
+    // same zone. The resource key matches and the token still cannot attach a route, so reading
+    // coverage from resources alone calls it `scoped` and the notice falls silent.
+    const tokens = listing([
+      { permission_groups: [{ id: "pg:Zone Read" }], resources: { "com.cloudflare.api.account.zone.zone-a": "*" } },
+    ]);
+    const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
+    expect(rows[0]?.routeScope).toBe("stale");
+  });
+
+  test("the route grant on the right zone is coverage", async () => {
+    const tokens = listing([
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
+  });
+
+  test("the route grant on a different zone is not coverage for this one", async () => {
+    const tokens = listing([
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.other": "*" },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("stale");
+  });
+
+  test("a policy that did not say which groups it grants cannot be judged", async () => {
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.zone.zone-a": "*" } }]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe(
+      "unknown",
+    );
+  });
+});
+
+/**
+ * `pithy token list` must survive the condition it exists to report.
+ *
+ * Its job is to say which tokens exist and whether the CI one is scoped. Zone resolution is how it
+ * answers the second half — and a typo'd zone, a zone the account lost, or a caller with no Zone Read
+ * makes that resolution throw. Letting the throw out takes the whole listing down, including every row
+ * that had nothing to do with zones, at exactly the moment somebody is trying to find out what is
+ * wrong. `RouteScope` already has the word for it.
+ */
+describe("listProfileTokens — reporting never fails on what it reports", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-routescope-fail-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const twoTokens = () =>
+    fakeControl({
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => [
+          {
+            id: "t1",
+            name: "acme-staging-ci-system",
+            status: "active",
+            policies: [{ resources: { "com.cloudflare.api.account.acct-1": "*" } }],
+          },
+          { id: "t2", name: "acme-staging-secrets", status: "active" },
+        ],
+      ),
+    });
+
+  test("an unresolvable zone makes one row unknown, and lists every row", async () => {
+    const tokens = twoTokens();
+    const rows = await listProfileTokens(
+      engineWith(dir, tokens, {
+        routeZones: vi.fn(async (): Promise<never> => {
+          throw new CloudflareNotConfiguredError({
+            message: "This account holds no zone `other.com`.",
+            action: "Add the zone, or fix `domains`.",
+          });
+        }),
+      }),
+      "staging",
+    );
+    expect(rows.map((row) => row.profile)).toEqual(["ci-system", "secrets"]);
+    expect(rows[0]?.routeScope).toBe("unknown");
+  });
+
+  test("a caller with no Zone Read still gets the listing", async () => {
+    const rows = await listProfileTokens(
+      engineWith(dir, twoTokens(), {
+        routeZones: vi.fn(async (): Promise<never> => {
+          throw new Error("Cloudflare API: list zones — Authentication error [10000]");
+        }),
+      }),
+      "staging",
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.routeScope).toBe("unknown");
+  });
+
+  test("a permission-group lookup that fails is unknown too, never stale", async () => {
+    const tokens = twoTokens();
+    tokens.resolvePermissionGroups = vi.fn(async (): Promise<never> => {
+      throw new Error("Cloudflare API: list account token permission groups — 403");
+    });
+    const rows = await listProfileTokens(
+      engineWith(dir, tokens, {
+        routeZones: vi.fn(async () => [
+          { worker: "api", domain: "staging.api.example.com", zone: "example.com", zoneId: "zone-a" },
+        ]),
+      }),
+      "staging",
+    );
+    expect(rows[0]?.routeScope).toBe("unknown");
+  });
+
+  test("a mint still fails loudly on the same unresolvable zone — reporting is lenient, minting is not", async () => {
+    // The two answers are deliberately different. A listing that refused would hide what exists; a mint
+    // that shrugged would hand over a credential that cannot deploy.
+    const tokens = twoTokens();
+    await expect(
+      mintProfileToken(
+        engineWith(dir, tokens, {
+          routeZones: vi.fn(async (): Promise<never> => {
+            throw new CloudflareNotConfiguredError({ message: "no zone", action: "fix it" });
+          }),
+        }),
+        "ci-system",
+        "staging",
+      ),
+    ).rejects.toBeInstanceOf(CloudflareNotConfiguredError);
   });
 });

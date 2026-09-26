@@ -62,18 +62,29 @@ ciPermissions: ["kv:write"]
 
 ### Your declared domains, and the route CI attaches
 
-A Worker that declares `domains` answers on a custom domain, and `pithy deploy` attaches that route on the zone — `POST /zones/<zone>/workers/routes`. Cloudflare publishes that grant, **Workers Routes Write**, at *zone* scope, and a minted token's resources are account-scoped, so the account policy every other permission rides on grants it nothing.
+A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls, on two scopes**:
+
+| Call | Scope | Grant |
+|---|---|---|
+| `GET`/`POST /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list | zone | **Workers Routes Write** |
+| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | **Workers Scripts Write** |
+
+`ci-system` has always carried `Workers Scripts Write`, so the domain write was never the missing piece. The **zone route read** is what failed: Cloudflare publishes the Workers Routes groups at *zone* scope, a minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all.
 
 So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
 
 You declare nothing extra. The zones come from `domains` in each Worker's `pithy.config.ts`, composed for the environment you are minting for, and resolved by name against your account at mint time. Two consequences worth knowing:
 
-- **A zone your account does not hold fails the mint**, naming the domain and the zone. That is deliberate: a token minted without it passes every check here and fails in CI, hours later, with an error that names a zone id and nothing else.
-- **The bootstrap token needs this grant too**, by the delegation rule above: Workers Routes → Edit on those zones, alongside its account permissions.
+- **A zone that cannot be scoped fails the mint**, naming what is wrong with it. Three ways: your account does not hold it, your account holds *two* of that name, or Cloudflare is not serving it yet (`pending`, `initializing`, `moved`). That is deliberate: a token minted over any of them passes every check here and fails in CI, hours later, with an error that names a zone id and nothing else.
+- **The bootstrap token needs this grant too**, by the delegation rule above: Workers Routes → Edit on those zones, alongside its account permissions. Cloudflare only lets a token create a token whose permissions it already holds, so without it the mint answers 403 — and the refusal says so by name.
 
 A project that declares no domain mints exactly what it minted before. No new permission for a project that needs none.
 
-**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy — one re-mint, which rolls the value in place:
+**An explicit `--permission` (or a `tokens.overrides["ci-system"].permissions` in `pithy.config.ts`) means exactly what it says.** The route policy rides with the profile's *default* permission set, not with every mint — so a run that narrows the credential by hand gets the narrow credential, with no zone grant added behind your back. Drop the override to get it back.
+
+**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
+
+The remedy is one re-mint. **It re-scopes the token in place** — `pithy` replaces the existing token's policies (`PUT /accounts/<id>/tokens/<id>`) and then rolls its value, so the credential keeps its identity, comes back with the current scope, and hands you a fresh secret to paste into CI. Scope first, value second: a re-scope that fails costs nothing, where a value handed over before the scope lands is a credential that looks new and cannot deploy.
 
 ```bash
 pithy token mint ci-system --env prod

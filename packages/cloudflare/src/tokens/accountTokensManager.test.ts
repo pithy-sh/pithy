@@ -10,6 +10,7 @@ import { accountResource, CloudflareAccountTokensManager, zoneResources } from "
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
 const mockTokenList = vi.fn();
+const mockTokenUpdate = vi.fn();
 const mockTokenGet = vi.fn();
 const mockVerify = vi.fn();
 const mockPgList = vi.fn();
@@ -23,6 +24,7 @@ vi.mock("cloudflare", () => ({
         delete: mockDelete,
         get: mockTokenGet,
         list: mockTokenList,
+        update: mockTokenUpdate,
         verify: mockVerify,
         permissionGroups: { list: mockPgList },
         value: { update: mockValueUpdate },
@@ -90,6 +92,33 @@ describe("CloudflareAccountTokensManager", () => {
       { id: "pg-other", name: "DNS Read" },
       { id: "pg-routes", name: "Workers Routes Write" },
       { id: "pg-zone-write", name: "Zone Write" },
+    ]);
+  });
+
+  it("listTokens keeps each policy's permission groups, not only its resources", async () => {
+    // A zone resource says which zone a policy is about and nothing about what it grants. Reading
+    // coverage from resources alone calls a zone-scoped `Zone Read` a route grant (#651 round two).
+    mockTokenList.mockReturnValue(
+      paginator([
+        {
+          id: "t1",
+          name: "acme-staging-ci-system",
+          status: "active",
+          policies: [
+            {
+              effect: "allow",
+              permission_groups: [{ id: "pg-routes", name: "Workers Routes Write" }],
+              resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+            },
+          ],
+        },
+      ]),
+    );
+    expect((await manager.listTokens())[0]?.policies).toEqual([
+      {
+        permission_groups: [{ id: "pg-routes" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
     ]);
   });
 
@@ -206,6 +235,19 @@ describe("CloudflareAccountTokensManager", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(CloudflareNotConfiguredError);
     expect((error as CloudflareNotConfiguredError).payload.action).toMatch(/Account API Tokens Write/);
+  });
+
+  it("the 403 on a mint that carries a zone policy names the zone grant the caller must itself hold", async () => {
+    // Cloudflare only lets a token create a token whose permissions it already holds, so the first
+    // thing #651's zone policy breaks is a bootstrap token that has every account grant and no zone
+    // one. "Grant it Account API Tokens Write" is then true and useless — it already has that.
+    mockCreate.mockRejectedValue(Object.assign(new Error("Unauthorized"), { status: 403 }));
+    const error = await manager
+      .mintToken("t", [{ permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) }])
+      .catch((e: unknown) => e);
+    const action = (error as CloudflareNotConfiguredError).payload.action ?? "";
+    expect(action).toMatch(/Workers Routes/);
+    expect(action).toMatch(/zone/i);
   });
 
   // Rate limiting is the transient half of the upstream pair: the same mint may well succeed next
@@ -426,7 +468,79 @@ describe("CloudflareAccountTokensManager", () => {
     });
   });
 
-  it("rollToken mints a fresh token when none of that name exists", async () => {
+  /**
+   * #651, round two. `pithy token list` tells an adopter their CI token predates route scoping and to
+   * run `pithy token mint ci-system --env <env>`. That command rolls an *existing* token — so if the
+   * roll only regenerates the secret, the remedy hands over a fresh value carrying the old policies and
+   * the deploy fails exactly as before, with the CLI having printed `Done.`
+   *
+   * Cloudflare's `PUT /accounts/<id>/tokens/<id>` takes `name` and `policies` as required fields, so it
+   * replaces the policy set. Re-scope in place is therefore possible, keeps the token's identity, and is
+   * what roll now does.
+   */
+  it("rollToken re-scopes an existing token to the policies it was handed, then rolls its value", async () => {
+    mockTokenList.mockReturnValue(paginator([{ id: "tk-existing", name: "acme-staging-ci-system", status: "active" }]));
+    mockValueUpdate.mockResolvedValue("rolled-value");
+
+    await manager.rollToken("acme-staging-ci-system", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
+    ]);
+
+    // The policies reached Cloudflare, resolved to ids, on the token that already existed.
+    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-existing", {
+      account_id: "acct-1",
+      name: "acme-staging-ci-system",
+      policies: [
+        {
+          effect: "allow",
+          permission_groups: [{ id: "pg-read" }],
+          resources: { "com.cloudflare.api.account.acct-1": "*" },
+        },
+        {
+          effect: "allow",
+          permission_groups: [{ id: "pg-routes" }],
+          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+        },
+      ],
+    });
+    expect(mockValueUpdate).toHaveBeenCalledWith("tk-existing", { account_id: "acct-1", body: {} });
+  });
+
+  it("rollToken applies the scope BEFORE handing out a value", async () => {
+    // Order is the whole safety property. Roll first and a failed re-scope has already given the
+    // operator a working, under-scoped secret and a zero exit — the silent failure this replaces.
+    // Re-scope first and a failure costs nothing: the old value still works and nothing was handed out.
+    mockTokenList.mockReturnValue(paginator([{ id: "tk-existing", name: "acme-staging-ci-system", status: "active" }]));
+    mockTokenUpdate.mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 500 }));
+
+    await expect(
+      manager.rollToken("acme-staging-ci-system", [
+        { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
+      ]),
+    ).rejects.toThrow();
+    expect(mockValueUpdate).not.toHaveBeenCalled();
+  });
+
+  it("updateTokenPolicies replaces the policy set and never touches the value", async () => {
+    await manager.updateTokenPolicies("tk-1", "acme-staging-ci-system", [
+      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
+    ]);
+    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-1", {
+      account_id: "acct-1",
+      name: "acme-staging-ci-system",
+      policies: [
+        {
+          effect: "allow",
+          permission_groups: [{ id: "pg-routes" }],
+          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+        },
+      ],
+    });
+    expect(mockValueUpdate).not.toHaveBeenCalled();
+  });
+
+  it("mints a fresh token when none of that name exists", async () => {
     mockTokenList.mockReturnValue(paginator([{ id: "other", name: "unrelated" }]));
     mockCreate.mockResolvedValue({ id: "fresh", value: "new-value", name: "pithy-secrets-manager", status: "active" });
 

@@ -7,7 +7,7 @@ import type {
   MintedAccountToken,
   TokenPermission,
 } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
-import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
   CI_SYSTEM_PROFILE,
   type ProfileOverride,
@@ -26,6 +26,8 @@ import { type SinkTarget, writeTokenToSink } from "./sinks";
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
 export interface AccountTokenControl {
   mintToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken>;
+  /** Resolve permission-group display names to their account ids — for reading a live token's grants. */
+  resolvePermissionGroups(names: string[]): Promise<Array<{ id: string }>>;
   rollToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken>;
   findTokenByName(name: string): Promise<AccountTokenSummary | null>;
   listTokens(): Promise<AccountTokenSummary[]>;
@@ -211,9 +213,17 @@ async function tokenPolicies(
   engine: TokenEngine,
   profileName: string,
   profile: TokenProfile,
+  override: ProfileOverride | undefined,
 ): Promise<TokenPermission[]> {
   const account = profilePermissions(profile, engine.accountId);
   if (profileName !== CI_SYSTEM_PROFILE) return account;
+  // **An explicit narrowing means exactly what it says.** The route policy rides with the profile's
+  // *default* permission set — the thing `ci-system` is, grown from the composed capabilities — and not
+  // with every mint. An operator who writes `--permission d1:read`, or pins `tokens.overrides` in
+  // `pithy.config.ts`, is stating what this credential may do; adding a zone grant they did not ask for
+  // would make the flag a suggestion. It would also be the one scope they cannot take back, since
+  // naming `routes:write` by hand is refused.
+  if (override?.permissions) return account;
   const zones = (await engine.routeZones?.()) ?? [];
   return [...account, ...routePermissions(routeZoneIds(zones))];
 }
@@ -236,12 +246,13 @@ export async function mintProfileToken(
   env: string,
   options?: MintOptions,
 ): Promise<TokenResult> {
-  const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
+  const override = mergeOverride(engine, profileName, options);
+  const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
 
   try {
-    const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile));
+    const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,
@@ -296,18 +307,65 @@ export interface TokenListItem {
   routeScope: RouteScope;
 }
 
-/** Read a live token's zone coverage against the zones this environment needs. */
-function routeScopeOf(token: AccountTokenSummary, requiredZoneIds: readonly string[]): RouteScope {
-  if (requiredZoneIds.length === 0) return "not-required";
-  if (token.policies === undefined) return "unknown";
-  const scoped = new Set(
-    token.policies.flatMap((policy) =>
-      Object.keys(policy.resources)
-        .filter((key) => key.startsWith(ZONE_RESOURCE_PREFIX))
-        .map((key) => key.slice(ZONE_RESOURCE_PREFIX.length)),
-    ),
+/**
+ * What this environment needs a live `ci-system` token to carry, or why it cannot be said.
+ *
+ * `null` for "cannot be said", which is not the same as "carries nothing": the zones come from an
+ * account call and the group id from another, and either can fail for a caller that is perfectly
+ * entitled to see the listing.
+ */
+interface RouteRequirement {
+  zoneIds: readonly string[];
+  routeGroupId: string;
+}
+
+/**
+ * Read a live token's route coverage against what this environment needs.
+ *
+ * **Both halves of a policy, never one.** A `com.cloudflare.api.account.zone.<id>` resource says which
+ * zone a policy is *about* and nothing about what it may do there — a zone-scoped `Zone Read` somebody
+ * added by hand matches the resource exactly and still cannot attach a route. So a zone is covered only
+ * when one policy names the route group **and** that zone.
+ *
+ * A policy that did not say which groups it grants is not evidence of absence, so it reads `unknown`.
+ */
+function routeScopeOf(token: AccountTokenSummary, requirement: RouteRequirement | null, needed: boolean): RouteScope {
+  if (!needed) return "not-required";
+  if (requirement === null || token.policies === undefined) return "unknown";
+  if (token.policies.some((policy) => policy.permission_groups === undefined)) return "unknown";
+  const covered = new Set(
+    token.policies
+      .filter((policy) => (policy.permission_groups ?? []).some((group) => group.id === requirement.routeGroupId))
+      .flatMap((policy) =>
+        Object.keys(policy.resources)
+          .filter((key) => key.startsWith(ZONE_RESOURCE_PREFIX))
+          .map((key) => key.slice(ZONE_RESOURCE_PREFIX.length)),
+      ),
   );
-  return requiredZoneIds.every((zoneId) => scoped.has(zoneId)) ? "scoped" : "stale";
+  return requirement.zoneIds.every((zoneId) => covered.has(zoneId)) ? "scoped" : "stale";
+}
+
+/**
+ * What a `ci-system` token must carry here — the declared zones, and the id of the route group — or
+ * `null` when either could not be read.
+ *
+ * **Never throws, and that is the point.** This is the reporting path: `pithy token list` is what an
+ * operator runs to find out which credentials exist and whether the CI one is scoped, and both lookups
+ * behind the second question can fail while the first is perfectly answerable. A typo'd zone, a zone
+ * the account no longer holds, a caller without Zone Read — letting any of them out would take down
+ * every row in the listing, including the ones that have nothing to do with zones, at exactly the
+ * moment somebody is trying to find out what is wrong. Minting is where the same failure is loud.
+ */
+async function routeRequirement(engine: TokenEngine): Promise<RouteRequirement | null> {
+  try {
+    const zoneIds = routeZoneIds((await engine.routeZones?.()) ?? []);
+    if (zoneIds.length === 0) return { zoneIds, routeGroupId: "" };
+    const [group] = await engine.tokens.resolvePermissionGroups([...PERMISSION_GROUPS["routes:write"]]);
+    if (!group) return null;
+    return { zoneIds, routeGroupId: group.id };
+  } catch {
+    return null;
+  }
 }
 
 /** The resource-key prefix a zone-scoped policy is written under. */
@@ -336,15 +394,16 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
   const all = await engine.tokens.listTokens();
   // Resolved once for the whole listing, and only if something in it is a `ci-system` token — a project
   // with no CI token minted yet has no reason to read the account's zones.
-  const requiredZoneIds = all.some((token) => byName.get(token.name) === CI_SYSTEM_PROFILE)
-    ? routeZoneIds((await engine.routeZones?.()) ?? [])
-    : [];
+  const requirement = all.some((token) => byName.get(token.name) === CI_SYSTEM_PROFILE)
+    ? await routeRequirement(engine)
+    : null;
   return all.flatMap((token) => {
     if (!token.name.startsWith(prefix)) return [];
     const profile = byName.get(token.name);
     if (!profile) return [];
     // Only the CI credential deploys, so only it needs a route scope. Everything else is `not-required`.
-    const routeScope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requiredZoneIds) : "not-required";
+    const needed = profile === CI_SYSTEM_PROFILE && requirement?.zoneIds.length !== 0;
+    const routeScope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requirement, needed) : "not-required";
     return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope }];
   });
 }
@@ -367,13 +426,14 @@ export async function rotateProfileToken(
   env: string,
   options?: RotateOptions,
 ): Promise<TokenResult> {
-  const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
+  const override = mergeOverride(engine, profileName, options);
+  const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
   try {
     // Snapshot the prior token id(s) before creating the replacement, so we delete exactly what predates it.
     const priorIds = (await engine.tokens.listTokens()).filter((token) => token.name === name).map((token) => token.id);
-    const minted = await engine.tokens.mintToken(name, await tokenPolicies(engine, profileName, profile));
+    const minted = await engine.tokens.mintToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,

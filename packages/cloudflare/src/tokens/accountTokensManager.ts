@@ -69,7 +69,7 @@ export function accountResource(accountId: string): Record<string, string> {
  */
 export function zoneResources(zoneIds: readonly string[]): Record<string, string> {
   const resources: Record<string, string> = {};
-  for (const zoneId of zoneIds) resources[`com.cloudflare.api.account.zone.${zoneId}`] = "*";
+  for (const zoneId of zoneIds) resources[`${ZONE_RESOURCE_PREFIX}${zoneId}`] = "*";
   return resources;
 }
 
@@ -107,13 +107,23 @@ export type MintedAccountToken = z.output<typeof MintedAccountToken>;
  */
 export const AccountTokenPolicy = z
   .object({
+    permission_groups: z
+      .array(
+        z
+          .object({ id: z.string().describe("The permission-group id this policy grants.") })
+          .describe("One permission group referenced by a live token's policy, by the id the account assigned it."),
+      )
+      .optional()
+      .describe(
+        "The permission groups this policy grants, by id. **Read together with `resources`, never apart**: a zone resource says which zone a policy is about and nothing about what it may do there, so coverage judged from resources alone reads a zone-scoped `Zone Read` as a route grant. Optional because a response that omits it has not said the policy grants nothing.",
+      ),
     resources: z
       .record(z.string(), z.unknown())
       .describe(
         "The resource scope keys this policy applies to — `com.cloudflare.api.account.<id>` for an account policy, `com.cloudflare.api.account.zone.<id>` for a zone one. Read to tell what a live token is scoped to; the values are not interpreted.",
       ),
   })
-  .describe("One access policy on an existing token, narrowed to the resources it applies to.");
+  .describe("One access policy on an existing token: the groups it grants, and the resources it grants them on.");
 export type AccountTokenPolicy = z.output<typeof AccountTokenPolicy>;
 
 export const AccountTokenSummary = z
@@ -264,7 +274,7 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
         throw new CloudflareNotConfiguredError(
           {
             message: said.message,
-            action: "Grant it 'Account API Tokens Write' (Account → API Tokens → Edit), then re-run.",
+            action: delegationAction(permissions),
             params: said.params,
             detail: `mint account token '${name}': ${messageOf(error)}`,
           },
@@ -403,10 +413,65 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
   async rollToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> {
     const existing = await this.findTokenByName(name);
     if (!existing) return this.mintToken(name, permissions);
+    // Scope first, value second, and the order is the whole safety property (#651). Rolling first would
+    // hand the caller a working secret and *then* try to widen it, so a failed widen exits zero with a
+    // credential that is missing exactly the grant the operator ran this to add — which is how the
+    // remedy for #651 shipped unable to perform the remedy. Re-scoping first costs nothing when it
+    // fails: the token's previous value is still live and nothing has been handed out.
+    await this.updateTokenPolicies(existing.id, existing.name, permissions);
     const value = await this.rollTokenValue(existing.id);
     return { id: existing.id, value, name: existing.name, status: existing.status };
   }
+
+  /**
+   * Replace an existing token's access policies in place — `PUT /accounts/{id}/tokens/{token_id}`.
+   *
+   * **Replace, not merge.** Cloudflare requires `name` and `policies` on the update, so the policy set
+   * sent is the policy set the token ends with. That is what makes re-minting a credential able to
+   * *narrow* as well as widen: a capability removed from a project takes its `ciPermissions` with it on
+   * the next mint, exactly as the profile contract has always claimed.
+   *
+   * Identity is untouched — same token id, same name, same value — so nothing that holds the credential
+   * has to learn a new one. {@link rollToken} pairs it with a value roll; on its own this is the seam
+   * for re-scoping a token whose secret must not change.
+   */
+  async updateTokenPolicies(tokenId: string, name: string, permissions: TokenPermission[]): Promise<void> {
+    const index = indexByName(await this.listPermissionGroups());
+    const policies = permissions.map((permission) => ({
+      effect: permission.effect ?? ("allow" as const),
+      permission_groups: this.resolveAgainstIndex(index, permission.permissionGroupNames),
+      resources: permission.resources,
+    }));
+    await cloudflareRequest(
+      `update account token policies ${tokenId}`,
+      () => this.getClient().accounts.tokens.update(tokenId, { account_id: this.accountId, name, policies }),
+      API_TOKENS_ENDPOINT,
+    );
+  }
 }
+
+/**
+ * The remedy line for a 403 on a mint, which depends on **what was being delegated**.
+ *
+ * Cloudflare only lets a token create a token whose permissions it already holds, so a mint carrying a
+ * zone-scoped policy (#651's Workers Routes Write, on the project's declared zones) fails for a
+ * bootstrap token that holds every account grant and no zone one. Telling that operator to grant
+ * "Account API Tokens Write" is true, useless, and sends them to a checkbox that is already ticked.
+ *
+ * So the zone half is named when a zone policy is in the set, and only then.
+ */
+function delegationAction(permissions: readonly TokenPermission[]): string {
+  const base = "Grant it 'Account API Tokens Write' (Account → API Tokens → Edit), then re-run.";
+  const zoneScoped = permissions.filter((permission) =>
+    Object.keys(permission.resources).some((key) => key.startsWith(ZONE_RESOURCE_PREFIX)),
+  );
+  if (zoneScoped.length === 0) return base;
+  const groups = [...new Set(zoneScoped.flatMap((permission) => permission.permissionGroupNames))].join(", ");
+  return `${base} It must also already hold what it is delegating: ${groups} on the zones being scoped (Zone → Workers Routes → Edit), because Cloudflare only lets a token create a token whose permissions it has.`;
+}
+
+/** The resource-key prefix every zone-scoped policy is written under. */
+const ZONE_RESOURCE_PREFIX = "com.cloudflare.api.account.zone.";
 
 /** The rolled secret value Cloudflare returns from a value-roll — a non-empty bearer string. */
 const RolledTokenValue = z.string().min(1);
