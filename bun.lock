@@ -48,7 +48,7 @@
     },
     "packages/auth": {
       "name": "@pithy-sh/auth",
-      "version": "0.6.3",
+      "version": "0.6.4",
       "dependencies": {
         "@better-auth/i18n": "^1.7.1",
         "@cloudflare/workers-types": "^5.20260729.1",
@@ -87,7 +87,7 @@
     },
     "packages/cli": {
       "name": "@pithy-sh/cli",
-      "version": "0.10.0",
+      "version": "0.10.1",
       "bin": {
         "pithy": "./dist/bin.js",
       },
@@ -260,7 +260,7 @@
     },
     "packages/leaderboard": {
       "name": "@pithy-sh/leaderboard",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -290,7 +290,7 @@
     },
     "packages/ledger": {
       "name": "@pithy-sh/ledger",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -319,7 +319,7 @@
     },
     "packages/matchmaking": {
       "name": "@pithy-sh/matchmaking",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -342,9 +342,9 @@
         "zod": "^4.4.0",
       },
       "peerDependencies": {
-        "@pithy-sh/auth": "^0.6.3",
+        "@pithy-sh/auth": "^0.6.4",
         "@pithy-sh/core": "^0.7.4",
-        "@pithy-sh/rating": "^0.2.5",
+        "@pithy-sh/rating": "^0.2.6",
         "hono": "^4.13.2",
         "kysely": "^0.29.0",
         "zod": "^4.4.0",
@@ -391,7 +391,7 @@
     },
     "packages/multiplayer": {
       "name": "@pithy-sh/multiplayer",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -415,8 +415,8 @@
       },
       "peerDependencies": {
         "@pithy-sh/core": "^0.7.4",
-        "@pithy-sh/leaderboard": "^0.2.5",
-        "@pithy-sh/ledger": "^0.2.5",
+        "@pithy-sh/leaderboard": "^0.2.6",
+        "@pithy-sh/ledger": "^0.2.6",
         "hono": "^4.13.2",
         "kysely": "^0.29.0",
         "zod": "^4.4.0",
@@ -428,7 +428,7 @@
     },
     "packages/organization": {
       "name": "@pithy-sh/organization",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -453,7 +453,7 @@
         "zod": "^4.4.0",
       },
       "peerDependencies": {
-        "@pithy-sh/auth": "^0.6.3",
+        "@pithy-sh/auth": "^0.6.4",
         "@pithy-sh/core": "^0.7.4",
         "@pithy-sh/email": "^0.3.8",
         "hono": "^4.13.2",
@@ -466,7 +466,7 @@
     },
     "packages/payments": {
       "name": "@pithy-sh/payments",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -497,7 +497,7 @@
       },
       "peerDependencies": {
         "@pithy-sh/core": "^0.7.4",
-        "@pithy-sh/ledger": "^0.2.5",
+        "@pithy-sh/ledger": "^0.2.6",
         "@pithy-sh/secrets": "^0.2.7",
         "hono": "^4.13.2",
         "kysely": "^0.29.0",
@@ -511,7 +511,7 @@
     },
     "packages/rating": {
       "name": "@pithy-sh/rating",
-      "version": "0.2.5",
+      "version": "0.2.6",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -605,7 +605,7 @@
     },
     "packages/support": {
       "name": "@pithy-sh/support",
-      "version": "0.2.9",
+      "version": "0.3.0",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -633,10 +633,10 @@
         "zod": "^4.4.0",
       },
       "peerDependencies": {
-        "@pithy-sh/auth": "^0.6.3",
+        "@pithy-sh/auth": "^0.6.4",
         "@pithy-sh/core": "^0.7.4",
         "@pithy-sh/email": "^0.3.8",
-        "@pithy-sh/payments": "^0.3.6",
+        "@pithy-sh/payments": "^0.3.7",
         "@pithy-sh/secrets": "^0.2.7",
         "@pithy-sh/storage": "^0.2.7",
         "hono": "^4.13.2",
@@ -650,7 +650,7 @@
     },
     "packages/testers": {
       "name": "@pithy-sh/testers",
-      "version": "0.2.9",
+      "version": "0.2.10",
       "dependencies": {
         "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
@@ -675,7 +675,7 @@
         "zod": "^4.4.0",
       },
       "peerDependencies": {
-        "@pithy-sh/auth": "^0.6.3",
+        "@pithy-sh/auth": "^0.6.4",
         "@pithy-sh/core": "^0.7.4",
         "@pithy-sh/email": "^0.3.8",
         "@pithy-sh/secrets": "^0.2.7",
