@@ -508,9 +508,9 @@ export function featureRunLines(report: ProvisionReport): string[] {
     );
   }
   // A binding this feature could not make its own, named rather than left to be met at runtime (#650 review).
-  for (const foreign of report.foreignScripts ?? []) {
+  for (const gone of report.bindingsDropped ?? []) {
     lines.push(
-      `${foreign.worker}: ${foreign.bindings.join(", ")} still names a Worker outside this project. The feature binds that one, not a copy of its own.`,
+      `${gone.worker}: ${gone.bindings.join(", ")} not bound. Each names a Worker outside this project, and a feature binds nothing it does not own.`,
     );
   }
   lines.push(...mintReportLines(report.featureSecrets ?? []));

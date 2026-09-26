@@ -307,12 +307,12 @@ export interface ProvisionReport {
    */
   routesDropped?: { worker: string; routes: string[] }[];
   /**
-   * **Bindings a feature's stanza still points at a script this project does not own (#650 review)** — a
-   * `durable_objects` entry naming somebody else's Worker. A feature has no copy of that Worker to retarget at,
-   * so the entry is left as the adopter wrote it and the run says so. One entry per Worker that had any; absent
-   * on a run with none.
+   * **Bindings a feature's stanza gave up (#650 review)** — a `durable_objects` or `services` entry naming a
+   * script this project does not own. A feature has no copy of that Worker to point at, and writing the entry
+   * verbatim would bind a stranger's live namespace, so it is stripped exactly as a route is and the run says
+   * so. One entry per Worker that had any; absent on a run that stripped none.
    */
-  foreignScripts?: { worker: string; bindings: string[] }[];
+  bindingsDropped?: { worker: string; bindings: string[] }[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */
@@ -475,17 +475,32 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
   }));
 
 /**
- * The Worker of this project a binding's target names — its deploy name, or its `apps/<name>` directory — or
- * `undefined` when the name is not one of them.
+ * **The Worker of this project that deploys under this script name**, or `undefined` when no Worker does.
  *
- * **One lookup, two callers with two answers to a miss.** A `service` target the adopter wrote must exist, so
- * {@link resolveServiceTarget} refuses one that does not. A `durable_objects` `script_name` may legitimately name
- * a Worker outside this project, so the feature writer takes the `undefined` and reports it (#650 review). Two
- * spellings of the match would be two answers to "is this one of ours?", which is the drift a sibling Worker's DO
- * binding was already on the wrong side of.
+ * **By deploy name only, and that is the whole of it (#650 review).** A `durable_objects` `script_name` and a
+ * hand-written `services` `service` are both *script* names — what wrangler uploads under — never an
+ * `apps/<name>` directory. Matching a directory here read `script_name: "realtime"`, another team's live Worker,
+ * as this project's `apps/realtime`, and silently retargeted a branch at it; and a single pass over a match that
+ * accepted either spelling let `apps/acme-realtime` (deploying as `acme-decoy`) answer for the real
+ * `acme-realtime`, so the feature bound the wrong sibling. Neither said a word.
+ *
+ * {@link resolveServiceTarget} keeps its own, wider match, because its input is a different thing: a capability's
+ * `BindingSpec.service` names the callee as `apps/<name>`, which is what an adopter writes in a manifest and what
+ * that function exists to turn into a deploy name. One function per question, rather than one match for two.
+ *
+ * **Two Workers under one deploy name is refused**, not resolved: Cloudflare would have them overwrite each
+ * other, and picking either here is a silent answer to a question with none.
  */
-export function findProjectWorker(workers: readonly ProvisionWorker[], target: string): ProvisionWorker | undefined {
-  return workers.find((worker) => worker.name === target || worker.dir.endsWith(`/${target}`));
+export function findWorkerByScript(workers: readonly ProvisionWorker[], script: string): ProvisionWorker | undefined {
+  const found = workers.filter((worker) => worker.name === script);
+  if (found.length > 1) {
+    throw new ValidationError({
+      message: `Two of this project's workers deploy as "${script}".`,
+      action: `Give each worker its own name in its wrangler.jsonc. Both: ${found.map((worker) => worker.dir).join(", ")}.`,
+      detail: "A script name is account-wide; two workers sharing one would deploy over each other.",
+    });
+  }
+  return found[0];
 }
 
 /**
@@ -503,7 +518,7 @@ export function findProjectWorker(workers: readonly ProvisionWorker[], target: s
  * dangling service name is the exact failure this resolution exists to remove.
  */
 function resolveServiceTarget(workers: readonly ProvisionWorker[], target: string): string {
-  const found = findProjectWorker(workers, target);
+  const found = workers.find((worker) => worker.name === target || worker.dir.endsWith(`/${target}`));
   if (!found) {
     throw new ValidationError({
       message: `A service binding targets "${target}", which is not one of this project's workers.`,
@@ -653,7 +668,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   const routesDropped: { worker: string; routes: string[] }[] = [];
-  const foreignScripts: { worker: string; bindings: string[] }[] = [];
+  const bindingsDropped: { worker: string; bindings: string[] }[] = [];
   // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
   const subdomain =
     !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
@@ -708,13 +723,13 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
       ...(worker.config?.app ? { app: worker.config.app } : {}),
       ...(subdomain !== undefined ? { subdomain } : {}),
-      // The one resolution `services` goes through, handed to the writer so a `durable_objects` entry naming a
-      // sibling Worker reaches this scope's copy of it rather than being dropped (#650 review).
-      scopedScript: (target) => {
-        const found = findProjectWorker(workers, target);
+      // Deploy name to this scope's script name, handed to the writer so a `durable_objects` or hand-written
+      // `services` entry naming a sibling Worker reaches this scope's copy of it (#650 review).
+      scopedScript: (script) => {
+        const found = findWorkerByScript(workers, script);
         return found ? scopedName(found.name) : undefined;
       },
-      onForeignScripts: (bindings) => foreignScripts.push({ worker: worker.name, bindings }),
+      onBindingsDropped: (bindings) => bindingsDropped.push({ worker: worker.name, bindings }),
       onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
@@ -747,7 +762,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     configs,
     committed: scope.source,
     ...(routesDropped.length > 0 ? { routesDropped } : {}),
-    ...(foreignScripts.length > 0 ? { foreignScripts } : {}),
+    ...(bindingsDropped.length > 0 ? { bindingsDropped } : {}),
   };
 }
 

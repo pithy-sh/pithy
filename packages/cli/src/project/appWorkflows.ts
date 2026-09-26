@@ -80,7 +80,7 @@ export interface AppWorkflowNameParts extends Omit<WorkflowHostNameParts, "capab
  * is dropped rather than a second name-composer being written.
  */
 export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): AppWorkflowPlan {
-  const registry = composeWorkflows([app]);
+  const registry = derivableWorkflows(app);
   const { workflows, crons } = hostWorkflowsFor(registry, {
     project: parts.project,
     capability: app.name,
@@ -99,26 +99,55 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
 }
 
 /**
- * **Every job the app declares that cannot be hosted — the dispatch keys {@link planAppWorkflows} would
- * refuse (#650 review).**
+ * **Is this job's entry one this table derives at all?**
  *
- * `className` is optional on a `WorkflowSpec`, so an app may declare a job with no class, and `hostWorkflowsFor`
- * refuses to name one: there would be no class for wrangler to instantiate. **Refused, not skipped**, and that is
- * the kit's answer everywhere — `pithy worker sync` throws on the same declaration today, and `pithy doctor`
- * reports it as `unwritable-declaration`. Skipping would be worse than it looks: `createBackend` derives a
- * required `workflow` binding from **every** registered job whether or not it has a class, so a silently skipped
- * job is a Worker that deploys and then answers `Missing required bindings` on its first request. The declaration
- * is the truth; a job that cannot be deployed is a declaration to fix, not one to quietly drop.
+ * A job with a `className` is. One without is not, and `WorkflowSpec.className` says why in its own words:
+ * *"Omit only for a job whose host config is hand-maintained."* There is no class for wrangler to instantiate
+ * in this Worker, so the honest answer is that this table has no entry for it — the adopter writes their own,
+ * against whatever script does host the class, and a cross-script entry is exactly the shape `isAppOwned`
+ * leaves alone.
  *
- * What this adds is **when**. The refusal used to arrive from the stanza writer, after a feature run had created
- * every database, namespace, bucket and store entry. This lets `pithy provision --feature` ask first.
+ * **But only when the binding it derives is optional (#650 review).** `workflowBinding` carries `optional`
+ * straight from the spec, and `createBackend` derives a required `workflow` binding from a job that does not
+ * declare itself optional — so quietly skipping a *required* one ships a Worker that deploys and then answers
+ * `Missing required bindings` on its first request. That one is a declaration to fix. This is the whole of the
+ * correction to what the first cut of this file said: it called every class-less job a fault, which refused a
+ * branch whose project `pithy provision --env staging` provisions without complaint.
+ */
+function isHandMaintained(spec: { className?: string; optional?: boolean }): boolean {
+  return spec.className === undefined && spec.optional === true;
+}
+
+/**
+ * The app's jobs this table can name, with the hand-maintained ones removed.
+ *
+ * Filtered before {@link hostWorkflowsFor} rather than after, because that function refuses a class-less job
+ * outright — correctly, for a *host* Worker, where every job it is given must run somewhere in that script.
+ * An app's table is the other case.
+ */
+function derivableWorkflows(app: Capability): ReturnType<typeof composeWorkflows> {
+  const registry = composeWorkflows([app]);
+  return Object.fromEntries(Object.entries(registry).filter(([, entry]) => !isHandMaintained(entry.spec)));
+}
+
+/**
+ * **Every job the app declares that cannot be hosted and is not allowed to be — the dispatch keys
+ * {@link planAppWorkflows} would refuse (#650 review).**
+ *
+ * A class-less job whose binding is **required** is a declaration nothing can satisfy: no `workflows` entry can
+ * be written for it, and `createBackend` will demand the binding on the first request. `pithy worker sync`
+ * refuses the same declaration and `pithy doctor` reports it as `unwritable-declaration`, so this says the same
+ * thing one step earlier — the refusal used to arrive from the stanza writer, after a feature run had created
+ * every database, namespace, bucket and store entry.
+ *
+ * A class-less job that declares itself **optional** is not one of these. See {@link isHandMaintained}.
  *
  * Read from the same registry `planAppWorkflows` plans from, and `appWorkflows.test.ts` holds the two together:
  * a capability this names is one `planAppWorkflows` throws for, and one it does not name is one that plans.
  */
 export function unhostableAppJobs(app: Capability): string[] {
   return Object.values(composeWorkflows([app]))
-    .filter((entry) => !entry.spec.className)
+    .filter((entry) => !entry.spec.className && !isHandMaintained(entry.spec))
     .map((entry) => entry.key);
 }
 

@@ -189,6 +189,38 @@ describe("unhostableAppJobs", () => {
     expect(() => planAppWorkflows(appCapability(), { project: PROJECT, env: "staging" })).not.toThrow();
   });
 
+  /**
+   * **A class-less job that declares itself optional is a legal declaration (#650 review, defect 3).**
+   * `WorkflowSpec.className` says so — "Omit only for a job whose host config is hand-maintained" — and
+   * `workflowBinding` carries `optional` straight through, so the binding `createBackend` derives is optional
+   * and the Worker boots without it. Refusing it made `pithy provision --feature` reject a branch whose project
+   * `pithy provision --env staging` provisions without a word.
+   */
+  test("an optional class-less job is not a fault, and the plan simply has no entry for it", () => {
+    const handMaintained = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: {
+        rotate: { binding: "ROTATE", params: z.object({}), className: "Rotate" },
+        legacy: { binding: "LEGACY", params: z.object({}), optional: true },
+      },
+    });
+    expect(unhostableAppJobs(handMaintained)).toEqual([]);
+    expect(planAppWorkflows(handMaintained, { project: PROJECT, env: "staging" }).workflows).toEqual([
+      { binding: "ROTATE", name: "acme-staging-dashboard-rotate", class_name: "Rotate" },
+    ]);
+  });
+
+  test("a required class-less job still is, because nothing can satisfy the binding it derives", () => {
+    const required = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: { legacy: { binding: "LEGACY", params: z.object({}) } },
+    });
+    expect(unhostableAppJobs(required)).toEqual(["dashboard/legacy"]);
+    expect(() => planAppWorkflows(required, { project: PROJECT, env: "staging" })).toThrow(PithyError);
+  });
+
   test("an app with no workflows at all names none", () => {
     expect(unhostableAppJobs(defineCapability({ name: "dashboard", requiredBindings: [] }))).toEqual([]);
   });

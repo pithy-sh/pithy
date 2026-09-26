@@ -1844,6 +1844,35 @@ describe("a feature deployment serves a request (#650)", () => {
     expect([...stores.d1.keys(), ...stores.kv.keys(), ...stores.r2.keys()]).toEqual([]);
   });
 
+  test("but an optional class-less job provisions, because nothing requires the binding it derives", async () => {
+    const handMaintained = defineCapability({
+      name: "board",
+      requiredBindings: [{ type: "kv", name: "CACHE" }],
+      workflows: { legacy: { binding: "LEGACY", params: z.object({}), optional: true } },
+    });
+    const { stores, provisioners } = fakeProvisioners();
+    await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities: [handMaintained],
+      identity,
+      provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "acme-board",
+          dir: join(dir, "apps", "board"),
+          capabilities: [handMaintained],
+          config: { capabilities: [], app: handMaintained },
+        },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    // It ran: the KV the capability declares exists, and the stanza names no Workflow it cannot host.
+    expect([...stores.kv.keys()]).toEqual(["acme-f650-app-workflows--cache-kv"]);
+    expect((await generated()).workflows).toBeUndefined();
+  });
+
   test("the refusal names the class to add and the file to add it in", async () => {
     const classless = defineCapability({
       name: "board",

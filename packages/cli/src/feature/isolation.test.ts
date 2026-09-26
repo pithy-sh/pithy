@@ -23,6 +23,7 @@ import { deployKitWorkers } from "../project/deployKit";
 import { featureConfigPath } from "../provision/featureConfig";
 import type { ResourceProvisioner, ResourceProvisioners } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
+import { linkKitCopies } from "../test-utils/linkKit";
 import { featureHostCapabilities, featureHostScripts, featureOwnedIds } from "./hosts";
 import { provisionFeature } from "./provision";
 
@@ -110,6 +111,12 @@ beforeAll(async () => {
   dir = await mkdtemp(join(import.meta.dirname, "..", "..", ".e2e-feature-isolation-"));
   appDir = join(dir, "apps", "app");
   await mkdir(appDir, { recursive: true });
+  // **Every composed capability, linked from a copy inside the fixture (#650 review).** This fixture deploys
+  // every kit host the registry knows, and a deploy writes its resolved config beside that host's worker module
+  // — through a resolution that reached the repository's own `packages/<pkg>/src/workflows/` and left eight
+  // `.wrangler.feature.json` paths there, transient and un-ignored, in the hashed input set `ci/turboInputs`
+  // compares. `test-utils/linkKit.ts` states the rule; `core` stays the repository's, as it does there.
+  await linkKitCopies(dir, Object.keys(COMPOSED));
   // The sibling `LOBBY` names, as far as this fixture needs one: a directory with a config of its own, so
   // provisioning can name it for the feature the way it names any other Worker.
   await mkdir(join(dir, "apps", "realtime"), { recursive: true });
@@ -424,13 +431,15 @@ describe("a feature composing every host-owning capability", () => {
    * **The gate can fail.** The defects it exists for, planted back into a copy of what provisioning wrote, and the
    * walk names each one: the top level's rate-limit namespace (bound in a feature, it is production's), a store entry bound to the project's `global` copy,
    * a same-issue sibling's host and Workflow (a prefix check passed both), another project's, production's D1 and
-   * KV by id, production's service and queue, and a binding kind the walk has never seen.
+   * KV by id, production's service and queue, **a Durable Object in a script outside this feature (#650)**, and a
+   * binding kind the walk has never seen.
    */
   test("a planted shared resource fails the walk", () => {
     const planted = structuredClone(result.stanza) as Config & {
       ratelimits: { namespace_id: string }[];
       secrets_store_secrets: { binding: string; secret_name: string }[];
       workflows?: { binding: string; name: string; class_name: string; script_name: string }[];
+      durable_objects?: { bindings: { name: string; class_name: string; script_name?: string }[] };
     };
     const [limiter] = planted.ratelimits;
     if (limiter) limiter.namespace_id = TOP_LIMITER.namespace_id;
@@ -453,6 +462,15 @@ describe("a feature composing every host-owning capability", () => {
       { binding: "NEIGHBOR", service: featureWorkerName(neighbor, "api") },
     ];
     planted.queues = { producers: [{ binding: "JOBS", queue: "replay-prod-jobs" }] };
+    // **The kind #650 added, held by the list rather than by the claim that it would be caught.** Both shapes:
+    // a class in production's own sibling, and one in another project's feature.
+    planted.durable_objects = {
+      bindings: [
+        { name: "ROOM", class_name: "Room" },
+        { name: "LOBBY", class_name: "Lobby", script_name: "replay-prod-realtime" },
+        { name: "NEIGHBOR_LOBBY", class_name: "Lobby", script_name: featureWorkerName(neighbor, "realtime") },
+      ],
+    };
     planted.hyperdrive = [{ binding: "PG", id: "shared" }];
     // Sorted: which key the walk meets first is the stanza's order, and not what is being proven.
     expect(shared(planted, result.stand.names).sort()).toEqual(
@@ -466,6 +484,8 @@ describe("a feature composing every host-owning capability", () => {
         "service API: replay-prod-api",
         `service NEIGHBOR: ${featureWorkerName(neighbor, "api")}`,
         "queue JOBS: replay-prod-jobs",
+        "durable object LOBBY: replay-prod-realtime",
+        `durable object NEIGHBOR_LOBBY: ${featureWorkerName(neighbor, "realtime")}`,
         "unclassified key hyperdrive",
       ].sort(),
     );
