@@ -18,6 +18,7 @@ import { masterKeySecretName, type SecretsProvisioner } from "@pithy-sh/secrets/
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { managerMintedSecrets, mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
+import { unhostableAppJobs } from "../project/appWorkflows";
 import { type KitDeployReport, summarizeKitDeploy } from "../project/deployKit";
 import {
   type BackendRunner,
@@ -194,6 +195,27 @@ export interface ProvisionFeatureOptions {
 }
 
 /**
+ * **Refuse a branch whose app declares a job nothing can host, naming the job and the fix (#650 review).**
+ *
+ * One sentence for every unhostable job across every Worker on the branch, rather than the first one a writer
+ * happened to reach: an adopter who added two classless jobs fixes both in one pass.
+ */
+function assertAppWorkflowsHostable(workers: readonly ProvisionWorker[]): void {
+  const faults = workers.flatMap((worker) => {
+    const app = worker.config?.app;
+    return app ? unhostableAppJobs(app).map((job) => ({ worker: worker.name, job })) : [];
+  });
+  if (faults.length === 0) return;
+  const jobs = faults.map((fault) => fault.job).join(", ");
+  throw new ValidationError({
+    message: `This branch declares a Workflow nothing can run: ${jobs}.`,
+    action:
+      "Give each job a className naming the WorkflowEntrypoint subclass your Worker's main exports, in that Worker's pithy.config.ts. pithy worker sync refuses the same declaration.",
+    detail: faults.map((fault) => `${fault.worker}: ${fault.job} declares no className`).join("; "),
+  });
+}
+
+/**
  * Provision (or resume provisioning) a feature's Cloudflare environment, recording every resource in the
  * per-feature manifest **after each step** so an interrupted run resumes cleanly and `destroy` knows
  * exactly what to remove. Idempotent; safe to re-run.
@@ -223,6 +245,12 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
   });
   // Before anything is created: an app Worker that would deploy under a kit host's name (F3 of #643's review).
   assertNoFeatureHostCollision(options.identity, workers.map(provisionWorkerNames));
+  // Before anything is created: a job the app declares with no class to run it (#650 review). The stanza writer
+  // refuses it too — `planAppWorkflows` cannot name a Workflow with no `className`, exactly as `pithy worker
+  // sync` cannot — but that writer runs after every resource and store entry, so the run threw with the feature
+  // already on the account and every re-run threw in the same place. Asked here, beside the slug budget, for the
+  // same reason that one is: a refusal that costs nothing is worth making before a run costs something.
+  assertAppWorkflowsHostable(workers);
 
   // **The feature's rate-limit namespaces, checked before anything is created (#643).** Every Worker's tracked
   // config is read, so a declared id in the feature range is refused wherever it is, and every limiter the feature

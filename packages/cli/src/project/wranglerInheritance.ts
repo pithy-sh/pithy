@@ -265,10 +265,22 @@ function seedValue(value: unknown): unknown {
  * an emptied `ratelimits` was not caution — it was a feature stanza with no `AUTH_RATE_LIMITER`, and auth
  * refusing every request on `Missing required bindings`.
  *
+ * **`send_email` was the second for a day, and taking it back out is the rule stated properly (#650 review).**
+ * An entry names no resource an environment owns — it is a binding name and an address verified once at the
+ * account — so by the paragraph above it reads like a limiter. What it carries that a limiter does not is a
+ * *decision*: where this environment's mail goes. Seeding `env.prod` from the top level therefore wrote the
+ * address on a developer's laptop into production's first stanza, where the next deploy would mail real users
+ * from it. This list runs for **every** stanza this module creates, declared environments included, so it is the
+ * wrong instrument for "a feature may inherit dev's". `provision/wranglerEnv.ts` refills a feature's
+ * `send_email` explicitly, where the scope is known and the choice is a feature's to make.
+ *
  * A name table rather than a shape rule, because no shape tells a limiter's `namespace_id` — a counter label —
- * from a namespace's `id`. Every key here must also be one {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which
- * `wranglerInheritance.test.ts` holds. `workflows` is deliberately not here: its entries name `dev`'s
- * Workflows, and a scope that needs them writes its own (`feature/hosts.ts`).
+ * from a namespace's `id`, nor a routing decision from a policy. Every key here must also be one
+ * {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which `wranglerInheritance.test.ts` holds. `workflows` is
+ * deliberately not here: its entries name `dev`'s Workflows, and a scope that needs them writes its own
+ * (`feature/hosts.ts`, `project/appWorkflows.ts`). `queues` and `analytics_engine_datasets` are not here either,
+ * and for the opposite reason to `workflows`: each entry names a resource an environment owns, nothing derives
+ * one per environment, and a feature carrying the top level's would bind production's queue.
  */
 export const CARRIED_WHOLE: readonly string[] = ["ratelimits"];
 

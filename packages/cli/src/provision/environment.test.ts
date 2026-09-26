@@ -977,3 +977,124 @@ describe("a self-administering project", () => {
     expect(stanza?.d1_databases?.[0]?.binding).toBe("DB");
   });
 });
+
+/**
+ * **A Durable Object's `script_name` is a deploy name, and resolving it as anything else binds the wrong
+ * Worker (#650 review, defect 5).**
+ *
+ * The lookup matched `worker.name === target || worker.dir.endsWith("/" + target)` in one pass, which is right
+ * for a `service` target — a capability writes that as `apps/<name>` — and wrong for a script name twice over:
+ * an earlier Worker matching by *directory* answered for a later one matching by its real deploy name, and a
+ * foreign script whose name happens to equal a local directory was silently retargeted at this project's copy.
+ * Neither said anything.
+ */
+describe("a Durable Object script_name, resolved", () => {
+  let dir: string;
+  const identity = { project: "acme", issue: "650", slug: "probe" };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-do-resolve-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** One Worker on disk: its `apps/<app>` directory, its deploy name, and whatever else its config says. */
+  async function worker(appDir: string, name: string, config: Record<string, unknown> = {}): Promise<string> {
+    const path = join(dir, "apps", appDir);
+    await mkdir(path, { recursive: true });
+    await writeFile(path.concat("/wrangler.jsonc"), JSON.stringify({ name, main: "src/index.ts", ...config }));
+    return path;
+  }
+
+  const featureStanza = async (workerDir: string) =>
+    (
+      parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+        env: Record<string, { durable_objects?: { bindings?: { script_name?: string }[] } }>;
+      }
+    ).env.feature;
+
+  const run = (workers: { name: string; dir: string }[]) =>
+    provisionEnvironment({
+      projectDir: dir,
+      scope: featureScope(identity),
+      capabilities: [],
+      provisioners: fakeProvisioners().provisioners,
+      seedData: false,
+      administersItself: false,
+      resolveWorkers: async () => workers.map((entry) => ({ ...entry, capabilities: [] })),
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+  test("reaches the Worker that deploys under that name, not one whose directory happens to match", async () => {
+    // `apps/acme-realtime` deploys as `acme-decoy`; `apps/realtime` deploys as `acme-realtime`. The decoy is
+    // first, which is the order `apps/` is read in.
+    const decoy = await worker("acme-realtime", "acme-decoy");
+    const realtime = await worker("realtime", "acme-realtime");
+    const board = await worker("board", "acme-board", {
+      durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "acme-realtime" }] },
+    });
+    await run([
+      { name: "acme-decoy", dir: decoy },
+      { name: "acme-realtime", dir: realtime },
+      { name: "acme-board", dir: board },
+    ]);
+    expect((await featureStanza(board))?.durable_objects?.bindings?.[0]?.script_name).toBe("acme-f650-probe--realtime");
+  });
+
+  test("a foreign script whose name is one of this project's directories is stripped, not adopted", async () => {
+    // Another team deploys a Worker called `realtime`. This project has `apps/realtime`, deploying as
+    // `acme-realtime` — a different script entirely.
+    const realtime = await worker("realtime", "acme-realtime");
+    const board = await worker("board", "acme-board", {
+      durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "realtime" }] },
+    });
+    const report = await run([
+      { name: "acme-realtime", dir: realtime },
+      { name: "acme-board", dir: board },
+    ]);
+    expect((await featureStanza(board))?.durable_objects?.bindings).toEqual([]);
+    expect(report.bindingsDropped).toEqual([{ worker: "acme-board", bindings: ["durable object LOBBY: realtime"] }]);
+  });
+
+  test("two workers deploying under one name is refused, never resolved to either", async () => {
+    const one = await worker("one", "acme-same");
+    const two = await worker("two", "acme-same");
+    const board = await worker("board", "acme-board", {
+      durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "acme-same" }] },
+    });
+    await expect(
+      run([
+        { name: "acme-same", dir: one },
+        { name: "acme-same", dir: two },
+        { name: "acme-board", dir: board },
+      ]),
+    ).rejects.toThrow(/deploy as "acme-same"/);
+  });
+
+  test("a service target is still resolved by its apps/<name> directory, which is what a capability writes", async () => {
+    const realtime = await worker("realtime", "acme-realtime");
+    const board = await worker("board", "acme-board");
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope: featureScope(identity),
+      capabilities: [
+        defineCapability({
+          name: "wiring",
+          requiredBindings: [{ type: "service", name: "REALTIME", service: "realtime" }] satisfies BindingSpecInput[],
+        }),
+      ],
+      provisioners: fakeProvisioners().provisioners,
+      seedData: false,
+      administersItself: false,
+      resolveWorkers: async () => [
+        { name: "acme-realtime", dir: realtime, capabilities: [] },
+        { name: "acme-board", dir: board, capabilities: [] },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    expect(report.services).toEqual([{ binding: "REALTIME", service: "acme-f650-probe--realtime" }]);
+  });
+});

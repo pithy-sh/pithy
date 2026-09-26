@@ -17,7 +17,6 @@ import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { secretsWriteWorkflowName } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
-import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities } from "../project/workerScope";
@@ -76,8 +75,12 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   for (const worker of sources.workers) add("worker", scope.worker(worker));
   // Every registry host, composed or not: teardown names them all.
   for (const host of featureHostScripts(probe)) add("worker", host.script);
+  // **Every Workflow the branch composes, whoever owns it (#650).** This read the registry host first, so only
+  // a capability owning a kit Worker contributed a shape — and the app's own jobs own no host, because their
+  // classes are exported by the app's own `main`. A branch whose slug fitted every kit name and not the app's
+  // was therefore accepted here and refused by `composeFeatureName` at provision time, after the resources it
+  // had already created. A Workflow name is account-wide whichever script hosts it; the budget asks only that.
   for (const capability of sources.capabilities) {
-    if (hostWorkerFor(capability.name) === undefined) continue;
     for (const entry of Object.values(composeWorkflows([capability]))) {
       add("workflow", workflowScriptName({ ...scope.workflowHost, capability: capability.name, job: entry.job }));
     }

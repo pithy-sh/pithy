@@ -4,9 +4,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { type FeatureIdentity, featureWorkerName, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
+import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import type { FeatureResource } from "../feature/manifest";
 import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
@@ -736,6 +740,516 @@ describe("a feature stanza's routes and rate limiters", () => {
       JSON.stringify({ name: "replay-board", ratelimits: [{ ...LIMITER, namespace_id: "2000000001" }] }),
     );
     await expect(provision()).rejects.toThrow(/rate limiter AUTH_RATE_LIMITER declares namespace 2000000001/);
+  });
+});
+
+/**
+ * **The app's own same-script bindings in a feature's stanza (#650).**
+ *
+ * A feature deployment answered 500 on every request — `Missing required bindings: workflow:CONNECTION_ROTATION,
+ * workflow:ROTATION_SWEEP` — because the generated stanza carried the kit hosts' Workflows and none of the app's
+ * own. Staging and prod carry theirs, written by `pithy worker sync` into the tracked file; the feature's stanza
+ * is regenerated from that file on every run and `stanzaFor` empties every binding array it seeds, so nothing
+ * put them back. A Durable Object namespace the app declares went the same way, for the same reason.
+ */
+describe("a feature stanza's app-owned bindings", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const identity: FeatureIdentity = { project: "replay", issue: "650", slug: "app-workflows" };
+  const feature = featureScope(identity);
+
+  /** The dashboard's real shape, reduced: two Workflows whose classes are exported by the app's own main. */
+  const app = defineCapability({
+    name: "board",
+    requiredBindings: [],
+    workflows: {
+      rotate: {
+        binding: "CONNECTION_ROTATION",
+        params: z.object({}),
+        className: "ConnectionRotationWorkflow",
+        schedule: "0 4 * * *",
+      },
+      sweep: { binding: "ROTATION_SWEEP", params: z.object({}), className: "RotationSweepWorkflow" },
+    },
+  });
+
+  interface FeatureStanza {
+    workflows?: { binding: string; name: string; class_name: string; script_name?: string }[];
+    durable_objects?: { bindings?: { name: string; class_name: string; script_name?: string }[] };
+    triggers?: { crons?: string[] };
+    send_email?: { name: string; destination_address?: string }[];
+    services?: { binding: string; service: string }[];
+  }
+
+  /**
+   * This project's Workers, as `provisionEnvironment` resolves them for the writer: the sibling `apps/realtime`
+   * deploying as `replay-realtime`, and this Worker itself. Anything else is another project's.
+   */
+  const scopedScript = (target: string): string | undefined =>
+    ({
+      "replay-realtime": featureWorkerName(identity, "realtime"),
+      "replay-board": featureWorkerName(identity, "board"),
+    })[target];
+
+  const provision = (scope = feature, extra: Partial<Parameters<typeof applyProvisionedEnv>[0]> = {}) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources: [],
+      services: [],
+      secrets: [],
+      app,
+      ...extra,
+    });
+
+  const generated = async (): Promise<FeatureStanza> =>
+    (parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as { env: Record<string, FeatureStanza> }).env
+      .feature as FeatureStanza;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envapp-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("carries every Workflow the app declares, feature-named and same-script", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", main: "src/index.ts" }));
+    await provision();
+    expect((await generated()).workflows).toEqual([
+      {
+        binding: "CONNECTION_ROTATION",
+        name: "replay-f650-app-workflows--board-rotate",
+        class_name: "ConnectionRotationWorkflow",
+      },
+      {
+        binding: "ROTATION_SWEEP",
+        name: "replay-f650-app-workflows--board-sweep",
+        class_name: "RotationSweepWorkflow",
+      },
+    ]);
+  });
+
+  test("every name it writes is this feature's own, and within the Workflow limit", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    const entries = (await generated()).workflows ?? [];
+    // Not vacuously: an empty table would satisfy every clause below, and an empty table is the defect.
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      expect(isFeatureOwnedName(identity, entry.name)).toBe(true);
+      expect(entry.name.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.workflow.maxLength);
+      // Same-script: the class is exported by this Worker's own main, so there is no host to point at.
+      expect(entry.script_name).toBeUndefined();
+    }
+  });
+
+  test("never writes dev's names, which a carried-whole table would have", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        workflows: [
+          { binding: "CONNECTION_ROTATION", name: "replay-dev-board-rotate", class_name: "ConnectionRotationWorkflow" },
+          { binding: "ROTATION_SWEEP", name: "replay-dev-board-sweep", class_name: "RotationSweepWorkflow" },
+        ],
+      }),
+    );
+    await provision();
+    const names = ((await generated()).workflows ?? []).map((entry) => entry.name);
+    expect(names).toHaveLength(2);
+    expect(names.some((name) => name.includes("-dev-"))).toBe(false);
+  });
+
+  test("replaces a stale app-owned entry a tracked env.feature declared, and keeps a host's", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: {
+          feature: {
+            workflows: [
+              {
+                binding: "EMAIL_SENDER",
+                name: "replay-f650-app-workflows--email-send",
+                class_name: "EmailSendWorkflow",
+                script_name: "replay-f650-app-workflows--email",
+              },
+              { binding: "GONE", name: "replay-dev-board-gone", class_name: "GoneWorkflow" },
+            ],
+          },
+        },
+      }),
+    );
+    await provision();
+    expect(((await generated()).workflows ?? []).map((entry) => entry.binding)).toEqual([
+      "EMAIL_SENDER",
+      "CONNECTION_ROTATION",
+      "ROTATION_SWEEP",
+    ]);
+  });
+
+  test("carries the same-script Durable Object namespaces the top level declares", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room" }] },
+      }),
+    );
+    await provision();
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "Room" }]);
+  });
+
+  /**
+   * **A script this project does not deploy is stripped, never written (#650 review, defect 1).** Written, the
+   * feature Worker reads and writes a Durable Object namespace inside a live Worker somebody else owns —
+   * `featureHostNameLeaks` never sees an app Worker's config, so nothing downstream would have caught it.
+   * `stripFeatureRoutes` makes the same trade twenty lines up, and `seedValue` states the preference: an absent
+   * binding fails loudly on the first request, a shared one corrupts quietly.
+   */
+  test("strips a Durable Object naming a Worker this project does not deploy, and says so", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: {
+          bindings: [
+            { name: "ROOM", class_name: "Room" },
+            { name: "LOBBY", class_name: "Lobby", script_name: "someone-elses-prod-lobby" },
+          ],
+        },
+      }),
+    );
+    const dropped: string[][] = [];
+    await provision(feature, { scopedScript, onBindingsDropped: (entries: string[]) => dropped.push(entries) });
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "Room" }]);
+    expect(dropped).toEqual([["durable object LOBBY: someone-elses-prod-lobby"]]);
+  });
+
+  test("a Durable Object a tracked env.feature already binds is the adopter's, and is not duplicated", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room" }] },
+        env: { feature: { durable_objects: { bindings: [{ name: "ROOM", class_name: "BranchRoom" }] } } },
+      }),
+    );
+    await provision();
+    expect((await generated()).durable_objects?.bindings).toEqual([{ name: "ROOM", class_name: "BranchRoom" }]);
+  });
+
+  test("a project that declares no Durable Object gets no key at all — wrangler reads an empty one as a declaration", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    expect((await generated()).durable_objects).toBeUndefined();
+  });
+
+  /**
+   * **The acceptance criterion that keeps this fix inside the feature.** A declared environment's table is
+   * `pithy worker sync`'s, written into the tracked file and reviewed in a pull request; provisioning writing
+   * it too would be a second writer of one fact. So the same project's staging stanza is byte-identical with
+   * the app handed in and without it.
+   */
+  test("a declared environment's stanza is byte-identical, app capability or not", async () => {
+    const tracked = JSON.stringify({ name: "replay-board", main: "src/index.ts" });
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "staging"));
+    const withApp = await readFile(wranglerPath, "utf8");
+
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "staging"), { app: undefined });
+    expect(await readFile(wranglerPath, "utf8")).toBe(withApp);
+    expect(withApp).not.toContain("CONNECTION_ROTATION");
+  });
+
+  test("and so is prod's", async () => {
+    const tracked = JSON.stringify({ name: "replay-board", durable_objects: { bindings: [] } });
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "prod"));
+    const withApp = await readFile(wranglerPath, "utf8");
+
+    await writeFile(wranglerPath, tracked);
+    await provision(environmentScope("replay", "prod"), { app: undefined });
+    expect(await readFile(wranglerPath, "utf8")).toBe(withApp);
+  });
+
+  test("a Worker with no app capability writes no workflows key at all", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision(feature, { app: undefined });
+    expect((await generated()).workflows).toBeUndefined();
+  });
+
+  test("the app's cron schedule is stated in the stanza rather than left to inheritance", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board" }));
+    await provision();
+    expect((await generated()).triggers?.crons).toEqual(["0 4 * * *"]);
+  });
+
+  /**
+   * **A feature states its own schedule, empty included (#650 review, defect 4).** `triggers` is one of the keys
+   * wrangler *does* inherit, so a stanza that says nothing takes the top level's crons — and the top level's are
+   * `dev`'s, or whatever the adopter runs in production. `setCrons` writing nothing is right for a tracked
+   * stanza, where an absent `crons` means "leave the deployed schedule alone"; it is wrong for a feature, which
+   * is generated whole on every run and has no deployed schedule of its own to preserve.
+   */
+  test("an app with no schedule leaves the feature an empty cron list, never the top level's", async () => {
+    const unscheduled = defineCapability({
+      name: "board",
+      requiredBindings: [],
+      workflows: { rotate: { binding: "CONNECTION_ROTATION", params: z.object({}), className: "Rotate" } },
+    });
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", triggers: { crons: ["0 4 * * *"] } }));
+    await provision(feature, { app: unscheduled });
+    expect((await generated()).triggers?.crons).toEqual([]);
+  });
+
+  test("and a Worker with no app capability at all still states an empty one", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", triggers: { crons: ["0 4 * * *"] } }));
+    await provision(feature, { app: undefined });
+    expect((await generated()).triggers?.crons).toEqual([]);
+  });
+
+  test("a declared environment keeps the inheritance it always had", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", triggers: { crons: ["0 4 * * *"] } }));
+    await provision(environmentScope("replay", "staging"));
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: Record<string, FeatureStanza | undefined>;
+    };
+    expect(tracked.env.staging?.triggers).toBeUndefined();
+  });
+
+  /**
+   * **A Durable Object in a sibling Worker of this project is retargeted, not dropped (#650 review, defect 2).**
+   *
+   * `services` to that very Worker is retargeted through `scope.worker(...)` two statements down. A DO binding
+   * naming the same script is the same wiring by another key, and dropping it deployed the feature with no
+   * `LOBBY` — `Missing required bindings: durable_object:LOBBY`, the error this whole issue is about.
+   */
+  test("a Durable Object in a sibling Worker of this project is retargeted at the feature's copy", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        services: [{ binding: "REALTIME", service: "replay-realtime" }],
+        durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "replay-realtime" }] },
+      }),
+    );
+    await provision(feature, {
+      scopedScript,
+      services: [{ binding: "REALTIME", service: featureWorkerName(identity, "realtime") }],
+    });
+    const stanza = await generated();
+    // The two keys reach one Worker and must name one script.
+    expect(stanza.durable_objects?.bindings).toEqual([
+      { name: "LOBBY", class_name: "Lobby", script_name: "replay-f650-app-workflows--realtime" },
+    ]);
+    expect(stanza.services).toEqual([{ binding: "REALTIME", service: "replay-f650-app-workflows--realtime" }]);
+  });
+
+  test("a Durable Object naming this Worker's own script is retargeted at the feature's name for it", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room", script_name: "replay-board" }] },
+      }),
+    );
+    await provision(feature, { scopedScript });
+    expect((await generated()).durable_objects?.bindings).toEqual([
+      { name: "ROOM", class_name: "Room", script_name: "replay-f650-app-workflows--board" },
+    ]);
+  });
+
+  test("the whole key goes when every entry named somebody else's script", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "SHARED", class_name: "Shared", script_name: "other-prod-thing" }] },
+      }),
+    );
+    const dropped: string[][] = [];
+    await provision(feature, { scopedScript, onBindingsDropped: (entries: string[]) => dropped.push(entries) });
+    expect((await generated()).durable_objects?.bindings).toEqual([]);
+    expect(dropped).toEqual([["durable object SHARED: other-prod-thing"]]);
+  });
+
+  test("says nothing when every Durable Object is this project's", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        durable_objects: { bindings: [{ name: "ROOM", class_name: "Room" }] },
+      }),
+    );
+    const foreign: string[][] = [];
+    await provision(feature, { scopedScript, onBindingsDropped: (entries: string[]) => foreign.push(entries) });
+    expect(foreign).toEqual([]);
+  });
+
+  /**
+   * **`send_email` is carried whole (#650 review, defect 5).** A send binding names an account-level Cloudflare
+   * Email Service address: nothing in the entry belongs to an environment, which is `CARRIED_WHOLE`'s stated
+   * rule. Emptied, a hand-written one failed at runtime as `env.NOTIFY is undefined` — `email` is in neither
+   * `isWrittenBinding` nor `isProvisionedBinding`, so no command anywhere would have put it back.
+   */
+  /**
+   * **A tracked `env.feature`'s entry is retargeted like any other (#650 review, defect 2).** `featureRatelimits`
+   * rewrites the namespace of an entry the adopter wrote there, for the same reason: which binding and which
+   * class is the adopter's choice, and which script it resolves to in this environment is this run's answer.
+   * Left alone, the feature bound the namespace of the sibling's **dev** Worker.
+   */
+  test("retargets a Durable Object a tracked env.feature declares against the sibling's dev script", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: {
+          feature: {
+            durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "replay-realtime" }] },
+          },
+        },
+      }),
+    );
+    await provision(feature, { scopedScript });
+    expect((await generated()).durable_objects?.bindings).toEqual([
+      { name: "LOBBY", class_name: "Lobby", script_name: "replay-f650-app-workflows--realtime" },
+    ]);
+  });
+
+  test("and strips one a tracked env.feature points outside the project", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: {
+          feature: {
+            durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "not-ours" }] },
+          },
+        },
+      }),
+    );
+    const dropped: string[][] = [];
+    await provision(feature, { scopedScript, onBindingsDropped: (entries: string[]) => dropped.push(entries) });
+    expect((await generated()).durable_objects?.bindings).toEqual([]);
+    expect(dropped).toEqual([["durable object LOBBY: not-ours"]]);
+  });
+
+  /**
+   * **One sibling Worker, two keys, one answer (#650 review, defect 6).** A capability's `service` binding was
+   * already retargeted by the caller; a hand-written one was emptied with the rest of the stanza and never put
+   * back, so the same adopter got the Durable Object and not the RPC to the very same Worker. Retargeted, not
+   * dropped: a feature deploys its own copy of every Worker in the project, so the wiring is meaningful there.
+   */
+  test("retargets a hand-written service to a sibling, exactly as it retargets the Durable Object", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        services: [{ binding: "REALTIME", service: "replay-realtime" }],
+        durable_objects: { bindings: [{ name: "LOBBY", class_name: "Lobby", script_name: "replay-realtime" }] },
+      }),
+    );
+    await provision(feature, { scopedScript });
+    const stanza = await generated();
+    expect(stanza.services).toEqual([{ binding: "REALTIME", service: "replay-f650-app-workflows--realtime" }]);
+    expect(stanza.durable_objects?.bindings).toEqual([
+      { name: "LOBBY", class_name: "Lobby", script_name: "replay-f650-app-workflows--realtime" },
+    ]);
+  });
+
+  test("and strips a hand-written service naming a Worker outside the project, with the same sentence", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", services: [{ binding: "ELSEWHERE", service: "not-ours" }] }),
+    );
+    const dropped: string[][] = [];
+    await provision(feature, { scopedScript, onBindingsDropped: (entries: string[]) => dropped.push(entries) });
+    expect((await generated()).services).toEqual([]);
+    expect(dropped).toEqual([["service ELSEWHERE: not-ours"]]);
+  });
+
+  test("a capability's own service binding still wins over the copied one", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", services: [{ binding: "REALTIME", service: "replay-realtime" }] }),
+    );
+    await provision(feature, {
+      scopedScript,
+      services: [{ binding: "REALTIME", service: "replay-f650-app-workflows--realtime" }],
+    });
+    expect((await generated()).services).toEqual([
+      { binding: "REALTIME", service: "replay-f650-app-workflows--realtime" },
+    ]);
+  });
+
+  /**
+   * **A cron an adopter wrote into a tracked `env.feature` is theirs (#650 review, defect 4).** The empty list
+   * fills a gap — `triggers` is inherited, so a stanza that says nothing runs the top level's — and a gap is all
+   * it fills.
+   */
+  test("leaves a cron a tracked env.feature declares exactly as written", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        triggers: { crons: ["0 4 * * *"] },
+        env: { feature: { triggers: { crons: ["17 * * * *"] } } },
+      }),
+    );
+    await provision(feature, { app: undefined });
+    expect((await generated()).triggers?.crons).toEqual(["17 * * * *"]);
+  });
+
+  test("a send_email binding the top level declares is carried into the feature whole", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        send_email: [{ name: "NOTIFY", destination_address: "ops@example.com" }],
+      }),
+    );
+    await provision();
+    expect((await generated()).send_email).toEqual([{ name: "NOTIFY", destination_address: "ops@example.com" }]);
+  });
+
+  /**
+   * **And a declared environment's first stanza does not get dev's (#650 review, defect 7).** A `send_email`
+   * entry carries a routing *decision*, so seeding `env.prod` from the top level writes the address on a
+   * developer's laptop into production's stanza. A feature may inherit it — a branch of dev is what a feature is
+   * — and a declared environment may not. See `wranglerInheritance.ts` for why that rules out `CARRIED_WHOLE`.
+   */
+  test("a newly created declared environment's stanza carries no send_email at all", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        send_email: [{ name: "NOTIFY", destination_address: "dev-ops@example.com" }],
+      }),
+    );
+    await provision(environmentScope("replay", "prod"));
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: Record<string, FeatureStanza | undefined>;
+    };
+    expect(tracked.env.prod?.send_email).toEqual([]);
+  });
+
+  test("a send_email binding a tracked env.feature already names is the adopter's", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        send_email: [{ name: "NOTIFY", destination_address: "ops@example.com" }],
+        env: { feature: { send_email: [{ name: "NOTIFY", destination_address: "branch@example.com" }] } },
+      }),
+    );
+    await provision();
+    expect((await generated()).send_email).toEqual([{ name: "NOTIFY", destination_address: "branch@example.com" }]);
   });
 });
 

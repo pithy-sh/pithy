@@ -74,3 +74,42 @@ export async function materializeKitPackage(projectDir: string, name: string): P
     // The package ships its own `node_modules`, or the link is already there. Either way it can resolve.
   });
 }
+
+/**
+ * **Install capability packages as links to copies inside the fixture — the arrangement a fixture that
+ * *deploys* needs (#650 review).**
+ *
+ * {@link linkKitPackages} points the project at the repository's own `packages/<name>`, which is right until
+ * something writes there. `deployHostWorker` does: it writes each host's resolved config and generated entry
+ * beside that host's worker module, and through a link that is `packages/email/src/workflows/`. Those files are
+ * not git-ignored and turbo's `inputs` negations do not reach them, so they land in another task's hashed input
+ * set while `ci/turboInputs.test.ts` compares two `--dry=json` plans — the failure 34b55c6b fixed for
+ * `deployKit.test.ts`, met again by two more fixtures.
+ *
+ * **A link to a copy rather than a copy in `node_modules`**, because both halves have to hold: `pithy add` must
+ * not reach the registry, and it skips it only for a package whose realpath is *outside* the project's
+ * `node_modules` ({@link alreadyProvided}) — which a copy sitting inside it is not. A link to
+ * `<projectDir>/.kit/<name>` satisfies that, and every write the deploy makes lands in the directory the
+ * fixture's `afterAll` removes.
+ *
+ * **Each copy's own `@pithy-sh` scope is dropped.** The workspace install leaves
+ * `packages/auth/node_modules/@pithy-sh` linking back at the repository's packages, so a copied `auth` read the
+ * repository's `secrets` while the fixture composed its own copy — two module-level configs, and
+ * `configureSharedSecrets` wrote to one of them (`packageManager.ts` names that failure exactly). Without it,
+ * `@pithy-sh/*` resolves up to the fixture's own scope; everything else in that directory stays put.
+ *
+ * **`@pithy-sh/core` is deliberately not copied by any caller.** It carries the composition registry a fixture's
+ * harness reads through `createEntrypoint`, so the fixture and the harness must have one core — which is what a
+ * plain link to the repository's gives them.
+ */
+export async function linkKitCopies(projectDir: string, packages: readonly string[]): Promise<void> {
+  const scope = join(projectDir, "node_modules", "@pithy-sh");
+  await mkdir(scope, { recursive: true });
+  for (const name of packages) {
+    const copy = join(projectDir, ".kit", name);
+    await cp(await realpath(join(REPO_ROOT, "packages", name)), copy, { recursive: true, dereference: false });
+    await rm(join(copy, "node_modules", "@pithy-sh"), { recursive: true, force: true });
+    await rm(join(scope, name), { recursive: true, force: true });
+    await symlink(copy, join(scope, name));
+  }
+}

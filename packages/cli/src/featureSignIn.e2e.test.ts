@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -27,6 +27,7 @@ import { featureConfigPath } from "./provision/featureConfig";
 import type { ResourceProvisioner, ResourceProvisioners } from "./provision/resources";
 import type { SecretsStore } from "./provision/store";
 import { seedProject } from "./seed/run";
+import { linkKitCopies } from "./test-utils/linkKit";
 
 /**
  * **The goal of #643, run end to end: `pithy provision --feature` stands up every kit Worker the project composes,
@@ -65,10 +66,22 @@ const EMAIL_HOST = "replay-f643-feature-address--email";
 const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 const PERSON = "ada@example.com";
 
-/** Every kit package the composed Worker imports, linked the way a working checkout is. */
-const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloudflare", "storage", "testers"];
-const REPO = resolve(import.meta.dirname, "..", "..", "..");
+/** Every kit package the composed Worker imports, installed the way a working checkout has them. */
+const KIT_PACKAGES = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloudflare", "storage", "testers"];
 
+/**
+ * **Every one of them but `core` is linked from a copy inside the fixture, never from the repository (#650
+ * review).**
+ *
+ * The rule and the reasons are `test-utils/linkKit.ts`'s {@link linkKitCopies}: this fixture deploys kit hosts,
+ * and a deploy writes beside the host's worker module, which through a link to the repository's own package is
+ * `packages/email/src/workflows/`. `core` is the one that stays a plain link, because the fixture and this
+ * file's harness must share one composition registry.
+ */
+const COPIED = KIT_PACKAGES.filter((pkg) => pkg !== "core");
+
+/** This repository's `packages/`, where every kit package is copied or linked from. */
+const KIT_SOURCE = resolve(import.meta.dirname, "..", "..");
 /** More ids than any run here asks for. Miniflare binds databases by name up front, so the pool is fixed. */
 const D1_POOL = ["D1_1", "D1_2", "D1_3", "D1_4", "D1_5", "D1_6", "D1_7", "D1_8"];
 
@@ -86,7 +99,8 @@ beforeAll(async () => {
   const scope = join(dir, "node_modules", "@pithy-sh");
   await rm(scope, { recursive: true, force: true });
   await mkdir(scope, { recursive: true });
-  for (const pkg of LINKED) await symlink(join(REPO, "packages", pkg), join(scope, pkg));
+  await linkKitCopies(dir, COPIED);
+  await symlink(join(KIT_SOURCE, "core"), join(scope, "core"));
   for (const capability of ["auth", "storage", "testers"]) {
     await runAdd({
       account: null,
@@ -99,7 +113,35 @@ beforeAll(async () => {
       migrate: async () => [],
     });
   }
+  await declareAppWorkflow();
 }, 240_000);
+
+/**
+ * **The adopter declares a Workflow of their own, in the app capability the scaffold wrote (#650).**
+ *
+ * Every other job in this project belongs to a kit capability and runs in that capability's host Worker. This one
+ * is the adopter's: its class is exported by `apps/board`'s own `main`, so the binding is same-script and nothing
+ * provisions a host for it. That is the case a feature deployment had no binding for — the app Worker shipped
+ * without it and answered `Missing required bindings: workflow:CONNECTION_ROTATION` on every request, so the
+ * sign-in below never got as far as asking for a link.
+ *
+ * Written into the scaffolded config rather than declared in this file, because the whole point is that
+ * `loadWorkerConfig` reads it back off disk the way the deployed Worker's `main` imports it.
+ */
+async function declareAppWorkflow(): Promise<void> {
+  const path = join(workerDir, "pithy.config.ts");
+  const source = await readFile(path, "utf8");
+  const declaration = `  requiredBindings: [],
+  workflows: {
+    rotate: {
+      binding: "CONNECTION_ROTATION",
+      params: z.object({}),
+      className: "ConnectionRotationWorkflow",
+    },
+  },`;
+  if (!source.includes("  requiredBindings: [],")) throw new Error("the scaffolded app capability changed shape");
+  await writeFile(path, `import { z } from "zod";\n${source.replace("  requiredBindings: [],", declaration)}`, "utf8");
+}
 
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -463,6 +505,17 @@ describe("a feature deployment, after provision and deploy", () => {
       expect(manager?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
       expect(manager?.workflows?.map((entry) => entry.class_name)).toEqual(["SecretsWriteWorkflow"]);
       expect(manager?.triggers?.crons ?? []).toEqual([]);
+
+      // **The app's own Workflow is in the stanza the deployment reads, named for this feature (#650).** The
+      // sign-in below is what proves it is enough: the Worker validates every required binding on its first
+      // request, and this one is derived from the adopter's `pithy.config.ts` rather than from any kit host.
+      const stanza = await featureStanza();
+      expect(stanza.workflows?.find((entry) => entry.binding === "CONNECTION_ROTATION")).toEqual({
+        binding: "CONNECTION_ROTATION",
+        name: "replay-f643-feature-address--board-rotate",
+        class_name: "ConnectionRotationWorkflow",
+      });
+      expect(isFeatureOwnedName(identity, "replay-f643-feature-address--board-rotate")).toBe(true);
 
       await signsIn(account);
 

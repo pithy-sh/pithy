@@ -507,6 +507,12 @@ export function featureRunLines(report: ProvisionReport): string[] {
       `${dropped.worker}: ${dropped.routes.join(", ")} not routed to this feature. A feature answers on its own workers.dev address.`,
     );
   }
+  // A binding this feature could not make its own, named rather than left to be met at runtime (#650 review).
+  for (const gone of report.bindingsDropped ?? []) {
+    lines.push(
+      `${gone.worker}: ${gone.bindings.join(", ")} not bound. Each names a Worker outside this project, and a feature binds nothing it does not own.`,
+    );
+  }
   lines.push(...mintReportLines(report.featureSecrets ?? []));
   return lines;
 }

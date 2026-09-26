@@ -3,6 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { BASE_URL_VAR, SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
@@ -10,6 +11,7 @@ import { parse } from "comment-json";
 import type { HostedWorkflowEntry } from "../feature/hosts";
 import type { FeatureResource } from "../feature/manifest";
 import { featureNamespaceId } from "../feature/ratelimits";
+import { type AppOwnedWorkflow, applyAppWorkflows, planAppWorkflows } from "../project/appWorkflows";
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
@@ -44,6 +46,27 @@ export interface ServiceEntry {
   service: string;
 }
 
+/**
+ * **This scope's script name for a Worker of this project, or `undefined` when the name is not one of them.**
+ *
+ * The same resolution `services` already goes through — `resolveServiceTarget` then `scope.worker(...)`, in
+ * `provision/environment.ts` — handed here as a function so a `durable_objects` entry pointing at a sibling
+ * Worker reaches that sibling's copy in this scope rather than being dropped (#650 review). It answers
+ * `undefined` rather than throwing, because unlike a `service` target — which an adopter writes as an
+ * `apps/<name>` and must exist — a DO `script_name` may legitimately name a Worker this project does not own.
+ */
+export type ScopedScript = (target: string) => string | undefined;
+
+/** One `durable_objects.bindings` entry: the namespace binding, its class, and the script holding it. */
+interface DurableObjectEntry {
+  /** The binding name the Worker env exposes, e.g. `ROOM`. */
+  name: string;
+  /** The exported `DurableObject` subclass. */
+  class_name: string;
+  /** The Worker the class lives in. **Absent is same-script** — this Worker's own `main`. */
+  script_name?: string;
+}
+
 /** The env stanza slice provisioning writes: the Worker's own name, its binding arrays, and its services. */
 interface EnvBindings {
   name?: string;
@@ -56,7 +79,15 @@ interface EnvBindings {
   r2_buckets?: BindingEntry[];
   services?: ServiceEntry[];
   secrets_store_secrets?: SecretStoreBinding[];
-  workflows?: HostedWorkflowEntry[];
+  /**
+   * Both shapes: a kit host's cross-script entry ({@link HostedWorkflowEntry}) and the app's own same-script
+   * one ({@link AppOwnedWorkflow}), which is exactly how `appWorkflows.ts` tells them apart (#650).
+   */
+  workflows?: (AppOwnedWorkflow & { script_name?: string })[];
+  durable_objects?: { bindings?: DurableObjectEntry[] };
+  /** One Email Sending binding: its name in the env, and whatever the adopter says about where mail may go. */
+  send_email?: { name: string; [field: string]: unknown }[];
+  triggers?: { crons?: string[] };
 }
 
 /**
@@ -253,6 +284,171 @@ function featureRatelimits(stanza: Record<string, unknown>, top: Record<string, 
 }
 
 /**
+ * **Retarget one entry's `script_name` at this scope's copy of the Worker it names, or say it has to go.**
+ *
+ * The one rule both `durable_objects` and hand-written `services` answer to, because they are one piece of
+ * wiring said twice (#650 review): each names a *script*, and in a feature the script a sibling Worker deploys
+ * under is that sibling's feature copy.
+ *
+ * **A name no Worker of this project deploys under is stripped, never written.** It reaches a live Worker
+ * somebody else owns, and a feature that bound it would read and write a stranger's Durable Object namespace or
+ * dispatch into their Worker — worse than the absent binding, which fails loudly on the first request.
+ * `stripFeatureRoutes` twenty lines up makes the same trade for the same reason, and `seedValue`'s docstring
+ * states the preference: an absent binding fails loudly, a shared one corrupts quietly.
+ */
+function retargetScript(what: string, script: string, scopedScript: ScopedScript, dropped: string[]): string | null {
+  const scoped = scopedScript(script);
+  if (scoped !== undefined) return scoped;
+  dropped.push(`${what}: ${script}`);
+  return null;
+}
+
+/**
+ * **A feature binds every Durable Object namespace the top level declares, each in this feature's copy of the
+ * Worker that hosts it (#650).**
+ *
+ * The second kind the feature stanza lost, and it is lost the same way the Workflows were: `durable_objects` is
+ * one of the keys an environment does not inherit, `stanzaFor` empties the lists in a stanza it seeds, and
+ * nothing puts a feature's back. A Worker composing `multiplayer` therefore deployed with no `ROOM` and answered
+ * `Missing required bindings: durable_object:ROOM` on every request.
+ *
+ * **Three cases, and the third is nobody's to bind.**
+ *
+ * - **No `script_name`** — the class is in this Worker's own `main`. The entry is `{ name, class_name }`, names
+ *   no Cloudflare resource, and is identical in dev, staging and a branch, so it is **copied**: there is nothing
+ *   for a feature to rename. That is the whole difference from the Workflows beside it, which are derived.
+ * - **A `script_name` naming one of this project's Workers** — a sibling, or this Worker itself. It is
+ *   **retargeted** at this scope's copy of that Worker ({@link retargetScript}). A `script_name` names another
+ *   *Worker*, not another environment, and the feature deploys its own copy of it.
+ * - **A `script_name` naming a Worker outside this project** — **stripped**, and said out loud. See
+ *   {@link retargetScript}.
+ *
+ * **Every entry is read, the top level's and the stanza's own (#650 review).** `featureRatelimits` rewrites a
+ * tracked `env.feature`'s entries for exactly this reason: a stanza an adopter wrote by hand still names `dev`'s
+ * sibling script, and leaving it there was a feature binding the namespace its own developers' dev Worker runs.
+ * The adopter's *choice* — which binding, which class — is theirs and is never overwritten; the script it
+ * resolves to in this environment is not a choice, it is this run's answer.
+ */
+function featureDurableObjects(
+  stanza: EnvBindings,
+  top: Record<string, unknown>,
+  scopedScript: ScopedScript,
+  dropped: string[],
+): void {
+  const declared = (top as EnvBindings).durable_objects?.bindings ?? [];
+  const own = stanza.durable_objects?.bindings;
+  const bound = new Set((own ?? []).map((entry) => entry.name));
+  const missing = declared.filter((entry) => !bound.has(entry.name)).map((entry) => structuredClone(entry));
+  // In place where the array is there, so comment-json keeps the adopter's comments on it.
+  if (missing.length > 0) {
+    if (own) own.push(...missing);
+    else if (stanza.durable_objects) stanza.durable_objects.bindings = missing;
+    else stanza.durable_objects = { bindings: missing };
+  }
+  const entries = stanza.durable_objects?.bindings;
+  if (!entries) return;
+  const kept = entries.filter((entry) => {
+    if (entry.script_name === undefined) return true;
+    const scoped = retargetScript(`durable object ${entry.name}`, entry.script_name, scopedScript, dropped);
+    if (scoped === null) return false;
+    entry.script_name = scoped;
+    return true;
+  });
+  entries.length = 0;
+  entries.push(...kept);
+}
+
+/**
+ * **A feature binds every `services` entry the top level declares, each at this scope's copy of the callee
+ * (#650 review).**
+ *
+ * The same rule as the Durable Objects above, and it is the same rule on purpose: one sibling Worker, reached by
+ * two keys, must be reached by both or by neither. A capability's `service` binding was already retargeted — by
+ * the caller, out of the resolved Worker set — and a *hand-written* one was emptied with the rest of the stanza
+ * and never put back, so an adopter who wired two of their own Workers together got the Durable Object and not
+ * the RPC. **Retarget both** rather than drop both: the wiring is the adopter's declaration, a feature deploys
+ * its own copy of every Worker in the project, and the binding is meaningful there.
+ *
+ * An entry the stanza already declares is left alone here — the caller upserts the capability-declared ones over
+ * the top of this — and one naming a script outside the project is stripped and reported, as above.
+ */
+function featureServices(
+  stanza: EnvBindings,
+  top: Record<string, unknown>,
+  scopedScript: ScopedScript,
+  dropped: string[],
+): void {
+  const declared = (top as EnvBindings).services ?? [];
+  const own = stanza.services;
+  const bound = new Set((own ?? []).map((entry) => entry.binding));
+  const missing = declared.filter((entry) => !bound.has(entry.binding)).map((entry) => structuredClone(entry));
+  if (missing.length > 0) {
+    if (own) own.push(...missing);
+    else stanza.services = missing;
+  }
+  const entries = stanza.services;
+  if (!entries) return;
+  const kept = entries.filter((entry) => {
+    const scoped = retargetScript(`service ${entry.binding}`, entry.service, scopedScript, dropped);
+    if (scoped === null) return false;
+    entry.service = scoped;
+    return true;
+  });
+  entries.length = 0;
+  entries.push(...kept);
+}
+
+/**
+ * **A feature binds every Email Sending destination the top level declares (#650 review).**
+ *
+ * A `send_email` entry is `{ name, destination_address? | allowed_destination_addresses? }`: a binding name and
+ * an address verified once at the Cloudflare account. Nothing in it is a resource an environment owns, and
+ * `email` is in neither `isWrittenBinding` nor `isProvisionedBinding`, so an emptied one is refilled by nothing
+ * anywhere — a hand-written `NOTIFY` came back as `env.NOTIFY is undefined` at the first send.
+ *
+ * **Refilled here rather than through `CARRIED_WHOLE`, and the difference is which environments it reaches.**
+ * A feature seeds from the top level by design — that is what a branch of `dev` is — so carrying dev's
+ * destination into it is the same decision `vars` already makes. A **declared** environment is not: seeding
+ * `env.prod` from the top level would write dev's routing into production's first stanza, where the adopter's
+ * next deploy mails real users at the address their laptop uses. A declared environment's stanza is created
+ * with an empty list instead — `seedValue`'s "this environment has none", which they fill in with the address
+ * that environment should send from.
+ */
+function featureSendEmail(stanza: EnvBindings, top: Record<string, unknown>): void {
+  const declared = (top as EnvBindings).send_email ?? [];
+  if (declared.length === 0) return;
+  const own = stanza.send_email;
+  const bound = new Set((own ?? []).map((entry) => entry.name));
+  const missing = declared.filter((entry) => !bound.has(entry.name)).map((entry) => structuredClone(entry));
+  if (missing.length === 0) return;
+  if (own) own.push(...missing);
+  else stanza.send_email = missing;
+}
+
+/**
+ * **A feature states its own cron schedule, empty included (#650 review).**
+ *
+ * `triggers` is one of the keys wrangler *does* inherit, so a feature stanza that says nothing takes the top
+ * level's crons — `dev`'s, or whatever an adopter runs in production. `setCrons` in `project/appWorkflows.ts`
+ * deliberately writes nothing when a plan has none, and that is right for the file it writes: in a tracked
+ * stanza an absent `crons` means "leave the deployed Worker's schedule alone", and inventing `[]` there would
+ * clear a schedule nobody asked to clear.
+ *
+ * A feature has no deployed schedule to preserve. Its config is generated whole on every run, so the only thing
+ * an absent `crons` can mean here is *inherit somebody else's* — which is how a branch came to fire the
+ * project's production schedule.
+ *
+ * **Only when nothing else has stated one.** This fills a gap; it does not settle the question. The app's own
+ * declaration has already been written by `applyAppWorkflows`, and a schedule an adopter wrote into a tracked
+ * `env.feature` is theirs — the rule this module states everywhere else, and one this used to break by writing
+ * an empty list over a cron they deliberately wrote there.
+ */
+function featureCrons(stanza: EnvBindings): void {
+  stanza.triggers ??= {};
+  stanza.triggers.crons ??= [];
+}
+
+/**
  * Stamp a feature stanza's `vars.BASE_URL` with its derived `workers.dev` address, or remove the one it
  * inherited when there is none to derive.
  *
@@ -333,6 +529,38 @@ export async function applyProvisionedEnv(options: {
    */
   subdomain?: string | null;
   /**
+   * **This Worker's own app capability — what its `workflows` table is derived from (#650).**
+   *
+   * A feature's stanza is regenerated from the tracked file on every run and every binding array it seeds is
+   * emptied, so the app's own Workflows had to be re-derived for it or the Worker deployed with none: the
+   * feature answered `Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP` on
+   * every request, `/health` included. The names come from {@link planAppWorkflows} against
+   * `scope.workflowHost` — the same derivation `pithy worker sync` writes staging's and prod's with, handed
+   * the scope rather than an environment string, so a feature's table and a declared environment's cannot
+   * come to mean different things by "the app's own".
+   *
+   * **Read for a feature scope only.** A declared environment's table lives in the tracked `wrangler.jsonc`,
+   * written by `pithy worker sync` and reviewed in a pull request; provisioning writing it too would be a
+   * second writer of one fact, and `project/workflows.ts` is the reader that already refuses a deploy whose
+   * stanza disagrees with the declaration. Passing it for a declared environment changes nothing.
+   *
+   * Omitted for a Worker that declares no `app` in its `pithy.config.ts`, which writes no `workflows` key at
+   * all — wrangler reads an empty one as a declaration.
+   */
+  app?: Capability;
+  /**
+   * This scope's script name for a Worker of this project — see {@link ScopedScript}. Read for a feature scope
+   * only, where it is what retargets a `durable_objects` entry at this feature's copy of the Worker hosting the
+   * class. Omitted, every such entry reads as another project's and is reported rather than retargeted.
+   */
+  scopedScript?: ScopedScript;
+  /**
+   * Told the bindings a feature stanza gave up (#650 review) — a `durable_objects` or `services` entry naming a
+   * script this project does not own. A feature has no copy of that Worker to point at, and binding a
+   * stranger's live namespace is worse than binding nothing, so the entry is stripped and the run says so.
+   */
+  onBindingsDropped?: (bindings: string[]) => void;
+  /**
    * Told the route patterns a feature stanza gave up (#643) — the ones it declared, or would have inherited. A
    * feature answers on its own `workers.dev` address only, so they are stripped, and the run says so.
    */
@@ -351,9 +579,21 @@ export async function applyProvisionedEnv(options: {
     // A feature's address, from the name just settled. Never a declared environment's: its address is
     // declared, and `workers.dev` can be disabled per account and commonly is in production (#89).
     if (!options.scope.source) {
-      const dropped = stripFeatureRoutes(stanza, top);
-      if (dropped.length > 0) options.onRoutesDropped?.(dropped);
+      const routes = stripFeatureRoutes(stanza, top);
+      if (routes.length > 0) options.onRoutesDropped?.(routes);
       featureRatelimits(stanza as Record<string, unknown>, top);
+      // One resolver and one list for both keys that name a sibling script, so a feature cannot bind the
+      // Durable Object and drop the RPC to the same Worker (#650 review).
+      const scopedScript = options.scopedScript ?? (() => undefined);
+      const dropped: string[] = [];
+      featureDurableObjects(stanza, top, scopedScript, dropped);
+      featureServices(stanza, top, scopedScript, dropped);
+      featureSendEmail(stanza, top);
+      if (dropped.length > 0) options.onBindingsDropped?.(dropped);
+      // The app's own Workflows, named for this scope — see `app` above for why only here, and
+      // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from (#650).
+      if (options.app) applyAppWorkflows(stanza, planAppWorkflows(options.app, options.scope.workflowHost));
+      featureCrons(stanza);
       if (options.subdomain !== undefined) stampFeatureAddress(stanza, top, options.subdomain);
     }
     for (const resource of options.resources) {

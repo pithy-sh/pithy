@@ -4,6 +4,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { maxFeatureSlug } from "@pithy-sh/core/src/naming/feature";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
@@ -11,6 +12,7 @@ import { email } from "@pithy-sh/email/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { z } from "zod";
 import type { ResourceProvisioners } from "../provision/resources";
 import { provisionFeature } from "./provision";
 import { featureNameShapes } from "./slugBudget";
@@ -51,6 +53,30 @@ describe("featureNameShapes", () => {
     expect(things).toContain("media-audio-transcribe");
     expect(things).toContain("secrets-encryption-keys");
     // `replay-f643-` is 12; `--media-audio-transcribe` is 24; a Workflow stops at 64: 28.
+    expect(maxFeatureSlug(head, shapes)).toBe(28);
+  });
+
+  /**
+   * **The app's own Workflows are names this feature composes too (#650).**
+   *
+   * They were left out because only a capability owning a kit host contributed a Workflow shape, and the app
+   * owns no host — its classes are in its own Worker. So a branch whose slug fitted every kit name and not the
+   * app's was accepted, and the refusal arrived from `composeFeatureName` at provision time, after the resources
+   * it had already created.
+   */
+  test("counts a Workflow the app's own capability declares", async () => {
+    const head = { project: "replay", issue: "650" };
+    const app = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: { "key-rotation": { binding: "KEY_ROTATION", params: z.object({}), className: "Rotate" } },
+    });
+    // The app alone, so the number below is the app's and not a kit capability's: with `media` composed the
+    // two tails are the same length and a tie would prove nothing about which one was read.
+    const shapes = await featureNameShapes({ head, capabilities: [app], workers: WORKERS, projectDir: dir });
+    expect(shapes.map((shape) => shape.thing)).toContain("dashboard-key-rotation");
+    // `replay-f650-` is 12; `--dashboard-key-rotation` is 24; a Workflow stops at 64: 28. Every other shape
+    // this branch composes — its Worker, every registry host — leaves more, so the app's job sets the maximum.
     expect(maxFeatureSlug(head, shapes)).toBe(28);
   });
 

@@ -6,10 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { type FeatureIdentity, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
+import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { planAppWorkflows, reconcileAppWorkflows } from "./appWorkflows";
+import { planAppWorkflows, reconcileAppWorkflows, unhostableAppJobs } from "./appWorkflows";
 
 /**
  * Workflows the adopter's **own app capability** declares.
@@ -100,6 +102,51 @@ describe("planAppWorkflows", () => {
     expect(staging.workflows[0]?.name).not.toBe(prod.workflows[0]?.name);
   });
 
+  /**
+   * **A feature is an environment, and the app's own Workflows take its names (#650).**
+   *
+   * `<project>-feature-<capability>-<job>` would be one Workflow every open branch deployed over every
+   * other's — Workflow names are account-wide. The feature's own head is what `featureScope.workflowHost`
+   * carries, so the one derivation composes it for a feature exactly as it does for staging.
+   */
+  test("a feature's names are the feature's own, and parse back to it", () => {
+    const identity: FeatureIdentity = { project: PROJECT, issue: "69", slug: "demo" };
+    const plan = planAppWorkflows(appCapability(), featureScope(identity).workflowHost);
+    expect(plan.workflows).toEqual([
+      { binding: "KEY_ROTATION", name: "acme-f69-demo--dashboard-key-rotation", class_name: "KeyRotationWorkflow" },
+      { binding: "REINDEX", name: "acme-f69-demo--dashboard-reindex", class_name: "ReindexWorkflow" },
+    ]);
+    // Owned, not merely prefixed: parsed back to this project, issue and slug, which is what teardown asks.
+    for (const entry of plan.workflows) expect(isFeatureOwnedName(identity, entry.name)).toBe(true);
+  });
+
+  test("two branches of one issue never compose one Workflow name", () => {
+    const one = planAppWorkflows(
+      appCapability(),
+      featureScope({ project: PROJECT, issue: "69", slug: "a" }).workflowHost,
+    );
+    const two = planAppWorkflows(
+      appCapability(),
+      featureScope({ project: PROJECT, issue: "69", slug: "b" }).workflowHost,
+    );
+    expect(one.workflows[0]?.name).not.toBe(two.workflows[0]?.name);
+  });
+
+  /**
+   * A feature name is never truncated: a fitted slug was a short hash, and a hash is a slug some sibling branch
+   * can have whole. So a name that does not fit is refused here, at the derivation, rather than deployed under a
+   * string two features could compose. `assertFeatureSlugFits` says it once for the whole branch; this is the
+   * backstop behind it.
+   */
+  test("a name that will not fit the Workflow limit is refused, never truncated", () => {
+    expect(() =>
+      planAppWorkflows(
+        appCapability(),
+        featureScope({ project: PROJECT, issue: "69", slug: "a".repeat(40) }).workflowHost,
+      ),
+    ).toThrow(PithyError);
+  });
+
   test("a capability with no workflows plans nothing", () => {
     const bare = defineCapability({ name: "dashboard", requiredBindings: [] });
     expect(planAppWorkflows(bare, { project: PROJECT, env: "dev" })).toEqual({ workflows: [], crons: [] });
@@ -112,6 +159,70 @@ describe("planAppWorkflows", () => {
       workflows: { sweep: { binding: "SWEEP", params: z.object({}) } },
     });
     expect(() => planAppWorkflows(classless, { project: PROJECT, env: "dev" })).toThrow(PithyError);
+  });
+});
+
+/**
+ * **The preflight and the writer must mean one thing by "cannot be hosted" (#650 review).**
+ *
+ * `feature/provision.ts` asks this before a feature run creates anything; `planAppWorkflows` refuses the same
+ * declaration when the stanza is written. Two readings of one rule is a branch that passes the preflight and
+ * then throws with its resources already on the account — the exact defect the preflight exists to close — so
+ * the two are held together here rather than each tested alone.
+ */
+describe("unhostableAppJobs", () => {
+  test("names the job planAppWorkflows refuses, and nothing else", () => {
+    const mixed = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: {
+        rotate: { binding: "ROTATE", params: z.object({}), className: "Rotate" },
+        sweep: { binding: "SWEEP", params: z.object({}) },
+      },
+    });
+    expect(unhostableAppJobs(mixed)).toEqual(["dashboard/sweep"]);
+    expect(() => planAppWorkflows(mixed, { project: PROJECT, env: "staging" })).toThrow(PithyError);
+  });
+
+  test("and an app whose jobs all declare a class names none, and plans", () => {
+    expect(unhostableAppJobs(appCapability())).toEqual([]);
+    expect(() => planAppWorkflows(appCapability(), { project: PROJECT, env: "staging" })).not.toThrow();
+  });
+
+  /**
+   * **A class-less job that declares itself optional is a legal declaration (#650 review, defect 3).**
+   * `WorkflowSpec.className` says so — "Omit only for a job whose host config is hand-maintained" — and
+   * `workflowBinding` carries `optional` straight through, so the binding `createBackend` derives is optional
+   * and the Worker boots without it. Refusing it made `pithy provision --feature` reject a branch whose project
+   * `pithy provision --env staging` provisions without a word.
+   */
+  test("an optional class-less job is not a fault, and the plan simply has no entry for it", () => {
+    const handMaintained = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: {
+        rotate: { binding: "ROTATE", params: z.object({}), className: "Rotate" },
+        legacy: { binding: "LEGACY", params: z.object({}), optional: true },
+      },
+    });
+    expect(unhostableAppJobs(handMaintained)).toEqual([]);
+    expect(planAppWorkflows(handMaintained, { project: PROJECT, env: "staging" }).workflows).toEqual([
+      { binding: "ROTATE", name: "acme-staging-dashboard-rotate", class_name: "Rotate" },
+    ]);
+  });
+
+  test("a required class-less job still is, because nothing can satisfy the binding it derives", () => {
+    const required = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: { legacy: { binding: "LEGACY", params: z.object({}) } },
+    });
+    expect(unhostableAppJobs(required)).toEqual(["dashboard/legacy"]);
+    expect(() => planAppWorkflows(required, { project: PROJECT, env: "staging" })).toThrow(PithyError);
+  });
+
+  test("an app with no workflows at all names none", () => {
+    expect(unhostableAppJobs(defineCapability({ name: "dashboard", requiredBindings: [] }))).toEqual([]);
   });
 });
 

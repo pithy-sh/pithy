@@ -306,6 +306,13 @@ export interface ProvisionReport {
    * so. One entry per Worker that had any; absent on a run that stripped nothing.
    */
   routesDropped?: { worker: string; routes: string[] }[];
+  /**
+   * **Bindings a feature's stanza gave up (#650 review)** — a `durable_objects` or `services` entry naming a
+   * script this project does not own. A feature has no copy of that Worker to point at, and writing the entry
+   * verbatim would bind a stranger's live namespace, so it is stripped exactly as a route is and the run says
+   * so. One entry per Worker that had any; absent on a run that stripped none.
+   */
+  bindingsDropped?: { worker: string; bindings: string[] }[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */
@@ -355,9 +362,11 @@ export interface ProvisionWorker {
   /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
   capabilities: Capability[];
   /**
-   * That Worker's own `pithy.config.ts`. Only `declinedBindings` is read from it — a binding this Worker
-   * declines gets no resource created for it, because the decline said the resource is not wanted.
-   * Optional: the resolver is a seam, and a caller with no config to give is a Worker declining nothing.
+   * That Worker's own `pithy.config.ts`. Two fields are read from it: `declinedBindings` — a binding this
+   * Worker declines gets no resource created for it, because the decline said the resource is not wanted —
+   * and `app`, the capability whose Workflows a feature's stanza is derived from (#650). Optional: the
+   * resolver is a seam, and a caller with no config to give is a Worker declining nothing and declaring no
+   * jobs.
    */
   config?: WorkerConfig;
 }
@@ -464,6 +473,35 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
     capabilities: worker.capabilities,
     config: worker.config,
   }));
+
+/**
+ * **The Worker of this project that deploys under this script name**, or `undefined` when no Worker does.
+ *
+ * **By deploy name only, and that is the whole of it (#650 review).** A `durable_objects` `script_name` and a
+ * hand-written `services` `service` are both *script* names — what wrangler uploads under — never an
+ * `apps/<name>` directory. Matching a directory here read `script_name: "realtime"`, another team's live Worker,
+ * as this project's `apps/realtime`, and silently retargeted a branch at it; and a single pass over a match that
+ * accepted either spelling let `apps/acme-realtime` (deploying as `acme-decoy`) answer for the real
+ * `acme-realtime`, so the feature bound the wrong sibling. Neither said a word.
+ *
+ * {@link resolveServiceTarget} keeps its own, wider match, because its input is a different thing: a capability's
+ * `BindingSpec.service` names the callee as `apps/<name>`, which is what an adopter writes in a manifest and what
+ * that function exists to turn into a deploy name. One function per question, rather than one match for two.
+ *
+ * **Two Workers under one deploy name is refused**, not resolved: Cloudflare would have them overwrite each
+ * other, and picking either here is a silent answer to a question with none.
+ */
+export function findWorkerByScript(workers: readonly ProvisionWorker[], script: string): ProvisionWorker | undefined {
+  const found = workers.filter((worker) => worker.name === script);
+  if (found.length > 1) {
+    throw new ValidationError({
+      message: `Two of this project's workers deploy as "${script}".`,
+      action: `Give each worker its own name in its wrangler.jsonc. Both: ${found.map((worker) => worker.dir).join(", ")}.`,
+      detail: "A script name is account-wide; two workers sharing one would deploy over each other.",
+    });
+  }
+  return found[0];
+}
 
 /**
  * Resolve a `service` binding's target to the script name that Worker actually deploys under.
@@ -630,6 +668,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   const routesDropped: { worker: string; routes: string[] }[] = [];
+  const bindingsDropped: { worker: string; bindings: string[] }[] = [];
   // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
   const subdomain =
     !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
@@ -678,7 +717,19 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // out of the `name` it writes in the same edit — see `applyProvisionedEnv` for why it is not one
       // more thing composed here.
       administersItself: options.administersItself,
+      // **This Worker's own app capability, so a feature's stanza binds the Workflows it declares (#650).**
+      // Off the Worker's own `pithy.config.ts`, never inferred from the capability list: `allCapabilities`
+      // appends the app to the libraries and the array cannot say which one it was, so a guess here would
+      // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
+      ...(worker.config?.app ? { app: worker.config.app } : {}),
       ...(subdomain !== undefined ? { subdomain } : {}),
+      // Deploy name to this scope's script name, handed to the writer so a `durable_objects` or hand-written
+      // `services` entry naming a sibling Worker reaches this scope's copy of it (#650 review).
+      scopedScript: (script) => {
+        const found = findWorkerByScript(workers, script);
+        return found ? scopedName(found.name) : undefined;
+      },
+      onBindingsDropped: (bindings) => bindingsDropped.push({ worker: worker.name, bindings }),
       onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
@@ -711,6 +762,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     configs,
     committed: scope.source,
     ...(routesDropped.length > 0 ? { routesDropped } : {}),
+    ...(bindingsDropped.length > 0 ? { bindingsDropped } : {}),
   };
 }
 
