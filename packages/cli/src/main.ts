@@ -61,6 +61,7 @@ const COMMANDS = {
   // Toolchain — the tool rather than the project.
   doctor: { group: "Toolchain", load: () => import("./commands/doctor").then((m) => m.default) },
   alias: { group: "Toolchain", load: () => import("./commands/alias").then((m) => m.default) },
+  docs: { group: "Toolchain", load: () => import("./commands/docs").then((m) => m.default) },
 } as const satisfies Record<string, CommandEntry>;
 
 /** The registry, for the help screen. Every name, its group, and its loader. */

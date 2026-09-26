@@ -33,6 +33,7 @@ import {
 } from "../doctor/devSecrets";
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
+import { checkDocsMcp, DOCS_MCP_ACTION, type DocsMcpCheck, describeDocsMcp } from "../doctor/docsMcp";
 import {
   checkEnvironmentConfigs,
   describeEnvironmentConfigs,
@@ -277,6 +278,13 @@ export interface DoctorReport {
    * readable project. **It fails the exit**: `provision` and `deploy` refuse the same stanza.
    */
   featureRatelimitIds: FeatureRatelimitIdsCheck | null;
+  /**
+   * Which AI clients detected on this machine cannot read the Pithy documentation (#652). `null` outside a
+   * readable project. **It never fails the exit, and it is not a term in the terse predicate**: an
+   * unconnected editor is a choice nobody has made yet rather than a fault, exactly like `Alias: not
+   * installed`, and a report that turned verbose over it would be the toolchain nagging.
+   */
+  docsMcp: DocsMcpCheck | null;
   /**
    * Whether every Worker's `env.<name>` stanzas are the environments the root config declares (#241), and
    * whether a declaration changed after resources were provisioned under the old names. `null` outside a
@@ -714,6 +722,11 @@ export interface DoctorReportOptions {
   checkSelfBinding?: (projectDir: string) => Promise<SelfBindingCheck>;
   /** Feature rate-limit range seam; defaults to {@link checkFeatureRatelimitIds}. Reads files only. */
   checkFeatureRatelimitIds?: (projectDir: string) => Promise<FeatureRatelimitIdsCheck>;
+  /**
+   * AI client seam; defaults to {@link checkDocsMcp}. Reads files only — but files in the operator's own
+   * home, which is why every test builds from `doctorHarness` and never lets the real one run.
+   */
+  checkDocsMcp?: (projectDir: string) => Promise<DocsMcpCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
   /**
@@ -893,6 +906,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeSelfBinding = options.checkSelfBinding ?? checkSelfBinding;
   const probeFeatureRatelimitIds = options.checkFeatureRatelimitIds ?? checkFeatureRatelimitIds;
+  const probeDocsMcp = options.checkDocsMcp ?? checkDocsMcp;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
@@ -1220,6 +1234,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         findings: [],
       })
     : null;
+  // Which AI clients on this machine could be reading the docs and are not (#652). Files only, and only
+  // files that are already there — a diagnostic never creates one.
+  const docsMcp = inProject
+    ? await probed<DocsMcpCheck>(() => probeDocsMcp(options.projectDir), {
+        state: "could-not-check",
+        findings: [],
+      })
+    : null;
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
   // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
   const environments = inProject
@@ -1366,6 +1388,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     workerNames,
     selfBinding,
     featureRatelimitIds,
+    docsMcp,
     environments,
     environmentInheritance,
     turnstileSitekeys,
@@ -2989,6 +3012,18 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     );
   }
 
+  // The AI clients that could read the docs and cannot (#652). The block is the finding, and it prints
+  // in both forms: it is short, it is actionable, and it is never in the way of anything.
+  if (report.docsMcp?.state === "unconnected") {
+    blocks.push(
+      [
+        "AI clients:",
+        ...report.docsMcp.findings.map((finding) => `${HEALTH_INDENT}${finding}`),
+        `${HEALTH_INDENT}${DOCS_MCP_ACTION}`,
+      ].join("\n"),
+    );
+  }
+
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
@@ -3165,6 +3200,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // consumer that an empty `missing` is a project with the binding rather than one that never asked.
     featureRatelimitIds: report.featureRatelimitIds
       ? { state: report.featureRatelimitIds.state, findings: report.featureRatelimitIds.findings }
+      : null,
+    docsMcp: report.docsMcp
+      ? { state: report.docsMcp.state, findings: report.docsMcp.findings, detail: describeDocsMcp(report.docsMcp) }
       : null,
     selfBinding: report.selfBinding
       ? {

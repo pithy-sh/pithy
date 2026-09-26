@@ -224,6 +224,41 @@
       ]
     },
     {
+      "path": "docs",
+      "flags": []
+    },
+    {
+      "path": "docs connect",
+      "flags": [
+        "--client",
+        "--all",
+        "--no-all",
+        "--scope",
+        "--print",
+        "--no-print",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "docs disconnect",
+      "flags": [
+        "--client",
+        "--all",
+        "--no-all",
+        "--scope",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "docs status",
+      "flags": [
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "doctor",
       "flags": [
         "--worker",

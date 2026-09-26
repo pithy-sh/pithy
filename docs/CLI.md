@@ -49,6 +49,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see [`commands/ui.md`](commands/ui.md)) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
+| `pithy docs <connect\|disconnect\|status>` | Point your AI coding agent at the Pithy documentation server — writes the `pithy` MCP entry into whichever of ten clients this machine has (Claude Code, Cursor, VS Code, Codex, Zed, Goose, …), merging into each tool's own file and leaving every other server in it alone. `--scope project` commits it for the team, `--scope user` follows you; a file it cannot parse is refused with the snippet to paste, never rewritten. No credential is written or read — the client runs the OAuth flow (see [`commands/docs.md`](commands/docs.md)) |
 | `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
 | `pithy --help` / `pithy -h` | Show help for any command |
 | `pithy --version` / `pithy -v` | Print the installed version |
@@ -125,6 +126,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
 | `pithy deploy` | [`commands/deploy.md`](commands/deploy.md) — Deploy to Cloudflare Workers |
 | `pithy dev` | [`commands/dev.md`](commands/dev.md) — Run every Worker the project composes locally under one supervisor |
+| `pithy docs` | [`commands/docs.md`](commands/docs.md) — Connect the documentation server to your AI coding agent |
 | `pithy doctor` | [`commands/doctor.md`](commands/doctor.md) — Check the toolchain, the project, and for a new CLI version |
 | `pithy email` | [`commands/email.md`](commands/email.md) — Send, template, and inspect transactional mail |
 | `pithy env` | [`commands/env.md`](commands/env.md) — Report every Worker's environments, bindings, and ids |
@@ -750,6 +752,7 @@ COMMANDS
   Toolchain
      doctor    Check the toolchain, project, and for a new CLI version
       alias    Install the `p.` shortcut for `pithy`
+       docs    Connect the Pithy documentation server to your AI coding agent
 
 Use pithy <command> --help for more information about a command.
 ```

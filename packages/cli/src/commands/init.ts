@@ -24,6 +24,7 @@ import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from ".
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { installAlias } from "./alias";
+import { offerDocs } from "./docs";
 
 /**
  * Offer the `p.` shortcut once, right after scaffolding (docs/CLI.md §2.7). Interactive only — a `--json`
@@ -544,6 +545,8 @@ export default defineCommand({
       // Offer the shortcut only to a human at a terminal — never in a --json or piped run.
       if (!args.json && process.stdin.isTTY && process.stdout.isTTY) {
         await offerAlias();
+        // And the docs server, which says nothing when this machine runs no AI client (#652).
+        await offerDocs();
       }
     }),
 });
