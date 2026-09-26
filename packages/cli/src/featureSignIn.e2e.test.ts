@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
@@ -65,10 +65,38 @@ const EMAIL_HOST = "replay-f643-feature-address--email";
 const ORIGIN = `https://${SCRIPT}.acme.workers.dev`;
 const PERSON = "ada@example.com";
 
-/** Every kit package the composed Worker imports, linked the way a working checkout is. */
-const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloudflare", "storage", "testers"];
-const REPO = resolve(import.meta.dirname, "..", "..", "..");
+/** Every kit package the composed Worker imports, installed the way a working checkout has them. */
+const KIT_PACKAGES = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloudflare", "storage", "testers"];
 
+/**
+ * **Every one of them but `core` is linked from a copy inside the fixture, never from the repository (#650
+ * review).**
+ *
+ * The rule is `test-utils/linkKit.ts`'s own: the link or the write, never both. This fixture deploys kit hosts,
+ * and `deployHostWorker` writes each host's resolved config and generated entry *beside that host's worker
+ * module* — through a link to the repository's own package that is
+ * `packages/email/src/workflows/.wrangler.feature.json` and `packages/secrets/src/manager/`'s equivalent. Neither
+ * is git-ignored and turbo's `inputs` negations do not reach them, so they land in another task's hashed input
+ * set while `ci/turboInputs.test.ts` runs `--dry=json` twice beside this file and compares the two plans. That is
+ * exactly the failure 34b55c6b fixed for `deployKit.test.ts`; this file was linking and writing too.
+ *
+ * **A link to a copy, rather than a copy in `node_modules`**, because both halves have to hold: `pithy add` must
+ * not reach npm, and it skips the registry only for a package whose realpath is *outside* the project's
+ * `node_modules` (`alreadyProvided`) — which a copy sitting in it is not. A link to `<fixture>/.kit/<pkg>`
+ * satisfies it, resolves each copy's kit peers back through the fixture's own scope, and puts every write the
+ * deploy makes inside the directory `afterAll` removes.
+ *
+ * **All of them, not only the four written into, and `core` deliberately not.** Module-level seams are shared by
+ * name, so a fixture holding a copy of `secrets` beside a link to the repository's `auth` has two
+ * `@pithy-sh/secrets` modules, and the one the app Worker composed is not the one auth reads: the feature
+ * answered 500 on `The shared secrets accessor is not configured.` `core` is the exception and the reason the
+ * rest work — it carries the composition registry this file's own harness reads through `createEntrypoint`, so
+ * the fixture and the harness must have **one** core, and the repository's own is what gives them one.
+ */
+const COPIED = KIT_PACKAGES.filter((pkg) => pkg !== "core");
+
+/** This repository's `packages/`, where every kit package is copied or linked from. */
+const KIT_SOURCE = resolve(import.meta.dirname, "..", "..");
 /** More ids than any run here asks for. Miniflare binds databases by name up front, so the pool is fixed. */
 const D1_POOL = ["D1_1", "D1_2", "D1_3", "D1_4", "D1_5", "D1_6", "D1_7", "D1_8"];
 
@@ -86,7 +114,19 @@ beforeAll(async () => {
   const scope = join(dir, "node_modules", "@pithy-sh");
   await rm(scope, { recursive: true, force: true });
   await mkdir(scope, { recursive: true });
-  for (const pkg of LINKED) await symlink(join(REPO, "packages", pkg), join(scope, pkg));
+  // The copies first, then one link each — see the note on COPIED for why it is this way round.
+  for (const pkg of COPIED) {
+    await cp(join(KIT_SOURCE, pkg), join(dir, ".kit", pkg), { recursive: true, dereference: false });
+    // **The copy's own `@pithy-sh` scope goes**, and it is the whole of why a copy alone was not enough: the
+    // workspace install leaves `packages/auth/node_modules/@pithy-sh` linking back at the repository's packages,
+    // so a copied `auth` read the repository's `secrets` while the app Worker composed the fixture's — two
+    // module-level configs, and `configureSharedSecrets` wrote to one of them. `packageManager.ts` names that
+    // failure exactly. Without it, `@pithy-sh/*` resolves up to the fixture's own scope; everything else in that
+    // directory — better-auth, hono, kysely — stays where the install put it.
+    await rm(join(dir, ".kit", pkg, "node_modules", "@pithy-sh"), { recursive: true, force: true });
+    await symlink(join(dir, ".kit", pkg), join(scope, pkg));
+  }
+  await symlink(join(KIT_SOURCE, "core"), join(scope, "core"));
   for (const capability of ["auth", "storage", "testers"]) {
     await runAdd({
       account: null,

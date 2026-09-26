@@ -11,7 +11,7 @@ import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { planAppWorkflows, reconcileAppWorkflows } from "./appWorkflows";
+import { planAppWorkflows, reconcileAppWorkflows, unhostableAppJobs } from "./appWorkflows";
 
 /**
  * Workflows the adopter's **own app capability** declares.
@@ -159,6 +159,38 @@ describe("planAppWorkflows", () => {
       workflows: { sweep: { binding: "SWEEP", params: z.object({}) } },
     });
     expect(() => planAppWorkflows(classless, { project: PROJECT, env: "dev" })).toThrow(PithyError);
+  });
+});
+
+/**
+ * **The preflight and the writer must mean one thing by "cannot be hosted" (#650 review).**
+ *
+ * `feature/provision.ts` asks this before a feature run creates anything; `planAppWorkflows` refuses the same
+ * declaration when the stanza is written. Two readings of one rule is a branch that passes the preflight and
+ * then throws with its resources already on the account — the exact defect the preflight exists to close — so
+ * the two are held together here rather than each tested alone.
+ */
+describe("unhostableAppJobs", () => {
+  test("names the job planAppWorkflows refuses, and nothing else", () => {
+    const mixed = defineCapability({
+      name: "dashboard",
+      requiredBindings: [],
+      workflows: {
+        rotate: { binding: "ROTATE", params: z.object({}), className: "Rotate" },
+        sweep: { binding: "SWEEP", params: z.object({}) },
+      },
+    });
+    expect(unhostableAppJobs(mixed)).toEqual(["dashboard/sweep"]);
+    expect(() => planAppWorkflows(mixed, { project: PROJECT, env: "staging" })).toThrow(PithyError);
+  });
+
+  test("and an app whose jobs all declare a class names none, and plans", () => {
+    expect(unhostableAppJobs(appCapability())).toEqual([]);
+    expect(() => planAppWorkflows(appCapability(), { project: PROJECT, env: "staging" })).not.toThrow();
+  });
+
+  test("an app with no workflows at all names none", () => {
+    expect(unhostableAppJobs(defineCapability({ name: "dashboard", requiredBindings: [] }))).toEqual([]);
   });
 });
 

@@ -265,12 +265,22 @@ function seedValue(value: unknown): unknown {
  * an emptied `ratelimits` was not caution — it was a feature stanza with no `AUTH_RATE_LIMITER`, and auth
  * refusing every request on `Missing required bindings`.
  *
+ * **`send_email` is the second, and it is one by the same reading (#650 review).** An entry is
+ * `{ name, destination_address? }`: a binding name, and an address verified once at the Cloudflare account. No
+ * environment owns a copy of an Email Sending destination — the kit's own host templates carry theirs unchanged
+ * into every environment, which is that reading already in force. And `email` is in neither `isWrittenBinding`
+ * nor `isProvisionedBinding`, so nothing anywhere would ever refill an emptied one: a hand-written `NOTIFY` came
+ * back as `env.NOTIFY is undefined` at the first send, not even as a missing binding.
+ *
  * A name table rather than a shape rule, because no shape tells a limiter's `namespace_id` — a counter label —
- * from a namespace's `id`. Every key here must also be one {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which
- * `wranglerInheritance.test.ts` holds. `workflows` is deliberately not here: its entries name `dev`'s
- * Workflows, and a scope that needs them writes its own (`feature/hosts.ts`).
+ * from a namespace's `id`, nor an Email Sending destination from a queue's name. Every key here must also be one
+ * {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which `wranglerInheritance.test.ts` holds. `workflows` is
+ * deliberately not here: its entries name `dev`'s Workflows, and a scope that needs them writes its own
+ * (`feature/hosts.ts`, `project/appWorkflows.ts`). `queues` and `analytics_engine_datasets` are not here either,
+ * and for the opposite reason to `workflows`: each entry names a resource an environment owns, nothing derives
+ * one per environment, and a feature carrying the top level's would bind production's queue.
  */
-export const CARRIED_WHOLE: readonly string[] = ["ratelimits"];
+export const CARRIED_WHOLE: readonly string[] = ["ratelimits", "send_email"];
 
 /** A config far enough to reach its stanzas. The caller casts back to whatever slice it cares about. */
 interface StanzaHost {

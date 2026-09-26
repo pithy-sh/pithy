@@ -306,6 +306,13 @@ export interface ProvisionReport {
    * so. One entry per Worker that had any; absent on a run that stripped nothing.
    */
   routesDropped?: { worker: string; routes: string[] }[];
+  /**
+   * **Bindings a feature's stanza still points at a script this project does not own (#650 review)** — a
+   * `durable_objects` entry naming somebody else's Worker. A feature has no copy of that Worker to retarget at,
+   * so the entry is left as the adopter wrote it and the run says so. One entry per Worker that had any; absent
+   * on a run with none.
+   */
+  foreignScripts?: { worker: string; bindings: string[] }[];
 }
 
 /** One file a provisioning run wrote a Worker's ids into. */
@@ -468,6 +475,20 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
   }));
 
 /**
+ * The Worker of this project a binding's target names — its deploy name, or its `apps/<name>` directory — or
+ * `undefined` when the name is not one of them.
+ *
+ * **One lookup, two callers with two answers to a miss.** A `service` target the adopter wrote must exist, so
+ * {@link resolveServiceTarget} refuses one that does not. A `durable_objects` `script_name` may legitimately name
+ * a Worker outside this project, so the feature writer takes the `undefined` and reports it (#650 review). Two
+ * spellings of the match would be two answers to "is this one of ours?", which is the drift a sibling Worker's DO
+ * binding was already on the wrong side of.
+ */
+export function findProjectWorker(workers: readonly ProvisionWorker[], target: string): ProvisionWorker | undefined {
+  return workers.find((worker) => worker.name === target || worker.dir.endsWith(`/${target}`));
+}
+
+/**
  * Resolve a `service` binding's target to the script name that Worker actually deploys under.
  *
  * A service binding names its target as it appears in `apps/<name>/` (`BindingSpec.service`), but a Worker
@@ -482,7 +503,7 @@ export const defaultResolveWorkers = async (projectDir: string, environment: str
  * dangling service name is the exact failure this resolution exists to remove.
  */
 function resolveServiceTarget(workers: readonly ProvisionWorker[], target: string): string {
-  const found = workers.find((worker) => worker.name === target || worker.dir.endsWith(`/${target}`));
+  const found = findProjectWorker(workers, target);
   if (!found) {
     throw new ValidationError({
       message: `A service binding targets "${target}", which is not one of this project's workers.`,
@@ -632,6 +653,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   const routesDropped: { worker: string; routes: string[] }[] = [];
+  const foreignScripts: { worker: string; bindings: string[] }[] = [];
   // One lookup for the whole run, and only where it is read: a declared environment's address is declared.
   const subdomain =
     !scope.source && options.workersSubdomain !== undefined ? await options.workersSubdomain() : undefined;
@@ -686,6 +708,13 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // name somebody else's jobs. A Worker declaring no `app` passes nothing and writes nothing.
       ...(worker.config?.app ? { app: worker.config.app } : {}),
       ...(subdomain !== undefined ? { subdomain } : {}),
+      // The one resolution `services` goes through, handed to the writer so a `durable_objects` entry naming a
+      // sibling Worker reaches this scope's copy of it rather than being dropped (#650 review).
+      scopedScript: (target) => {
+        const found = findProjectWorker(workers, target);
+        return found ? scopedName(found.name) : undefined;
+      },
+      onForeignScripts: (bindings) => foreignScripts.push({ worker: worker.name, bindings }),
       onRoutesDropped: (routes) => routesDropped.push({ worker: worker.name, routes }),
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
@@ -718,6 +747,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     configs,
     committed: scope.source,
     ...(routesDropped.length > 0 ? { routesDropped } : {}),
+    ...(foreignScripts.length > 0 ? { foreignScripts } : {}),
   };
 }
 

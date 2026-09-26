@@ -8,7 +8,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import {
   type FeatureIdentity,
   featureResourceName,
@@ -1802,6 +1802,78 @@ describe("a feature deployment serves a request (#650)", () => {
       }),
     });
   }
+
+  /**
+   * **A job with no class is refused before anything is created (#650 review, defect 1).**
+   *
+   * `className` is optional on a `WorkflowSpec`, and `hostWorkflowsFor` refuses a job without one — which is
+   * right, and is what `pithy worker sync` does with the same declaration today. What was wrong is *when*: the
+   * refusal came from the stanza writer, which runs after every D1, KV, R2 and store entry has been created, so
+   * the run threw with the feature's resources already on the account and every re-run threw again in the same
+   * place. It joins the slug-budget refusal at the front of the run instead.
+   */
+  test("an app job with no className is refused before a single resource exists", async () => {
+    // A binding whose resource provisioning creates, so "nothing exists" is a claim about a run that would
+    // otherwise have created something. Without it the case passes on a capability that provisions nothing.
+    const classless = defineCapability({
+      name: "board",
+      requiredBindings: [{ type: "kv", name: "CACHE" }],
+      workflows: { rotate: { binding: "CONNECTION_ROTATION", params: z.object({}) } },
+    });
+    const { stores, provisioners } = fakeProvisioners();
+    await expect(
+      provisionFeature({
+        administersItself: false,
+        projectDir: dir,
+        capabilities: [classless],
+        identity,
+        provisioners,
+        resolveWorkers: async () => [
+          {
+            name: "acme-board",
+            dir: join(dir, "apps", "board"),
+            capabilities: [classless],
+            config: { capabilities: [], app: classless },
+          },
+        ],
+        migrate: async () => {},
+        seed: async () => {},
+      }),
+    ).rejects.toThrow(/board\/rotate/);
+    // Nothing on the account, which is the whole of the defect: the old refusal came after all three.
+    expect([...stores.d1.keys(), ...stores.kv.keys(), ...stores.r2.keys()]).toEqual([]);
+  });
+
+  test("the refusal names the class to add and the file to add it in", async () => {
+    const classless = defineCapability({
+      name: "board",
+      requiredBindings: [],
+      workflows: { rotate: { binding: "CONNECTION_ROTATION", params: z.object({}) } },
+    });
+    const { provisioners } = fakeProvisioners();
+    const error = await provisionFeature({
+      administersItself: false,
+      projectDir: dir,
+      capabilities: [classless],
+      identity,
+      provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "acme-board",
+          dir: join(dir, "apps", "board"),
+          capabilities: [classless],
+          config: { capabilities: [], app: classless },
+        },
+      ],
+      migrate: async () => {},
+      seed: async () => {},
+    }).catch((thrown: unknown) => thrown as PithyError);
+    expect(error).toBeInstanceOf(PithyError);
+    // Through `sentenceOf`, the one renderer a terminal sees: the message and the action it carries.
+    expect(sentenceOf(error)).toMatch(/board\/rotate/);
+    expect(sentenceOf(error)).toMatch(/className/);
+    expect(sentenceOf(error)).toMatch(/pithy\.config\.ts/);
+  });
 
   test("the generated stanza carries the app's own Workflows beside the kit host's", async () => {
     await provision();

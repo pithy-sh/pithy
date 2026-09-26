@@ -98,6 +98,30 @@ export function planAppWorkflows(app: Capability, parts: AppWorkflowNameParts): 
   };
 }
 
+/**
+ * **Every job the app declares that cannot be hosted — the dispatch keys {@link planAppWorkflows} would
+ * refuse (#650 review).**
+ *
+ * `className` is optional on a `WorkflowSpec`, so an app may declare a job with no class, and `hostWorkflowsFor`
+ * refuses to name one: there would be no class for wrangler to instantiate. **Refused, not skipped**, and that is
+ * the kit's answer everywhere — `pithy worker sync` throws on the same declaration today, and `pithy doctor`
+ * reports it as `unwritable-declaration`. Skipping would be worse than it looks: `createBackend` derives a
+ * required `workflow` binding from **every** registered job whether or not it has a class, so a silently skipped
+ * job is a Worker that deploys and then answers `Missing required bindings` on its first request. The declaration
+ * is the truth; a job that cannot be deployed is a declaration to fix, not one to quietly drop.
+ *
+ * What this adds is **when**. The refusal used to arrive from the stanza writer, after a feature run had created
+ * every database, namespace, bucket and store entry. This lets `pithy provision --feature` ask first.
+ *
+ * Read from the same registry `planAppWorkflows` plans from, and `appWorkflows.test.ts` holds the two together:
+ * a capability this names is one `planAppWorkflows` throws for, and one it does not name is one that plans.
+ */
+export function unhostableAppJobs(app: Capability): string[] {
+  return Object.values(composeWorkflows([app]))
+    .filter((entry) => !entry.spec.className)
+    .map((entry) => entry.key);
+}
+
 /** The wrangler slice this module reads and writes. Unknown keys survive untouched — comment-json holds them. */
 export interface WorkflowStanza {
   workflows?: (AppOwnedWorkflow & { script_name?: string })[];

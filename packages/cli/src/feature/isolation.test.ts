@@ -4,7 +4,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { type FeatureIdentity, featureWorkerName } from "@pithy-sh/core/src/naming/feature";
 import { email } from "@pithy-sh/email/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
@@ -16,6 +16,7 @@ import { testers } from "@pithy-sh/testers/src/capability";
 import { vector } from "@pithy-sh/vector/src/capability";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { z } from "zod";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import { CloudflareSecretsProvisioner } from "../capabilities/secretsProvisioner";
 import { deployKitWorkers } from "../project/deployKit";
@@ -86,6 +87,22 @@ const COMPOSED: Record<string, Capability> = {
 };
 const capabilities = Object.values(COMPOSED);
 
+/**
+ * **The adopter's own app capability — a Workflow of its own, and a Durable Object beside it (#650).**
+ *
+ * The fixture composed only kit capabilities, so neither of the writes #650 added was walked by the gate that
+ * exists to prove a feature binds nothing of anybody else's: the app's own `workflows` entry, named for the
+ * feature and same-script, and the `durable_objects` entry a feature now carries and retargets. Both are
+ * followed by `shared()` below — a Workflow by its `name`, a Durable Object by the `script_name` it reaches.
+ */
+const app = defineCapability({
+  name: "board",
+  requiredBindings: [],
+  workflows: {
+    rotate: { binding: "CONNECTION_ROTATION", params: z.object({}), className: "ConnectionRotationWorkflow" },
+  },
+});
+
 let dir: string;
 let appDir: string;
 
@@ -93,6 +110,13 @@ beforeAll(async () => {
   dir = await mkdtemp(join(import.meta.dirname, "..", "..", ".e2e-feature-isolation-"));
   appDir = join(dir, "apps", "app");
   await mkdir(appDir, { recursive: true });
+  // The sibling `LOBBY` names, as far as this fixture needs one: a directory with a config of its own, so
+  // provisioning can name it for the feature the way it names any other Worker.
+  await mkdir(join(dir, "apps", "realtime"), { recursive: true });
+  await writeFile(
+    join(dir, "apps", "realtime", "wrangler.jsonc"),
+    JSON.stringify({ name: "replay-realtime", main: "./src/index.ts", compatibility_date: "2026-06-01" }),
+  );
   // A tracked config the way an adopter leaves one: `dev`'s ids and routes at the top level, a production stanza
   // with its own limiter, and a rate limiter whose namespace a feature must never reuse.
   await writeFile(
@@ -104,6 +128,14 @@ beforeAll(async () => {
       routes: [{ pattern: "replay.example", custom_domain: true }],
       d1_databases: [{ binding: "DB", database_name: "replay-dev-db", database_id: "DB" }],
       ratelimits: [TOP_LIMITER],
+      // One class in this Worker's own main, one in a sibling this project deploys: the two shapes a feature
+      // must answer for, copied and retargeted (#650).
+      durable_objects: {
+        bindings: [
+          { name: "ROOM", class_name: "Room" },
+          { name: "LOBBY", class_name: "Lobby", script_name: "replay-realtime" },
+        ],
+      },
       vars: { ENVIRONMENT: "dev", PROJECT, WORKER: "app" },
       env: {
         prod: {
@@ -291,7 +323,11 @@ async function provisioned() {
     provisioners: stand.provisioners,
     store: stand.store,
     administersItself: false,
-    resolveWorkers: async () => [{ name: "replay-app", dir: appDir, capabilities }],
+    resolveWorkers: async () => [
+      { name: "replay-app", dir: appDir, capabilities, config: { capabilities, app } },
+      // The sibling the `LOBBY` binding names. It has no config of its own here; only its name is read.
+      { name: "replay-realtime", dir: join(dir, "apps", "realtime"), capabilities: [] },
+    ],
     migrate: async () => {},
     seed: async () => {},
     workersSubdomain: async () => "acme",
