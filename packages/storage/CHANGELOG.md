@@ -1,5 +1,13 @@
 # @pithy-sh/storage
 
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [[`b11d67b`](https://github.com/pithy-sh/pithy/commit/b11d67b4fe97ef0808ee031fcff7f92608370a4c), [`aa8b18a`](https://github.com/pithy-sh/pithy/commit/aa8b18a99f9cb17486d34880e83c9b874f6c202d)]:
+  - @pithy-sh/cloudflare@0.4.0
+  - @pithy-sh/secrets@0.3.0
+
 ## 0.2.7
 
 ### Patch Changes

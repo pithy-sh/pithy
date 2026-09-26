@@ -1,5 +1,12 @@
 # @pithy-sh/turnstile
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [[`aa8b18a`](https://github.com/pithy-sh/pithy/commit/aa8b18a99f9cb17486d34880e83c9b874f6c202d)]:
+  - @pithy-sh/secrets@0.3.0
+
 ## 0.3.1
 
 ### Patch Changes
