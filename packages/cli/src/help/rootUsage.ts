@@ -124,7 +124,7 @@ export async function renderRootUsage<T extends ArgsDef = ArgsDef>(cmd: CommandD
 export async function showRootUsage<T extends ArgsDef = ArgsDef>(cmd: CommandDef<T>): Promise<void> {
   // Caught for the same reason citty catches in its own `showUsage`, and it matters more here: this is
   // installed as `runMain`'s `showUsage`, so it runs *inside* citty's `CLIError` handler. Rendering
-  // resolves all twenty-six command modules, and a module that rejects at import would throw out of that
+  // resolves all twenty-seven command modules, and a module that rejects at import would throw out of that
   // handler — turning `pithy` and `pithy nonsense` into an unhandled-rejection stack instead of a help
   // screen, which is the crash-banner failure #329 removed. stderr, and the run still ends.
   try {

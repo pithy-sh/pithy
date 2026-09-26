@@ -18,7 +18,7 @@ import type { CommandDef } from "citty";
  * step, and under `bun run` adds `error: script "pithy" exited with code 1` as the loudest and least
  * informative line on screen (#319).
  *
- * **One rule, one place.** Fifteen commands take that path — the root and fourteen groups — and giving
+ * **One rule, one place.** Sixteen commands take that path — the root and fifteen groups — and giving
  * each of them a `run` would be fifteen producers of one rule, plus a subtlety that guarantees drift:
  * citty runs a parent's `run` *after* dispatching to a subcommand, so each would need to know whether it
  * had been dispatched through. This module answers the question before citty is asked, so a group added
@@ -60,7 +60,7 @@ async function resolve(value: SubCommand): Promise<CommandDef> {
  *
  * Copying each record onto a null prototype is the whole fix: an inherited name resolves to nothing, and
  * citty's `E_UNKNOWN_COMMAND` names it and exits non-zero exactly as it does for a typo. Done here, once,
- * rather than at the twenty-six `defineCommand` calls — the same reason the usage rule is: a group
+ * rather than at the twenty-seven `defineCommand` calls — the same reason the usage rule is: a group
  * added next year inherits it with nothing to remember. **Laziness survives**: a thunk is wrapped, never
  * called, so the imports this tree defers stay deferred until a name is actually walked into.
  */

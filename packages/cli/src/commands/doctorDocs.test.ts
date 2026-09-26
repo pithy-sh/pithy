@@ -1542,6 +1542,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "dashboard",
     "deploy",
     "dev",
+    "docs",
     "email",
     "env",
     "feature",

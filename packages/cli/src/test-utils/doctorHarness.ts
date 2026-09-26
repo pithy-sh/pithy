@@ -148,6 +148,11 @@ export function doctorHarness(): DoctorHarness {
         tokenStatus: "active",
         credentialSplit: null,
       }),
+      // And once more for the AI clients (#652): unstubbed, the check reads the operator's own
+      // `~/.cursor`, `~/.codex` and the rest, so the report would say something different on every
+      // machine — and `mcp/home.ts` refuses the real home under vitest rather than let it. The connected
+      // state is the quiet one; the suites about the block override this.
+      checkDocsMcp: async () => ({ state: "ok" as const, findings: [] }),
       // Same reason: unstubbed, every test here would list the real account's D1 and R2.
       checkProjectName: async () => ({ state: "ok" as const, project: "pithy-app", misnamed: [] }),
       // And the same again for the machine's port registry: unstubbed, `present` and every row of the
