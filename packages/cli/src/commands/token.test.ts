@@ -8,10 +8,12 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   collectPermissionFlags,
+  deadTokenNotice,
   parsePermissions,
   parseStore,
   publicToken,
   resolveAppDatabaseId,
+  routeScopeNotice,
   tokenProfiles,
 } from "./token";
 
@@ -138,5 +140,115 @@ describe("tokenProfiles", () => {
 
   test("a healthy set resolves to its profiles", () => {
     expect(Object.keys(tokenProfiles([worker()]))).toContain("ci-system");
+  });
+});
+
+describe("routeScopeNotice", () => {
+  const row = (
+    profile: string,
+    routeScope: "not-required" | "scoped" | "stale" | "overridden" | "inactive" | "unknown",
+  ) => ({
+    profile,
+    env: "staging",
+    name: `acme-staging-${profile}`,
+    tokenId: "t1",
+    routeScope,
+  });
+
+  test("names the stale profile and the one command that fixes it — rotate, not mint", () => {
+    // #651 round four. `mint` rolls the value and never touches the policy set, so it cannot re-scope a
+    // token that predates the zone grant; `rotate` mints with the current policies and deletes the old
+    // one, which is what re-scoping is. Naming mint here is the no-op the earlier rounds kept finding.
+    const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
+    expect(notice).toContain("ci-system");
+    expect(notice).toContain("pithy token rotate ci-system --env staging");
+    expect(notice).not.toContain("pithy token mint");
+    // And it says what rotate costs, because it is not the same act as a mint.
+    expect(notice).toMatch(/replace|new token|deletes the old/i);
+  });
+
+  test("the stale line states what the token lacks, never when it was minted", () => {
+    // A `--permission` narrowing on a *rotate* produces a route-less token seconds ago, and "minted
+    // before this project's domains were scoped" is then simply false. The remedy is unchanged — a plain
+    // rotate restores the profile's set — so only the diagnosis needed to stop guessing at history.
+    const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
+    expect(notice).not.toMatch(/minted before/);
+    expect(notice).toMatch(/does not carry/);
+  });
+
+  test("an inactive token is reported as dead rather than as unscoped", () => {
+    const notice = routeScopeNotice([row("ci-system", "inactive")], "staging");
+    expect(notice).toMatch(/disabled|expired|not active/i);
+    expect(notice).not.toContain("minted before");
+  });
+
+  test("an overridden grant names the override, never a re-mint that would not change it", () => {
+    // The no-op loop: the adopter runs the printed command, the standing override strips the route
+    // policy from that mint too, and the listing prints the same line again. #651 round three.
+    const notice = routeScopeNotice([row("ci-system", "overridden")], "staging");
+    expect(notice).toContain("tokens.overrides");
+    expect(notice).toContain("re-minting will not change that");
+    // The mint command may appear, but never as the remedy on its own: it is only useful *after* the
+    // override is gone, and the line that offers it has to say so.
+    const commandLine = (notice ?? "").split("\n").find((line) => line.includes("pithy token rotate"));
+    expect(commandLine).toMatch(/Remove that override/);
+  });
+
+  test("a stale token gets the plain rotate remedy, with no override talk", () => {
+    const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
+    expect(notice).toContain("pithy token rotate ci-system --env staging");
+    expect(notice).not.toContain("tokens.overrides");
+  });
+
+  test("says nothing when every token is scoped, needs no scope, or could not be read", () => {
+    expect(routeScopeNotice([row("ci-system", "scoped")], "staging")).toBeNull();
+    expect(routeScopeNotice([row("ci-system", "not-required")], "staging")).toBeNull();
+    // Unknown is not stale: claiming a token is wrong on a policy set that never came back would send
+    // an adopter to roll a working credential.
+    expect(routeScopeNotice([row("ci-system", "unknown")], "staging")).toBeNull();
+  });
+});
+
+describe("deadTokenNotice", () => {
+  const result = (status?: "active" | "disabled" | "expired") => ({
+    profile: "ci-system",
+    env: "staging",
+    tokenId: "t1",
+    name: "acme-staging-ci-system",
+    value: "never printed",
+    sink: { sink: "dev-vars" as const, location: "/tmp/tokens.json" },
+    ...(status ? { status } : {}),
+  });
+
+  test.each(["disabled", "expired"] as const)("a %s token is named, with what to do about it", (status) => {
+    // The value is real and the token is dead. `Done.` over that is the failure (#651).
+    const notice = deadTokenNotice(result(status));
+    expect(notice).toContain(status);
+    expect(notice).toContain("pithy token rotate ci-system --env staging");
+  });
+
+  test("says nothing for an active token, or one whose status Cloudflare did not give", () => {
+    expect(deadTokenNotice(result("active"))).toBeNull();
+    expect(deadTokenNotice(result())).toBeNull();
+  });
+
+  test("never carries the secret", () => {
+    expect(deadTokenNotice(result("disabled"))).not.toContain("never printed");
+  });
+});
+
+describe("publicToken", () => {
+  test("carries the status so --json can be acted on, and never the value", () => {
+    const json = publicToken({
+      profile: "ci-system",
+      env: "staging",
+      tokenId: "t1",
+      name: "acme-staging-ci-system",
+      value: "never printed",
+      sink: { sink: "dev-vars", location: "/tmp/tokens.json" },
+      status: "disabled",
+    });
+    expect(json).toMatchObject({ status: "disabled" });
+    expect(JSON.stringify(json)).not.toContain("never printed");
   });
 });

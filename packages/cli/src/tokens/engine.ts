@@ -3,26 +3,32 @@
 
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type {
+  AccountTokenPolicy,
   AccountTokenSummary,
   MintedAccountToken,
   TokenPermission,
 } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
-import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
+  CI_SYSTEM_PROFILE,
   type ProfileOverride,
   profilePermissions,
   resolveProfile,
+  routePermissions,
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
+import { type ResolvedRouteZone, routeZoneIds } from "./routeZones";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
 
 /** The account-token control plane the engine drives — the subset of `CloudflareAccountTokensManager` it needs. */
 export interface AccountTokenControl {
   mintToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken>;
+  /** Resolve permission-group display names to their account ids — for reading a live token's grants. */
+  resolvePermissionGroups(names: string[]): Promise<Array<{ id: string }>>;
   rollToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken>;
   findTokenByName(name: string): Promise<AccountTokenSummary | null>;
   listTokens(): Promise<AccountTokenSummary[]>;
@@ -78,6 +84,19 @@ export interface TokenEngine {
   audit?: TokenAudit;
   /** Resolves an adopter's `pithy.config.ts` override for a profile. */
   override?: (profile: string) => ProfileOverride | undefined;
+  /**
+   * The zones this environment's declared domains sit in, resolved against the account (#651).
+   *
+   * Only the `ci-system` token gets them, because only CI deploys: the route write
+   * (`POST /zones/<zone>/workers/routes`) is the last step of `pithy deploy` for an environment with a
+   * declared domain, and a token with no zone resource cannot make it. A resolver that answers `[]` —
+   * or is absent, as it is in every caller that does not deploy — mints exactly the account-scoped
+   * token this engine minted before route scoping existed.
+   *
+   * It may **throw**, and a throw here fails the mint. That is the design: a zone the account does not
+   * hold cannot be scoped, and a token minted without it passes every local check and fails in CI.
+   */
+  routeZones?: () => Promise<ResolvedRouteZone[]>;
 }
 
 /** Per-call overrides (CLI flags) that win over the profile default and the config override. */
@@ -137,6 +156,16 @@ export interface TokenResult {
   /** The secret token value — for in-process use. NEVER include in CLI output or `--json`. */
   value: string;
   sink: SinkTarget;
+  /**
+   * The token's lifecycle status, when Cloudflare said — so the command can refuse to call a dead
+   * credential a success.
+   *
+   * A mint *rolls* an existing token's value, and a roll says nothing about whether that token is still
+   * alive: a `disabled` or `expired` token gives up a perfectly real new secret that fails on its first
+   * call. The value was written to the sink and `Done.` was printed, which is the one thing that must
+   * not happen quietly. `undefined` means the response did not say, which is not a claim that it is fine.
+   */
+  status?: "active" | "disabled" | "expired";
 }
 
 /** Emit a lifecycle event through the audit sink; non-fatal — an audit failure never breaks the action. */
@@ -149,13 +178,30 @@ async function emit(engine: TokenEngine, event: TokenAuditEvent): Promise<void> 
   }
 }
 
+/**
+ * The config override and the per-call CLI flags, merged — **and where the permissions came from.**
+ *
+ * The provenance is not decoration (#651 round three). Both a standing `tokens.overrides` entry and a
+ * one-off `--permission` suppress the route policy, and the two need opposite handling: a standing
+ * declaration is the adopter saying what this credential permanently is, while a flag is one command
+ * that, under replace semantics, would permanently re-scope a credential CI deploys with. Merging them
+ * into one indistinguishable field is what made the printed remedy a no-op loop in the first case and a
+ * silent strip in the second.
+ */
+interface MergedOverride {
+  override: ProfileOverride | undefined;
+  /** Where the permission set came from, or `null` when nothing overrode it. */
+  permissionsFrom: "config" | "flag" | null;
+}
+
 /** Merge the config override and the per-call CLI flags into one override (CLI flags win). */
-function mergeOverride(engine: TokenEngine, profile: string, options?: MintOptions): ProfileOverride | undefined {
+function mergeOverride(engine: TokenEngine, profile: string, options?: MintOptions): MergedOverride {
   const config = engine.override?.(profile);
   const merged: ProfileOverride = { ...config };
   if (options?.store) merged.store = options.store;
   if (options?.permissions) merged.permissions = options.permissions;
-  return Object.keys(merged).length > 0 ? merged : undefined;
+  const permissionsFrom = options?.permissions ? "flag" : config?.permissions ? "config" : null;
+  return { override: Object.keys(merged).length > 0 ? merged : undefined, permissionsFrom };
 }
 
 /**
@@ -184,6 +230,33 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
 }
 
 /**
+ * The whole policy set a profile's token carries: its own account-scoped policy, plus — for `ci-system`
+ * alone — the zone-scoped route policy the project's declared domains require (#651).
+ *
+ * The zones resolve **before** any Cloudflare write, so an unresolvable one fails the mint rather than
+ * producing a credential that deploys green and cannot attach a route. Every other profile is a
+ * worker-consumer credential that never deploys, so its resolver is never called at all.
+ */
+async function tokenPolicies(
+  engine: TokenEngine,
+  profileName: string,
+  profile: TokenProfile,
+  override: ProfileOverride | undefined,
+): Promise<TokenPermission[]> {
+  const account = profilePermissions(profile, engine.accountId);
+  if (profileName !== CI_SYSTEM_PROFILE) return account;
+  // **An explicit narrowing means exactly what it says.** The route policy rides with the profile's
+  // *default* permission set — the thing `ci-system` is, grown from the composed capabilities — and not
+  // with every mint. An operator who writes `--permission d1:read`, or pins `tokens.overrides` in
+  // `pithy.config.ts`, is stating what this credential may do; adding a zone grant they did not ask for
+  // would make the flag a suggestion. It would also be the one scope they cannot take back, since
+  // naming `routes:write` by hand is refused.
+  if (override?.permissions) return account;
+  const zones = (await engine.routeZones?.()) ?? [];
+  return [...account, ...routePermissions(routeZoneIds(zones))];
+}
+
+/**
  * Mint the profile's token for an environment and return a usable value. **Rolls in place**: the token
  * name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's
  * *current* permissions — so adding a capability's `ciPermissions` (or an override) takes effect on the
@@ -201,12 +274,13 @@ export async function mintProfileToken(
   env: string,
   options?: MintOptions,
 ): Promise<TokenResult> {
-  const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
+  const { override } = mergeOverride(engine, profileName, options);
+  const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
 
   try {
-    const minted = await engine.tokens.rollToken(name, profilePermissions(profile, engine.accountId));
+    const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,
@@ -223,12 +297,57 @@ export async function mintProfileToken(
       tokenId: minted.id,
       store,
     });
-    return { profile: profileName, env, tokenId: minted.id, name, value: minted.value, sink };
+    return {
+      profile: profileName,
+      env,
+      tokenId: minted.id,
+      name,
+      value: minted.value,
+      sink,
+      ...(minted.status !== undefined ? { status: minted.status } : {}),
+    };
   } catch (error) {
     await emit(engine, { action: TokenAuditActions.minted, outcome: "failure", profile: profileName, env });
     throw error;
   }
 }
+
+/**
+ * Whether a live token is scoped to the zones this environment's declared domains need (#651).
+ *
+ * **The token's own policies are the record.** A `ci-system` token minted before zone-scoped routes
+ * carries one account policy and no zone resource, and it will fail the next deploy of a custom domain —
+ * so an adopter needs to be told before that deploy, and told what to run. Nothing local can say it: a
+ * mint writes a value, not a scope, and reading the token record needs `API Tokens Read`, which these
+ * least-privilege tokens deliberately do not carry. The policy set on the account's own token list is
+ * the one answer available, and this is it.
+ */
+export type RouteScope =
+  /** This environment declares no domain, so there is no route to attach and no zone to scope. */
+  | "not-required"
+  /** Every zone this environment's domains need is on the token. */
+  | "scoped"
+  /** A zone this environment's domains need is **not** on the token — it predates route scoping. */
+  | "stale"
+  /**
+   * The grant is missing **because a standing `tokens.overrides` says so**, so re-minting would produce
+   * the same token again.
+   *
+   * Distinct from `stale` because the remedy is a different edit, and printing `stale`'s remedy here is
+   * a lie the tool repeats forever: the adopter runs the command, the override strips the route policy
+   * from that mint too, and the listing says `stale` again.
+   */
+  | "overridden"
+  /**
+   * The token carries the grant and **is not active**, so Cloudflare refuses it on every call.
+   *
+   * Its own word because a `disabled` or `expired` token with a perfect policy set is not stale — the
+   * scope is right and the credential is dead — and reading the policies alone called it `scoped`,
+   * which tells an operator their next deploy will work.
+   */
+  | "inactive"
+  /** The token's policies did not come back, so nothing can be claimed either way. */
+  | "unknown";
 
 /** One row of `pithy token list`: a minted token's identity, never its value. */
 export interface TokenListItem {
@@ -237,7 +356,128 @@ export interface TokenListItem {
   name: string;
   tokenId: string;
   status?: string;
+  /** Whether this token can attach the routes this environment's declared domains need. */
+  routeScope: RouteScope;
 }
+
+/**
+ * What this environment needs a live `ci-system` token to carry, or why it cannot be said.
+ *
+ * `null` for "cannot be said", which is not the same as "carries nothing": the zones come from an
+ * account call and the group id from another, and either can fail for a caller that is perfectly
+ * entitled to see the listing.
+ */
+interface RouteRequirement {
+  zoneIds: readonly string[];
+  routeGroupId: string;
+}
+
+/**
+ * Every zone id a policy's `resources` names, and whether it names *all* of them.
+ *
+ * **Two shapes, because Cloudflare writes two.** A zone resource appears as a top-level
+ * `com.cloudflare.api.account.zone.<id>` key, and also nested one level inside an account key —
+ * `{ "com.cloudflare.api.account.<acct>": { "com.cloudflare.api.account.zone.<id>": "*" } }`, which is
+ * the form Cloudflare's own documentation gives for zones within an account. Scanning only the top
+ * level read a working token as stale and sent an operator to re-mint something that already worked.
+ * The `*` id is Cloudflare's all-zones wildcard and covers whatever this project declares.
+ */
+function zonesNamedBy(resources: Record<string, unknown>): { ids: Set<string>; all: boolean } {
+  const ids = new Set<string>();
+  let all = false;
+  const take = (key: string): void => {
+    if (!key.startsWith(ZONE_RESOURCE_PREFIX)) return;
+    const id = key.slice(ZONE_RESOURCE_PREFIX.length);
+    if (id === "*") all = true;
+    else ids.add(id);
+  };
+  for (const [key, value] of Object.entries(resources)) {
+    take(key);
+    if (typeof value === "object" && value !== null) for (const nested of Object.keys(value)) take(nested);
+  }
+  return { ids, all };
+}
+
+/** Whether a policy's resources reach one zone. */
+function policyReaches(policy: AccountTokenPolicy, zoneId: string): boolean {
+  const named = zonesNamedBy(policy.resources);
+  return named.all || named.ids.has(zoneId);
+}
+
+/** What can be said about one zone: covered, definitely not, or not knowable from this response. */
+type ZoneVerdict = "covered" | "uncovered" | "indeterminate";
+
+/**
+ * Read a live token's route coverage against what this environment needs.
+ *
+ * **Both halves of a policy, never one, and the effect as well.** A
+ * `com.cloudflare.api.account.zone.<id>` resource says which zone a policy is *about* and nothing about
+ * what it may do there — a zone-scoped `Zone Read` somebody added by hand matches the resource exactly
+ * and still cannot attach a route. And Cloudflare evaluates explicit denies first, so a `deny` policy
+ * naming the route group on the zone is the opposite of coverage rather than coverage.
+ *
+ * **A zone nobody named is decisively uncovered, whatever the groups say.** That distinction is the
+ * whole of round three's regression: requiring `permission_groups` before judging anything turned the
+ * original stale token — one account policy, no zone resource at all — into `unknown`, and the remedy
+ * stopped printing for exactly the shape it was written for. Only a zone that *is* named needs its
+ * groups read, and only then can the answer be "cannot tell".
+ */
+function routeScopeOf(token: AccountTokenSummary, requirement: RouteRequirement | null, needed: boolean): RouteScope {
+  if (!needed) return "not-required";
+  // Before any policy is read: a token Cloudflare will refuse cannot attach a route however it is
+  // scoped. A response that did not say is judged on its policies, since absent is not `disabled`.
+  if (token.status !== undefined && token.status !== "active") return "inactive";
+  if (requirement === null || token.policies === undefined) return "unknown";
+  const verdicts = requirement.zoneIds.map((zoneId) => zoneVerdict(token.policies ?? [], requirement, zoneId));
+  if (verdicts.includes("uncovered")) return "stale";
+  if (verdicts.includes("indeterminate")) return "unknown";
+  return "scoped";
+}
+
+/** The verdict for one required zone against a token's whole policy set. */
+function zoneVerdict(
+  policies: readonly AccountTokenPolicy[],
+  requirement: RouteRequirement,
+  zoneId: string,
+): ZoneVerdict {
+  const reaching = policies.filter((policy) => policyReaches(policy, zoneId));
+  // Nothing names this zone at all. No reading of any group changes that.
+  if (reaching.length === 0) return "uncovered";
+  const names = (policy: AccountTokenPolicy): boolean =>
+    (policy.permission_groups ?? []).some((group) => group.id === requirement.routeGroupId);
+  // Explicit deny first, exactly as Cloudflare evaluates it.
+  if (reaching.some((policy) => policy.effect === "deny" && names(policy))) return "uncovered";
+  if (reaching.some((policy) => policy.effect !== "deny" && names(policy))) return "covered";
+  // Something reaches the zone and did not say what it grants — that, and only that, is unknowable.
+  if (reaching.some((policy) => policy.permission_groups === undefined)) return "indeterminate";
+  return "uncovered";
+}
+
+/**
+ * What a `ci-system` token must carry here — the declared zones, and the id of the route group — or
+ * `null` when either could not be read.
+ *
+ * **Never throws, and that is the point.** This is the reporting path: `pithy token list` is what an
+ * operator runs to find out which credentials exist and whether the CI one is scoped, and both lookups
+ * behind the second question can fail while the first is perfectly answerable. A typo'd zone, a zone
+ * the account no longer holds, a caller without Zone Read — letting any of them out would take down
+ * every row in the listing, including the ones that have nothing to do with zones, at exactly the
+ * moment somebody is trying to find out what is wrong. Minting is where the same failure is loud.
+ */
+async function routeRequirement(engine: TokenEngine): Promise<RouteRequirement | null> {
+  try {
+    const zoneIds = routeZoneIds((await engine.routeZones?.()) ?? []);
+    if (zoneIds.length === 0) return { zoneIds, routeGroupId: "" };
+    const [group] = await engine.tokens.resolvePermissionGroups([...PERMISSION_GROUPS["routes:write"]]);
+    if (!group) return null;
+    return { zoneIds, routeGroupId: group.id };
+  } catch {
+    return null;
+  }
+}
+
+/** The resource-key prefix a zone-scoped policy is written under. */
+const ZONE_RESOURCE_PREFIX = "com.cloudflare.api.account.zone.";
 
 /**
  * List **this project's** minted tokens for an environment — identities only, never values.
@@ -260,11 +500,25 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
     byName.set(tokenName(engine.project, env, profile), profile);
   }
   const all = await engine.tokens.listTokens();
+  // Resolved once for the whole listing, and only if something in it is a `ci-system` token — a project
+  // with no CI token minted yet has no reason to read the account's zones.
+  const requirement = all.some((token) => byName.get(token.name) === CI_SYSTEM_PROFILE)
+    ? await routeRequirement(engine)
+    : null;
+  // Read once for the listing: a standing `tokens.overrides["ci-system"].permissions` is why a grant is
+  // absent, and is the thing to change rather than the mint command.
+  const overridden = engine.override?.(CI_SYSTEM_PROFILE)?.permissions !== undefined;
   return all.flatMap((token) => {
     if (!token.name.startsWith(prefix)) return [];
     const profile = byName.get(token.name);
     if (!profile) return [];
-    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status }];
+    // Only the CI credential deploys, so only it needs a route scope. Everything else is `not-required`.
+    const needed = profile === CI_SYSTEM_PROFILE && requirement?.zoneIds.length !== 0;
+    const scope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requirement, needed) : "not-required";
+    // A standing override strips the route policy from every mint, so a missing grant is that override's
+    // doing and re-minting would reproduce it exactly. Said as its own word, because the remedy differs.
+    const routeScope: RouteScope = scope === "stale" && overridden ? "overridden" : scope;
+    return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope }];
   });
 }
 
@@ -286,13 +540,14 @@ export async function rotateProfileToken(
   env: string,
   options?: RotateOptions,
 ): Promise<TokenResult> {
-  const profile = resolveProfile(engine.profiles, profileName, mergeOverride(engine, profileName, options));
+  const { override } = mergeOverride(engine, profileName, options);
+  const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
   try {
     // Snapshot the prior token id(s) before creating the replacement, so we delete exactly what predates it.
     const priorIds = (await engine.tokens.listTokens()).filter((token) => token.name === name).map((token) => token.id);
-    const minted = await engine.tokens.mintToken(name, profilePermissions(profile, engine.accountId));
+    const minted = await engine.tokens.mintToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
       env,
@@ -312,7 +567,15 @@ export async function rotateProfileToken(
       tokenId: minted.id,
       store,
     });
-    return { profile: profileName, env, tokenId: minted.id, name, value: minted.value, sink };
+    return {
+      profile: profileName,
+      env,
+      tokenId: minted.id,
+      name,
+      value: minted.value,
+      sink,
+      ...(minted.status !== undefined ? { status: minted.status } : {}),
+    };
   } catch (error) {
     await emit(engine, { action: TokenAuditActions.rotated, outcome: "failure", profile: profileName, env });
     throw error;

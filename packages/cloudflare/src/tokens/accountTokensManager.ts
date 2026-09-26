@@ -57,6 +57,36 @@ export function accountResource(accountId: string): Record<string, string> {
 }
 
 /**
+ * The resource scope for a **zone-level** policy: one `com.cloudflare.api.account.zone.<id>` key per
+ * zone, each `"*"`.
+ *
+ * Every zone is named individually, and that is the point (#651). Cloudflare also spells "every zone in
+ * this account" — `{ "com.cloudflare.api.account.<id>": { "com.cloudflare.api.account.zone.*": "*" } }` —
+ * and a `ci-system` token must never carry it: the credential a pipeline runs under gets the zones the
+ * project's own declared domains sit in and no others, so an account holding a customer's zone beside
+ * this project's is not one compromise away from both. De-duped, because two environments and two
+ * Workers routinely share one zone.
+ */
+export function zoneResources(zoneIds: readonly string[]): Record<string, string> {
+  const resources: Record<string, string> = {};
+  for (const zoneId of zoneIds) resources[`${ZONE_RESOURCE_PREFIX}${zoneId}`] = "*";
+  return resources;
+}
+
+/**
+ * Read an explicit `null` as "the response did not say", keeping the field **optional** rather than
+ * required-and-undefined.
+ *
+ * Every optional field decoded off a token list goes through this, and it is load-bearing rather than
+ * defensive (#651): `listTokens` decodes each entry with `safeParse` and drops what fails, so one `null`
+ * where a schema wanted a value makes a live token invisible to `findTokenByName` — and the next roll
+ * mints a *second* credential of the same name beside the first, with nothing saying so.
+ */
+function nullAsAbsent<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((value) => value ?? undefined, schema);
+}
+
+/**
  * A permission group available to account-owned tokens, as returned by the permission-groups list.
  * Only the id and name matter for resolution — the manager maps a requested name to its id.
  */
@@ -78,21 +108,83 @@ export const MintedAccountToken = z
     id: z.string().describe("The CF-assigned token id, used to address the token for get/delete."),
     value: z.string().describe("The secret token value — returned once on create, never again. Store immediately."),
     name: z.string().optional().describe("The token name as registered with Cloudflare."),
-    status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
+    status: nullAsAbsent(
+      z
+        .enum(["active", "disabled", "expired"])
+        .describe("The lifecycle state Cloudflare holds for the token.")
+        .optional(),
+    ).describe("The token's lifecycle status."),
   })
   .describe("A newly created account-owned API token, including its one-time secret value.");
 export type MintedAccountToken = z.output<typeof MintedAccountToken>;
 
 /**
+ * One access policy on an existing token, as the token list returns it.
+ *
+ * **Every field is `nullish`, and that is load-bearing rather than defensive.** `listTokens` decodes
+ * each entry with `safeParse` and drops what fails, so a single `null` where this expected a value
+ * makes a live token invisible to `findTokenByName` — and the next roll mints a *second* credential of
+ * the same name beside the first, with nothing saying so (#651).
+ */
+export const AccountTokenPolicy = z
+  .object({
+    effect: nullAsAbsent(
+      z.enum(["allow", "deny"]).describe("Allow or deny, as Cloudflare states it on the policy.").optional(),
+    ).describe(
+      "Whether this policy grants its groups on its resources or refuses them. Cloudflare evaluates explicit denies first, so a policy naming a group is not evidence the token may use it. Absent is an allow, which is the API's own default.",
+    ),
+    permission_groups: nullAsAbsent(
+      z
+        .array(
+          z
+            .object({ id: z.string().describe("The permission-group id this policy grants.") })
+            .describe("One permission group referenced by a live token's policy, by the id the account assigned it."),
+        )
+        .optional(),
+    ).describe(
+      "The permission groups this policy grants, by id. **Read together with `resources`, never apart**: a zone resource says which zone a policy is about and nothing about what it may do there, so coverage judged from resources alone reads a zone-scoped `Zone Read` as a route grant. Absent has not said the policy grants nothing.",
+    ),
+    resources: z
+      .record(z.string(), z.unknown())
+      .describe(
+        "The resource scope keys this policy applies to — `com.cloudflare.api.account.<id>` for an account policy, `com.cloudflare.api.account.zone.<id>` for a zone one, and either nested inside the other. Read to tell what a live token is scoped to; the values are not interpreted beyond that nesting.",
+      ),
+  })
+  .describe("One access policy on an existing token: the groups it grants, and the resources it grants them on.");
+export type AccountTokenPolicy = z.output<typeof AccountTokenPolicy>;
+
+/**
  * An existing account-owned token's metadata, as returned by list/get. No `value` — Cloudflare never
- * returns a token's secret after creation — so this is only enough to find a token by name and
- * address it for deletion.
+ * returns a token's secret after creation — so this is only enough to find a token by name, report on
+ * it, and address it for deletion.
+ *
+ * **It reads what it uses and nothing more.** It briefly carried `expires_on`, `not_before` and
+ * `condition` so a re-scoping mint could resend them; that mint is gone (see {@link
+ * CloudflareAccountTokensManager.rollToken}), and reading a field only to hand it straight back is a
+ * field that can be read wrong.
  */
 export const AccountTokenSummary = z
   .object({
     id: z.string().describe("The CF-assigned token id, used to address the token for deletion."),
     name: z.string().describe("The token name, the key callers match on for idempotent re-mint."),
-    status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
+    status: nullAsAbsent(
+      z
+        .enum(["active", "disabled", "expired"])
+        .describe("The lifecycle state Cloudflare holds for the token.")
+        .optional(),
+    ).describe(
+      "The token's lifecycle status. Reported, because a `disabled` or `expired` token cannot attach a route however its policies read. `nullish` for the reason {@link AccountTokenPolicy} gives.",
+    ),
+    policies: nullAsAbsent(z.array(AccountTokenPolicy).optional())
+      // **An undecodable policy set costs the scope, never the token.** `resources` is required inside a
+      // policy, so one shape Cloudflare returns that this does not model would fail the whole entry —
+      // `listTokens` drops what fails, `findTokenByName` answers null, and the roll mints a *second* live
+      // credential of the same name beside the first. A token's identity does not depend on its policies
+      // being readable, and "the scope could not be read" is a state the reporting already has a word for.
+      .catch(undefined)
+      .describe(
+        "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these least-privilege tokens deliberately lack). Absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
+      ),
   })
   .describe("An existing account-owned API token's metadata (never its secret value).");
 export type AccountTokenSummary = z.output<typeof AccountTokenSummary>;
@@ -230,7 +322,7 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
         throw new CloudflareNotConfiguredError(
           {
             message: said.message,
-            action: "Grant it 'Account API Tokens Write' (Account → API Tokens → Edit), then re-run.",
+            action: delegationAction(permissions),
             params: said.params,
             detail: `mint account token '${name}': ${messageOf(error)}`,
           },
@@ -365,6 +457,18 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * Either way the caller gets a usable secret to store — the idempotent path for a credential that
    * lives in the Secrets Store, since Cloudflare never returns a token's existing secret. Mirrors the
    * dashboard's roll-or-create.
+   *
+   * **A roll never changes the policy set, and that is a decision rather than an omission (#651).** It
+   * briefly did: `pithy token list` tells an adopter their CI token predates zone-scoped routes, and
+   * re-scoping here made the remedy one command. But Cloudflare's token update is a full
+   * representation, so doing it meant every mint had to resend the whole token correctly — `condition`,
+   * `expires_on`, `not_before`, `status` — and three review rounds each found a new way that went
+   * wrong: a cleared IP allowlist, a re-enabled disabled token, a `null` that hid the token and minted a
+   * duplicate beside it.
+   *
+   * {@link mintToken} plus a delete is what actually re-scopes, and `pithy token rotate` has always been
+   * exactly that. So the remedy names rotate, and this stays the one thing it can be relied on to be:
+   * a new secret on the same token, with nothing else touched.
    */
   async rollToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> {
     const existing = await this.findTokenByName(name);
@@ -373,6 +477,29 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
     return { id: existing.id, value, name: existing.name, status: existing.status };
   }
 }
+
+/**
+ * The remedy line for a 403 on a mint, which depends on **what was being delegated**.
+ *
+ * Cloudflare only lets a token create a token whose permissions it already holds, so a mint carrying a
+ * zone-scoped policy (#651's Workers Routes Write, on the project's declared zones) fails for a
+ * bootstrap token that holds every account grant and no zone one. Telling that operator to grant
+ * "Account API Tokens Write" is true, useless, and sends them to a checkbox that is already ticked.
+ *
+ * So the zone half is named when a zone policy is in the set, and only then.
+ */
+function delegationAction(permissions: readonly TokenPermission[]): string {
+  const base = "Grant it 'Account API Tokens Write' (Account → API Tokens → Edit), then re-run.";
+  const zoneScoped = permissions.filter((permission) =>
+    Object.keys(permission.resources).some((key) => key.startsWith(ZONE_RESOURCE_PREFIX)),
+  );
+  if (zoneScoped.length === 0) return base;
+  const groups = [...new Set(zoneScoped.flatMap((permission) => permission.permissionGroupNames))].join(", ");
+  return `${base} It must also already hold what it is delegating: ${groups} on the zones being scoped (Zone → Workers Routes → Edit), because Cloudflare only lets a token create a token whose permissions it has.`;
+}
+
+/** The resource-key prefix every zone-scoped policy is written under. */
+const ZONE_RESOURCE_PREFIX = "com.cloudflare.api.account.zone.";
 
 /** The rolled secret value Cloudflare returns from a value-roll — a non-empty bearer string. */
 const RolledTokenValue = z.string().min(1);

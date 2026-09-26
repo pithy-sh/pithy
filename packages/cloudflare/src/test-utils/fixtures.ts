@@ -202,6 +202,13 @@ export const LIVE_FIXTURES = {
     consequence: "Turnstile sign-in gating on a workers.dev hostname (#84) skips.",
     doc: "docs/FIXTURES.md#turnstile-widget",
   },
+  "workers-route-zone": {
+    name: "workers-route-zone",
+    keys: ["WORKERS_ROUTE_ZONE"],
+    shape: "credential",
+    consequence: "The route-scoped CI token round trip (#651) skips: nothing proves a minted token can attach a route.",
+    doc: "docs/FIXTURES.md#workers-route-zone",
+  },
 } as const satisfies Record<string, LiveFixture>;
 
 /** Every declared fixture name. A typo is a type error rather than a silently skipped suite. */

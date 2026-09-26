@@ -58,7 +58,56 @@ ciPermissions: ["email:routing"]
 ciPermissions: ["kv:write"]
 ```
 
-`pithy token mint ci-system` mints `base ∪ (every capability's ciPermissions)`. Add a capability and the CI token grows to match — no hand-editing of scopes. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per mint with `--permission`.
+`ci-system`'s scope is `base ∪ (every capability's ciPermissions)`, so adding a capability grows what the CI token *should* carry with no hand-editing of scopes. **Applying that to a token that already exists is `pithy token rotate`** — see below: a mint rolls the value and leaves the policies where they are. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per run with `--permission`.
+
+### Your declared domains, and the route CI attaches
+
+A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls** — addressed to two different scopes, and needing the same one grant:
+
+| Call | Endpoint scope | Grant |
+|---|---|---|
+| `GET`/`POST /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list | zone | **Workers Routes Write**, on that zone |
+| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | **Workers Routes Write**, on that zone |
+
+**The endpoint's scope and the grant's scope are different things, and only the second one matters here.** Cloudflare's [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/) is explicit: *"To add, update, or remove Routes or Custom Domains, you need `Editor` access to the Worker and `Workers Routes Write` permission for every affected zone"*, and *"API tokens need Zone > Workers Routes > Write, scoped to each affected zone."* The custom-domain call is addressed to an account path and still needs the zone grant.
+
+So one zone-scoped grant unblocks both calls. A minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all — which is why every deploy of a declared domain failed.
+
+So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
+
+You declare nothing extra. The zones come from `domains` in each Worker's `pithy.config.ts`, composed for the environment you are minting for, and resolved by name against your account at mint time. Two consequences worth knowing:
+
+- **A zone that cannot be scoped fails the mint**, naming what is wrong with it. Three ways: your account does not hold it, your account holds *two* of that name, or Cloudflare is not serving it yet (`pending`, `initializing`, `moved`). That is deliberate: a token minted over any of them passes every check here and fails in CI, hours later, with an error that names a zone id and nothing else.
+- **The bootstrap token needs this grant too**, by the delegation rule above: Workers Routes → Edit on those zones, alongside its account permissions. Cloudflare only lets a token create a token whose permissions it already holds, so without it the mint answers 403 — and the refusal says so by name.
+
+A project that declares no domain mints exactly what it minted before. No new permission for a project that needs none.
+
+**An explicit `--permission` (or a `tokens.overrides["ci-system"].permissions` in `pithy.config.ts`) means exactly what it says.** The route policy rides with the profile's *default* permission set, not with every mint — so a run that narrows the credential by hand gets the narrow credential, with no zone grant added behind your back.
+
+**A standing `tokens.overrides[...].permissions` keeps stripping the grant**, on purpose. `pithy token list` reports that state as its own thing and tells you to change the override rather than to run a command that would honor it and produce the same token again.
+
+**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; a `disabled` or `expired` token is reported as dead rather than as scoped; and when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
+
+### Mint rolls the value. Rotate replaces the token.
+
+The remedy is a **rotate**, not a mint, and the difference is the whole of it:
+
+| | What it does to the token |
+|---|---|
+| `pithy token mint <profile> --env <env>` | Same token, same id, **same policies**. A new secret, and nothing else changes. |
+| `pithy token rotate <profile> --env <env>` | A **new** token with the profile's current policies, stored, then the old one deleted. |
+
+So a token that predates a permission — the zone route grant, or a capability you have since composed — is re-scoped by rotate. A mint will hand you a fresh secret with the old scope and change nothing about what it may do.
+
+```bash
+pithy token rotate ci-system --env prod
+```
+
+`--keep-previous` leaves the old token alive as a grace window while a consumer picks up the new value.
+
+**A mint over a token that is `disabled` or `expired` says so.** The value it writes is real and the token is dead, so the command names the status and points at rotate rather than printing `Done.` over a credential that fails on its first call. `--json` carries the status too.
+
+**Mint deliberately does not re-scope.** It briefly did, and Cloudflare's token update is a full representation — so doing it meant every mint had to resend the whole token correctly, and a bug there silently cleared a hand-set expiry or IP allowlist, or re-enabled a token you had disabled. Rotate was always the operation that replaces a token; mint is the one you can rely on to change exactly one thing.
 
 ## Worker-consumer tokens
 

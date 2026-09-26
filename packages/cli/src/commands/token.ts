@@ -4,6 +4,7 @@
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
+  CI_SYSTEM_PROFILE,
   resolveTokenProfiles,
   TOKEN_STORES,
   type TokenProfile,
@@ -36,8 +37,10 @@ import {
   rotateProfileToken,
   type TokenAudit,
   type TokenEngine,
+  type TokenListItem,
   type TokenResult,
 } from "../tokens/engine";
+import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
 
 // `resolveAppDatabaseId` used to be this file's own copy of the app-database lookup, before
 // `createCliAudit` centralized it. Re-exported under its original name — same behavior, same
@@ -124,6 +127,7 @@ export function publicToken(result: TokenResult): {
   tokenId: string;
   store: TokenStore;
   location: string;
+  status?: "active" | "disabled" | "expired";
 } {
   return {
     profile: result.profile,
@@ -131,7 +135,28 @@ export function publicToken(result: TokenResult): {
     tokenId: result.tokenId,
     store: result.sink.sink,
     location: result.sink.location,
+    // Carried so a pipeline reading `--json` can act on it. Never the value.
+    ...(result.status !== undefined ? { status: result.status } : {}),
   };
+}
+
+/**
+ * The line a mint adds when the token it rolled is not alive, or nothing.
+ *
+ * **A mint rolls an existing token's value and says nothing about the token.** So minting over a
+ * `disabled` or `expired` one writes a perfectly real new secret to the sink, prints `Done.`, and hands
+ * CI a credential that fails on its first call — the tool reporting success over something it can
+ * already see will not work (#651). Rotate is the way out, because it creates a new token rather than
+ * reviving one.
+ *
+ * Silent when Cloudflare said `active`, and silent when it said nothing: absent is not a claim.
+ */
+export function deadTokenNotice(result: TokenResult): string | null {
+  if (result.status === undefined || result.status === "active") return null;
+  return (
+    `${result.profile}: the token this rolled is ${result.status}, so Cloudflare will refuse the value it just wrote.\n` +
+    `Re-enable it on the account, or replace it: pithy token rotate ${result.profile} --env ${result.env}\n`
+  );
 }
 
 /**
@@ -247,7 +272,66 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
     // The set itself when it is unknowable, so the emitter says which worker rather than falling silent.
     audit: await buildAudit(capabilitySetOf(workerSet), cf, projectDir, env, apiToken),
     override: tokenOverrideResolver(config),
+    /*
+      The zones the `ci-system` token may attach a route to (#651), from *this* environment's
+      composition — `workers` is already composed for `env`, which is the reading that can answer which
+      domain this environment declares. Lazy, so a project with no domain makes no zone call and mints
+      exactly what it minted before.
+    */
+    routeZones: () => resolveRouteZones(declaredRouteZones(workers, env), cf.zones()),
   };
+}
+
+/**
+ * What `pithy token list` adds for a CI token that cannot attach this project's route (#651), or nothing.
+ *
+ * Its own sentence rather than a column, because it is not a fact about the listing — it is the next
+ * deploy of a custom domain failing. Said once for the listing, since every row in a given state has the
+ * same remedy.
+ *
+ * **Three states, three remedies, and naming the wrong one is worse than saying nothing.**
+ *
+ * A token that predates route scoping is fixed by `pithy token rotate`, *not* `pithy token mint`. A mint
+ * rolls the value and leaves the policy set exactly as it was, so it cannot add a grant the token does
+ * not have; rotate mints a replacement with the profile's current policies and deletes the old token.
+ * The earlier rounds of this issue printed mint here, and running it changed nothing.
+ *
+ * A token whose grant a standing `tokens.overrides` removes is fixed by neither, because rotate honors
+ * the override too and would produce the same token again. So that case is checked first and names the
+ * override.
+ *
+ * And a `disabled` or `expired` token is not missing anything — it is dead, and re-scoping a dead
+ * credential produces a dead credential.
+ */
+export function routeScopeNotice(tokens: readonly TokenListItem[], env: string): string | null {
+  const overridden = tokens.filter((token) => token.routeScope === "overridden");
+  if (overridden.length > 0) {
+    const profile = overridden[0]?.profile ?? CI_SYSTEM_PROFILE;
+    return (
+      `${overridden.map((token) => token.profile).join(", ")}: cannot attach this project's declared route, and re-minting will not change that.\n` +
+      `tokens.overrides["${profile}"].permissions in pithy.config.ts replaces the profile's set, and the route grant goes with it.\n` +
+      `Remove that override — or its permissions key — then run: pithy token rotate ${profile} --env ${env}\n`
+    );
+  }
+  const inactive = tokens.filter((token) => token.routeScope === "inactive");
+  if (inactive.length > 0) {
+    const profile = inactive[0]?.profile ?? CI_SYSTEM_PROFILE;
+    return (
+      `${inactive.map((token) => token.profile).join(", ")}: disabled or expired, so Cloudflare refuses it whatever it is scoped to.\n` +
+      `Re-enable it on the account, or replace it: pithy token rotate ${profile} --env ${env}\n`
+    );
+  }
+  const stale = tokens.filter((token) => token.routeScope === "stale");
+  if (stale.length === 0) return null;
+  const profile = stale[0]?.profile ?? CI_SYSTEM_PROFILE;
+  return (
+    // States what the token lacks rather than when it was minted. "Minted before this project's domains
+    // were scoped" is the usual cause and not the only one: a `--permission` narrowing on a rotate
+    // produces exactly this token seconds ago, and a diagnosis that guesses at history is then false.
+    `${stale.map((token) => token.profile).join(", ")}: does not carry the route grant this project's declared domains need, so a deploy cannot attach its route.\n` +
+    `A mint only rolls the value. Rotate replaces the token — new value, old one deleted — with the current scope.\n` +
+    `Run: pithy token rotate ${profile} --env ${env}\n`
+  );
 }
 
 const profileArg = {
@@ -268,7 +352,10 @@ const overrideArgs = {
 } as const;
 
 const mint = defineCommand({
-  meta: { name: "mint", description: "Mint a scoped account token for a profile (rolls to the current scope)" },
+  meta: {
+    name: "mint",
+    description: "Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)",
+  },
   args: { ...profileArg, ...envArgs, ...overrideArgs, ...jsonArg },
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
@@ -283,6 +370,8 @@ const mint = defineCommand({
         return;
       }
       process.stdout.write(`${result.profile}: minted → ${result.sink.location}.\n`);
+      const dead = deadTokenNotice(result);
+      if (dead) process.stdout.write(dead);
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
@@ -306,11 +395,16 @@ const list = defineCommand({
       process.stdout.write(
         `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
       );
+      const notice = routeScopeNotice(tokens, env);
+      if (notice) process.stdout.write(notice);
     }),
 });
 
 const rotate = defineCommand({
-  meta: { name: "rotate", description: "Rotate a profile's token (create new, delete old)" },
+  meta: {
+    name: "rotate",
+    description: "Replace a profile's token with the profile's current scope (create new, delete old)",
+  },
   args: {
     ...profileArg,
     ...envArgs,

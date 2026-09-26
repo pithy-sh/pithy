@@ -194,6 +194,14 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * else mint a new least-privilege token — and write it into the store. A bootstrap token that cannot
    * mint fails here, before any resource is created, with an actionable error.
    *
+   * **A roll here changes the value and not the scope**, which is `rollToken`'s contract again rather
+   * than a special case this path asks for (#651). It briefly was one: a re-scoping mint would have
+   * rewritten this *live runtime credential*'s policies up to {@link MAX_TOKEN_ROLLS} times inside the
+   * loop below, so this path took a separate value-only seam. That seam then had the opposite problem —
+   * the manager token's name is not a profile name, so nothing could re-scope it at all and a newly
+   * required permission would never land. With re-scoping gone from mint entirely, there is one
+   * behavior again and no second method to keep in step.
+   *
    * **Never check-then-overwrite (#643).** Two runs that both find the entry absent both roll, and each roll
    * revokes the value before it. Whichever write landed last used to win, so the store could keep a value
    * Cloudflare had already revoked, and nothing repaired it. Now a run is finished only when the value it stored
