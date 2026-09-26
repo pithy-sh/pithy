@@ -13,7 +13,7 @@ import {
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "./provisionTurnstile";
-import { TEST_KEY_ENVIRONMENTS, TEST_SECRET } from "./testKeys";
+import { PROVISIONED_TEST_KEY_ENVIRONMENTS, TEST_KEY_ENVIRONMENTS, TEST_SECRET } from "./testKeys";
 
 describe("naming helpers", () => {
   test("production widget names are stable per mode", () => {
@@ -55,9 +55,11 @@ describe("isStrandedSitekeyVar", () => {
 
 describe("environmentsWithoutSitekeys", () => {
   test("names every environment a build cannot resolve a sitekey for, and none it can", () => {
-    // Literals on both sides: the three a sitekey has a slot for, and two that a project really builds.
-    expect(environmentsWithoutSitekeys(["staging", "live", "prod", "feature", "dev"])).toEqual(["live", "feature"]);
-    expect(environmentsWithoutSitekeys(["dev", "staging", "prod"])).toEqual([]);
+    // Literals on both sides: the four a sitekey resolves for, and a declared name that really is beyond
+    // them. `feature` is not one of those any more (#656) — it has a slot, and it resolves Cloudflare's
+    // test key by default when the slot is empty, which is the whole of why a branch can sign in.
+    expect(environmentsWithoutSitekeys(["staging", "live", "prod", "feature", "dev"])).toEqual(["live"]);
+    expect(environmentsWithoutSitekeys(["dev", "staging", "prod", "feature"])).toEqual([]);
   });
 });
 
@@ -206,7 +208,12 @@ describe("provisionTurnstile", () => {
     const wired = [...written]
       .filter(([, secret]) => Object.values(secret).some((entry) => entry?.key === TEST_SECRET))
       .map(([environment]) => environment);
-    expect(wired.sort()).toEqual([...TEST_KEY_ENVIRONMENTS].sort());
+    expect(wired.sort()).toEqual([...PROVISIONED_TEST_KEY_ENVIRONMENTS].sort());
+    // And the environments the gate accepts one in are those, plus the one nothing writes into: a
+    // feature's store is created empty per branch, so its pair is a default at the gate rather than a
+    // write here (#656). Stated as the difference, so a fourth environment added to either list has to
+    // be added to this sentence too.
+    expect([...TEST_KEY_ENVIRONMENTS]).toEqual([...PROVISIONED_TEST_KEY_ENVIRONMENTS, "feature"]);
     // And the production secret it did write is a real widget's, not the test key under another name.
     expect(Object.values(written.get("prod") ?? {}).map((entry) => entry?.key)).not.toContain(TEST_SECRET);
   });

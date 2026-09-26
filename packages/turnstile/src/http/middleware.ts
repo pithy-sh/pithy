@@ -8,8 +8,13 @@ import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { DEFAULT_TOKEN_FIELD, type TurnstileMode } from "../config/config";
 import { TurnstileConfigError, TurnstileFailedError, TurnstileMissingTokenError } from "../error/errors";
-import { isTestKeyEnvironment, TEST_KEY_ENVIRONMENTS } from "../provision/testKeys";
-import { selectTurnstileSecret, TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "../secret/registry";
+import { defaultWidgetSecret, isTestKeyEnvironment, TEST_KEY_ENVIRONMENTS } from "../provision/testKeys";
+import {
+  selectTurnstileSecret,
+  TURNSTILE_SECRET_NAME,
+  type TurnstileSecrets,
+  turnstileSecretsRegistry,
+} from "../secret/registry";
 
 /** Cloudflare's server-side endpoint a Turnstile token is validated against. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -107,6 +112,38 @@ async function errorCodesOf(response: Response): Promise<string[]> {
   const raw: unknown = await response.json().catch(() => null);
   const codes = (raw as { "error-codes"?: unknown } | null)?.["error-codes"];
   return Array.isArray(codes) ? codes.filter((code): code is string => typeof code === "string") : [];
+}
+
+/**
+ * **The refusal for a gate with no widget secret, which names what is missing and which environment it is
+ * missing for (#656).**
+ *
+ * `{"code":"turnstile/config","message":"Turnstile is not configured."}` is what a real feature deployment
+ * answered, and it is true of every environment at once: an operator holding it has learned that one of
+ * dev, staging, prod or a branch has no secret, and has to find out which by elimination. Meanwhile the
+ * `turnstile/*` codes are the gate's contract, so this stays one of them rather than becoming a generic
+ * internal fault.
+ *
+ * **The environment rides in `message`.** That is the one field the HTTP codec lets across
+ * (CLAUDE.md §Errors), the same argument `@pithy-sh/secrets` makes for putting a secret's name in the
+ * message of `secrets/rotation_unrecorded`: a fact the reader cannot act without is not operator-only
+ * detail. The secret's registry name and the reader's own failure stay in `detail`, and the command that
+ * fixes it in `action`, because both describe the deployment rather than the request.
+ */
+function noWidgetSecret(environment: string | null, cause: unknown): TurnstileConfigError {
+  const where = environment === null ? "an unstamped Worker" : `the ${environment} environment`;
+  const why =
+    cause === undefined
+      ? `no "${TURNSTILE_SECRET_NAME}" secret is stored`
+      : `reading "${TURNSTILE_SECRET_NAME}" failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+  return new TurnstileConfigError(
+    {
+      message: `The humanity check has no widget secret for ${where}.`,
+      action: `Run \`pithy turnstile provision\` and redeploy ${environment ?? "this Worker"}, or remove the turnstile() gate from this route. \`pithy doctor\` names every environment whose widget cannot render.`,
+      detail: `${where}: ${why}`,
+    },
+    { cause },
+  );
 }
 
 /** Options the `turnstile()` middleware accepts when a route stacks it. */
@@ -229,35 +266,54 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
  * **fails closed** — every failure throws a `PithyError` subclass (all carrying a `turnstile/*` code), so
  * a bot gate never silently opens. Register `pithyErrorHandler` on the app to map these to HTTP responses.
  *
- * **Two failures are the deployment's, not the caller's, and say so.** A secret Cloudflare does not
- * recognize, and a documented test key outside dev/staging, both raise `turnstile/config` — see
- * {@link assertSecretRecognized} and {@link testKeyCarriesNoAction} for why blaming the caller for
- * either one costs an operator an hour.
+ * **Three failures are the deployment's, not the caller's, and say so.** A secret Cloudflare does not
+ * recognize, a documented test key outside the environments one belongs in, and a gate with no widget
+ * secret at all, each raise `turnstile/config` — see {@link assertSecretRecognized},
+ * {@link testKeyCarriesNoAction} and {@link noWidgetSecret} for why blaming the caller for any of them
+ * costs an operator an hour.
+ *
+ * **A feature deployment needs nothing provisioned.** Where the store holds no secret and the Worker is
+ * stamped `feature`, the gate verifies against Cloudflare's documented always-pass secret — the pair dev
+ * wires, for the environment nothing provisions and no adopter edit can reach ({@link defaultWidgetSecret},
+ * #656). Every other environment refuses.
  *
  * @throws {@link TurnstileMissingTokenError} (`turnstile/missing_token`, 400) — no token in the request.
  * @throws {@link TurnstileFailedError} (`turnstile/failed`, 403) — the token did not pass siteverify, its
  *   action did not match a configured `action`, or the check could not complete (an unreachable/malformed
  *   siteverify response also lands here, fail-closed).
- * @throws {@link TurnstileConfigError} (`turnstile/config`, 500) — the secret is missing, malformed, has
- *   no entry for the route's widget mode, is one Cloudflare does not recognize, or is a test key in an
- *   environment that has no business holding one (the `secretsStore` read is rewrapped to this too, so
- *   the gate's contract stays `turnstile/*`).
+ * @throws {@link TurnstileConfigError} (`turnstile/config`, 500) — the secret is missing (outside a feature
+ *   deployment), malformed, has no entry for the route's widget mode, is one Cloudflare does not recognize,
+ *   or is a test key in an environment that has no business holding one (the `secretsStore` read is
+ *   rewrapped to this too, so the gate's contract stays `turnstile/*`).
  */
 export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
   const field = options.field ?? DEFAULT_TOKEN_FIELD;
   return async (c, next) => {
-    let secret: string;
+    const environment = workerIdentity(c.env).environment;
+
+    // What the store holds for this environment, or the reason it holds nothing. The read's failure is kept
+    // rather than thrown, because what to do about it depends on the environment: see `noWidgetSecret`.
+    let stored: TurnstileSecrets | null = null;
+    let unreadable: unknown;
     try {
       const store = await sharedSecretsStore(c.env as unknown as SecretsStoreEnv, turnstileSecretsRegistry);
-      secret = selectTurnstileSecret(store.get(TURNSTILE_SECRET_NAME), options.mode);
+      stored = store.get(TURNSTILE_SECRET_NAME);
     } catch (cause) {
-      // selectTurnstileSecret already throws turnstile/config; the reader throws secrets/* — rewrap those
-      // so the gate fails closed under its own contract (a missing secret is a misconfig, not a 404 route).
-      if (cause instanceof TurnstileConfigError) throw cause;
-      throw new TurnstileConfigError(
-        { detail: `Could not resolve the turnstile secret: ${cause instanceof Error ? cause.message : String(cause)}` },
-        { cause },
-      );
+      unreadable = cause;
+    }
+
+    let secret: string;
+    if (stored === null || Object.keys(stored).length === 0) {
+      // Nothing is stated for this environment. A feature deployment defaults to Cloudflare's documented
+      // always-pass secret — nothing provisions a branch, and no adopter edit could (#656). Every other
+      // environment refuses, naming what is absent and where.
+      const fallback = defaultWidgetSecret(environment);
+      if (fallback === null) throw noWidgetSecret(environment, unreadable);
+      secret = fallback;
+    } else {
+      // The route's own selection, with its own refusals: which widget this route gates, and the pair that
+      // needs a `mode` to choose between them.
+      secret = selectTurnstileSecret(stored, options.mode);
     }
 
     const token = await readToken(c, field, options.header);
@@ -269,7 +325,6 @@ export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
       });
     }
 
-    const environment = workerIdentity(c.env).environment;
     const result = await siteverify(secret, token, { remoteIp: c.req.header("CF-Connecting-IP") });
 
     // A documented test key answers for everybody who asks, so where it is wired is the whole of what

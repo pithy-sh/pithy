@@ -41,9 +41,11 @@ Before this, the sitekeys went into `env.<name>.vars` and `.dev.vars` as `TURNST
 
 **String literals, in place, and nothing else.** A value is replaced only where the config states a string literal. An expression that already resolves to the value — `dev: testSitekey("visible")` — is left alone. One that resolves to something else is refused by key, before a byte is written. After writing, the config is loaded back through the real loader, and a value the capability does not then resolve puts the file back and refuses.
 
-**An environment beyond dev, staging and prod has no sitekey.** `TurnstileSitekeys` has three keys, and the projection indexes them by the environment being built. A declared `live` and every feature build (`ENVIRONMENT=feature`) render no widget, and sign-in there is blocked. Nothing provisions them — a test key is refused outside dev and staging, and the one real widget is prod's — so `provision` names them in its output rather than leave the bundle to say `enabled: false` in silence.
+**A declared environment beyond dev, staging and prod has no sitekey.** The projection indexes `TurnstileSitekeys` by the environment being built, so a declared `live` renders no widget and sign-in there is blocked. Nothing provisions it — a test key is accepted only where one belongs, and the one real widget is prod's — so `provision` names it in its output rather than leave the bundle to say `enabled: false` in silence.
 
-**A test key belongs in dev and staging and nowhere else, and the gate enforces that.** Cloudflare flags its own answers from a documented test key (`metadata.result_with_testing_key`), so a Worker stamped `prod` — or stamped nothing — refuses one with `turnstile/config` rather than letting a secret that passes everybody stand in for a widget. It is the same flag that lets dev and staging sign in at all: a test key's answer carries no `action`, which the login gate's action binding would otherwise refuse (#374). See [pithy.sh/docs/capabilities/turnstile/reference](https://pithy.sh/docs/capabilities/turnstile/reference).
+**A feature build needs nothing provisioned.** `TurnstileSitekeys` carries an optional `feature` key, and a branch build left with none resolves Cloudflare's always-pass test sitekey for the widget's mode; the gate resolves the matching test secret the same way when the branch's secrets store holds none. Both halves are defaults rather than writes, because a feature's config and store are generated per branch and nothing an adopter or this command writes could reach them — which is why a branch deployment used to answer `500 turnstile/config` on every sign-in. State `feature` to run a real widget on a branch, or `""` for no widget at all; `provision` never writes that key, so a project scaffolded before it existed provisions exactly as it did.
+
+**A test key belongs in dev, staging and a feature build, and nowhere else — the gate enforces that.** Cloudflare flags its own answers from a documented test key (`metadata.result_with_testing_key`), so a Worker stamped `prod` — or stamped nothing — refuses one with `turnstile/config` rather than letting a secret that passes everybody stand in for a widget. It is the same flag that lets those three sign in at all: a test key's answer carries no `action`, which the login gate's action binding would otherwise refuse (#374). See [pithy.sh/docs/capabilities/turnstile/reference](https://pithy.sh/docs/capabilities/turnstile/reference).
 
 Idempotent: a re-run reuses an existing production widget rather than creating a second one, and writes the same sitekeys again — a config already holding them is not touched. That reuse has one consequence worth stating, because it is the failure adopters hit. Cloudflare never returns an existing widget's secret, so it cannot be recomposed — a re-run over widgets that already exist leaves the stored secret exactly as it was, and reports that it did. If the secret was never stored, re-running will not heal it; `deprovision` then `provision` is what does.
 
@@ -57,7 +59,7 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy turnstile provision --json
-{"command":"turnstile provision","modes":["visible"],"widgets":[{"mode":"visible","sitekey":"0x4AAA…","created":true}],"productionSecretWritten":true,"sitekeys":{"visible":{"dev":"1x00000000000000000000AA","staging":"1x00000000000000000000AA","prod":"0x4AAA…"}},"strandedVarsRemoved":[{"name":"TURNSTILE_SITEKEY_VISIBLE","environment":"prod"}],"configFile":"apps/web/pithy.config.ts","redeployRequired":true,"environmentsWithoutSitekeys":["feature"]}
+{"command":"turnstile provision","modes":["visible"],"widgets":[{"mode":"visible","sitekey":"0x4AAA…","created":true}],"productionSecretWritten":true,"sitekeys":{"visible":{"dev":"1x00000000000000000000AA","staging":"1x00000000000000000000AA","prod":"0x4AAA…"}},"strandedVarsRemoved":[{"name":"TURNSTILE_SITEKEY_VISIBLE","environment":"prod"}],"configFile":"apps/web/pithy.config.ts","redeployRequired":true,"environmentsWithoutSitekeys":[]}
 ```
 
 | key | type | meaning |
@@ -73,7 +75,7 @@ $ pithy turnstile provision --json
 | `strandedVarsRemoved` | `object[]` | Each `TURNSTILE_SITEKEY_*` var removed this run — its `name`, and the `environment` whose vars held it (`dev` for the top level and `dev.json`). Empty on a project provisioned since the sitekey moved into config |
 | `configFile` | `string` | The `pithy.config.ts` the sitekeys were written to, relative to the project root |
 | `redeployRequired` | `true` | Always. The sitekeys are inlined when the front end is built, so no deployed bundle carries them until the Worker is deployed again |
-| `environmentsWithoutSitekeys` | `string[]` | Every environment this project builds a front end for that no sitekey can reach — a declared one beyond dev, staging and prod, and `feature`. Builds there render no widget, and sign-in is blocked |
+| `environmentsWithoutSitekeys` | `string[]` | Every environment this project builds a front end for that no sitekey can reach — a **declared** one beyond dev, staging, prod and a feature build. Builds there render no widget, and sign-in is blocked. A feature build is not one: it resolves the test sitekey by default |
 
 ```
 $ pithy turnstile deprovision --json
@@ -155,9 +157,9 @@ Provision, in a project with one Worker.
 ```
 $ pithy turnstile provision
 Test secret wired for dev and staging. 1 production widget(s) ready (1 new).
+A feature deployment uses the same test pair by default — nothing to provision, and no redeploy of a branch needed for it.
 Sitekeys written to apps/web/pithy.config.ts for dev, staging and prod.
 The build inlines them. Redeploy staging and prod before the widget renders there.
-feature has no sitekey. Builds there render no widget, and sign-in is blocked.
 Done.
 ```
 
@@ -166,11 +168,11 @@ A project provisioned before the sitekeys moved into config gets its stranded va
 ```
 $ pithy turnstile provision
 Test secret wired for dev and staging. 1 production widget(s) ready (0 new).
+A feature deployment uses the same test pair by default — nothing to provision, and no redeploy of a branch needed for it.
 Production widgets already existed; their secret was left as-is. If the production gate returns turnstile/config, run `pithy turnstile deprovision` then provision again.
 Sitekeys written to apps/web/pithy.config.ts for dev, staging and prod.
 The build inlines them. Redeploy staging and prod before the widget renders there.
 Removed stranded vars nothing read: TURNSTILE_SITEKEY_VISIBLE (dev), TURNSTILE_SITEKEY_VISIBLE (staging), TURNSTILE_SITEKEY_VISIBLE (prod).
-feature has no sitekey. Builds there render no widget, and sign-in is blocked.
 Done.
 ```
 

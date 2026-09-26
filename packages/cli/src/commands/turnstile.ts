@@ -230,6 +230,12 @@ const provision = defineCommand({
       process.stdout.write(
         `Test secret wired for dev and staging. ${result.widgets.length} production widget(s) ready (${created} new).\n`,
       );
+      // Said here because this is where an operator asks "which environments can sign in now?". A feature
+      // deployment is covered by the same pair and by nothing this command wrote: its config and its secrets
+      // store are generated per branch, so the kit resolves the pair at build and at the gate (#656).
+      process.stdout.write(
+        "A feature deployment uses the same test pair by default — nothing to provision, and no redeploy of a branch needed for it.\n",
+      );
       if (result.widgets.length > 0 && !result.productionSecretWritten) {
         // All production widgets already existed, so their secret can't be recomposed (Cloudflare never
         // returns it) and was left as-is. If it was never stored, re-running won't heal it — say so.

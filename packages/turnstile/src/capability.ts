@@ -4,6 +4,7 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { TurnstileClientProjection } from "./client/projection";
 import { TURNSTILE_LOGIN_ACTION, TurnstileConfig, type TurnstileConfigInput } from "./config/config";
+import { defaultSitekey } from "./provision/testKeys";
 import { turnstileSecretsRegistry } from "./secret/registry";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -50,6 +51,10 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
      * widget unconfigured, or no sitekey for this environment) so a screen branches instead of
      * mounting a widget that cannot solve.
      *
+     * **A feature build is the one environment with a default** (#656): a branch's config is generated, so
+     * an absent key there means "nobody could have stated one" rather than "not provisioned yet", and it
+     * resolves the documented always-pass test key instead of rendering nothing and blocking sign-in.
+     *
      * **`action` rides here because the boundary was already being crossed** (#377). The label is baked
      * into the token at render and asserted by the route, so it is one contract with two ends, and it
      * was written out at both — where nothing before production could catch them disagreeing. See
@@ -65,9 +70,13 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
       if (!mode) return { enabled: false };
       const widget = resolved.widgets[mode];
       if (!widget) return { enabled: false };
-      // Indexed as a record: `environment` is any adopter name, not just the three documented keys.
+      // Indexed as a record: `environment` is any adopter name, not just the documented keys.
       const sitekeys: Record<string, string | undefined> = widget.sitekeys;
-      const sitekey = sitekeys[environment];
+      // A feature build resolves Cloudflare's always-pass test key when the config states none, because a
+      // branch's config is generated and nobody owns it — see `defaultSitekey` (#656). Every other
+      // environment resolves what it states and nothing else, so `??`: a key stated blank still renders no
+      // widget, deliberately, exactly as a blank dev or prod key does.
+      const sitekey = sitekeys[environment] ?? defaultSitekey(environment, mode);
       if (!sitekey) return { enabled: false };
       return {
         enabled: true,

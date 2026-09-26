@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
@@ -53,6 +55,28 @@ interface Deployment {
  */
 async function post(secret: string, body: URLSearchParams, deployment: Deployment = {}): Promise<Response> {
   await seedSecrets(env, turnstileSecretsRegistry, { [TURNSTILE_SECRET_NAME]: { visible: { key: secret } } });
+  return send(body, deployment);
+}
+
+/**
+ * The same route with **nothing provisioned** — the store's tables exist and hold no turnstile row.
+ *
+ * That is every feature deployment (#656): `pithy turnstile provision` writes dev's secrets file and
+ * staging's and prod's stores, and `pithy provision --feature` creates a branch's store empty.
+ *
+ * The empty fixture creates the tables and writes no value; every row is then deleted, because this D1 is
+ * the one every case in this file seeds into and a leftover row would make "nothing provisioned" resolve
+ * whichever secret ran last. Planted and watched: without the delete, the always-block secret from the case
+ * above answers here, and the unprovisioned case reads as a failed challenge instead of a refusal.
+ */
+async function postUnprovisioned(body: URLSearchParams, deployment: Deployment = {}): Promise<Response> {
+  await seedSecrets(env, turnstileSecretsRegistry, {});
+  await createDatabase(env.SECRETS, secretsTables).deleteFrom("pithySecretsSystemSecrets").execute();
+  return send(body, deployment);
+}
+
+/** The guarded route and the request, shared by the provisioned and unprovisioned harnesses. */
+async function send(body: URLSearchParams, deployment: Deployment): Promise<Response> {
   const app = new Hono();
   app.onError(pithyErrorHandler);
   app.use("/login", turnstile({ action: deployment.action }));
@@ -135,6 +159,29 @@ describe("turnstile({ action }) with a documented test key (Workers runtime)", (
     const res = await post(SECRETS.fail, withToken(), { action: "login", environment: "dev" });
     expect(res.status).toBe(403);
     expect(await errCode(res)).toBe("turnstile/failed");
+  });
+});
+
+/**
+ * **A feature deployment signs in with nothing provisioned for it (#656), against live siteverify.**
+ *
+ * This is the case a stub cannot make: the gate defaults a feature to a secret string, and only Cloudflare
+ * can say whether that string is the always-pass test secret it documents. A wrong one comes back as HTTP
+ * 400 `invalid-input-secret`, which the gate renders `turnstile/config` — the very refusal the branch
+ * deployment answered before this. A right one comes back `success: true` with the test-key flag set and no
+ * `action`, and the composed login gate has to accept exactly that answer here, as it does in dev.
+ */
+describe("a feature deployment with nothing provisioned (Workers runtime)", () => {
+  test("the secret it defaults to is Cloudflare's, and the composed login gate passes", async () => {
+    const res = await postUnprovisioned(withToken(), { action: "login", environment: "feature" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  test("dev with nothing provisioned still refuses — the default belongs to a feature alone", async () => {
+    const res = await postUnprovisioned(withToken(), { action: "login", environment: "dev" });
+    expect(res.status).toBe(500);
+    expect(await errCode(res)).toBe("turnstile/config");
   });
 });
 

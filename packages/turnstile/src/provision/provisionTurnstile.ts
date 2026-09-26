@@ -60,19 +60,24 @@ export interface StrandedSitekeyVar {
 }
 
 /**
- * The environments a sitekey can be stated for: the keys of {@link TurnstileSitekeys}, read off the schema.
+ * The environments a sitekey can be resolved for: the keys of {@link TurnstileSitekeys}, read off the schema.
  *
  * Read rather than written out, because this is the question "can a build for this environment render a
  * widget at all?", and the schema is what answers it — `TurnstileConfig` strips any other key, so a sitekey
  * written for `live` is gone before the projection looks.
+ *
+ * `feature` is one of them (#656) even though nothing writes it: the key is optional, and a branch build
+ * resolves Cloudflare's always-pass test key when it is absent. The question this answers is what a build
+ * can render, not what provisioning wrote.
  */
 export const SITEKEY_ENVIRONMENTS: readonly string[] = TurnstileSitekeys.keyof().options;
 
 /**
- * The environments in `environments` that no sitekey can be stated for — a declared environment beyond dev,
- * staging and prod, or a feature build. **A build for one renders no widget, and sign-in there is blocked.**
- * Nothing provisions them: no test key is accepted outside dev and staging, and the one real widget is
- * prod's. Named so a caller can say so, rather than leave the projection to answer `enabled: false` quietly.
+ * The environments in `environments` that no sitekey can be resolved for — a **declared** environment beyond
+ * dev, staging, prod and a feature build. **A build for one renders no widget, and sign-in there is
+ * blocked.** Nothing provisions them: a test key is accepted only where one belongs, and the one real widget
+ * is prod's. Named so a caller can say so, rather than leave the projection to answer `enabled: false`
+ * quietly.
  */
 export function environmentsWithoutSitekeys(environments: readonly string[]): string[] {
   return [...new Set(environments)].filter((environment) => !SITEKEY_ENVIRONMENTS.includes(environment));
@@ -119,13 +124,17 @@ function buildSecrets(modes: TurnstileMode[], key: string): TurnstileSecrets {
 }
 
 /**
- * The sitekeys one widget renders with in each environment the config can state one for.
+ * The sitekeys one widget renders with in each environment **this command writes one for**.
  *
  * dev and staging get the documented always-pass test sitekey, because those are the two environments the
- * test *secret* is written into and the only two the gate accepts a test key's answer in
- * (`TEST_KEY_ENVIRONMENTS`). prod gets the real widget's. The keys are the whole of `TurnstileSitekeys` —
- * written out rather than mapped, so a fourth key added to that schema is a compile error here instead of
- * an environment this quietly leaves blank.
+ * test *secret* is written into (`PROVISIONED_TEST_KEY_ENVIRONMENTS`). prod gets the real widget's.
+ *
+ * **`feature` is deliberately not written** (#656), and that is the one key of `TurnstileSitekeys` this
+ * leaves out. Writing it would mean editing `widgets.<mode>.sitekeys.feature` in an adopter's
+ * `pithy.config.ts`, and the writer refuses a key the registration does not already state — so every
+ * project scaffolded before this key existed would have its next `pithy turnstile provision` refused, to
+ * add a value the capability resolves by itself. A branch build takes the same test key from
+ * `defaultSitekey` instead, and this command reports that rather than writing it.
  */
 function sitekeysFor<Production extends string | null>(
   mode: TurnstileMode,
@@ -247,6 +256,10 @@ export interface TurnstilePlan {
  *
  * **The sitekeys are inlined at build time**, so nothing here reaches a deployed bundle until the Worker is
  * built and deployed again. The caller says so.
+ *
+ * **A feature build needs nothing from this run.** It resolves the same test pair by default — the sitekey
+ * from `defaultSitekey`, the secret from `defaultWidgetSecret` — because a branch's config and secrets store
+ * are generated per branch and nothing here could write to them (#656). See {@link sitekeysFor}.
  *
  * Idempotent: a re-run reuses existing production widgets and skips the production secret write (whose
  * value can't be recovered from Cloudflare), while their sitekeys — which Cloudflare does return — are

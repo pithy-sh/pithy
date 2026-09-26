@@ -96,15 +96,28 @@ describe("checkTurnstileSitekeys", () => {
     expect(text).not.toContain("pithy turnstile provision");
   });
 
-  test("a feature build is named once this Worker has one, and not before", async () => {
+  test("a feature build renders the test widget, so it is never named (#656)", async () => {
+    // It used to be named as an environment no sitekey could reach, which was true and was why nobody could
+    // sign in to a branch deployment. A feature resolves Cloudflare's always-pass key with nothing stated,
+    // so there is nothing to report — before the Worker has a generated feature config, and after.
     const { projectDir, workerDir } = await project({ sitekeys: PROVISIONED });
     expect((await checkTurnstileSitekeys(projectDir)).unrendered).toEqual([]);
 
     await mkdir(join(workerDir, ".wrangler", "pithy"), { recursive: true });
     await writeFile(featureConfigPath(workerDir), "{}");
 
+    expect((await checkTurnstileSitekeys(projectDir)).unrendered).toEqual([]);
+  });
+
+  test("and a feature sitekey stated blank is still named — the check is not blind to a branch", async () => {
+    // The plant. "A feature is fine" would pass the case above whatever the config said; this is the one
+    // shape that renders no widget on a branch, and an adopter has to have written it deliberately.
+    const { projectDir, workerDir } = await project({ sitekeys: `${PROVISIONED}, feature: ""` });
+    await mkdir(join(workerDir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(workerDir), "{}");
+
     expect((await checkTurnstileSitekeys(projectDir)).unrendered).toEqual([
-      { worker: "board", environment: "feature", slot: false },
+      { worker: "board", environment: "feature", slot: true },
     ]);
   });
 

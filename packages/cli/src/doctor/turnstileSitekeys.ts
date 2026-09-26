@@ -35,8 +35,10 @@ import { featureConfigPath } from "../provision/featureConfig";
  *
  * - **An environment that renders no widget**, per Worker that gates `login`. Either its sitekey is blank —
  *   a step not yet taken, and `pithy turnstile provision` then a redeploy is the remedy — or no sitekey can
- *   reach it at all: a declared environment beyond dev, staging and prod, or a feature build. Those have no
- *   remedy in the kit, and the line says what they are rather than inventing one.
+ *   reach it at all: a declared environment beyond the names `TurnstileSitekeys` carries. Those have no
+ *   remedy in the kit, and the line says what they are rather than inventing one. A feature build is named
+ *   by neither any more: it resolves Cloudflare's always-pass test key by default (#656), so it renders,
+ *   unless the config states a blank sitekey for it — which is an adopter's deliberate "no widget here".
  * - **A stranded `TURNSTILE_SITEKEY_*` var**, in a Worker's `wrangler.jsonc` (any stanza), in the project's
  *   `dev.json`, or in the project root's `.dev.vars` — the three files a provisioner ever wrote one into.
  *   Nothing ever read them. This names the file each one is in, and the remedy only where one exists.
@@ -62,7 +64,7 @@ import { featureConfigPath } from "../provision/featureConfig";
  * answered as that environment's bundle would be; asked once, unstamped, it named a prod that renders and
  * missed a staging where nobody can sign in. `pithy doctor` hands in the compositions its report already took,
  * so none is composed twice. Which Workers a provision accepts is read the same way: a Worker composing
- * turnstile in any environment checked is one. A feature build is reported only once the
+ * turnstile in any environment checked is one. A feature build is looked at only once the
  * Worker has a generated feature config (`featureConfigPath`): before that, nothing has built one, and a
  * line every Turnstile project carried forever would be noise rather than a finding.
  *
@@ -293,7 +295,7 @@ export function describeTurnstileSitekeys(check: TurnstileSitekeysCheck): string
     }
     if (unreachable.length > 0) {
       lines.push(
-        `${worker}: ${listed(unreachable)} ${unreachable.length === 1 ? "has" : "have"} no sitekey. Turnstile covers dev, staging and prod, so sign-in there is blocked.`,
+        `${worker}: ${listed(unreachable)} ${unreachable.length === 1 ? "has" : "have"} no sitekey. Turnstile covers dev, staging, prod and a feature build, so sign-in there is blocked.`,
       );
     }
   }

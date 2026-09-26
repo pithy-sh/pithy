@@ -61,9 +61,16 @@ export type TurnstileMode = z.infer<typeof TurnstileMode>;
  * value renders no widget, and the gate on sign-in fails closed.
  *
  * The keys are Pithy's environment names verbatim, because that is what the client projection indexes
- * them by — a bundle built for `prod` reads `sitekeys.prod`. They are not free-form labels, and an
- * environment beyond these three has no sitekey: its builds render no widget, which `pithy turnstile
- * provision` and `pithy doctor` both say.
+ * them by — a bundle built for `prod` reads `sitekeys.prod`. They are not free-form labels, and a
+ * *declared* environment beyond these three has no sitekey: its builds render no widget, which `pithy
+ * turnstile provision` and `pithy doctor` both say.
+ *
+ * **`feature` is the fourth, and it is optional (#656).** A branch's environment is generated rather than
+ * declared, so nothing an adopter writes can state a key for it and nothing provisioning writes reaches it
+ * either — which is why a feature deployment used to render no widget and refuse every sign-in. Absent, it
+ * resolves Cloudflare's always-pass test key for the widget's mode (`provision/testKeys`' `defaultSitekey`),
+ * which is the pair dev wires and the only pair an ephemeral environment should want. Stated, it is honored:
+ * a real key for a branch an adopter wants to run a real widget on, or `""` for no widget at all.
  */
 export const TurnstileSitekeys = z
   .object({
@@ -78,6 +85,12 @@ export const TurnstileSitekeys = z
         "Staging sitekey — Cloudflare's always-pass test key, written by `pithy turnstile provision` (no real widget is created).",
       ),
     prod: z.string().describe("Prod sitekey — the real widget's public key, written by `pithy turnstile provision`."),
+    feature: z
+      .string()
+      .optional()
+      .describe(
+        "Feature-build sitekey. Optional: left out, a branch build resolves Cloudflare's always-pass test key for this widget's mode. State one to render a real widget on a branch, or \"\" to render none.",
+      ),
   })
   .describe("Per-environment public sitekeys the front-end build inlines to render the widget.");
 export type TurnstileSitekeys = z.infer<typeof TurnstileSitekeys>;

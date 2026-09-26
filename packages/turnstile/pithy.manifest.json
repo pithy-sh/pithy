@@ -19,7 +19,7 @@
       }
     }
   ],
-  "whenToEnable": "Stop bots at credential-entry and form-submit points without asking real users to prove themselves. Stacks a Cloudflare Turnstile humanity check on any route — magic-link and OTP login, signup, lead capture, contact. dev and staging wire Cloudflare's test keys automatically; only `prod` provisions a real widget. The widget secret is stored and read through @pithy-sh/secrets, so the secrets capability is required.",
+  "whenToEnable": "Stop bots at credential-entry and form-submit points without asking real users to prove themselves. Stacks a Cloudflare Turnstile humanity check on any route — magic-link and OTP login, signup, lead capture, contact. dev and staging wire Cloudflare's test keys automatically, a feature deployment resolves the same pair by default, and only `prod` provisions a real widget. The widget secret is stored and read through @pithy-sh/secrets, so the secrets capability is required.",
   "scaffold": [
     "`turnstile({ ... })` in pithy.config.ts declares a visible widget, which gates `login` by default. Add an `invisible` widget and `protect` entries (action → mode) for silent forms. Social/OAuth login is never gated.",
     "Ensure the secrets capability is provisioned (`pithy add secrets` then `pithy secrets provision`) — the turnstile widget secret is stored and read through @pithy-sh/secrets, which the secrets capability sets up.",
