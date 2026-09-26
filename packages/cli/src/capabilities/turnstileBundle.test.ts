@@ -45,7 +45,8 @@ import { environmentsBuiltWithoutSitekeys } from "./turnstileSitekeys";
  *
  * **What must be true, for every environment this project builds a front end for:** the bundle renders the
  * widget, with the sitekey provisioning reports writing — or provisioning names that environment as one
- * with no sitekey. Never a silent `enabled: false`.
+ * with no sitekey. Never a silent `enabled: false`. A feature build renders it without a write, off the
+ * capability's own default (#656), which is the one environment where the two halves are not one write.
  *
  * ## What it does not see
  *
@@ -195,7 +196,12 @@ describe("pithy add turnstile, then provision, then a build per environment", ()
         // it did not write, nor a report computed from the bundle, can pass.
         const expected = environment === "prod" ? PROD_SITEKEY : VISIBLE_TEST_SITEKEY;
         expect(projection.sitekey).toBe(expected);
-        expect(projection.sitekey).toBe(fixture.result?.sitekeys.visible?.[environment as "dev" | "staging" | "prod"]);
+        // Against the report, for each environment provisioning writes a sitekey into. A feature build is
+        // not one of them (#656): a branch's config is generated, so nothing writes a key there and the
+        // capability resolves the documented test key by default — which is why `reported` no longer names
+        // it either. The literal above is the whole of the gate for that one.
+        const written: Record<string, string | undefined> = fixture.result?.sitekeys.visible ?? {};
+        if (environment in written) expect(projection.sitekey).toBe(written[environment]);
         expect(reported).not.toContain(environment);
       } else {
         expect(reported).toContain(environment);
@@ -206,8 +212,11 @@ describe("pithy add turnstile, then provision, then a build per environment", ()
   test("the environments a sitekey has a slot for are exactly the ones that rendered", async () => {
     // The other direction: an environment provisioning *claims* is covered must render. Without this, a
     // writer that wrote nothing would pass the case above for every environment, each one "reported".
-    for (const environment of ["dev", "staging", "prod"]) {
-      expect((await bundledProjection(fixture.workerDir, environment)).enabled).toBe(true);
+    // `feature` is in the list because a branch build is covered too now, by the default rather than by a
+    // write (#656) — and a real `vite build` for it is the only thing that can say the default reaches a
+    // bundle.
+    for (const environment of ["dev", "staging", "prod", FEATURE_ENVIRONMENT]) {
+      expect((await bundledProjection(fixture.workerDir, environment)).enabled, environment).toBe(true);
     }
-  }, 180_000);
+  }, 240_000);
 });

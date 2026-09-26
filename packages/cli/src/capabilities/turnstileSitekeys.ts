@@ -59,9 +59,14 @@ import { locateRegistration, type ObjectProperty, objectProperties } from "./rec
  *
  * The builds are the ones the CLI makes: `dev` locally, each environment the root config declares under
  * `pithy deploy --env`, and a feature build under `pithy feature`, which `uiBuildEnvironment` stamps
- * `ENVIRONMENT=feature`. `TurnstileSitekeys` has a slot for three of those names, so a declared `live` and
- * every feature build render no widget, and the gate on sign-in fails closed there. Nothing provisions them:
- * a test key is refused outside dev and staging, and the one real widget is prod's.
+ * `ENVIRONMENT=feature`. `TurnstileSitekeys` has a slot for four of those names, so a **declared** name
+ * beyond them — `live`, say — renders no widget and the gate on sign-in fails closed there. Nothing
+ * provisions it: a test key is accepted only where one belongs, and the one real widget is prod's.
+ *
+ * A feature build is no longer one of them (#656). It has a slot, it is left empty on purpose, and the
+ * capability resolves Cloudflare's always-pass test key for it — which is what lets anybody sign in to a
+ * branch deployment at all. `feature` stays in the list handed over, because the question is asked of the
+ * schema and the answer has to come from there rather than from this line.
  *
  * The one list `pithy turnstile provision` reports and `pithy doctor` reads, and the one
  * `turnstileBundle.test.ts` holds against real builds.

@@ -291,6 +291,36 @@ describe("the action binding and Cloudflare's test keys", () => {
     expect(await errCode(res)).toBe("turnstile/config");
   });
 
+  test("and prod's refusal points at the secret, never at the Worker's stamp", async () => {
+    // The action used to offer "stamp ENVIRONMENT as dev or staging or feature … if that is what this
+    // deployment is". Followed on a production Worker — the only kind that reaches this branch — it opens
+    // production: the gate would then accept the very always-pass key it had just refused. A remedy an
+    // operator can follow into a breach is worse than none, so the line names the secret and says so.
+    stubSecrets(turnstileSecretsRegistry, one(ONE_WIDGET));
+    stubSiteverify(TEST_KEY_PASS);
+    const hono = new Hono();
+    let thrown: unknown;
+    hono.onError((error) => {
+      thrown = error;
+      return new Response("", { status: 500 });
+    });
+    hono.use("/protected", turnstile({ action: "login" }));
+    hono.post("/protected", (c) => c.json({ ok: true }));
+    await hono.request(
+      "/protected",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+      },
+      { ENVIRONMENT: "prod" },
+    );
+    const action = (thrown as { payload: { action?: string } }).payload.action ?? "";
+    expect(action).toContain("pithy turnstile provision");
+    expect(action).not.toMatch(/stamp ENVIRONMENT as/i);
+    expect(action).toMatch(/never the stamp/i);
+  });
+
   test("a test key that DOES return a different action is still refused in dev", async () => {
     // The condition that keeps this an exception rather than a hole: the binding is relaxed for an
     // action that is *absent*, never for one that disagrees. A token minted for another action is the
@@ -315,6 +345,129 @@ describe("the action binding and Cloudflare's test keys", () => {
     stubSiteverify(TEST_KEY_PASS);
     const res = await post(app({}, one(ONE_WIDGET), "dev"));
     expect(res.status).toBe(200);
+  });
+});
+
+/**
+ * **A feature deployment verifies against the documented always-pass test secret (#656).**
+ *
+ * Nothing provisions a branch: `pithy turnstile provision` writes dev's secrets file, staging's store and
+ * prod's, and a feature's store is created empty by `pithy provision --feature`. So the gate's own read
+ * found nothing and every sign-in on a real feature deployment answered `500 turnstile/config` — the
+ * humanity check refusing the deployment, on every protected route at once.
+ *
+ * The pair a feature wants is the pair dev already wires, and it wants it with no adopter edit, because a
+ * branch's config is generated per branch and nobody owns it. So the gate defaults to it, for that one
+ * environment name, and for no other.
+ *
+ * The secret literal is written out here rather than imported from `provision/testKeys`: the gate reads
+ * that module, and an expectation taken from it could only agree with itself. `middleware.workers.test.ts`
+ * is where the same default is verified against live siteverify, which is the only thing that can say the
+ * string is genuinely Cloudflare's.
+ */
+describe("a feature deployment's widget secret", () => {
+  /** Cloudflare's always-pass test secret — https://developers.cloudflare.com/turnstile/troubleshooting/testing/ */
+  const PASS_SECRET = "1x0000000000000000000000000000000AA";
+  /** Exactly what that secret answers: success, its own test-key flag, and no `action` at all. */
+  const TEST_KEY_PASS = { success: true, "error-codes": [], metadata: { result_with_testing_key: true } };
+
+  const post = (send: ReturnType<typeof app>) =>
+    send({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+    });
+
+  test("signs in with nothing provisioned for it, through the gate auth stacks", async () => {
+    const fetchMock = stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({ action: "login" }, {}, "feature"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    // The secret the gate actually sent, so this says *which* pair a feature verifies against rather
+    // than only that something got through.
+    expect(sentBody(fetchMock).get("secret")).toBe(PASS_SECRET);
+  });
+
+  test("a stated secret still wins — the default fills an absence, it does not override", async () => {
+    const fetchMock = stubSiteverify({ success: true, "error-codes": [] });
+    const res = await post(app({}, one({ visible: { key: "0xa-real-feature-secret" } }), "feature"));
+    expect(res.status).toBe(200);
+    expect(sentBody(fetchMock).get("secret")).toBe("0xa-real-feature-secret");
+  });
+
+  test("and no other environment defaults to anything: an unprovisioned gate still refuses", async () => {
+    // The plant. A gate that answered for everybody wherever its secret was missing would satisfy the
+    // first case and would be a hole in every deployment that had not run provisioning yet — including
+    // prod. `feature` is the one environment `DeclaredEnvironments` refuses and a branch's provisioning
+    // writes, so it is the one name that can carry this default.
+    for (const environment of ["dev", "staging", "prod", "features", undefined]) {
+      stubSiteverify(TEST_KEY_PASS);
+      const res = await post(app({ action: "login" }, {}, environment));
+      expect(res.status, `${environment ?? "an unstamped Worker"} let an unprovisioned gate through`).toBe(500);
+      expect(await errCode(res)).toBe("turnstile/config");
+    }
+  });
+});
+
+/**
+ * **The refusal when nothing is provisioned says what is missing and where (#656).**
+ *
+ * `{"code":"turnstile/config","message":"Turnstile is not configured."}` is true of every environment at
+ * once, and the one thing an operator holding it needs is which. The environment therefore rides in
+ * `message`, the field that crosses the HTTP boundary; the secret's own name and the reader's failure stay
+ * in `detail`, which the codec strips (CLAUDE.md §Errors).
+ */
+describe("the refusal when no widget secret is provisioned", () => {
+  const post = (send: ReturnType<typeof app>) =>
+    send({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+    });
+
+  test("names the environment and what is missing, to the client", async () => {
+    const res = await post(app({}, {}, "staging"));
+    const body = (await res.json()) as { error: { code: string; message: string; action?: string; detail?: string } };
+    expect(body.error.code).toBe("turnstile/config");
+    expect(body.error.message).toContain("staging");
+    expect(body.error.message).toMatch(/widget secret/i);
+    // And the remedy and the throw-site context are the operator's, not the browser's.
+    expect(body.error.action).toBeUndefined();
+    expect(body.error.detail).toBeUndefined();
+  });
+
+  test("an unstamped Worker is named as one, rather than as an environment called nothing", async () => {
+    const res = await post(app({}, {}));
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/unstamped/i);
+  });
+
+  test("the operator's half names the command and the secret", async () => {
+    // On the payload, because `action` and `detail` never leave the Worker. A refusal whose remedy an
+    // operator cannot read is the 500 this issue was filed about, wearing a better sentence.
+    stubSecrets(turnstileSecretsRegistry, {});
+    const hono = new Hono();
+    let thrown: unknown;
+    hono.onError((error) => {
+      thrown = error;
+      return new Response("", { status: 500 });
+    });
+    hono.use("/protected", turnstile());
+    hono.post("/protected", (c) => c.json({ ok: true }));
+    await hono.request(
+      "/protected",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+      },
+      { ENVIRONMENT: "prod" },
+    );
+    expect(thrown).toMatchObject({
+      payload: {
+        code: "turnstile/config",
+        action: expect.stringContaining("pithy turnstile provision"),
+        detail: expect.stringContaining(TURNSTILE_SECRET_NAME),
+      },
+    });
   });
 });
 

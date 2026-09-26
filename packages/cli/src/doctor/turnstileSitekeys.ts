@@ -35,8 +35,11 @@ import { featureConfigPath } from "../provision/featureConfig";
  *
  * - **An environment that renders no widget**, per Worker that gates `login`. Either its sitekey is blank —
  *   a step not yet taken, and `pithy turnstile provision` then a redeploy is the remedy — or no sitekey can
- *   reach it at all: a declared environment beyond dev, staging and prod, or a feature build. Those have no
- *   remedy in the kit, and the line says what they are rather than inventing one.
+ *   reach it at all: a declared environment beyond the names `TurnstileSitekeys` carries. Those have no
+ *   remedy in the kit, and the line says what they are rather than inventing one. A feature build is named
+ *   by neither any more: it resolves Cloudflare's always-pass test key by default (#656), so it renders,
+ *   unless the config states a blank sitekey for it — which is an adopter's deliberate "no widget here", and
+ *   gets a third sentence, because the command that fills every other blank does not write that key.
  * - **A stranded `TURNSTILE_SITEKEY_*` var**, in a Worker's `wrangler.jsonc` (any stanza), in the project's
  *   `dev.json`, or in the project root's `.dev.vars` — the three files a provisioner ever wrote one into.
  *   Nothing ever read them. This names the file each one is in, and the remedy only where one exists.
@@ -62,7 +65,7 @@ import { featureConfigPath } from "../provision/featureConfig";
  * answered as that environment's bundle would be; asked once, unstamped, it named a prod that renders and
  * missed a staging where nobody can sign in. `pithy doctor` hands in the compositions its report already took,
  * so none is composed twice. Which Workers a provision accepts is read the same way: a Worker composing
- * turnstile in any environment checked is one. A feature build is reported only once the
+ * turnstile in any environment checked is one. A feature build is looked at only once the
  * Worker has a generated feature config (`featureConfigPath`): before that, nothing has built one, and a
  * line every Turnstile project carried forever would be noise rather than a finding.
  *
@@ -282,18 +285,27 @@ export function describeTurnstileSitekeys(check: TurnstileSitekeysCheck): string
   const lines: string[] = [];
   const workers = [...new Set(check.unrendered.map((found) => found.worker))];
   for (const worker of workers) {
-    const blank = check.unrendered.filter((found) => found.worker === worker && found.slot).map((f) => f.environment);
-    const unreachable = check.unrendered
-      .filter((found) => found.worker === worker && !found.slot)
-      .map((found) => found.environment);
+    const mine = check.unrendered.filter((found) => found.worker === worker);
+    // **A feature's blank is the one blank `pithy turnstile provision` cannot fill**, so it gets its own
+    // sentence (#656 review). `sitekeysFor` writes dev, staging and prod; the `feature` key is optional and
+    // written by nobody, so an operator who ran the command and redeployed the branch would find this line
+    // exactly where it was. What clears it is the config.
+    const blank = mine.filter((found) => found.slot && found.environment !== FEATURE_ENVIRONMENT);
+    const blankFeature = mine.some((found) => found.slot && found.environment === FEATURE_ENVIRONMENT);
+    const unreachable = mine.filter((found) => !found.slot).map((found) => found.environment);
     if (blank.length > 0) {
       lines.push(
-        `${worker}: no widget renders in ${listed(blank)}, so sign-in there is blocked. Run pithy turnstile provision --worker ${worker}, then redeploy.`,
+        `${worker}: no widget renders in ${listed(blank.map((found) => found.environment))}, so sign-in there is blocked. Run pithy turnstile provision --worker ${worker}, then redeploy.`,
+      );
+    }
+    if (blankFeature) {
+      lines.push(
+        `${worker}: no widget renders in a feature build, so sign-in on a branch is blocked. Its sitekeys.feature is stated blank — remove that key and Cloudflare's test sitekey applies again, or state a real widget's. No pithy command writes it.`,
       );
     }
     if (unreachable.length > 0) {
       lines.push(
-        `${worker}: ${listed(unreachable)} ${unreachable.length === 1 ? "has" : "have"} no sitekey. Turnstile covers dev, staging and prod, so sign-in there is blocked.`,
+        `${worker}: ${listed(unreachable)} ${unreachable.length === 1 ? "has" : "have"} no sitekey. Turnstile covers dev, staging, prod and a feature build, so sign-in there is blocked.`,
       );
     }
   }

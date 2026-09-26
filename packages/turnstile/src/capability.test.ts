@@ -95,6 +95,50 @@ describe("turnstile client projection", () => {
     expect(resolveClientProjection(cap, { environment: "preview" })).toEqual({ enabled: false });
   });
 
+  test("a feature build renders Cloudflare's always-pass test widget, with nothing stated for it", () => {
+    // #656: a branch deployment answered `500 turnstile/config` on every sign-in, because the sitekey
+    // lookup was a closed three-key object and a feature read `undefined` out of it. A feature is
+    // ephemeral, so a real widget would be wrong there — the documented test key is what it wants, and it
+    // gets it without an adopter editing a config no branch owns.
+    //
+    // The literals are written out rather than imported from `provision/testKeys`: the projection reads
+    // that module, so an expectation taken from it could only agree with itself.
+    const cap = turnstile({ widgets: { visible: { sitekeys } } });
+    expect(resolveClientProjection(cap, { environment: "feature" })).toEqual({
+      enabled: true,
+      mode: "visible",
+      sitekey: "1x00000000000000000000AA",
+      action: "login",
+      token: { field: "cf-turnstile-response", header: null },
+    });
+  });
+
+  test("the widget's own mode picks the key — an invisible login widget gets the invisible one", () => {
+    const cap = turnstile({ widgets: { invisible: { sitekeys } }, protect: { login: "invisible" } });
+    expect(resolveClientProjection(cap, { environment: "feature" }).sitekey).toBe("1x00000000000000000000BB");
+  });
+
+  test("a stated feature sitekey wins — the default fills an absence, it is not a policy", () => {
+    const cap = turnstile({ widgets: { visible: { sitekeys: { ...sitekeys, feature: "0x4AAAAAAA-a-real-one" } } } });
+    expect(resolveClientProjection(cap, { environment: "feature" }).sitekey).toBe("0x4AAAAAAA-a-real-one");
+  });
+
+  test("and a blanked one renders no widget, exactly as a blank dev or prod sitekey does", () => {
+    const cap = turnstile({ widgets: { visible: { sitekeys: { ...sitekeys, feature: "" } } } });
+    expect(resolveClientProjection(cap, { environment: "feature" })).toEqual({ enabled: false });
+  });
+
+  test("no other environment defaults to anything — `feature` is the one nothing can declare", () => {
+    // The plant, and what keeps this a default rather than "an unknown environment renders the test
+    // widget". `feature` is the stanza a branch's provisioning writes and `DeclaredEnvironments` refuses,
+    // so it is the one name no adopter's environment can be. A declared `live`, a `preview`, and a name
+    // that merely starts like a feature's still render nothing at all.
+    const cap = turnstile({ widgets: { visible: { sitekeys } } });
+    for (const environment of ["live", "preview", "features", "Feature", "feature-1"]) {
+      expect(resolveClientProjection(cap, { environment }), environment).toEqual({ enabled: false });
+    }
+  });
+
   test("no secret, and no other environment's sitekey, reaches the bundle", () => {
     // A sensitive-looking extra field, as an adopter (or a future schema edit) might introduce it.
     const extra = { secret: "0x_widget_secret_never_ship" } as unknown as Partial<TurnstileConfigInput>;
