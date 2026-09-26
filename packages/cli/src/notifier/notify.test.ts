@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -12,14 +12,34 @@ import { defaultState, type NotifierState, readState, writeState } from "./state
 /** A visible, ANSI-free accent so tests can assert which tokens are accented without color codes. */
 const mark = (s: string): string => `«${s}»`;
 
+/** The `.tmp` siblings `writeFileAtomic` holds mid-write — named, so a failure says which one survived. */
+async function tempsIn(directory: string): Promise<string[]> {
+  return (await readdir(directory)).filter((name) => name.endsWith(".tmp"));
+}
+
+/** One macrotask, so every pending microtask has drained before a "still pending" assertion is made. */
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 let dir: string;
 let file: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-notify-"));
   file = join(dir, "state.json");
 });
+/**
+ * Teardown is a gate here, not a courtesy (#658).
+ *
+ * `force: true` was on the `rm` and it hid the one failure that mattered. The directory always exists, so
+ * `force` swallowed no `ENOENT` worth swallowing — what it could not swallow was `rmdir`'s `ENOTEMPTY`,
+ * which is what a `state.json.<hex>.tmp` created *after* the recursive walk's `readdir` snapshot produces.
+ * That is a test returning while the notifier's write is still in flight, and it failed a release at random
+ * rather than saying so. So: the survivors are listed first, and named in the assertion; the removal is
+ * allowed to throw, because a directory this suite cannot remove is a result.
+ */
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  const survivors = await tempsIn(dir);
+  await rm(dir, { recursive: true });
+  expect(survivors, "a write was still in flight when the test returned").toEqual([]);
 });
 
 function okFetch(version: string, extra: Record<string, unknown> = {}): FetchLike {
@@ -129,7 +149,7 @@ describe("runUpdateNotifier", () => {
     await writeState(file, base);
     const fetch = okFetch("1.3.0");
     let job: (() => void) | undefined;
-    runUpdateNotifier({
+    const settled = runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: file,
       fetch,
@@ -144,13 +164,84 @@ describe("runUpdateNotifier", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(job).toBeTypeOf("function");
     job?.();
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    // The returned promise, not the fetch. The fetch is the job's *first* observable step; the state
+    // write that follows it is the last durable one, and teardown is what races that (#658).
+    await settled;
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect((await readState(file)).latestVersion).toBe("1.3.0");
+    expect(await tempsIn(dir)).toEqual([]);
+  });
+
+  test("the promise is the state write, not the fetch: it stays pending while the write is held open", async () => {
+    await writeState(file, base);
+
+    // Hold `writeFileAtomic` open exactly where the real one is vulnerable: the temp file exists, the
+    // rename has not happened. No timing anywhere — the write finishes only when this test releases it,
+    // so neither assertion below can pass for the wrong reason.
+    let release: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reportOpen: (() => void) | undefined;
+    const isOpen = new Promise<void>((resolve) => {
+      reportOpen = resolve;
+    });
+
+    vi.resetModules();
+    vi.doMock("../project/atomic", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../project/atomic")>();
+      return {
+        ...actual,
+        writeFileAtomic: async (path: string, content: string): Promise<void> => {
+          const tmp = `${path}.0123456789abcdef.tmp`;
+          await writeFile(tmp, content);
+          reportOpen?.();
+          await released;
+          await rename(tmp, path);
+        },
+      };
+    });
+
+    try {
+      const { runUpdateNotifier: fresh } = await import("./notify");
+      const fetch = okFetch("1.3.0");
+      const settled = fresh({
+        installedVersion: "1.2.0",
+        stateFile: file,
+        fetch,
+        now: () => 5_000_000_000,
+        isTTY: true,
+        stderr: () => {},
+        schedule: (fn) => fn(),
+      });
+      let done = false;
+      void settled.then(() => {
+        done = true;
+      });
+
+      await isOpen;
+      // This is where the old test returned: the fetch has happened, so the wait it made was satisfied —
+      // and a temp file is sitting in the directory teardown is about to try to remove.
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(await tempsIn(dir)).toHaveLength(1);
+      await tick();
+      expect(done, "settled before its own write landed").toBe(false);
+
+      release?.();
+      await settled;
+      expect(done).toBe(true);
+      expect(await tempsIn(dir)).toEqual([]);
+      expect((await readState(file)).latestVersion).toBe("1.3.0");
+    } finally {
+      vi.doUnmock("../project/atomic");
+      vi.resetModules();
+    }
   });
 
   test("stale cache → fetches, persists, and prints a minor notice", async () => {
     await writeState(file, base);
     const writes: string[] = [];
-    runUpdateNotifier({
+    await runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: file,
       fetch: okFetch("1.3.0"),
@@ -161,7 +252,7 @@ describe("runUpdateNotifier", () => {
       schedule: (fn) => fn(),
       accent: mark,
     });
-    await vi.waitFor(() => expect(writes.length).toBe(1));
+    expect(writes.length).toBe(1);
     expect(writes[0]).toContain("pithy «1.3.0» «available». You have 1.2.0.");
     // State persisted with the new version.
     expect((await readState(file)).latestVersion).toBe("1.3.0");
@@ -172,7 +263,7 @@ describe("runUpdateNotifier", () => {
     await writeState(file, { ...base, lastCheck: now(), latestVersion: "1.3.0" });
     const fetch = okFetch("9.9.9");
     const writes: string[] = [];
-    runUpdateNotifier({
+    await runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: file,
       fetch,
@@ -182,7 +273,7 @@ describe("runUpdateNotifier", () => {
       schedule: (fn) => fn(),
       accent: mark,
     });
-    await vi.waitFor(() => expect(writes.length).toBe(1));
+    expect(writes.length).toBe(1);
     expect(fetch).not.toHaveBeenCalled();
     expect(writes[0]).toContain("«1.3.0»"); // cached, not the 9.9.9 the network would have returned
   });
@@ -193,7 +284,7 @@ describe("runUpdateNotifier", () => {
       throw new Error("offline");
     };
     const writes: string[] = [];
-    runUpdateNotifier({
+    await runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: file,
       fetch,
@@ -202,17 +293,17 @@ describe("runUpdateNotifier", () => {
       stderr: (t) => writes.push(t),
       schedule: (fn) => fn(),
     });
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
     expect(writes).toEqual([]);
   });
 
   test("a corrupt state file yields the safe default and never throws", async () => {
-    const { writeFile } = await import("node:fs/promises");
     await writeFile(file, "{ broken");
     const writes: string[] = [];
-    expect(() =>
-      runUpdateNotifier({
+    let settled: Promise<void> | undefined;
+    // Synchronously, because the throw this rules out would be a synchronous one: `bin.ts` calls this
+    // without a `try`, so a notice must not be able to take a command's exit code with it.
+    expect(() => {
+      settled = runUpdateNotifier({
         installedVersion: "1.2.0",
         stateFile: file,
         fetch: okFetch("1.3.0"),
@@ -221,20 +312,22 @@ describe("runUpdateNotifier", () => {
         stderr: (t) => writes.push(t),
         schedule: (fn) => fn(),
         accent: mark,
-      }),
-    ).not.toThrow();
-    await vi.waitFor(() => expect(writes.length).toBe(1));
+      });
+    }).not.toThrow();
+    await expect(settled).resolves.toBeUndefined();
+    expect(writes.length).toBe(1);
   });
 
   test("patch bump does not notify; security-flagged patch does", async () => {
-    // Distinct state files so the two fire-and-forget jobs never race on one file.
+    // Distinct state files, still: each job is awaited before the next starts now, but two writes aimed at
+    // one file is a race the next edit reintroduces for free.
     const plainFile = join(dir, "plain.json");
     const flaggedFile = join(dir, "flagged.json");
 
     // Plain patch → suppressed.
     await writeState(plainFile, base);
     const plain: string[] = [];
-    runUpdateNotifier({
+    await runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: plainFile,
       fetch: okFetch("1.2.1"),
@@ -243,14 +336,12 @@ describe("runUpdateNotifier", () => {
       stderr: (t) => plain.push(t),
       schedule: (fn) => fn(),
     });
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
     expect(plain).toEqual([]);
 
     // Security-flagged patch → notifies.
     await writeState(flaggedFile, base);
     const flagged: string[] = [];
-    runUpdateNotifier({
+    await runUpdateNotifier({
       installedVersion: "1.2.0",
       stateFile: flaggedFile,
       fetch: okFetch("1.2.1", { "pithy:security": true }),
@@ -260,7 +351,7 @@ describe("runUpdateNotifier", () => {
       schedule: (fn) => fn(),
       accent: mark,
     });
-    await vi.waitFor(() => expect(flagged.length).toBe(1));
+    expect(flagged.length).toBe(1);
     expect(flagged[0]).toContain("«1.2.1»");
   });
 });
