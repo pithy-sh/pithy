@@ -107,6 +107,12 @@ export type MintedAccountToken = z.output<typeof MintedAccountToken>;
  */
 export const AccountTokenPolicy = z
   .object({
+    effect: z
+      .enum(["allow", "deny"])
+      .optional()
+      .describe(
+        "Whether this policy grants its groups on its resources or refuses them. Cloudflare evaluates explicit denies first, so a policy naming a group is not evidence the token may use it. Optional because a response that omits it is an allow, which is the API's own default.",
+      ),
     permission_groups: z
       .array(
         z
@@ -131,6 +137,24 @@ export const AccountTokenSummary = z
     id: z.string().describe("The CF-assigned token id, used to address the token for deletion."),
     name: z.string().describe("The token name, the key callers match on for idempotent re-mint."),
     status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
+    expires_on: z
+      .string()
+      .optional()
+      .describe(
+        "When the token stops being accepted, if it was given a lifetime. Read so a re-scope can resend it — Cloudflare's token update is a full representation, and a field the body omits is a field the token loses.",
+      ),
+    not_before: z
+      .string()
+      .optional()
+      .describe(
+        "When the token starts being accepted, if it was given one. Resent by a re-scope, for the reason above.",
+      ),
+    condition: z
+      .looseObject({})
+      .optional()
+      .describe(
+        "The token's use conditions — an IP allowlist, today. Kept opaque and passed back verbatim: this reads it only to resend it, and narrowing the shape here would silently drop a condition Cloudflare adds later.",
+      ),
     policies: z
       .array(AccountTokenPolicy)
       .optional()
@@ -418,7 +442,27 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
     // credential that is missing exactly the grant the operator ran this to add — which is how the
     // remedy for #651 shipped unable to perform the remedy. Re-scoping first costs nothing when it
     // fails: the token's previous value is still live and nothing has been handed out.
-    await this.updateTokenPolicies(existing.id, existing.name, permissions);
+    await this.updateTokenPolicies(existing, permissions);
+    const value = await this.rollTokenValue(existing.id);
+    return { id: existing.id, value, name: existing.name, status: existing.status };
+  }
+
+  /**
+   * Ensure a named token exists and return a fresh value — **without touching its policy set.**
+   *
+   * The same roll-or-create as {@link rollToken}, minus the re-scope. Its one caller is the secrets
+   * manager's runtime credential (`ensureManagerToken`), and the difference matters there for two
+   * reasons. That call sits in a contention loop that may roll up to five times, so a replace would
+   * rewrite a *live* runtime credential's scope five times over. And the permission list it would
+   * replace with is resolved by the provisioner, not by the thing consuming the token — a Worker that
+   * is already deployed and already reading secrets under the scope it was given.
+   *
+   * `permissions` is still taken because the create path needs it: a token that does not exist yet has
+   * no scope to keep.
+   */
+  async rollTokenKeepingPolicies(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> {
+    const existing = await this.findTokenByName(name);
+    if (!existing) return this.mintToken(name, permissions);
     const value = await this.rollTokenValue(existing.id);
     return { id: existing.id, value, name: existing.name, status: existing.status };
   }
@@ -431,11 +475,18 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * *narrow* as well as widen: a capability removed from a project takes its `ciPermissions` with it on
    * the next mint, exactly as the profile contract has always claimed.
    *
+   * **And a full representation, which is why this takes the record rather than an id.** The endpoint
+   * replaces the whole token, not the field you named: a body carrying only `policies` clears a
+   * hand-set `expires_on`, `not_before` and `condition`, and flips a `disabled` token back to active.
+   * Those are the hardening Cloudflare's own documentation recommends, and a routine `pithy token mint`
+   * was silently undoing all of it. They come off the record the caller already read — the token list
+   * returns them — so preserving them costs no extra call and no grant this path did not already need.
+   *
    * Identity is untouched — same token id, same name, same value — so nothing that holds the credential
    * has to learn a new one. {@link rollToken} pairs it with a value roll; on its own this is the seam
    * for re-scoping a token whose secret must not change.
    */
-  async updateTokenPolicies(tokenId: string, name: string, permissions: TokenPermission[]): Promise<void> {
+  async updateTokenPolicies(existing: TokenRecord, permissions: TokenPermission[]): Promise<void> {
     const index = indexByName(await this.listPermissionGroups());
     const policies = permissions.map((permission) => ({
       effect: permission.effect ?? ("allow" as const),
@@ -443,11 +494,37 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
       resources: permission.resources,
     }));
     await cloudflareRequest(
-      `update account token policies ${tokenId}`,
-      () => this.getClient().accounts.tokens.update(tokenId, { account_id: this.accountId, name, policies }),
+      `update account token policies ${existing.id}`,
+      () =>
+        this.getClient().accounts.tokens.update(existing.id, {
+          account_id: this.accountId,
+          name: existing.name,
+          // Everything the record carries goes back, because the endpoint is a full representation and
+          // this call is only meant to change one thing. Present-and-undefined is not the same as
+          // absent to a JSON body builder, so each key is spread in only when the record has it.
+          ...(existing.status !== undefined ? { status: existing.status } : {}),
+          ...(existing.expires_on !== undefined ? { expires_on: existing.expires_on } : {}),
+          ...(existing.not_before !== undefined ? { not_before: existing.not_before } : {}),
+          ...(existing.condition !== undefined ? { condition: existing.condition } : {}),
+          policies,
+        }),
       API_TOKENS_ENDPOINT,
     );
   }
+}
+
+/**
+ * The fields {@link CloudflareAccountTokensManager.updateTokenPolicies} needs off an existing token: its
+ * identity, and every attribute the full-representation `PUT` would otherwise clear. An
+ * {@link AccountTokenSummary} satisfies it; so does a hand-built record in a test.
+ */
+export interface TokenRecord {
+  id: string;
+  name: string;
+  status?: "active" | "disabled" | "expired";
+  expires_on?: string;
+  not_before?: string;
+  condition?: Record<string, unknown>;
 }
 
 /**

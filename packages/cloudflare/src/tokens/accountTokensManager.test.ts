@@ -116,6 +116,7 @@ describe("CloudflareAccountTokensManager", () => {
     );
     expect((await manager.listTokens())[0]?.policies).toEqual([
       {
+        effect: "allow",
         permission_groups: [{ id: "pg-routes" }],
         resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
       },
@@ -491,6 +492,7 @@ describe("CloudflareAccountTokensManager", () => {
     expect(mockTokenUpdate).toHaveBeenCalledWith("tk-existing", {
       account_id: "acct-1",
       name: "acme-staging-ci-system",
+      status: "active",
       policies: [
         {
           effect: "allow",
@@ -522,8 +524,107 @@ describe("CloudflareAccountTokensManager", () => {
     expect(mockValueUpdate).not.toHaveBeenCalled();
   });
 
+  it("a re-scope preserves every other attribute the token carries", async () => {
+    // #651 round three. `PUT /accounts/<id>/tokens/<id>` is a full representation: whatever the body
+    // omits, the token loses. A hand-set TTL or IP allowlist is exactly the hardening Cloudflare's own
+    // docs recommend, and a routine `pithy token mint` was clearing all of it — and re-enabling a token
+    // somebody had disabled. The list response already carries these fields, so preserving them costs
+    // no extra call and no extra grant.
+    mockTokenList.mockReturnValue(
+      paginator([
+        {
+          id: "tk-existing",
+          name: "acme-staging-ci-system",
+          status: "disabled",
+          expires_on: "2026-12-31T00:00:00Z",
+          not_before: "2026-01-01T00:00:00Z",
+          condition: { request_ip: { in: ["203.0.113.0/24"] } },
+          policies: [{ resources: { "com.cloudflare.api.account.acct-1": "*" } }],
+        },
+      ]),
+    );
+    mockValueUpdate.mockResolvedValue("rolled-value");
+
+    await manager.rollToken("acme-staging-ci-system", [
+      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
+    ]);
+
+    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-existing", {
+      account_id: "acct-1",
+      name: "acme-staging-ci-system",
+      status: "disabled",
+      expires_on: "2026-12-31T00:00:00Z",
+      not_before: "2026-01-01T00:00:00Z",
+      condition: { request_ip: { in: ["203.0.113.0/24"] } },
+      policies: [
+        {
+          effect: "allow",
+          permission_groups: [{ id: "pg-routes" }],
+          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+        },
+      ],
+    });
+  });
+
+  it("a token carrying none of those attributes sends none of them", async () => {
+    // Absent on the record is absent on the token. Sending `undefined` keys would be a different write.
+    mockTokenList.mockReturnValue(paginator([{ id: "tk-plain", name: "acme-staging-ci-system" }]));
+    mockValueUpdate.mockResolvedValue("v");
+    await manager.rollToken("acme-staging-ci-system", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+    ]);
+    expect(Object.keys(mockTokenUpdate.mock.calls[0]?.[1] ?? {}).sort()).toEqual(["account_id", "name", "policies"]);
+  });
+
+  it("listTokens reads the attributes a re-scope has to resend", async () => {
+    mockTokenList.mockReturnValue(
+      paginator([
+        {
+          id: "t1",
+          name: "n",
+          status: "disabled",
+          expires_on: "2026-12-31T00:00:00Z",
+          not_before: "2026-01-01T00:00:00Z",
+          condition: { request_ip: { in: ["203.0.113.0/24"] } },
+        },
+      ]),
+    );
+    expect((await manager.listTokens())[0]).toMatchObject({
+      status: "disabled",
+      expires_on: "2026-12-31T00:00:00Z",
+      not_before: "2026-01-01T00:00:00Z",
+      condition: { request_ip: { in: ["203.0.113.0/24"] } },
+    });
+  });
+
+  it("rollTokenKeepingPolicies rolls the value and never rewrites the scope", async () => {
+    // The seam for a credential whose policy set is not this caller's to decide — the secrets manager's
+    // runtime token, rolled in a contention loop. Replace semantics there would re-scope a live
+    // credential up to five times from a permission list resolved somewhere else entirely.
+    mockTokenList.mockReturnValue(paginator([{ id: "tk-mgr", name: "acme-secrets-manager", status: "active" }]));
+    mockValueUpdate.mockResolvedValue("rolled");
+
+    const rolled = await manager.rollTokenKeepingPolicies("acme-secrets-manager", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+    ]);
+
+    expect(rolled.value).toBe("rolled");
+    expect(mockTokenUpdate).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rollTokenKeepingPolicies still mints when the token does not exist", async () => {
+    mockTokenList.mockReturnValue(paginator([]));
+    mockCreate.mockResolvedValue({ id: "fresh", value: "v", name: "acme-secrets-manager" });
+    const minted = await manager.rollTokenKeepingPolicies("acme-secrets-manager", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+    ]);
+    expect(minted.id).toBe("fresh");
+    expect(mockTokenUpdate).not.toHaveBeenCalled();
+  });
+
   it("updateTokenPolicies replaces the policy set and never touches the value", async () => {
-    await manager.updateTokenPolicies("tk-1", "acme-staging-ci-system", [
+    await manager.updateTokenPolicies({ id: "tk-1", name: "acme-staging-ci-system" }, [
       { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
     ]);
     expect(mockTokenUpdate).toHaveBeenCalledWith("tk-1", {

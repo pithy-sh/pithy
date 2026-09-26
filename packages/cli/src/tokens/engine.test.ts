@@ -542,7 +542,10 @@ describe("mintProfileToken — route zones", () => {
     expect(routeZones).not.toHaveBeenCalled();
   });
 
-  test("a pithy.config.ts override narrows the same way a flag does", async () => {
+  test("a standing pithy.config.ts override narrows too — and the listing says why", async () => {
+    // It still suppresses the route policy: a standing override is the adopter stating this
+    // credential's permanent shape. What changed (#651 round three) is that the listing no longer
+    // prints a re-mint remedy that this same override would undo.
     const tokens = fakeControl();
     await mintProfileToken(
       engineWith(dir, tokens, {
@@ -553,6 +556,50 @@ describe("mintProfileToken — route zones", () => {
       "staging",
     );
     expect(tokens.policies[0]).toHaveLength(1);
+  });
+
+  test("a --permission narrowing of a token that already exists is refused", async () => {
+    // The mint replaces an existing token's policy set now, so a one-off flag permanently re-scopes the
+    // credential CI deploys with — a contractor handed a read-only token for an hour takes the deploy
+    // token's route grant with them. Refusing is the only answer that cannot silently break a pipeline.
+    const tokens = fakeControl({
+      findTokenByName: vi.fn(async () => ({ id: "t1", name: "acme-staging-ci-system", status: "active" as const })),
+    });
+    const failure = await mintProfileToken(
+      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
+      "ci-system",
+      "staging",
+      { permissions: ["d1:read"] },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.message).toMatch(/--permission/);
+    expect((failure as PithyError).payload.action).toMatch(/tokens\.overrides|pithy token rotate/);
+    // Nothing was written: the refusal lands before the roll.
+    expect(tokens.rolled).toEqual([]);
+    expect(tokens.policies).toEqual([]);
+  });
+
+  test("a --permission narrowing of a token that does not exist yet is allowed", async () => {
+    // Nothing to strip. This is the case the flag is actually for.
+    const tokens = fakeControl();
+    await mintProfileToken(
+      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
+      "ci-system",
+      "staging",
+      {
+        permissions: ["d1:read"],
+      },
+    );
+    expect(tokens.policies[0]).toHaveLength(1);
+  });
+
+  test("an unnarrowed mint of an existing token is untouched by the refusal", async () => {
+    const tokens = fakeControl({
+      findTokenByName: vi.fn(async () => ({ id: "t1", name: "acme-staging-ci-system", status: "active" as const })),
+    });
+    await mintProfileToken(engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }), "ci-system", "staging");
+    expect(tokens.policies[0]).toHaveLength(2);
   });
 
   test("an override of something other than the permissions keeps the route policy", async () => {
@@ -689,6 +736,88 @@ describe("listProfileTokens — route scope", () => {
     expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe(
       "unknown",
     );
+  });
+
+  test("a token that names the zone nowhere is stale, whatever its groups say", async () => {
+    // The regression #651 round three caught: requiring `permission_groups` to judge anything turned the
+    // *original* stale token — one account policy, no zone resource at all — into `unknown`, and the
+    // remedy stopped printing for exactly the shape it was written for. Absence of the resource is
+    // decisive on its own; only a zone that IS named needs its groups read.
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("stale");
+  });
+
+  test("a deny naming the route group on the zone is not coverage", async () => {
+    const tokens = listing([
+      {
+        effect: "deny",
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("stale");
+  });
+
+  test("a deny beside an allow on the same zone still denies", async () => {
+    const tokens = listing([
+      {
+        effect: "allow",
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+      {
+        effect: "deny",
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("stale");
+  });
+
+  test("Cloudflare's nested zone-inside-account resource form is coverage", async () => {
+    // `{ "com.cloudflare.api.account.<id>": { "com.cloudflare.api.account.zone.<zid>": "*" } }` — the
+    // form Cloudflare's own docs give. Scanning only top-level keys read a working token as stale and
+    // told the operator to re-mint something that already worked.
+    const tokens = listing([
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.acct-1": { "com.cloudflare.api.account.zone.zone-a": "*" } },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
+  });
+
+  test("an all-zones grant covers the declared zone", async () => {
+    const tokens = listing([
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.acct-1": { "com.cloudflare.api.account.zone.*": "*" } },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
+  });
+
+  test("a standing override that strips the grant reads `overridden`, not `stale`", async () => {
+    // The state where "run pithy token mint" is a lie: the mint would re-scope the token to exactly what
+    // it has now, because the override removes the route policy from every mint.
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const rows = await listProfileTokens(
+      engineWith(dir, tokens, {
+        routeZones,
+        override: (profile) => (profile === "ci-system" ? { permissions: ["d1:read"] } : undefined),
+      }),
+      "staging",
+    );
+    expect(rows[0]?.routeScope).toBe("overridden");
+  });
+
+  test("an override of something other than the permissions is not an override of the grant", async () => {
+    const tokens = listing([{ resources: { "com.cloudflare.api.account.acct-1": "*" } }]);
+    const rows = await listProfileTokens(
+      engineWith(dir, tokens, { routeZones, override: () => ({ store: "ephemeral" as const }) }),
+      "staging",
+    );
+    expect(rows[0]?.routeScope).toBe("stale");
   });
 });
 

@@ -261,14 +261,30 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
 }
 
 /**
- * The one line `pithy token list` adds for a CI token that predates zone-scoped routes (#651), or
- * nothing.
+ * What `pithy token list` adds for a CI token that cannot attach this project's route (#651), or nothing.
  *
  * Its own sentence rather than a column, because it is not a fact about the listing — it is the next
- * deploy of a custom domain failing, and the remedy is one command. Said once for the listing, since
- * every stale row has the same remedy.
+ * deploy of a custom domain failing. Said once for the listing, since every row in a given state has the
+ * same remedy.
+ *
+ * **Two states, two remedies, and getting that wrong is worse than saying nothing.** A token that
+ * predates route scoping is fixed by re-minting. A token whose grant a standing `tokens.overrides`
+ * removes is not: the mint honors the override, strips the route policy again, and the listing repeats
+ * itself. So the override case is checked first and never prints the mint command on its own.
  */
 export function routeScopeNotice(tokens: readonly TokenListItem[], env: string): string | null {
+  const overridden = tokens.filter((token) => token.routeScope === "overridden");
+  if (overridden.length > 0) {
+    // Never the mint command here. The override strips the route policy from every mint, so printing it
+    // would send an adopter round a loop that ends where it started, with the tool still saying "run
+    // this" — the state #651's round three calls a permanent no-op.
+    const profile = overridden[0]?.profile ?? CI_SYSTEM_PROFILE;
+    return (
+      `${overridden.map((token) => token.profile).join(", ")}: cannot attach this project's declared route, and re-minting will not change that.\n` +
+      `tokens.overrides["${profile}"].permissions in pithy.config.ts replaces the profile's set, and the route grant goes with it.\n` +
+      `Remove that override — or its permissions key — then run: pithy token mint ${profile} --env ${env}\n`
+    );
+  }
   const stale = tokens.filter((token) => token.routeScope === "stale");
   if (stale.length === 0) return null;
   return (

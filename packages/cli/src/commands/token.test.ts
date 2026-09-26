@@ -143,7 +143,7 @@ describe("tokenProfiles", () => {
 });
 
 describe("routeScopeNotice", () => {
-  const row = (profile: string, routeScope: "not-required" | "scoped" | "stale" | "unknown") => ({
+  const row = (profile: string, routeScope: "not-required" | "scoped" | "stale" | "overridden" | "unknown") => ({
     profile,
     env: "staging",
     name: `acme-staging-${profile}`,
@@ -157,6 +157,24 @@ describe("routeScopeNotice", () => {
     const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
     expect(notice).toContain("ci-system");
     expect(notice).toContain("pithy token mint ci-system --env staging");
+  });
+
+  test("an overridden grant names the override, never a re-mint that would not change it", () => {
+    // The no-op loop: the adopter runs the printed command, the standing override strips the route
+    // policy from that mint too, and the listing prints the same line again. #651 round three.
+    const notice = routeScopeNotice([row("ci-system", "overridden")], "staging");
+    expect(notice).toContain("tokens.overrides");
+    expect(notice).toContain("re-minting will not change that");
+    // The mint command may appear, but never as the remedy on its own: it is only useful *after* the
+    // override is gone, and the line that offers it has to say so.
+    const mintLine = (notice ?? "").split("\n").find((line) => line.includes("pithy token mint"));
+    expect(mintLine).toMatch(/Remove that override/);
+  });
+
+  test("a stale token still gets the plain re-mint remedy", () => {
+    const notice = routeScopeNotice([row("ci-system", "stale")], "staging");
+    expect(notice).toContain("pithy token mint ci-system --env staging");
+    expect(notice).not.toContain("tokens.overrides");
   });
 
   test("says nothing when every token is scoped, needs no scope, or could not be read", () => {

@@ -109,13 +109,16 @@ describe.skipIf(!creds.hasCreds)("CloudflareAccountTokensManager — LIVE mint +
  * - `GET /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list. **Zone-scoped**, and
  *   the call that actually failed: `No access to the specified resource`, because the minted token
  *   carried one account-scoped policy and Cloudflare publishes the Workers Routes groups at zone scope.
- * - `PUT /accounts/<id>/workers/domains` — the custom domain itself. **Account-scoped**, and its
- *   accepted permission is `Workers Scripts Write`, which `ci-system` has carried all along.
+ * - `PUT /accounts/<id>/workers/domains` — the custom domain itself. The **endpoint** is account-scoped;
+ *   the **grant is not**. Cloudflare's authorization page is explicit: "To add, update, or remove Routes
+ *   or Custom Domains, you need `Editor` access to the Worker and `Workers Routes Write` permission for
+ *   every affected zone", and "API tokens need *Zone* > *Workers Routes* > *Write*, scoped to each
+ *   affected zone" (https://developers.cloudflare.com/workers/authorization/workers/).
  *
- * So the zone grant is what unblocks the reported failure, and the custom-domain write was never the
- * thing that was missing. Both are exercised here because a suite that covered only the zone route would
- * pass green through a regression on the endpoint the deploy actually attaches the domain with — and one
- * that covered only the domain would not have caught #651 at all.
+ * So one zone-scoped grant unblocks both calls, and both are exercised here — each with the old shape
+ * asserted refused. An earlier round of this suite read the API reference's "Accepted Permissions:
+ * Workers Scripts Write" as the whole answer, concluded the domain write needed nothing new, and dropped
+ * its negative control. A custom-domain regression would have passed green.
  *
  * Three facts decide whether the fix is a fix, and **not one of them is knowable locally**: whether the
  * group is named "Workers Routes Write" in this account's catalog, whether Cloudflare accepts an account
@@ -148,32 +151,53 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         body: JSON.stringify({ hostname, service, zone_id: zoneId }),
       });
     }
-    async function customDomainId(hostname: string): Promise<string | null> {
-      const response = await fetch(`${domainsUrl}?hostname=${encodeURIComponent(hostname)}`, {
-        headers: { Authorization: `Bearer ${creds.apiToken}` },
-      });
-      if (!response.ok) return null;
-      const body = (await response.json()) as { result?: Array<{ id?: string }> };
-      return body.result?.[0]?.id ?? null;
-    }
 
     /**
-     * The route on the zone, polled until the zone's route list shows it.
+     * What a lookup found — **and "could not tell" is not "absent".**
      *
-     * **Because the alternative leaks.** A single read that answers `null` on a list Cloudflare has not
-     * finished propagating fails the assertion *and* tells the teardown there is nothing to delete — so
-     * the one run where the API is slow leaves a real route on a real zone. Polling makes both the
-     * check and the cleanup read the same settled answer. Errors are swallowed between attempts: a
-     * transient 500 on the way to finding a route is not evidence the route is absent.
+     * Every leak left in the previous round came from one `null` meaning both. A transient 500 on the
+     * route list, a 403 on the domain list, a read that has not propagated: each answered "nothing
+     * here", the teardown deleted nothing, and the run exited clean over a live route or a live DNS
+     * record. Three states, so the teardown can delete what it found, ignore what is genuinely gone, and
+     * *say so* about what it could not establish.
      */
-    async function settledRoute(workers: CloudflareWorkersManager, zoneId: string, pattern: string) {
+    type Lookup<T> = { state: "found"; value: T } | { state: "absent" } | { state: "unknown"; reason: string };
+
+    /**
+     * Poll a lookup until it finds something, giving up after the budget.
+     *
+     * A miss is only reported as `absent` when every attempt answered cleanly. If any attempt errored,
+     * the answer is `unknown` — the object may well be there, and a teardown that shrugs at that is how
+     * a route stays on somebody's zone.
+     */
+    async function settled<T>(read: () => Promise<T | null>): Promise<Lookup<T>> {
+      let lastError: string | null = null;
       for (let attempt = 0; attempt < 5; attempt++) {
-        const found = await workers.getRoute(zoneId, pattern).catch(() => null);
-        if (found) return found;
+        try {
+          const found = await read();
+          if (found) return { state: "found", value: found };
+        } catch (error) {
+          lastError = error instanceof Error ? error.message : String(error);
+        }
         await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
-      return null;
+      return lastError === null ? { state: "absent" } : { state: "unknown", reason: lastError };
     }
+
+    /** The route on the zone, polled. */
+    const settledRoute = (workers: CloudflareWorkersManager, zoneId: string, pattern: string) =>
+      settled(() => workers.getRoute(zoneId, pattern));
+
+    /** The custom domain's id, polled — and a non-2xx list is `unknown`, never `absent`. */
+    const settledCustomDomain = (hostname: string) =>
+      settled(async () => {
+        const response = await fetch(`${domainsUrl}?hostname=${encodeURIComponent(hostname)}`, {
+          headers: { Authorization: `Bearer ${creds.apiToken}` },
+        });
+        if (!response.ok) throw new Error(`GET /workers/domains answered ${response.status}`);
+        const body = (await response.json()) as { result?: Array<{ id?: string }> };
+        return body.result?.[0]?.id ?? null;
+      });
 
     test("the zone-scoped token reads the zone's routes and attaches the domain; the token it replaces cannot", async () => {
       // Resolved by name against the account's own list — the same lookup `resolveRouteZones` makes from
@@ -193,6 +217,14 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
       const hostname = `${script}.${zoneName}`;
       const pattern = `${hostname}/*`;
 
+      // **What this run is known to have created**, set the moment the write returns.
+      //
+      // A teardown that asks only "is it there?" cannot tell a propagation lag from a deletion, so a
+      // list that has not caught up answers `absent` and the run exits clean over a live route or a
+      // live DNS record. The write's own success is the better evidence: once it returned, the object
+      // exists, and a teardown that then cannot find it has failed to confirm rather than found nothing.
+      let routeWritten = false;
+      let domainAttached = false;
       try {
         const before = await tokens.mintToken(beforeName, accountPolicy);
         const after = await tokens.mintToken(afterName, [...accountPolicy, ...routePermissions([zone.id])]);
@@ -209,21 +241,34 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         // 2. The zone route write.
         await expect(beforeWorkers.addRoute(zone.id, pattern, script)).rejects.toThrow();
         await afterWorkers.addRoute(zone.id, pattern, script);
-        expect((await settledRoute(bootstrapWorkers, zone.id, pattern))?.script).toBe(script);
+        routeWritten = true;
+        const written = await settledRoute(bootstrapWorkers, zone.id, pattern);
+        expect(written.state, `route ${pattern} never settled`).toBe("found");
+        expect(written.state === "found" ? written.value.script : null).toBe(script);
 
-        // 3. The custom domain — account-scoped, on `Workers Scripts Write`, which BOTH tokens hold.
-        //    Asserted as working under the minted token, and deliberately not asserted as refused under
-        //    the old one: it was never the missing grant, and claiming otherwise here would be a test
-        //    that lies about what #651 was.
+        // 3. The custom domain. The endpoint is account-scoped, and the grant is **not**: Cloudflare's
+        //    own authorization page says "To add, update, or remove Routes or Custom Domains, you need
+        //    Editor access to the Worker and Workers Routes Write permission for every affected zone",
+        //    and "API tokens need Zone > Workers Routes > Write, scoped to each affected zone"
+        //    (https://developers.cloudflare.com/workers/authorization/workers/). So the old shape must
+        //    be refused here too — an earlier round of this suite omitted that control on a wrong
+        //    reading of the API reference, and a custom-domain regression would have passed green.
+        const refused = await attachCustomDomain(before.value, hostname, script, zone.id);
+        expect(refused.ok, "the account-only token attached a custom domain").toBe(false);
+
         const attached = await attachCustomDomain(after.value, hostname, script, zone.id);
+        domainAttached = attached.ok;
         expect(attached.ok, `PUT /accounts/<id>/workers/domains answered ${attached.status}`).toBe(true);
-        expect(await customDomainId(hostname)).not.toBeNull();
+        expect((await settledCustomDomain(hostname)).state).toBe("found");
       } finally {
         // Unconditional, independently caught, and it *finds* what it deletes — nothing here depends on
         // a variable an earlier assertion may never have reached. Each step is its own `attempt`, so a
-        // rate limit on one cannot skip the ones after it, and whatever could not be removed is named on
-        // stderr rather than swallowed: a leaked route or custom domain is a live change on somebody's
-        // zone, and a leaked token is a live credential.
+        // rate limit on one cannot skip the ones after it.
+        //
+        // **And it reports what it could not establish, not only what it could not delete.** A lookup
+        // that errored is not an absence: exiting clean over an unreadable route list is how a live
+        // route stays on somebody's zone, and the custom domain is a real DNS record with a certificate
+        // behind it.
         const leaks: string[] = [];
         const attempt = async (what: string, run: () => Promise<unknown>): Promise<void> => {
           try {
@@ -233,24 +278,41 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
           }
         };
         await attempt(`custom domain ${hostname}`, async () => {
-          const domainId = await customDomainId(hostname);
-          if (!domainId) return;
-          const deleted = await fetch(`${domainsUrl}/${domainId}`, {
+          const found = await settledCustomDomain(hostname);
+          if (found.state === "unknown") {
+            leaks.push(`custom domain ${hostname} — could not be read (${found.reason}); it may still exist`);
+            return;
+          }
+          if (found.state === "absent") {
+            if (domainAttached) {
+              leaks.push(`custom domain ${hostname} — attached, then not listed; it may still exist`);
+            }
+            return;
+          }
+          const deleted = await fetch(`${domainsUrl}/${found.value}`, {
             method: "DELETE",
             headers: { Authorization: `Bearer ${creds.apiToken}` },
           });
           if (!deleted.ok) throw new Error(`DELETE answered ${deleted.status}`);
         });
         await attempt(`worker route ${pattern}`, async () => {
-          const route = await settledRoute(bootstrapWorkers, zone.id, pattern);
-          if (route?.id) await bootstrapWorkers.removeRoute(zone.id, route.id);
+          const found = await settledRoute(bootstrapWorkers, zone.id, pattern);
+          if (found.state === "unknown") {
+            leaks.push(`worker route ${pattern} — could not be read (${found.reason}); it may still exist`);
+            return;
+          }
+          if (found.state === "absent") {
+            if (routeWritten) leaks.push(`worker route ${pattern} — written, then not listed; it may still exist`);
+            return;
+          }
+          if (found.value.id) await bootstrapWorkers.removeRoute(zone.id, found.value.id);
         });
         await attempt(`worker ${script}`, () => bootstrapWorkers.deleteWorker(script));
         await attempt(`account token ${beforeName}`, () => tokens.deleteTokensByName(beforeName));
         await attempt(`account token ${afterName}`, () => tokens.deleteTokensByName(afterName));
         if (leaks.length > 0) {
           console.error(
-            `[integration] LEAKED on account ${creds.accountId} — delete by hand:\n  ${leaks.join("\n  ")}`,
+            `[integration] POSSIBLY LEFT on account ${creds.accountId} — check and delete by hand:\n  ${leaks.join("\n  ")}`,
           );
         }
       }

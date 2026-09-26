@@ -3,6 +3,7 @@
 
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type {
+  AccountTokenPolicy,
   AccountTokenSummary,
   MintedAccountToken,
   TokenPermission,
@@ -17,6 +18,7 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
@@ -167,13 +169,30 @@ async function emit(engine: TokenEngine, event: TokenAuditEvent): Promise<void> 
   }
 }
 
+/**
+ * The config override and the per-call CLI flags, merged — **and where the permissions came from.**
+ *
+ * The provenance is not decoration (#651 round three). Both a standing `tokens.overrides` entry and a
+ * one-off `--permission` suppress the route policy, and the two need opposite handling: a standing
+ * declaration is the adopter saying what this credential permanently is, while a flag is one command
+ * that, under replace semantics, would permanently re-scope a credential CI deploys with. Merging them
+ * into one indistinguishable field is what made the printed remedy a no-op loop in the first case and a
+ * silent strip in the second.
+ */
+interface MergedOverride {
+  override: ProfileOverride | undefined;
+  /** Where the permission set came from, or `null` when nothing overrode it. */
+  permissionsFrom: "config" | "flag" | null;
+}
+
 /** Merge the config override and the per-call CLI flags into one override (CLI flags win). */
-function mergeOverride(engine: TokenEngine, profile: string, options?: MintOptions): ProfileOverride | undefined {
+function mergeOverride(engine: TokenEngine, profile: string, options?: MintOptions): MergedOverride {
   const config = engine.override?.(profile);
   const merged: ProfileOverride = { ...config };
   if (options?.store) merged.store = options.store;
   if (options?.permissions) merged.permissions = options.permissions;
-  return Object.keys(merged).length > 0 ? merged : undefined;
+  const permissionsFrom = options?.permissions ? "flag" : config?.permissions ? "config" : null;
+  return { override: Object.keys(merged).length > 0 ? merged : undefined, permissionsFrom };
 }
 
 /**
@@ -198,6 +217,40 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
   throw new CloudflareNotConfiguredError({
     message: `No storage is declared for token "${profile.name}".`,
     action: `Declare the secret ${profile.secret} (pithy secrets) as cf-secrets-store, or mint with --store dev-vars.`,
+  });
+}
+
+/**
+ * Refuse a one-off `--permission` narrowing of a token that already exists.
+ *
+ * **Because the mint replaces, a flag is no longer one command's decision (#651 round three).** Before
+ * re-scoping, a narrowed mint handed out a new value and left the live token's policies alone; now it
+ * rewrites them. So `pithy token mint ci-system --env prod --permission d1:read` — a reasonable thing to
+ * type when somebody wants a throwaway read-only credential for an hour — permanently strips the deploy
+ * token's route grant, and nothing fails until the next deploy of a custom domain.
+ *
+ * Three ways out, and the refusal names all three, because which one is right depends on what was meant:
+ * drop the flag (the narrowing was a mistake), pin it in `tokens.overrides` (it was meant to stand), or
+ * `pithy token rotate` (the replacement was meant, and rotate has always replaced).
+ *
+ * A **standing** config override is not refused: that is the adopter declaring this credential's shape
+ * rather than a command doing it in passing. A token that does not exist yet is not refused either —
+ * there is nothing to strip, and that is the case the flag is for.
+ */
+async function refuseOneOffNarrowing(
+  engine: TokenEngine,
+  name: string,
+  profileName: string,
+  permissionsFrom: "config" | "flag" | null,
+): Promise<void> {
+  if (permissionsFrom !== "flag") return;
+  if (!(await engine.tokens.findTokenByName(name))) return;
+  throw new ValidationError({
+    message: `--permission would permanently re-scope the existing ${profileName} token, not just this mint.`,
+    action:
+      `Drop --permission to mint ${profileName}'s declared set; pin it in tokens.overrides["${profileName}"] ` +
+      `in pithy.config.ts if the narrowing is meant to stand; or run pithy token rotate to replace the token deliberately.`,
+    detail: `mint ${name}: a --permission flag on an existing token replaces its policy set`,
   });
 }
 
@@ -246,10 +299,11 @@ export async function mintProfileToken(
   env: string,
   options?: MintOptions,
 ): Promise<TokenResult> {
-  const override = mergeOverride(engine, profileName, options);
+  const { override, permissionsFrom } = mergeOverride(engine, profileName, options);
   const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
+  await refuseOneOffNarrowing(engine, name, profileName, permissionsFrom);
 
   try {
     const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile, override));
@@ -293,6 +347,15 @@ export type RouteScope =
   | "scoped"
   /** A zone this environment's domains need is **not** on the token — it predates route scoping. */
   | "stale"
+  /**
+   * The grant is missing **because a standing `tokens.overrides` says so**, so re-minting would produce
+   * the same token again.
+   *
+   * Distinct from `stale` because the remedy is a different edit, and printing `stale`'s remedy here is
+   * a lie the tool repeats forever: the adopter runs the command, the override strips the route policy
+   * from that mint too, and the listing says `stale` again.
+   */
+  | "overridden"
   /** The token's policies did not come back, so nothing can be claimed either way. */
   | "unknown";
 
@@ -320,29 +383,81 @@ interface RouteRequirement {
 }
 
 /**
+ * Every zone id a policy's `resources` names, and whether it names *all* of them.
+ *
+ * **Two shapes, because Cloudflare writes two.** A zone resource appears as a top-level
+ * `com.cloudflare.api.account.zone.<id>` key, and also nested one level inside an account key —
+ * `{ "com.cloudflare.api.account.<acct>": { "com.cloudflare.api.account.zone.<id>": "*" } }`, which is
+ * the form Cloudflare's own documentation gives for zones within an account. Scanning only the top
+ * level read a working token as stale and sent an operator to re-mint something that already worked.
+ * The `*` id is Cloudflare's all-zones wildcard and covers whatever this project declares.
+ */
+function zonesNamedBy(resources: Record<string, unknown>): { ids: Set<string>; all: boolean } {
+  const ids = new Set<string>();
+  let all = false;
+  const take = (key: string): void => {
+    if (!key.startsWith(ZONE_RESOURCE_PREFIX)) return;
+    const id = key.slice(ZONE_RESOURCE_PREFIX.length);
+    if (id === "*") all = true;
+    else ids.add(id);
+  };
+  for (const [key, value] of Object.entries(resources)) {
+    take(key);
+    if (typeof value === "object" && value !== null) for (const nested of Object.keys(value)) take(nested);
+  }
+  return { ids, all };
+}
+
+/** Whether a policy's resources reach one zone. */
+function policyReaches(policy: AccountTokenPolicy, zoneId: string): boolean {
+  const named = zonesNamedBy(policy.resources);
+  return named.all || named.ids.has(zoneId);
+}
+
+/** What can be said about one zone: covered, definitely not, or not knowable from this response. */
+type ZoneVerdict = "covered" | "uncovered" | "indeterminate";
+
+/**
  * Read a live token's route coverage against what this environment needs.
  *
- * **Both halves of a policy, never one.** A `com.cloudflare.api.account.zone.<id>` resource says which
- * zone a policy is *about* and nothing about what it may do there — a zone-scoped `Zone Read` somebody
- * added by hand matches the resource exactly and still cannot attach a route. So a zone is covered only
- * when one policy names the route group **and** that zone.
+ * **Both halves of a policy, never one, and the effect as well.** A
+ * `com.cloudflare.api.account.zone.<id>` resource says which zone a policy is *about* and nothing about
+ * what it may do there — a zone-scoped `Zone Read` somebody added by hand matches the resource exactly
+ * and still cannot attach a route. And Cloudflare evaluates explicit denies first, so a `deny` policy
+ * naming the route group on the zone is the opposite of coverage rather than coverage.
  *
- * A policy that did not say which groups it grants is not evidence of absence, so it reads `unknown`.
+ * **A zone nobody named is decisively uncovered, whatever the groups say.** That distinction is the
+ * whole of round three's regression: requiring `permission_groups` before judging anything turned the
+ * original stale token — one account policy, no zone resource at all — into `unknown`, and the remedy
+ * stopped printing for exactly the shape it was written for. Only a zone that *is* named needs its
+ * groups read, and only then can the answer be "cannot tell".
  */
 function routeScopeOf(token: AccountTokenSummary, requirement: RouteRequirement | null, needed: boolean): RouteScope {
   if (!needed) return "not-required";
   if (requirement === null || token.policies === undefined) return "unknown";
-  if (token.policies.some((policy) => policy.permission_groups === undefined)) return "unknown";
-  const covered = new Set(
-    token.policies
-      .filter((policy) => (policy.permission_groups ?? []).some((group) => group.id === requirement.routeGroupId))
-      .flatMap((policy) =>
-        Object.keys(policy.resources)
-          .filter((key) => key.startsWith(ZONE_RESOURCE_PREFIX))
-          .map((key) => key.slice(ZONE_RESOURCE_PREFIX.length)),
-      ),
-  );
-  return requirement.zoneIds.every((zoneId) => covered.has(zoneId)) ? "scoped" : "stale";
+  const verdicts = requirement.zoneIds.map((zoneId) => zoneVerdict(token.policies ?? [], requirement, zoneId));
+  if (verdicts.includes("uncovered")) return "stale";
+  if (verdicts.includes("indeterminate")) return "unknown";
+  return "scoped";
+}
+
+/** The verdict for one required zone against a token's whole policy set. */
+function zoneVerdict(
+  policies: readonly AccountTokenPolicy[],
+  requirement: RouteRequirement,
+  zoneId: string,
+): ZoneVerdict {
+  const reaching = policies.filter((policy) => policyReaches(policy, zoneId));
+  // Nothing names this zone at all. No reading of any group changes that.
+  if (reaching.length === 0) return "uncovered";
+  const names = (policy: AccountTokenPolicy): boolean =>
+    (policy.permission_groups ?? []).some((group) => group.id === requirement.routeGroupId);
+  // Explicit deny first, exactly as Cloudflare evaluates it.
+  if (reaching.some((policy) => policy.effect === "deny" && names(policy))) return "uncovered";
+  if (reaching.some((policy) => policy.effect !== "deny" && names(policy))) return "covered";
+  // Something reaches the zone and did not say what it grants — that, and only that, is unknowable.
+  if (reaching.some((policy) => policy.permission_groups === undefined)) return "indeterminate";
+  return "uncovered";
 }
 
 /**
@@ -397,13 +512,19 @@ export async function listProfileTokens(engine: TokenEngine, env: string): Promi
   const requirement = all.some((token) => byName.get(token.name) === CI_SYSTEM_PROFILE)
     ? await routeRequirement(engine)
     : null;
+  // Read once for the listing: a standing `tokens.overrides["ci-system"].permissions` is why a grant is
+  // absent, and is the thing to change rather than the mint command.
+  const overridden = engine.override?.(CI_SYSTEM_PROFILE)?.permissions !== undefined;
   return all.flatMap((token) => {
     if (!token.name.startsWith(prefix)) return [];
     const profile = byName.get(token.name);
     if (!profile) return [];
     // Only the CI credential deploys, so only it needs a route scope. Everything else is `not-required`.
     const needed = profile === CI_SYSTEM_PROFILE && requirement?.zoneIds.length !== 0;
-    const routeScope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requirement, needed) : "not-required";
+    const scope = profile === CI_SYSTEM_PROFILE ? routeScopeOf(token, requirement, needed) : "not-required";
+    // A standing override strips the route policy from every mint, so a missing grant is that override's
+    // doing and re-minting would reproduce it exactly. Said as its own word, because the remedy differs.
+    const routeScope: RouteScope = scope === "stale" && overridden ? "overridden" : scope;
     return [{ profile, env, name: token.name, tokenId: token.id, status: token.status, routeScope }];
   });
 }
@@ -426,7 +547,7 @@ export async function rotateProfileToken(
   env: string,
   options?: RotateOptions,
 ): Promise<TokenResult> {
-  const override = mergeOverride(engine, profileName, options);
+  const { override } = mergeOverride(engine, profileName, options);
   const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);

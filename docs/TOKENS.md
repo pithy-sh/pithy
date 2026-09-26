@@ -62,14 +62,16 @@ ciPermissions: ["kv:write"]
 
 ### Your declared domains, and the route CI attaches
 
-A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls, on two scopes**:
+A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls** — addressed to two different scopes, and needing the same one grant:
 
-| Call | Scope | Grant |
+| Call | Endpoint scope | Grant |
 |---|---|---|
-| `GET`/`POST /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list | zone | **Workers Routes Write** |
-| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | **Workers Scripts Write** |
+| `GET`/`POST /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list | zone | **Workers Routes Write**, on that zone |
+| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | **Workers Routes Write**, on that zone |
 
-`ci-system` has always carried `Workers Scripts Write`, so the domain write was never the missing piece. The **zone route read** is what failed: Cloudflare publishes the Workers Routes groups at *zone* scope, a minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all.
+**The endpoint's scope and the grant's scope are different things, and only the second one matters here.** Cloudflare's [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/) is explicit: *"To add, update, or remove Routes or Custom Domains, you need `Editor` access to the Worker and `Workers Routes Write` permission for every affected zone"*, and *"API tokens need Zone > Workers Routes > Write, scoped to each affected zone."* The custom-domain call is addressed to an account path and still needs the zone grant.
+
+So one zone-scoped grant unblocks both calls. A minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all — which is why every deploy of a declared domain failed.
 
 So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
 
@@ -80,11 +82,18 @@ You declare nothing extra. The zones come from `domains` in each Worker's `pithy
 
 A project that declares no domain mints exactly what it minted before. No new permission for a project that needs none.
 
-**An explicit `--permission` (or a `tokens.overrides["ci-system"].permissions` in `pithy.config.ts`) means exactly what it says.** The route policy rides with the profile's *default* permission set, not with every mint — so a run that narrows the credential by hand gets the narrow credential, with no zone grant added behind your back. Drop the override to get it back.
+**An explicit `--permission` (or a `tokens.overrides["ci-system"].permissions` in `pithy.config.ts`) means exactly what it says.** The route policy rides with the profile's *default* permission set, not with every mint — so a run that narrows the credential by hand gets the narrow credential, with no zone grant added behind your back.
+
+Two consequences follow from the mint replacing an existing token's policies:
+
+- **`--permission` on a token that already exists is refused.** The flag would not narrow that one run; it would permanently re-scope the credential CI deploys with. The refusal names the three ways to say what you meant: drop the flag, pin the narrowing in `tokens.overrides` if it is meant to stand, or `pithy token rotate` to replace the token deliberately. A profile with no token yet mints narrowed without complaint — there is nothing to strip.
+- **A standing `tokens.overrides[...].permissions` keeps stripping the grant**, on purpose. `pithy token list` reports that state as its own thing and tells you to change the override, never to re-mint — re-minting would honor the override and produce the same token again.
 
 **A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
 
 The remedy is one re-mint. **It re-scopes the token in place** — `pithy` replaces the existing token's policies (`PUT /accounts/<id>/tokens/<id>`) and then rolls its value, so the credential keeps its identity, comes back with the current scope, and hands you a fresh secret to paste into CI. Scope first, value second: a re-scope that fails costs nothing, where a value handed over before the scope lands is a credential that looks new and cannot deploy.
+
+**Anything else you set on that token is kept.** Cloudflare's token update is a full representation, so a body carrying only the policies would clear a hand-set expiry, start time or IP allowlist and re-enable a token you had disabled. Those come off the record `pithy` already read and go back with the write.
 
 ```bash
 pithy token mint ci-system --env prod

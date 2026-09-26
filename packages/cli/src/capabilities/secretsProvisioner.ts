@@ -190,9 +190,17 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   /**
    * Ensure the manager's runtime CF API token. Reuse the value already in the Secrets Store if present
    * (Cloudflare never returns a token's secret twice, so a stored token is trusted as-is); otherwise
-   * get a fresh secret via `rollToken` — roll the existing manager token's value in place if one exists,
-   * else mint a new least-privilege token — and write it into the store. A bootstrap token that cannot
-   * mint fails here, before any resource is created, with an actionable error.
+   * get a fresh secret via `rollTokenKeepingPolicies` — roll the existing manager token's value in place
+   * if one exists, else mint a new least-privilege token — and write it into the store. A bootstrap token
+   * that cannot mint fails here, before any resource is created, with an actionable error.
+   *
+   * **Value-only, deliberately, and it is the neighboring `rollToken` that made that a choice (#651).**
+   * That one now *replaces* an existing token's policy set, which is right for `pithy token mint`: a CI
+   * credential's scope is derived from the project and re-derived on every mint. It is wrong here twice
+   * over. This is a **live runtime credential** a deployed Worker is already reading secrets with, and
+   * the loop below may roll it up to {@link MAX_TOKEN_ROLLS} times under contention — so a replace would
+   * rewrite that Worker's scope five times from a permission list resolved by the provisioner rather
+   * than by the thing consuming it. The value changes; the scope is not this call's to decide.
    *
    * **Never check-then-overwrite (#643).** Two runs that both find the entry absent both roll, and each roll
    * revokes the value before it. Whichever write landed last used to win, so the store could keep a value
@@ -215,7 +223,10 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     for (let roll = 1; ; roll += 1) {
       const minted = await this.#cf
         .accountTokens()
-        .rollToken(managerCfApiTokenName(this.#project), await managerTokenPermissions(this.#account.accountId));
+        .rollTokenKeepingPolicies(
+          managerCfApiTokenName(this.#project),
+          await managerTokenPermissions(this.#account.accountId),
+        );
       await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
       if (await this.#honors(minted.value)) break;
       if (roll >= MAX_TOKEN_ROLLS) {

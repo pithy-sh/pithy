@@ -304,12 +304,16 @@ Do not use `pithy.sh`: its apex MX is Google Workspace and it carries real mail.
 `pithy-int-…/<zone>/*` pattern resolves nowhere. The **custom domain** is different: attaching one
 creates a proxied DNS record on the zone and starts certificate issuance for
 `pithy-int-….<zone>`. It is covered because it is the endpoint a declared domain is actually attached
-with — account-scoped `PUT /accounts/<id>/workers/domains`, on `Workers Scripts Write` — and a suite
-that only wrote the zone route would pass green through a regression there.
+with — `PUT /accounts/<id>/workers/domains`, an account path whose grant is nonetheless the *zone's*
+`Workers Routes Write` ([Workers roles and
+permissions](https://developers.cloudflare.com/workers/authorization/workers/)) — and a suite that only
+wrote the zone route would pass green through a regression there.
 
 The domain, the route, the script and both tokens are removed in a teardown that runs unconditionally,
-looks each one up rather than trusting an id captured mid-test, and **names on stderr anything it could
-not delete**. Read the end of a failed run before assuming the account is clean.
+looks each one up rather than trusting an id captured mid-test, polls through a list that has not caught
+up, and **names on stderr anything it could not delete _or could not confirm gone_** — a read that
+errored is not an absence, and neither is a write this run made that the list does not show yet. Read the
+end of a failed run before assuming the account is clean.
 
 **The token needs more than the account scopes.** Workers Routes: Edit on the zone, plus Account API
 Tokens: Edit — the suite mints and deletes real account tokens, and Cloudflare only lets a token create
