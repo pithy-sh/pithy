@@ -1,5 +1,12 @@
 # @pithy-sh/auth
 
+## 0.6.6
+
+### Patch Changes
+
+- Updated dependencies [[`2fa6d65`](https://github.com/pithy-sh/pithy/commit/2fa6d659c87298db4de20afe0e5abf08c081b784)]:
+  - @pithy-sh/turnstile@0.4.0
+
 ## 0.6.5
 
 ### Patch Changes
