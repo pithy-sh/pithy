@@ -175,9 +175,16 @@ export const AccountTokenSummary = z
     ).describe(
       "The token's lifecycle status. Reported, because a `disabled` or `expired` token cannot attach a route however its policies read. `nullish` for the reason {@link AccountTokenPolicy} gives.",
     ),
-    policies: nullAsAbsent(z.array(AccountTokenPolicy).optional()).describe(
-      "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these least-privilege tokens deliberately lack). Absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
-    ),
+    policies: nullAsAbsent(z.array(AccountTokenPolicy).optional())
+      // **An undecodable policy set costs the scope, never the token.** `resources` is required inside a
+      // policy, so one shape Cloudflare returns that this does not model would fail the whole entry —
+      // `listTokens` drops what fails, `findTokenByName` answers null, and the roll mints a *second* live
+      // credential of the same name beside the first. A token's identity does not depend on its policies
+      // being readable, and "the scope could not be read" is a state the reporting already has a word for.
+      .catch(undefined)
+      .describe(
+        "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these least-privilege tokens deliberately lack). Absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
+      ),
   })
   .describe("An existing account-owned API token's metadata (never its secret value).");
 export type AccountTokenSummary = z.output<typeof AccountTokenSummary>;

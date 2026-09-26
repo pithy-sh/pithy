@@ -58,7 +58,7 @@ ciPermissions: ["email:routing"]
 ciPermissions: ["kv:write"]
 ```
 
-`pithy token mint ci-system` mints `base ∪ (every capability's ciPermissions)`. Add a capability and the CI token grows to match — no hand-editing of scopes. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per mint with `--permission`.
+`ci-system`'s scope is `base ∪ (every capability's ciPermissions)`, so adding a capability grows what the CI token *should* carry with no hand-editing of scopes. **Applying that to a token that already exists is `pithy token rotate`** — see below: a mint rolls the value and leaves the policies where they are. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per run with `--permission`.
 
 ### Your declared domains, and the route CI attaches
 

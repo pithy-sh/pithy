@@ -352,7 +352,10 @@ const overrideArgs = {
 } as const;
 
 const mint = defineCommand({
-  meta: { name: "mint", description: "Mint a scoped account token for a profile (rolls to the current scope)" },
+  meta: {
+    name: "mint",
+    description: "Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)",
+  },
   args: { ...profileArg, ...envArgs, ...overrideArgs, ...jsonArg },
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
@@ -398,7 +401,10 @@ const list = defineCommand({
 });
 
 const rotate = defineCommand({
-  meta: { name: "rotate", description: "Rotate a profile's token (create new, delete old)" },
+  meta: {
+    name: "rotate",
+    description: "Replace a profile's token with the profile's current scope (create new, delete old)",
+  },
   args: {
     ...profileArg,
     ...envArgs,

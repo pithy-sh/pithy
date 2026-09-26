@@ -532,6 +532,69 @@ describe("CloudflareAccountTokensManager", () => {
     expect((await manager.rollToken("acme-staging-ci-system", [])).id).toBe("tk-existing");
   });
 
+  /**
+   * **A policy set that will not decode must cost the scope, never the token.**
+   *
+   * `policies` is decoded now, and `resources` inside it is required — so one shape Cloudflare returns
+   * that this did not model drops the whole entry from `safeParse`, `findTokenByName` answers null, and
+   * the roll mints a *second* live credential of the same name beside the first. `origin/main` never
+   * read policies at all, so that exposure arrived with this branch.
+   *
+   * The token's identity does not depend on its policies being readable. An undecodable set degrades to
+   * "the scope could not be read", which `RouteScope` already has a word for.
+   */
+  it.each([
+    ["a null resources map", [{ resources: null }]],
+    ["a policy with no resources at all", [{ permission_groups: [] }]],
+    ["a null policy entry", [null]],
+    [
+      "a null permission-group entry",
+      [{ resources: { "com.cloudflare.api.account.acct-1": "*" }, permission_groups: [null] }],
+    ],
+  ])("%s costs the scope, not the token — no duplicate mint", async (_label, policies) => {
+    mockTokenList.mockReturnValue(
+      paginator([{ id: "tk-existing", name: "acme-staging-ci-system", status: "active", policies }]),
+    );
+    mockValueUpdate.mockResolvedValue("rolled-value");
+
+    const rolled = await manager.rollToken("acme-staging-ci-system", [
+      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+    ]);
+
+    // The token was found and rolled. A second credential of this name is the alternative.
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(rolled.id).toBe("tk-existing");
+    // And the scope reads as unsaid rather than as empty, so nothing judges coverage from it.
+    expect((await manager.listTokens())[0]?.policies).toBeUndefined();
+  });
+
+  it("a policy set that does decode is still read", async () => {
+    // The guard above must not be a blanket shrug: a well-formed set still reaches the reporting.
+    mockTokenList.mockReturnValue(
+      paginator([
+        {
+          id: "tk-existing",
+          name: "acme-staging-ci-system",
+          status: "active",
+          policies: [
+            {
+              effect: "allow",
+              permission_groups: [{ id: "pg-routes" }],
+              resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+            },
+          ],
+        },
+      ]),
+    );
+    expect((await manager.listTokens())[0]?.policies).toEqual([
+      {
+        effect: "allow",
+        permission_groups: [{ id: "pg-routes" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+  });
+
   it("mints a fresh token when none of that name exists", async () => {
     mockTokenList.mockReturnValue(paginator([{ id: "other", name: "unrelated" }]));
     mockCreate.mockResolvedValue({ id: "fresh", value: "new-value", name: "pithy-secrets-manager", status: "active" });

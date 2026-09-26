@@ -1003,3 +1003,38 @@ describe("mintProfileToken — a rolled token that is not alive", () => {
     expect((await rotateProfileToken(engineWith(dir, tokens), "ci-system", "staging")).status).toBe("active");
   });
 });
+
+/**
+ * An undecodable policy set reaches the listing as `unknown`, not as a missing token.
+ *
+ * The manager degrades it (see `accountTokensManager.test.ts`); this is the other half — that the state
+ * it degrades to is one the reporting already handles, so the row still lists and says nothing it cannot
+ * support.
+ */
+describe("listProfileTokens — a policy set that would not decode", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-undecodable-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("the row lists, and its route scope is unknown rather than stale", async () => {
+    const tokens = fakeControl({
+      // What the manager hands on once `.catch(undefined)` has swallowed the bad set.
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => [{ id: "t1", name: "acme-staging-ci-system", status: "active" }],
+      ),
+    });
+    const rows = await listProfileTokens(
+      engineWith(dir, tokens, {
+        routeZones: vi.fn(async () => [
+          { worker: "api", domain: "staging.api.example.com", zone: "example.com", zoneId: "zone-a" },
+        ]),
+      }),
+      "staging",
+    );
+    expect(rows.map((row) => [row.profile, row.routeScope])).toEqual([["ci-system", "unknown"]]);
+  });
+});
