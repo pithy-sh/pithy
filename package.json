@@ -31,7 +31,7 @@
     "postinstall": "bun scripts/fileModes.ts",
     "prepare": "husky",
     "changeset": "changeset",
-    "version": "changeset version && bun scripts/stampVersions.ts",
+    "version": "changeset version && bun scripts/stampVersions.ts && bun install --lockfile-only",
     "release": "changeset publish",
     "release:local": "bun scripts/localRelease.ts",
     "verify-published": "bun scripts/verifyPublished.ts",

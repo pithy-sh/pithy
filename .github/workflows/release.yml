@@ -278,9 +278,18 @@ jobs:
       # Step 3. Build, **after** the bump and never before it — #476.
       #
       # This step used to sit above `Snapshot the changesets`, and moving it is the whole of what that
-      # issue changed here. `bun run version` does two things: Changesets rewrites every `package.json`,
+      # issue changed here. `bun run version` does three things: Changesets rewrites every `package.json`,
       # and the root `version` script chains `stampVersions.ts`, which rewrites each package's
       # `src/version.generated.ts` from the manifest beside it. Both are inputs to the build.
+      #
+      # The third is `bun install --lockfile-only`, and it is there because Changesets does not touch the
+      # lockfile. Eleven packages' recorded versions drifted before anybody noticed — `bun.lock` said
+      # `@pithy-sh/auth` was 0.6.3 while its manifest said 0.6.4 — because every release rewrote the
+      # manifests and left the lockfile behind. Nothing failed over it, which is why it accumulated:
+      # `bun install` reports no change to the resolved graph, so the drift is invisible until somebody
+      # diffs the two. `--lockfile-only` rather than a full install because `changeset version` only
+      # rewrites versions and the workspace ranges pointing at them — it can never add a dependency, so
+      # there is nothing to link, and the build below keeps the `node_modules` this job already has.
       #
       # Built first, `dist/version.generated.js` carried the version this release is *replacing*, and
       # `GET /control-plane/manifest` would report it to every customer on the new release. `CLAUDE.md`
