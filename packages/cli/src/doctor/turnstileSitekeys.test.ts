@@ -121,6 +121,41 @@ describe("checkTurnstileSitekeys", () => {
     ]);
   });
 
+  test("its line names the remedy that works, and not the command that cannot", async () => {
+    // A blank `feature` key is the one blank `pithy turnstile provision` does not fill: `sitekeysFor`
+    // writes dev, staging and prod. So the blank-sitekey sentence — run provision, then redeploy — would
+    // send an operator to do both and find the line exactly where it was.
+    const { projectDir, workerDir } = await project({ sitekeys: `${PROVISIONED}, feature: ""` });
+    await mkdir(join(workerDir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(workerDir), "{}");
+
+    const line = describeTurnstileSitekeys(await checkTurnstileSitekeys(projectDir)).join("\n");
+
+    expect(line).toContain("sitekeys.feature");
+    expect(line).not.toMatch(/Run pithy turnstile provision/);
+    expect(line).toMatch(/remove/i);
+  });
+
+  test("a declared environment's blank keeps that command, in the same report as a feature's", async () => {
+    // The refutation. "No provision line where a feature is blank" would also pass a renderer that had
+    // stopped naming the command anywhere, and staging's blank is exactly what it fixes.
+    const { projectDir, workerDir } = await project({
+      sitekeys: 'dev: "1x00000000000000000000AA", staging: "", prod: "0x4AAAA", feature: ""',
+    });
+    await mkdir(join(workerDir, ".wrangler", "pithy"), { recursive: true });
+    await writeFile(featureConfigPath(workerDir), "{}");
+
+    const lines = describeTurnstileSitekeys(await checkTurnstileSitekeys(projectDir));
+    const declared = lines.filter((text) => text.includes("staging"));
+    const feature = lines.filter((text) => text.includes("feature build"));
+
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).toContain("Run pithy turnstile provision --worker board");
+    expect(declared[0]).not.toContain("feature");
+    expect(feature).toHaveLength(1);
+    expect(feature[0]).not.toMatch(/Run pithy turnstile provision/);
+  });
+
   test("each environment is judged from the composition for it, not from one composed for none (#595)", async () => {
     // A config is code, and this one asks which environment it is composed for: prod's widget is set only
     // when composed for prod, and staging's key is blanked only when composed for staging. Composed for no

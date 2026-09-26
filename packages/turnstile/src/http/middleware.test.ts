@@ -291,6 +291,36 @@ describe("the action binding and Cloudflare's test keys", () => {
     expect(await errCode(res)).toBe("turnstile/config");
   });
 
+  test("and prod's refusal points at the secret, never at the Worker's stamp", async () => {
+    // The action used to offer "stamp ENVIRONMENT as dev or staging or feature … if that is what this
+    // deployment is". Followed on a production Worker — the only kind that reaches this branch — it opens
+    // production: the gate would then accept the very always-pass key it had just refused. A remedy an
+    // operator can follow into a breach is worse than none, so the line names the secret and says so.
+    stubSecrets(turnstileSecretsRegistry, one(ONE_WIDGET));
+    stubSiteverify(TEST_KEY_PASS);
+    const hono = new Hono();
+    let thrown: unknown;
+    hono.onError((error) => {
+      thrown = error;
+      return new Response("", { status: 500 });
+    });
+    hono.use("/protected", turnstile({ action: "login" }));
+    hono.post("/protected", (c) => c.json({ ok: true }));
+    await hono.request(
+      "/protected",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+      },
+      { ENVIRONMENT: "prod" },
+    );
+    const action = (thrown as { payload: { action?: string } }).payload.action ?? "";
+    expect(action).toContain("pithy turnstile provision");
+    expect(action).not.toMatch(/stamp ENVIRONMENT as/i);
+    expect(action).toMatch(/never the stamp/i);
+  });
+
   test("a test key that DOES return a different action is still refused in dev", async () => {
     // The condition that keeps this an exception rather than a hole: the binding is relaxed for an
     // action that is *absent*, never for one that disagrees. A token minted for another action is the

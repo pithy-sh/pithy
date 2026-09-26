@@ -334,7 +334,7 @@ export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
     if (fromTestingKey(result) && !isTestKeyEnvironment(environment)) {
       throw new TurnstileConfigError({
         message: "The humanity check is not configured.",
-        action: `This widget secret is a Cloudflare Turnstile test key, which passes every caller. Run \`pithy turnstile provision\` for the real widget, or stamp ENVIRONMENT as ${TEST_KEY_ENVIRONMENTS.join(" or ")} in this Worker's wrangler.jsonc if that is what this deployment is.`,
+        action: `This widget secret is a Cloudflare Turnstile test key, which passes every caller, and ENVIRONMENT here is "${environment ?? "unstamped"}". Run \`pithy turnstile provision\` so this deployment verifies against its own widget. A test key's verdict is accepted only where ENVIRONMENT is ${TEST_KEY_ENVIRONMENTS.join(", ")}, so the remedy is the secret and never the stamp — restamping a deployed Worker to reach that list is how a production login page is opened.`,
         detail: `siteverify set metadata.result_with_testing_key on environment "${environment ?? "unstamped"}".`,
       });
     }

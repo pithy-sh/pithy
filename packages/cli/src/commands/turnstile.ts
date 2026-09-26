@@ -154,6 +154,37 @@ function listed(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
+/**
+ * **What `provision` says about a branch deployment, true of the config in front of it (#656 review).**
+ *
+ * A feature build resolves Cloudflare's always-pass sitekey only where `widgets.<mode>.sitekeys.feature` is
+ * absent, and this command never writes that key. So the default is the common case and not the only one: an
+ * adopter who stated a real key runs a real widget on a branch, and one who stated `""` renders no widget
+ * there at all — where "uses the same test pair by default", printed unconditionally, would tell them
+ * sign-in works on the one deployment it does not.
+ *
+ * Every combination is a true sentence here, including two widgets that disagree, because that is the shape
+ * a half-stated config really has.
+ */
+export function featureSitekeyNote(config: TurnstileConfig, modes: readonly TurnstileMode[]): string {
+  const stated = modes.filter((mode) => config.widgets[mode]?.sitekeys.feature !== undefined);
+  if (stated.length === 0) {
+    return "A feature deployment uses the same test pair by default — nothing to provision, and no redeploy of a branch needed for it.";
+  }
+  const blank = stated.filter((mode) => config.widgets[mode]?.sitekeys.feature === "");
+  const absent = modes.filter((mode) => !stated.includes(mode));
+  const parts = [
+    `This config states a feature sitekey for ${listed(stated)}, so a branch build uses that rather than the test pair.`,
+  ];
+  if (blank.length > 0) {
+    parts.push(
+      `It is blank for ${listed(blank)}, which renders no widget there — sign-in on a branch is blocked until that key is removed or given a real widget's.`,
+    );
+  }
+  if (absent.length > 0) parts.push(`${listed(absent)} still uses the test pair by default.`);
+  return parts.join(" ");
+}
+
 /** Where each stranded var was, as an operator reads it: `TURNSTILE_SITEKEY_VISIBLE (staging)`. */
 function strandedLine(stranded: readonly StrandedSitekeyVar[]): string {
   return stranded.map((found) => `${found.name} (${found.environment})`).join(", ");
@@ -232,10 +263,9 @@ const provision = defineCommand({
       );
       // Said here because this is where an operator asks "which environments can sign in now?". A feature
       // deployment is covered by the same pair and by nothing this command wrote: its config and its secrets
-      // store are generated per branch, so the kit resolves the pair at build and at the gate (#656).
-      process.stdout.write(
-        "A feature deployment uses the same test pair by default — nothing to provision, and no redeploy of a branch needed for it.\n",
-      );
+      // store are generated per branch, so the kit resolves the pair at build and at the gate (#656) — unless
+      // this config states a `feature` sitekey, which `featureSitekeyNote` is what reads.
+      process.stdout.write(`${featureSitekeyNote(config, modes)}\n`);
       if (result.widgets.length > 0 && !result.productionSecretWritten) {
         // All production widgets already existed, so their secret can't be recomposed (Cloudflare never
         // returns it) and was left as-is. If it was never stored, re-running won't heal it — say so.

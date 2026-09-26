@@ -665,6 +665,8 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy testers command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/turnstile.ts#default":
     "Returns the pithy turnstile command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/turnstile.ts#featureSitekeyNote":
+    "Returns the sentence `provision` prints about a branch build, read off a turnstile config the caller already holds; no composition of its own and none leaves it.",
   "commands/vector.ts#default":
     "Returns the pithy vector command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "capabilities/secretApplicability.ts#projectSecretApplicability":
