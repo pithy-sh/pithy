@@ -147,5 +147,9 @@ if (wantsVersion(argv)) {
  */
 if (process.stderr.isTTY && !process.env.PITHY_NO_UPDATE_NOTIFIER && argv[0] !== "doctor") {
   const { runUpdateNotifier } = await import("./notifier/notify");
-  runUpdateNotifier({ installedVersion: version });
+  // Dropped deliberately, and `void` says so. The promise it hands back exists for a caller that wants to
+  // know when the state write landed (#658); this one does not — awaiting here would hold the process for
+  // a notice, which is the one thing the notifier must never do. The pending write keeps the event loop
+  // alive on its own until it finishes.
+  void runUpdateNotifier({ installedVersion: version });
 }

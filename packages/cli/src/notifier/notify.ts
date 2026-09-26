@@ -143,10 +143,30 @@ async function notifierJob(options: RunUpdateNotifierOptions): Promise<void> {
  * Fire the update notifier — the entry point `bin.ts` calls after the command's primary work. Returns
  * immediately: the check is scheduled via `setImmediate` (so the command's output, including `Done.`, is
  * already flushed) and runs fire-and-forget, with every error swallowed. It never blocks or delays exit.
+ *
+ * **The returned promise is the job's completion, and it is there so something can wait for it.** Nothing
+ * has to: `bin.ts` drops it, which is what fire-and-forget means, and the promise never rejects, so
+ * dropping it cannot surface an unhandled rejection. What it buys is that the job's *last durable step* —
+ * the state write, not the network call that precedes it — is observable. Without it the only thing a
+ * caller could see was the fetch, and a test that settled on the fetch returned with `writeState` still
+ * creating `state.json.<hex>.tmp`; its own teardown then removed the directory out from under the write
+ * and failed a release at random (#658). A write in flight is worth being able to wait for.
+ *
+ * It does not make an abrupt exit safe, and is not meant to. A signal, a `process.exit`, an OOM kill: none
+ * of them await anything, and a temp file left by one of those is what `writeFileAtomic`'s stale-sibling
+ * sweep is for.
  */
-export function runUpdateNotifier(options: RunUpdateNotifierOptions): void {
+export function runUpdateNotifier(options: RunUpdateNotifierOptions): Promise<void> {
   const schedule = options.schedule ?? setImmediate;
-  schedule(() => {
-    void notifierJob(options).catch(() => {});
+  return new Promise<void>((settled) => {
+    schedule(() => {
+      // `then(settled, settled)`, not `.catch(() => {}).then(...)`: every failure is still swallowed —
+      // the notice is never worth an error — and the promise resolves either way, because a caller
+      // waiting for the write to be over wants the same answer whether it succeeded or threw.
+      void notifierJob(options).then(
+        () => settled(),
+        () => settled(),
+      );
+    });
   });
 }
