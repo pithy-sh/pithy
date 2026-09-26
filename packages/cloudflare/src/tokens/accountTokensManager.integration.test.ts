@@ -217,14 +217,17 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
       const hostname = `${script}.${zoneName}`;
       const pattern = `${hostname}/*`;
 
-      // **What this run is known to have created**, set the moment the write returns.
+      // **What this run may have created**, set *before* each call that could create it.
       //
       // A teardown that asks only "is it there?" cannot tell a propagation lag from a deletion, so a
       // list that has not caught up answers `absent` and the run exits clean over a live route or a
-      // live DNS record. The write's own success is the better evidence: once it returned, the object
-      // exists, and a teardown that then cannot find it has failed to confirm rather than found nothing.
-      let routeWritten = false;
-      let domainAttached = false;
+      // live DNS record. Tracking the write's *success* fixed that for the happy path and left the
+      // worst case open: the two negative controls are calls that must be refused, so when the
+      // regression they exist to catch actually happens the write lands, no success is recorded, and
+      // teardown shrugs. Attempted, not succeeded, is the flag that covers both — an object that was
+      // never created only costs the teardown a lookup that says so.
+      let routeAttempted = false;
+      let domainAttempted = false;
       try {
         const before = await tokens.mintToken(beforeName, accountPolicy);
         const after = await tokens.mintToken(afterName, [...accountPolicy, ...routePermissions([zone.id])]);
@@ -235,13 +238,16 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         await afterWorkers.createWorker(script, INTEGRATION_COMPATIBILITY_DATE);
 
         // 1. The zone route read. This is the refusal #651 reported, asserted rather than assumed.
+        //    Reads create nothing, so nothing is flagged for it.
         await expect(beforeWorkers.getRoute(zone.id, pattern)).rejects.toThrow();
         expect(await afterWorkers.getRoute(zone.id, pattern)).toBeNull();
 
-        // 2. The zone route write.
+        // 2. The zone route write. Flagged before the *negative* control too: if the old shape is not
+        //    refused, it has written a real route on a real zone, and that is the run that most needs
+        //    the teardown to look.
+        routeAttempted = true;
         await expect(beforeWorkers.addRoute(zone.id, pattern, script)).rejects.toThrow();
         await afterWorkers.addRoute(zone.id, pattern, script);
-        routeWritten = true;
         const written = await settledRoute(bootstrapWorkers, zone.id, pattern);
         expect(written.state, `route ${pattern} never settled`).toBe("found");
         expect(written.state === "found" ? written.value.script : null).toBe(script);
@@ -253,11 +259,11 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         //    (https://developers.cloudflare.com/workers/authorization/workers/). So the old shape must
         //    be refused here too — an earlier round of this suite omitted that control on a wrong
         //    reading of the API reference, and a custom-domain regression would have passed green.
+        domainAttempted = true;
         const refused = await attachCustomDomain(before.value, hostname, script, zone.id);
         expect(refused.ok, "the account-only token attached a custom domain").toBe(false);
 
         const attached = await attachCustomDomain(after.value, hostname, script, zone.id);
-        domainAttached = attached.ok;
         expect(attached.ok, `PUT /accounts/<id>/workers/domains answered ${attached.status}`).toBe(true);
         expect((await settledCustomDomain(hostname)).state).toBe("found");
       } finally {
@@ -284,8 +290,10 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
             return;
           }
           if (found.state === "absent") {
-            if (domainAttached) {
-              leaks.push(`custom domain ${hostname} — attached, then not listed; it may still exist`);
+            if (domainAttempted) {
+              leaks.push(
+                `custom domain ${hostname} — an attach was attempted and it is not listed; it may still exist`,
+              );
             }
             return;
           }
@@ -302,7 +310,9 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
             return;
           }
           if (found.state === "absent") {
-            if (routeWritten) leaks.push(`worker route ${pattern} — written, then not listed; it may still exist`);
+            if (routeAttempted) {
+              leaks.push(`worker route ${pattern} — a write was attempted and it is not listed; it may still exist`);
+            }
             return;
           }
           if (found.value.id) await bootstrapWorkers.removeRoute(zone.id, found.value.id);

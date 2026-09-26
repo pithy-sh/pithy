@@ -18,7 +18,6 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
@@ -157,6 +156,16 @@ export interface TokenResult {
   /** The secret token value — for in-process use. NEVER include in CLI output or `--json`. */
   value: string;
   sink: SinkTarget;
+  /**
+   * The token's lifecycle status, when Cloudflare said — so the command can refuse to call a dead
+   * credential a success.
+   *
+   * A mint *rolls* an existing token's value, and a roll says nothing about whether that token is still
+   * alive: a `disabled` or `expired` token gives up a perfectly real new secret that fails on its first
+   * call. The value was written to the sink and `Done.` was printed, which is the one thing that must
+   * not happen quietly. `undefined` means the response did not say, which is not a claim that it is fine.
+   */
+  status?: "active" | "disabled" | "expired";
 }
 
 /** Emit a lifecycle event through the audit sink; non-fatal — an audit failure never breaks the action. */
@@ -221,40 +230,6 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
 }
 
 /**
- * Refuse a one-off `--permission` narrowing of a token that already exists.
- *
- * **Because the mint replaces, a flag is no longer one command's decision (#651 round three).** Before
- * re-scoping, a narrowed mint handed out a new value and left the live token's policies alone; now it
- * rewrites them. So `pithy token mint ci-system --env prod --permission d1:read` — a reasonable thing to
- * type when somebody wants a throwaway read-only credential for an hour — permanently strips the deploy
- * token's route grant, and nothing fails until the next deploy of a custom domain.
- *
- * Three ways out, and the refusal names all three, because which one is right depends on what was meant:
- * drop the flag (the narrowing was a mistake), pin it in `tokens.overrides` (it was meant to stand), or
- * `pithy token rotate` (the replacement was meant, and rotate has always replaced).
- *
- * A **standing** config override is not refused: that is the adopter declaring this credential's shape
- * rather than a command doing it in passing. A token that does not exist yet is not refused either —
- * there is nothing to strip, and that is the case the flag is for.
- */
-async function refuseOneOffNarrowing(
-  engine: TokenEngine,
-  name: string,
-  profileName: string,
-  permissionsFrom: "config" | "flag" | null,
-): Promise<void> {
-  if (permissionsFrom !== "flag") return;
-  if (!(await engine.tokens.findTokenByName(name))) return;
-  throw new ValidationError({
-    message: `--permission would permanently re-scope the existing ${profileName} token, not just this mint.`,
-    action:
-      `Drop --permission to mint ${profileName}'s declared set; pin it in tokens.overrides["${profileName}"] ` +
-      `in pithy.config.ts if the narrowing is meant to stand; or run pithy token rotate to replace the token deliberately.`,
-    detail: `mint ${name}: a --permission flag on an existing token replaces its policy set`,
-  });
-}
-
-/**
  * The whole policy set a profile's token carries: its own account-scoped policy, plus — for `ci-system`
  * alone — the zone-scoped route policy the project's declared domains require (#651).
  *
@@ -299,11 +274,10 @@ export async function mintProfileToken(
   env: string,
   options?: MintOptions,
 ): Promise<TokenResult> {
-  const { override, permissionsFrom } = mergeOverride(engine, profileName, options);
+  const { override } = mergeOverride(engine, profileName, options);
   const profile = resolveProfile(engine.profiles, profileName, override);
   const store = resolveDestination(engine, profile);
   const name = tokenName(engine.project, env, profileName);
-  await refuseOneOffNarrowing(engine, name, profileName, permissionsFrom);
 
   try {
     const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile, override));
@@ -323,7 +297,15 @@ export async function mintProfileToken(
       tokenId: minted.id,
       store,
     });
-    return { profile: profileName, env, tokenId: minted.id, name, value: minted.value, sink };
+    return {
+      profile: profileName,
+      env,
+      tokenId: minted.id,
+      name,
+      value: minted.value,
+      sink,
+      ...(minted.status !== undefined ? { status: minted.status } : {}),
+    };
   } catch (error) {
     await emit(engine, { action: TokenAuditActions.minted, outcome: "failure", profile: profileName, env });
     throw error;
@@ -356,6 +338,14 @@ export type RouteScope =
    * from that mint too, and the listing says `stale` again.
    */
   | "overridden"
+  /**
+   * The token carries the grant and **is not active**, so Cloudflare refuses it on every call.
+   *
+   * Its own word because a `disabled` or `expired` token with a perfect policy set is not stale — the
+   * scope is right and the credential is dead — and reading the policies alone called it `scoped`,
+   * which tells an operator their next deploy will work.
+   */
+  | "inactive"
   /** The token's policies did not come back, so nothing can be claimed either way. */
   | "unknown";
 
@@ -434,6 +424,9 @@ type ZoneVerdict = "covered" | "uncovered" | "indeterminate";
  */
 function routeScopeOf(token: AccountTokenSummary, requirement: RouteRequirement | null, needed: boolean): RouteScope {
   if (!needed) return "not-required";
+  // Before any policy is read: a token Cloudflare will refuse cannot attach a route however it is
+  // scoped. A response that did not say is judged on its policies, since absent is not `disabled`.
+  if (token.status !== undefined && token.status !== "active") return "inactive";
   if (requirement === null || token.policies === undefined) return "unknown";
   const verdicts = requirement.zoneIds.map((zoneId) => zoneVerdict(token.policies ?? [], requirement, zoneId));
   if (verdicts.includes("uncovered")) return "stale";
@@ -574,7 +567,15 @@ export async function rotateProfileToken(
       tokenId: minted.id,
       store,
     });
-    return { profile: profileName, env, tokenId: minted.id, name, value: minted.value, sink };
+    return {
+      profile: profileName,
+      env,
+      tokenId: minted.id,
+      name,
+      value: minted.value,
+      sink,
+      ...(minted.status !== undefined ? { status: minted.status } : {}),
+    };
   } catch (error) {
     await emit(engine, { action: TokenAuditActions.rotated, outcome: "failure", profile: profileName, env });
     throw error;

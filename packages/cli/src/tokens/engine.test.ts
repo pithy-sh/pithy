@@ -558,31 +558,19 @@ describe("mintProfileToken — route zones", () => {
     expect(tokens.policies[0]).toHaveLength(1);
   });
 
-  test("a --permission narrowing of a token that already exists is refused", async () => {
-    // The mint replaces an existing token's policy set now, so a one-off flag permanently re-scopes the
-    // credential CI deploys with — a contractor handed a read-only token for an hour takes the deploy
-    // token's route grant with them. Refusing is the only answer that cannot silently break a pipeline.
+  test("a --permission narrowing of a token that already exists strips nothing", async () => {
+    // #651 round four. The refusal that used to live here existed because the mint replaced the token's
+    // policy set, so a one-off flag permanently re-scoped the credential CI deploys with. The mint is
+    // value-only again, so the flag governs only what a *fresh* token would be minted with and the live
+    // token's scope is untouched. Nothing to refuse.
+    const rolled: string[] = [];
     const tokens = fakeControl({
       findTokenByName: vi.fn(async () => ({ id: "t1", name: "acme-staging-ci-system", status: "active" as const })),
+      rollToken: vi.fn(async (name: string) => {
+        rolled.push(name);
+        return { id: "t1", value: "fresh", name };
+      }),
     });
-    const failure = await mintProfileToken(
-      engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
-      "ci-system",
-      "staging",
-      { permissions: ["d1:read"] },
-    ).catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(PithyError);
-    expect((failure as PithyError).payload.message).toMatch(/--permission/);
-    expect((failure as PithyError).payload.action).toMatch(/tokens\.overrides|pithy token rotate/);
-    // Nothing was written: the refusal lands before the roll.
-    expect(tokens.rolled).toEqual([]);
-    expect(tokens.policies).toEqual([]);
-  });
-
-  test("a --permission narrowing of a token that does not exist yet is allowed", async () => {
-    // Nothing to strip. This is the case the flag is actually for.
-    const tokens = fakeControl();
     await mintProfileToken(
       engineWith(dir, tokens, { routeZones: zonesResolving(["zone-a"]) }),
       "ci-system",
@@ -591,10 +579,10 @@ describe("mintProfileToken — route zones", () => {
         permissions: ["d1:read"],
       },
     );
-    expect(tokens.policies[0]).toHaveLength(1);
+    expect(rolled).toEqual(["acme-staging-ci-system"]);
   });
 
-  test("an unnarrowed mint of an existing token is untouched by the refusal", async () => {
+  test("an unnarrowed mint of an existing token carries the route policy", async () => {
     const tokens = fakeControl({
       findTokenByName: vi.fn(async () => ({ id: "t1", name: "acme-staging-ci-system", status: "active" as const })),
     });
@@ -797,6 +785,62 @@ describe("listProfileTokens — route scope", () => {
     expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
   });
 
+  test("a token that is not active cannot attach a route, whatever its policies say", async () => {
+    // #651 round four. A `disabled` or `expired` token with a perfect policy set is refused by
+    // Cloudflare on every call, so calling it `scoped` tells an operator their deploy will work.
+    for (const status of ["disabled", "expired"] as const) {
+      const tokens = fakeControl({
+        listTokens: vi.fn(
+          async (): Promise<AccountTokenSummary[]> => [
+            {
+              id: "t1",
+              name: "acme-staging-ci-system",
+              status,
+              policies: [
+                {
+                  permission_groups: [{ id: "pg:Workers Routes Write" }],
+                  resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+                },
+              ],
+            },
+          ],
+        ),
+      });
+      const rows = await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging");
+      expect(rows[0]?.routeScope, status).toBe("inactive");
+    }
+  });
+
+  test("an active token with the grant still reads scoped", async () => {
+    const tokens = listing([
+      {
+        permission_groups: [{ id: "pg:Workers Routes Write" }],
+        resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+      },
+    ]);
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
+  });
+
+  test("a token whose status the response did not carry is judged on its policies alone", async () => {
+    const tokens = fakeControl({
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => [
+          {
+            id: "t1",
+            name: "acme-staging-ci-system",
+            policies: [
+              {
+                permission_groups: [{ id: "pg:Workers Routes Write" }],
+                resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+              },
+            ],
+          },
+        ],
+      ),
+    });
+    expect((await listProfileTokens(engineWith(dir, tokens, { routeZones }), "staging"))[0]?.routeScope).toBe("scoped");
+  });
+
   test("a standing override that strips the grant reads `overridden`, not `stale`", async () => {
     // The state where "run pithy token mint" is a lie: the mint would re-scope the token to exactly what
     // it has now, because the override removes the route policy from every mint.
@@ -915,5 +959,47 @@ describe("listProfileTokens — reporting never fails on what it reports", () =>
         "staging",
       ),
     ).rejects.toBeInstanceOf(CloudflareNotConfiguredError);
+  });
+});
+
+/**
+ * A mint must not report success over a credential Cloudflare will refuse.
+ *
+ * A roll regenerates the secret of the token that is already there, and says nothing about whether that
+ * token is still alive. So `pithy token mint` on a `disabled` or `expired` token wrote a fresh value to
+ * the sink, printed `Done.`, and handed CI a credential that fails on its first call. The value is real;
+ * the token is dead. Carrying the status through is what lets the command say so (#651).
+ */
+describe("mintProfileToken — a rolled token that is not alive", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-deadtoken-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test.each(["disabled", "expired"] as const)("a %s token's roll carries the status to the caller", async (status) => {
+    const tokens = fakeControl({
+      rollToken: vi.fn(async (name: string) => ({ id: "t1", value: "fresh", name, status })),
+    });
+    const result = await mintProfileToken(engineWith(dir, tokens), "ci-system", "staging");
+    expect(result.status).toBe(status);
+  });
+
+  test("an active token reports active, and a response that said nothing reports nothing", async () => {
+    const active = fakeControl({
+      rollToken: vi.fn(async (name: string) => ({ id: "t1", value: "fresh", name, status: "active" as const })),
+    });
+    expect((await mintProfileToken(engineWith(dir, active), "ci-system", "staging")).status).toBe("active");
+    const silent = fakeControl({ rollToken: vi.fn(async (name: string) => ({ id: "t1", value: "fresh", name })) });
+    expect((await mintProfileToken(engineWith(dir, silent), "ci-system", "staging")).status).toBeUndefined();
+  });
+
+  test("rotate reports the status of the token it created", async () => {
+    const tokens = fakeControl({
+      mintToken: vi.fn(async (name: string) => ({ id: "t2", value: "fresh", name, status: "active" as const })),
+    });
+    expect((await rotateProfileToken(engineWith(dir, tokens), "ci-system", "staging")).status).toBe("active");
   });
 });

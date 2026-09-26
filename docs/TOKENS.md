@@ -84,20 +84,30 @@ A project that declares no domain mints exactly what it minted before. No new pe
 
 **An explicit `--permission` (or a `tokens.overrides["ci-system"].permissions` in `pithy.config.ts`) means exactly what it says.** The route policy rides with the profile's *default* permission set, not with every mint — so a run that narrows the credential by hand gets the narrow credential, with no zone grant added behind your back.
 
-Two consequences follow from the mint replacing an existing token's policies:
+**A standing `tokens.overrides[...].permissions` keeps stripping the grant**, on purpose. `pithy token list` reports that state as its own thing and tells you to change the override rather than to run a command that would honor it and produce the same token again.
 
-- **`--permission` on a token that already exists is refused.** The flag would not narrow that one run; it would permanently re-scope the credential CI deploys with. The refusal names the three ways to say what you meant: drop the flag, pin the narrowing in `tokens.overrides` if it is meant to stand, or `pithy token rotate` to replace the token deliberately. A profile with no token yet mints narrowed without complaint — there is nothing to strip.
-- **A standing `tokens.overrides[...].permissions` keeps stripping the grant**, on purpose. `pithy token list` reports that state as its own thing and tells you to change the override, never to re-mint — re-minting would honor the override and produce the same token again.
+**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; a `disabled` or `expired` token is reported as dead rather than as scoped; and when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
 
-**A CI token minted before this** carries no zone, and the next deploy of a custom domain fails on the route. `pithy token list --env <env>` says so and names the remedy. It reads the token's own policies for the route grant **and** the zone, so a zone-scoped permission that is not a route grant does not count as coverage; when the zones or the group cannot be read it says nothing rather than guessing, and never takes the listing down with it.
+### Mint rolls the value. Rotate replaces the token.
 
-The remedy is one re-mint. **It re-scopes the token in place** — `pithy` replaces the existing token's policies (`PUT /accounts/<id>/tokens/<id>`) and then rolls its value, so the credential keeps its identity, comes back with the current scope, and hands you a fresh secret to paste into CI. Scope first, value second: a re-scope that fails costs nothing, where a value handed over before the scope lands is a credential that looks new and cannot deploy.
+The remedy is a **rotate**, not a mint, and the difference is the whole of it:
 
-**Anything else you set on that token is kept.** Cloudflare's token update is a full representation, so a body carrying only the policies would clear a hand-set expiry, start time or IP allowlist and re-enable a token you had disabled. Those come off the record `pithy` already read and go back with the write.
+| | What it does to the token |
+|---|---|
+| `pithy token mint <profile> --env <env>` | Same token, same id, **same policies**. A new secret, and nothing else changes. |
+| `pithy token rotate <profile> --env <env>` | A **new** token with the profile's current policies, stored, then the old one deleted. |
+
+So a token that predates a permission — the zone route grant, or a capability you have since composed — is re-scoped by rotate. A mint will hand you a fresh secret with the old scope and change nothing about what it may do.
 
 ```bash
-pithy token mint ci-system --env prod
+pithy token rotate ci-system --env prod
 ```
+
+`--keep-previous` leaves the old token alive as a grace window while a consumer picks up the new value.
+
+**A mint over a token that is `disabled` or `expired` says so.** The value it writes is real and the token is dead, so the command names the status and points at rotate rather than printing `Done.` over a credential that fails on its first call. `--json` carries the status too.
+
+**Mint deliberately does not re-scope.** It briefly did, and Cloudflare's token update is a full representation — so doing it meant every mint had to resend the whole token correctly, and a bug there silently cleared a hand-set expiry or IP allowlist, or re-enabled a token you had disabled. Rotate was always the operation that replaces a token; mint is the one you can rely on to change exactly one thing.
 
 ## Worker-consumer tokens
 

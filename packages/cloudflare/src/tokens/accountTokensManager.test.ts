@@ -479,166 +479,57 @@ describe("CloudflareAccountTokensManager", () => {
    * replaces the policy set. Re-scope in place is therefore possible, keeps the token's identity, and is
    * what roll now does.
    */
-  it("rollToken re-scopes an existing token to the policies it was handed, then rolls its value", async () => {
+  it("a roll never sends policies — re-scoping is `pithy token rotate`'s job, not a mint's", async () => {
+    // #651 round four, and it is a revert. Re-scoping in place meant every mint had to resend the whole
+    // token correctly — `condition`, `expires_on`, `not_before`, `status` — and three review rounds each
+    // found a new way that went wrong. `rotate` already mints with the current policies and deletes the
+    // old token; it has always been the correct re-scope. So a mint rolls the value and touches nothing
+    // else, which is a property that cannot be got subtly wrong.
     mockTokenList.mockReturnValue(paginator([{ id: "tk-existing", name: "acme-staging-ci-system", status: "active" }]));
     mockValueUpdate.mockResolvedValue("rolled-value");
 
     await manager.rollToken("acme-staging-ci-system", [
-      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
       { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
     ]);
 
-    // The policies reached Cloudflare, resolved to ids, on the token that already existed.
-    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-existing", {
-      account_id: "acct-1",
-      name: "acme-staging-ci-system",
-      status: "active",
-      policies: [
-        {
-          effect: "allow",
-          permission_groups: [{ id: "pg-read" }],
-          resources: { "com.cloudflare.api.account.acct-1": "*" },
-        },
-        {
-          effect: "allow",
-          permission_groups: [{ id: "pg-routes" }],
-          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
-        },
-      ],
-    });
+    expect(mockTokenUpdate).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
     expect(mockValueUpdate).toHaveBeenCalledWith("tk-existing", { account_id: "acct-1", body: {} });
   });
 
-  it("rollToken applies the scope BEFORE handing out a value", async () => {
-    // Order is the whole safety property. Roll first and a failed re-scope has already given the
-    // operator a working, under-scoped secret and a zero exit — the silent failure this replaces.
-    // Re-scope first and a failure costs nothing: the old value still works and nothing was handed out.
-    mockTokenList.mockReturnValue(paginator([{ id: "tk-existing", name: "acme-staging-ci-system", status: "active" }]));
-    mockTokenUpdate.mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 500 }));
+  it.each(["status", "policies"] as const)(
+    "a null %s does not make a token invisible — a duplicate mint is the alternative",
+    async (field) => {
+      // `safeParse` drops an entry that fails, so one `null` where the schema wanted a value hides the
+      // token from `findTokenByName`, and the roll mints a *second* live credential of the same name
+      // beside the first. Every optional field a list response may null out is `.nullish()` for that.
+      mockTokenList.mockReturnValue(paginator([{ id: "tk-existing", name: "acme-staging-ci-system", [field]: null }]));
+      mockValueUpdate.mockResolvedValue("rolled-value");
 
-    await expect(
-      manager.rollToken("acme-staging-ci-system", [
-        { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
-      ]),
-    ).rejects.toThrow();
-    expect(mockValueUpdate).not.toHaveBeenCalled();
-  });
+      const rolled = await manager.rollToken("acme-staging-ci-system", [
+        { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+      ]);
 
-  it("a re-scope preserves every other attribute the token carries", async () => {
-    // #651 round three. `PUT /accounts/<id>/tokens/<id>` is a full representation: whatever the body
-    // omits, the token loses. A hand-set TTL or IP allowlist is exactly the hardening Cloudflare's own
-    // docs recommend, and a routine `pithy token mint` was clearing all of it — and re-enabling a token
-    // somebody had disabled. The list response already carries these fields, so preserving them costs
-    // no extra call and no extra grant.
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(rolled.id).toBe("tk-existing");
+    },
+  );
+
+  it("a null effect or permission_groups inside a policy does not drop the token either", async () => {
     mockTokenList.mockReturnValue(
       paginator([
         {
           id: "tk-existing",
           name: "acme-staging-ci-system",
-          status: "disabled",
-          expires_on: "2026-12-31T00:00:00Z",
-          not_before: "2026-01-01T00:00:00Z",
-          condition: { request_ip: { in: ["203.0.113.0/24"] } },
-          policies: [{ resources: { "com.cloudflare.api.account.acct-1": "*" } }],
+          status: "active",
+          policies: [
+            { effect: null, permission_groups: null, resources: { "com.cloudflare.api.account.acct-1": "*" } },
+          ],
         },
       ]),
     );
-    mockValueUpdate.mockResolvedValue("rolled-value");
-
-    await manager.rollToken("acme-staging-ci-system", [
-      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
-    ]);
-
-    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-existing", {
-      account_id: "acct-1",
-      name: "acme-staging-ci-system",
-      status: "disabled",
-      expires_on: "2026-12-31T00:00:00Z",
-      not_before: "2026-01-01T00:00:00Z",
-      condition: { request_ip: { in: ["203.0.113.0/24"] } },
-      policies: [
-        {
-          effect: "allow",
-          permission_groups: [{ id: "pg-routes" }],
-          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
-        },
-      ],
-    });
-  });
-
-  it("a token carrying none of those attributes sends none of them", async () => {
-    // Absent on the record is absent on the token. Sending `undefined` keys would be a different write.
-    mockTokenList.mockReturnValue(paginator([{ id: "tk-plain", name: "acme-staging-ci-system" }]));
     mockValueUpdate.mockResolvedValue("v");
-    await manager.rollToken("acme-staging-ci-system", [
-      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
-    ]);
-    expect(Object.keys(mockTokenUpdate.mock.calls[0]?.[1] ?? {}).sort()).toEqual(["account_id", "name", "policies"]);
-  });
-
-  it("listTokens reads the attributes a re-scope has to resend", async () => {
-    mockTokenList.mockReturnValue(
-      paginator([
-        {
-          id: "t1",
-          name: "n",
-          status: "disabled",
-          expires_on: "2026-12-31T00:00:00Z",
-          not_before: "2026-01-01T00:00:00Z",
-          condition: { request_ip: { in: ["203.0.113.0/24"] } },
-        },
-      ]),
-    );
-    expect((await manager.listTokens())[0]).toMatchObject({
-      status: "disabled",
-      expires_on: "2026-12-31T00:00:00Z",
-      not_before: "2026-01-01T00:00:00Z",
-      condition: { request_ip: { in: ["203.0.113.0/24"] } },
-    });
-  });
-
-  it("rollTokenKeepingPolicies rolls the value and never rewrites the scope", async () => {
-    // The seam for a credential whose policy set is not this caller's to decide — the secrets manager's
-    // runtime token, rolled in a contention loop. Replace semantics there would re-scope a live
-    // credential up to five times from a permission list resolved somewhere else entirely.
-    mockTokenList.mockReturnValue(paginator([{ id: "tk-mgr", name: "acme-secrets-manager", status: "active" }]));
-    mockValueUpdate.mockResolvedValue("rolled");
-
-    const rolled = await manager.rollTokenKeepingPolicies("acme-secrets-manager", [
-      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
-    ]);
-
-    expect(rolled.value).toBe("rolled");
-    expect(mockTokenUpdate).not.toHaveBeenCalled();
-    expect(mockCreate).not.toHaveBeenCalled();
-  });
-
-  it("rollTokenKeepingPolicies still mints when the token does not exist", async () => {
-    mockTokenList.mockReturnValue(paginator([]));
-    mockCreate.mockResolvedValue({ id: "fresh", value: "v", name: "acme-secrets-manager" });
-    const minted = await manager.rollTokenKeepingPolicies("acme-secrets-manager", [
-      { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
-    ]);
-    expect(minted.id).toBe("fresh");
-    expect(mockTokenUpdate).not.toHaveBeenCalled();
-  });
-
-  it("updateTokenPolicies replaces the policy set and never touches the value", async () => {
-    await manager.updateTokenPolicies({ id: "tk-1", name: "acme-staging-ci-system" }, [
-      { permissionGroupNames: ["Workers Routes Write"], resources: zoneResources(["zone-a"]) },
-    ]);
-    expect(mockTokenUpdate).toHaveBeenCalledWith("tk-1", {
-      account_id: "acct-1",
-      name: "acme-staging-ci-system",
-      policies: [
-        {
-          effect: "allow",
-          permission_groups: [{ id: "pg-routes" }],
-          resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
-        },
-      ],
-    });
-    expect(mockValueUpdate).not.toHaveBeenCalled();
+    expect((await manager.rollToken("acme-staging-ci-system", [])).id).toBe("tk-existing");
   });
 
   it("mints a fresh token when none of that name exists", async () => {

@@ -39,13 +39,13 @@ function fakeCf() {
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
   const accountSubdomain = vi.fn();
-  const rollTokenKeepingPolicies = vi.fn();
+  const rollToken = vi.fn();
   const deleteTokensByName = vi.fn();
   const cf = {
     d1Provisioner: () => ({ findDatabaseByName, createDatabase, deleteDatabase }),
     secrets: () => ({ exists, putSecret, createSecretIfAbsent, deleteSecret }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
-    accountTokens: () => ({ rollTokenKeepingPolicies, deleteTokensByName }),
+    accountTokens: () => ({ rollToken, deleteTokensByName }),
     d1: () => EMPTY_D1,
   } as unknown as CloudflareClients;
   return {
@@ -60,7 +60,7 @@ function fakeCf() {
     getWorker,
     deleteWorker,
     accountSubdomain,
-    rollTokenKeepingPolicies,
+    rollToken,
     deleteTokensByName,
   };
 }
@@ -158,7 +158,7 @@ describe("CloudflareSecretsProvisioner", () => {
    */
   test("for a feature, creates the feature's own master key and refuses to mint a token", async () => {
     const feature = { project: PROJECT, issue: "643", slug: "feature-address" };
-    const { cf, exists, putSecret, createSecretIfAbsent, rollTokenKeepingPolicies } = fakeCf();
+    const { cf, exists, putSecret, createSecretIfAbsent, rollToken } = fakeCf();
     exists.mockResolvedValue(false);
     const provisioner = new CloudflareSecretsProvisioner({ ...provisionerOptions(cf), feature });
 
@@ -169,7 +169,7 @@ describe("CloudflareSecretsProvisioner", () => {
       `${PROJECT}-f643-feature-address--secrets-encryption-keys`,
       expect.stringContaining("currentVersion"),
     );
-    expect(rollTokenKeepingPolicies).not.toHaveBeenCalled();
+    expect(rollToken).not.toHaveBeenCalled();
     expect(putSecret).not.toHaveBeenCalled();
   });
 
@@ -183,37 +183,34 @@ describe("CloudflareSecretsProvisioner", () => {
   });
 
   test("ensureManagerToken mints a scoped token and writes it when the store entry is absent", async () => {
-    const { cf, exists, rollTokenKeepingPolicies, putSecret } = fakeCf();
+    const { cf, exists, rollToken, putSecret } = fakeCf();
     exists.mockResolvedValue(false);
-    rollTokenKeepingPolicies.mockResolvedValue({ id: "tk-1", value: "minted-token" });
+    rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     await provisioner.ensureManagerToken();
 
-    expect(rollTokenKeepingPolicies).toHaveBeenCalledWith(
-      managerCfApiTokenName(PROJECT),
-      await managerTokenPermissions("acct-1"),
-    );
+    expect(rollToken).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT), await managerTokenPermissions("acct-1"));
     const [name, value] = putSecret.mock.calls[0] ?? [];
     expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "minted-token" } });
   });
 
   test("ensureManagerToken reuses the stored token (no mint) when the entry already exists", async () => {
-    const { cf, exists, rollTokenKeepingPolicies, putSecret } = fakeCf();
+    const { cf, exists, rollToken, putSecret } = fakeCf();
     exists.mockResolvedValue(true);
     const provisioner = new CloudflareSecretsProvisioner(provisionerOptions(cf));
 
     await provisioner.ensureManagerToken();
 
-    expect(rollTokenKeepingPolicies).not.toHaveBeenCalled();
+    expect(rollToken).not.toHaveBeenCalled();
     expect(putSecret).not.toHaveBeenCalled();
   });
 
   test("ensureManagerToken audits secrets/set without the token value when it mints one", async () => {
-    const { cf, exists, rollTokenKeepingPolicies } = fakeCf();
+    const { cf, exists, rollToken } = fakeCf();
     exists.mockResolvedValue(false);
-    rollTokenKeepingPolicies.mockResolvedValue({ id: "tk-1", value: "minted-token" });
+    rollToken.mockResolvedValue({ id: "tk-1", value: "minted-token" });
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareSecretsProvisioner({
       ...provisionerOptions(cf),
@@ -298,7 +295,7 @@ describe("two projects sharing one Cloudflare account", () => {
         deleteSecret: async (name: string) => void store.delete(name),
       }),
       accountTokens: () => ({
-        rollTokenKeepingPolicies: async (name: string) => ({ id: `tk-${name}`, value: `value-${name}` }),
+        rollToken: async (name: string) => ({ id: `tk-${name}`, value: `value-${name}` }),
         deleteTokensByName: async (name: string) => {
           deletedTokenNames.push(name);
           return 1;
@@ -670,7 +667,7 @@ describe("teardown refuses an unconfirmed account", () => {
 describe("ensureManagerToken under a race", () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  /** Cloudflare as `rollTokenKeepingPolicies` sees it: mint when absent, roll the value in place when present. */
+  /** Cloudflare as `rollToken` sees it: find by name, mint when absent, roll the value in place when present. */
   function racingAccount() {
     const entries = new Map<string, string>();
     const tokens: { id: string; name: string; value: string }[] = [];
@@ -687,7 +684,7 @@ describe("ensureManagerToken under a race", () => {
         },
       }),
       accountTokens: () => ({
-        rollTokenKeepingPolicies: async (name: string) => {
+        rollToken: async (name: string) => {
           const existing = tokens.find((token) => token.name === name);
           seq += 1;
           if (!existing) {

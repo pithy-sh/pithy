@@ -74,6 +74,19 @@ export function zoneResources(zoneIds: readonly string[]): Record<string, string
 }
 
 /**
+ * Read an explicit `null` as "the response did not say", keeping the field **optional** rather than
+ * required-and-undefined.
+ *
+ * Every optional field decoded off a token list goes through this, and it is load-bearing rather than
+ * defensive (#651): `listTokens` decodes each entry with `safeParse` and drops what fails, so one `null`
+ * where a schema wanted a value makes a live token invisible to `findTokenByName` — and the next roll
+ * mints a *second* credential of the same name beside the first, with nothing saying so.
+ */
+function nullAsAbsent<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((value) => value ?? undefined, schema);
+}
+
+/**
  * A permission group available to account-owned tokens, as returned by the permission-groups list.
  * Only the id and name matter for resolution — the manager maps a requested name to its id.
  */
@@ -95,72 +108,76 @@ export const MintedAccountToken = z
     id: z.string().describe("The CF-assigned token id, used to address the token for get/delete."),
     value: z.string().describe("The secret token value — returned once on create, never again. Store immediately."),
     name: z.string().optional().describe("The token name as registered with Cloudflare."),
-    status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
+    status: nullAsAbsent(
+      z
+        .enum(["active", "disabled", "expired"])
+        .describe("The lifecycle state Cloudflare holds for the token.")
+        .optional(),
+    ).describe("The token's lifecycle status."),
   })
   .describe("A newly created account-owned API token, including its one-time secret value.");
 export type MintedAccountToken = z.output<typeof MintedAccountToken>;
 
 /**
- * An existing account-owned token's metadata, as returned by list/get. No `value` — Cloudflare never
- * returns a token's secret after creation — so this is only enough to find a token by name and
- * address it for deletion.
+ * One access policy on an existing token, as the token list returns it.
+ *
+ * **Every field is `nullish`, and that is load-bearing rather than defensive.** `listTokens` decodes
+ * each entry with `safeParse` and drops what fails, so a single `null` where this expected a value
+ * makes a live token invisible to `findTokenByName` — and the next roll mints a *second* credential of
+ * the same name beside the first, with nothing saying so (#651).
  */
 export const AccountTokenPolicy = z
   .object({
-    effect: z
-      .enum(["allow", "deny"])
-      .optional()
-      .describe(
-        "Whether this policy grants its groups on its resources or refuses them. Cloudflare evaluates explicit denies first, so a policy naming a group is not evidence the token may use it. Optional because a response that omits it is an allow, which is the API's own default.",
-      ),
-    permission_groups: z
-      .array(
-        z
-          .object({ id: z.string().describe("The permission-group id this policy grants.") })
-          .describe("One permission group referenced by a live token's policy, by the id the account assigned it."),
-      )
-      .optional()
-      .describe(
-        "The permission groups this policy grants, by id. **Read together with `resources`, never apart**: a zone resource says which zone a policy is about and nothing about what it may do there, so coverage judged from resources alone reads a zone-scoped `Zone Read` as a route grant. Optional because a response that omits it has not said the policy grants nothing.",
-      ),
+    effect: nullAsAbsent(
+      z.enum(["allow", "deny"]).describe("Allow or deny, as Cloudflare states it on the policy.").optional(),
+    ).describe(
+      "Whether this policy grants its groups on its resources or refuses them. Cloudflare evaluates explicit denies first, so a policy naming a group is not evidence the token may use it. Absent is an allow, which is the API's own default.",
+    ),
+    permission_groups: nullAsAbsent(
+      z
+        .array(
+          z
+            .object({ id: z.string().describe("The permission-group id this policy grants.") })
+            .describe("One permission group referenced by a live token's policy, by the id the account assigned it."),
+        )
+        .optional(),
+    ).describe(
+      "The permission groups this policy grants, by id. **Read together with `resources`, never apart**: a zone resource says which zone a policy is about and nothing about what it may do there, so coverage judged from resources alone reads a zone-scoped `Zone Read` as a route grant. Absent has not said the policy grants nothing.",
+    ),
     resources: z
       .record(z.string(), z.unknown())
       .describe(
-        "The resource scope keys this policy applies to — `com.cloudflare.api.account.<id>` for an account policy, `com.cloudflare.api.account.zone.<id>` for a zone one. Read to tell what a live token is scoped to; the values are not interpreted.",
+        "The resource scope keys this policy applies to — `com.cloudflare.api.account.<id>` for an account policy, `com.cloudflare.api.account.zone.<id>` for a zone one, and either nested inside the other. Read to tell what a live token is scoped to; the values are not interpreted beyond that nesting.",
       ),
   })
   .describe("One access policy on an existing token: the groups it grants, and the resources it grants them on.");
 export type AccountTokenPolicy = z.output<typeof AccountTokenPolicy>;
 
+/**
+ * An existing account-owned token's metadata, as returned by list/get. No `value` — Cloudflare never
+ * returns a token's secret after creation — so this is only enough to find a token by name, report on
+ * it, and address it for deletion.
+ *
+ * **It reads what it uses and nothing more.** It briefly carried `expires_on`, `not_before` and
+ * `condition` so a re-scoping mint could resend them; that mint is gone (see {@link
+ * CloudflareAccountTokensManager.rollToken}), and reading a field only to hand it straight back is a
+ * field that can be read wrong.
+ */
 export const AccountTokenSummary = z
   .object({
     id: z.string().describe("The CF-assigned token id, used to address the token for deletion."),
     name: z.string().describe("The token name, the key callers match on for idempotent re-mint."),
-    status: z.enum(["active", "disabled", "expired"]).optional().describe("The token's lifecycle status."),
-    expires_on: z
-      .string()
-      .optional()
-      .describe(
-        "When the token stops being accepted, if it was given a lifetime. Read so a re-scope can resend it — Cloudflare's token update is a full representation, and a field the body omits is a field the token loses.",
-      ),
-    not_before: z
-      .string()
-      .optional()
-      .describe(
-        "When the token starts being accepted, if it was given one. Resent by a re-scope, for the reason above.",
-      ),
-    condition: z
-      .looseObject({})
-      .optional()
-      .describe(
-        "The token's use conditions — an IP allowlist, today. Kept opaque and passed back verbatim: this reads it only to resend it, and narrowing the shape here would silently drop a condition Cloudflare adds later.",
-      ),
-    policies: z
-      .array(AccountTokenPolicy)
-      .optional()
-      .describe(
-        "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these tokens deliberately lack). Optional because absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
-      ),
+    status: nullAsAbsent(
+      z
+        .enum(["active", "disabled", "expired"])
+        .describe("The lifecycle state Cloudflare holds for the token.")
+        .optional(),
+    ).describe(
+      "The token's lifecycle status. Reported, because a `disabled` or `expired` token cannot attach a route however its policies read. `nullish` for the reason {@link AccountTokenPolicy} gives.",
+    ),
+    policies: nullAsAbsent(z.array(AccountTokenPolicy).optional()).describe(
+      "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these least-privilege tokens deliberately lack). Absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
+    ),
   })
   .describe("An existing account-owned API token's metadata (never its secret value).");
 export type AccountTokenSummary = z.output<typeof AccountTokenSummary>;
@@ -433,98 +450,25 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * Either way the caller gets a usable secret to store — the idempotent path for a credential that
    * lives in the Secrets Store, since Cloudflare never returns a token's existing secret. Mirrors the
    * dashboard's roll-or-create.
+   *
+   * **A roll never changes the policy set, and that is a decision rather than an omission (#651).** It
+   * briefly did: `pithy token list` tells an adopter their CI token predates zone-scoped routes, and
+   * re-scoping here made the remedy one command. But Cloudflare's token update is a full
+   * representation, so doing it meant every mint had to resend the whole token correctly — `condition`,
+   * `expires_on`, `not_before`, `status` — and three review rounds each found a new way that went
+   * wrong: a cleared IP allowlist, a re-enabled disabled token, a `null` that hid the token and minted a
+   * duplicate beside it.
+   *
+   * {@link mintToken} plus a delete is what actually re-scopes, and `pithy token rotate` has always been
+   * exactly that. So the remedy names rotate, and this stays the one thing it can be relied on to be:
+   * a new secret on the same token, with nothing else touched.
    */
   async rollToken(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> {
     const existing = await this.findTokenByName(name);
     if (!existing) return this.mintToken(name, permissions);
-    // Scope first, value second, and the order is the whole safety property (#651). Rolling first would
-    // hand the caller a working secret and *then* try to widen it, so a failed widen exits zero with a
-    // credential that is missing exactly the grant the operator ran this to add — which is how the
-    // remedy for #651 shipped unable to perform the remedy. Re-scoping first costs nothing when it
-    // fails: the token's previous value is still live and nothing has been handed out.
-    await this.updateTokenPolicies(existing, permissions);
     const value = await this.rollTokenValue(existing.id);
     return { id: existing.id, value, name: existing.name, status: existing.status };
   }
-
-  /**
-   * Ensure a named token exists and return a fresh value — **without touching its policy set.**
-   *
-   * The same roll-or-create as {@link rollToken}, minus the re-scope. Its one caller is the secrets
-   * manager's runtime credential (`ensureManagerToken`), and the difference matters there for two
-   * reasons. That call sits in a contention loop that may roll up to five times, so a replace would
-   * rewrite a *live* runtime credential's scope five times over. And the permission list it would
-   * replace with is resolved by the provisioner, not by the thing consuming the token — a Worker that
-   * is already deployed and already reading secrets under the scope it was given.
-   *
-   * `permissions` is still taken because the create path needs it: a token that does not exist yet has
-   * no scope to keep.
-   */
-  async rollTokenKeepingPolicies(name: string, permissions: TokenPermission[]): Promise<MintedAccountToken> {
-    const existing = await this.findTokenByName(name);
-    if (!existing) return this.mintToken(name, permissions);
-    const value = await this.rollTokenValue(existing.id);
-    return { id: existing.id, value, name: existing.name, status: existing.status };
-  }
-
-  /**
-   * Replace an existing token's access policies in place — `PUT /accounts/{id}/tokens/{token_id}`.
-   *
-   * **Replace, not merge.** Cloudflare requires `name` and `policies` on the update, so the policy set
-   * sent is the policy set the token ends with. That is what makes re-minting a credential able to
-   * *narrow* as well as widen: a capability removed from a project takes its `ciPermissions` with it on
-   * the next mint, exactly as the profile contract has always claimed.
-   *
-   * **And a full representation, which is why this takes the record rather than an id.** The endpoint
-   * replaces the whole token, not the field you named: a body carrying only `policies` clears a
-   * hand-set `expires_on`, `not_before` and `condition`, and flips a `disabled` token back to active.
-   * Those are the hardening Cloudflare's own documentation recommends, and a routine `pithy token mint`
-   * was silently undoing all of it. They come off the record the caller already read — the token list
-   * returns them — so preserving them costs no extra call and no grant this path did not already need.
-   *
-   * Identity is untouched — same token id, same name, same value — so nothing that holds the credential
-   * has to learn a new one. {@link rollToken} pairs it with a value roll; on its own this is the seam
-   * for re-scoping a token whose secret must not change.
-   */
-  async updateTokenPolicies(existing: TokenRecord, permissions: TokenPermission[]): Promise<void> {
-    const index = indexByName(await this.listPermissionGroups());
-    const policies = permissions.map((permission) => ({
-      effect: permission.effect ?? ("allow" as const),
-      permission_groups: this.resolveAgainstIndex(index, permission.permissionGroupNames),
-      resources: permission.resources,
-    }));
-    await cloudflareRequest(
-      `update account token policies ${existing.id}`,
-      () =>
-        this.getClient().accounts.tokens.update(existing.id, {
-          account_id: this.accountId,
-          name: existing.name,
-          // Everything the record carries goes back, because the endpoint is a full representation and
-          // this call is only meant to change one thing. Present-and-undefined is not the same as
-          // absent to a JSON body builder, so each key is spread in only when the record has it.
-          ...(existing.status !== undefined ? { status: existing.status } : {}),
-          ...(existing.expires_on !== undefined ? { expires_on: existing.expires_on } : {}),
-          ...(existing.not_before !== undefined ? { not_before: existing.not_before } : {}),
-          ...(existing.condition !== undefined ? { condition: existing.condition } : {}),
-          policies,
-        }),
-      API_TOKENS_ENDPOINT,
-    );
-  }
-}
-
-/**
- * The fields {@link CloudflareAccountTokensManager.updateTokenPolicies} needs off an existing token: its
- * identity, and every attribute the full-representation `PUT` would otherwise clear. An
- * {@link AccountTokenSummary} satisfies it; so does a hand-built record in a test.
- */
-export interface TokenRecord {
-  id: string;
-  name: string;
-  status?: "active" | "disabled" | "expired";
-  expires_on?: string;
-  not_before?: string;
-  condition?: Record<string, unknown>;
 }
 
 /**
