@@ -9,11 +9,11 @@ Stand up an isolated environment for one issue — worktree, ports, local backen
 ```
 pithy feature create <slug> --issue <n> [--skip-install] [--json]
 pithy feature sync [--skip-data] [--json]
-pithy feature destroy [--env <environment>] [--local-only] [--json]
+pithy feature destroy [--branch <name>] [--env <environment>] [--local-only] [--json]
 pithy feature prune [--dry-run] [--json]
 ```
 
-`create` runs from the main checkout. `sync` and `destroy` run from inside the worktree, and take no name: the branch says which feature it is. `prune` runs from any checkout of the repository.
+`create` runs from the main checkout. `sync` and `destroy` run from inside the worktree, and take no name: the branch says which feature it is. `destroy` also takes `--branch`, for the one caller that cannot be inside the worktree — a merged pull request's runner, which has neither the worktree nor the branch. `prune` runs from any checkout of the repository.
 
 **The feature's live Cloudflare environment is [`pithy provision --feature`](provision.md).** Provisioning is one job whichever environment it is for, so it is one command and one page. What lives here is the rest of a branch's lifecycle, which is a branch's alone.
 
@@ -27,6 +27,7 @@ pithy feature prune [--dry-run] [--json]
 | `--issue <n>` | `create` | required | The issue number this feature tracks. Digits only, at most six of them |
 | `--skip-install` | `create` | `false` | Skip installing dependencies in the new worktree |
 | `--skip-data` | `sync` | `false` | Reconcile ports only, leaving the backend alone |
+| `--branch <name>` | `destroy` | the checkout's own branch | The feature to tear down, named rather than inferred — `feature/<issue>-<slug>`. Only the issue and the slug come from it: the project is this checkout's, so it names a feature of this project and reaches no other's. Anything else is refused before anything is deleted |
 | `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recorded and recomputed feature name regardless |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
 | `--dry-run` | `prune` | `false` | List the blocks it would free, and write nothing |
@@ -65,6 +66,10 @@ Every kit host the feature could have stood up is one of the scripts: `destroy` 
 **One name it deployed under is not among them.** Before scripts were recorded, a feature with a Secrets Store had its generated config rewritten without the script name, and wrangler deployed it as `<script>-feature` — `acme-api-feature`. That name carries no issue and no slug, and every such branch of the project deployed over the same one, so no single feature's teardown can claim it: deleting it would take down whichever open branch deployed last. `destroy` leaves it and does not report it. Once no feature branch from before that fix is still deployed, delete it by hand with `wrangler delete --name <script>-feature`. Names are matched exactly, never by prefix, so a sibling feature whose slug extends this one's is left alone. A Worker removed from the branch after it deployed is found through the manifest instead, which keeps every script name a provision ever wrote.
 
 **`destroy` does not count retained rows.** A feature has its own copy of every `d1` binding, `SECRETS` and `EMAIL_SUPPRESSIONS` included, and `destroy` deletes them with the rest, rows and all. `pithy migrate --rollback`, `pithy secrets deprovision` and `pithy email deprovision --suppression` refuse over the same tables unless `--destroy-retained <n>` matches the count. `destroy` takes no such flag: the database is the branch's own, and the teardown runs headlessly when a branch merges, where nobody can type a count. Every name it deletes is recomputed from the feature's identity, so it never reaches a declared environment's database.
+
+**`destroy --branch` is how a merged pull request tears its own environment down.** Every other subcommand here infers the feature from the checkout, which is right for a developer and impossible for a runner: on `pull_request: closed` the branch is already deleted and `refs/pull/<n>/head` checks out detached, so there is no branch to read. The pipeline holds the name anyway — `github.event.pull_request.head.ref` is a snapshot in the event payload and outlives the branch it names — and this is how it says it. The name goes through the same parser the inferred path uses, so the two cannot disagree about what a feature is called, and the **project** still comes from this checkout's `pithy.config.ts`, which is what keeps the flag inside this project. With no `--branch`, nothing changes: the checkout's branch decides, exactly as before. `provision` and `create` take no such flag; teardown is the only half with a caller standing outside the worktree.
+
+**A runner has no worktree and no port block, and the report says so rather than claiming otherwise.** Both are machine-local — the port registry is `<config>/dev-ports.json` on the machine that ran `feature create` — so on a fresh container there is nothing local to tear down. That is a successful run, not a failure: the remote half is reported, and the local half reports `portsFreed: false`, `worktreePruned: false`, with `No port block and no worktree here. Nothing local to tear down.` on stdout. `portsFreed` answers from the registry write now, so it is `false` wherever nothing was there to free — including a re-run of a teardown that already freed it.
 
 **`destroy` does not need a Worker config to load.** Its local half — free the port block, prune the worktree — is derived from the branch and the root `pithy.config.ts`, and that is deliberate: the state it is most needed in is a `create` that failed partway, which leaves a worktree whose Worker config throws. A teardown that loaded it first was unavailable in exactly that state, and the port block leaked to a branch that no longer existed. The remote half genuinely cannot run without those configs, so an unloadable one is refused unless `--local-only` says the remote half is not wanted.
 
@@ -150,7 +155,7 @@ $ pithy feature destroy --json
 | `deletedResources[].name` | `string` | The resource name |
 | `deletedResources[].id` | `string` | The id that was deleted. A Worker script's is its name, which is all Cloudflare addresses one by |
 | `remote` | `boolean` | Whether the remote teardown ran. `false` under `--local-only` |
-| `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry |
+| `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry — whether there was one. `false` when the registry held no block for this branch, which is every CI runner, and a re-run of a teardown that already freed it |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |
 | `branchDeleted` | `boolean` | Whether the feature branch was deleted. Only when it has been merged |
 | `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is 1 |
@@ -210,6 +215,18 @@ Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote envir
 **The project has no name.** `pithy.config.ts`'s `name` is the first segment of every feature resource name and the only key teardown has to find them by, so it is required with no guessed fallback: a wrong guess means `destroy` computes names that match nothing, deletes nothing, and exits 0.
 
 **The branch is not a feature branch.** `sync` and `destroy` derive the issue and slug from the checked-out branch, so they must be run from inside the worktree — as does `pithy provision --feature`.
+
+```
+Not on a feature branch (HEAD).
+Run this from inside a feature worktree, or create one with pithy feature create.
+```
+
+**A `--branch` that is not a feature branch.** The same parser, and refused before the project config is even opened, so nothing is deleted.
+
+```
+Not a feature branch (not-a-feature).
+Pass --branch feature/<issue>-<slug>, e.g. --branch feature/69-media-cli.
+```
 
 **`prune` outside a git repository.** It judges blocks by the repository's branches and worktrees, and without them every block would look unused, so it refuses rather than freeing them.
 

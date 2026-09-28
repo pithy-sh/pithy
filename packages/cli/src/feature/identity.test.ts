@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test } from "vitest";
 import { isUnknown } from "../project/workerScope";
 import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
@@ -16,6 +16,7 @@ import {
   deriveIdentityFromBranch,
   featureCapabilitySet,
   parseFeatureBranch,
+  requireFeatureBranch,
 } from "./identity";
 import type { GitRunner } from "./worktree";
 
@@ -141,5 +142,104 @@ describe("a feature's teardown composes the set its provision named", () => {
     const { capabilities: provisioned } = await branchIdentity(dir);
     expect(isUnknown(destroyed) ? destroyed : destroyed.map((capability) => capability.name)).toEqual(["app", "vec"]);
     expect(provisioned.map((capability) => capability.name)).toEqual(["app", "vec"]);
+  });
+});
+
+/**
+ * **A feature can be named instead of inferred — #660.**
+ *
+ * `pithy feature destroy` read the checkout's own branch, which is the one thing a merged pull request's
+ * runner does not have: the branch is deleted and `refs/pull/<n>/head` checks out detached, so
+ * `--abbrev-ref HEAD` answers `HEAD`. The pipeline holds `github.event.pull_request.head.ref` — the event
+ * payload is a snapshot and outlives the branch — and the CLI would not be told it.
+ *
+ * The flag joins the existing parser rather than bringing its own, so the two paths cannot come to
+ * disagree about what a feature is called.
+ */
+describe("naming the feature rather than inferring it — #660", () => {
+  /** The `PithyError` a call threw, or a failure here — never a silent pass over a call that returned. */
+  function refusalFor(call: () => unknown): PithyError {
+    try {
+      call();
+    } catch (error) {
+      if (error instanceof PithyError) return error;
+      throw error;
+    }
+    throw new Error("expected a refusal, got a value");
+  }
+
+  let dir: string | null = null;
+
+  afterEach(async () => {
+    if (dir) await removeTempDir(dir);
+    dir = null;
+  });
+
+  /** A checkout of a project called `probe` with **no branch at all** — the runner's state, exactly. */
+  async function detachedCheckout(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "pithy-identity-detached-"));
+    await run("git", [...GIT_NO_MAINTENANCE, "init"], { cwd: root });
+    await run("git", ["config", "user.email", "t@e.com"], { cwd: root });
+    await run("git", ["config", "user.name", "T"], { cwd: root });
+    await writeFile(join(root, "pithy.config.ts"), `export default { name: "probe" };\n`);
+    await run("git", ["add", "-A"], { cwd: root });
+    await run("git", ["commit", "-m", "init"], { cwd: root });
+    await run("git", ["checkout", "-q", "--detach"], { cwd: root });
+    return root;
+  }
+
+  test("the named path is the inferred path's parser, not a second one", () => {
+    expect(requireFeatureBranch("feature/69-media-cli", "flag")).toEqual(parseFeatureBranch("feature/69-media-cli"));
+  });
+
+  test.each([
+    ["main", "not a feature branch at all"],
+    ["feature/nope", "no issue number"],
+    ["feature/69-Bad_Slug", "slug is not kebab-case"],
+  ])("a malformed name is refused in the inferred path's shape: %s (%s)", (branch) => {
+    // **The two refusals, side by side.** The same error, the same code, and a message whose subject is
+    // the name it was given — because one parser and one table produce both. Only the remedy differs,
+    // and only because only the remedy is about where the name came from.
+    const named = refusalFor(() => requireFeatureBranch(branch, "flag"));
+    const inferred = refusalFor(() => requireFeatureBranch(branch, "checkout"));
+    expect(named).toBeInstanceOf(ValidationError);
+    expect(named.payload.code).toBe(inferred.payload.code);
+    expect(named.payload.status).toBe(inferred.payload.status);
+    expect(named.payload.message).toContain(`(${branch}).`);
+    expect(inferred.payload.message).toContain(`(${branch}).`);
+    expect(named.payload.action).toContain("feature/<issue>-<slug>");
+    // The inferred path's own wording is untouched by any of this — #660 adds a row, it does not edit one.
+    expect(inferred.payload.message).toBe(`Not on a feature branch (${branch}).`);
+    expect(inferred.payload.action).toBe(
+      "Run this from inside a feature worktree, or create one with pithy feature create.",
+    );
+  });
+
+  test("**the identity resolves from a detached HEAD, where the inferred path cannot**", async () => {
+    dir = await detachedCheckout();
+    await expect(branchIdentityWithoutWorkers(dir)).rejects.toBeInstanceOf(PithyError);
+    expect(await branchIdentityWithoutWorkers(dir, { branch: "feature/12-x" })).toEqual({
+      project: "probe",
+      issue: "12",
+      slug: "x",
+    });
+  });
+
+  test("with a name in hand the checkout's branch is never read", async () => {
+    dir = await detachedCheckout();
+    const git: GitRunner = () => {
+      throw new Error("the current branch was read");
+    };
+    expect(await branchIdentityWithoutWorkers(dir, { branch: "feature/12-x", git })).toEqual({
+      project: "probe",
+      issue: "12",
+      slug: "x",
+    });
+  });
+
+  test("the project comes from the checkout, so --branch cannot name another project's feature", async () => {
+    dir = await detachedCheckout();
+    await writeFile(join(dir, "pithy.config.ts"), `export default { name: "replay" };\n`);
+    expect((await branchIdentityWithoutWorkers(dir, { branch: "feature/12-x" })).project).toBe("replay");
   });
 });

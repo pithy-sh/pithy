@@ -665,15 +665,30 @@ function dropBranches(
   return dropped;
 }
 
-/** Free a branch's block under the lock (idempotent: a missing branch/checkout/registry is a no-op). */
-export async function freePortBlock(options: FreeOptions): Promise<void> {
+/**
+ * Free a branch's block under the lock (idempotent: a missing branch/checkout/registry is a no-op), and
+ * say **whether a block was actually there**.
+ *
+ * The answer, rather than `void`, because `feature destroy` publishes it as `portsFreed` and used to
+ * publish the literal `true` (#660). Every no-op above — a branch the registry does not hold, a checkout
+ * it has never heard of, a registry file that does not exist — is a case a report saying `true` was wrong
+ * about, and the last of those is every CI runner. It is also the failure mode #435 describes from the
+ * other side: two spellings of the root key made this free no-op while the report still said `true`, and
+ * the block leaked for the life of the machine with nothing on stdout to suggest it.
+ *
+ * {@link freePortBlocks} has answered which blocks it freed since `feature prune` needed the list; this is
+ * the same fact for one branch.
+ */
+export async function freePortBlock(options: FreeOptions): Promise<boolean> {
   const { registryPath, root, branch } = options;
 
-  await withLock(
+  return withLock(
     registryPath,
     async () => {
       const registry = await readPortsRegistry(registryPath);
-      if (dropBranches(registry, root, [branch]).length > 0) await writeRegistry(registryPath, registry);
+      if (dropBranches(registry, root, [branch]).length === 0) return false;
+      await writeRegistry(registryPath, registry);
+      return true;
     },
     options.lock,
   );

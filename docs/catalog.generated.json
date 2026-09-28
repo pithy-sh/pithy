@@ -341,6 +341,7 @@
       "path": "feature destroy",
       "flags": [
         "--env",
+        "--branch",
         "--local-only",
         "--localOnly",
         "--no-local-only",

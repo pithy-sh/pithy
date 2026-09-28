@@ -12,7 +12,7 @@ import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
 import { type DeprovisionedResource, deletedBeforeFailure, deprovisionFeature } from "./provision";
-import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
+import { defaultGit, featureNames, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
  * `pithy feature destroy` — the teardown half, run from within the worktree. It reverses both remote and
@@ -34,7 +34,13 @@ export interface DestroyReport {
   deleted: DeprovisionedResource[];
   /** Whether the remote teardown ran (false when no provisioners were available, e.g. no CF credentials). */
   remote: boolean;
-  /** Whether the feature's port block was freed. */
+  /**
+   * Whether the feature's port block was freed — **whether there was one**, since #660.
+   *
+   * It was the literal `true`, which is a claim about a registry nobody had read. A CI runner holds no
+   * block at all (the registry is machine-local and the machine is a fresh container), so the honest
+   * answer there is `false` and the run is still a success: nothing local was there to tear down.
+   */
   portsFreed: boolean;
   /** Whether a registered worktree was pruned. */
   worktreePruned: boolean;
@@ -129,6 +135,20 @@ export interface DestroyFeatureBaseOptions {
   registryPath?: string;
   /** Override the main checkout root, the registry's key (tests inject; a real run resolves it via git-common-dir). */
   root?: string;
+  /**
+   * Whether `projectDir` is the feature's **own** worktree. True unless stated, which is the inferred path.
+   *
+   * False is `pithy feature destroy --branch` (#660): the feature was named rather than inferred, so this
+   * run is standing in some other checkout — a CI runner's, or a developer's main. That distinction is
+   * only about one file. `.dev.config.json` is a *worktree's* port claim, and teardown removes it so a
+   * later `feature create` cannot read the pinned block straight back out of it. Removing the one in a
+   * checkout that is not this feature's would delete a live reservation belonging to a different branch.
+   *
+   * Everything else in the local half is already addressed by identity rather than by cwd — the registry
+   * key is `feature/<issue>-<slug>`, and the worktree is wherever `featureNames` puts it — so nothing else
+   * consults this.
+   */
+  inWorktree?: boolean;
 }
 
 /**
@@ -177,11 +197,19 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
 
   const registryPath = options.registryPath ?? portsRegistryPath();
   // The same git-common-dir derivation the registry key was always freed by — `projectDir` is the
-  // worktree, and this is the main checkout it belongs to. `ports.test.ts` pins it against the
-  // `git worktree list` derivation `feature create` reserves under, because a key freed under a root
-  // create never wrote is a no-op that still reports `portsFreed: true` (#435).
+  // worktree (or, under `--branch`, the checkout it belongs to), and this is the main checkout. Pinned in
+  // `ports.test.ts` against the `git worktree list` derivation `feature create` reserves under, because a
+  // key freed under a root create never wrote frees nothing at all (#435). It would also have reported
+  // `portsFreed: true` doing it; that half is `freePortBlock`'s answer now (#660).
   const root = options.root ?? (await resolveMainRepoRoot(options.projectDir));
-  const branch = `feature/${options.identity.issue}-${options.identity.slug}`;
+  const names = featureNames(options.identity.issue, options.identity.slug, root);
+  const branch = names.branch;
+  // Whose `.dev.config.json` — the one question `--branch` changes the answer to (#660). On the inferred
+  // path the cwd *is* the feature's worktree, and removing the file there removes this feature's own
+  // claim. When the feature was named instead, the cwd belongs to somebody else's branch, so the file to
+  // remove is the feature's own, wherever `featureNames` puts it — and in a runner there is no such
+  // directory, which makes the removal below a no-op rather than a deletion of the wrong claim.
+  const worktree = options.inWorktree === false ? names.wtPath : options.projectDir;
   // Drop the feature's pinned ports **before** freeing its registry key, and in that order. Teardown leaves
   // the worktree's files on disk by design (recursive deletion is what we must never do on Linux), and
   // `.dev.config.json` is a port claim: every later `feature create`/`sync` rebuilds the registry from the
@@ -189,8 +217,8 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // permanently, to a feature that no longer exists. Removing one file is not a recursive delete. If the run
   // dies between the two steps, the registry is the only claim left and a re-run clears it; the reverse order
   // would leave the stale claim to be reclaimed.
-  await rm(devConfigPath(options.projectDir), { force: true });
-  await freePortBlock({ registryPath, root, branch });
+  await rm(devConfigPath(worktree), { force: true });
+  const portsFreed = await freePortBlock({ registryPath, root, branch });
 
   const teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });
 
@@ -198,7 +226,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
     command: "feature.destroy",
     deleted,
     remote,
-    portsFreed: true,
+    portsFreed,
     worktreePruned: teardown.pruned,
     branchDeleted: teardown.branchDeleted,
   };

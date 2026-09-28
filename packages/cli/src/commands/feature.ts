@@ -282,7 +282,19 @@ const sync = defineCommand({
     }),
 });
 
-/** `pithy feature destroy` — teardown. Run from within the worktree. */
+/**
+ * `pithy feature destroy` — teardown. Run from within the worktree, or told which feature with `--branch`.
+ *
+ * **`--branch` is what makes a merged pull request able to tear its own environment down (#660).** Every
+ * other `pithy feature` subcommand infers the feature from the checkout, which is right for a developer
+ * and impossible for a runner: on `pull_request: closed` the branch is already deleted and
+ * `refs/pull/<n>/head` checks out detached, so there is no branch to read. The pipeline holds the name
+ * anyway — `github.event.pull_request.head.ref` is a snapshot in the event payload and outlives the
+ * branch — and this is how it says it.
+ *
+ * Teardown alone, because teardown alone has a caller that cannot be inside the worktree. `provision` and
+ * `create` are run by somebody standing in the feature.
+ */
 const destroy = defineCommand({
   meta: {
     name: "destroy",
@@ -290,6 +302,10 @@ const destroy = defineCommand({
   },
   args: {
     env: { type: "string", description: `Environment to tear down (default: "${DEFAULT_FEATURE_ENV}")` },
+    branch: {
+      type: "string",
+      description: "Tear down this feature branch instead of the checkout's, e.g. feature/69-media-cli",
+    },
     "local-only": {
       type: "boolean",
       default: false,
@@ -312,7 +328,15 @@ const destroy = defineCommand({
         (every D1/KV/R2 leaks while the run reports success). So an unloadable config is refused unless
         `--local-only` says the remote half is not wanted.
       */
-      const identity = await branchIdentityWithoutWorkers(projectDir);
+      /*
+        `--branch` names the feature; without it the checkout's own branch does, exactly as before (#660).
+
+        The name goes through the parser the inferred path uses, so the two cannot disagree about what a
+        feature is called — and it is refused before the config is opened, let alone before anything is
+        deleted. The **project** still comes from this checkout's `pithy.config.ts` either way, which is
+        what keeps the flag from reaching another project's resources: it names a feature of this project.
+      */
+      const identity = await branchIdentityWithoutWorkers(projectDir, { branch: args.branch });
       // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
       // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
       // resolutions could disagree, and an unstamped one misses a capability a config composes only
@@ -358,6 +382,9 @@ const destroy = defineCommand({
           workers: isUnknown(workerSet) ? [] : workerSet,
           ...(store && !args["local-only"] ? { store } : {}),
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
+          // Told which feature means this is not standing in it (#660), and the local half needs that for
+          // exactly one thing: whose `.dev.config.json` it is about to remove. See `inWorktree`.
+          inWorktree: args.branch === undefined,
           ...remote,
           // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
           // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
@@ -399,6 +426,13 @@ const destroy = defineCommand({
       }
       if (!report.remote) process.stdout.write("Remote teardown skipped. Cloudflare resources were left in place.\n");
       if (report.worktreePruned) process.stdout.write("Worktree pruned.\n");
+      // **Said, because nothing else would say it (#660).** A runner tearing down a merged feature has no
+      // worktree and no port block — both are machine-local and the machine is a fresh container — so the
+      // local half has nothing to do, and a run that printed only what it deleted remotely would leave an
+      // operator wondering whether it was skipped or simply silent. Nothing to do is an outcome.
+      if (!report.portsFreed && !report.worktreePruned) {
+        process.stdout.write("No port block and no worktree here. Nothing local to tear down.\n");
+      }
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

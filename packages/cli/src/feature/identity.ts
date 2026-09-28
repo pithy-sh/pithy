@@ -32,24 +32,61 @@ export function parseFeatureBranch(branch: string): FeatureBranchIdentity | null
   return { issue, slug, branch };
 }
 
+/** Where a branch name came from: read off the checkout, or handed to the CLI as `--branch`. */
+export type BranchSource = "checkout" | "flag";
+
 /**
- * Derive the feature identity from the current git branch — the source of truth for `provision` and
- * `destroy`, which take no positional args and run from within the worktree. Fails with an actionable
- * error when the checkout is not on a `feature/<issue>-<slug>` branch.
+ * The refusal a name that is not `feature/<issue>-<slug>` earns, per source — one table, two rows.
+ *
+ * Two `throw` sites is how the two paths would come to disagree about what a feature is called, or about
+ * how they say a name is not one. Only the preposition and the remedy vary, and only because only those
+ * are about *where the name came from*: the inferred path read a checkout and the operator has to move,
+ * while `--branch` was handed a string and the operator has to fix it. The diagnosis itself is one
+ * sentence with one subject — the name — because there is one parser above it.
+ */
+const NOT_A_FEATURE_BRANCH: Record<BranchSource, { message: (branch: string) => string; action: string }> = {
+  checkout: {
+    message: (branch) => `Not on a feature branch (${branch}).`,
+    action: "Run this from inside a feature worktree, or create one with pithy feature create.",
+  },
+  flag: {
+    message: (branch) => `Not a feature branch (${branch}).`,
+    action: "Pass --branch feature/<issue>-<slug>, e.g. --branch feature/69-media-cli.",
+  },
+};
+
+/**
+ * A branch name's feature identity, or the refusal — {@link parseFeatureBranch} plus the `null` case,
+ * which is the layer every caller that cannot proceed without an identity wants.
+ *
+ * **One gate for both paths (#660).** `pithy feature destroy --branch <name>` names the feature a merged
+ * pull request's runner cannot infer, and it reaches the identity through this, exactly as
+ * {@link deriveIdentityFromBranch} does. A second derivation beside this one is a second opinion about
+ * what `feature/12-x` means, and the two would be found to differ by whichever resource was left behind.
+ *
+ * **Before anything is deleted.** Teardown calls this first, so a malformed name costs nothing.
+ */
+export function requireFeatureBranch(branch: string, source: BranchSource): FeatureBranchIdentity {
+  const identity = parseFeatureBranch(branch);
+  if (identity) return identity;
+  const refusal = NOT_A_FEATURE_BRANCH[source];
+  throw new ValidationError({ message: refusal.message(branch), action: refusal.action });
+}
+
+/**
+ * Derive the feature identity from the current git branch — the source of truth for `provision`, and for
+ * a `destroy` that was not told which feature to tear down. Fails with an actionable error when the
+ * checkout is not on a `feature/<issue>-<slug>` branch.
+ *
+ * **A checkout is not the only way to know (#660).** `destroy` also takes `--branch`, for the caller that
+ * has no worktree and no branch — a runner on `pull_request: closed`, where the branch is already deleted
+ * and `refs/pull/<n>/head` is detached. That path goes through {@link requireFeatureBranch} too.
  */
 export async function deriveIdentityFromBranch(
   cwd: string,
   git: GitRunner = defaultGit,
 ): Promise<FeatureBranchIdentity> {
-  const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
-  const identity = parseFeatureBranch(branch);
-  if (!identity) {
-    throw new ValidationError({
-      message: `Not on a feature branch (${branch}).`,
-      action: "Run this from inside a feature worktree, or create one with pithy feature create.",
-    });
-  }
-  return identity;
+  return requireFeatureBranch(await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd), "checkout");
 }
 
 /**
@@ -122,9 +159,27 @@ export function featureWorkerSet(projectDir: string): Promise<WorkerSet> {
  * The project name still comes from the **root** config, which is project identity and holds no
  * capabilities — so it loads when a Worker's does not, and teardown keeps deriving resource names the same
  * way it always did rather than guessing them.
+ *
+ * **`branch` names the feature instead of inferring it — `#660`.** `pithy feature destroy --branch` is for
+ * the caller that has neither a worktree nor a branch, which is every merged pull request: the branch is
+ * deleted and `refs/pull/<n>/head` checks out detached, so `--abbrev-ref HEAD` answers `HEAD`. With a name
+ * in hand the checkout's branch is **not read at all** — the git seam below is never reached — and the
+ * name goes through {@link requireFeatureBranch}, the parser the inferred path uses.
+ *
+ * **The project is the checkout's either way**, which is what keeps `--branch` from reaching another
+ * project's resources: it names a feature *of this project*, and every resource name teardown recomputes
+ * starts with the name this repository states.
  */
-export async function branchIdentityWithoutWorkers(projectDir: string): Promise<FeatureIdentity> {
-  const { issue, slug } = await deriveIdentityFromBranch(projectDir);
+export async function branchIdentityWithoutWorkers(
+  projectDir: string,
+  options: { branch?: string | undefined; git?: GitRunner | undefined } = {},
+): Promise<FeatureIdentity> {
+  // First, and before the config is even opened: a malformed name costs nothing, which is what "refused
+  // before anything is deleted" means on a command whose next step deletes infrastructure.
+  const { issue, slug } =
+    options.branch === undefined
+      ? await deriveIdentityFromBranch(projectDir, options.git)
+      : requireFeatureBranch(options.branch, "flag");
   const project = requireProjectName(await loadProject(projectDir));
   return { project, issue, slug };
 }
