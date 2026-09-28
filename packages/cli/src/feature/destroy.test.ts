@@ -75,7 +75,7 @@ describe("the local half of a teardown reports what it did — #660", () => {
       git: gitWithNoWorktrees(root),
       registryPath,
       root,
-      inWorktree: false,
+      record: { dir: join(root, ".worktrees", "12-x"), present: false },
     });
 
     expect(report).toEqual({
@@ -83,8 +83,12 @@ describe("the local half of a teardown reports what it did — #660", () => {
       deleted: [],
       remote: false,
       portsFreed: false,
+      branch: "feature/12-x",
       worktreePruned: false,
       branchDeleted: false,
+      // And the record it could not consult, named rather than passed over (#660).
+      manifestReachable: false,
+      manifestPath: join(root, ".worktrees", "12-x", ".pithy-feature.json"),
     });
   });
 
@@ -102,7 +106,7 @@ describe("the local half of a teardown reports what it did — #660", () => {
       git: gitWithNoWorktrees(root),
       registryPath,
       root,
-      inWorktree: false,
+      record: { dir: join(root, ".worktrees", "12-x"), present: false },
     });
 
     expect(report.portsFreed).toBe(true);
@@ -130,7 +134,7 @@ describe("the local half of a teardown reports what it did — #660", () => {
       git: gitWithNoWorktrees(root),
       registryPath,
       root,
-      inWorktree: false,
+      record: { dir: join(root, ".worktrees", "12-x"), present: false },
     });
 
     expect(existsSync(devConfigPath(root))).toBe(true);

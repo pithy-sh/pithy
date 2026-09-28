@@ -4,7 +4,8 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { canonicalIssue, type FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { resolveWorkerSetFor, resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { type CapabilitySet, capabilitySetOf, projectCapabilities, type WorkerSet } from "../project/workerScope";
@@ -20,16 +21,33 @@ export interface FeatureBranchIdentity {
   branch: string;
 }
 
-/** `feature/<digits>-<kebab-slug>` — the branch shape `pithy feature` owns. */
-const FEATURE_BRANCH = /^feature\/(\d+)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+/**
+ * `feature/<digits>-<kebab-slug>` — the branch shape `pithy feature` owns.
+ *
+ * The digit bound is `MAX_ISSUE_DIGITS`, the same term {@link canonicalIssue}'s own guard is built from,
+ * so a branch this accepts is one the naming layer accepts too. Stated here rather than left to throw
+ * later: `feature/1234567890-x` is not a branch this command owns, and saying so at the parse is one
+ * refusal instead of a refusal several account lookups in.
+ */
+const FEATURE_BRANCH = new RegExp(`^feature/([0-9]{1,${MAX_ISSUE_DIGITS}})-([a-z0-9]+(?:-[a-z0-9]+)*)$`);
 
-/** Parse a branch name into a feature identity, or null when it is not a `feature/<issue>-<slug>` branch. */
+/**
+ * Parse a branch name into a feature identity, or null when it is not a `feature/<issue>-<slug>` branch.
+ *
+ * **The issue is canonical, and so is the branch it reports (#660).** `feature/012-x` and `feature/12-x`
+ * are one feature — {@link canonicalIssue} has settled that for resource *names* since #643, because
+ * `f012` and `f12` would otherwise collide on the rate-limit namespaces every feature shares. The branch
+ * did not go through it, so teardown's remote half addressed feature 12 while its local half looked for a
+ * `feature/012-x` registry key and a `.worktrees/012-x` directory: one command, two features, and the
+ * half that leaks is the quiet one. Both halves read this, so both read one string.
+ */
 export function parseFeatureBranch(branch: string): FeatureBranchIdentity | null {
   const match = FEATURE_BRANCH.exec(branch);
   if (!match) return null;
-  const [, issue, slug] = match;
-  if (!issue || !slug) return null;
-  return { issue, slug, branch };
+  const [, digits, slug] = match;
+  if (!digits || !slug) return null;
+  const issue = canonicalIssue(digits);
+  return { issue, slug, branch: `feature/${issue}-${slug}` };
 }
 
 /** Where a branch name came from: read off the checkout, or handed to the CLI as `--branch`. */

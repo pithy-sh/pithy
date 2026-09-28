@@ -256,6 +256,47 @@ export async function createWorktree(options: {
   return { ...names, root, created: true, base };
 }
 
+/**
+ * The feature's own worktree: where it is, and whether this machine has it (#660).
+ *
+ * **The feature's record lives there and nowhere else.** `.pithy-feature.json` is what teardown deletes by
+ * exact id, and the branch's `apps/<name>/pithy.config.ts` is what it recomputes names from — both are the
+ * *feature's*, not the checkout's, and `pithy feature destroy --branch` is by definition run from
+ * somewhere else. Asking where that worktree is, rather than assuming the cwd is it, is the difference
+ * between deleting what the feature provisioned and deleting what the current branch happens to declare.
+ *
+ * **`existsSync`, not `git worktree list`.** Teardown deliberately leaves a pruned worktree's files on
+ * disk (CLAUDE.md: never `rm -rf` a node_modules tree on Linux), so a directory git no longer registers
+ * still holds the manifest — and a half-torn-down feature is exactly when the record matters. The
+ * directory is the test, the same one `feature prune` applies.
+ *
+ * `present: false` is the runner's answer, and it is not a failure: the registry, the worktree and the
+ * manifest are all machine-local, and the machine is a fresh container. It is a fact the run reports.
+ */
+export async function featureWorktree(options: {
+  issue: string;
+  slug: string;
+  git?: GitRunner;
+}): Promise<FeatureRecord> {
+  const git = options.git ?? defaultGit;
+  const { wtPath } = featureNames(options.issue, options.slug, await mainRepoRoot(git));
+  return { dir: wtPath, present: existsSync(wtPath) };
+}
+
+/**
+ * Where a feature's own record lives, and whether this machine has it (#660).
+ *
+ * On the inferred path the two are the cwd and `true`: the run is standing in the feature. Under
+ * `pithy feature destroy --branch` the feature's worktree is somewhere else, or nowhere — and
+ * `present: false` is the runner's ordinary answer, not a failure.
+ */
+export interface FeatureRecord {
+  /** The feature's own worktree. */
+  dir: string;
+  /** Whether that directory is on this machine. */
+  present: boolean;
+}
+
 /** The outcome of {@link teardownWorktree}: what was actually removed. */
 export interface TeardownWorktreeResult extends FeatureNames {
   /** True when a registered worktree was pruned. */

@@ -36,8 +36,32 @@ describe("parseFeatureBranch", () => {
     ["feature/nope", "no issue number"],
     ["feature/69-", "no slug"],
     ["feature/69-Bad_Slug", "slug is not kebab-case"],
+    ["feature/1234567890-x", "more digits than a feature name reserves"],
   ])("returns null for %s (%s)", (branch) => {
     expect(parseFeatureBranch(branch)).toBeNull();
+  });
+
+  /**
+   * **`feature/012-x` is feature 12 — #660.**
+   *
+   * `canonicalIssue` has settled this for resource names since #643: `f012` and `f12` would otherwise be
+   * two features sharing one set of rate-limit namespaces. The branch did not go through it, so the
+   * remote half of a teardown addressed feature 12 while its local half looked for a `feature/012-x`
+   * registry key and a `.worktrees/012-x` directory. One parser, so now one string.
+   */
+  test("the issue is canonical, and so is the branch it reports", () => {
+    expect(parseFeatureBranch("feature/012-x")).toEqual({
+      issue: "12",
+      slug: "x",
+      branch: "feature/12-x",
+    });
+    expect(parseFeatureBranch("feature/012-x")).toEqual(parseFeatureBranch("feature/12-x"));
+  });
+
+  /** `0` is an issue number, and stripping it to nothing would be the obvious way to get this wrong. */
+  test("issue 0 survives canonicalisation", () => {
+    expect(parseFeatureBranch("feature/0-x")?.issue).toBe("0");
+    expect(parseFeatureBranch("feature/00-x")?.branch).toBe("feature/0-x");
   });
 });
 

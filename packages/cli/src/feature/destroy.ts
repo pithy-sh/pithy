@@ -10,9 +10,10 @@ import type { ProvisionWorker } from "../provision/environment";
 import type { FeatureIndexes, ResourceProvisioners, WorkerScripts, WorkflowDefinitions } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
+import { manifestPath } from "./manifest";
 import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
 import { type DeprovisionedResource, deletedBeforeFailure, deprovisionFeature } from "./provision";
-import { defaultGit, featureNames, type GitRunner, teardownWorktree } from "./worktree";
+import { defaultGit, type FeatureRecord, featureNames, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
  * `pithy feature destroy` — the teardown half, run from within the worktree. It reverses both remote and
@@ -42,10 +43,33 @@ export interface DestroyReport {
    * answer there is `false` and the run is still a success: nothing local was there to tear down.
    */
   portsFreed: boolean;
+  /**
+   * The feature branch this run was about, canonically spelled (#660).
+   *
+   * Published because `--branch` is an *input* that the parse may correct: `feature/012-x` and
+   * `feature/12-x` are one feature, so both arrive here as `feature/12-x`. A caller that logs what it
+   * asked for and a report that says what was torn down should not be two different strings.
+   */
+  branch: string;
   /** Whether a registered worktree was pruned. */
   worktreePruned: boolean;
   /** Whether the feature branch was deleted (only when merged). */
   branchDeleted: boolean;
+  /**
+   * **Whether the feature's own manifest was reachable — #660.**
+   *
+   * The manifest is the record of what `provision --feature` actually created, and it is the only way to
+   * reach a resource whose binding the branch has since dropped. It lives in the feature's worktree, which
+   * is machine-local: a runner tearing down a merged pull request has none, so it deletes by recomputed
+   * name alone.
+   *
+   * That is a real narrowing, and it is published rather than left to be inferred from a shorter list.
+   * The command that must never "leak while reporting success" cannot answer a narrower question in
+   * silence.
+   */
+  manifestReachable: boolean;
+  /** Where that manifest is — read, or merely named when {@link manifestReachable} is false. */
+  manifestPath: string;
 }
 
 /** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
@@ -136,19 +160,19 @@ export interface DestroyFeatureBaseOptions {
   /** Override the main checkout root, the registry's key (tests inject; a real run resolves it via git-common-dir). */
   root?: string;
   /**
-   * Whether `projectDir` is the feature's **own** worktree. True unless stated, which is the inferred path.
+   * The feature's own worktree, when this run is not standing in it — `pithy feature destroy --branch`
+   * (#660). Defaults to `{ dir: projectDir, present: true }`, which is the inferred path exactly as before.
    *
-   * False is `pithy feature destroy --branch` (#660): the feature was named rather than inferred, so this
-   * run is standing in some other checkout — a CI runner's, or a developer's main. That distinction is
-   * only about one file. `.dev.config.json` is a *worktree's* port claim, and teardown removes it so a
-   * later `feature create` cannot read the pinned block straight back out of it. Removing the one in a
-   * checkout that is not this feature's would delete a live reservation belonging to a different branch.
+   * **Two things are the feature's own rather than the cwd's, and both are here.** Its `.pithy-feature.json`
+   * is the record teardown deletes by exact id — reading the *checkout's* copy tears down by recomputed
+   * name alone and silently leaves behind anything the branch no longer declares. And its
+   * `.dev.config.json` is a *worktree's* port claim: removing the one in a checkout that is not this
+   * feature's deletes a live reservation belonging to a different branch.
    *
-   * Everything else in the local half is already addressed by identity rather than by cwd — the registry
-   * key is `feature/<issue>-<slug>`, and the worktree is wherever `featureNames` puts it — so nothing else
-   * consults this.
+   * Everything else in the local half is addressed by identity rather than by cwd — the registry key is
+   * `feature/<issue>-<slug>`, and the worktree is wherever `featureNames` puts it.
    */
-  inWorktree?: boolean;
+  record?: FeatureRecord;
 }
 
 /**
@@ -160,13 +184,31 @@ export interface DestroyFeatureBaseOptions {
  */
 export async function destroyFeature(options: DestroyFeatureOptions): Promise<DestroyReport> {
   const git = options.git ?? defaultGit;
+  // The inferred path's answer, unchanged: this run is standing in the feature (#660).
+  const record: FeatureRecord = options.record ?? { dir: options.projectDir, present: true };
+  const manifest = manifestPath(record.dir);
 
   let deleted: DeprovisionedResource[] = [];
   const remote = options.provisioners !== undefined;
   if (options.provisioners) {
     try {
       const report = await deprovisionFeature({
-        projectDir: options.projectDir,
+        /*
+          Two directories, because there are two questions and `--branch` answers them differently (#660).
+
+          **The manifest is the feature's own, always.** It records the resources `provision --feature`
+          created, by id, and it is the only way to reach one whose binding the branch has since dropped.
+          The checkout's copy is a different feature's record or no record at all, so it is the feature's
+          worktree or nothing — and nothing is reported, never passed over.
+
+          **The configs are read from wherever the feature's code is.** That is its worktree when this
+          machine has one. On a runner it is this checkout, and the rule that makes that sound is stated
+          in `docs/commands/feature.md`: check out `refs/pull/<n>/head`, which carries the feature's own
+          `apps/<name>/pithy.config.ts`. A runner left on the trunk reconciles against the trunk's
+          bindings, which is the narrowing the manifest line above is reported for.
+        */
+        manifestDir: record.present ? record.dir : null,
+        projectDir: record.present ? record.dir : options.projectDir,
         identity: options.identity,
         capabilities: options.capabilities,
         env: options.env,
@@ -189,8 +231,11 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
         deleted: deletedBeforeFailure(error),
         remote,
         portsFreed: false,
+        branch: `feature/${options.identity.issue}-${options.identity.slug}`,
         worktreePruned: false,
         branchDeleted: false,
+        manifestReachable: record.present,
+        manifestPath: manifest,
       });
     }
   }
@@ -202,14 +247,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // key freed under a root create never wrote frees nothing at all (#435). It would also have reported
   // `portsFreed: true` doing it; that half is `freePortBlock`'s answer now (#660).
   const root = options.root ?? (await resolveMainRepoRoot(options.projectDir));
-  const names = featureNames(options.identity.issue, options.identity.slug, root);
-  const branch = names.branch;
-  // Whose `.dev.config.json` — the one question `--branch` changes the answer to (#660). On the inferred
-  // path the cwd *is* the feature's worktree, and removing the file there removes this feature's own
-  // claim. When the feature was named instead, the cwd belongs to somebody else's branch, so the file to
-  // remove is the feature's own, wherever `featureNames` puts it — and in a runner there is no such
-  // directory, which makes the removal below a no-op rather than a deletion of the wrong claim.
-  const worktree = options.inWorktree === false ? names.wtPath : options.projectDir;
+  const branch = featureNames(options.identity.issue, options.identity.slug, root).branch;
   // Drop the feature's pinned ports **before** freeing its registry key, and in that order. Teardown leaves
   // the worktree's files on disk by design (recursive deletion is what we must never do on Linux), and
   // `.dev.config.json` is a port claim: every later `feature create`/`sync` rebuilds the registry from the
@@ -217,7 +255,9 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // permanently, to a feature that no longer exists. Removing one file is not a recursive delete. If the run
   // dies between the two steps, the registry is the only claim left and a re-run clears it; the reverse order
   // would leave the stale claim to be reclaimed.
-  await rm(devConfigPath(worktree), { force: true });
+  // The feature's own pinned ports, and only its. On a machine that has no such worktree there is no file
+  // and nothing to do; in a checkout that is not this feature's, the file belongs to another branch.
+  if (record.present) await rm(devConfigPath(record.dir), { force: true });
   const portsFreed = await freePortBlock({ registryPath, root, branch });
 
   const teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });
@@ -227,7 +267,10 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
     deleted,
     remote,
     portsFreed,
+    branch,
     worktreePruned: teardown.pruned,
     branchDeleted: teardown.branchDeleted,
+    manifestReachable: record.present,
+    manifestPath: manifest,
   };
 }
