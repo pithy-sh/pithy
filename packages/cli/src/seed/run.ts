@@ -31,6 +31,7 @@ import {
 import { composeFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
 import { readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
+import { type MintedThisRun, NOTHING_MINTED } from "../provision/mintedThisRun";
 import { startStep } from "../terminal/progress";
 import {
   type ImagesFactory,
@@ -168,6 +169,20 @@ export interface SeedProjectOptions {
    * value here proves nothing about where a real run finds one.
    */
   secret?: (name: string) => Promise<string | undefined>;
+  /**
+   * **What the run that called this just minted (#660).** Handed to every prepared set as
+   * `context.mintedThisRun`, unchanged.
+   *
+   * `provisionEnvironment` passes its own record: it creates a value for each mintable
+   * `cf-secrets-store` secret, writes it into the account's write-only store, and then migrates and
+   * seeds in the same process — so this is the one arrangement in which a fixture can seal something
+   * under a value nothing will ever be able to read back.
+   *
+   * **Omitted everywhere else, which is most callers.** `pithy seed` mints nothing, so it offers
+   * nothing; the default is the empty channel, and every set is handed `undefined` for every name. That
+   * is an answer, not a failure — see {@link NOTHING_MINTED}.
+   */
+  mintedThisRun?: MintedThisRun;
   /** Seam: write a prepared set's artifact. Defaults to the project's gitignored `logs/`. */
   writeArtifact?: (artifact: SeedArtifact) => Promise<void>;
   /**
@@ -649,6 +664,8 @@ interface PreparedRun {
   origin: (worker: WorkerScope) => Promise<string | null>;
   /** Resolve a secret by name. */
   secret: (name: string) => Promise<string | undefined>;
+  /** What the calling run minted — the empty channel unless it said otherwise (#660). */
+  mintedThisRun: MintedThisRun;
   /** The rows this run declares, per table, across the whole fan-out. */
   seeded: SeededRows;
   /** Write one artifact. */
@@ -738,6 +755,9 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
         env: options.env,
         registry: aggregateSecretRegistries(composed.flatMap((entry) => entry.worker.capabilities)),
       }),
+    // Never a default that reads anything: a run that minted nothing offers nothing, and the empty
+    // channel is the honest answer for every caller but a provisioning run.
+    mintedThisRun: options.mintedThisRun ?? NOTHING_MINTED,
     writeArtifact:
       options.writeArtifact ??
       (async (artifact) => {
@@ -793,6 +813,10 @@ async function writeWorker(
             // report lists the set, the others having recorded it in `shared`.
             origin: await prepared.origin(entry.worker),
             secret: prepared.secret,
+            // A bare lookup closed over the run's record, so a set holds no way to add to it — and a
+            // name this run did not mint answers `undefined` here whatever the environment, which is
+            // what keeps #159's rule about `secret` above exactly where it was (#660).
+            mintedThisRun: (name) => prepared.mintedThisRun.get(name),
             preferences: await prepared.preferences(),
             seeded: prepared.seeded,
           })

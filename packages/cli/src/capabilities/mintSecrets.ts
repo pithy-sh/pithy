@@ -12,6 +12,7 @@ import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import type { MintedThisRunSink } from "../provision/mintedThisRun";
 import type { MintStoreSecret } from "../provision/secretBindings";
 
 /**
@@ -57,6 +58,19 @@ export function storeSecretMinter(options: {
   environment: string;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * **The in-memory record of what this run created, for the seed step that follows it (#660).**
+   *
+   * The write below is the only moment this value exists anywhere the CLI can see it: the Secrets Store
+   * is write-only from here, so nothing reads it back, ever. Provisioning migrates and seeds in the same
+   * process a few steps later, and a prepared set that must seal something at creation time can only do
+   * it then. Omitted, nothing is remembered and the value is gone the instant this returns — which is
+   * what every caller that runs no seed should do.
+   *
+   * It is still never returned, never logged, never audited, and never printed. It goes in one direction,
+   * to one step, inside one process.
+   */
+  minted?: MintedThisRunSink;
 }): MintStoreSecret {
   const audit = options.audit ?? (async () => {});
   return async ({ secret, binding, secretName, entry }) => {
@@ -74,8 +88,14 @@ export function storeSecretMinter(options: {
     // dev secrets file states for the same secret, byte for byte. `initialDevSecret` composes the entry
     // the file would hold; reading it back is the one materialization every destination shares (#323).
     // This wrote an envelope unconditionally, which is the defect that wave was about, at a new producer.
-    const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
+    const value = mintSecretValue(entry.devValue);
+    const stated = initialDevSecret(entry, value);
     await options.store.put(secretName, devSecretPayload(entry, secretName, stated).text);
+    // **After the write, and only after it (#660).** A value remembered before the store accepted it is
+    // a value a prepared set could seal against while the entry the Worker reads holds something else,
+    // or nothing. Recorded under the *registry* name, which is what a set asks by — `secretName` is the
+    // scoped entry address, and a set has no business composing one.
+    options.minted?.record(secret, value);
     // The name, the entry, the environment. Never the value, and nothing derived from it.
     await audit({
       environment: options.environment,

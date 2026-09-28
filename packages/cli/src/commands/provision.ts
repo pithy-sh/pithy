@@ -40,6 +40,7 @@ import {
   type ProvisionWorker,
   provisionEnvironment,
 } from "../provision/environment";
+import { mintedThisRun } from "../provision/mintedThisRun";
 import { type ProvisionMode, requireProvisionMode } from "../provision/mode";
 import { type PendingSecrets, pendingSecretLines, pendingSecrets } from "../provision/pendingSecrets";
 import { formatProvisionPlan, manifestFaultLines, provisionPlan } from "../provision/plan";
@@ -586,6 +587,8 @@ async function provisionDeclared(
   const capabilities = projectCapabilities(await resolved());
   const store = await buildStore(account);
   const audit = await buildAudit(projectDir, capabilities, account);
+  // One record per run: filled by the minter in `secretBindings` below, read by the seed step (#660).
+  const minted = mintedThisRun();
   const report = await provisionEnvironment({
     projectDir,
     scope,
@@ -605,13 +608,19 @@ async function provisionDeclared(
               exists: (name) => store.exists(name),
               // A declared secret whose value is arbitrary is created here rather than printed as
               // homework (#321). Absence is checked first, so an existing value is never replaced.
-              mint: storeSecretMinter({ store, environment: scope.stanza, audit }),
+              // Remembered for this process's seed step, which runs only under `--seed` (#660). What is
+              // created here goes into a store the CLI cannot read back, so a fixture that must seal
+              // something under one of these values has this run and no other.
+              mint: storeSecretMinter({ store, environment: scope.stanza, audit, minted }),
             }),
         }
       : {}),
     // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
     // job, with its own gate, and it must not be something provisioning did on the way past.
     seedData: options.seed,
+    // The read side of the record the minter above fills. Empty on a re-run, and empty when this project
+    // reaches no Secrets Store at all — both of which are answers rather than faults (#660).
+    mintedThisRun: minted,
     // Read from the root config this command already loaded, never from the shape of what it composes:
     // composing the control plane makes a Worker administrable by anybody, and only the project can say
     // that the client is itself (#616).

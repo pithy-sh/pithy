@@ -97,6 +97,8 @@ async function seedDevLogin(user: string, userSets: readonly SeedSet[] = [authEx
     // What the CLI hands a checkout with no port block, and what this set reads either way.
     origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
+    // This set seals nothing at creation time, so it asks the run for nothing it just minted (#660).
+    mintedThisRun: () => undefined,
     preferences: { user },
     seeded: collectSeededRows(userSets),
   });

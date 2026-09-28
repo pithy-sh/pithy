@@ -51,6 +51,8 @@ A prepared set is handed the origin its Worker answers on (`context.origin`, `do
 - `localhost`, `127.0.0.1` and `*.localhost` in `dev` only;
 - as a URL parser reads it: a host `new URL` refuses — `xn--a.test` — is refused, and a spelling it rewrites is refused rather than taken, so `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `0` are the loopback they parse to. Off `dev`, loopback in any spelling, `0.0.0.0` and IPv6 `[::1]` are refused, and so is every IP address: a deployed Worker answers on a name.
 
+**`pithy seed` mints nothing, so it offers a prepared set an empty channel.** `context.mintedThisRun` answers `undefined` for every name here, in every environment. That is not a failure: the only commands that mint and seed in one process are `pithy provision --feature` and `pithy provision --env <environment> --seed`, and a set that has to seal something under a freshly minted secret runs through one of those. See [`SEED.md`](../SEED.md#what-this-run-just-minted-contextmintedthisrun).
+
 On a feature, a prepared set that asks for a secret is refused, as on `staging` and `prod`. A feature's secrets exist only in its own Secrets Store and `SECRETS` database, where `pithy provision --feature` created them and the Worker reads them; nothing reads them back to this machine. The dev secrets file is never opened: it belongs to `dev`. There is no dev login on a feature — a magic link is how anybody signs in to one.
 
 ### Idempotency

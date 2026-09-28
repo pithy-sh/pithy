@@ -29,6 +29,7 @@ import {
   provisionEnvironment,
   provisionWorkerNames,
 } from "../provision/environment";
+import { mintedThisRun } from "../provision/mintedThisRun";
 import {
   AUDIT_RESOURCE_TYPE,
   type FeatureIndexes,
@@ -277,6 +278,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     await options.secrets.ensureMasterKey(FEATURE_ENVIRONMENT);
   }
 
+  // **One record per run, filled by the minter below and read by the seed step (#660).** A feature is
+  // provisioned and seeded in one process, and a `cf-secrets-store` value is readable for exactly the
+  // stretch between those two — the store is write-only from the CLI.
+  const minted = mintedThisRun();
+
   const report = await provisionEnvironment({
     projectDir: options.projectDir,
     scope,
@@ -308,6 +314,8 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     },
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
+    // The read side of the same record the minter above fills. One record, two directions, one process.
+    mintedThisRun: minted,
     ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
     resolveWorkers: async () => workers,
     ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
@@ -325,9 +333,14 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               //
               // Through the store's create-if-absent (#643): absence is checked first, and a run that loses a race
               // for the same entry leaves the winner's value where it is rather than writing over it.
+              // **And remembered for the seed that follows, in memory (#660).** A feature's store entries
+              // are created here and never readable again, while its seed runs a few steps later in this
+              // same process — so a fixture that must seal something under one of these values can only
+              // do it now. Nothing minted, nothing remembered; a re-run hands the seed an empty channel.
               mint: storeSecretMinter({
                 store: { put: async (name, value) => void (await store.create(name, value)) },
                 environment: scope.stanza,
+                minted,
                 ...(options.audit !== undefined ? { audit: options.audit } : {}),
               }),
             }),

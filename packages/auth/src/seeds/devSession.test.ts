@@ -39,6 +39,8 @@ function context(overrides: Partial<SeedPrepareContext> = {}): SeedPrepareContex
     // here would plant the very fixture #458 is about while proving nothing.
     origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
+    // This set seals nothing at creation time, so it asks the run for nothing it just minted (#660).
+    mintedThisRun: () => undefined,
     preferences: { user: EXAMPLE_ADA.email },
     seeded: seededRows(authExampleSeed, appUserSeed),
     ...overrides,
