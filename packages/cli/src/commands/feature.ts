@@ -3,6 +3,7 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { canonicalIssue } from "@pithy-sh/core/src/naming/feature";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
@@ -16,7 +17,7 @@ import { portsRegistryPath } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
 import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
 import { syncFeatureDevConfig } from "../feature/sync";
-import { behindRemote, mainRepoRoot } from "../feature/worktree";
+import { behindRemote, featureWorktree, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
@@ -152,16 +153,28 @@ const create = defineCommand({
           action: "Use lowercase words joined by hyphens, e.g. media-cli.",
         });
       }
+      /*
+        **The issue as every name will carry it, from the first thing composed (#660).**
+
+        `featureResourceName` canonicalises — `f012` and `f12` are one feature since #643, because they
+        would otherwise collide on the rate-limit namespaces every feature shares. Nothing canonicalised
+        the *local* half, so `--issue 012` cut `feature/012-x` and `.worktrees/012-x` while provisioning
+        `replay-f12-x--db-d1`: one feature, two strings, and a teardown that addressed one of them with
+        each half. Canonical here means the branch, the worktree, the registry key and every resource
+        name are composed from one value, and `pithy feature destroy --branch feature/012-x` reaches all
+        of them.
+      */
+      const issue = canonicalIssue(args.issue);
 
       // Before a branch or a worktree exists: a slug too long for a name this feature would compose (#643).
       // Feature names are never truncated, so the refusal names the longest slug this project takes.
-      await assertFeatureSlugFitsProject(projectDir, { issue: args.issue, slug: args.slug });
+      await assertFeatureSlugFitsProject(projectDir, { issue, slug: args.slug });
 
       // Capabilities are read from the worktree it creates, not from here: the feature branch is what
       // decides which Workers exist and what each composes.
       const report = await createFeature({
         projectDir,
-        issue: args.issue,
+        issue,
         slug: args.slug,
         skipInstall: args["skip-install"],
       });
@@ -282,7 +295,19 @@ const sync = defineCommand({
     }),
 });
 
-/** `pithy feature destroy` — teardown. Run from within the worktree. */
+/**
+ * `pithy feature destroy` — teardown. Run from within the worktree, or told which feature with `--branch`.
+ *
+ * **`--branch` is what makes a merged pull request able to tear its own environment down (#660).** Every
+ * other `pithy feature` subcommand infers the feature from the checkout, which is right for a developer
+ * and impossible for a runner: on `pull_request: closed` the branch is already deleted and
+ * `refs/pull/<n>/head` checks out detached, so there is no branch to read. The pipeline holds the name
+ * anyway — `github.event.pull_request.head.ref` is a snapshot in the event payload and outlives the
+ * branch — and this is how it says it.
+ *
+ * Teardown alone, because teardown alone has a caller that cannot be inside the worktree. `provision` and
+ * `create` are run by somebody standing in the feature.
+ */
 const destroy = defineCommand({
   meta: {
     name: "destroy",
@@ -290,6 +315,10 @@ const destroy = defineCommand({
   },
   args: {
     env: { type: "string", description: `Environment to tear down (default: "${DEFAULT_FEATURE_ENV}")` },
+    branch: {
+      type: "string",
+      description: "Tear down this feature branch instead of the checkout's, e.g. feature/69-media-cli",
+    },
     "local-only": {
       type: "boolean",
       default: false,
@@ -312,12 +341,37 @@ const destroy = defineCommand({
         (every D1/KV/R2 leaks while the run reports success). So an unloadable config is refused unless
         `--local-only` says the remote half is not wanted.
       */
-      const identity = await branchIdentityWithoutWorkers(projectDir);
+      /*
+        `--branch` names the feature; without it the checkout's own branch does, exactly as before (#660).
+
+        The name goes through the parser the inferred path uses, so the two cannot disagree about what a
+        feature is called — and it is refused before the config is opened, let alone before anything is
+        deleted. The **project** still comes from this checkout's `pithy.config.ts` either way, which is
+        what keeps the flag from reaching another project's resources: it names a feature of this project.
+      */
+      const identity = await branchIdentityWithoutWorkers(projectDir, { branch: args.branch });
+      /*
+        **Where the feature's own record is (#660).** `--branch` used to correct the name and nothing
+        else: the manifest, the capabilities and the Workers still came from the checkout the command ran
+        in, so teardown deleted by recomputed name against *this branch's* bindings and never read the
+        record of what was actually provisioned. Anything the feature created and the current config no
+        longer names survived a run that printed `Done.`
+
+        The feature's worktree is where both live. When this machine has it, everything is read there.
+        When it does not — the runner, and the whole reason the flag exists — the manifest is
+        unreachable and the report says so; the configs come from this checkout, which is sound exactly
+        when the workflow checked out `refs/pull/<n>/head`. `docs/commands/feature.md` states that rule.
+      */
+      const record =
+        args.branch === undefined
+          ? { dir: projectDir, present: true }
+          : await featureWorktree({ issue: identity.issue, slug: identity.slug, spelled: identity.spelled });
+      const configDir = record.present ? record.dir : projectDir;
       // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
       // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
       // resolutions could disagree, and an unstamped one misses a capability a config composes only
       // for deployed environments, leaving its resources and credentials in the account.
-      const workerSet = await featureWorkerSet(projectDir);
+      const workerSet = await featureWorkerSet(configDir);
       const capabilities = capabilitySetOf(workerSet);
       if (isUnknown(capabilities) && !args["local-only"]) {
         throw new ValidationError({
@@ -331,7 +385,9 @@ const destroy = defineCommand({
         });
       }
       const account = await projectCloudflareAccount(projectDir);
-      const teardown = await buildTeardown(account, projectDir, identity.project);
+      // The feature's own indexes are composed from the feature's own configs, for the reason the
+      // capability set above is (#660).
+      const teardown = await buildTeardown(account, configDir, identity.project);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
       // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the
@@ -358,6 +414,12 @@ const destroy = defineCommand({
           workers: isUnknown(workerSet) ? [] : workerSet,
           ...(store && !args["local-only"] ? { store } : {}),
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
+          // Which worktree is the feature's own, and whether this machine has it (#660).
+          record,
+          // The spelling the branch actually used, for the local half's fallback (#660 review). Every
+          // name is composed from the canonical issue; only the worktree, the branch and the port key
+          // may have been filed under `012`.
+          spelled: identity.spelled,
           ...remote,
           // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
           // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
@@ -376,7 +438,12 @@ const destroy = defineCommand({
             process.stdout.write(`${formatJsonLine({ command, deletedResources, ...rest, interrupted: true })}\n`);
           } else {
             for (const resource of partial.deleted) process.stdout.write(`Deleted ${resource.name}.\n`);
-            process.stdout.write("Teardown stopped there. The rest is still in the account, and in the manifest.\n");
+            // Only after something went. "Teardown stopped there. The rest is still in the account" is
+            // true of a partial delete and false before the first one — there is no *rest* when nothing
+            // went, and the error on stderr is the whole story (#660).
+            if (partial.deleted.length > 0) {
+              process.stdout.write("Teardown stopped there. The rest is still in the account, and in the manifest.\n");
+            }
           }
         }
         throw error;
@@ -398,7 +465,31 @@ const destroy = defineCommand({
         process.stdout.write(`Deleted ${resource.name}.\n`);
       }
       if (!report.remote) process.stdout.write("Remote teardown skipped. Cloudflare resources were left in place.\n");
+      // **The record it could not consult, named (#660).** The manifest is the only way to reach a
+      // resource whose binding the branch has since dropped, and a runner has no copy of it. A teardown
+      // that quietly deletes less than it would have is the failure this command spends a paragraph
+      // forbidding, so the narrowing is a sentence rather than a shorter list nobody counted.
+      // Only when the remote half actually ran: with `--local-only` nothing was deleted remotely at all,
+      // and the line above has already said so. A second sentence about a record it did not need would
+      // read as a warning about a run that was never going to touch the account.
+      if (report.remote && !report.manifestRead) {
+        process.stdout.write(`No feature manifest at ${report.manifestPath}.\n`);
+        // True whether the file was absent or the whole worktree was: what went is what the branch and
+        // this checkout's config name, and a resource recorded only there is still in the account.
+        process.stdout.write("Deleted by recomputed name alone; anything only it recorded is still there.\n");
+      }
       if (report.worktreePruned) process.stdout.write("Worktree pruned.\n");
+      // `branchDeleted` has been in the payload since this command existed and had no sentence, so the
+      // line below was printed over a run that had just deleted a branch (#660).
+      if (report.branchDeleted) process.stdout.write(`Branch ${report.branch} deleted.\n`);
+      // **Said, because nothing else would say it (#660).** A runner tearing down a merged feature has no
+      // worktree, no port block and no branch — all three are machine-local and the machine is a fresh
+      // container — so the local half has nothing to do, and a run that printed only what it deleted
+      // remotely would leave an operator wondering whether it was skipped or simply silent. Nothing to do
+      // is an outcome; anything at all having happened is not, which is why every field is read.
+      if (!report.portsFreed && !report.worktreePruned && !report.branchDeleted) {
+        process.stdout.write("No port block and no worktree here. Nothing local to tear down.\n");
+      }
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

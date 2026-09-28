@@ -135,10 +135,6 @@ const DECLARED: readonly Declared[] = [
     via: "the `putSecret` seam's own parameter, handed `context.storeEntryName` by `tokens/sinks.ts` — see that row",
   },
   {
-    site: "packages/cli/src/feature/provision.ts create(name, value)",
-    via: "`MintDestination.put`'s parameter, handed `secretName` by `storeSecretMinter`, which `secretsStoreBindings` composes through the feature scope's `secretEntry`",
-  },
-  {
     site: "packages/cli/src/feature/provision.ts remove(scope.secretEntry(binding, entry.scope))",
     via: "`ProvisionScope.secretEntry` — the feature scope, composed in the argument",
   },
@@ -151,6 +147,8 @@ const DECLARED: readonly Declared[] = [
     via: "the `SecretsStore` adapter's own parameter. It composes nothing by design — every name reaching it is composed by the caller, and those callers are the rows above",
   },
   {
+    // The minter writes through this one now (#660 review): `feature/provision.ts` used to adapt it to a
+    // `put` that discarded the outcome, and that adapter — its own write site — is gone.
     site: "packages/cli/src/provision/store.ts createSecretIfAbsent(name, value)",
     via: "the same adapter parameter",
   },
@@ -233,7 +231,7 @@ describe("the population this gate ranges over", () => {
     // A tripwire whose input silently became empty passes every assertion about findings. This is the
     // exact-count assertion the draft's analyzer could not have made: it found nothing at all.
     expect(analysis.parsed).toBeGreaterThan(500);
-    expect(analysis.sites).toHaveLength(17);
+    expect(analysis.sites).toHaveLength(16);
   });
 });
 

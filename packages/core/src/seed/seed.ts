@@ -197,6 +197,31 @@ export interface SeedPrepareContext {
    */
   secret: (name: string) => Promise<string | undefined>;
   /**
+   * The value **this run just minted** for a secret, or `undefined` — never what the environment holds.
+   *
+   * `pithy provision` creates a random value for every `cf-secrets-store` secret the registry declares
+   * mintable, writes it into the account's Secrets Store, and lets it go. The Secrets Store is write-only
+   * from the CLI, so that write is the only moment the value exists anywhere the toolchain can see it —
+   * and provisioning migrates and seeds in the same process, a few steps later. A fixture that must
+   * *seal* something at creation time (encrypt a private key under the environment's key-encryption
+   * secret, derive an id that the running app will re-derive) can only do it then. Afterwards the value
+   * is unrecoverable by design.
+   *
+   * **This is not {@link secret}, and the two are not interchangeable.** `secret` answers what the
+   * environment holds and refuses outside `dev`, absolutely (#159); that rule is untouched. This answers
+   * the strictly narrower question *did this run create one, a moment ago, in memory*. A set asking here
+   * for a secret this run did not mint gets `undefined` wherever it runs, in `dev` or anywhere else.
+   *
+   * **Synchronous, because it cannot fetch.** There is no file to open and no request to make; a promise
+   * in this signature would suggest otherwise.
+   *
+   * **Empty is ordinary.** A re-run mints nothing — absence is checked before anything is generated — and
+   * a standalone `pithy seed` mints nothing at all. Both answer `undefined` for every name, and neither
+   * is an error. A set that needs a minted value and is handed none says so itself; nothing is invented
+   * on its behalf.
+   */
+  mintedThisRun: (name: string) => string | undefined;
+  /**
    * The developer's machine-local preferences for this project, read from the Pithy config directory
    * (`~/.config/pithy/<project>/dev.json`, or `%APPDATA%\pithy\<project>\dev.json` on Windows), parsed but
    * unvalidated — `undefined` when the file is absent or unreadable. It is a per-machine opt-in, outside

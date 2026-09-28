@@ -74,7 +74,7 @@ describe("ports", () => {
     await allocatePortBlock({ registryPath, root, branch: "feature/1-a" });
     await allocatePortBlock({ registryPath, root, branch: "feature/2-b" });
 
-    await freePortBlock({ registryPath, root, branch: "feature/1-a" });
+    await expect(freePortBlock({ registryPath, root, branch: "feature/1-a" })).resolves.toBe(true);
 
     const block = await allocatePortBlock({ registryPath, root, branch: "feature/3-c" });
     expect(block).toEqual({ block: 0, base: BASE_PORT, size: BLOCK_SIZE });
@@ -86,7 +86,9 @@ describe("ports", () => {
 
   it("freeing a missing branch is a no-op", async () => {
     await allocatePortBlock({ registryPath, root, branch: "feature/1-a" });
-    await expect(freePortBlock({ registryPath, root, branch: "feature/nope" })).resolves.toBeUndefined();
+    // `false`, and that is the point of the answer (#660): every no-op here is a case `feature destroy`
+    // used to report `portsFreed: true` over.
+    await expect(freePortBlock({ registryPath, root, branch: "feature/nope" })).resolves.toBe(false);
 
     const registry = await readRegistry();
     expect(Object.keys(registry[root] ?? {})).toEqual(["feature/1-a"]);
@@ -97,14 +99,14 @@ describe("ports", () => {
     const other = join(dir, "other");
     await mkdir(other);
 
-    await expect(freePortBlock({ registryPath, root: other, branch: "feature/1-a" })).resolves.toBeUndefined();
+    await expect(freePortBlock({ registryPath, root: other, branch: "feature/1-a" })).resolves.toBe(false);
 
     const registry = await readRegistry();
     expect(registry[root]?.["feature/1-a"]).toBeDefined();
   });
 
   it("freeing against a missing registry file is a no-op", async () => {
-    await expect(freePortBlock({ registryPath, root, branch: "feature/nope" })).resolves.toBeUndefined();
+    await expect(freePortBlock({ registryPath, root, branch: "feature/nope" })).resolves.toBe(false);
   });
 
   it("honors a custom block size", async () => {

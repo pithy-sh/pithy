@@ -22,6 +22,7 @@ import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConf
 import type { KitWorkerDeploy } from "../project/deployKit";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
+import type { MintedThisRun } from "./mintedThisRun";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
 import {
   bindingSecrets,
@@ -50,8 +51,14 @@ import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
  * run interrupted by a network hiccup completes on the next attempt.
  */
 
-/** A migrate/seed seam so provisioning's orchestration is testable without a live backend. */
-export type BackendRunner = (args: { env: string; projectDir: string }) => Promise<void>;
+/**
+ * A migrate/seed seam so provisioning's orchestration is testable without a live backend.
+ *
+ * `mintedThisRun` reaches the seed alone (#660): a migration has no fixtures and asks for nothing. It is
+ * what this run created a few steps earlier and is about to lose — see {@link MintedThisRun} — and it is
+ * on the arguments rather than closed over so that a caller substituting the seam is handed it too.
+ */
+export type BackendRunner = (args: { env: string; projectDir: string; mintedThisRun?: MintedThisRun }) => Promise<void>;
 
 // The migrate names its project for the same reason the seed below does, and one more: the stamp it
 // writes is what refuses a later run from another project. A fresh environment's D1 is brand new, so
@@ -72,7 +79,7 @@ export const defaultMigrate: BackendRunner = async ({ env, projectDir }) => {
 // The seed names its project because a fixture can mint Cloudflare Images/Stream assets, and those two
 // account-flat stores carry no name we chose — only the owner in their metadata. `requireProjectName`,
 // the same resolver every provisioned resource name already leads with.
-const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
+const defaultSeed: BackendRunner = async ({ env, projectDir, mintedThisRun }) => {
   const config = await loadProject(projectDir);
   await seedProject({
     env,
@@ -81,6 +88,9 @@ const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
     account: loadProjectCloudflare(config) ?? null,
     yes: true,
     json: true,
+    // What this run minted, handed to every prepared set as `context.mintedThisRun` (#660). Absent when
+    // nothing was minted, which is a re-run and every caller that provisions no secrets.
+    ...(mintedThisRun ? { mintedThisRun } : {}),
   });
 };
 
@@ -413,6 +423,15 @@ export interface ProvisionEnvironmentOptions {
   migrate?: BackendRunner;
   /** Seed runner seam (default: `seedProject`). */
   seed?: BackendRunner;
+  /**
+   * What this run minted, forwarded to the seed step and to nothing else (#660).
+   *
+   * The caller owns it because the caller builds `secretBindings`, and the minter inside it is what
+   * fills it. Two things read the same record and neither derives it: the minter writes, the seed reads.
+   * Omitted means nothing was minted or nothing may be offered, and every prepared set is handed the
+   * empty channel.
+   */
+  mintedThisRun?: MintedThisRun;
   /**
    * Look up the account's `workers.dev` subdomain — the seam over `CloudflareWorkersManager.accountSubdomain()`.
    * Asked at most once a run, and only for a scope whose config is generated (a feature): its answer is how a
@@ -747,7 +766,16 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // migrate and seed fan out over the Workers themselves, each against its own wrangler.jsonc — the file
   // this run just wrote the environment's binding ids into.
   await migrate({ env: scope.stanza, projectDir: options.projectDir });
-  if (options.seedData) await seed({ env: scope.stanza, projectDir: options.projectDir });
+  if (options.seedData) {
+    // **The one arrangement in which a fixture can seal (#660).** The bindings above minted each absent
+    // `cf-secrets-store` secret and wrote it into a store nothing can read back; this seed runs in the
+    // same process, holding what that write created. Nothing is passed when nothing was created.
+    await seed({
+      env: scope.stanza,
+      projectDir: options.projectDir,
+      ...(options.mintedThisRun ? { mintedThisRun: options.mintedThisRun } : {}),
+    });
+  }
 
   return {
     env: scope.stanza,

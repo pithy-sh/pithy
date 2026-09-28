@@ -154,12 +154,32 @@ defineSeed({
 });
 ```
 
-The context is deliberately narrow: `env`, `project`, `origin` — where this Worker answers locally — a `secret(name)` reader, the developer's machine-local `preferences`, and `seeded` — the run's own inventory. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
+The context is deliberately narrow: `env`, `project`, `origin` — where this Worker answers locally — a `secret(name)` reader, `mintedThisRun(name)` for a value the calling run just created, the developer's machine-local `preferences`, and `seeded` — the run's own inventory. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
 - `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only. A `feature` is a deployed environment here too: its secrets exist only in its own Secrets Store and `SECRETS` database, which `pithy provision --feature` writes and nothing reads back, so a set that asks for one on a feature is refused like `staging` and `prod`. The dev secrets file is never opened for anything but `dev`.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
+
+### What this run just minted: `context.mintedThisRun`
+
+Some fixtures have to **seal** at creation time. A row holding a private key encrypted under the environment's key-encryption secret can only be built while that secret is in hand — and for a `cf-secrets-store` secret there is exactly one moment when it is.
+
+`pithy provision` creates a random value for every store secret the registry declares mintable, writes it into the account's Secrets Store, and lets it go. Nothing reads an entry back: the store is **write-only from the CLI**. Provisioning then migrates and seeds *in the same process*, so the stretch between that write and the seed is the only time the value exists anywhere the toolchain can see it. After the run, it is unrecoverable by design.
+
+```ts
+prepare: async (context) => {
+  const key = context.mintedThisRun("connection-key");
+  if (!key) return {}; // nothing was minted this run — see below
+  return { d1: [d1SeedGroup("app", "connections", Connection, [sealUnder(key)])] };
+},
+```
+
+- **It is not `context.secret`, and the two are not interchangeable.** `secret` answers *what the environment holds* and refuses outside `dev`, absolutely. `mintedThisRun` answers the strictly narrower *did this run create one, a moment ago, in memory*. A set asking here for a secret this run did not mint gets `undefined` wherever it runs — `dev` included.
+- **Synchronous, because it cannot fetch.** There is no file to open and no request to make.
+- **Empty is ordinary, and never an error.** A re-run mints nothing — absence is checked before anything is generated — so every name answers `undefined`. A set that needs a minted value and is handed none says so itself; nothing is invented on its behalf.
+- **Which runs can offer it.** `pithy provision --feature`, which always seeds, and `pithy provision --env <environment> --seed`. Those are the only commands that mint and seed in one process. A standalone `pithy seed`, in any environment, mints nothing and offers an empty channel — so a set that seals must be run through provisioning, and a set that must work under both handles `undefined`.
+- **No minted value reaches any output.** Not a log line, not a report, not `--json`, not an artifact, not an error message. What a run says is that a secret was minted, and which entry it went to.
 
 ### Where this Worker answers: `context.origin`
 

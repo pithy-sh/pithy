@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
@@ -120,10 +121,12 @@ export interface MintTarget {
  * Create one declared-but-absent secret. Injected, so the orchestration here is tested without an
  * account, and so a caller with no store credentials simply passes nothing and mints nothing.
  *
- * It resolves once the value is written and readable. It never returns the value, and nothing here ever
- * sees one.
+ * It resolves once the store has answered, with **which of the three things happened** and never with the
+ * value (#660 review). `created` is the only one under which this run's value is the one the Worker will
+ * read: absence is checked before this is called, but a check is not a lock, and the loser of a race for
+ * one entry must not be reported — or remembered — as having minted it.
  */
-export type MintStoreSecret = (target: MintTarget) => Promise<void>;
+export type MintStoreSecret = (target: MintTarget) => Promise<CreateSecretOutcome>;
 
 /**
  * A declared secret whose Secrets Store entry is not there — the binding, and **the entry name it would
@@ -190,8 +193,10 @@ export async function secretsStoreBindings(options: {
     const secretName = secretStoreEntryName(options.scope, secret, entry);
     let present = await options.exists(secretName);
     if (!present && options.mint && isMintableSecret(entry)) {
-      await options.mint({ secret, binding, secretName, entry });
-      minted.push(secret);
+      // The entry is there either way — this run created it, or the run that beat this one did — so the
+      // binding is written either way. Only `created` is a mint, and only a mint is reported as one.
+      const wrote = await options.mint({ secret, binding, secretName, entry });
+      if (wrote === "created") minted.push(secret);
       present = true;
     }
     if (present) {

@@ -148,6 +148,7 @@ async function everythingTheCliCreates(registry: SecretRegistry): Promise<string
     exists: async () => false,
     mint: async ({ secret }) => {
       created.add(secret);
+      return "created" as const;
     },
   });
   for (const name of store.minted) created.add(name);

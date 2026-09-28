@@ -756,9 +756,24 @@ describe("provisionFeature / deprovisionFeature", () => {
       const { provisioners } = fakeProvisioners();
       await writeCraftedManifest([], { project: "acme", issue: "999", slug: "someone-else" });
 
-      await expect(
-        deprovisionFeature({ ...noScripts, projectDir: dir, identity, capabilities, env: "feature", provisioners }),
-      ).rejects.toThrow(/different feature/i);
+      const refused = await deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      }).catch((error: unknown) => error as PithyError);
+
+      expect(refused).toBeInstanceOf(PithyError);
+      // **It names the feature the file belongs to, and never advises deleting it (#660).** The remedy
+      // used to be "Delete .pithy-feature.json and re-run" — and that file is the only record of what
+      // *that* feature provisioned, so a reader who follows it orphans every resource in it.
+      const { message, action } = (refused as PithyError).payload;
+      expect(message).toContain("acme-f999-someone-else");
+      expect(message).toContain("acme-f69-demo");
+      expect(action).not.toMatch(/delete/i);
+      expect(action).toContain("--branch feature/999-someone-else");
     });
 
     test("provision does not launder a foreign entry forward into the manifest it rewrites", async () => {

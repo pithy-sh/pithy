@@ -29,6 +29,7 @@ import {
   provisionEnvironment,
   provisionWorkerNames,
 } from "../provision/environment";
+import { mintedThisRun } from "../provision/mintedThisRun";
 import {
   AUDIT_RESOURCE_TYPE,
   type FeatureIndexes,
@@ -106,7 +107,7 @@ function isScriptOwnedByFeature(identity: FeatureIdentity, script: FeatureScript
  * control, but a mismatched header means the file was authored for something else entirely — failing loudly
  * beats silently ignoring every entry, which would look like a successful teardown that removed nothing.
  */
-function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManifest | null): void {
+function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManifest | null, dir: string): void {
   if (!manifest) return;
   if (
     manifest.project === identity.project &&
@@ -115,10 +116,14 @@ function assertManifestBelongs(identity: FeatureIdentity, manifest: FeatureManif
   ) {
     return;
   }
+  // **It names the feature the file belongs to, and never advises deleting it (#660 review).** The
+  // remedy used to be "Delete .pithy-feature.json and re-run" — and a reader who follows that has just
+  // thrown away the only record of what *that* feature provisioned, orphaning every resource in it. The
+  // file is somebody's teardown instructions; the run that cannot use them says whose they are.
   throw new ValidationError({
-    message: "The feature manifest belongs to a different feature.",
-    action: "Delete .pithy-feature.json and re-run, or check out the branch it was written for.",
-    detail: `Manifest names ${manifest.project}-f${manifest.issue}-${manifest.slug}; this feature is ${identity.project}-f${identity.issue}-${identity.slug}.`,
+    message: `The feature manifest in ${dir} belongs to ${manifest.project}-f${manifest.issue}-${manifest.slug}, not to ${identity.project}-f${identity.issue}-${identity.slug}.`,
+    action: `Tear that feature down from its own worktree, or pass --branch feature/${canonicalIssue(manifest.issue)}-${manifest.slug} to tear it down from here. The file is the only record of what it provisioned, so keep it until it has been.`,
+    detail: `manifest header ${manifest.project}/${manifest.issue}/${manifest.slug} against identity ${identity.project}/${identity.issue}/${identity.slug}`,
   });
 }
 
@@ -273,6 +278,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     await options.secrets.ensureMasterKey(FEATURE_ENVIRONMENT);
   }
 
+  // **One record per run, filled by the minter below and read by the seed step (#660).** A feature is
+  // provisioned and seeded in one process, and a `cf-secrets-store` value is readable for exactly the
+  // stretch between those two — the store is write-only from the CLI.
+  const minted = mintedThisRun();
+
   const report = await provisionEnvironment({
     projectDir: options.projectDir,
     scope,
@@ -284,7 +294,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     record: {
       load: async () => {
         const existing = await readManifest(path);
-        assertManifestBelongs(options.identity, existing);
+        assertManifestBelongs(options.identity, existing, options.projectDir);
         // Carry forward only entries this feature could have created. Keeping a foreign one would
         // re-persist it under a freshly-written, legitimate-looking header — laundering it into what
         // `destroy` later deletes.
@@ -304,6 +314,8 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     },
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
+    // The read side of the same record the minter above fills. One record, two directions, one process.
+    mintedThisRun: minted,
     ...(options.workersSubdomain !== undefined ? { workersSubdomain: options.workersSubdomain } : {}),
     resolveWorkers: async () => workers,
     ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
@@ -321,9 +333,17 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               //
               // Through the store's create-if-absent (#643): absence is checked first, and a run that loses a race
               // for the same entry leaves the winner's value where it is rather than writing over it.
+              // **And remembered for the seed that follows, in memory (#660).** A feature's store entries
+              // are created here and never readable again, while its seed runs a few steps later in this
+              // same process — so a fixture that must seal something under one of these values can only
+              // do it now. Nothing minted, nothing remembered; a re-run hands the seed an empty channel.
               mint: storeSecretMinter({
-                store: { put: async (name, value) => void (await store.create(name, value)) },
+                // The store itself: `create` is what the minter needs, and its outcome is what decides
+                // whether this run may claim the value (#660 review). Adapting it to a plain `put` threw
+                // that answer away, and a discarded `present` is a record of a value nothing holds.
+                store,
                 environment: scope.stanza,
+                minted,
                 ...(options.audit !== undefined ? { audit: options.audit } : {}),
               }),
             }),
@@ -417,6 +437,15 @@ export interface DeprovisionedResource {
 export interface DeprovisionReport {
   /** Every resource deleted — from the manifest and from the expected-name reconcile. */
   deleted: DeprovisionedResource[];
+  /**
+   * **Whether a manifest was actually read** — #660 review.
+   *
+   * Not whether one was looked for, and not whether the directory it would be in exists: a bare
+   * `.worktrees/<issue>-<slug>` left behind by an earlier teardown satisfies both and holds no record.
+   * `false` means this run deleted by recomputed name alone, which is a narrower teardown, and the
+   * caller says so rather than letting a shorter list speak for it.
+   */
+  manifest: boolean;
 }
 
 /** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
@@ -447,8 +476,16 @@ export function deletedBeforeFailure(error: unknown): DeprovisionedResource[] {
 
 /** Options for {@link deprovisionFeature}. */
 export interface DeprovisionFeatureOptions {
-  /** The worktree root — where the manifest lives. */
+  /** Where the feature's configs are read from — its own worktree, or the checkout standing in for it. */
   projectDir: string;
+  /**
+   * Where the feature's `.pithy-feature.json` is, or `null` when this machine does not have it (#660).
+   *
+   * Omitted means {@link projectDir}, which is the inferred path: the run is standing in the feature.
+   * `pithy feature destroy --branch` passes the feature's own worktree, or `null` for a runner — and a
+   * `null` narrows the teardown to recomputed names, which the caller publishes rather than passing over.
+   */
+  manifestDir?: string | null;
   /** The feature identity — project/issue/slug — for recomputing expected resource names. */
   identity: FeatureIdentity;
   /**
@@ -519,8 +556,12 @@ export interface DeprovisionFeatureOptions {
  * between tearing down a branch and tearing down production is not a difference a flag should carry.
  */
 export async function deprovisionFeature(options: DeprovisionFeatureOptions): Promise<DeprovisionReport> {
-  const path = manifestPath(options.projectDir);
-  const manifest = await readManifest(path);
+  // **The feature's own manifest, or none at all (#660).** `manifestDir` is the feature's worktree, and
+  // `null` says this machine does not have it — a runner tearing down a merged pull request. Falling back
+  // to `projectDir` would read *a* manifest belonging to whatever the cwd is, which is either another
+  // feature's teardown instructions or nothing; the caller reports the absence instead.
+  const path = options.manifestDir === null ? null : manifestPath(options.manifestDir ?? options.projectDir);
+  const manifest = path === null ? null : await readManifest(path);
   const deleted: DeprovisionedResource[] = [];
   const seen = new Set<string>(); // `${kind}:${id}` — never delete the same resource twice.
 
@@ -562,7 +603,7 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   // delete that failed for a reason belonging to the account — a revoked token, a resource another
   // project holds — is not a reason to keep deleting.
   try {
-    assertManifestBelongs(options.identity, manifest);
+    assertManifestBelongs(options.identity, manifest, options.manifestDir ?? options.projectDir);
     // Every script this feature could have deployed, named before anything is deleted: the manifest's record;
     // every name the current Workers could have deployed under — a feature provisioned before scripts were
     // recorded has none in its manifest, and one deployed before #587 runs under the doubled shape; and every
@@ -638,8 +679,9 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     throw deprovisionReport.carry(error, deleted);
   }
 
-  // The manifest is removed only on a clean pass. It is the record of what is left to delete, and a
-  // teardown that failed partway is precisely when a re-run needs it.
-  await rm(path, { force: true });
-  return { deleted };
+  // The manifest is removed only on a clean pass, and only the one that was actually read. It is the
+  // record of what is left to delete, and a teardown that failed partway is precisely when a re-run
+  // needs it.
+  if (path !== null) await rm(path, { force: true });
+  return { deleted, manifest: manifest !== null };
 }
