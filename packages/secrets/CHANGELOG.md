@@ -1,5 +1,13 @@
 # @pithy-sh/secrets
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`b9c624f`](https://github.com/pithy-sh/pithy/commit/b9c624fa227f23dbc97545a03544ef1af5bba182)]:
+  - @pithy-sh/core@0.8.0
+  - @pithy-sh/cloudflare@0.4.1
+
 ## 0.3.0
 
 ### Minor Changes
