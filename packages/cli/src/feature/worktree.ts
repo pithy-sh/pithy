@@ -276,11 +276,25 @@ export async function createWorktree(options: {
 export async function featureWorktree(options: {
   issue: string;
   slug: string;
+  /**
+   * The issue as it was spelled, when that differs from the canonical one — `012` for `12` (#660
+   * review). Tried only when nothing is at the canonical path: a feature created before the issue was
+   * canonicalised filed its worktree under the padded spelling, and nothing else knows that.
+   */
+  spelled?: string;
   git?: GitRunner;
 }): Promise<FeatureRecord> {
   const git = options.git ?? defaultGit;
-  const { wtPath } = featureNames(options.issue, options.slug, await mainRepoRoot(git));
-  return { dir: wtPath, present: existsSync(wtPath) };
+  const root = await mainRepoRoot(git);
+  const canonical = featureNames(options.issue, options.slug, root).wtPath;
+  if (existsSync(canonical)) return { dir: canonical, present: true };
+  if (options.spelled !== undefined && options.spelled !== options.issue) {
+    const padded = featureNames(options.spelled, options.slug, root).wtPath;
+    if (existsSync(padded)) return { dir: padded, present: true };
+  }
+  // Canonical either way when there is nothing to find: that is the path a reader should be shown, and
+  // the one a feature created from here on has.
+  return { dir: canonical, present: false };
 }
 
 /**

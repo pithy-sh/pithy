@@ -28,6 +28,8 @@ describe("parseFeatureBranch", () => {
       issue: "69",
       slug: "media-cli",
       branch: "feature/69-media-cli",
+      // The spelling the name used, which for an unpadded issue is the canonical one (#660 review).
+      spelled: "69",
     });
   });
 
@@ -54,14 +56,20 @@ describe("parseFeatureBranch", () => {
       issue: "12",
       slug: "x",
       branch: "feature/12-x",
+      // **The one thing that is not canonical, and it is why teardown can still find a padded feature.**
+      // Its worktree, its branch and its port key were all filed under `012` (#660 review).
+      spelled: "012",
     });
-    expect(parseFeatureBranch("feature/012-x")).toEqual(parseFeatureBranch("feature/12-x"));
+    const { spelled: _padded, ...canonical } = parseFeatureBranch("feature/012-x") ?? {};
+    const { spelled: _plain, ...plain } = parseFeatureBranch("feature/12-x") ?? {};
+    expect(canonical).toEqual(plain);
   });
 
   /** `0` is an issue number, and stripping it to nothing would be the obvious way to get this wrong. */
   test("issue 0 survives canonicalisation", () => {
     expect(parseFeatureBranch("feature/0-x")?.issue).toBe("0");
     expect(parseFeatureBranch("feature/00-x")?.branch).toBe("feature/0-x");
+    expect(parseFeatureBranch("feature/00-x")?.spelled).toBe("00");
   });
 });
 
@@ -69,7 +77,7 @@ describe("deriveIdentityFromBranch", () => {
   test("derives the identity from a feature branch", async () => {
     const git: GitRunner = async () => "feature/69-media-cli";
     const identity = await deriveIdentityFromBranch("/repo", git);
-    expect(identity).toEqual({ issue: "69", slug: "media-cli", branch: "feature/69-media-cli" });
+    expect(identity).toEqual({ issue: "69", slug: "media-cli", branch: "feature/69-media-cli", spelled: "69" });
   });
 
   test("throws a PithyError when not on a feature branch", async () => {
@@ -110,7 +118,12 @@ describe("tearing down a feature whose Worker config will not load — #454", ()
     // Everything teardown's local half needs: the issue and slug from the branch, the project name from
     // the root config. Neither is a Worker's, which is why this answers where `branchIdentity` throws.
     dir = await brokenWorkerCheckout();
-    expect(await branchIdentityWithoutWorkers(dir)).toEqual({ project: "probe", issue: "454", slug: "probe" });
+    expect(await branchIdentityWithoutWorkers(dir)).toEqual({
+      project: "probe",
+      issue: "454",
+      slug: "probe",
+      spelled: "454",
+    });
   });
 });
 
@@ -246,6 +259,7 @@ describe("naming the feature rather than inferring it — #660", () => {
       project: "probe",
       issue: "12",
       slug: "x",
+      spelled: "12",
     });
   });
 
@@ -258,6 +272,7 @@ describe("naming the feature rather than inferring it — #660", () => {
       project: "probe",
       issue: "12",
       slug: "x",
+      spelled: "12",
     });
   });
 

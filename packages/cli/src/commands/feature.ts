@@ -365,7 +365,7 @@ const destroy = defineCommand({
       const record =
         args.branch === undefined
           ? { dir: projectDir, present: true }
-          : await featureWorktree({ issue: identity.issue, slug: identity.slug });
+          : await featureWorktree({ issue: identity.issue, slug: identity.slug, spelled: identity.spelled });
       const configDir = record.present ? record.dir : projectDir;
       // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
       // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
@@ -416,6 +416,10 @@ const destroy = defineCommand({
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
           // Which worktree is the feature's own, and whether this machine has it (#660).
           record,
+          // The spelling the branch actually used, for the local half's fallback (#660 review). Every
+          // name is composed from the canonical issue; only the worktree, the branch and the port key
+          // may have been filed under `012`.
+          spelled: identity.spelled,
           ...remote,
           // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
           // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
@@ -468,9 +472,11 @@ const destroy = defineCommand({
       // Only when the remote half actually ran: with `--local-only` nothing was deleted remotely at all,
       // and the line above has already said so. A second sentence about a record it did not need would
       // read as a warning about a run that was never going to touch the account.
-      if (report.remote && !report.manifestReachable) {
+      if (report.remote && !report.manifestRead) {
         process.stdout.write(`No feature manifest at ${report.manifestPath}.\n`);
-        process.stdout.write("Resources only it recorded were not deleted.\n");
+        // True whether the file was absent or the whole worktree was: what went is what the branch and
+        // this checkout's config name, and a resource recorded only there is still in the account.
+        process.stdout.write("Deleted by recomputed name alone; anything only it recorded is still there.\n");
       }
       if (report.worktreePruned) process.stdout.write("Worktree pruned.\n");
       // `branchDeleted` has been in the payload since this command existed and had no sentence, so the

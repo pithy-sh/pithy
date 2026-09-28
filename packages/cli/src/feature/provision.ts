@@ -338,7 +338,10 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               // same process — so a fixture that must seal something under one of these values can only
               // do it now. Nothing minted, nothing remembered; a re-run hands the seed an empty channel.
               mint: storeSecretMinter({
-                store: { put: async (name, value) => void (await store.create(name, value)) },
+                // The store itself: `create` is what the minter needs, and its outcome is what decides
+                // whether this run may claim the value (#660 review). Adapting it to a plain `put` threw
+                // that answer away, and a discarded `present` is a record of a value nothing holds.
+                store,
                 environment: scope.stanza,
                 minted,
                 ...(options.audit !== undefined ? { audit: options.audit } : {}),
@@ -434,6 +437,15 @@ export interface DeprovisionedResource {
 export interface DeprovisionReport {
   /** Every resource deleted — from the manifest and from the expected-name reconcile. */
   deleted: DeprovisionedResource[];
+  /**
+   * **Whether a manifest was actually read** — #660 review.
+   *
+   * Not whether one was looked for, and not whether the directory it would be in exists: a bare
+   * `.worktrees/<issue>-<slug>` left behind by an earlier teardown satisfies both and holds no record.
+   * `false` means this run deleted by recomputed name alone, which is a narrower teardown, and the
+   * caller says so rather than letting a shorter list speak for it.
+   */
+  manifest: boolean;
 }
 
 /** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
@@ -671,5 +683,5 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
   // record of what is left to delete, and a teardown that failed partway is precisely when a re-run
   // needs it.
   if (path !== null) await rm(path, { force: true });
-  return { deleted };
+  return { deleted, manifest: manifest !== null };
 }

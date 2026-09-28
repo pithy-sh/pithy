@@ -39,10 +39,22 @@ const entry: SecretRegistryEntry = {
   devValue: "random",
 };
 
-/** A store that records what it was told to write, so a test can read the envelope back. */
+/**
+ * A store that records what it was told to write, so a test can read the envelope back.
+ *
+ * `create`, with the real create-if-absent answer: `created` when this call made the entry, `present`
+ * when one was already there. What the minter does with that answer is what #660's review was about.
+ */
 function recordingStore() {
   const written = new Map<string, string>();
-  return { written, put: async (name: string, value: string) => void written.set(name, value) };
+  return {
+    written,
+    create: async (name: string, value: string) => {
+      if (written.has(name)) return "present" as const;
+      written.set(name, value);
+      return "created" as const;
+    },
+  };
 }
 
 describe("storeSecretMinter", () => {

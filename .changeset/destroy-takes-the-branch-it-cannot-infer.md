@@ -1,5 +1,6 @@
 ---
 "@pithy-sh/cli": minor
+"@pithy-sh/core": minor
 ---
 
 `pithy feature destroy --branch <name>` names the feature, so a merged pull request can tear its own environment down.
@@ -33,3 +34,15 @@ The value now travels to that one step, on the context `origin` already travels,
 **An empty channel is an answer.** A re-run mints nothing, because absence is checked before anything is generated, so every name is `undefined` and nothing throws. So is a standalone `pithy seed`, in any environment: it mints nothing, so it offers nothing. The commands that can honestly offer it are `pithy provision --feature`, which always seeds, and `pithy provision --env <environment> --seed` — the two that mint and seed in one process — and the docs say so.
 
 No minted value reaches a log, a report line, `--json`, an artifact or an error message. That is asserted end to end with the real binary against a stubbed Cloudflare: a prepared set receives the value on the first run and an empty channel on the second, while the `--json` payload carries `minted: true` and no value.
+
+---
+
+**Three corrections from a review of the two commits above, and the `@pithy-sh/core` bump that belongs with them.**
+
+**A value the store did not take is never recorded, reported or audited.** `create` answers `created`, `present` or `unconfirmed`, and only the first means this run's value is the one the Worker will read. The feature's minter discarded that answer, so a run that lost a race — its `exists` said absent, another run wrote in the window — recorded and reported a value nothing holds. A prepared set sealing a row under it writes a row nothing can ever open, on a run that exits 0 saying it minted, with no way to detect it afterwards because nothing can read the entry back. `MintDestination` is create-if-absent now and carries the outcome out; both provisioning paths hand the store through rather than adapting it to a plain overwrite; `secretsStoreBindings` reports `minted` only for a create that happened; and the audit event is emitted only then, because a trail saying a key was generated on a run that generated none is a trail an operator would act on.
+
+**A feature created with a padded `--issue` still tears down.** Canonicalising the branch is right for every name a feature composes and, on its own, a regression for the local half: `pithy feature create --issue 012` filed `.worktrees/012-x`, a `feature/012-x` branch and a `feature/012-x` port key, and looking only under `12-x` leaves all three while the run prints "Nothing local to tear down". The spelling actually read or given travels beside the canonical issue, and the local half tries canonical first and that spelling second — worktree, branch and port key alike, from both entry points. Nothing created after this change reaches the second attempt.
+
+**`manifestRead` means a manifest was read.** It was `manifestReachable`, and it answered "the directory exists" — which a bare `.worktrees/<issue>-<slug>` left behind by an earlier teardown satisfies while holding no record at all. So a teardown that deleted by recomputed name alone reported that it had consulted the record, and the sentence saying otherwise was suppressed in exactly the state it exists for. It comes from `readManifest` now, and the sentence reads `Deleted by recomputed name alone; anything only it recorded is still there.`
+
+`@pithy-sh/core` is a minor because `SeedPrepareContext` gained `mintedThisRun`, a required member the seed docs tell a set to call.

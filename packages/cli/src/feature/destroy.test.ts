@@ -87,7 +87,7 @@ describe("the local half of a teardown reports what it did — #660", () => {
       worktreePruned: false,
       branchDeleted: false,
       // And the record it could not consult, named rather than passed over (#660).
-      manifestReachable: false,
+      manifestRead: false,
       manifestPath: join(root, ".worktrees", "12-x", ".pithy-feature.json"),
     });
   });

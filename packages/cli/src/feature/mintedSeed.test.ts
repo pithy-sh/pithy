@@ -65,8 +65,14 @@ function fakeProvisioners(): ResourceProvisioners {
   } as ResourceProvisioners;
 }
 
-/** An in-memory Secrets Store, with the real create-if-absent semantics a feature's run relies on. */
-function fakeStore() {
+/**
+ * An in-memory Secrets Store, with the real create-if-absent semantics a feature's run relies on.
+ *
+ * `outcome` forces what `create` answers without changing what the store holds, which is how the two
+ * cases that are not `created` are reached without a real race: `present` is the window between another
+ * run's `exists` and its write, and `unconfirmed` is a create that failed over an entry that is there now.
+ */
+function fakeStore(outcome?: "present" | "unconfirmed") {
   const entries = new Map<string, string>();
   return {
     entries,
@@ -75,6 +81,7 @@ function fakeStore() {
       exists: async (name: string) => entries.has(name),
       put: async (name: string, value: string) => void entries.set(name, value),
       create: async (name: string, value: string) => {
+        if (outcome !== undefined) return outcome;
         if (entries.has(name)) return "present" as const;
         entries.set(name, value);
         return "created" as const;
@@ -115,10 +122,14 @@ describe("what a feature's provisioning hands its own seed step", () => {
   async function provision(
     target: { dir: string; workers: ProvisionWorker[] },
     store: ReturnType<typeof fakeStore>["store"],
-  ): Promise<{ offered: MintedThisRun | undefined; audit: CliAuditEvent[] }> {
+  ): Promise<{
+    offered: MintedThisRun | undefined;
+    audit: CliAuditEvent[];
+    report: { secretBindings?: { secret: string; minted: boolean }[] };
+  }> {
     let offered: MintedThisRun | undefined;
     const audit: CliAuditEvent[] = [];
-    await provisionFeature({
+    const report = await provisionFeature({
       projectDir: target.dir,
       capabilities: target.workers[0]?.capabilities ?? [],
       identity,
@@ -132,7 +143,7 @@ describe("what a feature's provisioning hands its own seed step", () => {
       store,
       audit: async (event) => void audit.push(event),
     });
-    return { offered, audit };
+    return { offered, audit, report: report as { secretBindings?: { secret: string; minted: boolean }[] } };
   }
 
   test("**the seed step is handed the value this run minted, as the store holds it**", async () => {
@@ -179,6 +190,35 @@ describe("what a feature's provisioning hands its own seed step", () => {
     expect(first.offered?.size).toBe(1);
     expect(second.offered?.size).toBe(0);
     expect(second.offered?.get("connection-key")).toBeUndefined();
+  });
+
+  /**
+   * **A record of what the store did not take is worse than no record at all — #660 review.**
+   *
+   * `create` answers `created`, `present` or `unconfirmed`, and only the first means this run's value is
+   * the one the Worker will read. `present` is the window between another run's `exists` and its write;
+   * `unconfirmed` is a create that failed over an entry that is there now. In both, the entry holds
+   * somebody else's value — and a set that seals a row under this run's discarded one writes a row
+   * nothing can ever open, on a run that exits 0 saying it minted.
+   */
+  test.each([["present"], ["unconfirmed"]] as const)("**a store that answers %s records nothing**", async (outcome) => {
+    const target = await project();
+    const { store } = fakeStore(outcome);
+
+    const { offered } = await provision(target, store);
+
+    expect(offered?.size).toBe(0);
+    expect(offered?.get("connection-key")).toBeUndefined();
+  });
+
+  /** And the report does not claim it either: `minted` is what this run created, not what it attempted. */
+  test.each(["present", "unconfirmed"] as const)("a store that answers %s reports nothing minted", async (outcome) => {
+    const target = await project();
+    const { store } = fakeStore(outcome);
+
+    const { report } = await provision(target, store);
+
+    expect(report.secretBindings?.filter((binding) => binding.minted)).toEqual([]);
   });
 
   /** The trail records that a secret was created, by name and environment. Never what it is. */

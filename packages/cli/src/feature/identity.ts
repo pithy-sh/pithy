@@ -17,8 +17,18 @@ export interface FeatureBranchIdentity {
   issue: string;
   /** The kebab-case slug, e.g. "media-cli". */
   slug: string;
-  /** The full branch, `feature/<issue>-<slug>`. */
+  /** The full branch, `feature/<issue>-<slug>`, in the canonical spelling. */
   branch: string;
+  /**
+   * The issue **exactly as the name spelled it** — `012` where {@link issue} is `12` (#660 review).
+   *
+   * Canonicalising is right for every name a feature composes, and it is a regression for the local
+   * half on its own: a feature created before the rule holds a `.worktrees/012-x`, a `feature/012-x`
+   * branch and a `feature/012-x` port key, and looking only at `12-x` leaves all three while reporting
+   * nothing local to tear down. So the spelling that was actually read or given travels with the
+   * canonical one, and teardown falls back to it when the canonical thing is not there.
+   */
+  spelled: string;
 }
 
 /**
@@ -47,7 +57,7 @@ export function parseFeatureBranch(branch: string): FeatureBranchIdentity | null
   const [, digits, slug] = match;
   if (!digits || !slug) return null;
   const issue = canonicalIssue(digits);
-  return { issue, slug, branch: `feature/${issue}-${slug}` };
+  return { issue, slug, branch: `feature/${issue}-${slug}`, spelled: digits };
 }
 
 /** Where a branch name came from: read off the checkout, or handed to the CLI as `--branch`. */
@@ -191,13 +201,16 @@ export function featureWorkerSet(projectDir: string): Promise<WorkerSet> {
 export async function branchIdentityWithoutWorkers(
   projectDir: string,
   options: { branch?: string | undefined; git?: GitRunner | undefined } = {},
-): Promise<FeatureIdentity> {
+): Promise<FeatureIdentity & { spelled: string }> {
   // First, and before the config is even opened: a malformed name costs nothing, which is what "refused
   // before anything is deleted" means on a command whose next step deletes infrastructure.
-  const { issue, slug } =
+  const { issue, slug, spelled } =
     options.branch === undefined
       ? await deriveIdentityFromBranch(projectDir, options.git)
       : requireFeatureBranch(options.branch, "flag");
   const project = requireProjectName(await loadProject(projectDir));
-  return { project, issue, slug };
+  // `spelled` rides along for the local half alone (#660 review): every *name* is composed from the
+  // canonical issue, and only the worktree, the branch and the port key may have been filed under the
+  // spelling somebody typed.
+  return { project, issue, slug, spelled };
 }

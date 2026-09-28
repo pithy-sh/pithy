@@ -64,7 +64,7 @@ describe("secretsStoreBindings", () => {
       scope: environmentScope("replay", "staging"),
       storeId: "store-1",
       exists: async () => false,
-      mint: async () => {},
+      mint: async () => "created" as const,
     });
 
     expect(result.bound).toEqual([
@@ -254,6 +254,7 @@ describe("secretsStoreBindings — minting", () => {
       exists: none,
       mint: async (target) => {
         minted.push(target.secretName);
+        return "created" as const;
       },
     });
 
@@ -263,6 +264,31 @@ describe("secretsStoreBindings — minting", () => {
       "CONNECTION_KEY_ENCRYPTION_KEY",
       "RELEASE_INGEST_SECRET",
     ]);
+  });
+
+  /**
+   * **A mint that lost the race is not a mint — #660 review.** Absence is checked before `mint` is
+   * called, and a check is not a lock: two runs can both see one entry absent, and `create` tells the
+   * loser so. The entry exists either way, so the binding is written either way; what must not happen is
+   * the losing run reporting a value it did not create.
+   */
+  test.each(["present", "unconfirmed"] as const)("a mint answering %s binds but reports nothing", async (outcome) => {
+    const result = await secretsStoreBindings({
+      registry: mintable,
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: none,
+      mint: async () => outcome,
+    });
+
+    expect(result.minted).toEqual([]);
+    // Bound all the same: the entry is there, whoever created it. A supplied secret is still missing,
+    // because nothing mints one — that answer is unchanged by any of this.
+    expect(result.bound.map((entry) => entry.binding)).toEqual([
+      "CONNECTION_KEY_ENCRYPTION_KEY",
+      "RELEASE_INGEST_SECRET",
+    ]);
+    expect(result.missing.map((entry) => entry.secret)).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
   /**
@@ -278,6 +304,7 @@ describe("secretsStoreBindings — minting", () => {
       exists: all,
       mint: async (target) => {
         minted.push(target.secretName);
+        return "created" as const;
       },
     });
 
@@ -299,6 +326,7 @@ describe("secretsStoreBindings — minting", () => {
       exists: none,
       mint: async (target) => {
         minted.push(target.secretName);
+        return "created" as const;
       },
     });
 

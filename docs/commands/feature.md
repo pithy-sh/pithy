@@ -27,7 +27,7 @@ pithy feature prune [--dry-run] [--json]
 | `--issue <n>` | `create` | required | The issue number this feature tracks. Digits only, at most six of them |
 | `--skip-install` | `create` | `false` | Skip installing dependencies in the new worktree |
 | `--skip-data` | `sync` | `false` | Reconcile ports only, leaving the backend alone |
-| `--branch <name>` | `destroy` | the checkout's own branch | The feature to tear down, named rather than inferred — `feature/<issue>-<slug>`. Only the issue and the slug come from it: the project is this checkout's, so it names a feature of this project and reaches no other's. The issue is canonical, so `feature/012-x` and `feature/12-x` are the same feature. Anything else is refused before anything is deleted |
+| `--branch <name>` | `destroy` | the checkout's own branch | The feature to tear down, named rather than inferred — `feature/<issue>-<slug>`. Only the issue and the slug come from it: the project is this checkout's, so it names a feature of this project and reaches no other's. The issue is canonical, so `feature/012-x` and `feature/12-x` are the same feature; a feature created under a padded issue is still found, because the local half tries the canonical spelling first and the one it was given second. Anything else is refused before anything is deleted |
 | `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recorded and recomputed feature name regardless |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
 | `--dry-run` | `prune` | `false` | List the blocks it would free, and write nothing |
@@ -73,7 +73,7 @@ Every kit host the feature could have stood up is one of the scripts: `destroy` 
 
 When it is **not** on the machine, which is every CI runner, the two differ:
 
-- **The manifest is gone, and the run says so.** `manifestReachable` is `false` in `--json`, and stdout carries `No feature manifest at <path>.` followed by `Resources only it recorded were not deleted.` Everything named from the branch and the checkout's config still goes; a resource provisioned for a binding the config no longer declares does not. That is a real narrowing and it is stated rather than left to be inferred from a shorter list.
+- **The manifest is gone, and the run says so.** `manifestRead` is `false` in `--json`, and stdout carries `No feature manifest at <path>.` followed by `Deleted by recomputed name alone; anything only it recorded is still there.` Everything named from the branch and the checkout's config still goes; a resource provisioned for a binding the config no longer declares does not. That is a real narrowing and it is stated rather than left to be inferred from a shorter list. The field answers **whether a manifest was read**, not whether a directory exists — a `.worktrees/<issue>-<slug>` an earlier teardown left behind holds no record, and a run that found none says so.
 - **The config comes from the checkout, so check out the feature's own ref.** A workflow on `pull_request: closed` must check out `refs/pull/<n>/head` — the merge commit's parent carries the feature's `apps/<name>/pithy.config.ts`, and that is what makes the reconcile the feature's own. A runner left on the trunk reconciles against the trunk's bindings, which is the same narrowing the manifest line reports, one level worse. The event payload gives you both: `github.event.pull_request.head.ref` for `--branch`, `github.event.pull_request.head.sha` for the checkout.
 
 **A runner has no worktree, no port block and no branch, and the report says so rather than claiming otherwise.** All three are machine-local — the port registry is `<config>/dev-ports.json` on the machine that ran `feature create` — so on a fresh container there is nothing local to tear down. That is a successful run, not a failure: the remote half is reported, and the local half reports `portsFreed: false`, `worktreePruned: false`, `branchDeleted: false`, with `No port block and no worktree here. Nothing local to tear down.` on stdout. That sentence reads all three fields, so it is never printed over a run that deleted a branch; a run that did prints `Branch feature/<issue>-<slug> deleted.` instead. `portsFreed` answers from the registry write, so it is `false` wherever nothing was there to free — including a re-run of a teardown that already freed it.
@@ -151,7 +151,7 @@ The payload for a feature's Cloudflare environment is [`provision.md`](provision
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestReachable":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
+{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestRead":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
 ```
 
 | key | type | meaning |
@@ -164,8 +164,8 @@ $ pithy feature destroy --json
 | `remote` | `boolean` | Whether the remote teardown ran. `false` under `--local-only` |
 | `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry — whether there was one. `false` when the registry held no block for this branch, which is every CI runner, and a re-run of a teardown that already freed it |
 | `branch` | `string` | The feature branch this run was about, canonically spelled. `--branch feature/012-x` reports `feature/12-x`: a caller that logs what it asked for and a report that says what was torn down should not be two strings |
-| `manifestReachable` | `boolean` | Whether the feature's own `.pithy-feature.json` was read. `false` when its worktree is not on this machine, which narrows the teardown to recomputed names |
-| `manifestPath` | `string` | Where that manifest is — read, or merely named when `manifestReachable` is `false` |
+| `manifestRead` | `boolean` | Whether the feature's own `.pithy-feature.json` was read. `false` when its worktree is not on this machine, when the directory is there and the file is not, and whenever the remote half did not run — each of which narrows the teardown to recomputed names |
+| `manifestPath` | `string` | Where that manifest is — read, or merely named when `manifestRead` is `false` |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |
 | `branchDeleted` | `boolean` | Whether the feature branch was deleted. Only when it has been merged |
 | `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is 1 |

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -44,10 +45,24 @@ import type { MintStoreSecret } from "../provision/secretBindings";
  * was created and which entry it went to.
  */
 
-/** The slice of the Secrets Store minting needs: write an entry. Never reads, never deletes. */
+/**
+ * The slice of the Secrets Store minting needs: **create** an entry. Never reads, never deletes.
+ *
+ * Create-if-absent, not a plain write, and the outcome comes back (#660 review). A minted value is
+ * created once and never regenerated, and `secretsStoreBindings` checks absence first — but a check is
+ * not a lock. Two runs can both see an entry absent, and the loser of that race must not overwrite the
+ * winner, must not be recorded as having minted, and must not be reported as having minted. `create`
+ * answers which of the three happened, and every one of those three sentences turns on the answer.
+ */
 export interface MintDestination {
-  /** Write a value under `name`. Overwrites in place — which is why the caller checks absence first. */
-  put(name: string, value: string): Promise<void>;
+  /**
+   * Write a value under `name` only if nothing is there.
+   *
+   * `created` when this call made it — the only outcome under which this run's value is the one the
+   * Worker will read. `present` when one was there already; `unconfirmed` when the create failed and an
+   * entry is there now, perhaps not this call's.
+   */
+  create(name: string, value: string): Promise<CreateSecretOutcome>;
 }
 
 /** Build the live minter for one environment's Secrets Store. */
@@ -90,13 +105,21 @@ export function storeSecretMinter(options: {
     // This wrote an envelope unconditionally, which is the defect that wave was about, at a new producer.
     const value = mintSecretValue(entry.devValue);
     const stated = initialDevSecret(entry, value);
-    await options.store.put(secretName, devSecretPayload(entry, secretName, stated).text);
-    // **After the write, and only after it (#660).** A value remembered before the store accepted it is
-    // a value a prepared set could seal against while the entry the Worker reads holds something else,
-    // or nothing. Recorded under the *registry* name, which is what a set asks by — `secretName` is the
-    // scoped entry address, and a set has no business composing one.
+    const wrote = await options.store.create(secretName, devSecretPayload(entry, secretName, stated).text);
+    // **`created`, and nothing else (#660 review).** `present` means another run got there in the window
+    // after the absence check, and `unconfirmed` means this create failed over an entry that is there
+    // now — in both, the store holds a value this run never generated, and the one below is a string
+    // nothing will ever read. Recording it anyway hands a prepared set a key that opens nothing: a row
+    // sealed under it is unopenable, on a run that exits 0 saying it minted. There is no repair for that
+    // after the fact, because nothing can read the entry back to compare.
+    //
+    // Recorded under the *registry* name, which is what a set asks by — `secretName` is the scoped entry
+    // address, and a set has no business composing one.
+    if (wrote !== "created") return wrote;
     options.minted?.record(secret, value);
-    // The name, the entry, the environment. Never the value, and nothing derived from it.
+    // The name, the entry, the environment. Never the value, and nothing derived from it. Emitted only
+    // for a create that happened, for the same reason: a trail saying a key was generated on a run that
+    // generated nothing is a trail an operator would act on.
     await audit({
       environment: options.environment,
       action: "secrets/set",
@@ -106,6 +129,7 @@ export function storeSecretMinter(options: {
       resourceId: secretName,
       metadata: { name: secretName, binding, kind: "generated" },
     });
+    return wrote;
   };
 }
 

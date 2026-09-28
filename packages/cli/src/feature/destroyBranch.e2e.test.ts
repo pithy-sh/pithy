@@ -266,7 +266,7 @@ describe("pithy feature destroy --branch, from a detached HEAD — #660", () => 
       branchDeleted: false,
       // And the feature's own manifest was not on this machine, which the report states rather than
       // passing over — see the manifest suite below.
-      manifestReachable: false,
+      manifestRead: false,
       manifestPath: join(dir, ".worktrees", "12-x", ".pithy-feature.json"),
     });
     // Asked of the account, not merely printed: the deletes went out, addressed to the pinned account.
@@ -446,7 +446,7 @@ describe("a named feature's own record — #660", () => {
     });
 
     expect(code).toBe(0);
-    const report = JSON.parse(stdout.trim()) as { deletedResources: { id: string }[]; manifestReachable: boolean };
+    const report = JSON.parse(stdout.trim()) as { deletedResources: { id: string }[]; manifestRead: boolean };
     // `gone-uuid` is the manifest's alone; `extra-uuid` is the branch config's alone. Both were invisible
     // to a teardown reading `main`'s copy of each, and both go.
     expect(report.deletedResources.map((resource) => resource.id).sort()).toEqual([
@@ -455,7 +455,7 @@ describe("a named feature's own record — #660", () => {
       "gone-uuid",
       "replay-f12-x--board",
     ]);
-    expect(report.manifestReachable).toBe(true);
+    expect(report.manifestRead).toBe(true);
     // The record it read is removed with the feature, on the clean pass, from where it actually lived.
     expect(existsSync(join(worktree, ".pithy-feature.json"))).toBe(false);
   });
@@ -499,7 +499,36 @@ describe("a named feature's own record — #660", () => {
     expect(code).toBe(0);
     // Plainly, in the human output: the path, and what its absence means for what was deleted.
     expect(stdout).toContain(`No feature manifest at ${join(root, ".worktrees", "12-x", ".pithy-feature.json")}.`);
-    expect(stdout).toContain("Resources only it recorded were not deleted.");
+    expect(stdout).toContain("Deleted by recomputed name alone; anything only it recorded is still there.");
+  });
+
+  /**
+   * **`manifestRead` means a manifest was read — #660 review.**
+   *
+   * It answered "the directory exists", which a bare `.worktrees/12-x` satisfies while holding no record
+   * at all. So a teardown that deleted by recomputed name alone reported that it had consulted the
+   * record, and the sentence saying otherwise was suppressed — the narrowing went unsaid in exactly the
+   * state it was added for.
+   */
+  test("**an empty worktree is not a manifest, and the run does not claim one**", async () => {
+    const root = await mainCheckout();
+    dirs.push(root);
+    // A directory where the feature's worktree would be, holding nothing. A teardown that ran with
+    // `--local-only` and left its files behind looks exactly like this.
+    await mkdir(join(root, ".worktrees", "12-x"), { recursive: true });
+    const account = await stubCloudflare({
+      scripts: ["replay-f12-x--board"],
+      databases: [{ name: "replay-f12-x--db-d1", id: "db-uuid" }],
+    });
+    servers.push(account);
+
+    const { code, stdout } = await pithy(["feature", "destroy", "--branch", "feature/12-x"], {
+      cwd: root,
+      env: ciEnv(root, account),
+    });
+
+    expect(code).toBe(0);
+    expect(stdout).toContain(`No feature manifest at ${join(root, ".worktrees", "12-x", ".pithy-feature.json")}.`);
   });
 
   test("from inside another feature's worktree, the named feature's own record is the one read", async () => {
@@ -771,6 +800,96 @@ describe("a branch's issue is canonical — #660", () => {
     expect(JSON.parse(stdout.trim())).toMatchObject({ portsFreed: true });
     const registry = JSON.parse(await readFile(join(configDir, "dev-ports.json"), "utf8")) as Record<string, unknown>;
     expect(registry[realRoot]).toBeUndefined();
+  });
+
+  /**
+   * **A feature created before the issue was canonicalised still tears down — #660 review.**
+   *
+   * `pithy feature create --issue 012` cut `feature/012-x` and `.worktrees/012-x` and reserved a
+   * `feature/012-x` port key, while provisioning `replay-f12-x--*`. Canonicalising the branch makes the
+   * remote half right and, on its own, makes all three local things invisible: the run frees nothing,
+   * prunes nothing, and prints "Nothing local to tear down" over a worktree that is sitting there.
+   *
+   * So the local half tries the canonical spelling and then the one it was actually given. Both entry
+   * points, because a developer standing in `.worktrees/012-x` infers `feature/012-x` and a runner is
+   * handed it.
+   */
+  describe("a feature created under a padded issue", () => {
+    /** The registry a `--issue 012` feature reserved: its key is the padded spelling. */
+    async function paddedRegistry(root: string): Promise<{ path: string; realRoot: string }> {
+      const configDir = join(root, ".pithy-config");
+      await mkdir(configDir, { recursive: true });
+      const realRoot = (await run("realpath", [root])).stdout.trim();
+      const path = join(configDir, "dev-ports.json");
+      await writeFile(path, JSON.stringify({ [realRoot]: { "feature/012-x": { block: 0, base: 9000, size: 10 } } }));
+      return { path, realRoot };
+    }
+
+    test("**--branch feature/012-x frees the padded block and prunes the padded worktree**", async () => {
+      const root = await mainCheckout();
+      dirs.push(root);
+      const worktree = await addFeature(root, "012", "x", [{ name: "DB", type: "d1" }]);
+      await writeFile(join(worktree, ".dev.config.json"), JSON.stringify({ version: 1, branch: "feature/012-x" }));
+      const registry = await paddedRegistry(root);
+
+      const { code, stdout } = await pithy(
+        ["feature", "destroy", "--branch", "feature/012-x", "--local-only", "--json"],
+        { cwd: root, env: localEnv(root) },
+      );
+
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout.trim())).toMatchObject({ portsFreed: true, worktreePruned: true });
+      expect(existsSync(join(worktree, ".dev.config.json"))).toBe(false);
+      const held = JSON.parse(await readFile(registry.path, "utf8")) as Record<string, unknown>;
+      expect(held[registry.realRoot]).toBeUndefined();
+    });
+
+    test("the inferred path does too, standing in the padded worktree", async () => {
+      const root = await mainCheckout();
+      dirs.push(root);
+      const worktree = await addFeature(root, "012", "x", [{ name: "DB", type: "d1" }]);
+      await writeFile(join(worktree, ".dev.config.json"), JSON.stringify({ version: 1, branch: "feature/012-x" }));
+      const registry = await paddedRegistry(root);
+
+      const { code, stdout } = await pithy(["feature", "destroy", "--local-only", "--json"], {
+        cwd: worktree,
+        env: localEnv(root),
+      });
+
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout.trim())).toMatchObject({ portsFreed: true, worktreePruned: true });
+      expect(existsSync(join(worktree, ".dev.config.json"))).toBe(false);
+      const held = JSON.parse(await readFile(registry.path, "utf8")) as Record<string, unknown>;
+      expect(held[registry.realRoot]).toBeUndefined();
+    });
+
+    /** The canonical spelling is tried first, so a feature created after this change is unaffected. */
+    test("a canonical feature is still found under its own name, from both paths", async () => {
+      const root = await mainCheckout();
+      dirs.push(root);
+      const worktree = await addFeature(root, "12", "x", [{ name: "DB", type: "d1" }]);
+      await writeFile(join(worktree, ".dev.config.json"), JSON.stringify({ version: 1, branch: "feature/12-x" }));
+      const configDir = join(root, ".pithy-config");
+      await mkdir(configDir, { recursive: true });
+      const realRoot = (await run("realpath", [root])).stdout.trim();
+      await writeFile(
+        join(configDir, "dev-ports.json"),
+        JSON.stringify({ [realRoot]: { "feature/12-x": { block: 0, base: 9000, size: 10 } } }),
+      );
+
+      const { code, stdout } = await pithy(
+        ["feature", "destroy", "--branch", "feature/012-x", "--local-only", "--json"],
+        { cwd: root, env: localEnv(root) },
+      );
+
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout.trim())).toMatchObject({
+        portsFreed: true,
+        worktreePruned: true,
+        branch: "feature/12-x",
+      });
+      expect(existsSync(join(worktree, ".dev.config.json"))).toBe(false);
+    });
   });
 
   test("the remote half is feature 12's either way, which it already was", async () => {

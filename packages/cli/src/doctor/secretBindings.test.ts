@@ -421,6 +421,7 @@ async function pithySecretsProvision(where: Account, targets: readonly DevSecret
         exists: async (name) => where.store.has(name),
         mint: async ({ secretName }) => {
           where.store.set(secretName, "minted");
+          return "created" as const;
         },
       });
       await applySecretBindings(target.dir, env, bound);
