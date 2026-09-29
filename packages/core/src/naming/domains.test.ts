@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { baseUrlFor, domainFor, LOCAL_ORIGIN, originFor, resolveOrigin, WorkerDomains } from "./domains";
+import {
+  baseUrlFor,
+  domainFor,
+  isPublicHostname,
+  LOCAL_ORIGIN,
+  originFor,
+  resolveOrigin,
+  WorkerDomains,
+} from "./domains";
 
 const DOMAINS = WorkerDomains.parse({
   staging: { pattern: "staging.api.example.com", zone: "example.com" },
@@ -157,5 +165,43 @@ describe("a feature environment's origin", () => {
 
   test("is the local placeholder when nothing was stamped", () => {
     expect(originFor("feature", undefined, {})).toBe(LOCAL_ORIGIN);
+  });
+});
+
+describe("isPublicHostname", () => {
+  test("takes an ordinary hostname", () => {
+    for (const hostname of ["example.com", "api.example.com", "a.b.c.example.com", "xn.example.com"]) {
+      expect(isPublicHostname(hostname), hostname).toBe(true);
+    }
+  });
+
+  /**
+   * **A punycode label is refused, and the kit decides that rather than a URL parser (#662-adjacent).**
+   *
+   * `xn--a.test` is a malformed A-label: legal DNS syntax, invalid as an encoding. Nothing here used to
+   * say so — `seedHostOrigin` asked `new URL` and took the throw as the answer. Node 24.20.0 bumped Ada
+   * from 3.4.4 to 4.0.0, Ada 4 stopped rejecting invalid punycode, and the same `pithy seed --host`
+   * started succeeding on Node 24 and failing on Node 22. A rule the kit borrows from a parser is a rule
+   * that changes under it, so this states it: an `xn--` label is not a hostname Pithy takes.
+   *
+   * Whole labels, not a substring — `xn.example.com` and `myxn--a.test` are ordinary names that happen to
+   * read that way, and refusing them would be this rule reaching past what it is about.
+   */
+  test("refuses a punycode label, on every runtime, wherever it sits", () => {
+    for (const hostname of [
+      "xn--a.test",
+      "a.xn--.test",
+      "xn--bcher-kva.example",
+      "example.xn--p1ai",
+      "XN--A.TEST".toLowerCase(),
+    ]) {
+      expect(isPublicHostname(hostname), hostname).toBe(false);
+    }
+  });
+
+  test("a label that merely contains xn-- is an ordinary label", () => {
+    for (const hostname of ["myxn--a.test", "axn--b.example.com"]) {
+      expect(isPublicHostname(hostname), hostname).toBe(true);
+    }
   });
 });

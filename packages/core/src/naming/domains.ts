@@ -42,15 +42,37 @@ import { ENVIRONMENTS, FEATURE_ENVIRONMENT } from "./environment";
 const HOSTNAME_PATTERN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
 
 /**
+ * **A label that is a punycode A-label — the ASCII spelling of an internationalized name.**
+ *
+ * Anchored to a label boundary, so it is `xn--a.test` and `example.xn--p1ai` and never `myxn--a.test`:
+ * a name that merely reads that way is an ordinary name, and refusing it would be this rule reaching
+ * past what it is about.
+ */
+const PUNYCODE_LABEL = /(^|\.)xn--/;
+
+/**
  * Whether a string is a public hostname: dot-separated DNS labels, at least two, lowercase. No scheme, no
  * port, no trailing dot, and nothing a URL parser decoded into one — `%2e%2e` is `..` once parsed, which is an
  * empty label rather than a host (#643). `localhost` is not one: it has a single label, and it is this machine.
  *
  * The one test for "is this a host" that an origin read from a stamp and an origin typed on a command line
  * both pass, so the two cannot accept different things.
+ *
+ * **It answers the same on every runtime, and that is why the punycode rule is stated here.** It used to be
+ * borrowed: `seedHostOrigin` asked `new URL` to parse the host and took a throw as the answer, and an invalid
+ * A-label like `xn--a.test` was refused because the parser refused it. Node 24.20.0 bumped Ada from 3.4.4 to
+ * 4.0.0, Ada 4 stopped rejecting invalid punycode, and the same `pithy seed --host` began succeeding on Node 24
+ * while still failing on Node 22 — one command, two answers, decided by the adopter's Node. A rule borrowed from
+ * a parser changes under you, so this owns it.
+ *
+ * **Every A-label is refused, valid or not.** Telling a good one from a bad one is UTS-46, which needs IDNA
+ * mapping tables this package is not carrying into a Worker for the sake of a hostname check — and
+ * {@link HOSTNAME_PATTERN} is ASCII-only anyway, so a Unicode domain never reached here to begin with. This
+ * closes the hand-encoded spelling, and internationalized domains are a feature with a specification behind
+ * them rather than a side effect of a parser version.
  */
 export function isPublicHostname(hostname: string): boolean {
-  return hostname.length <= 253 && HOSTNAME_PATTERN.test(hostname);
+  return hostname.length <= 253 && HOSTNAME_PATTERN.test(hostname) && !PUNYCODE_LABEL.test(hostname);
 }
 
 /** The environments a domain may be declared for — every managed one, never `dev`. */
