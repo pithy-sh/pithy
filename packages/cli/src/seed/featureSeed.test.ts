@@ -392,7 +392,13 @@ describe("seedHostOrigin", () => {
     }
   });
 
-  test("refuses a host new URL rejects, everywhere — xn--a.test is not a hostname", () => {
+  /**
+   * **Refused by `isPublicHostname`, not by the parser — and that is the point (Node 24.20.0).** These were
+   * refused because `new URL` threw on them; Ada 4.0.0 stopped throwing, and the same host was taken on Node 24
+   * and refused on Node 22. The rule is the kit's now, so this asserts one answer rather than whichever Node is
+   * installed.
+   */
+  test("refuses a punycode label, everywhere — xn--a.test is not a hostname", () => {
     for (const env of ["dev", "feature"]) {
       for (const host of ["xn--a.test", "https://xn--a.test", "a.xn--.test"]) {
         expect(refused(host, env), `${env} ${host}`).toBe(true);

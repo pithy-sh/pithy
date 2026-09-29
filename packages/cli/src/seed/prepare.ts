@@ -234,8 +234,12 @@ export function seedHostOrigin(host: string, env: string): string {
   // **As a URL parser reads it, or not at all (#643).** `new URL` is what every consumer of this origin parses it
   // with, and it reads `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `2130706433` all as `127.0.0.1`, and `0` as
   // `0.0.0.0` — this machine, spelled so that no pattern here sees it. So a host is taken only in the spelling
-  // the parser gives back, and one the parser refuses outright — `xn--a.test`, an invalid punycode label — is
-  // not a host at all.
+  // the parser gives back, and one it refuses to parse at all is no host either.
+  //
+  // **What the parser is asked is canonical spelling, and nothing else.** It used to be asked whether a punycode
+  // label was valid too, and it answered until Node 24.20.0 shipped Ada 4.0.0 and stopped: `xn--a.test` was
+  // refused on Node 22 and taken on Node 24, from one command. That rule is `isPublicHostname`'s now, where it
+  // reads the same on every runtime — the catch below is for a host no parser will take, not for punycode.
   let canonical: string;
   try {
     canonical = new URL(`${scheme}://${hostname}`).hostname;
