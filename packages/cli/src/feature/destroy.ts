@@ -19,7 +19,7 @@ import { defaultGit, type FeatureRecord, featureNames, type GitRunner, teardownW
  * `pithy feature destroy` — the teardown half, run from within the worktree. It reverses both remote and
  * local, in order: delete the feature's Worker scripts and Cloudflare resources (the manifest's record,
  * then every name recomputed from the identity), free the feature's port block, and finally prune the
- * worktree the Linux-safe way. Every step is idempotent, so a
+ * worktree. Every step is idempotent, so a
  * partial-failed provision or a half-torn-down feature still tears down to zero, exiting 0. It is exactly
  * what the merge-to-main CI job runs headlessly.
  */
@@ -273,7 +273,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
       ? featureNames(options.spelled, options.identity.slug, root).branch
       : null;
   // Drop the feature's pinned ports **before** freeing its registry key, and in that order. Teardown leaves
-  // the worktree's files on disk by design (recursive deletion is what we must never do on Linux), and
+  // the worktree's files in place whenever a dev session may still be watching it, and
   // `.dev.config.json` is a port claim: every later `feature create`/`sync` rebuilds the registry from the
   // pinned blocks it finds under `.worktrees`, so a surviving one hands this branch its block straight back —
   // permanently, to a feature that no longer exists. Removing one file is not a recursive delete. If the run

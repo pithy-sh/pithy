@@ -2,19 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { devStatePath } from "../dev/state";
 
 const run = promisify(execFile);
 
 /**
  * The git worktree/branch core behind `pithy feature create`/`destroy`. It is the same proven shape as
  * the repo's `scripts/worktree.ts` — compose `feature/<issue>-<slug>` + `.worktrees/<issue>-<slug>` from
- * the issue and slug, attach-or-cut the branch, and tear down the Linux-safe way (`rm .git` +
- * `git worktree prune`, never `rm -rf`/`git worktree remove`, which trigger inotify storms on Linux) —
+ * the issue and slug, attach-or-cut the branch, and tear down by dropping the gitlink and pruning the
+ * registration (never `git worktree remove`) before removing the directory —
  * ported into the CLI: async (no `execFileSync`), runtime- and package-manager-agnostic, and free of the
  * `.dev.vars` symlinking, which the richer consolidated composition (`devVars.ts`) supersedes.
  */
@@ -218,7 +219,7 @@ export interface CreateWorktreeResult extends FeatureNames {
  * Create the feature's branch and worktree, or no-op if the worktree is already registered. Attaches to
  * the branch when it already exists (a re-run after teardown left the branch behind); otherwise cuts a
  * fresh one from the trunk. Idempotent **only** while the worktree stays registered — a re-run after
- * {@link teardownWorktree} (which deliberately leaves the files on disk) fails with an actionable
+ * {@link teardownWorktree} (which keeps them only when a dev session may still be watching) fails with an actionable
  * `ConflictError` instead of a raw git error, because those leftover files must not be recursively
  * deleted on Linux (CLAUDE.md).
  */
@@ -239,8 +240,9 @@ export async function createWorktree(options: {
     throw new ConflictError({
       message: `${names.wtPath} already exists and is not empty.`,
       action:
-        "A previous 'pithy feature destroy' left these files on disk by design. Once no file watcher or editor " +
-        `has it open, remove the directory yourself (rm -r ${names.wtPath}) and re-run 'pithy feature create'.`,
+        "Teardown removes the directory, so something else left this one: a 'pithy dev' session that was " +
+        "running when the feature was destroyed, or a tree made by hand. Remove it yourself " +
+        `(rm -r ${names.wtPath}) and re-run 'pithy feature create'.`,
       detail: `git worktree add would fail: ${names.wtPath} is an unregistered, non-empty directory.`,
     });
   }
@@ -312,6 +314,35 @@ export interface FeatureRecord {
 }
 
 /** The outcome of {@link teardownWorktree}: what was actually removed. */
+/**
+ * Whether a `pithy dev` session may still be supervising this worktree. `.dev-state.json` records the
+ * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signalling it.
+ *
+ * **It fails safe, and deliberately does not parse through {@link DevState}.** The only question here is
+ * "may something still be watching", and the answer gates a recursive delete — so anything short of proof
+ * that the process is gone keeps the files. No file at all is the one confident "no": the file is
+ * ephemeral and its absence is the ordinary case. A file that will not read, will not parse, or carries no
+ * numeric pid counts as live, because that is exactly what a session killed mid-write leaves behind.
+ * `EPERM` counts as live too — the process exists and belongs to somebody else.
+ */
+function hasLiveDevSession(worktreePath: string): boolean {
+  const statePath = devStatePath(worktreePath);
+  if (!existsSync(statePath)) return false;
+  let pid: unknown;
+  try {
+    pid = JSON.parse(readFileSync(statePath, "utf8")).pid;
+  } catch {
+    return true;
+  }
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 export interface TeardownWorktreeResult extends FeatureNames {
   /** True when a registered worktree was pruned. */
   pruned: boolean;
@@ -320,13 +351,24 @@ export interface TeardownWorktreeResult extends FeatureNames {
 }
 
 /**
- * Tear down the feature's worktree the Linux-safe way and drop its branch. Drops the gitlink then prunes
- * the registration — never `rm -rf` or `git worktree remove`, whose recursive delete over a node_modules
- * tree triggers inotify storms that crash the box (CLAUDE.md). Files remain on disk by design (the dir is
- * git-ignored). The lowercase `-d` refuses an unmerged branch, so an open feature keeps its branch.
- * Idempotent for repeated teardowns: nothing registered / no branch is a clean no-op. Recreating the same
- * feature afterwards is **not** automatically idempotent — the leftover files on disk make
- * {@link createWorktree} fail loudly until an operator clears them; see its docstring.
+ * Tear down the feature's worktree and drop its branch. Drops the gitlink, prunes the registration, then
+ * removes the directory. Never `git worktree remove`, which is what recursed while git still held the
+ * registration; the order here is what makes the delete ordinary — by the time it runs, git has forgotten
+ * the tree entirely.
+ *
+ * **This only ever runs on a teardown that got that far.** `featureDestroy` throws before reaching it when
+ * the remote half fails, precisely so the checkout a re-run happens from — and the `.pithy-feature.json`
+ * saying what is left to delete — survive. Deleting here is therefore scoped to the case where nothing is
+ * left to resume.
+ *
+ * **A live `pithy dev` session keeps its files.** Removing thousands of `node_modules` paths out from under
+ * a running watcher is the one shape that has crashed a box (CLAUDE.md), and a supervising session is the
+ * half of that this can actually detect: `.dev-state.json` names the pid. When one is alive the directory
+ * is kept and said so, and `pithy feature prune` clears it later. An editor's watcher cannot be detected
+ * from here and remains the operator's to know.
+ *
+ * The lowercase `-d` refuses an unmerged branch, so an open feature keeps its branch. Idempotent for
+ * repeated teardowns: nothing registered / no branch is a clean no-op.
  */
 export async function teardownWorktree(options: {
   issue: string;
@@ -343,6 +385,12 @@ export async function teardownWorktree(options: {
     if (existsSync(gitlink)) rmSync(gitlink);
     await git(["worktree", "prune"], root);
     pruned = true;
+  }
+
+  // Remove the directory once git no longer knows about it. Guarded on a live dev session only: see the
+  // docstring for why that is the one watcher this can see.
+  if (existsSync(names.wtPath) && !hasLiveDevSession(names.wtPath)) {
+    rmSync(names.wtPath, { recursive: true, force: true });
   }
 
   let branchDeleted = false;

@@ -7,7 +7,7 @@
  * Given an issue number and a short kebab slug, it composes both names itself —
  * branch `feature/<issue>-<slug>`, folder `.worktrees/<issue>-<slug>` — so callers
  * never format paths. `setup` creates and wires the worktree (or no-ops if it
- * already exists); `teardown` removes it the Linux-safe way and prunes the branch.
+ * already exists); `teardown` prunes the registration, removes the directory, and drops the branch.
  *
  * Dependency-free and runtime-agnostic on purpose: this is the minimal core the
  * future `pithy feature create/destroy` command (issue #25) will wrap, adding the
@@ -15,7 +15,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /** Run git, return trimmed stdout. Throws on a non-zero exit. */
@@ -136,18 +136,52 @@ function configure(wtPath: string): void {
   execFileSync("bun", ["install"], { cwd: wtPath, stdio: "inherit" });
 }
 
+/**
+ * Whether a `pithy dev` session is still supervising this worktree. `.dev-state.json` records the
+ * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signalling it. Fails safe:
+ * only the absence of the file is a confident "no session". A file that will not read or carries no
+ * numeric pid counts as live, which is what a session killed mid-write leaves behind. `EPERM` counts as
+ * live too — the process exists and is somebody else's.
+ */
+function hasLiveDevSession(wtPath: string): boolean {
+  const statePath = join(wtPath, ".dev-state.json");
+  if (!existsSync(statePath)) return false;
+  let pid: unknown;
+  try {
+    pid = JSON.parse(readFileSync(statePath, "utf8")).pid;
+  } catch {
+    return true; // fails safe: a file that will not read is what a session killed mid-write leaves
+  }
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 function teardown(issue: string, slug: string): void {
   const { branch, wtPath, root } = names(issue, slug);
 
   if (isRegistered(wtPath)) {
-    // Linux-safe removal: drop the gitlink, then prune the registration. Never
-    // `rm -rf` or `git worktree remove` — recursive deletion over a node_modules
-    // tree triggers inotify storms that crash the box (CLAUDE.md).
+    // Drop the gitlink, prune the registration, then remove the directory — in that order. Never
+    // `git worktree remove`, which recursed while git still held the registration; by the time the
+    // delete runs here git has forgotten the tree and it is an ordinary directory.
     const gitlink = join(wtPath, ".git");
     if (existsSync(gitlink)) rmSync(gitlink);
     git(["worktree", "prune"], root);
     console.log(`Worktree pruned. ${wtPath}`);
-    console.log("Files remain on disk by design; the directory is git-ignored. Remove it when no watchers are active.");
+    // A live `pithy dev` session keeps its files: deleting thousands of node_modules paths out from
+    // under a running watcher is the shape that has crashed a box (CLAUDE.md), and the supervising pid
+    // in `.dev-state.json` is the half of that this can detect. An editor's watcher cannot be.
+    if (existsSync(wtPath) && hasLiveDevSession(wtPath)) {
+      console.log("A pithy dev session is still running there, so the files were kept.");
+      console.log("Stop it and re-run, or clear the directory with `pithy feature prune`.");
+    } else if (existsSync(wtPath)) {
+      rmSync(wtPath, { recursive: true, force: true });
+      console.log("Directory removed.");
+    }
   } else {
     console.log("No worktree to remove.");
   }

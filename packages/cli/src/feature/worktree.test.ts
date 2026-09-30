@@ -3,7 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -153,7 +153,8 @@ describe("worktree (real git)", () => {
 
     const list = await run("git", ["worktree", "list"], { cwd: repo });
     expect(list.stdout).not.toContain(created.wtPath);
-    expect(existsSync(join(created.wtPath, ".git"))).toBe(false);
+    // The directory goes too, once git has forgotten the registration.
+    expect(existsSync(created.wtPath)).toBe(false);
 
     const branches = await run("git", ["branch", "--list", "feature/77-demo"], { cwd: repo });
     expect(branches.stdout.trim()).toBe("");
@@ -162,13 +163,50 @@ describe("worktree (real git)", () => {
     expect(second.pruned).toBe(false);
   });
 
-  test("recreating after teardown fails with an actionable PithyError, not a raw git error", async () => {
-    const created = await createWorktree({ issue: "77", slug: "demo" });
+  test("recreating after a clean teardown succeeds, because the directory went with it", async () => {
+    await createWorktree({ issue: "77", slug: "demo" });
     await teardownWorktree({ issue: "77", slug: "demo" });
 
-    // Teardown deliberately left the files behind (CLAUDE.md forbids recursive delete on Linux).
+    const again = await createWorktree({ issue: "77", slug: "demo" });
+    expect(again.created).toBe(true);
+  });
+
+  test("a live pithy dev session keeps the worktree's files", async () => {
+    const created = await createWorktree({ issue: "77", slug: "demo" });
+    // This process is alive by construction, so the guard must read it as a running session.
+    await writeFile(join(created.wtPath, ".dev-state.json"), JSON.stringify({ pid: process.pid }), "utf8");
+
+    const result = await teardownWorktree({ issue: "77", slug: "demo" });
+    expect(result.pruned).toBe(true);
     expect(existsSync(created.wtPath)).toBe(true);
     expect(existsSync(join(created.wtPath, ".git"))).toBe(false);
+  });
+
+  test("a state file that will not parse keeps the files, because the guard fails safe", async () => {
+    const created = await createWorktree({ issue: "77", slug: "demo" });
+    // What a session killed mid-write leaves behind. The only question the guard answers is "may
+    // something still be watching", and it gates a recursive delete, so doubt keeps the files.
+    await writeFile(join(created.wtPath, ".dev-state.json"), '{"pid": 12', "utf8");
+
+    await teardownWorktree({ issue: "77", slug: "demo" });
+    expect(existsSync(created.wtPath)).toBe(true);
+  });
+
+  test("a dead session's state file does not keep the files", async () => {
+    const created = await createWorktree({ issue: "77", slug: "demo" });
+    // A pid that cannot be running: the kernel reserves 0, and kill(0, 0) signals our own group.
+    await writeFile(join(created.wtPath, ".dev-state.json"), JSON.stringify({ pid: 2 ** 31 - 1 }), "utf8");
+
+    await teardownWorktree({ issue: "77", slug: "demo" });
+    expect(existsSync(created.wtPath)).toBe(false);
+  });
+
+  test("a directory left behind some other way still fails createWorktree actionably", async () => {
+    const created = await createWorktree({ issue: "77", slug: "demo" });
+    await teardownWorktree({ issue: "77", slug: "demo" });
+    // Not a state teardown produces any more — a stray tree, or one a live session kept.
+    await mkdir(created.wtPath, { recursive: true });
+    await writeFile(join(created.wtPath, "stray.txt"), "x", "utf8");
 
     const failure = await createWorktree({ issue: "77", slug: "demo" }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PithyError);
@@ -177,7 +215,7 @@ describe("worktree (real git)", () => {
     expect(error.payload.action).toBeTruthy();
     expect(error.payload.action).not.toMatch(/fatal:/);
 
-    // The leftover directory is untouched — no recursive delete happened on its behalf.
+    // The stray directory is untouched — createWorktree deletes nothing on its behalf.
     expect(existsSync(created.wtPath)).toBe(true);
   });
 });
