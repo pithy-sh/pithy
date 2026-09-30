@@ -94,7 +94,8 @@
     "**/node_modules/*/**": true,
     "**/.worktrees/**/.smoke-*/**": true,
     "**/.wrangler/*/**": true,
-    "**/.turbo/*/**": true
+    "**/.turbo/*/**": true,
+    "**/.worktrees/**": true
   },
   "files.exclude": {
     "**/.worktrees/**/.smoke-*/**": true

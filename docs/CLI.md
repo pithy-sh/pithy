@@ -54,31 +54,14 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy --help` / `pithy -h` | Show help for any command |
 | `pithy --version` / `pithy -v` | Print the installed version |
 
-**Every Worker lives in `apps/<name>/`, and owns its own config.** There is no root Worker. A Worker's
-`apps/<name>/pithy.config.ts` declares `{ capabilities, app }` — what *that* Worker is made of — because
-everything capabilities drive is per-Worker: the composed route tree, the `requiredBindings` written into
-that Worker's `wrangler.jsonc`, and Durable Object class migrations, which register a class against a
-specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the leading
-segment of **every** name this project provisions — D1, KV, R2, Vectorize, Worker scripts, Workflows, Secrets
-Store entries, API tokens; see `docs/NAMING.md`), `tokens`, `seed.productionEnvironments`, and
-`administersItself` — one of this project's own Workers is the control plane it calls, so every stanza
-provisioning generates gets a `SELF` service binding, because a Worker cannot fetch its own hostname
-(`docs/commands/provision.md`). `name` stops at 26 characters and is effectively permanent;
-`docs/NAMING.md` derives the number and lists every namespace's real limit.
+**Every Worker lives in `apps/<name>/`, and owns its own config.** There is no root Worker. A Worker's `apps/<name>/pithy.config.ts` declares `{ capabilities, app }` — what *that* Worker is made of — because everything capabilities drive is per-Worker: the composed route tree, the `requiredBindings` written into that Worker's `wrangler.jsonc`, and Durable Object class migrations, which register a class against a specific script. The **root** `pithy.config.ts` carries only what cannot be per-Worker: `name` (the leading segment of **every** name this project provisions — D1, KV, R2, Vectorize, Worker scripts, Workflows, Secrets Store entries, API tokens; see `docs/NAMING.md`), `tokens`, `seed.productionEnvironments`, and `administersItself` — one of this project's own Workers is the control plane it calls, so every stanza provisioning generates gets a `SELF` service binding, because a Worker cannot fetch its own hostname (`docs/commands/provision.md`). `name` stops at 26 characters and is effectively permanent; `docs/NAMING.md` derives the number and lists every namespace's real limit.
 
 **One project, or two?** Do these apps share users or data? Then it is one project with more Workers, not two projects. Two apps often should share. Two projects never can — each carries its own migration registry and upgrade cadence, so one project's `pithy migrate` applies schema the other has never heard of, and `pithy migrate` refuses a database another project owns. `pithy worker add` is the answer far more often than a second `pithy init`. Full reasoning in `docs/NAMING.md`.
 
 Two consequences worth stating outright:
 
-- **Commands that wire one Worker take `--worker <name>`** (`add`, `remove`). With a single-Worker project
-  the flag is optional; with several, the CLI prompts at a terminal and **fails with an actionable error
-  under `--json`** rather than guessing — wiring a capability into the wrong Worker would put its bindings
-  and DO class migrations on the wrong script. Commands that operate on the whole project (`migrate`, `seed`,
-  `upgrade`, `doctor`, `env`) **fan out over every Worker** and accept `--worker` to narrow.
-- **Workers share a resource by declaring the same binding name.** Feature resource names derive from
-  `(project, issue, slug, binding, kind)` with no Worker segment, so two Workers that both declare `DB` are
-  backed by one D1; a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`). Locally this is
-  why Miniflare state persists at the project root — per-Worker state would silently split a shared database.
+- **Commands that wire one Worker take `--worker <name>`** (`add`, `remove`). With a single-Worker project the flag is optional; with several, the CLI prompts at a terminal and **fails with an actionable error under `--json`** rather than guessing — wiring a capability into the wrong Worker would put its bindings and DO class migrations on the wrong script. Commands that operate on the whole project (`migrate`, `seed`, `upgrade`, `doctor`, `env`) **fan out over every Worker** and accept `--worker` to narrow.
+- **Workers share a resource by declaring the same binding name.** Feature resource names derive from `(project, issue, slug, binding, kind)` with no Worker segment, so two Workers that both declare `DB` are backed by one D1; a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`). Locally this is why Miniflare state persists at the project root — per-Worker state would silently split a shared database.
 
 ### 1.2 Flag conventions
 
@@ -919,30 +902,13 @@ function upgradeCommandFor(installer: Installer): string {
 
 The detection runs once and is cached in the state file. Unknown installs default to `npm` — anyone with Node has npm, so the fallback is universal.
 
-**Deno is detected by its cache, not by its install root.** `deno install -g npm:@pithy-sh/cli` writes a
-shim at `$DENO_INSTALL_ROOT/bin/pithy`, but the module deno executes — and so `process.argv[1]` — is the one
-it resolved into `$DENO_DIR/npm/<registry host>/@pithy-sh/cli/<version>/dist/bin.js`. That directory is
-literally named `npm`, so the generic npm test claims it unless the deno test runs first, and a deno user is
-told to run `npm i -g`: a second copy under npm's prefix, and the shim they actually invoke left stale. The
-`/.deno/` test only ever matched the shim. `DENO_DIR` is user-settable and its platform defaults
-(`~/.cache/deno`, `~/Library/Caches/deno`, `%LOCALAPPDATA%\deno`) share no segment, so the mark is the
-layout below it: a directory named `npm` whose child is a registry hostname — matched by shape, because an
-adopter on a mirror caches under their own host. See #582.
+**Deno is detected by its cache, not by its install root.** `deno install -g npm:@pithy-sh/cli` writes a shim at `$DENO_INSTALL_ROOT/bin/pithy`, but the module deno executes — and so `process.argv[1]` — is the one it resolved into `$DENO_DIR/npm/<registry host>/@pithy-sh/cli/<version>/dist/bin.js`. That directory is literally named `npm`, so the generic npm test claims it unless the deno test runs first, and a deno user is told to run `npm i -g`: a second copy under npm's prefix, and the shim they actually invoke left stale. The `/.deno/` test only ever matched the shim. `DENO_DIR` is user-settable and its platform defaults (`~/.cache/deno`, `~/Library/Caches/deno`, `%LOCALAPPDATA%\deno`) share no segment, so the mark is the layout below it: a directory named `npm` whose child is a registry hostname — matched by shape, because an adopter on a mirror caches under their own host. See #582.
 
-**Every one of those commands must resolve the registry's `latest` tag, never a range an earlier install
-recorded.** That rules out the update verbs. `bun update`, `pnpm update` and `yarn global upgrade` each honor
-the range written into the global manifest when the binary was first installed — and for a `0.x` release a
-caret pins the *minor*, so `^0.5.0` can never reach `0.7.1`. They run, report success, and install nothing.
-The install verbs name no range: they resolve `latest` and rewrite what is recorded. Deno needs `-f` for the
-same reason in a different shape — without it, it refuses to replace an existing shim and exits 1. Homebrew
-and npm keep their upgrade verbs because neither records a range to respect: brew has a formula, and npm's
-global prefix has no `package.json`.
+**Every one of those commands must resolve the registry's `latest` tag, never a range an earlier install recorded.** That rules out the update verbs. `bun update`, `pnpm update` and `yarn global upgrade` each honor the range written into the global manifest when the binary was first installed — and for a `0.x` release a caret pins the *minor*, so `^0.5.0` can never reach `0.7.1`. They run, report success, and install nothing. The install verbs name no range: they resolve `latest` and rewrite what is recorded. Deno needs `-f` for the same reason in a different shape — without it, it refuses to replace an existing shim and exits 1. Homebrew and npm keep their upgrade verbs because neither records a range to respect: brew has a formula, and npm's global prefix has no `package.json`.
 
-`yarn global add` is Yarn 1 spelling with no modern equivalent — Yarn 2+ removed `yarn global` outright, so a
-binary that arrived via `yarn global add` is on Yarn 1 by construction.
+`yarn global add` is Yarn 1 spelling with no modern equivalent — Yarn 2+ removed `yarn global` outright, so a binary that arrived via `yarn global add` is on Yarn 1 by construction.
 
-`Installer` is derived from the `INSTALLERS` array rather than written beside it, so the test that asks this
-question asks it of every installer. A seventh is enrolled by existing, not by somebody remembering.
+`Installer` is derived from the `INSTALLERS` array rather than written beside it, so the test that asks this question asks it of every installer. A seventh is enrolled by existing, not by somebody remembering.
 
 ### 5.4 Homebrew tap
 

@@ -400,8 +400,7 @@ Keep them pithy. Verbatim style:
 
 ## 7. Asset files
 
-Source-of-truth assets live in **`docs/assets/brand/`** (paths below are relative to that
-directory). The docs site and any deploy target import/serve from there.
+Source-of-truth assets live in the marketing repo, **`brand/assets/`** (paths below are relative to that directory). The site serves the built copies from `/static/assets/`; this repository carries none. Use the `-paths` build anywhere the Geist font cannot be loaded — a README on GitHub or npm, for one.
 
 | File                       | Use                                                                      |
 | -------------------------- | ------------------------------------------------------------------------ |
@@ -471,6 +470,4 @@ The canonical identity. Use these exactly; do not invent variants.
 | Bluesky          | **@pithy.sh**                        | Matches the domain (Bluesky allows the dot). Preferred social handle.      |
 | X (Twitter)      | **@pithy_sh**                        | X disallows `.` and `-` in handles, so the dot becomes an underscore.      |
 
-**The dot rule across handles.** The brand is the period, so prefer the dotted form
-(`pithy.sh`, `@pithy.sh`) wherever a platform allows it. Where the dot is disallowed (npm,
-X), fall back to the hyphen or underscore form — but the dotted form is the canonical one.
+**The dot rule across handles.** The brand is the period, so prefer the dotted form (`pithy.sh`, `@pithy.sh`) wherever a platform allows it. Where the dot is disallowed (npm, X), fall back to the hyphen or underscore form — but the dotted form is the canonical one.

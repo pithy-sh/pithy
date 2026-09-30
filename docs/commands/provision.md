@@ -169,25 +169,13 @@ auth-session-secret: not created here — they need a deployed manager.
 Run pithy secrets provision to create them.
 ```
 
-`--feature` creates them the way `pithy secrets provision` does, when the account has a Secrets Store (#643). A
-feature has its own `SECRETS` database, so it gets its own secrets manager: the run creates the feature's own
-master key, only if absent, through the provisioner `pithy secrets provision` uses, deploys the feature's manager
-with its other kit Workers, and then asks that manager to create every `d1` secret the registry says may be
-generated, through the same `mintDeclaredSecrets` pass. **No token.** A feature's manager binds no Cloudflare API
-token and rotates nothing, so branch code never holds write access to the account's Secrets Store. Nothing is
-pending:
+`--feature` creates them the way `pithy secrets provision` does, when the account has a Secrets Store (#643). A feature has its own `SECRETS` database, so it gets its own secrets manager: the run creates the feature's own master key, only if absent, through the provisioner `pithy secrets provision` uses, deploys the feature's manager with its other kit Workers, and then asks that manager to create every `d1` secret the registry says may be generated, through the same `mintDeclaredSecrets` pass. **No token.** A feature's manager binds no Cloudflare API token and rotates nothing, so branch code never holds write access to the account's Secrets Store. Nothing is pending:
 
 ```
 auth-session-secret created in feature.
 ```
 
-**The feature's own stores are the only copy, and the manager is the only writer.** The CLI never holds a
-value: the manager probes before anything is minted and writes with `create`, which never replaces a secret
-that is there, so a re-run from any machine changes nothing, and a probe that fails fails the run rather than
-reading as an absence. **Nothing depends on which run created the key.** The manager seals every row under
-whatever key the store holds, so a run that fails anywhere after the key exists — a migration, a host deploy, the
-mint itself — is finished by the next one. Two runs at once leave one value: the manager's `create` is a single
-insert-if-absent, and the loser is told the secret already exists.
+**The feature's own stores are the only copy, and the manager is the only writer.** The CLI never holds a value: the manager probes before anything is minted and writes with `create`, which never replaces a secret that is there, so a re-run from any machine changes nothing, and a probe that fails fails the run rather than reading as an absence. **Nothing depends on which run created the key.** The manager seals every row under whatever key the store holds, so a run that fails anywhere after the key exists — a migration, a host deploy, the mint itself — is finished by the next one. Two runs at once leave one value: the manager's `create` is a single insert-if-absent, and the loser is told the secret already exists.
 
 Without a Secrets Store there is no key to give a manager, and the shortfall names the run that would create them:
 

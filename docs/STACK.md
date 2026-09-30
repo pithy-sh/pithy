@@ -284,48 +284,21 @@ Zod also unlocks rich validation that maps cleanly to Pithy's domain — checkin
 
 ## 3. Error class: PithyError
 
-**One family, runtime and CLI (#16).** `PithyError` lives in
-`@pithy-sh/core/src/error`. It is a real `Error` that **carries** a Zod-validated
-`ErrorPayload` — a discriminated union keyed on a namespaced `code`
-(`auth/invalid_token`, `core/not_found`, …) with an HTTP `status`, a public `message`, an
-optional operator `action`, and an optional internal `detail`. Three fields, three audiences:
-`message` is the caller's, `action` is the operator's, `detail` is the throw site's. Each
-surface is just an encoder over that one payload:
+**One family, runtime and CLI (#16).** `PithyError` lives in `@pithy-sh/core/src/error`. It is a real `Error` that **carries** a Zod-validated `ErrorPayload` — a discriminated union keyed on a namespaced `code` (`auth/invalid_token`, `core/not_found`, …) with an HTTP `status`, a public `message`, an optional operator `action`, and an optional internal `detail`. Three fields, three audiences: `message` is the caller's, `action` is the operator's, `detail` is the throw site's. Each surface is just an encoder over that one payload:
 
-- **HTTP:** `app.onError(pithyErrorHandler)` → `{ error: HttpError.encode(payload) }` at the
-  declared status. The codec's encode side strips `action` and `detail`, so neither an
-  operator's remedy nor internal context reaches a client.
-- **CLI:** `renderTerminal(payload)` → `message` on line 1 (problem), `action` on line 2 — the
-  shape `CLI.md` §3.3 specifies (ANSI red first line, no stack trace; the CLI adds the color via
-  `style.ts`). Anything that is **not** a `PithyError` is an unexpected crash, reported with a
-  debug hint:
+- **HTTP:** `app.onError(pithyErrorHandler)` → `{ error: HttpError.encode(payload) }` at the declared status. The codec's encode side strips `action` and `detail`, so neither an operator's remedy nor internal context reaches a client.
+- **CLI:** `renderTerminal(payload)` → `message` on line 1 (problem), `action` on line 2 — the shape `CLI.md` §3.3 specifies (ANSI red first line, no stack trace; the CLI adds the color via `style.ts`). Anything that is **not** a `PithyError` is an unexpected crash, reported with a debug hint:
 
 ```
 Something unexpected happened.
 Run with `--verbose` to see the full error, or open an issue at https://github.com/pithy-sh/cli/issues.
 ```
 
-Thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`, `InternalError`, …) are
-sugar that default a member's `code`/`status`. The CLI keeps its `(problem, action)`
-ergonomics by constructing a payload — `new InternalError({ message, action })` — rather than a
-second class. **Runtime code throws `PithyError`, never plain `new Error`**; every new
-capability adds its own namespaced codes (`domain/reason`, aligned with migration namespaces).
+Thin subclasses (`ValidationError`, `ForbiddenError`, `NotFoundError`, `InternalError`, …) are sugar that default a member's `code`/`status`. The CLI keeps its `(problem, action)` ergonomics by constructing a payload — `new InternalError({ message, action })` — rather than a second class. **Runtime code throws `PithyError`, never plain `new Error`**; every new capability adds its own namespaced codes (`domain/reason`, aligned with migration namespaces).
 
-**The kit's set is closed; the union is not.** `KitErrorPayload` is the discriminated union above —
-the only one anything may switch over exhaustively, and the one every kit code is validated against,
-status and all. `ErrorPayload` is that plus one open member, so an adopter declares their own
-`domain/reason` codes through `defineErrorPayload` instead of reusing a kit code that means
-something else. The kit's domains are reserved — `auth/`, `payments/`, `core/` and the rest are
-refused, at the declaration as a type error and again at the parse, which is also what keeps a
-capability's own typo a hard failure — and `detail` is stripped from an adopter's errors by the same
-codec, on the same path: the boundary is a property of the schema, not of who wrote the code.
+**The kit's set is closed; the union is not.** `KitErrorPayload` is the discriminated union above — the only one anything may switch over exhaustively, and the one every kit code is validated against, status and all. `ErrorPayload` is that plus one open member, so an adopter declares their own `domain/reason` codes through `defineErrorPayload` instead of reusing a kit code that means something else. The kit's domains are reserved — `auth/`, `payments/`, `core/` and the rest are refused, at the declaration as a type error and again at the parse, which is also what keeps a capability's own typo a hard failure — and `detail` is stripped from an adopter's errors by the same codec, on the same path: the boundary is a property of the schema, not of who wrote the code.
 
-Two things the seam cannot carry across. A kit member pins one `status` per `code`; an adopter's is
-bounded to 400–599 and no further, so declare each of your codes in one vehicle class and keep the
-pinning yourself. And an adopter's code is branded, which is what keeps `payload.code ===
-"core/not_found"` narrowing to exactly one kit member — so narrow your own with
-`isErrorCode(payload, "connect/device_code_expired")` and type the class with
-`ErrorPayloadOf<"connect/device_code_expired">`, never a bare `===`.
+Two things the seam cannot carry across. A kit member pins one `status` per `code`; an adopter's is bounded to 400–599 and no further, so declare each of your codes in one vehicle class and keep the pinning yourself. And an adopter's code is branded, which is what keeps `payload.code === "core/not_found"` narrowing to exactly one kit member — so narrow your own with `isErrorCode(payload, "connect/device_code_expired")` and type the class with `ErrorPayloadOf<"connect/device_code_expired">`, never a bare `===`.
 
 ---
 
@@ -472,8 +445,7 @@ Honesty matters here — there are real things pnpm 10 still does better in 2026
 
 ### Repo structure (high-level)
 
-The authoritative package roadmap lives in the foundation spec (§4). The set below is what
-has shipped, plus what the roadmap still holds — not the full final tree:
+The authoritative package roadmap lives in the foundation spec (§4). The set below is what has shipped, plus what the roadmap still holds — not the full final tree:
 
 ```
 pithy/
@@ -502,14 +474,10 @@ pithy/
 ├── turbo.json
 ├── CLAUDE.md             # always-loaded agent instructions (points to docs/)
 ├── README.md
-└── docs/                 # BRAND.md, CLI.md, STACK.md + superpowers/{specs,plans}
+└── docs/                 # BRAND.md, CLI.md, NAMING.md, STACK.md, RELEASING.md, commands/
 ```
 
-> `jobs` appears elsewhere in this doc as an **illustrative suggestion**. It was never
-> designed, and it is retired: durable background work is a core seam
-> (`@pithy-sh/core/src/workflow/`) that every capability registers against, not a capability
-> of its own. Any other name not in the tree above is illustrative too. The spec's §4
-> roadmap governs what ships next.
+> `jobs` appears elsewhere in this doc as an **illustrative suggestion**. It was never designed, and it is retired: durable background work is a core seam (`@pithy-sh/core/src/workflow/`) that every capability registers against, not a capability of its own. Any other name not in the tree above is illustrative too. The spec's §4 roadmap governs what ships next.
 
 Bun reads `workspaces` from the root `package.json`; no separate `pnpm-workspace.yaml` equivalent needed.
 
@@ -949,33 +917,22 @@ Useful as a "if you're tempted, here's why we said no" reference.
 
 ## 17. Dependency floors
 
-**A published floor decides what every adopter resolves.** That is the whole reason this section exists.
-A caret range is a floor, not a pin — an adopter with an old lockfile, a constrained resolver, or a
-sibling dependency pulling the range down lands on the bottom of it. So a floor sitting inside an
-advisory range is a vulnerability handed to people who never chose it, whether or not the kit's own
-code touches the vulnerable path.
+**A published floor decides what every adopter resolves.** That is the whole reason this section exists. A caret range is a floor, not a pin — an adopter with an old lockfile, a constrained resolver, or a sibling dependency pulling the range down lands on the bottom of it. So a floor sitting inside an advisory range is a vulnerability handed to people who never chose it, whether or not the kit's own code touches the vulnerable path.
 
 Set before the first release, in #397. The survey and the reasoning are on that issue.
 
 ### Audit the floors, not the lockfile
 
-`bun audit` reads the **lockfile** — the versions *we* resolved. An adopter has neither our lockfile
-nor our resolution, and lands wherever their own resolver puts them, which for a caret range can be
-the bottom. So a green `bun audit` in this repo says nothing about what a floor hands out. The two
-questions are different and only one of them was being asked.
+`bun audit` reads the **lockfile** — the versions *we* resolved. An adopter has neither our lockfile nor our resolution, and lands wherever their own resolver puts them, which for a caret range can be the bottom. So a green `bun audit` in this repo says nothing about what a floor hands out. The two questions are different and only one of them was being asked.
 
-**Ask the other one directly.** Take every caret range this repo publishes, strip the caret to pin
-each at its own minimum, install that, and audit it:
+**Ask the other one directly.** Take every caret range this repo publishes, strip the caret to pin each at its own minimum, install that, and audit it:
 
 ```
 # every published floor, pinned to its floor, in a scratch project
 bun install && bun audit
 ```
 
-Run before the first release, that check reported **36 vulnerabilities — 2 critical, 16 high, 14
-moderate, 4 low** against a lockfile audit of 5. Four floors accounted for all of the difference,
-and **none of them moved a version we install** — every one was already resolving above its own floor,
-so the fix is a declaration change with no behavior change at all:
+Run before the first release, that check reported **36 vulnerabilities — 2 critical, 16 high, 14 moderate, 4 low** against a lockfile audit of 5. Four floors accounted for all of the difference, and **none of them moved a version we install** — every one was already resolving above its own floor, so the fix is a declaration change with no behavior change at all:
 
 | Floor | Was | Now | What the old floor handed an adopter |
 |---|---|---|---|
@@ -983,33 +940,23 @@ so the fix is a declaration change with no behavior change at all:
 | `js-base64` (`@pithy-sh/cloudflare`, runtime) | `^3.7.0` | **`^3.9.2`** | `js-base64@3.7.0` declares **`mocha` as a runtime dependency** — an upstream packaging fault, fixed later — dragging `nanoid`, `minimatch`, `js-yaml`, `serialize-javascript` and `diff` into an adopter's tree with fourteen advisories between them. `3.9.2` has no dependencies at all. |
 | `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner` | `^3.700.0` | **`^3.1111.0`** | `fast-xml-parser <5.7.0` — 1 critical, 2 high — plus `@smithy/config-resolver` and `uuid`. |
 
-At the corrected floors the same check reports **5**: the `undici` set below, which no floor of ours
-can move.
+At the corrected floors the same check reports **5**: the `undici` set below, which no floor of ours can move.
 
-**The rule this leaves behind.** A floor is a security decision, so it is stated as the lowest version
-that is *safe*, not the lowest version that *works*. Where those differ, safety wins and the reason is
-written down. Re-run the floor audit whenever a floor changes — a lockfile audit will not catch it.
+**The rule this leaves behind.** A floor is a security decision, so it is stated as the lowest version that is *safe*, not the lowest version that *works*. Where those differ, safety wins and the reason is written down. Re-run the floor audit whenever a floor changes — a lockfile audit will not catch it.
 
 ### Hono: the exposure is the floor, not our usage
 
 `hono` is declared in seventeen packages and in the starter template, at **`^4.13.2`**.
 
-Seven advisories apply below `4.12.34`, and the serious ones are `hono/jsx` not isolating context per
-request and `memo()` retaining SSR output — both cross-user data disclosure — plus SSR XSS via `cx()`
-and ReDoS in the CORS middleware.
+Seven advisories apply below `4.12.34`, and the serious ones are `hono/jsx` not isolating context per request and `memo()` retaining SSR output — both cross-user data disclosure — plus SSR XSS via `cx()` and ReDoS in the CORS middleware.
 
-**None of them applies to the kit's own code.** There is no `hono/jsx`, `hono/css`, `hono/cors`,
-`hono/proxy` or `hono/language` anywhere in `packages/*/src`; the one `memo(` in
-`cloudflare/src/client/clients.ts` is our own helper, unrelated to Hono's.
+**None of them applies to the kit's own code.** There is no `hono/jsx`, `hono/css`, `hono/cors`, `hono/proxy` or `hono/language` anywhere in `packages/*/src`; the one `memo(` in `cloudflare/src/client/clients.ts` is our own helper, unrelated to Hono's.
 
-That is not the point. **An adopter composing `hono/cors` or `hono/jsx` in their own Worker resolves
-Hono through our floor**, and gets whatever the bottom of the range gives them. `4.13.2` clears all
-seven. Do not lower it because a grep says we are clean — the grep is about us.
+That is not the point. **An adopter composing `hono/cors` or `hono/jsx` in their own Worker resolves Hono through our floor**, and gets whatever the bottom of the range gives them. `4.13.2` clears all seven. Do not lower it because a grep says we are clean — the grep is about us.
 
 ### `@types/node` stays on 22.x
 
-`^22.20.1`, never 26. `CLAUDE.md` and §1 above set a **Node 22 LTS floor**; moving the types past it
-contradicts a stated constraint rather than satisfying it.
+`^22.20.1`, never 26. `CLAUDE.md` and §1 above set a **Node 22 LTS floor**; moving the types past it contradicts a stated constraint rather than satisfying it.
 
 ### The `miniflare` we ship stays on 4.x. The one the harness runs on no longer can
 
@@ -1023,128 +970,54 @@ So the two are no longer one decision. `@cloudflare/vitest-plugin` is a devDepen
 
 ### The kit does not read Babel
 
-`@babel/parser` was a dev-only dependency of `packages/cli`, used by one test — the Workflow
-determinism gate in `src/ci/workflowDeterminism.test.ts`. It is gone (#405). Nothing in the kit
-imports Babel.
+`@babel/parser` was a dev-only dependency of `packages/cli`, used by one test — the Workflow determinism gate in `src/ci/workflowDeterminism.test.ts`. It is gone (#405). Nothing in the kit imports Babel.
 
-**The gate still parses**, because it still needs to: it resolves scopes, follows a call into a
-module-local function, and judges arity. A regex cannot do that, and #326 finding 4 is the standing
-record of what a gate that only looks like it walks costs. What changed is which parser answers.
-`ParseModule` was already a seam, so the parser is a parameter rather than an import.
+**The gate still parses**, because it still needs to: it resolves scopes, follows a call into a module-local function, and judges arity. A regex cannot do that, and #326 finding 4 is the standing record of what a gate that only looks like it walks costs. What changed is which parser answers. `ParseModule` was already a seam, so the parser is a parameter rather than an import.
 
-**It parses with `rolldown/parseAst`** — oxc, ESTree-shaped and TypeScript-aware — declared as a
-devDependency of `packages/cli` at `^1.2.4`. `vite@8` already depends on `rolldown@~1.2.1`, so
-declaring it added **one line to `bun.lock` and no package at all**: same resolution, same binary,
-same bytes on disk. Declared directly all the same, because a parser reached through somebody else's
-bundler is a build that breaks the day they bump it.
+**It parses with `rolldown/parseAst`** — oxc, ESTree-shaped and TypeScript-aware — declared as a devDependency of `packages/cli` at `^1.2.4`. `vite@8` already depends on `rolldown@~1.2.1`, so declaring it added **one line to `bun.lock` and no package at all**: same resolution, same binary, same bytes on disk. Declared directly all the same, because a parser reached through somebody else's bundler is a build that breaks the day they bump it.
 
-Why not `oxc-parser` directly, which is the same parser under a plainer name: it resolves its own
-copy. Nineteen platform-binding entries and roughly 3.6 MB, to remove a declaration that costs
-nothing on disk. That is a swap dressed as a removal.
+Why not `oxc-parser` directly, which is the same parser under a plainer name: it resolves its own copy. Nineteen platform-binding entries and roughly 3.6 MB, to remove a declaration that costs nothing on disk. That is a swap dressed as a removal.
 
-Two things this is *not*. It is not a way round `@babel/parser@8`, which still fails on an `async`
-arrow with a return type inside a parenthesized object literal — see #403, which this makes moot
-rather than fixes. And it is not a claim that Babel left the tree: `@vitest/coverage-v8` reaches
-`@babel/parser` through `magicast`, and will keep doing so. What went is the kit's own declaration
-and the kit's own use of it.
+Two things this is *not*. It is not a way round `@babel/parser@8`, which still fails on an `async` arrow with a return type inside a parenthesized object literal — see #403, which this makes moot rather than fixes. And it is not a claim that Babel left the tree: `@vitest/coverage-v8` reaches `@babel/parser` through `magicast`, and will keep doing so. What went is the kit's own declaration and the kit's own use of it.
 
-**The analyzer speaks ESTree now.** `MethodDefinition` and `Property` where Babel wrote `ClassMethod`
-and `ObjectMethod`, `Literal` where it wrote `StringLiteral`, a `CallExpression` inside a
-`ChainExpression` where it wrote `OptionalCallExpression`, and a byte offset where it wrote a `loc`.
-The one that bites: a method is a *wrapper* around a `FunctionExpression` in ESTree, so the walked
-scope must be the function, never the method — walk the wrapper and the first node the walk sees is a
-deferred one, and the gate reports every driver in the kit clean without parsing a thing.
+**The analyzer speaks ESTree now.** `MethodDefinition` and `Property` where Babel wrote `ClassMethod` and `ObjectMethod`, `Literal` where it wrote `StringLiteral`, a `CallExpression` inside a `ChainExpression` where it wrote `OptionalCallExpression`, and a byte offset where it wrote a `loc`. The one that bites: a method is a *wrapper* around a `FunctionExpression` in ESTree, so the walked scope must be the function, never the method — walk the wrapper and the first node the walk sees is a deferred one, and the gate reports every driver in the kit clean without parsing a thing.
 
-Held to the swap by comparison rather than by argument: `analyseDrivers` was run over all 1023
-sources under `packages/` with each parser, and over a second corpus planted with 75 violations
-across 19 of the 21 real driver bodies. Both outputs are byte-identical — the same entrypoints,
-drivers, declared class names, findings, lines and expressions.
+Held to the swap by comparison rather than by argument: `analyseDrivers` was run over all 1023 sources under `packages/` with each parser, and over a second corpus planted with 75 violations across 19 of the 21 real driver bodies. Both outputs are byte-identical — the same entrypoints, drivers, declared class names, findings, lines and expressions.
 
 ### `undici`: the one advisory we cannot close, and why
 
-`bun audit` reports five undici advisories (`>=7.0.0 <7.29.0`) down a single path, `miniflare`. One is
-high: cross-user information disclosure via degenerate private cache directives.
+`bun audit` reports five undici advisories (`>=7.0.0 <7.29.0`) down a single path, `miniflare`. One is high: cross-user information disclosure via degenerate private cache directives.
 
-**No floor of ours can move it.** Every `miniflare` 4.x release pins `undici` at exactly `7.28.0` —
-not a range — so there is no 4.x version that resolves a patched undici. `7.29.0` is the first patched
-release, and on this tree only the nested `miniflare@5.x-alpha` copies carry it: the one under
-`@cloudflare/vitest-plugin`, and the ones under `wrangler` — the hoisted `4.123.0`, plus the `4.125.0`
-the plugin's own exact pin drags in. Count that fan-out in `bun.lock` rather than assuming it is
-uniform. There are fifteen nested `wrangler@4.125.0` entries: one under `@cloudflare/vitest-plugin`
-itself, and fourteen under `@pithy-sh/*` packages that declare both it and `wrangler`. Three packages
-declare both and get no nested entry — `audit`, `media` and `vector` keep the hoisted `4.123.0`. So
-the tree now carries two wrangler generations, and two miniflare and workerd generations with them,
-across the capability packages. That is harmless, because the workerd a `*.workers.test.ts` runs on
-comes from the plugin's own pinned miniflare either way, never from whichever wrangler sits beside it.
-None of these copies is reported, and after #433 none is excluded either — the harness runs the first.
+**No floor of ours can move it.** Every `miniflare` 4.x release pins `undici` at exactly `7.28.0` — not a range — so there is no 4.x version that resolves a patched undici. `7.29.0` is the first patched release, and on this tree only the nested `miniflare@5.x-alpha` copies carry it: the one under `@cloudflare/vitest-plugin`, and the ones under `wrangler` — the hoisted `4.123.0`, plus the `4.125.0` the plugin's own exact pin drags in. Count that fan-out in `bun.lock` rather than assuming it is uniform. There are fifteen nested `wrangler@4.125.0` entries: one under `@cloudflare/vitest-plugin` itself, and fourteen under `@pithy-sh/*` packages that declare both it and `wrangler`. Three packages declare both and get no nested entry — `audit`, `media` and `vector` keep the hoisted `4.123.0`. So the tree now carries two wrangler generations, and two miniflare and workerd generations with them, across the capability packages. That is harmless, because the workerd a `*.workers.test.ts` runs on comes from the plugin's own pinned miniflare either way, never from whichever wrangler sits beside it. None of these copies is reported, and after #433 none is excluded either — the harness runs the first.
 
-So **`bun audit` now leaves the advisory exactly one resolved path — and the manifest it names is not
-the one that matters.** It prints `workspace:@pithy-sh/auth › miniflare`. Two manifests declare
-`miniflare` 4.x, both at `^4.20260722.1`, and both resolve the single hoisted `4.20260730.0` with
-`undici@7.28.0`: `@pithy-sh/cli` as a **runtime dependency**, and `@pithy-sh/auth` as a
-**devDependency**, for the `Miniflare` that `packages/auth/src/test-utils/liveApp.ts` builds. Only the
-first is shipped — `pithy migrate`, `pithy seed` and the dev-secrets store construct `Miniflare`
-directly to reach a local D1 or KV. The cli declaration is #388's hold on 4.x, and this document does
-not move it.
+So **`bun audit` now leaves the advisory exactly one resolved path — and the manifest it names is not the one that matters.** It prints `workspace:@pithy-sh/auth › miniflare`. Two manifests declare `miniflare` 4.x, both at `^4.20260722.1`, and both resolve the single hoisted `4.20260730.0` with `undici@7.28.0`: `@pithy-sh/cli` as a **runtime dependency**, and `@pithy-sh/auth` as a **devDependency**, for the `Miniflare` that `packages/auth/src/test-utils/liveApp.ts` builds. Only the first is shipped — `pithy migrate`, `pithy seed` and the dev-secrets store construct `Miniflare` directly to reach a local D1 or KV. The cli declaration is #388's hold on 4.x, and this document does not move it.
 
-What bounds it. It is **not in any deployed Worker** — a deployed Worker runs on workerd, which does
-not use undici, and the adopter-facing runtime is untouched by any of this. It is not behind
-`pithy dev` either: that execs the adopter's own `wrangler`, which brings its own miniflare. What is
-left is a local simulator on a developer's machine, reading a local database, and five advisories that
-are HTTP-client and cache-directive faults needing an attacker-controlled upstream to reach.
+What bounds it. It is **not in any deployed Worker** — a deployed Worker runs on workerd, which does not use undici, and the adopter-facing runtime is untouched by any of this. It is not behind `pithy dev` either: that execs the adopter's own `wrangler`, which brings its own miniflare. What is left is a local simulator on a developer's machine, reading a local database, and five advisories that are HTTP-client and cache-directive faults needing an attacker-controlled upstream to reach.
 
-Accepted, not ignored. It closes when miniflare 5 stabilizes and **both** declarations are promoted —
-`@pithy-sh/cli`'s runtime dependency and `@pithy-sh/auth`'s devDependency. Moving cli's alone leaves
-auth resolving 4.x and `bun audit` reporting the same five advisories under the same path it prints
-today. That is the same revisit as above.
+Accepted, not ignored. It closes when miniflare 5 stabilizes and **both** declarations are promoted — `@pithy-sh/cli`'s runtime dependency and `@pithy-sh/auth`'s devDependency. Moving cli's alone leaves auth resolving 4.x and `bun audit` reporting the same five advisories under the same path it prints today. That is the same revisit as above.
 
 ### `@cloudflare/workers-types` is held at `5.20260729.1`
 
-Held by an `overrides` entry in the root `package.json`, while the declared ranges stay `^5.20260729.1`
-so **adopters are not constrained by our tooling problem** — they are not affected by this.
+Held by an `overrides` entry in the root `package.json`, while the declared ranges stay `^5.20260729.1` so **adopters are not constrained by our tooling problem** — they are not affected by this.
 
-**`5.20260807.2` added `declare const Buffer: any;`** — not `5.20260816.1`, which is where #402 first
-noticed it. **`5.20260804.1` is the last clean release**, and every release since carries the line.
-`@types/node` declares `var Buffer: BufferConstructor`, and a `var` merges where a block-scoped
-`const` does not. With `skipLibCheck` off, TypeScript says it plainly:
+**`5.20260807.2` added `declare const Buffer: any;`** — not `5.20260816.1`, which is where #402 first noticed it. **`5.20260804.1` is the last clean release**, and every release since carries the line. `@types/node` declares `var Buffer: BufferConstructor`, and a `var` merges where a block-scoped `const` does not. With `skipLibCheck` off, TypeScript says it plainly:
 
 ```
 @cloudflare/workers-types/index.d.ts(486,15): error TS2451: Cannot redeclare block-scoped variable 'Buffer'.
 @types/node/buffer.buffer.d.ts(356,19):       error TS2451: Cannot redeclare block-scoped variable 'Buffer'.
 ```
 
-The redeclaration discards `@types/node`'s `declare global { … }` block in `buffer.buffer.d.ts`, so
-the `Buffer` interface loses its own members and falls back to `Uint8Array`'s: `randomBytes(8).toString`
-resolves to `() => string`, and `randomBytes(8).toString("hex")` becomes *"Expected 0 arguments, but
-got 1"*. `skipLibCheck: true` hides the `TS2451` and leaves only the confusing downstream error, which
-is why this reads as a mystery rather than a redeclaration.
+The redeclaration discards `@types/node`'s `declare global { … }` block in `buffer.buffer.d.ts`, so the `Buffer` interface loses its own members and falls back to `Uint8Array`'s: `randomBytes(8).toString` resolves to `() => string`, and `randomBytes(8).toString("hex")` becomes *"Expected 0 arguments, but got 1"*. `skipLibCheck: true` hides the `TS2451` and leaves only the confusing downstream error, which is why this reads as a mystery rather than a redeclaration.
 
-It breaks any project listing both `@cloudflare/workers-types` and `node` in `types` — which
-`packages/cli` must do, because it is a Node program that type-checks against capability packages
-using `D1Database` and `KVNamespace` globals. **Reordering `types` does not help**, verified both ways.
-Lifting the override puts three real errors into `packages/cli` (`dev/logging.ts`, `devSecrets/edit.ts`,
-`project/atomic.ts`), so the pin is load-bearing, not defensive.
+It breaks any project listing both `@cloudflare/workers-types` and `node` in `types` — which `packages/cli` must do, because it is a Node program that type-checks against capability packages using `D1Database` and `KVNamespace` globals. **Reordering `types` does not help**, verified both ways. Lifting the override puts three real errors into `packages/cli` (`dev/logging.ts`, `devSecrets/edit.ts`, `project/atomic.ts`), so the pin is load-bearing, not defensive.
 
-The same release also added `declare const process: any;`, which collides with `@types/node`'s
-`var process` in exactly the same way. It causes no error only because `any` absorbs every member
-access — it silently degrades `process` to `any` rather than breaking. Worth knowing when the
-override lifts.
+The same release also added `declare const process: any;`, which collides with `@types/node`'s `var process` in exactly the same way. It causes no error only because `any` absorbs every member access — it silently degrades `process` to `any` rather than breaking. Worth knowing when the override lifts.
 
-**Adopters are unaffected, and this was checked rather than assumed.** A project scaffolded by
-`pithy init` keeps the two `types` arrays disjoint — `apps/api/tsconfig.json` lists
-`["@cloudflare/workers-types"]`, `tsconfig.tools.json` lists `["node"]`, and no project lists both.
-A real scaffold type-checks clean against `5.20260816.1` under both `tsc` 5.9.3 and `tsgo` 7.0.2; add
-`"node"` to the Worker's `types` and it fails immediately with the same `TS2554`. So the split holds:
-**pinned for us, open for them.** Lift the override once upstream declares `Buffer` mergeably, or drops it.
+**Adopters are unaffected, and this was checked rather than assumed.** A project scaffolded by `pithy init` keeps the two `types` arrays disjoint — `apps/api/tsconfig.json` lists `["@cloudflare/workers-types"]`, `tsconfig.tools.json` lists `["node"]`, and no project lists both. A real scaffold type-checks clean against `5.20260816.1` under both `tsc` 5.9.3 and `tsgo` 7.0.2; add `"node"` to the Worker's `types` and it fails immediately with the same `TS2554`. So the split holds: **pinned for us, open for them.** Lift the override once upstream declares `Buffer` mergeably, or drops it.
 
 ### `postal-mime` is at `^3.0.0`, and that is a security bump
 
-It parses inbound mail from the open internet, so it is the highest-value dependency here to be
-current on. 3.0.0 resolves duplicated single-value headers **first**-wins; 2.7.x resolved them
-last-wins, which meant a sender could append a second `From:` below their own headers and choose the
-address `@pithy-sh/support` recorded as the sender. See
-`packages/support/src/mime/parse.test.ts`, *"a second From below the first does not become the
-sender"* — the test fails under 2.7.6 and passes under 3.0.0.
+It parses inbound mail from the open internet, so it is the highest-value dependency here to be current on. 3.0.0 resolves duplicated single-value headers **first**-wins; 2.7.x resolved them last-wins, which meant a sender could append a second `From:` below their own headers and choose the address `@pithy-sh/support` recorded as the sender. See `packages/support/src/mime/parse.test.ts`, *"a second From below the first does not become the sender"* — the test fails under 2.7.6 and passes under 3.0.0.
 
 ---
 

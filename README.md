@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/brand/pithy-wordmark.svg" alt="pithy." width="180">
+  <img src="https://pithy.sh/static/assets/pithy-wordmark-paths.svg" alt="pithy." width="180">
 </p>
 
 <p align="center">A backend kit. For Cloudflare. That's it.</p>

@@ -171,20 +171,11 @@ It is refused on `--dry-run` too. A dry run's job is to predict the write, and t
 
 ### `workers[]` when a Worker could not be reconciled
 
-A Worker whose plan could not be built carries `{"state":"unplanned","worker":"api"}` and nothing else. Its
-`pithy.config.ts` or its `wrangler.jsonc` would not read, so nothing was established about it and nothing was
-written for it — and the fields a reconciled entry has would each be a claim nobody checked. It carries no
-reason: what a config load or a database read throws names a path, an id, or a query.
+A Worker whose plan could not be built carries `{"state":"unplanned","worker":"api"}` and nothing else. Its `pithy.config.ts` or its `wrangler.jsonc` would not read, so nothing was established about it and nothing was written for it — and the fields a reconciled entry has would each be a claim nobody checked. It carries no reason: what a config load or a database read throws names a path, an id, or a query.
 
-A Worker whose **apply** failed partway carries `{"state":"unapplied","worker":"api","plan":{…}}`. That is a
-different state on purpose, and the difference is that this Worker's files have been opened for writing: its
-`wrangler.jsonc` may hold part of the plan, and under `--migrate` its schema may have moved. The `plan` is
-what the run set out to do, not what landed — what landed is exactly what an interrupted apply cannot say.
+A Worker whose **apply** failed partway carries `{"state":"unapplied","worker":"api","plan":{…}}`. That is a different state on purpose, and the difference is that this Worker's files have been opened for writing: its `wrangler.jsonc` may hold part of the plan, and under `--migrate` its schema may have moved. The `plan` is what the run set out to do, not what landed — what landed is exactly what an interrupted apply cannot say.
 
-Every *other* Worker still reports in full. A run that loses four Workers' reports to a fifth one's broken
-config is the report you cannot use on the day you need it. **Either state exits 1**, on the same standard
-`pithy doctor` holds: a Worker that was not reconciled establishes nothing, and exiting 0 around it would be
-a weaker gate than the failure it replaced.
+Every *other* Worker still reports in full. A run that loses four Workers' reports to a fifth one's broken config is the report you cannot use on the day you need it. **Either state exits 1**, on the same standard `pithy doctor` holds: a Worker that was not reconciled establishes nothing, and exiting 0 around it would be a weaker gate than the failure it replaced.
 
 ### `workers[]` when `dryRun` is `true`
 

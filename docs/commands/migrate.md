@@ -89,9 +89,7 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 
 ### A run that died partway
 
-A fan-out has no transaction across databases: the third one throws and the first two are already ahead of
-it. So the failure line still goes to stderr and the exit is still non-zero, and stdout carries **what the
-run changed on the way** — the record you need most when a migration dies mid-fan-out.
+A fan-out has no transaction across databases: the third one throws and the first two are already ahead of it. So the failure line still goes to stderr and the exit is still non-zero, and stdout carries **what the run changed on the way** — the record you need most when a migration dies mid-fan-out.
 
 ```
 $ pithy migrate --env staging --json
