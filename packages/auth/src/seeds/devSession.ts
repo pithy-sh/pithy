@@ -4,7 +4,7 @@
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
-import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, type DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { defineSeed, type SeedPreparation, type SeedPrepareContext, type SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
 import { DEV_PROTOCOL, sessionCookieName } from "../http/baseUrl";
@@ -76,8 +76,9 @@ export const DevPreferences = z
   .object({
     user: z
       .string()
+      .optional()
       .describe(
-        "The email of the seeded user to sign in as. Must be a user this seed run creates, or the seed fails rather than signing in as nobody.",
+        "The email of the seeded user to sign in as first. **This key is the dev-login opt-in**: without it no claim is minted at all, because `dev.json` has other tenants and its mere existence is not consent. With it, every seeded user gets a claim and this one is offered first. Must be a user this seed run creates, or the seed fails rather than naming nobody.",
       ),
   })
   .describe(
@@ -267,6 +268,29 @@ export async function mintDevLogin(input: MintDevLoginInput): Promise<MintedDevL
 }
 
 /**
+ * Mint a claim for **every** user this run seeds, keyed by user id — `#667`.
+ *
+ * Cheap by construction: a claim is a signature over a user id and an expiry, so N of them add no seeded
+ * rows and a few hundred bytes each.
+ *
+ * **The record keeps the order it is handed, except for integer-like ids — and that is JS, not us.** Keys
+ * that are canonical array indices are enumerated first and in ascending numeric order, by the language and
+ * again by `JSON.parse`, so an adopter whose users carry stringified integer PKs gets a numerically ordered
+ * picker and `dev.json`'s "offered first" does not survive for them. Keying the artifact by user id is the
+ * design; holding the order for every possible id would mean a different artifact shape.
+ */
+export async function mintDevLogins(input: {
+  users: readonly SeededUser[];
+  secret: string;
+  now?: Date;
+}): Promise<DevLogins> {
+  const minted = await Promise.all(
+    input.users.map((user) => mintDevLogin({ user, secret: input.secret, ...(input.now ? { now: input.now } : {}) })),
+  );
+  return Object.fromEntries(minted.map(({ login }) => [login.userId, login]));
+}
+
+/**
  * The users this run creates, whichever set contributes them.
  *
  * A row that does not parse is skipped rather than fatal: it belongs to some other set, which owns its own
@@ -287,22 +311,32 @@ function nameOneOf(users: readonly SeededUser[]): string {
   return `Name one of the users this run seeds instead: ${users.map((user) => user.email).join(", ")}.`;
 }
 
-/** Resolve the preference file into the user to sign in as, or fail saying who this run does seed. */
-function requireUser(preferences: unknown, users: readonly SeededUser[]): SeededUser {
+/**
+ * The email `dev.json` names, or `undefined` when it names none. A file that does not parse is a failure.
+ *
+ * Split from resolving it because the two answers differ: naming nobody is a valid file that wants no dev
+ * login, and naming somebody this run does not create is a typo worth failing over.
+ */
+function namedUser(preferences: unknown, users: readonly SeededUser[]): string | undefined {
   const parsed = DevPreferences.safeParse(preferences);
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
-      message: "The dev.json preference file does not name a user.",
+      message: "The dev.json preference file does not parse.",
       action: `Set { "user": "<email>" } in it. ${nameOneOf(users)}`,
     });
   }
-  // Both sides normalized: `dev.json` is hand-typed, and refusing to sign in over the capital in
-  // `Ada@example.com` would be a puzzle rather than an error.
-  const wanted = normalizeAddress(parsed.data.user);
+  return parsed.data.user;
+}
+
+/** Resolve the named email to a user this run seeds, or fail saying who it does seed. */
+function requireNamedUser(named: string, users: readonly SeededUser[]): SeededUser {
+  // Both sides normalized: `dev.json` is hand-typed, and refusing over the capital in `Ada@example.com`
+  // would be a puzzle rather than an error.
+  const wanted = normalizeAddress(named);
   const user = users.find((candidate) => normalizeAddress(candidate.email) === wanted);
   if (!user) {
     throw new ValidationError({
-      message: `dev.json asks to sign in as ${parsed.data.user}, which this seed run does not create.`,
+      message: `dev.json asks to sign in as ${named}, which this seed run does not create.`,
       action: nameOneOf(users),
     });
   }
@@ -322,7 +356,17 @@ export const authDevSessionSeed: SeedSet = defineSeed({
     // a magic link" true for everyone who never asked for anything else.
     if (context.preferences === undefined || context.preferences === null) return {};
 
-    const user = requireUser(context.preferences, seededUsers(context.seeded));
+    const users = seededUsers(context.seeded);
+    const named = namedUser(context.preferences, users);
+    // **No user named, no dev login — and `dev.json` is why the *key* has to be the opt-in rather than the
+    // file (`#154`, `#667`).** That file has other tenants: `writeBootstrapVars` creates it for bootstrap
+    // `.dev.vars` alone, with no `user` in it and no interest in signing anybody in. Treating its mere
+    // existence as consent would mint a live claim for every seeded user on a machine where nobody ever
+    // asked for one. `doctor/devPreferences.ts` holds the same contract, and this is the half that enforces
+    // it: naming a user is the opt-in, and it is also which identity `pithy dev` offers first.
+    if (named === undefined) return {};
+
+    const preferred = requireNamedUser(named, users);
     const secret = await context.secret(AUTH_SESSION_SECRET);
     if (!secret) {
       throw new ValidationError({
@@ -336,12 +380,14 @@ export const authDevSessionSeed: SeedSet = defineSeed({
       });
     }
 
-    const minted = await mintDevLogin({ user, secret });
+    // The named user first, then everyone else in the order the run seeded them.
+    const ordered = [preferred, ...users.filter((user) => user.id !== preferred.id)];
+    const minted = await mintDevLogins({ users: ordered, secret });
     // **No `d1` — `#572`.** This set writes a file and nothing else now. Nothing reaches
     // `pithy_auth_sessions` until somebody opens the link and the route mints a session for them, which
     // is what makes signing out of the app harmless to the way back in.
     return {
-      artifacts: [{ file: DEV_LOGIN_FILE, contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` }],
+      artifacts: [{ file: DEV_LOGIN_FILE, contents: `${JSON.stringify(DevLogins.encode(minted), null, 2)}\n` }],
     };
   },
 });

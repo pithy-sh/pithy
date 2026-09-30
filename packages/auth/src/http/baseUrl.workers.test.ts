@@ -10,7 +10,7 @@ import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { originFor } from "@pithy-sh/core/src/naming/domains";
-import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE, type DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
@@ -131,7 +131,12 @@ async function seedDevLogin(): Promise<DevLogin> {
   // No `d1` since `#572` — the set writes a file and nothing else. Kept as a loop rather than deleted
   // so this helper keeps working if a later set does declare rows.
   for (const group of prepared.d1 ?? []) await seedD1Group(database, group, Session);
-  return DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  // A record since `#667`. `dev.json` named Ada, so hers is the first entry — and these tests are about
+  // the cookie's name and port rather than about who is in it, so any one entry answers them.
+  const logins = DevLogins.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  const login = logins[EXAMPLE_ADA.id];
+  if (!login) throw new Error(`expected a dev login for ${EXAMPLE_ADA.id}`);
+  return login;
 }
 
 /**

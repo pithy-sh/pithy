@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import type { DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type GenerateDevVarsResult, generateDevVars } from "../devSecrets/generate";
@@ -47,7 +47,20 @@ import {
   deliveryFailureNote,
   deliveryPreflight,
 } from "./delivery";
-import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
+import {
+  type DevIdentity,
+  type DevLoginTarget,
+  devLoginChoice,
+  devLoginChoiceLines,
+  devLoginIdentities,
+  devLoginKeyAction,
+  devLoginLines,
+  MAX_KEY_CHOICES,
+  pickDevLoginByKey,
+  readDevLogins as readDevLoginsDefault,
+  selectDevLogin,
+  usableDevLogins,
+} from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
 import { type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
 import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
@@ -182,7 +195,15 @@ export interface StartDevOptions {
   /** Seam: where the prose goes when stdout is reserved for JSON (`--json`). */
   stderr?: (text: string) => void;
   /** Seam: the seeded dev login the ready banner offers, if `pithy seed` wrote one. */
-  readDevLogin?: (projectDir: string) => Promise<DevLogin | undefined>;
+  readDevLogins?: (projectDir: string) => Promise<DevLogins | undefined>;
+  /**
+   * Seam: ask which identity, for a list too long to number — an `@clack/prompts` `autocomplete`.
+   *
+   * Answers the chosen `userId`, or `undefined` when the prompt was canceled. A value rather than a
+   * `DevLogin`, so the answer crosses the seam as the thing a person or a script could equally have named
+   * and is resolved by {@link selectDevLogin} on the way back — including when it names nobody.
+   */
+  chooseDevLogin?: (logins: readonly DevLogin[]) => Promise<string | undefined>;
   /** Seam: which started workers carry the dev-login route (they compose auth). */
   devLoginTargets?: (started: readonly { name: string; dir: string; origin: string }[]) => Promise<DevLoginTarget[]>;
   /** Seam: the raw-mode key reader. Answers `active: false` on every non-TTY, and is never entered there. */
@@ -208,6 +229,14 @@ export interface StartedWorker {
 /** A running dev session's handle — its resolved workers, its lifecycle promises, and a shutdown hook. */
 export interface DevHandle {
   workers: StartedWorker[];
+  /**
+   * The seeded identities this session can sign in as — `userId`, `email`, `expiresAt`, and **no claim**.
+   *
+   * What `pithy dev --json` reports, and the surface an agent selects against. Empty when the seed wrote
+   * none, when every claim has expired, and under `--json` exactly as under a banner: which identities
+   * exist is a fact about the seed, not about who is reading.
+   */
+  identities: DevIdentity[];
   /** Resolves once every started worker has matched its ready signal (the ready banner fires). */
   ready: Promise<void>;
   /** Resolves once the session has fully torn down (all children gone, state removed). */
@@ -428,7 +457,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const hasSetsid = options.hasSetsid ?? process.platform !== "win32";
   const stdout = options.stdout ?? ((text: string) => void process.stdout.write(text));
   const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text));
-  const readDevLogin = options.readDevLogin ?? readDevLoginDefault;
+  const readDevLogins = options.readDevLogins ?? readDevLoginsDefault;
+  const chooseDevLogin = options.chooseDevLogin ?? chooseDevLoginDefault;
   const resolveDevLoginTargets =
     options.devLoginTargets ??
     ((started: readonly { name: string; dir: string; origin: string }[]) => devLoginTargetsDefault({ started }));
@@ -743,7 +773,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // 7. Open the log, wire the shared env, and spawn.
   const logPath = join(projectDir, "logs", "dev.log");
   // Read before anything spawns, so the banner never waits on the disk once the workers are up.
-  const devLogin = await readDevLogin(projectDir);
+  const devLogins = await readDevLogins(projectDir);
   const log = openLog(logPath);
   log.write(
     `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
@@ -757,8 +787,12 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const ci = isContinuousIntegration(baseEnv);
   // Which running workers carry `GET /__pithy/dev-login` — the ones composing auth. Resolved only when
   // there is a session to open, so a project with no dev login never loads a Worker config for this.
+  // An empty record is still a record, and `{}` is truthy — so the question is whether anything usable is
+  // in it. Without this a project whose claims have all expired loads every worker's config to resolve
+  // targets for a banner that will print nothing.
+  const hasDevIdentity = usableDevLogins(devLogins, now()).length > 0;
   const devLoginWorkers: DevLoginTarget[] =
-    devLogin && !ci
+    hasDevIdentity && !ci
       ? await resolveDevLoginTargets(
           started
             .filter((s) => !hostNames.has(s.worker.name))
@@ -811,7 +845,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       // The banner is the discovery mechanism. A seeded session nobody finds has removed no friction, and
       // the line below is the only place a developer reliably looks after `pithy dev`. It says that there
       // is a session and how to reach it — never what the session *is*.
-      for (const line of devLoginLines(devLogin, now(), { interactive: keys.active, targets: devLoginWorkers, ci })) {
+      for (const line of devLoginLines(devLogins, now(), { interactive: keys.active, targets: devLoginWorkers, ci })) {
         emitLine(line);
       }
       emitLine(dim(`logs → ${logPath}`));
@@ -821,14 +855,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   };
 
   /**
-   * `l` — open a signed-in browser.
+   * Open one identity's dev login, whichever way it was chosen.
    *
    * The decision is {@link devLoginKeyAction}'s and is made without touching the terminal, so the only
    * work here is saying it and handing the URL over. A failed open is reported and survived: `pithy dev`
    * supervises workers, and no browser is a reason for a sentence, not for tearing a session down.
    */
-  const openDevLogin = async (): Promise<void> => {
-    const action = devLoginKeyAction(devLogin, now(), devLoginWorkers, ci);
+  const openIdentity = async (login: DevLogin | undefined): Promise<void> => {
+    const action = devLoginKeyAction(login, now(), devLoginWorkers, ci);
     for (const line of action.lines) emitLine(line);
     if (!action.url) return;
     try {
@@ -838,12 +872,83 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     }
   };
 
-  // Scoped to `l`. A second binding is one more entry here — `r` to restart and `o` to open the app are
-  // the obvious neighbors — and neither is this issue.
+  /**
+   * The identities `l` has just listed and is waiting on a digit for.
+   *
+   * **It lasts exactly one keypress.** Empty before `l` and empty again after any digit, in range or not,
+   * so the window is the interaction the printed list asked for and nothing longer. Left armed it would
+   * outlive the question: somebody reads the list, thinks better of it, and a port number pasted into the
+   * terminal an hour later opens a signed-in browser as whoever that index named. `l` re-arms it, so
+   * declining a choice costs nothing.
+   */
+  let pendingIdentities: readonly DevLogin[] = [];
+
+  /**
+   * `l` — choose who to be, then open a signed-in browser.
+   *
+   * **The user axis composes in front of the worker logic, never into it — `#667`.** All this decides is
+   * which `DevLogin` {@link openIdentity} is handed; what happens next is the same four shapes it always
+   * was. One identity is handed straight over, because a project seeding one user has nothing to choose.
+   */
+  const openDevLogin = async (): Promise<void> => {
+    const choice = devLoginChoice(devLogins, now());
+    if (choice.kind === "only") {
+      await openIdentity(choice.login);
+      return;
+    }
+    // **Before asking who.** Under CI no route is registered, and with nothing composing auth there is
+    // nothing to open — neither refusal depends on which identity would have been picked, and making
+    // somebody choose first only to tell them that is a worse sentence for the same information.
+    if (ci || devLoginWorkers.length === 0) {
+      await openIdentity(choice.logins[0]);
+      return;
+    }
+    if (choice.kind === "keys") {
+      pendingIdentities = choice.logins;
+      for (const line of devLoginChoiceLines(choice.logins)) emitLine(line);
+      return;
+    }
+    // Past nine there is no digit left to bind, so it is a prompt — and a prompt reads its own stdin, so
+    // the terminal has to come out of raw mode for it and go back in after, whatever the prompt did.
+    keys.stop();
+    try {
+      const chosen = await chooseDevLogin(choice.logins);
+      if (chosen === undefined) {
+        emitLine("Nothing opened.");
+        return;
+      }
+      const selection = selectDevLogin(devLogins, now(), chosen);
+      for (const line of selection.lines) emitLine(line);
+      if (selection.login) await openIdentity(selection.login);
+    } finally {
+      // Unless the session went away underneath the prompt. `shutdown` gave the terminal its own Ctrl-C
+      // handling back; starting a reader after it would exit with raw mode on, and a shell that echoes
+      // nothing is exactly what `keys.stop()` exists to prevent.
+      if (!shuttingDown) startKeys();
+    }
+  };
+
+  /** A digit — the identity `l` numbered, when `l` is waiting for one. Inert at every other moment. */
+  const pickIdentity = async (key: string): Promise<void> => {
+    if (pendingIdentities.length === 0) return;
+    const login = pickDevLoginByKey(pendingIdentities, key);
+    // Consumed either way: a digit past the end of the list is an answer to the question, and the question
+    // is not asked again until `l` is.
+    pendingIdentities = [];
+    if (login) await openIdentity(login);
+  };
+
+  // Scoped to `l` and the digits it hands out. A second *command* is one more entry here — `r` to restart
+  // and `o` to open the app are the obvious neighbors — and neither is this issue.
   let keys: KeyReader = { active: false, stop: () => {} };
   const startKeys = () => {
     keys = readKeys({
-      bindings: [{ key: "l", run: openDevLogin }],
+      bindings: [
+        { key: "l", run: openDevLogin },
+        // Bound always, and inert until `l` has listed something: a reader's bindings are fixed when it
+        // starts, so the choice is state rather than a second reader with a second raw-mode handover.
+        ...DIGIT_KEYS.map((key) => ({ key, run: () => pickIdentity(key) })),
+      ],
       // Raw mode takes the terminal's own Ctrl-C handling away, so the supervisor has to put it back.
       // Without this line `pithy dev` becomes unstoppable from the keyboard.
       onInterrupt: () => void shutdown("interrupted"),
@@ -1087,6 +1192,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   return {
     workers: started.map((s) => ({ name: s.worker.name, port: s.port, origin: s.origin })),
+    identities: devLoginIdentities(devLogins, now()),
     ready,
     closed,
     shutdown,
@@ -1147,4 +1253,31 @@ async function waitFor(
     if (Date.now() - start > timeoutMs) return false;
     await sleep(100);
   }
+}
+
+/**
+ * The digits `l` can hand out — derived from {@link MAX_KEY_CHOICES} rather than written out beside it.
+ *
+ * Nine of them, because there is no tenth digit to bind, which is the whole reason 10+ identities get a
+ * prompt instead. Listing them by hand left two statements of one number, and lowering the constant would
+ * have left digits bound past the end of the printed list.
+ */
+const DIGIT_KEYS = Array.from({ length: MAX_KEY_CHOICES }, (_, index) => String(index + 1));
+
+/**
+ * Ask which identity, for a list too long to number — `@clack/prompts`' filterable `autocomplete`.
+ *
+ * Imported at the point of use, as every prompt in the CLI is: `pithy dev` starts a supervisor, and a
+ * session that never presses `l` should not pay to load a prompt library it never shows.
+ *
+ * **The label is the email and the value is the user id.** Filtering runs on what a person recognizes;
+ * what comes back is what the record is keyed by. A claim is neither, and appears in neither.
+ */
+async function chooseDevLoginDefault(logins: readonly DevLogin[]): Promise<string | undefined> {
+  const { autocomplete, isCancel } = await import("@clack/prompts");
+  const chosen = await autocomplete({
+    message: "Which identity?",
+    options: logins.map((login) => ({ value: login.userId, label: login.email })),
+  });
+  return isCancel(chosen) ? undefined : String(chosen);
 }

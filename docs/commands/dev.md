@@ -81,9 +81,12 @@ Whether a worker starts locally is not a fact about the project. `pithy.worker.j
 
 ### Signing in: press `l`
 
-`pithy seed` can mint a real, signed-in session for a seeded user (`docs/commands/seed.md`). `pithy dev` is where you use it.
+`pithy seed` mints a dev login for **every user it seeds** (`docs/commands/seed.md`). `pithy dev` is where you use them.
 
-- **The ready banner names the user, and nothing else.** `Dev login: ada@example.com — press l to open a signed-in browser.` **No session cookie is ever printed**, to the terminal or to `logs/dev.log`. It used to be — a `document.cookie = "…"` line to paste into a browser console — and a working session token rendered as text is a working session token at rest in a scrollback, a log, and a screenshot. The value now travels from the Worker to the browser over HTTP and lands nowhere else.
+- **The ready banner names the user, or how many there are.** With one seeded identity: `Dev login: ada@example.com — press l to open a signed-in browser.` With several: `Dev login: 4 identities — press l to choose who to be and open a signed-in browser.` It cannot name *the* user when there is a choice to make, and picking one to name would be making the choice. **No claim and no session cookie is ever printed** on a run where `pithy dev` can open the browser itself, to the terminal or to `logs/dev.log`. It used to be — a `document.cookie = "…"` line to paste into a browser console — and a working session token rendered as text is a working session token at rest in a scrollback, a log, and a screenshot. The value now travels from the Worker to the browser over HTTP and lands nowhere else.
+- **`l` asks who, then does what it always did.** One identity opens straight away. Two to nine are numbered and one keypress picks: `Which identity? Press 1–4.`, then `1`. Ten or more get a filterable prompt instead, because there is no tenth digit to bind. The choice is over *users*; which worker to open is the separate question below, decided the same way it always was however many identities exist.
+- **An expired claim takes one name out of the list.** Each entry carries its own expiry, so a stale one is absent from the picker and the rest stay usable. When every one has expired, `l` says so and names `pithy seed`, exactly as it did when there was one.
+- **Every seeded user, not a fixed cast.** The source is the auth rows this run seeds, so an adopter's own seed set yields an adopter's own users; the canonical cast is only what `seed.includeExamples` adds to them. The opt-in is still per machine and is the **`user` key** in `~/.config/pithy/<project>/dev.json` — that file has other tenants, so its existence alone mints nothing — and the user it names is the one offered first (`docs/SEED.md`).
 - **`l` opens the browser you already use.** It opens `http://localhost:<port>/__pithy/dev-login` with the platform's own opener (`xdg-open`, `open`, `start`) — no browser automation, so it works in whatever browser is default, from a second profile, and from an incognito window. That route sets the cookie and redirects to `/`. Reload nothing; you are signed in.
 - **The route exists only in a `dev` composition, and never under CI.** `@pithy-sh/auth` registers `GET /__pithy/dev-login` behind two independent gates, both at registration rather than inside the handler: the composition's `ENVIRONMENT` must be `dev`, **and** `CI` must be unset or blank. A `staging` or `prod` Worker does not carry the route at all, and neither does a `dev` Worker started by a CI job. It mints an authenticated session with no credential presented, so neither gate is allowed to imply the other. (`pithy dev` forwards `CI` into each Worker as a var, because the host environment does not otherwise cross into workerd.)
 - **Which Worker.** The candidates are the started Workers that compose auth — a cookie is scoped to the origin that set it, so no other origin can be signed in by opening it. With one candidate, `l` opens it. With several, the one carrying a front end (`ui` in its `pithy.worker.jsonc`) wins; if that does not decide, `pithy dev` prints the choices rather than guessing.
@@ -190,7 +193,7 @@ Everything said to a person moves to stderr under `--json` — the `Starting …
 Written as soon as every worker is started. It is what tells a script where the workers are.
 
 ```json
-{"command":"dev","workers":{"api":{"port":8787,"origin":"http://localhost:8787"},"web":{"port":8788,"origin":"http://localhost:8788"}}}
+{"command":"dev","workers":{"api":{"port":8787,"origin":"http://localhost:8787"},"web":{"port":8788,"origin":"http://localhost:8788"}},"identities":[{"userId":"example-ada","email":"ada@example.com","expiresAt":"2027-07-27T00:00:00.000Z"}]}
 ```
 
 | key | type | meaning |
@@ -199,8 +202,14 @@ Written as soon as every worker is started. It is what tells a script where the 
 | `workers` | object | One entry per started worker, keyed by its name. |
 | `workers.<name>.port` | number | The port that worker was assigned in `.dev.config.json`, verified free before it started. |
 | `workers.<name>.origin` | string | The localhost address its siblings were told to call it on. |
+| `identities` | array | One entry per seeded user this session can sign in as. Empty when nothing is seeded, and empty when every claim has expired. |
+| `identities[].userId` | string | The seeded user's id — canonical, and what the login artifact is keyed by. |
+| `identities[].email` | string | The seeded user's address — what a person recognizes. |
+| `identities[].expiresAt` | string | ISO-8601. When that identity's claim stops being accepted. |
 
-Those four keys are the whole session line. In particular it carries **no dev-login field**: the ready banner is suppressed under `--json`, no key handling starts, and a session cookie has no business in a machine-readable line any more than in a human-readable one. A script that wants the dev login builds the URL from an origin above and `/__pithy/dev-login`.
+**`identities` names who, and never how.** There is no `claim` key on the line and there is not going to be one: a claim mints a session for whoever presents it, and a machine-readable line is as public as a printed one — tee'd, piped, logged and pasted like every other. The line says which identities exist so a script can pick one; signing in is the browser's half, through `l` or through `/__pithy/dev-login`.
+
+The field arrived with `#667`, which is also when the artifact gained an entry per seeded user. Before it the line carried four keys and a script had nothing to select against.
 
 ### The still-waiting line
 

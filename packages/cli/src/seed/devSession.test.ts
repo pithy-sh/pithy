@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { auth } from "@pithy-sh/auth/src/capability";
 import { AUTH_SESSION_SECRET } from "@pithy-sh/auth/src/instance/secrets";
 import { verifyDevLoginClaim } from "@pithy-sh/auth/src/seeds/devSession";
-import { DEV_LOGIN_PATH } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_PATH, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { describe, expect, test } from "vitest";
 import { devSecretsFile } from "../devSecrets/location";
@@ -68,8 +68,11 @@ describe("the dev-session seed, through the real secret reader", () => {
 
     // The claim is signed with the secret, so verifying it asserts the reader resolved that exact value —
     // not merely that something was written.
-    const login: unknown = JSON.parse(await readFile(join(h.projectDir, DEV_LOGIN_PATH), "utf8"));
-    const claim = (login as { claim: string }).claim;
+    // A record keyed by user id since `#667` — every seeded user has an entry, and Ada's is the one this
+    // run asked to see first.
+    const logins = DevLogins.parse(JSON.parse(await readFile(join(h.projectDir, DEV_LOGIN_PATH), "utf8")));
+    const claim = logins[EXAMPLE_ADA.id]?.claim;
+    if (!claim) throw new Error(`expected a claim for ${EXAMPLE_ADA.id}`);
     expect(await verifyDevLoginClaim(claim, SECRET)).toMatchObject({ userId: EXAMPLE_ADA.id });
 
     // **And no session row landed — `#572`.** The seed writes a file; the route mints the session when

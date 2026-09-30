@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { type DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import type { D1SeedGroup, SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
@@ -124,13 +124,26 @@ beforeEach(async () => {
   await migrate();
 });
 
+/**
+ * One user's entry out of the record the seed writes — a record keyed by user id since `#667`.
+ *
+ * The tests below are each about one identity's claim, and they say which, so they name the entry rather
+ * than taking whichever came first. That the record holds an entry per seeded user is
+ * `seeds/devSession.test.ts`'s assertion; this file is about what one claim asserts and who verifies it.
+ */
+function entryFor(prepared: { artifacts?: readonly { contents: string }[] }, userId: string): DevLogin {
+  const logins = DevLogins.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  const login = logins[userId];
+  if (!login) throw new Error(`expected a dev login for ${userId}`);
+  return login;
+}
+
 test("the seeded claim names the user it was minted for", async () => {
   // **This asserted that the artifact's cookie signed you in, and there is no cookie in it any more —
   // `#572`.** The artifact carries a claim about *who*; the route is what turns one into a session, and
   // `http/devLoginRoute.workers.test.ts` is where that end-to-end assertion lives now. What is this
   // file's to prove is that the seed signs a claim the running secret verifies, naming the right person.
-  const prepared = await seedDevLogin(EXAMPLE_ADA.email);
-  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  const artifact = entryFor(await seedDevLogin(EXAMPLE_ADA.email), EXAMPLE_ADA.id);
 
   expect(artifact.email).toBe(EXAMPLE_ADA.email);
   expect(await verifyDevLoginClaim(artifact.claim, SECRET)).toEqual({
@@ -141,8 +154,7 @@ test("the seeded claim names the user it was minted for", async () => {
 
 test("the seeded claim names a user no example set creates", async () => {
   // The case that matters to an adopter: the dev login is their own user, and the fictional cast is absent.
-  const prepared = await seedDevLogin(APP_USER.email, [appUserSeed]);
-  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  const artifact = entryFor(await seedDevLogin(APP_USER.email, [appUserSeed]), APP_USER.id);
 
   expect(artifact.email).toBe(APP_USER.email);
   expect(await verifyDevLoginClaim(artifact.claim, SECRET)).toEqual({
@@ -194,8 +206,7 @@ test("a claim signed with the previous secret is refused after a rotation", asyn
   // Rotating the signing secret invalidates the claim, and reseeding is what mints a fresh one. That is
   // the cost `#572` accepted deliberately: surviving a rotation would have meant a durable marker, and a
   // marker means a table in every adopter's production schema for a `dev`-only affordance.
-  const prepared = await seedDevLogin(EXAMPLE_ADA.email);
-  const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+  const artifact = entryFor(await seedDevLogin(EXAMPLE_ADA.email), EXAMPLE_ADA.id);
 
   expect(await verifyDevLoginClaim(artifact.claim, SECRET)).not.toBeNull();
   expect(await verifyDevLoginClaim(artifact.claim, `${SECRET}-rotated`)).toBeNull();

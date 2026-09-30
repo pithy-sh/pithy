@@ -223,7 +223,7 @@ It is a plan, not a query: no I/O, no credentials, and the same answer whether o
 
 `@pithy-sh/auth` ships the first of these. Sign-in is passwordless, so every local sign-in is a magic link — correct in production, a tax in development, and impossible for anything automated.
 
-`auth`'s `dev-session` set mints a **real** session for a seeded user and writes `logs/dev-login.json`. `pithy dev` reads it and prints, on the ready banner, a line you paste into the browser console to be signed in.
+`auth`'s `dev-session` set mints a signed **claim** for every user the run seeds and writes them to `logs/dev-login.json`, keyed by user id. `pithy dev` reads that file and offers them on the ready banner: press `l`, pick who to be, and a signed-in browser opens. Nothing is pasted into a console, and no claim reaches the terminal on any run where `pithy dev` can open the browser itself.
 
 It is opt-in per machine, not per repo. Create `~/.config/pithy/<project>/dev.json` — `$XDG_CONFIG_HOME/pithy/<project>/dev.json` when that variable is set, `%APPDATA%\pithy\<project>\dev.json` on Windows. It is the directory `pithy doctor` reports, and doctor names this file on its `Dev login:` line:
 
@@ -231,13 +231,19 @@ It is opt-in per machine, not per repo. Create `~/.config/pithy/<project>/dev.js
 { "user": "jim@acme.dev" }
 ```
 
-Name **any user this run seeds** — one of your app's own, or one of the example cast when `seed.includeExamples` is on. The set is not itself an example: you should not have to turn on a fictional cast to sign in as yourself, and turning it off does not take your dev login away. It sorts last (order `9999`), so every set that could create a user has already been composed when it looks.
+**The `user` key is the opt-in, and it does two jobs.** Without it no claim is minted at all; with it every seeded user gets one and the user it names is the identity `pithy dev` offers first. Name **any user this run seeds** — one of your app's own, or one of the example cast when `seed.includeExamples` is on — and a name this run does not create still fails, listing the emails it does seed, rather than quietly signing in as nobody.
 
-No file, no session — the default stays "there is no way in but a magic link". A file naming a user this run does not create fails, listing the emails it does seed, rather than quietly seeding nothing.
+**The key rather than the file, because `dev.json` has other tenants.** `pithy dev` writes bootstrap `.dev.vars` values into the same file, with no `user` in them and no interest in signing anybody in. If merely having that file counted as consent, a machine where nobody ever asked for a dev login would get a live claim for every seeded user on the next seed. A `dev.json` belonging only to another tenant mints nothing and fails nothing. `pithy doctor` reports the same rule on its `Dev login:` line.
 
-The cookie is signed the way Better Auth signs its own, and its token is derived from a fingerprint of the auth secret. That makes it deterministic across reseeds — the same cookie keeps working in every worktree once each is seeded — while rotating the secret invalidates every previously seeded cookie for free.
+One wrinkle if your user ids are stringified integers: JavaScript enumerates integer-like object keys in ascending numeric order, so the picker follows the ids rather than `user`. Every identity still gets its own login; only the offer order differs.
 
-**The file is a live credential** for your local database. It lives under `logs/`, which the starter template gitignores. Do not move it, and do not commit it.
+The roster is the seeded auth rows, not a fixed cast. An adopter's own seed set yields an adopter's own users, however many that is. The set is not itself an example: you should not have to turn on a fictional cast to sign in as yourself, and turning it off does not take your dev login away. It sorts last (order `9999`), so every set that could create a user has already been composed when it looks.
+
+No file, no login — the default stays "there is no way in but a magic link".
+
+**A claim is not a session.** It names a user and is signed with this environment's auth secret; the `/__pithy/dev-login` route exchanges it for a fresh session on every open. So signing out of the app revokes the session it should and leaves the way back in alone, and rotating the auth secret invalidates every claim minted under the old one for free. Each carries its own expiry: a stale one drops out of the picker and the others keep working.
+
+**The file is a live credential** — one claim per seeded user, any of which is a way into your local database. It lives under `logs/`, which the starter template gitignores, it is written `0600`, and a symlink at its path is refused rather than followed. Do not move it, and do not commit it. Nothing migrates it either: it is transient and regenerated, so the single-entry file this replaced simply stops parsing and the banner stays quiet until the next `pithy seed`.
 
 ## The layered env-safety model
 

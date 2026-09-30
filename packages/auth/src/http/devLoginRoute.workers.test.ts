@@ -21,7 +21,7 @@ import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
-import { mintDevLogin } from "../seeds/devSession";
+import { mintDevLogin, mintDevLogins } from "../seeds/devSession";
 import { registerDevLoginRoute } from "./devLoginRoute";
 
 const SECRET = "test-secret-please-rotate-0000000000";
@@ -32,6 +32,17 @@ const SECRETS: SecretFixture<typeof authSecretsRegistry> = {
   "auth-apple-credentials": { clientId: "a", clientSecret: "a" },
   "auth-facebook-credentials": { clientId: "f", clientSecret: "f" },
   "auth-github-credentials": { clientId: "h", clientSecret: "h" },
+};
+
+const GRACE = {
+  id: "example-grace",
+  name: "Grace",
+  email: "grace@example.com",
+  emailVerified: true,
+  image: null,
+  locale: null,
+  createdAt: new Date(1_800_000_000_000),
+  updatedAt: new Date(1_800_000_000_000),
 };
 
 const ADA = {
@@ -154,6 +165,32 @@ test("redirects to the app root with a cookie Better Auth accepts as a real sess
   const cookie = setCookie.split(";")[0] ?? "";
   const session = await instance().api.getSession({ headers: new Headers({ cookie }) });
   expect(session?.user.email).toBe(ADA.email);
+});
+
+test("**every seeded identity's own claim signs that identity in, and nobody else**", async () => {
+  // `#667` mints a claim per seeded user, so the route now answers for several. Each claim is a signature
+  // over one user id, which is what makes handing somebody a link a way in as *them*: the session the
+  // route mints is that user's, and presenting one identity's claim can never yield another's.
+  const db = createDatabase(env.DB, authTables);
+  await seedD1Group(db, { database: "app", table: "pithyAuthUsers", rows: [ADA, GRACE] }, User);
+  const logins = await mintDevLogins({
+    users: [
+      { id: ADA.id, email: ADA.email },
+      { id: GRACE.id, email: GRACE.email },
+    ],
+    secret: SECRET,
+  });
+
+  for (const user of [ADA, GRACE]) {
+    const presented = logins[user.id]?.claim;
+    if (!presented) throw new Error(`expected a claim for ${user.id}`);
+    const response = await devApp().request(devLoginHref(presented), {}, env);
+
+    expect(response.status).toBe(302);
+    const cookie = (response.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    const session = await instance().api.getSession({ headers: new Headers({ cookie }) });
+    expect(session?.user.email).toBe(user.email);
+  }
 });
 
 test("the cookie value is never in the body — the browser is the only place it lands", async () => {

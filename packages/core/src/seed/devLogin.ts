@@ -71,3 +71,34 @@ export const DevLogin = z
   })
   .describe("A seeded dev login: the signed claim for one seeded user, written to `logs/dev-login.json`.");
 export type DevLogin = z.output<typeof DevLogin>;
+
+/**
+ * Every seeded dev login, keyed by `userId` — what `logs/dev-login.json` holds.
+ *
+ * **One entry per user the seed creates — `#667`.** It used to hold exactly one, named by a per-machine
+ * `dev.json`, so being a second seeded user meant reseeding or minting a claim by hand. Both are slow
+ * enough that people stop doing it, and the screens only one user can reach stop getting looked at. A
+ * claim is a signature over a user id and an expiry, so N of them cost no extra seeded rows and a few
+ * hundred bytes each.
+ *
+ * The key is the `userId`, which each entry also carries: the key is how the record is addressed and the
+ * field is what an entry means on its own, once something has picked one out of here.
+ *
+ * **Order is the file's, and for integer-like ids the language's.** `pithy dev` offers the identities in the
+ * order they are read, which is insertion order — except that JS enumerates canonical array-index keys
+ * first, in ascending numeric order, so a project whose user ids are stringified integers gets them
+ * numerically however the seed wrote them. Nothing depends on the order being the seed's; it is an offer
+ * order, not an identity.
+ *
+ * **The whole file is still one live credential, and the three properties that made one acceptable are
+ * what make N acceptable** — `logs/` is gitignored by the starter template, the artifact is written
+ * `0600`, and the writer refuses a symlink at the target.
+ *
+ * **Nothing migrates.** The single-entry file this replaced has strings where an entry belongs, so it does
+ * not parse, and every reader already answers "no dev login" to a file that does not — the banner stays
+ * quiet until the next `pithy seed`. The artifact is gitignored and regenerated, so that is the plan.
+ */
+export const DevLogins = z
+  .record(z.string(), DevLogin)
+  .describe("Every seeded dev login, keyed by user id, as `logs/dev-login.json` holds them.");
+export type DevLogins = z.output<typeof DevLogins>;

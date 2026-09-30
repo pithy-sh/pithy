@@ -227,7 +227,10 @@ export default defineCommand({
 
       if (args.json) {
         const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));
-        process.stdout.write(`${formatJsonLine({ command: "dev", workers })}\n`);
+        // `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
+        // credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is
+        // where that omission is stated and asserted.
+        process.stdout.write(`${formatJsonLine({ command: "dev", workers, identities: handle.identities })}\n`);
       }
 
       process.once("SIGINT", () => void handle.shutdown("interrupted"));
