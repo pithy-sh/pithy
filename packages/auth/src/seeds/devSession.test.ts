@@ -3,13 +3,13 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
-import { DEV_LOGIN_FILE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
-import { EXAMPLE_ADA, EXAMPLE_GRACE } from "@pithy-sh/core/src/seed/exampleIdentities";
+import { DEV_LOGIN_FILE, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
+import { EXAMPLE_ADA, EXAMPLE_GRACE, EXAMPLE_IDENTITIES } from "@pithy-sh/core/src/seed/exampleIdentities";
 import type { SeedPrepareContext, SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { describe, expect, test } from "vitest";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
-import { authDevSessionSeed, mintDevLogin, verifyDevLoginClaim } from "./devSession";
+import { authDevSessionSeed, mintDevLogin, mintDevLogins, verifyDevLoginClaim } from "./devSession";
 import { authExampleSeed } from "./example";
 
 const SECRET = "dev-secret-please-rotate-000000000000";
@@ -47,6 +47,11 @@ function context(overrides: Partial<SeedPrepareContext> = {}): SeedPrepareContex
   };
 }
 
+/** The artifact this run wrote, parsed — a record now, keyed by user id (`#667`). */
+function written(prepared: { artifacts?: readonly { file: string; contents: string }[] }): DevLogins {
+  return DevLogins.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+}
+
 /** Run the set's prepare hook, which every test here exercises. */
 function prepare(ctx: SeedPrepareContext) {
   const hook = authDevSessionSeed.prepare;
@@ -72,34 +77,72 @@ describe("the dev-session seed set", () => {
     expect(prepared).toEqual({});
   });
 
-  test("mints the login artifact for the named example user, and no rows at all", async () => {
-    const prepared = await prepare(context());
-
+  test("**mints one entry per seeded user**, keyed by user id, and no rows at all", async () => {
+    // `#667`. The source is the seeded auth rows, so an adopter's own seed set yields their own users —
+    // the canonical cast is only what `seed.includeExamples` happens to add to them.
+    //
     // **No `d1` — `#572`.** A seeded session was what the product's own sign-out revoked, taking the dev
     // login with it. The set writes a file; the route mints the session when somebody opens the link.
+    const prepared = await prepare(context());
     expect(prepared.d1).toBeUndefined();
     expect(prepared.artifacts?.[0]?.file).toBe(DEV_LOGIN_FILE);
 
-    const login = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
-    expect(login.email).toBe(EXAMPLE_ADA.email);
-    expect(login.userId).toBe(EXAMPLE_ADA.id);
-    expect(login.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    const logins = written(prepared);
+    expect(Object.keys(logins).sort()).toEqual([APP_USER.id, ...EXAMPLE_IDENTITIES.map((i) => i.id)].sort());
+    expect(logins[EXAMPLE_ADA.id]?.email).toBe(EXAMPLE_ADA.email);
+    expect(logins[APP_USER.id]?.email).toBe(APP_USER.email);
+    for (const [userId, entry] of Object.entries(logins)) {
+      expect(entry.userId).toBe(userId);
+      expect(entry.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    }
+  });
+
+  test("every claim verifies against this environment's secret and names its own user", async () => {
+    // The property that makes N claims worth minting: each one is a signature over one user id, so the
+    // route exchanges it for that user's session and nobody else's.
+    for (const entry of Object.values(written(await prepare(context())))) {
+      expect(await verifyDevLoginClaim(entry.claim, SECRET)).toMatchObject({ userId: entry.userId });
+    }
+  });
+
+  test("no two users share a claim", async () => {
+    const claims = Object.values(written(await prepare(context()))).map((entry) => entry.claim);
+    expect(new Set(claims).size).toBe(claims.length);
   });
 
   test("signs in as a real user the app's own seed creates, not only an example identity", async () => {
-    const prepared = await prepare(context({ preferences: { user: APP_USER.email } }));
+    const logins = written(await prepare(context()));
+    expect(logins[APP_USER.id]?.email).toBe(APP_USER.email);
+  });
 
-    const login = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
-    expect(login.email).toBe(APP_USER.email);
-    expect(login.userId).toBe(APP_USER.id);
+  test("**the user dev.json names comes first**, because the record's order is the picker's", () => {
+    // The field's remaining job. It no longer decides who gets a claim — everybody does — so what is left
+    // is which identity `l` offers first, which is what somebody who bothered to write the file wanted.
+    return prepare(context({ preferences: { user: APP_USER.email } })).then((prepared) => {
+      expect(Object.keys(written(prepared))[0]).toBe(APP_USER.id);
+    });
+  });
+
+  test("**a dev.json naming no user mints nothing** — the key is the opt-in, not the file", async () => {
+    // `dev.json` is a multi-tenant file (`#154`), and `pithy dev` creates it for bootstrap `.dev.vars`
+    // alone. So the *file* cannot be the opt-in: a machine that had vars written would silently get a live
+    // claim for every seeded user without anybody asking for a dev login. `doctor/devPreferences.ts` says
+    // the same thing — `user` is "the one key a dev-login preference file must carry".
+    expect(await prepare(context({ preferences: {} }))).toEqual({});
+  });
+
+  test("another tenant's dev.json is not a dev-login opt-in, and does not fail the seed either", async () => {
+    // The concrete case: `writeBootstrapVars` wrote `{ pithyBootstrapVars: … }` and nothing else. It is a
+    // valid file belonging to somebody else, so it mints nothing — and it is not malformed, so it throws
+    // nothing. Extra keys pass, exactly as the file's own schema and doctor's both hold.
+    expect(await prepare(context({ preferences: { pithyBootstrapVars: { SOME_VAR: "value" } } }))).toEqual({});
   });
 
   test("works with the example cast off — the app's own users are the whole roster", async () => {
     const examplesOff = context({ seeded: seededRows(appUserSeed) });
 
     const prepared = await prepare({ ...examplesOff, preferences: { user: APP_USER.email } });
-    const login = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
-    expect(login.userId).toBe(APP_USER.id);
+    expect(Object.keys(written(prepared))).toEqual([APP_USER.id]);
 
     // And the cast stays fictional: nothing seeds Ada, so nothing signs in as her.
     const failure = await prepare(examplesOff).catch((error: unknown) => error);
@@ -161,6 +204,42 @@ describe("the dev-session seed set", () => {
       expect(text).not.toContain(SECRET);
       expect(text).not.toContain(minted.login.claim);
     }
+  });
+});
+
+describe("mintDevLogins", () => {
+  const CAST = [EXAMPLE_ADA, EXAMPLE_GRACE, APP_USER];
+
+  test("keys every user by id and **keeps the order it was handed**", async () => {
+    // The order is the picker's, so it is the caller's to decide and this must not sort or rebuild it.
+    const minted = await mintDevLogins({ users: CAST, secret: SECRET });
+    expect(Object.keys(minted)).toEqual([EXAMPLE_ADA.id, EXAMPLE_GRACE.id, APP_USER.id]);
+    expect(minted[EXAMPLE_GRACE.id]?.email).toBe(EXAMPLE_GRACE.email);
+  });
+
+  test("mints each entry exactly as minting one would", async () => {
+    // One claim per user, from the same function — so a fix to how a claim is signed cannot reach one
+    // path and miss the other.
+    const at = new Date(1_800_000_000_000);
+    const minted = await mintDevLogins({ users: [EXAMPLE_ADA], secret: SECRET, now: at });
+    expect(minted[EXAMPLE_ADA.id]).toEqual((await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: at })).login);
+  });
+
+  test("**an integer-like user id is enumerated numerically, whatever order it was handed in**", async () => {
+    // Not our choice and not fixable in a record: JS enumerates canonical array-index keys first, in
+    // ascending numeric order, and `JSON.parse` does the same on the way back in. An adopter whose users
+    // carry stringified integer PKs therefore gets a numerically ordered picker, and `dev.json`'s "offered
+    // first" does not survive for them. Pinned rather than left to be discovered, because the artifact is
+    // keyed by user id by design and the alternative is a different artifact shape.
+    const numeric = [
+      { id: "3", email: "three@example.com" },
+      { id: "1", email: "one@example.com" },
+    ];
+    expect(Object.keys(await mintDevLogins({ users: numeric, secret: SECRET }))).toEqual(["1", "3"]);
+  });
+
+  test("no users is an empty record, not a failure — the caller owns that refusal", async () => {
+    expect(await mintDevLogins({ users: [], secret: SECRET })).toEqual({});
   });
 });
 

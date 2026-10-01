@@ -271,8 +271,8 @@ export function seedHostOrigin(host: string, env: string): string {
 }
 
 /**
- * The mode a freshly written artifact lands with. `logs/dev-login.json` holds a **live session cookie** —
- * one `cat` from being anybody's login — and the umask is not a permission policy.
+ * The mode a freshly written artifact lands with. `logs/dev-login.json` holds a **live signed claim per
+ * seeded user** — one `cat` from being any of their logins — and the umask is not a permission policy.
  */
 const ARTIFACT_MODE = 0o600;
 
@@ -280,12 +280,12 @@ const ARTIFACT_MODE = 0o600;
  * Write one prepared artifact under the project's `logs/`, returning the path written.
  *
  * The directory is not the fixture's to choose: `logs/` is gitignored by the starter template, and the one
- * artifact that exists holds a live session cookie. A `file` carrying any directory part is refused rather
- * than normalized — a fixture that tried it is a bug, and silently relocating it would hide the bug.
+ * artifact that exists holds a live claim for every seeded user. A `file` carrying any directory part is
+ * refused rather than normalized — a fixture that tried it is a bug, and relocating it would hide the bug.
  *
  * **Through {@link writeFileAtomic}, for the same two reasons `.dev.vars` is.** A plain `writeFile` follows
  * a symlink at the target wherever it points, so a foreign-owned link left at `logs/dev-login.json` carried
- * a live session cookie out of the project; and it lands the file at whatever the umask allows, which for
+ * live credentials out of the project; and it lands the file at whatever the umask allows, which for
  * a credential is a decision nobody made. The primitive owns both rules — an ownership check on every link
  * it follows, and a mode the file is *born* with rather than widened from. A file already there keeps its
  * own mode: those permissions are the adopter's.

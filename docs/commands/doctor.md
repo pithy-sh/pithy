@@ -72,12 +72,7 @@ OS:      macOS 14.5
 Runtime: Bun 1.2.4 (Node 22.10.0 compat)
 ```
 
-The **`Project health`** block is `pithy upgrade`'s manifest-versus-wiring comparison in read-only mode —
-one engine, two commands: doctor reports drift, upgrade fixes it. It is reported **per Worker**, since each
-Worker under `apps/` carries its own `pithy.config.ts` and `wrangler.jsonc` and so drifts independently; a
-healthy Worker collapses to one line, and the whole block is omitted when every Worker is healthy. **Doctor
-exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a
-required binding is missing before deploy does.
+The **`Project health`** block is `pithy upgrade`'s manifest-versus-wiring comparison in read-only mode — one engine, two commands: doctor reports drift, upgrade fixes it. It is reported **per Worker**, since each Worker under `apps/` carries its own `pithy.config.ts` and `wrangler.jsonc` and so drifts independently; a healthy Worker collapses to one line, and the whole block is omitted when every Worker is healthy. **Doctor exits non-zero when any Worker fails a check**, so CI can gate on it. Nothing else in the CLI tells you a required binding is missing before deploy does.
 
 The **`migrations`** check answers **every environment**, one line each: `dev`, then every environment the root `pithy.config.ts` declares, in the order it declares them. Each is composed for that environment — its `pithy.config.ts` evaluated under that environment's `ENVIRONMENT` — and read from that environment's databases, and every command on its line names that environment. There is no `--env`, because the answer is the whole project: passing `--env prod` to `pithy doctor` used to be accepted silently, and printed `dev`'s count under a prod heading, on a project whose prod had no database to have anything pending against. It is refused now, as every flag a command does not declare is (docs/CLI.md §1.2).
 
@@ -92,13 +87,7 @@ A deployed environment's line is one of four things, and none of them is ever an
 
 **No per-environment answer is taken from a composition built for another environment, or for none.** The Workers doctor lists are composed for `dev`. Then every Worker is composed once for each declared environment, and each answer below reads that environment's composition: the migrations on its line, the bindings its stanza lacks, the Durable Object exports, option keys and prerequisites its composition asks for, the settings its capability instances are judged on, and the origin each one is handed. `Origins:` and `Workflows:` read each environment's domains and jobs from that environment's composition too. So a capability a config composes for `prod` alone is asked about in `prod`'s stanza, and a Worker that does not start in `prod` fails the exit here rather than at deploy. A stanza no environment declares is answered from `dev`'s composition, and `Environments:` reports the stanza. An environment whose config throws contributes nothing, and no other composition stands in for it: `Environment configs:` names it and fails the exit. Declines, generated values, entitlements and ejected capabilities are `dev`'s, and `Local delivery:` is the dev session's.
 
-Each line asks the question in **both directions**, and the second one is why the check exists. A
-migration this project declares that the environment's database has not applied is `N pending`, and `pithy
-migrate` is the remedy. A migration the database has *applied* that the project no longer declares is a
-different fault with a different remedy — and it is invisible to a pending count, because nothing is
-missing, so nothing is pending. That state stops the migrator dead: Kysely reads an applied migration its
-registry does not carry as a corrupted chain and applies nothing. So doctor called a database healthy that
-`pithy migrate` refused to touch, which is the whole of #282.
+Each line asks the question in **both directions**, and the second one is why the check exists. A migration this project declares that the environment's database has not applied is `N pending`, and `pithy migrate` is the remedy. A migration the database has *applied* that the project no longer declares is a different fault with a different remedy — and it is invisible to a pending count, because nothing is missing, so nothing is pending. That state stops the migrator dead: Kysely reads an applied migration its registry does not carry as a corrupted chain and applies nothing. So doctor called a database healthy that `pithy migrate` refused to touch, which is the whole of #282.
 
 ```
 Project health:
@@ -113,20 +102,7 @@ Project health:
     entitlements no gated route without a provider ✓
 ```
 
-Both halves fail the exit for `dev`. The remedy names which case applies rather than leaving it to be guessed,
-because the tool knows: `dev` is the Miniflare store under `.wrangler/state` and throwing it away costs a
-re-migrate, while a deployed environment is a database with real rows in it, where the same advice would be
-data loss. There the line says to restore the migration or remove its `pithy_migrations` row. It is the
-same sentence `pithy migrate` refuses with — one wording, two commands, so the two can never disagree about
-one database again. In `--json` the check is `{ ok, environments }`: `ok` is `dev`'s answer, and
-`environments` is one entry per environment, `dev` first, each with its `env` and a `state`. `checked`
-carries a `ledger` whose `state` is `read`, `partial` or `unavailable`: the counts sit behind it, so a sum
-taken over some of an environment's databases cannot be read as a sum over all of them. `read` carries
-`pending` and `undeclared` — the latter one entry per migration with its `database`, `binding` and `name`.
-`partial` carries the same two under `counted` and names every database it could not read on `unreadable`.
-`unavailable` carries no number at all. `not-provisioned` names each database with no id on
-`unprovisioned`, `skipped` carries its `reason` (`offline` or `no-credentials`), and `not-composed` carries
-nothing.
+Both halves fail the exit for `dev`. The remedy names which case applies rather than leaving it to be guessed, because the tool knows: `dev` is the Miniflare store under `.wrangler/state` and throwing it away costs a re-migrate, while a deployed environment is a database with real rows in it, where the same advice would be data loss. There the line says to restore the migration or remove its `pithy_migrations` row. It is the same sentence `pithy migrate` refuses with — one wording, two commands, so the two can never disagree about one database again. In `--json` the check is `{ ok, environments }`: `ok` is `dev`'s answer, and `environments` is one entry per environment, `dev` first, each with its `env` and a `state`. `checked` carries a `ledger` whose `state` is `read`, `partial` or `unavailable`: the counts sit behind it, so a sum taken over some of an environment's databases cannot be read as a sum over all of them. `read` carries `pending` and `undeclared` — the latter one entry per migration with its `database`, `binding` and `name`. `partial` carries the same two under `counted` and names every database it could not read on `unreadable`. `unavailable` carries no number at all. `not-provisioned` names each database with no id on `unprovisioned`, `skipped` carries its `reason` (`offline` or `no-credentials`), and `not-composed` carries nothing.
 
 ```
 Project health:
@@ -142,14 +118,9 @@ Project health:
     entitlements no gated route without a provider ✓
 ```
 
-A database that could not be read is **not** `0 pending`. It is the one thing a count cannot say, and
-saying it wrongly is a green line about a schema nobody compared.
+A database that could not be read is **not** `0 pending`. It is the one thing a count cannot say, and saying it wrongly is a green line about a schema nobody compared.
 
-The **`bindings`** line covers both halves of a binding, not only the half that is config. A Durable Object
-is declared twice — a `durable_objects.bindings` entry naming a `class_name`, and an
-`export { <Class> } from "…";` on the module the Worker's `main` names, which is what wrangler resolves that
-name against. A project carrying the first and not the second is refused at deploy, so the class is named
-here and `pithy upgrade` writes it:
+The **`bindings`** line covers both halves of a binding, not only the half that is config. A Durable Object is declared twice — a `durable_objects.bindings` entry naming a `class_name`, and an `export { <Class> } from "…";` on the module the Worker's `main` names, which is what wrangler resolves that name against. A project carrying the first and not the second is refused at deploy, so the class is named here and `pithy upgrade` writes it:
 
 ```
 Project health:
@@ -224,11 +195,7 @@ Project health:
 
 Like the entitlement gap, it reports and does not fix: `pithy upgrade` writes bindings and config keys, and composing a capability is a different kind of decision. `pithy add auth --with-prerequisites` is the command that makes it. It fails the exit, because this was the state `pithy add auth` used to leave behind — and doctor called that project healthy, which is how it reached `pithy dev` to be found there instead.
 
-A Worker whose plan could not be built at all gets **one line and no checks**. Its `pithy.config.ts` or its
-`wrangler.jsonc` would not read, so nothing was established about it — and the four other lines a Worker
-normally has would each be a claim nobody checked. Every *other* Worker still reports in full: a diagnostic
-that loses four Workers' findings to a fifth one's broken config is the report you cannot use on exactly the
-day you need it.
+A Worker whose plan could not be built at all gets **one line and no checks**. Its `pithy.config.ts` or its `wrangler.jsonc` would not read, so nothing was established about it — and the four other lines a Worker normally has would each be a claim nobody checked. Every *other* Worker still reports in full: a diagnostic that loses four Workers' findings to a fifth one's broken config is the report you cannot use on exactly the day you need it.
 
 ```
 Project health:
@@ -237,10 +204,7 @@ Project health:
   collab: healthy ✓
 ```
 
-It **fails the exit**, on the same standard the `manifests:` section below is held to: a check that did not
-run established nothing, and calling a project healthy around a hole is the under-report both exist to
-prevent. In `--json` the entry carries `"state":"unavailable"` and its `worker`, and nothing else — there is
-no `ok` on it to read as `true`.
+It **fails the exit**, on the same standard the `manifests:` section below is held to: a check that did not run established nothing, and calling a project healthy around a hole is the under-report both exist to prevent. In `--json` the entry carries `"state":"unavailable"` and its `worker`, and nothing else — there is no `ok` on it to read as `true`.
 
 The block opens with a **`manifests:`** section when an installed `@pithy-sh/*` package ships a `pithy.manifest.json` that will not parse or will not validate. It sits above the Workers, and outside all of them, because that is where the fault is: manifests resolve once from the project root, so no Worker owns one — and a capability nobody can read contributes no drift to any check underneath it. Without this section a project full of unreadable manifests read as healthy and said nothing at all. It names the package and the reason, it **fails the exit** like every other check here, and it is the one finding in the block `pithy upgrade` cannot act on: the file belongs to someone else's package, so the fix is a reinstall or a word with its maintainer.
 

@@ -11,7 +11,7 @@ Use `/refine`. It interviews you one question at a time, writes a structured Git
 | `/refine` | Browse the board. Pick an idea to refine, or capture a new one. |
 | `/refine #N` | Refine issue `N`. Re-run anytime to continue. |
 
-The skill owns the mechanics — issue template, board ops, the lot. See [`.claude/skills/refine/SKILL.md`](.claude/skills/refine/SKILL.md).
+The skill owns the mechanics — issue template, board ops, the lot. It is shared across the Pithy repos and lives in the workspace checkout alongside them, not in this repository; the facts specific to this repo are in `.claude/project.md`.
 
 ## Building work
 
@@ -22,13 +22,13 @@ Use `/ship`. It takes a `Ready` issue and carries it to a merged PR — TDD impl
 | `/ship #N` | Build issue `N`. |
 | `/ship` | Build the lowest-numbered `Ready` issue whose dependencies are `Done`. |
 
-Mechanics live in [`.claude/skills/ship/SKILL.md`](.claude/skills/ship/SKILL.md).
+Mechanics live in the shared `ship` skill, in the workspace checkout alongside this repository. What it does *here* — the changeset, the `Security:` line, the worktree commands, the gates — is in `.claude/project.md`.
 
 ## The board
 
-The [Pithy board](https://github.com/orgs/pithy-sh/projects/1) tracks each issue's **Stage** across its life:
+The [Pithy board](https://github.com/orgs/pithy-sh/projects/1) tracks each issue's **Status** across its life:
 
-`Inbox → Refining → Ready` (owned by `/refine`) `→ Building → In review → Done` (owned by `/ship`).
+`Inbox → Ready` (owned by `/refine`) `→ In Progress → Done` (owned by `/ship`). Those four are the whole set — the field has no other options.
 
 ## Setup
 

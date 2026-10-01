@@ -609,20 +609,47 @@ async function signalReady(h: ReturnType<typeof harness>): Promise<void> {
  */
 const CLAIM = "eyJ1IjoiZXhhbXBsZS1hZGEifQ%3D%3D.c2ln";
 
-/** What `pithy seed` wrote, as `readDevLogin` hands it over. */
+/** What `pithy seed` wrote, as `readDevLogins` hands it over — a record keyed by user id (`#667`). */
 const seededLogin = async () => ({
-  email: "ada@example.com",
-  userId: "example-ada",
-  claim: CLAIM,
-  expiresAt: new Date("2027-07-27T00:00:00.000Z"),
+  "example-ada": {
+    email: "ada@example.com",
+    userId: "example-ada",
+    claim: CLAIM,
+    expiresAt: new Date("2027-07-27T00:00:00.000Z"),
+  },
 });
 
+/** A record of `count` seeded identities — the shape that gives `l` something to ask about. */
+function seededLogins(count: number) {
+  return async () =>
+    Object.fromEntries(
+      Array.from({ length: count }, (_, index) => {
+        const userId = `example-${index + 1}`;
+        return [
+          userId,
+          {
+            email: `user${index + 1}@example.com`,
+            userId,
+            claim: `${CLAIM}-${index + 1}`,
+            expiresAt: new Date("2027-07-27T00:00:00.000Z"),
+          },
+        ];
+      }),
+    );
+}
+
 /** A key reader that hands its bindings back, so a test can press a key without a terminal. */
-function pressable(): { readKeys: StartDevOptions["readKeys"]; press: (key: string) => Promise<void>; stops: number } {
-  const state = { bindings: [] as { key: string; run: () => void | Promise<void> }[], stops: 0 };
+function pressable(): {
+  readKeys: StartDevOptions["readKeys"];
+  press: (key: string) => Promise<void>;
+  stops: number;
+  readerCount: number;
+} {
+  const state = { bindings: [] as { key: string; run: () => void | Promise<void> }[], stops: 0, readers: 0 };
   return {
     readKeys: (options) => {
       state.bindings = [...options.bindings];
+      state.readers += 1;
       return {
         active: true,
         stop: () => {
@@ -637,15 +664,223 @@ function pressable(): { readKeys: StartDevOptions["readKeys"]; press: (key: stri
     get stops() {
       return state.stops;
     },
+    get readerCount() {
+      return state.readers;
+    },
   };
 }
 
 describe("startDev — the l keypress", () => {
+  test("**with several identities, l numbers them and a digit opens the one it named**", async () => {
+    // `#667`. The user axis composes in front of the worker logic: `l` resolves *who*, and what happens
+    // then is the same four shapes it always was.
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(3),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(h.stdoutLines).toContain("Which identity? Press 1–3.");
+    expect(h.stdoutLines).toContain("  2  user2@example.com");
+    // Naming the identities is not printing their claims: the list is emails, and the URL is opened.
+    for (const line of h.stdoutLines) expect(line).not.toContain(CLAIM);
+
+    await keys.press("2");
+    expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}-2`]);
+    expect(h.stdoutLines).toContain("Opening the dev login for user2@example.com.");
+  });
+
+  test("**one digit consumes the choice, so a later stray digit opens nothing**", async () => {
+    // Press `l`, read the list, then think better of it. The arm must not outlive the interaction: a port
+    // number typed or pasted into the terminal an hour later would otherwise open a signed-in browser as
+    // whoever that index happens to name.
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(3),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    await keys.press("9"); // out of range: consumes the choice and opens nothing
+    expect(opened).toEqual([]);
+    await keys.press("2"); // no longer armed
+    expect(opened).toEqual([]);
+
+    // And `l` re-arms, so declining a choice never costs the feature.
+    await keys.press("l");
+    await keys.press("2");
+    expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}-2`]);
+  });
+
+  test("**refuses before asking who, when nothing it could open is running**", async () => {
+    // The refusal is about what is running, and no identity changes it. Asking first would make somebody
+    // choose and then be told there was nothing to open.
+    const keys = pressable();
+    const h = harness({
+      readDevLogins: seededLogins(3),
+      devLoginTargets: async () => [],
+      readKeys: keys.readKeys,
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(h.stdoutLines).toContain("No running worker composes auth, so there is nothing to open.");
+    expect(h.stdoutLines).not.toContain("Which identity? Press 1–3.");
+  });
+
+  test("a digit before `l` opens nothing, because no choice is pending", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(3),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("2");
+    expect(opened).toEqual([]);
+  });
+
+  test("one identity opens straight away, with no choice to make", async () => {
+    // The acceptance criterion the whole design turns on: a project seeding one user behaves as it did
+    // before there was an axis at all.
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(1),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}-1`]);
+    expect(h.stdoutLines).not.toContain("Which identity? Press 1–1.");
+  });
+
+  test("**ten or more identities get the filterable select**, and the chosen one opens", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const asked: number[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(12),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+      chooseDevLogin: async (logins) => {
+        asked.push(logins.length);
+        return "example-7";
+      },
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(asked).toEqual([12]);
+    expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}-7`]);
+  });
+
+  test("the select gives the terminal back while it runs, and takes it again after", async () => {
+    // A `@clack/prompts` prompt reads its own stdin, so raw mode has to come off for it and go back on
+    // afterwards — otherwise the session is left with a terminal nobody owns.
+    const keys = pressable();
+    const h = harness({
+      readDevLogins: seededLogins(12),
+      readKeys: keys.readKeys,
+      chooseDevLogin: async () => {
+        expect(keys.stops).toBe(1);
+        return undefined;
+      },
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(keys.readerCount).toBe(2);
+  });
+
+  test("a value the select hands back that names nobody is refused by name, and opens nothing", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(12),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+      chooseDevLogin: async () => "nobody@example.com",
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(opened).toEqual([]);
+    expect(h.stdoutLines.some((line) => line.includes("No seeded identity is nobody@example.com."))).toBe(true);
+  });
+
+  test("**a session that shut down while the select was open does not take the terminal back**", async () => {
+    // `keys.stop()` is what gives the terminal its own Ctrl-C handling back, and shutdown calls it. If the
+    // prompt then restarted a reader on its way out, the process would exit with raw mode still on and
+    // leave a shell that echoes nothing — the failure `stop()` exists to prevent, reached from the far side.
+    const keys = pressable();
+    let handle: Awaited<ReturnType<typeof startDev>> | undefined;
+    const h = harness({
+      readDevLogins: seededLogins(12),
+      readKeys: keys.readKeys,
+      chooseDevLogin: async () => {
+        await handle?.shutdown("interrupted");
+        return undefined;
+      },
+    });
+    handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(keys.readerCount).toBe(1);
+  });
+
+  test("a canceled select opens nothing and says so", async () => {
+    const keys = pressable();
+    const opened: string[] = [];
+    const h = harness({
+      readDevLogins: seededLogins(12),
+      readKeys: keys.readKeys,
+      openUrl: async (url) => void opened.push(url),
+      chooseDevLogin: async () => undefined,
+    });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    await keys.press("l");
+    expect(opened).toEqual([]);
+    expect(h.stdoutLines).toContain("Nothing opened.");
+  });
+
   test("opens the worker that carries the route, and says what it opened", async () => {
     const keys = pressable();
     const opened: string[] = [];
     const h = harness({
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       readKeys: keys.readKeys,
       openUrl: async (url) => void opened.push(url),
     });
@@ -664,7 +899,7 @@ describe("startDev — the l keypress", () => {
     const keys = pressable();
     const opened: string[] = [];
     const h = harness({
-      readDevLogin: async () => undefined,
+      readDevLogins: async () => undefined,
       readKeys: keys.readKeys,
       openUrl: async (url) => void opened.push(url),
     });
@@ -681,7 +916,7 @@ describe("startDev — the l keypress", () => {
   test("a browser that will not open is a sentence, not a dead session", async () => {
     const keys = pressable();
     const h = harness({
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       readKeys: keys.readKeys,
       openUrl: () => Promise.reject(new ValidationError({ message: "Could not open a browser." })),
     });
@@ -698,7 +933,7 @@ describe("startDev — the l keypress", () => {
 
   test("gives the terminal back on shutdown, before anything that can take time", async () => {
     const keys = pressable();
-    const h = harness({ readDevLogin: seededLogin, readKeys: keys.readKeys });
+    const h = harness({ readDevLogins: seededLogin, readKeys: keys.readKeys });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
@@ -711,7 +946,7 @@ describe("startDev — the l keypress", () => {
   test("Ctrl-C still stops the session — raw mode is what takes that away", async () => {
     let interrupt: (() => void) | undefined;
     const h = harness({
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       readKeys: (options) => {
         interrupt = options.onInterrupt;
         return { active: true, stop: () => {} };
@@ -731,7 +966,7 @@ describe("startDev — the l keypress", () => {
     const keys = pressable();
     const opened: string[] = [];
     const h = harness({
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       baseEnv: { PATH: "/usr/bin", CI: "true" },
       readKeys: keys.readKeys,
       openUrl: async (url) => void opened.push(url),
@@ -751,7 +986,7 @@ describe("startDev — the l keypress", () => {
     let started = false;
     const h = harness({
       json: true,
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       readKeys: () => {
         started = true;
         return { active: true, stop: () => {} };
@@ -790,7 +1025,7 @@ describe("startDev — ready banner", () => {
   });
 
   test("offers the seeded dev login, so the banner is where signing in is discovered", async () => {
-    const h = harness({ readDevLogin: seededLogin });
+    const h = harness({ readDevLogins: seededLogin });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
@@ -804,7 +1039,7 @@ describe("startDev — ready banner", () => {
   test("no session cookie reaches the terminal or logs/dev.log", async () => {
     // The reason this feature exists. `pithy dev`'s output is read, piped, tee'd and screenshotted, so a
     // session token printed once is a session token at rest. Since `#572` the seed mints none at all.
-    const h = harness({ readDevLogin: seededLogin });
+    const h = harness({ readDevLogins: seededLogin });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
@@ -819,7 +1054,7 @@ describe("startDev — ready banner", () => {
     // The interactive single-worker run — the ordinary one. The URL goes to `openUrl`; the terminal is
     // told a name. A non-interactive run has no keypress and must print a link, which is the documented
     // boundary rather than a leak.
-    const h = harness({ readDevLogin: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
+    const h = harness({ readDevLogins: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
@@ -828,7 +1063,7 @@ describe("startDev — ready banner", () => {
   });
 
   test("offers the keypress where there is a terminal to press it on", async () => {
-    const h = harness({ readDevLogin: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
+    const h = harness({ readDevLogins: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
@@ -838,7 +1073,7 @@ describe("startDev — ready banner", () => {
 
   test("says so rather than offering a keypress when no running worker composes auth", async () => {
     const h = harness({
-      readDevLogin: seededLogin,
+      readDevLogins: seededLogin,
       devLoginTargets: async () => [],
       readKeys: () => ({ active: true, stop: () => {} }),
     });
@@ -852,7 +1087,7 @@ describe("startDev — ready banner", () => {
   });
 
   test("says nothing about signing in when no seed wrote a login", async () => {
-    const h = harness({ readDevLogin: async () => undefined });
+    const h = harness({ readDevLogins: async () => undefined });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;

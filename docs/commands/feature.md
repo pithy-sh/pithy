@@ -69,7 +69,7 @@ Every kit host the feature could have stood up is one of the scripts: `destroy` 
 
 **`destroy --branch` is how a merged pull request tears its own environment down.** Every other subcommand here infers the feature from the checkout, which is right for a developer and impossible for a runner: on `pull_request: closed` the branch is already deleted and `refs/pull/<n>/head` checks out detached, so there is no branch to read. The pipeline holds the name anyway — `github.event.pull_request.head.ref` is a snapshot in the event payload and outlives the branch it names — and this is how it says it. The name goes through the same parser the inferred path uses, so the two cannot disagree about what a feature is called, and the **project** still comes from this checkout's `pithy.config.ts`, which is what keeps the flag inside this project. With no `--branch`, nothing changes: the checkout's branch decides, exactly as before. `provision` and `create` take no such flag; teardown is the only half with a caller standing outside the worktree.
 
-**Where `--branch` reads the feature's record, and what it says when it cannot.** A feature's record is two things, and both live in *its* worktree, not in the checkout the command runs from: `.pithy-feature.json`, which lists what `provision --feature` actually created, by id; and the branch's own `apps/<name>/pithy.config.ts`, whose bindings every recomputed name comes from. `destroy --branch` reads both from `<root>/.worktrees/<issue>-<slug>` when that directory is on the machine — and a directory a previous teardown left behind still counts, because teardown removes the gitlink and leaves the files.
+**Where `--branch` reads the feature's record, and what it says when it cannot.** A feature's record is two things, and both live in *its* worktree, not in the checkout the command runs from: `.pithy-feature.json`, which lists what `provision --feature` actually created, by id; and the branch's own `apps/<name>/pithy.config.ts`, whose bindings every recomputed name comes from. `destroy --branch` reads both from `<root>/.worktrees/<issue>-<slug>` when that directory is on the machine. A successful teardown removes that directory, so the ordinary case after one is that it is gone; a directory is still there when a `pithy dev` session was running at teardown, or when one was made by hand, and it still counts.
 
 When it is **not** on the machine, which is every CI runner, the two differ:
 
@@ -87,7 +87,7 @@ Missing credentials are a hard failure on `destroy` rather than a silent skip, a
 **A block is freed only when its worktree's directory is gone from disk and its branch no longer exists locally.** Either one surviving keeps it, and so does anything `prune` cannot decide.
 
 - **The branch exists.** Checked out in some worktree or in none — a branch whose worktree you removed is a feature you may come back to, and it keeps its ports until you delete the branch.
-- **A directory on disk holds it.** A worktree still there with the branch checked out, a `.dev.config.json` there pinning it, or `.worktrees/<issue>-<slug>`, where `create` puts it. A directory a teardown left behind counts whether or not git still registers it — `git worktree list` marks a deleted directory `prunable`, and that is not the test; the directory is.
+- **A directory on disk holds it.** A worktree still there with the branch checked out, a `.dev.config.json` there pinning it, or `.worktrees/<issue>-<slug>`, where `create` puts it. A directory counts whether or not git still registers it — `git worktree list` marks a deleted directory `prunable`, and that is not the test; the directory is. Teardown removes the directory now, so `prune`'s remaining work is a worktree removed some other way, or one a live dev session kept.
 - **A `local:<path>` key**, which `pithy dev` files a checkout in detached HEAD under, has no branch, so it is freed once `<path>` is gone.
 
 `pithy dev` runs where the project is, so a repository whose project sits in a subdirectory pins `<worktree>/app/.dev.config.json` rather than one at the worktree's root. **Run `prune` from the project directory, as you run `pithy dev`**: it reads each worktree's pin at the worktree's root and at the same place the directory you run it from has in its own checkout. A branch a same-named tag shadows is filed under `heads/<branch>`, the way git spells it, and is read that way too. **The checkout `prune` runs from is never freed** — it is on disk. Only this checkout's blocks are judged: another project's are its own business, and a repository speaks only for its own branches.
@@ -186,9 +186,7 @@ $ pithy feature prune --json
 | `freedBlocks[].base` | `number` | The first port in the block |
 | `freedBlocks[].size` | `number` | How many ports the block spans |
 
-A teardown deletes real infrastructure one resource at a time, with no transaction across them. So a
-failure on the fourth delete still fails the command, and stdout still names the three that went: an
-operator finishing the teardown by hand needs the record more on that run than on the one that worked.
+A teardown deletes real infrastructure one resource at a time, with no transaction across them. So a failure on the fourth delete still fails the command, and stdout still names the three that went: an operator finishing the teardown by hand needs the record more on that run than on the one that worked.
 
 ## Errors
 

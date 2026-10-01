@@ -463,6 +463,10 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
    * a discard safe. Anything else belongs in {@link readOptionalFile}.
    */
   const DISCARDS_ON_PURPOSE: Record<string, { reads: string; why: string }> = {
+    "cli/src/feature/worktree.ts": {
+      reads: "readFileSync",
+      why: "`hasLiveDevSession` asks one question — may something still be watching this tree — and the answer gates a recursive delete, so it fails *towards* the discard being harmless: every failed read counts as live and keeps the files. Routing it through `readOptionalFile` would invert that, because the only outcome this must never produce is a confident 'nothing is watching' built on a read that did not happen. The absence of the file is the one confident no, and that is checked with `existsSync` rather than inferred from a throw.",
+    },
     "cli/src/devSecrets/bootstrapVars.ts": {
       reads: "readFile",
       why: "`readBootstrapVars` argues it at length, and the argument is about that call rather than about the file (#219): every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale — and a `dev.json` half-typed by hand must not stop `pithy dev`. The two writers beside it read their own base through `readMergeBase`, which refuses in every state but absence, and they take a `MergeBase` so this lenient answer cannot be handed to them by accident. The split is by *power*, not by file, which is why both writers now return through this read when their own arguments say they will write nothing (#222) — an empty `values`, an empty `names` — rather than refusing over a file they were never going to touch.",

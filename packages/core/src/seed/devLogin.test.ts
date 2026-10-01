@@ -8,6 +8,7 @@ import {
   DEV_LOGIN_PATH,
   DEV_LOGIN_ROUTE,
   DevLogin,
+  DevLogins,
   SEED_ARTIFACT_DIR,
 } from "./devLogin";
 
@@ -47,5 +48,49 @@ describe("DevLogin", () => {
     // spelling in one of them is a keypress that opens a 404.
     expect(DEV_LOGIN_ROUTE).toBe("/__pithy/dev-login");
     expect(DEV_LOGIN_ROUTE.startsWith("/__pithy/")).toBe(true);
+  });
+});
+
+describe("DevLogins", () => {
+  const ada = {
+    email: "ada@example.com",
+    userId: "example-ada",
+    claim: "YWRh%3D.signature",
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  };
+  const grace = {
+    email: "grace@example.com",
+    userId: "example-grace",
+    claim: "Z3JhY2U%3D.signature",
+    expiresAt: "2027-01-01T00:00:00.000Z",
+  };
+
+  test("round-trips the record the seed writes, keyed by user id", () => {
+    const onDisk = { "example-ada": ada, "example-grace": grace };
+    const decoded = DevLogins.parse(onDisk);
+    expect(Object.keys(decoded)).toEqual(["example-ada", "example-grace"]);
+    expect(decoded["example-grace"]?.expiresAt).toBeInstanceOf(Date);
+    expect(DevLogins.encode(decoded)).toEqual(onDisk);
+  });
+
+  test("keeps the order the seed wrote, because that is the order the picker offers", () => {
+    // The record's own insertion order is the only ordering there is, and `l` lists identities in it. A
+    // parse that rebuilt the object would reorder somebody's picker between reseeds for no reason.
+    expect(Object.keys(DevLogins.parse({ "example-grace": grace, "example-ada": ada }))).toEqual([
+      "example-grace",
+      "example-ada",
+    ]);
+  });
+
+  test("an entry missing the claim takes the whole file down rather than half-loading", () => {
+    const { claim: _dropped, ...without } = grace;
+    expect(DevLogins.safeParse({ "example-ada": ada, "example-grace": without }).success).toBe(false);
+  });
+
+  test("**the single-entry file this replaced does not parse** — no migration, just reseed", () => {
+    // `#667`. The old artifact was one `DevLogin` at the top level, so its fields are strings where an
+    // entry belongs. It is gitignored and transient, so the degradation is the whole migration plan: the
+    // reader answers "no dev login" and the banner stays quiet until `pithy seed` runs again.
+    expect(DevLogins.safeParse(ada).success).toBe(false);
   });
 });

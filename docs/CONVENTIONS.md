@@ -16,8 +16,7 @@ A wrong action is worse than no action, because it is followed. An adopter reads
 
 Someone worked this out and wrote it down in `packages/cli/src/capabilities/manifests.ts`:
 
-> A manifest that is there and will not open is **not** "not installed": telling an adopter to run
-> `pithy add auth` when the file is unreadable sends them to the command that just declined to run.
+> A manifest that is there and will not open is **not** "not installed": telling an adopter to run `pithy add auth` when the file is unreadable sends them to the command that just declined to run.
 
 That was one file. It did not spread. #207 fixed one instance of the same defect in the config loader, and the survey it asked for found twenty more — fourteen of them the identical line in seven files. Hence a rule, rather than a twenty-first patch.
 
@@ -87,8 +86,7 @@ Earned from #383, and they survived #392, #393 and #394 unchanged.
 
 **Can the gate run where it would be seeded?** This is the practical half, and it is a wall you find by trying rather than a judgment you make in advance. A seeded gate must pass under the plain `vitest run` an adopter already has — which is why the seeded gates stub `pithy-config.tsx` rather than `virtual:pithy/*`, and why a gate needing a spawned compiler cannot be one. #391 found the sharper case: the palette invariant lives in CSS text, and **Vitest stubs CSS modules to the empty string**, so `?raw` and a raw glob both answer `""` in a scaffolded project. A seeded gate would have swept an empty set and passed. It is kept in `packages/ui-react/src/palette.test.ts` instead, and the ledger records both the wall and what is lost — it catches the kit shipping a half-set, and cannot catch an adopter's later edit. **A gate that passes over nothing is worse than no gate**, because it is read as coverage. Find this out by planting, not by reasoning: this one passed against its own planted defect first time.
 
-#399 found the wall's other shape, and it is the one to expect from a build file. `vite.config.ts`'s
-`persistState` and both tsconfigs' paths are *relative*: `../../` is right from `apps/<worker>/` and wrong anywhere else, and the string reads identically either way. The invariant is not in the text, it is in where the Worker sits — so no test inside that Worker is at the right altitude to check it, and the gate went to the scaffolder's suite, which builds a real project and resolves against it. The same altitude argument covers `tsconfig.client.json`'s `include`, where the failure is `tsc -b` exiting 0 over a program holding no files: proving that needs a spawned compiler, which a seeded `vitest run` has not got. When a seeded file's invariant is a fact about the layout around it, expect to keep the gate.
+#399 found the wall's other shape, and it is the one to expect from a build file. `vite.config.ts`'s `persistState` and both tsconfigs' paths are *relative*: `../../` is right from `apps/<worker>/` and wrong anywhere else, and the string reads identically either way. The invariant is not in the text, it is in where the Worker sits — so no test inside that Worker is at the right altitude to check it, and the gate went to the scaffolder's suite, which builds a real project and resolves against it. The same altitude argument covers `tsconfig.client.json`'s `include`, where the failure is `tsc -b` exiting 0 over a program holding no files: proving that needs a spawned compiler, which a seeded `vitest run` has not got. When a seeded file's invariant is a fact about the layout around it, expect to keep the gate.
 
 **Can you remove the invariant instead?** Gating is the second answer. #393 made a screen's path and the router's redirect one statement; #394 made the mount node one the app creates rather than one an id in `index.html` names; #377 and #366 are the same move earlier. Removing the class beats watching it, every time.
 

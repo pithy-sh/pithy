@@ -133,8 +133,7 @@ No `unassignable`, so every role including `owner` may be handed to somebody, an
 
 ## Clear the acting selection when a session ends
 
-The acting selection is keyed by session id, so it has to go when the session does. Nothing here can
-see a sign-out — tenancy depends on auth, not the reverse — so the project that composes both wires it:
+The acting selection is keyed by session id, so it has to go when the session does. Nothing here can see a sign-out — tenancy depends on auth, not the reverse — so the project that composes both wires it:
 
 ```ts
 auth({
@@ -145,10 +144,7 @@ auth({
 }),
 ```
 
-Without it the row outlives the credential that made it, one per sign-in, in a table with no TTL and no
-sweep. It confers nothing — every read re-joins memberships and matches the user id too — so this is
-growth rather than an access question, and it is still the kind of growth nobody notices until it is
-large.
+Without it the row outlives the credential that made it, one per sign-in, in a table with no TTL and no sweep. It confers nothing — every read re-joins memberships and matches the user id too — so this is growth rather than an access question, and it is still the kind of growth nobody notices until it is large.
 
 ## The one page you have to serve
 
