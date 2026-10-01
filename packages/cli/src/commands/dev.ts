@@ -9,7 +9,7 @@ import { devListingRows, listDevSet } from "../dev/listDev";
 import { resolveAutostartOverrides, startDev } from "../dev/orchestrator";
 import { portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
-import { formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+import { formatJsonLine, formatJsonStreamLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
 /**
@@ -230,7 +230,10 @@ export default defineCommand({
         // `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
         // credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is
         // where that omission is stated and asserted.
-        process.stdout.write(`${formatJsonLine({ command: "dev", workers, identities: handle.identities })}\n`);
+        //
+        // The session line opens a stream that runs until the session ends, so it is framed as one:
+        // compact, one object per line, whatever this terminal would otherwise be given (#666).
+        process.stdout.write(`${formatJsonStreamLine({ command: "dev", workers, identities: handle.identities })}\n`);
       }
 
       process.once("SIGINT", () => void handle.shutdown("interrupted"));

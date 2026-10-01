@@ -24,8 +24,8 @@ import { readFileSync } from "node:fs";
 // `NO_COLOR` line is about evaluation order, and an erased import has none.
 import type { ArgsDef, CommandDef } from "citty";
 import { unsupportedNodeMessage } from "./nodeFloor";
-import { wantsVersion } from "./rootFlags";
-import { colorEnabled } from "./terminal/style";
+import { wantsPretty, wantsVersion } from "./rootFlags";
+import { colorEnabled, colorForced } from "./terminal/style";
 
 // Before anything is imported or read, so the refusal costs nothing and cannot itself fail on an old
 // runtime. The rule lives in `nodeFloor.ts` because this file cannot be tested — see `rootFlags.ts`.
@@ -69,8 +69,9 @@ if (!colorEnabled()) process.env.NO_COLOR = "1";
 
 const { main } = await import("./main");
 const { ownNamesOnly, usageTarget } = await import("./dispatch");
-const { asksForJson, refuseUndeclaredFlags } = await import("./declaredFlags");
-const { withErrorReporting } = await import("./terminal/output");
+const { asksForJson, refusePrettyFlags, refuseUndeclaredFlags } = await import("./declaredFlags");
+const { JSON_MODE_ENV, jsonStreams } = await import("./terminal/jsonMode");
+const { latchJsonFormat, withErrorReporting } = await import("./terminal/output");
 
 /**
  * One tree, for every reader below and for citty, answering only to the names it declares.
@@ -90,8 +91,34 @@ const root = ownNamesOnly(main);
  * undeclared flag without a word — and whose own argument errors would otherwise win the race and print
  * usage into the stdout a `--json` caller is parsing. Those flags are themselves declared on every command,
  * so asking for them is never refused. See `declaredFlags.ts`.
+ *
+ * **The `--json` mode is latched first, inside the same reporting**, so both refusals below print in the
+ * shape the operator asked for rather than in whatever shape the module happened to be left in.
+ * `jsonModes` throws on an unrecognized `PITHY_JSON`, and that one refusal cannot honor the mode it is
+ * refusing — nothing is latched, so it reports compact, which is the safe direction.
+ *
+ * **Both streams are read here, and nowhere else.** `process` belongs to the bin; the rule is a pure
+ * function of what the bin hands it (`terminal/jsonMode.ts`), which is what lets the whole env × flag ×
+ * isTTY matrix be asked in a test runner that has no terminal at all. The color seam is handed over
+ * the same way, as its two latched bits, so a stream that is not a terminal is never painted.
+ *
+ * `refusePrettyFlags` is after the undeclared-flag check on purpose: a typo in a safety flag is
+ * the more urgent of the two things `pithy secrets rotate API_KEY --dry-rn --pretty` got wrong.
  */
-await withErrorReporting(asksForJson(argv), () => refuseUndeclaredFlags(root, argv));
+await withErrorReporting(asksForJson(argv), async () => {
+  latchJsonFormat(
+    jsonStreams({
+      env: process.env[JSON_MODE_ENV],
+      pretty: wantsPretty(argv),
+      color: colorEnabled(),
+      forced: colorForced(),
+      stdout: Boolean(process.stdout.isTTY),
+      stderr: Boolean(process.stderr.isTTY),
+    }),
+  );
+  await refuseUndeclaredFlags(root, argv);
+  refusePrettyFlags(argv);
+});
 
 if (wantsVersion(argv)) {
   // citty answers its version builtin only when it is the sole argument, so `pithy add --version` would

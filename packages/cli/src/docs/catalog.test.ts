@@ -135,8 +135,10 @@ describe("buildDocsCatalog", () => {
   test("names every flag parsed outside a command's args, hidden ones included", async () => {
     expect((await buildDocsCatalog()).globalFlags).toEqual([
       "--help",
+      "--no-pretty",
       "--pithier",
       "--pithiest",
+      "--pretty",
       "--version",
       "-h",
       "-v",

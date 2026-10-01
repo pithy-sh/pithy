@@ -59,6 +59,26 @@ export function saffron(text: string): string {
 export const { red, yellow, cyan, dim, magenta, bold } = pc.createColors(enabled);
 
 /**
+ * Whether color was **forced** rather than detected — `FORCE_COLOR`, the operator saying "I am
+ * capturing this and I want color anyway".
+ *
+ * `colorEnabled()` folds that together with the TTY check, which is all any caller needed while the
+ * only question was "paint or not". A caller that writes to **both** streams has a second question:
+ * stdout is what the latch above looked at, so `colorEnabled()` can be true while stderr is a file.
+ * Painting there put escape bytes inside a JSON document something was about to parse (#666). This
+ * exposes the one bit needed to tell *forced* from *detected*, so that caller can require a terminal
+ * without also overriding an operator who asked for color everywhere.
+ *
+ * Read from the same latched evaluation, so it cannot disagree with `colorEnabled()` later in the run.
+ */
+const forced = enabled && Boolean(process.env.FORCE_COLOR) && !process.env.NO_COLOR;
+
+/** The latched "color was forced, not detected" bit. See the note above. */
+export function colorForced(): boolean {
+  return forced;
+}
+
+/**
  * A group heading on the root help screen: bold + basic-16 magenta (docs/CLI.md §3.4).
  *
  * One symbol rather than a nesting each call site repeats, because "bold + magenta" is a tier decision

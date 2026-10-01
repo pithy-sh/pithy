@@ -39,7 +39,7 @@ import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { type KeyReader, readKeys as readKeysDefault } from "../terminal/keys";
-import { formatJsonLine } from "../terminal/output";
+import { formatJsonStreamLine } from "../terminal/output";
 import { dim, workerColor } from "../terminal/style";
 import {
   type DevCloudflareEnv,
@@ -485,8 +485,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * actually apply: **every line on stdout is one object.** `docs/commands/dev.md` §`--json` states it.
    */
   const emitLine = (text: string) => (options.json ? stderr : stdout)(`${text}\n`);
-  /** The machine's half: one object per line, always on stdout, only under `--json`. */
-  const emitJson = (payload: Record<string, unknown>) => stdout(`${formatJsonLine(payload)}\n`);
+  /**
+   * The machine's half: one object per line, always on stdout, only under `--json`.
+   *
+   * Compact by construction. A session never ends, so a consumer reads it line by line and the framing
+   * is the contract — `formatJsonStreamLine` is what says this is a stream rather than a document, and
+   * keeps a terminal (or a PTY-allocating agent harness) from indenting it into something unreadable.
+   */
+  const emitJson = (payload: Record<string, unknown>) => stdout(`${formatJsonStreamLine(payload)}\n`);
 
   // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose
   //    (pithy-sh/pithy#410). Through `resolveDevSet`, which is the one place membership is decided, so

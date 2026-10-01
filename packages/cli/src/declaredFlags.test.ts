@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
-import { flagsOf, refuseUndeclaredFlags, undeclaredFlags } from "./declaredFlags";
+import { flagsOf, refusePrettyFlags, refuseUndeclaredFlags, undeclaredFlags } from "./declaredFlags";
 import { ownNamesOnly } from "./dispatch";
 import { main } from "./main";
 
@@ -420,4 +420,119 @@ describe("the real bin", () => {
       expect(stderr).toContain("--bogus-flag");
     }
   }, 120_000);
+});
+
+/**
+ * **`--pretty` formats the `--json` line and changes nothing else, so without `--json` it changes
+ * nothing at all.** One check, in one place, rather than fifty commands each restating a convention.
+ *
+ * `--no-pretty` is held to the same rule. It is the same flag with the opposite answer, and a flag that
+ * silently does nothing is the ambient surprise this feature exists to close, not an exception to it.
+ * `PITHY_JSON` is the session-wide lever for anyone who wants one set permanently.
+ */
+describe("refusePrettyFlags", () => {
+  test("says nothing when neither is typed", () => {
+    expect(() => refusePrettyFlags(["doctor"])).not.toThrow();
+    expect(() => refusePrettyFlags([])).not.toThrow();
+  });
+
+  test("says nothing when both are typed, in either order and on any command", () => {
+    expect(() => refusePrettyFlags(["doctor", "--json", "--pretty"])).not.toThrow();
+    expect(() => refusePrettyFlags(["--pretty", "token", "mint", "--json"])).not.toThrow();
+    expect(() => refusePrettyFlags(["migrate", "--json", "--no-pretty"])).not.toThrow();
+  });
+
+  test("refuses --pretty alone, naming the flag it needs", () => {
+    let thrown: unknown;
+    try {
+      refusePrettyFlags(["doctor", "--pretty"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ValidationError);
+    const { payload } = thrown as ValidationError;
+    expect(payload.message).toContain("--pretty");
+    expect(payload.message).toContain("--json");
+    expect(payload.action).toContain("--json");
+  });
+
+  test("refuses --no-pretty alone, naming that spelling rather than the other one", () => {
+    let thrown: unknown;
+    try {
+      refusePrettyFlags(["doctor", "--no-pretty"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as ValidationError).payload.message).toContain("--no-pretty");
+  });
+
+  /** `remove` is the one command with no `--json` at all (docs/CLI.md §1.2), so this is where it lands. */
+  test("refuses `pithy remove --pretty` — the command that has no --json to format", () => {
+    expect(() => refusePrettyFlags(["remove", "auth", "--pretty"])).toThrow(ValidationError);
+  });
+
+  test("a --pretty after `--` is payload, not a flag, so it is not refused", () => {
+    expect(() => refusePrettyFlags(["dev", "--", "--pretty"])).not.toThrow();
+  });
+
+  /** `--json=false` asks for no JSON line, so there is still nothing for `--pretty` to format. */
+  test("--json=false is not --json", () => {
+    expect(() => refusePrettyFlags(["doctor", "--json=false", "--pretty"])).toThrow(ValidationError);
+  });
+});
+
+describe("the pretty flags on the real command tree", () => {
+  const root = ownNamesOnly(main);
+
+  test("every command accepts both spellings, because they are global", async () => {
+    for (const argv of [
+      ["doctor", "--json", "--pretty"],
+      ["doctor", "--json", "--no-pretty"],
+      ["token", "mint", "--json", "--pretty"],
+      ["remove", "auth", "--pretty"],
+    ]) {
+      expect(await undeclaredFlags(root, argv)).toBeNull();
+    }
+  });
+});
+
+/**
+ * The `=value` spelling the parser lets through. Ignoring it left `--pretty=false` at a terminal
+ * indenting the output the operator had just asked to keep on one line.
+ */
+describe("refusePrettyFlags — the `=value` spelling", () => {
+  test("accepts true and false, paired with --json", () => {
+    expect(() => refusePrettyFlags(["doctor", "--json", "--pretty=true"])).not.toThrow();
+    expect(() => refusePrettyFlags(["doctor", "--json", "--no-pretty=false"])).not.toThrow();
+  });
+
+  test("refuses it unpaired, exactly as the bare spelling is refused", () => {
+    expect(() => refusePrettyFlags(["doctor", "--pretty=true"])).toThrow(ValidationError);
+    expect(() => refusePrettyFlags(["doctor", "--pretty=false"])).toThrow(ValidationError);
+  });
+
+  test("refuses a value that is neither, naming the token and the two it takes", () => {
+    let thrown: unknown;
+    try {
+      refusePrettyFlags(["doctor", "--json", "--pretty=maybe"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ValidationError);
+    const { payload } = thrown as ValidationError;
+    expect(payload.message).toContain("--pretty=maybe");
+    expect(payload.action).toContain("true");
+    expect(payload.action).toContain("false");
+  });
+
+  /** The malformed value is refused before the pairing rule — it is the more specific mistake. */
+  test("a malformed value with no --json reports the value, not the pairing", () => {
+    let thrown: unknown;
+    try {
+      refusePrettyFlags(["doctor", "--pretty=maybe"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as ValidationError).payload.message).toContain("--pretty=maybe");
+  });
 });

@@ -974,8 +974,10 @@
   ],
   "globalFlags": [
     "--help",
+    "--no-pretty",
     "--pithier",
     "--pithiest",
+    "--pretty",
     "--version",
     "-h",
     "-v"
