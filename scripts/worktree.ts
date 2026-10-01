@@ -138,7 +138,7 @@ function configure(wtPath: string): void {
 
 /**
  * Whether a `pithy dev` session is still supervising this worktree. `.dev-state.json` records the
- * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signalling it. Fails safe:
+ * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signaling it. Fails safe:
  * only the absence of the file is a confident "no session". A file that will not read or carries no
  * numeric pid counts as live, which is what a session killed mid-write leaves behind. `EPERM` counts as
  * live too — the process exists and is somebody else's.

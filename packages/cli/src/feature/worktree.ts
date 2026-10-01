@@ -316,7 +316,7 @@ export interface FeatureRecord {
 /** The outcome of {@link teardownWorktree}: what was actually removed. */
 /**
  * Whether a `pithy dev` session may still be supervising this worktree. `.dev-state.json` records the
- * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signalling it.
+ * supervising pid; `kill(pid, 0)` asks the kernel whether it is there without signaling it.
  *
  * **It fails safe, and deliberately does not parse through {@link DevState}.** The only question here is
  * "may something still be watching", and the answer gates a recursive delete — so anything short of proof
