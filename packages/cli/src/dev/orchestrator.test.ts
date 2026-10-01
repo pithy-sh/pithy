@@ -1167,6 +1167,33 @@ describe("startDev — ready deadline", () => {
     expect(h.logLines).toContain("Still waiting on: web.");
   });
 
+  /**
+   * **A session's stdout is a stream, and `--json` pretty-printing must not reframe it (#666).**
+   *
+   * `docs/commands/dev.md` §`--json` promises one object per line, because a session never ends and a
+   * consumer can only read it line by line. When `--json` learned to indent for a person, this emitter
+   * was global and latched — so at a terminal, or under any PTY-allocating agent harness, every record
+   * here became a multi-line painted blob and the first line a consumer read was `{`.
+   */
+  test("stays one compact line per record even when this run is latched pretty", async () => {
+    const { latchJsonFormat } = await import("../terminal/output");
+    latchJsonFormat({ stdout: { mode: "pretty", color: true }, stderr: { mode: "pretty", color: true } });
+    try {
+      const { h } = await halfReady({ json: true });
+      h.advance(READY_DEADLINE_MS);
+
+      const records = h.stdoutLines.filter((line) => line.startsWith("{"));
+      expect(records).toEqual(['{"command":"dev","event":"still-waiting","waiting":["web"]}']);
+      // The guard that matters to a consumer: nothing it reads line by line can be a fragment.
+      for (const line of h.stdoutLines) expect(line).not.toContain("\n");
+      expect(records.map((line) => JSON.parse(line) as unknown)).toEqual([
+        { command: "dev", event: "still-waiting", waiting: ["web"] },
+      ]);
+    } finally {
+      latchJsonFormat({ stdout: { mode: "compact", color: false }, stderr: { mode: "compact", color: false } });
+    }
+  });
+
   test("a cold first build that arrives in time produces no report", async () => {
     const h = harness();
     const handle = await startDev(h.options);

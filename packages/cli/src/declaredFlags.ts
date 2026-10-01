@@ -6,7 +6,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { HIDDEN_ROOT_FLAGS } from "./commands/alias";
 import { findSubCommand, type SubCommand } from "./dispatch";
-import { ROOT_FLAGS } from "./rootFlags";
+import { malformedPrettyFlag, ROOT_FLAGS, wantsPretty } from "./rootFlags";
 
 /**
  * **Every flag an invocation carries is a flag its command declares.** (#594)
@@ -269,4 +269,44 @@ export function asksForJson(argv: readonly string[]): boolean {
   const separator = argv.indexOf("--");
   const flags = separator === -1 ? argv : argv.slice(0, separator);
   return flags.some((token) => token === "--json" || (token.startsWith("--json=") && token !== "--json=false"));
+}
+
+/**
+ * Refuse a `--pretty` / `--no-pretty` that cannot mean anything: a malformed value, or no `--json`.
+ *
+ * **`--pretty` formats the `--json` line and changes nothing else**, so without `--json` it changes
+ * nothing at all — and a flag that silently does nothing is the same ambient surprise the whole feature
+ * exists to close. `pithy remove --pretty` lands here too: `remove` is the one command with no `--json`
+ * at all (docs/CLI.md §1.2), so the rule that covers every other command covers it without knowing its
+ * name.
+ *
+ * **`--no-pretty` is held to the same rule.** It is the same flag with the opposite answer, and nothing
+ * about the reasoning changes. Anyone wanting one setting for a whole session sets `PITHY_JSON`, which
+ * is what that variable is for; a flag in a shell alias would be asking every non-`--json` command in
+ * the session to ignore it.
+ *
+ * **The value is checked first**, because it is the more specific mistake: `--pretty=maybe` is a typo,
+ * and reporting the pairing rule at it would send the operator to fix the wrong thing.
+ *
+ * **Here rather than in `rootFlags.ts`**, which declares the flags: the rule needs {@link asksForJson},
+ * and `rootFlags.ts` is what this module imports. One direction only, or the two files are a cycle.
+ */
+export function refusePrettyFlags(argv: readonly string[]): void {
+  const malformed = malformedPrettyFlag(argv);
+  if (malformed !== undefined) {
+    const [name] = malformed.split("=") as [string];
+    throw new ValidationError({
+      message: `${malformed} is not a value ${name} takes.`,
+      action: `Write ${name} on its own, or ${name}=true or ${name}=false.`,
+      issues: [{ path: [name], code: "invalid_value", message: `${name} takes true or false.` }],
+    });
+  }
+  const asked = wantsPretty(argv);
+  if (asked === undefined || asksForJson(argv)) return;
+  const flag = asked ? "--pretty" : "--no-pretty";
+  throw new ValidationError({
+    message: `${flag} needs --json. It formats that line and nothing else.`,
+    action: `Add --json, or drop ${flag}.`,
+    issues: [{ path: [flag], code: "unrecognized_keys", message: `${flag} is only read alongside --json.` }],
+  });
 }

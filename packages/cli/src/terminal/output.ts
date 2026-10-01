@@ -4,6 +4,8 @@
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
+import { encodeJson, plainPaint, stylePaint } from "./jsonEncode";
+import type { JsonStream } from "./jsonMode";
 import { commandProgress, narrate } from "./progress";
 import { red, saffron } from "./style";
 
@@ -12,9 +14,56 @@ export function formatDone(): string {
   return `Done${saffron(".")}`;
 }
 
-/** One machine-readable line — every command's `--json` output shape. */
+/**
+ * How each stream's `--json` output is written. Compact and unpainted until `bin.ts` says otherwise.
+ *
+ * **Latched, because the alternative is a parameter threaded through every call site.** `style.ts`
+ * latches color at import for the same reason; this needs an explicit setter rather than an import-time
+ * decision because the flags it reads are argv, and argv is not available when this module is evaluated.
+ *
+ * **Two of them, because there are two readers.** `pithy doctor --json > out.json` at a terminal writes
+ * the parseable line to the file and the readable one to the screen, and neither reader has to give way.
+ * The paint decision rides along per stream for a sharper reason than the shape does: an indent in a
+ * captured document still parses, an escape sequence does not (`jsonMode.ts`).
+ *
+ * Unlatched is compact and unpainted both ways: a test importing this module, and anything that reaches
+ * a formatter without going through the bin, gets exactly the bytes it always got.
+ */
+let streams: { stdout: JsonStream; stderr: JsonStream } = {
+  stdout: { mode: "compact", color: false },
+  stderr: { mode: "compact", color: false },
+};
+
+/** Latch the resolved per-stream format. `bin.ts` calls this once, before any command runs. */
+export function latchJsonFormat(resolved: { stdout: JsonStream; stderr: JsonStream }): void {
+  streams = resolved;
+}
+
+/** One stream's encoder options — the shape it was latched with, and the paint that goes with it. */
+function encodingFor(stream: JsonStream): { pretty: boolean; paint: typeof stylePaint } {
+  return { pretty: stream.mode === "pretty", paint: stream.color ? stylePaint : plainPaint };
+}
+
+/** One machine-readable line — every command's `--json` output shape, indented when a person reads it. */
 export function formatJsonLine(payload: Record<string, unknown>): string {
-  return JSON.stringify(payload);
+  return encodeJson(payload, encodingFor(streams.stdout));
+}
+
+/**
+ * One line of a **JSON stream** — compact, always, whatever this run was latched with.
+ *
+ * `pithy dev --json` is the kit's one streaming surface: `docs/commands/dev.md` §`--json` promises one
+ * object per line for the life of a session, because a session never ends and a consumer can only read
+ * it line by line. Indenting those objects hands that consumer `{` as its first line and breaks every
+ * line after it — at a terminal, and under exactly the PTY-allocating agent harness `jsonMode.ts` exists
+ * to accommodate.
+ *
+ * **So the framing wins over the reader, and the call site says which it is.** A document can be shaped
+ * for whoever is reading it because nothing is parsing it incrementally; a stream cannot. Deciding by
+ * command name in `bin.ts` would have put that fact somewhere no reader of `orchestrator.ts` would look.
+ */
+export function formatJsonStreamLine(payload: Record<string, unknown>): string {
+  return encodeJson(payload, { pretty: false, paint: plainPaint });
 }
 
 /**
@@ -53,7 +102,8 @@ export function formatError(payload: ErrorPayload): string {
  * the line — and taken the fix out of a scripted `pithy` run for no gain anywhere.
  */
 export function formatErrorJson(payload: ErrorPayload): string {
-  return JSON.stringify({ error: operatorError(payload) });
+  // `stderr`, not `stdout`: this line is written to stderr, so it is stderr's reader it answers to.
+  return encodeJson({ error: operatorError(payload) }, encodingFor(streams.stderr));
 }
 
 /**
