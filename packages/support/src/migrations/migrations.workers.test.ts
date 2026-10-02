@@ -254,11 +254,20 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
     await runMigrations(env.DB, provider(ALL));
     await createSearchIndex(supportDatabase(env.DB));
     expect(await tables()).toContain("pithy_support_search");
-    // Deliberately none. Triggers are the obvious way to keep an FTS index in step and they work in
-    // Miniflare — but D1 runs an authorizer that rejects SQLite constructs workerd permits
-    // (`fts5vocab` is refused on D1 while plain FTS5 succeeds), and `CREATE TRIGGER` is documented
-    // neither as supported nor as refused. Passing here would have proved nothing about the
-    // deployment that matters, so the index is written by application code instead.
+    // Deliberately none — but no longer because triggers are in doubt. D1 runs an authorizer that
+    // rejects SQLite constructs workerd permits (`fts5vocab` is refused on D1 while plain FTS5
+    // succeeds), and `CREATE TRIGGER` used to sit in the undocumented middle: neither listed as
+    // supported nor as refused, so a pass in Miniflare proved nothing about the deployment that
+    // matters. That is settled. **`CREATE TRIGGER` runs on remote D1** — the Leed CMS ships one in
+    // a production migration (`BEFORE UPDATE … WHEN NEW.type <> OLD.type BEGIN SELECT RAISE(ABORT,
+    // …); END`), so the authorizer permits it and `RAISE(ABORT)` inside a trigger body works too.
+    // The one trap is casing: `BEGIN`/`END` must be uppercase, which Miniflare tolerates lowercase
+    // and remote D1 rejects as `incomplete input [code: 7500]`.
+    //
+    // The index is still written by application code, and that is now a choice rather than a
+    // constraint. Moving it onto triggers is a real option worth its own issue — it would keep the
+    // FTS table in step without the write path having to remember — so this assertion pins today's
+    // design, not a limit of the platform.
     expect(await triggers()).toEqual([]);
   });
 
