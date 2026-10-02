@@ -54,9 +54,24 @@ This is not a nicety and it is not hosted-mode-only. Without it Paddle refuses t
 
 > Cannot create a transaction or open a checkout as no default payment link has been set for this account. Set in the Paddle dashboard, then try again.
 
-Verified live. Every checkout mode creates the transaction server-side, so overlay and inline are blocked by exactly the same refusal. Point it at your own domain — Paddle only uses it to construct the hosted URL, which `checkout: "hosted"` returns and the other two modes ignore.
+Verified live. Every checkout mode creates the transaction server-side, so overlay and inline are blocked by exactly the same refusal. Point it at your own domain.
 
 `pithy doctor` asks the same question, so this is caught before a buyer finds it.
+
+### It is also the address Paddle sends buyers back to
+
+The link has a second job, and it is the one that decides **which page** to point it at. Paddle appends `?_ptxn=<transaction_id>` to it for links it sends rather than ones you open — a past-due dunning mail, a manually-collected invoice's pay link, the payment-method-update link it mints for a subscription — and expects that page to open a checkout for that transaction.
+
+```tsx
+const { handoff } = usePaddleLink();          // reads `_ptxn`, asks the server for the account
+usePaddleCheckout(handoff, { frameTarget: "pithy-checkout" });
+```
+
+`usePaddleLink` returns `null` when there is no `_ptxn`, so a page that is usually reached normally renders exactly as it did before. The transaction is Paddle's; nothing is minted, and the id never names a price.
+
+**In `inline` mode the page you name must already render the frame container.** Paddle finds it by class name at the moment `open` is called, so a link pointing at a page without one produces `client/paddle_no_container` rather than a checkout. Point it at the screen that holds your checkout container — usually your billing page — not at your site root. In `overlay` mode any page works. In `hosted` mode there is nothing to resume: the buyer is on Paddle's own checkout, and `GET /payments/checkout/resume` refuses with `payments/rail_not_configured`.
+
+`GET /payments/checkout/resume` is **unauthenticated**, and that is deliberate: the buyer following a dunning mail days later is usually signed out. It discloses nothing — the client token is publishable, the environment, display mode and success URL are config constants, and the id is the caller's own. It never reads the transaction from Paddle, so it cannot be used to discover whether an id exists.
 
 ## 4. Choose a checkout mode
 
@@ -415,7 +430,7 @@ The frame is styled `width: 100%; min-width: 312px; background-color: transparen
 
 ## 13. Testing checkout against a payment link in dev
 
-The sandbox account's default payment link is normalized by Paddle to `https://`. `wrangler dev` serves plain HTTP on 8787, so a Paddle-generated **hosted** payment link will not connect in dev unless you run `pithy dev` with `--local-protocol=https`. Overlay and inline never route through that link and are unaffected.
+The sandbox account's default payment link is normalized by Paddle to `https://`. `wrangler dev` serves plain HTTP on 8787, so a Paddle-generated **hosted** payment link will not connect in dev unless you run `pithy dev` with `--local-protocol=https`. Overlay and inline do not route *outbound* through that link, so starting a checkout in either is unaffected — but a `_ptxn` arrival is inbound on the same URL, so testing one locally hits the same normalization and wants the same flag.
 
 ## 14. Discounts
 

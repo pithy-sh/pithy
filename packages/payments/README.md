@@ -21,6 +21,7 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `POST /payments/restore` | Restore Purchases — rebind store history to the caller | bearer · session |
 | `GET /payments/pricing` | What the caller's own subscription pays, and when that changes | bearer · session |
 | `POST /payments/checkout` | Create a checkout, on Stripe, Lemon Squeezy or Paddle | bearer · session |
+| `GET /payments/checkout/resume` | Paddle only — what a page needs to open the transaction a `_ptxn` payment link arrived for | **none** |
 | `POST /payments/portal` | Create a billing-portal session for the caller's own account | bearer · session |
 | `GET /payments/subscription` | Where the caller's own subscription stands, read live from the store | bearer · session |
 | `POST /payments/subscription/preview` | What moving to one catalog product would cost, before anything is committed | bearer · session |

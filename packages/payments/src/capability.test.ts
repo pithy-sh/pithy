@@ -167,6 +167,7 @@ describe("payments()", () => {
       "/billing/admin/reconcile-runs",
       "/billing/admin/subscriptions",
       "/billing/checkout",
+      "/billing/checkout/resume",
       "/billing/entitlements",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",

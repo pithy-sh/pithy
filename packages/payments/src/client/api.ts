@@ -610,6 +610,41 @@ export function createCheckout(
   return callPayments("/checkout", jsonPost(input), options, isCheckoutHandoff);
 }
 
+/** Whether a value is a Paddle handoff specifically — the only shape the resume read answers with. */
+function isPaddleResumeHandoff(value: unknown): value is PaddleCheckoutHandoff {
+  return isCheckoutHandoff(value) && value.kind === "paddle";
+}
+
+/**
+ * What a page needs to open the transaction a Paddle payment link arrived for.
+ *
+ * **The transaction already exists, which is the whole difference from {@link createCheckout}.** Paddle
+ * created it before mailing the link — a past-due retry, a manually-collected invoice, a payment-method
+ * update — and appended `?_ptxn=<id>` to this project's Default payment link. So nothing is minted here;
+ * the id is read off the URL by `readPaddleLinkTransaction` in `./paddleLink` and this asks the server for
+ * the account and presentation that go with it.
+ *
+ * **Why a round trip at all, when the browser already holds the id.** Because `successUrl` is not the
+ * browser's to name. The handoff carries where a paying buyer is sent, and a page that could choose it
+ * could send a paying customer somewhere it controls — the same rule the minted path states on the field
+ * itself. The client token and the display mode travel with it for the same reason they do there: one
+ * source of truth for which Paddle account this project sells through.
+ *
+ * Sends no credentials of consequence and needs none: the route is unauthenticated, because the buyer
+ * following a dunning link days later is usually signed out.
+ */
+export function resumeCheckout(
+  transactionId: string,
+  options?: PaymentsClientOptions,
+): Promise<PaymentsResult<PaddleCheckoutHandoff>> {
+  return callPayments(
+    `/checkout/resume?transaction=${encodeURIComponent(transactionId)}`,
+    {},
+    options,
+    isPaddleResumeHandoff,
+  );
+}
+
 /**
  * Create a Billing Portal session for the caller's own store account.
  *

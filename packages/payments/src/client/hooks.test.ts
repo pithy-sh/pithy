@@ -14,6 +14,7 @@ import {
   useEntitlement,
   usePaddle,
   usePaddleCheckout,
+  usePaddleLink,
   usePricePreview,
   usePurchase,
   useSubscription,
@@ -991,5 +992,196 @@ describe("a screen composing both hooks", () => {
     await settle();
     expect(paddle.opened).toEqual([]);
     expect(screen.seen.current?.inline).toBe(false);
+  });
+});
+
+/**
+ * `#680`. The hook a Paddle payment link lands on.
+ *
+ * `paddleLink.test.ts` covers reading `_ptxn` out of a query string and `http/routes.workers.test.ts`
+ * covers what the route answers. This is the join: whether the hook asks at all, asks once, and hands
+ * `usePaddleCheckout` something it can open.
+ *
+ * **The URL is moved with `history.replaceState` rather than by assigning `location`.** It is the only
+ * way to change `search` in place in happy-dom, and it is what a real arrival looks like to the hook —
+ * the hook reads `location.search` and has no idea how the browser got there.
+ */
+describe("usePaddleLink — a Paddle payment link arrives", () => {
+  const RESUMED = {
+    kind: "paddle",
+    transactionId: "txn_01h8xce4x86pq3byvqf4x4zjvz",
+    clientToken: "test_1234567890abcdef",
+    environment: "sandbox",
+    displayMode: "inline",
+    successUrl: "https://acme.example/thanks",
+  };
+
+  /** Point the page at a search string, and put it back afterwards. */
+  function arriveAt(search: string): void {
+    globalThis.history.replaceState({}, "", search === "" ? "/" : `/${search}`);
+  }
+
+  afterEach(() => {
+    arriveAt("");
+  });
+
+  test("a `_ptxn` arrival is read and resumed", async () => {
+    arriveAt("?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const fetcher = queue([[200, RESUMED]]);
+    const held = await render(() => usePaddleLink({ fetch: fetcher }));
+    await settle();
+    expect(held.current.handoff).toEqual(RESUMED);
+    expect(held.current.failure).toBeNull();
+    expect(held.current.loading).toBe(false);
+    // The id travels in the query, and the route is the resume read rather than the minted one.
+    expect(fetcher.calls).toHaveLength(1);
+    expect(fetcher.calls[0]?.url).toBe("/payments/checkout/resume?transaction=txn_01h8xce4x86pq3byvqf4x4zjvz");
+  });
+
+  test("**no `_ptxn` asks nothing at all**", async () => {
+    // The ordinary load of every page this is mounted on. A request here would be one per page view on a
+    // route that is usually reached normally.
+    arriveAt("?pane=billing");
+    const fetcher = queue([[200, RESUMED]]);
+    const held = await render(() => usePaddleLink({ fetch: fetcher }));
+    await settle();
+    expect(fetcher.calls).toEqual([]);
+    expect(held.current.handoff).toBeNull();
+    expect(held.current.failure).toBeNull();
+    expect(held.current.loading).toBe(false);
+  });
+
+  test("a malformed `_ptxn` asks nothing, and is not a failure a screen renders", async () => {
+    arriveAt("?_ptxn=not-a-transaction");
+    const fetcher = queue([[200, RESUMED]]);
+    const held = await render(() => usePaddleLink({ fetch: fetcher }));
+    await settle();
+    expect(fetcher.calls).toEqual([]);
+    expect(held.current.handoff).toBeNull();
+    expect(held.current.failure).toBeNull();
+  });
+
+  test("**one arrival is one read, under `StrictMode`**", async () => {
+    // The mode `pithy ui add` scaffolds: every effect runs, cleans up and runs again. Without the `asked`
+    // ref this asked the server twice on every mount.
+    arriveAt("?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const fetcher = queue([[200, RESUMED]]);
+    const held = await render(() => usePaddleLink({ fetch: fetcher }), { strict: true });
+    await settle();
+    expect(fetcher.calls).toHaveLength(1);
+    expect(held.current.handoff).toEqual(RESUMED);
+  });
+
+  test("a re-render with a fresh options object does not ask again", async () => {
+    // The sibling property every hook here holds: a screen rebuilding its options inline on each render
+    // must not restart the effect.
+    arriveAt("?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const fetcher = queue([[200, RESUMED]]);
+    const held = await render(() => usePaddleLink({ fetch: fetcher }));
+    await settle();
+    await held.rerender();
+    await settle();
+    expect(fetcher.calls).toHaveLength(1);
+  });
+
+  test("a refusal is reported and nothing is handed to the opener", async () => {
+    arriveAt("?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const held = await render(() => usePaddleLink({ fetch: queue([[404, REFUSAL]]) }));
+    await settle();
+    expect(held.current.handoff).toBeNull();
+    expect(held.current.failure).not.toBeNull();
+    expect(held.current.loading).toBe(false);
+  });
+
+  test("a body that is not a Paddle handoff is refused rather than opened", async () => {
+    // The route answers one shape. Anything else means whatever replied was not this Worker, and passing
+    // it on would hand `Paddle.Checkout.open` a transaction id this client never validated.
+    arriveAt("?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const held = await render(() =>
+      usePaddleLink({ fetch: queue([[200, { kind: "redirect", url: "https://evil.example" }]]) }),
+    );
+    await settle();
+    expect(held.current.handoff).toBeNull();
+    expect(held.current.failure).not.toBeNull();
+  });
+});
+
+/**
+ * `#680`'s load-bearing claim: the link handoff opens through the *existing* opener, unchanged.
+ *
+ * The whole design rests on this. `usePaddleLink` deliberately implements no opening of its own, so the
+ * one-open-per-transaction guard, the `StrictMode` second pass, and the inline container ordering are
+ * inherited rather than restated — and a reader has no reason to believe that until something composes
+ * the two hooks the way a screen does and watches Paddle get opened exactly once.
+ */
+describe("usePaddleLink composed with usePaddleCheckout", () => {
+  const RESUMED_INLINE = {
+    kind: "paddle",
+    transactionId: "txn_01h8xce4x86pq3byvqf4x4zjvz",
+    clientToken: "test_1234567890abcdef",
+    environment: "sandbox",
+    displayMode: "inline",
+    successUrl: "https://acme.example/thanks",
+  };
+
+  afterEach(() => {
+    globalThis.history.replaceState({}, "", "/");
+  });
+
+  /** A screen reached by a payment link: it resumes, opens, and renders its container when inline. */
+  function mount(fetcher: PaymentsFetch, paddle: PaddleJs, options?: { strict?: boolean }) {
+    const initialize = stubInitializer(paddle);
+    const registry = paddlePage();
+    function Screen() {
+      const link = usePaddleLink({ fetch: fetcher });
+      const opened = usePaddleCheckout(link.handoff, { initialize, registry, frameTarget: FRAME });
+      return opened.inline ? createElement("div", { className: FRAME }) : null;
+    }
+    const tree = () =>
+      options?.strict ? createElement(StrictMode, null, createElement(Screen)) : createElement(Screen);
+    return act(async () => root.render(tree()));
+  }
+
+  test("**an arrival opens the checkout, once, with the transaction from the URL**", async () => {
+    globalThis.history.replaceState({}, "", "/?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const paddle = stubPaddle(US_NEW_YORK);
+    await mount(queue([[200, RESUMED_INLINE]]), paddle);
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    expect(paddle.opened[0]?.transactionId).toBe(RESUMED_INLINE.transactionId);
+    // Inline, so the container the same render committed is what Paddle found — the ordering gate the
+    // minted path has its own case for, reached here through a link instead of a click.
+    expect(container.querySelector(`.${FRAME}`)).not.toBeNull();
+    expect(paddle.opened[0]?.settings?.frameTarget).toBe(FRAME);
+    // The success URL is config's, carried on the handoff, never named by the page.
+    expect(paddle.opened[0]?.settings?.successUrl).toBe(RESUMED_INLINE.successUrl);
+  });
+
+  test("**no `customData` is sent, so a link cannot rewrite the ownership stamp**", async () => {
+    // `client/paddle.ts` records it measured live: Paddle accepts `customData` beside a `transactionId`
+    // and overwrites the `custom_data` the server wrote. A URL-derived open must send none.
+    globalThis.history.replaceState({}, "", "/?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const paddle = stubPaddle(US_NEW_YORK);
+    await mount(queue([[200, RESUMED_INLINE]]), paddle);
+    await settle();
+    expect(paddle.opened[0]).not.toHaveProperty("customData");
+    expect(Object.keys(paddle.opened[0] ?? {}).sort()).toEqual(["settings", "transactionId"]);
+  });
+
+  test("**still one open under `StrictMode`**", async () => {
+    globalThis.history.replaceState({}, "", "/?_ptxn=txn_01h8xce4x86pq3byvqf4x4zjvz");
+    const paddle = stubPaddle(US_NEW_YORK);
+    await mount(queue([[200, RESUMED_INLINE]]), paddle, { strict: true });
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+  });
+
+  test("an ordinary load opens nothing", async () => {
+    globalThis.history.replaceState({}, "", "/");
+    const paddle = stubPaddle(US_NEW_YORK);
+    await mount(queue([[200, RESUMED_INLINE]]), paddle);
+    await settle();
+    expect(paddle.opened).toEqual([]);
+    expect(container.querySelector(`.${FRAME}`)).toBeNull();
   });
 });

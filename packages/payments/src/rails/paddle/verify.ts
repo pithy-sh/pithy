@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { isPaddleTransactionId } from "../../data/paddleIds";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
@@ -51,8 +52,12 @@ export interface VerifyPaddleTransactionOptions {
   transport: PaddleHttpFetch;
 }
 
-/** Paddle's transaction ids. Checked before a round trip, so a malformed one costs nothing. */
-const TRANSACTION_ID = /^txn_[a-z0-9]+$/;
+/**
+ * Checked before a round trip, so a malformed one costs nothing.
+ *
+ * The pattern moved to `./transactionId.ts` when the `_ptxn` reader needed the same question answered
+ * about a value out of a query string — one rule, two callers, rather than two regexes that drift.
+ */
 
 /** Verify one submitted Paddle transaction id, and report who it says it belongs to. */
 export async function verifyPaddleTransaction(
@@ -60,7 +65,7 @@ export async function verifyPaddleTransaction(
   options: VerifyPaddleTransactionOptions,
 ): Promise<VerifiedPurchase> {
   const id = receipt.trim();
-  if (!TRANSACTION_ID.test(id)) {
+  if (!isPaddleTransactionId(id)) {
     throw new PaymentsInvalidReceiptError({
       message: "That isn't a Paddle transaction.",
       action: "Submit the `txn_…` the checkout's completion callback handed back.",
