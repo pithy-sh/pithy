@@ -1,5 +1,11 @@
 # @pithy-sh/cli
 
+## 0.13.1
+
+### Patch Changes
+
+- [#679](https://github.com/pithy-sh/pithy/pull/679) [`773aa6b`](https://github.com/pithy-sh/pithy/commit/773aa6b56ff9b8c7ce9b5bdb557864f129bd3421) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy deploy` now gives a new version up to a minute to reach the declared domain, so a deploy that worked is no longer reported as a mismatch four seconds after the upload.
+
 ## 0.13.0
 
 ### Minor Changes
