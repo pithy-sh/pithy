@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { devCloudflareAccount } from "../dev/delivery";
 import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
-import { resolveAutostartOverrides, startDev } from "../dev/orchestrator";
+import { type DevHandle, resolveAutostartOverrides, startDev } from "../dev/orchestrator";
+import { chooseRenderer, interruptAction, rendererInputsFromProcess } from "../dev/tui/choose";
 import { portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
+import { openUrl } from "../platform/browser";
 import { formatJsonLine, formatJsonStreamLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -175,6 +177,128 @@ async function setDevAutostart(options: {
   process.stdout.write(dim(`  ${registryPath}\n`));
 }
 
+/**
+ * Mount `pithy dev`'s live roster.
+ *
+ * **Behind `await import`, and that is enforced rather than remembered.** Ink is ~630 ms to import — a
+ * React reconciler and a Yoga layout engine, more than twice miniflare's cost and the heaviest single
+ * import in this CLI. `ci/lazyHeavyImports.test.ts` lists `ink` and `react` in its `HEAVY` table, so the
+ * gate fails the moment either reaches a command's static graph. `pithy dev --json`, a piped run, CI, and
+ * every other command pay nothing.
+ */
+async function mountTui(keys: boolean, live: () => DevHandle | undefined) {
+  const [{ createDevStore }, { startTui }] = await Promise.all([import("../dev/tui/store"), import("../dev/tui/app")]);
+  const store = createDevStore();
+  /** A key action's failure is a line, never a crash: the supervisor outranks its own footer. */
+  const report = (error: unknown) => store.line(messageOf(error));
+
+  // Typed off `store` rather than imported: a type-only import of the renderer would put its
+  // module name in this file's import list, and `ci/lazyHeavyImports.test.ts` reads that list.
+  let tui: { store: typeof store; stop: () => Promise<void> } | undefined;
+  let stopping = false;
+
+  /**
+   * Stop the session — and, pressed a second time, stop waiting for it.
+   *
+   * **The second press is not a convenience.** `shutdown` returns early once it has begun, and the
+   * roster holds raw mode with `exitOnCtrlC: false`, so without this there is no key that does anything
+   * while a teardown is in flight: a session whose child would not die could not be stopped at all. The
+   * orchestrator's own waits are bounded now, which makes that nearly unreachable — this is the backstop
+   * for the case the bound does not cover, because the cost of being wrong is a terminal nobody can
+   * recover without another one.
+   *
+   * The footer is unmounted first, which is what hands the terminal back; `130` is the conventional
+   * interrupted-by-user code and is honest here, because the session did not shut down cleanly.
+   */
+  const stop = (reason: string) => {
+    const action = interruptAction({ hasSession: live() !== undefined, stopping });
+    stopping = true;
+    if (action === "shutdown") {
+      store.line(dim("  press Ctrl-C again to stop waiting"));
+      void live()?.shutdown(reason).catch(report);
+      return;
+    }
+    // Hand the terminal back first — unmounting is what does that — then go, bounded in case the
+    // unmount is the thing that is stuck.
+    void Promise.race([tui?.stop() ?? Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 2000))]).finally(
+      () => process.exit(130),
+    );
+  };
+
+  /**
+   * `l` — ask who, unless there is nothing to ask.
+   *
+   * The list is read as the key is pressed, so a `pithy seed` run beside the session is picked up. With
+   * none or one identity there is no question: `devLogin` opens the only one, and says why when there is
+   * none. With several, the roster hands the pane over to the picker rather than printing the list into
+   * the stream, which is what it used to do — fine for three identities, a wall of output for
+   * twenty-nine, and impossible past nine, where it fell back to a prompt that cannot have the keyboard
+   * while Ink holds it.
+   */
+  const openIdentityPicker = async (worker: string) => {
+    const handle = live();
+    if (!handle) return;
+    try {
+      const identities = await handle.listIdentities();
+      if (identities.length <= 1) {
+        await handle.devLogin(worker);
+        return;
+      }
+      store.openPicker(
+        identities.map((identity) => ({ userId: identity.userId, email: identity.email })),
+        worker,
+      );
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  tui = startTui({
+    store,
+    keys,
+    onRestart: (worker) => void live()?.restart(worker).catch(report),
+    onOpen: (worker) => {
+      // From the whole dev set, not the startup snapshot: a worker started later from a parked row is
+      // not in `workers`, and resolving from there lit `o` up and then did nothing.
+      const origin = live()?.originOf(worker);
+      if (origin) void openUrl(origin).catch(report);
+    },
+    // The row, not a heuristic: an app stack can carry several front ends, and the marker says which.
+    onLogin: (worker) => void openIdentityPicker(worker),
+    onSignIn: (userId, worker) => void live()?.signInAs(userId, worker).catch(report),
+    // Writes this branch's answer to `dev-ports.json` — the same key `--disable-autostart` writes.
+    onAutostart: (worker, autostart) => void live()?.setAutostart(worker, autostart).catch(report),
+    // Forwarded verbatim, and inert unless `l` has a list open — digits belong to the identity list
+    // rather than to the roster, which moves on the arrow keys (#667).
+    onDigit: (digit) => void live()?.pickIdentity(digit).catch(report),
+    onQuit: () => stop("stopped"),
+    // Raw mode took the terminal's own Ctrl-C handling away, and Ink is rendered with
+    // `exitOnCtrlC: false`, so this is the only thing that stops the session. It goes to `shutdown` —
+    // unmounting first would orphan every `wrangler → workerd` subtree.
+    onInterrupt: () => stop("interrupted"),
+  });
+  return tui;
+}
+
+/** Report the session, wire the signals, and wait for it to end. */
+async function runSession(handle: DevHandle, json: boolean): Promise<void> {
+  if (json) {
+    const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));
+    // `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
+    // credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is
+    // where that omission is stated and asserted.
+    //
+    // The session line opens a stream that runs until the session ends, so it is framed as one:
+    // compact, one object per line, whatever this terminal would otherwise be given (#666).
+    process.stdout.write(`${formatJsonStreamLine({ command: "dev", workers, identities: handle.identities })}\n`);
+  }
+
+  process.once("SIGINT", () => void handle.shutdown("interrupted"));
+  process.once("SIGTERM", () => void handle.shutdown("terminated"));
+
+  await handle.closed;
+}
+
 export default defineCommand({
   meta: { name: "dev", description: "Run every worker locally under one supervisor" },
   args: {
@@ -192,6 +316,15 @@ export default defineCommand({
       type: "boolean",
       default: false,
       description: "Undo --disable-autostart for --app's workers. Starts nothing",
+    },
+    tui: {
+      type: "boolean",
+      default: true,
+      description: "Render the live roster at a terminal",
+      // citty renders a `--no-<name>` line for any boolean defaulting true, and takes its text from
+      // here. Left unset it prints the flag with no description at all — which is most of the way back
+      // to the undiscoverable environment variable this flag exists to replace.
+      negativeDescription: "Use the plain stream instead of the live roster",
     },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -223,23 +356,67 @@ export default defineCommand({
       // The account is resolved here, where the project is loaded, and handed down — never reached for
       // inside the orchestrator. It is what every worker this session spawns authenticates as (#555).
       const account = await devCloudflareAccount(projectDir);
-      const handle = await startDev({ projectDir, account, json: args.json, apps });
 
-      if (args.json) {
-        const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));
-        // `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
-        // credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is
-        // where that omission is stated and asserted.
-        //
-        // The session line opens a stream that runs until the session ends, so it is framed as one:
-        // compact, one object per line, whatever this terminal would otherwise be given (#666).
-        process.stdout.write(`${formatJsonStreamLine({ command: "dev", workers, identities: handle.identities })}\n`);
+      /**
+       * **Which renderer this run gets — the one place that knows both exist (#670).**
+       *
+       * A person at a terminal gets the live roster; `--json`, a pipe and CI get the plain stream, which
+       * is the contract anything automated reads. Every term of that decision, and the reads behind it,
+       * live together in `dev/tui/choose.ts` where the clauses are tested one by one.
+       */
+      // `--tui` is read from the raw argv as well as from citty, because only the typed form beats a
+      // `PITHY_NO_TUI` in somebody's profile — and citty cannot tell its default from an explicit true.
+      // Both spellings count: citty accepts `--tui=true`, and matching only the bare flag meant that
+      // form was treated as the default and lost to the variable it was typed to override.
+      const tuiExplicit = rawArgs.some((arg) => arg === "--tui" || arg.startsWith("--tui="));
+      const renderer = chooseRenderer(rendererInputsFromProcess(args.json, args.tui, tuiExplicit));
+
+      /**
+       * The live session, once there is one.
+       *
+       * Late-bound because the footer is mounted *before* `startDev` runs — so that the first thing it
+       * says lands in the roster's stream rather than above it — and its keys act on a handle that does
+       * not exist yet. Every handler is inert until it does, which is the correct behavior anyway: there
+       * is nothing to restart before anything has started.
+       */
+      let live: DevHandle | undefined;
+      const tui = renderer.tui ? await mountTui(renderer.keys, () => live) : undefined;
+
+      try {
+        const handle = await startDev({
+          projectDir,
+          account,
+          json: args.json,
+          apps,
+          // Ink owns the cursor, so a line written behind its back corrupts the frame: under the footer
+          // the supervisor's output is committed through the store instead. `logs/dev.log` is written by
+          // the orchestrator either way and is not affected.
+          ...(tui
+            ? {
+                stdout: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
+                stderr: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
+                events: tui.store.event,
+                // The roster carries every worker's state, port and address, so the banner leaves its
+                // own list of them out. `logs/dev.log` records them either way.
+                roster: true,
+                // `terminal/keys.ts` and Ink's `useInput` both claim raw mode, and only one may. The
+                // reader is stubbed out with `active` reporting whether there is in fact a keyboard, so
+                // the banner still offers `l` rather than printing a URL nobody needs.
+                readKeys: () => ({ active: renderer.keys, stop: () => {} }),
+              }
+            : {}),
+        });
+        live = handle;
+        await runSession(handle, args.json);
+      } finally {
+        // Whatever happened, give the terminal back. A session that died with raw mode on leaves a shell
+        // that echoes nothing. Unmounting here is also what leaves the footer's last frame printed as
+        // ordinary output — the roster as it stood, with exit codes.
+        await tui?.stop();
       }
 
-      process.once("SIGINT", () => void handle.shutdown("interrupted"));
-      process.once("SIGTERM", () => void handle.shutdown("terminated"));
-
-      await handle.closed;
+      // After the footer is down, never before: the exit is explicit because a supervisor that has
+      // reaped its children can still be holding a stdin listener or a stream that would keep Node alive.
       process.exit(0);
     }),
 });

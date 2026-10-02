@@ -51,8 +51,10 @@
     "@pithy-sh/ui-react": "^0.3.1",
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
+    "ink": "7.1.1",
     "miniflare": "^4.20260722.1",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "react": "^19.2.8"
   },
   "devDependencies": {
     "@pithy-sh/audit": "workspace:*",
@@ -73,7 +75,9 @@
     "@pithy-sh/vector": "workspace:*",
     "@pithy-sh/vite": "workspace:*",
     "@types/node": "^22.15.0",
+    "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^4.1.0",
+    "ink-testing-library": "4.0.0",
     "kysely": "^0.29.0",
     "rolldown": "^1.2.4",
     "tsdown": "^0.23.0",

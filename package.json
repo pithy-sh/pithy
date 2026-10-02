@@ -49,8 +49,24 @@
     "block and the override with it. The declared ranges stay `^5.20260729.1` — adopters are not",
     "affected, and a real scaffold was checked against 5.20260816.1 to confirm it."
   ],
+  "reactOverrideComment": [
+    "react and react-dom MUST resolve to the exact same version, or React refuses to run at all:",
+    "`Incompatible React versions: the \"react\" and \"react-dom\" packages must have the exact same version`.",
+    "Nothing in this workspace declared react until @pithy-sh/cli took a dependency on it for `pithy dev`'s",
+    "live roster (ink needs it, #670). That one `bun add` re-resolved react to 19.3.0 while react-dom stayed",
+    "at the locked 19.2.8 — and the failure did not land in the CLI. It landed in the project",
+    "`packages/cli/src/project/scaffoldGates.test.ts` scaffolds, whose seeded `.tsx` gates mount a real",
+    "front end and resolve both packages. A CLI dependency broke an adopter's front end.",
+    "So the pair is pinned together, and pinned symmetrically so the reverse drift is impossible too.",
+    "The declared ranges stay `^19.2.8` — adopters are not affected, and this is a workspace install",
+    "signal like `packageManager` above it.",
+    "BUMP BOTH LINES AT ONCE, never one: run `bun run --filter @pithy-sh/cli test` afterwards, which is",
+    "where the scaffolded front end's gates run."
+  ],
   "overrides": {
-    "@cloudflare/workers-types": "5.20260804.1"
+    "@cloudflare/workers-types": "5.20260804.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
