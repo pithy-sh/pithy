@@ -4,6 +4,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
 
@@ -62,8 +63,29 @@ export async function readDevState(path: string): Promise<DevState | null> {
 
 /** Zod-validate then write the session state atomically (pretty JSON, trailing newline). */
 export async function writeDevState(path: string, state: DevState): Promise<void> {
-  const validated = DevState.parse(state);
-  await writeFileAtomic(path, `${JSON.stringify(validated, null, 2)}\n`);
+  const parsed = DevState.safeParse(state);
+  if (!parsed.success) {
+    /**
+     * **A session's own bookkeeping must not report its problems as a Zod issue array.**
+     *
+     * `DevState.parse` was right to refuse a worker recorded with `port: 0`; what an operator saw was
+     * the raw `[{ "origin": "number", "code": "too_small", … }]` dump in the middle of a starting
+     * session, with no sentence saying what it was or what to do. Every other boundary in this CLI maps
+     * a `ZodError` through `fromZodError` for exactly that reason (`project/config.ts`), and the schema's
+     * own sentences are promoted into `message` because the renderer prints `message` and `action` and
+     * nothing else.
+     *
+     * The path is named because this file is git-ignored and transient: the remedy is almost always to
+     * stop the session and let the next run write it fresh.
+     */
+    throw fromZodError(parsed.error, {
+      message: `.dev-state.json cannot be written. ${parsed.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join(" ")}`,
+      action: `Stop this pithy dev session and start it again — ${path} is generated, and a fresh run rewrites it.`,
+    });
+  }
+  await writeFileAtomic(path, `${JSON.stringify(parsed.data, null, 2)}\n`);
 }
 
 /**

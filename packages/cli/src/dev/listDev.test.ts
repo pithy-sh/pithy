@@ -202,9 +202,9 @@ describe("devListingRows", () => {
 
   test("names each member, its kind, whether it starts, and its port", async () => {
     expect(await rowFor()).toEqual([
-      { name: "api", description: "app   starts   port 8787" },
-      { name: "web", description: "app   starts   port 8788" },
-      { name: "email", description: "host  starts   port 8789" },
+      { name: "api", description: "app     starts   port 8787" },
+      { name: "web", description: "app     starts   port 8788" },
+      { name: "email", description: "worker  starts   port 8789" },
     ]);
   });
 
@@ -212,16 +212,16 @@ describe("devListingRows", () => {
   // it", and both render as `skipped`. Without the suffix a reader goes looking for a committed file.
   test("a member this branch turned off says so on its row", async () => {
     expect(await rowFor({ autostartOverrides: { web: false } })).toEqual([
-      { name: "api", description: "app   starts   port 8787" },
-      { name: "web", description: "app   skipped  port 8788  off here" },
-      { name: "email", description: "host  starts   port 8789" },
+      { name: "api", description: "app     starts   port 8787" },
+      { name: "web", description: "app     skipped  port 8788  off here" },
+      { name: "email", description: "worker  starts   port 8789" },
     ]);
   });
 
   test("an unpinned member's port reads as a dash rather than a number it does not have", async () => {
     const rows = await rowFor({ loadDevConfig: async () => null });
 
-    expect(rows[0]?.description).toBe("app   starts   port —");
+    expect(rows[0]?.description).toBe("app     starts   port —");
   });
 });
 

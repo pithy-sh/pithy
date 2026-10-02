@@ -29,6 +29,7 @@ import {
   readWorkerAutostart,
   reclaimPortBlocks,
   registryRootFor,
+  setWorkerAutostart,
 } from "../feature/ports";
 import { heldReservations } from "../feature/prune";
 import { currentBranch, defaultGit } from "../feature/worktree";
@@ -62,8 +63,9 @@ import {
   usableDevLogins,
 } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
-import { type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
+import { type DevMemberKind, type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
 import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
+import type { DevEvent, DevEvents } from "./events";
 import {
   type HostMaterialization,
   type HostWorker,
@@ -191,9 +193,44 @@ export interface StartDevOptions {
   schedule?: Schedule;
   launchWrangler?: WranglerLauncher;
   hasSetsid?: boolean;
-  stdout?: (text: string) => void;
+  /**
+   * Seam: where a line goes.
+   *
+   * `origin` is the worker whose output this is, and it is absent for the session's own prose. The plain
+   * renderer ignores it; the live roster filters on it, so a focused worker is decided on a value rather
+   * than on a parse of the `[name]` prefix the line already carries in color (#670).
+   */
+  stdout?: (text: string, origin?: string) => void;
   /** Seam: where the prose goes when stdout is reserved for JSON (`--json`). */
-  stderr?: (text: string) => void;
+  stderr?: (text: string, origin?: string) => void;
+  /**
+   * Where this session's structured events go, if anyone is listening.
+   *
+   * **Additive, never a replacement.** Every line this supervisor writes is written whether a sink is
+   * installed or not — the stream is the contract `--json`, a pipe and `logs/dev.log` read, and
+   * `orchestrator.test.ts` holds a run with a sink to writing byte-identical output to a run without one.
+   * The sink exists so a live roster can render the state those lines describe (#670); under `--json`
+   * there is none.
+   */
+  events?: DevEvents;
+  /**
+   * Seam: how a parked answer is written. The real one is `feature/ports.ts`'s, under its own file lock.
+   *
+   * Injected for the same reason every other writer here is — a case about what the roster *does* has no
+   * business creating the operator's real config directory.
+   */
+  writeAutostart?: typeof setWorkerAutostart;
+  /**
+   * Whether a live roster is on screen, carrying every worker's state, port and address.
+   *
+   * **The one thing it changes is what the banner says.** With a table of those facts pinned directly
+   * below it, the banner's `name: http://localhost:####` list is the same information printed twice, so
+   * it is left out — and `logs/dev.log` still records every address, independently, as it always did.
+   *
+   * Keyed on this rather than on {@link events} being installed: a consumer that wants the structured
+   * feed without rendering anything still gets every line of the stream it would otherwise have had.
+   */
+  roster?: boolean;
   /** Seam: the seeded dev login the ready banner offers, if `pithy seed` wrote one. */
   readDevLogins?: (projectDir: string) => Promise<DevLogins | undefined>;
   /**
@@ -241,6 +278,60 @@ export interface DevHandle {
   ready: Promise<void>;
   /** Resolves once the session has fully torn down (all children gone, state removed). */
   closed: Promise<void>;
+  /**
+   * Restart one worker in place, on the same pinned port, without disturbing the session.
+   *
+   * Refuses a name this session is not running. A no-op once shutdown has begun.
+   */
+  restart: (worker: string) => Promise<void>;
+  /**
+   * Open a signed-in browser — what the `l` key does.
+   *
+   * On the handle because the live roster owns the keyboard when it is rendering, so the two key actions
+   * have to be reachable from outside. `terminal/keys.ts` still binds them on the plain path.
+   */
+  devLogin: (worker?: string) => Promise<void>;
+  /**
+   * Every seeded identity that is still usable — `userId`, `email`, `expiresAt`, and **no claim**.
+   *
+   * Read as it is called, for the reason `devLogin` is: the record on disk is the truth, and a session
+   * holding a copy from startup could not see a `pithy seed` run beside it. This is what the live
+   * roster's identity picker renders, so the omission of the claim is enforced here rather than there.
+   */
+  listIdentities: () => Promise<DevIdentity[]>;
+  /**
+   * Sign in as one named identity — a `userId` or an `email`.
+   *
+   * What the picker calls once a choice is made. The resolution and all four of its refusals are
+   * `selectDevLogin`'s, unchanged; `worker` scopes it the way {@link devLogin} does.
+   */
+  signInAs: (value: string, worker?: string) => Promise<void>;
+  /**
+   * Answer `devLogin`'s "which identity?" with a digit.
+   *
+   * **Inert unless a list is open**, which is what lets a renderer forward every digit without tracking
+   * the mode. One digit consumes the choice, so a stray digit later opens nothing.
+   */
+  pickIdentity: (digit: string) => Promise<void>;
+  /**
+   * Where a worker answers, for **any** member of the dev set.
+   *
+   * `workers` is the startup snapshot, so it has no entry for one started later from a parked row — and
+   * `o` resolving an origin from it lit the key up and then silently did nothing.
+   */
+  originOf: (worker: string) => string | undefined;
+  /**
+   * Park a worker, or unpark it: whether the **next** `pithy dev` on this branch starts it.
+   *
+   * What `pithy dev --app <name> --disable-autostart` writes, from the roster instead — the same
+   * registry, the same key, the same three things it is scoped by (this checkout, this branch, this
+   * machine), and nothing committed.
+   *
+   * **It changes the next run, never this one.** A worker parked while it is running keeps running, and
+   * the roster says both — the two facts genuinely disagree until the session restarts, and pretending
+   * otherwise on the row would be a lie about what is in front of you.
+   */
+  setAutostart: (worker: string, enabled: boolean) => Promise<void>;
   /** Tear the session down: SIGTERM every child group, SIGKILL survivors after a grace window, clean up. */
   shutdown: (reason: string) => Promise<void>;
   state: DevState;
@@ -248,6 +339,19 @@ export interface DevHandle {
 
 /** How long a child gets to exit on SIGTERM before it is SIGKILLed. */
 const SHUTDOWN_GRACE_MS = 5000;
+
+/**
+ * How long a teardown waits after SIGKILL, and for the streams to end, before it stops waiting.
+ *
+ * **A teardown must end.** Both of these were awaited without a bound, and either one hanging meant the
+ * session could not be stopped at all: `resolveClosed()` never ran, so the command never reached its
+ * exit, and with the live roster holding raw mode a second Ctrl-C went to a handler that had already
+ * begun shutting down. What an operator saw was `sending SIGKILL.` and then a dead prompt.
+ *
+ * Short, because by this point every child has had a full grace window *and* a SIGKILL: anything still
+ * here is not going to leave, and the honest thing is to name it and go rather than wait on it forever.
+ */
+const REAP_TIMEOUT_MS = 2000;
 
 const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -484,7 +588,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * terminal, and `logs/dev.log` has every line in either mode), and gives the rule a consumer can
    * actually apply: **every line on stdout is one object.** `docs/commands/dev.md` §`--json` states it.
    */
-  const emitLine = (text: string) => (options.json ? stderr : stdout)(`${text}\n`);
+  const emitLine = (text: string, origin?: string) => (options.json ? stderr : stdout)(`${text}\n`, origin);
   /**
    * The machine's half: one object per line, always on stdout, only under `--json`.
    *
@@ -493,6 +597,24 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * keeps a terminal (or a PTY-allocating agent harness) from indenting it into something unreadable.
    */
   const emitJson = (payload: Record<string, unknown>) => stdout(`${formatJsonStreamLine(payload)}\n`);
+  /**
+   * Raise a session event, or do nothing at all.
+   *
+   * **It never throws into the supervisor.** A renderer is not allowed to be the reason `pithy dev` stops
+   * supervising Workers, so a sink that fails is reported as a line, dropped, and the session carries on
+   * with the stream it always had. This is the only place the sink is called, which is what makes that
+   * guarantee one line rather than a convention.
+   */
+  let events = options.events;
+  const raise = (event: DevEvent) => {
+    if (!events) return;
+    try {
+      events(event);
+    } catch (error) {
+      events = undefined;
+      emitLine(`The live roster stopped updating. ${messageOf(error)}`);
+    }
+  };
 
   // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose
   //    (pithy-sh/pithy#410). Through `resolveDevSet`, which is the one place membership is decided, so
@@ -587,17 +709,32 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       ? existing
       : await ensure({ projectDir, workers: members, existing, ...(options.ensureDeps ?? {}) });
 
-  const started: { worker: WorkerTarget; port: number; origin: string }[] = [];
-  for (const { worker } of selected) {
-    const pinned = config.workers[worker.name];
+  /**
+   * Every member of the dev set with the address it is pinned to — **including the ones this branch
+   * parked.**
+   *
+   * `started` is the subset this run spawns. The difference matters twice: the roster lists the project
+   * rather than the run, so a parked worker has a row (`pithy dev --list` has always named one), and
+   * `restart` can *start* one, which is the only way to reach it without restarting the estate.
+   */
+  const roster: { worker: WorkerTarget; port: number; origin: string; kind: DevMemberKind; starts: boolean }[] = [];
+  for (const member of set.members) {
+    const pinned = config.workers[member.worker.name];
     if (!pinned) {
       throw new ValidationError({
-        message: `Worker "${worker.name}" has no port in .dev.config.json.`,
+        message: `Worker "${member.worker.name}" has no port in .dev.config.json.`,
         action: "Delete .dev.config.json and run pithy dev again to reassign this project's ports.",
       });
     }
-    started.push({ worker, port: pinned.port, origin: pinned.origin });
+    roster.push({
+      worker: member.worker,
+      port: pinned.port,
+      origin: pinned.origin,
+      kind: member.kind,
+      starts: selected.some((s) => s.worker.name === member.worker.name),
+    });
   }
+  const started: { worker: WorkerTarget; port: number; origin: string }[] = roster.filter((entry) => entry.starts);
 
   //    Which hosts this run actually starts. Materializing a host's config is a disk write for a
   //    capability the run will not touch, so it follows the selection — while `hostPorts` below does
@@ -644,6 +781,10 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   let liveHosts: HostWorker[] = selectedHosts;
   let materializeHosts: ((options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>) | undefined;
   let hostBaseUrl = "http://localhost";
+  /** Whether delivery was resolved to the simulator, so a host materialized later is written the same way. */
+  let hostsSimulateDelivery = false;
+  /** Every composed host, so `restart` can write the config of one this run never started. */
+  let allHosts: readonly HostWorker[] = [];
   let deliveryIsLive = false;
   // **Resolved here, before the preflight and before anything spawns, and exactly once.**
   // Two properties depend on the position. The preflight below decides whether this session sends real
@@ -671,7 +812,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     anyone who wants to look, which is the place to answer a question rather than to volunteer one.
   */
 
-  if (project !== null && selectedHosts.length > 0) {
+  // **`hosts`, not `selectedHosts`.** The materializer and the host list below are what `restart` needs
+  // to write a parked host's config when `r` starts it, and gating them on what *this* run selected left
+  // both unset for a project whose only host is parked, so `r` spawned `wrangler dev` in a directory that
+  // was never created. The eager materialize inside still covers only the hosts this run starts.
+  if (project !== null && hosts.length > 0) {
     // The app's address: the first started Worker that is not a host. Callback links point at the
     // app, never at the host — the host holds no public route of its own.
     //
@@ -713,36 +858,44 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       "http://localhost";
     const materialize = options.materializeHostConfigs ?? materializeHostConfigsDefault;
     materializeHosts = materialize;
-    const materialized = await materialize({
-      projectDir,
-      project,
-      baseUrl: hostBaseUrl,
-      hosts: selectedHosts,
-      simulateDelivery: !preflight.live,
-    });
-    for (const line of materialized.notes) emitLine(line);
-    // A host with no config on disk leaves the set here, and that is the whole point of the second
-    // list. Its directory was never created, so `wrangler dev` in it fails on the spawn itself — Node
-    // raises `error`, the handler below tears the session down, and every Worker that was running fine
-    // dies for one capability nobody could resolve. The note said "it will not run"; this is what makes
-    // that true. Its siblings' `<STEM>_ORIGIN` goes with it, because an address nothing listens on is
-    // worse than none: the loopback dispatcher prefers a published origin over the binding.
-    const dropped = new Set(materialized.failed);
-    if (dropped.size > 0) {
-      for (let index = started.length - 1; index >= 0; index -= 1) {
-        if (dropped.has(started[index]?.worker.name ?? "")) started.splice(index, 1);
+    hostsSimulateDelivery = !preflight.live;
+    allHosts = hosts;
+    // **Only the hosts this run starts are written now.** Materializing one the run will not touch is a
+    // disk write for nothing, and `naming what starts` holds that line: `--app <an app worker>` writes
+    // no host config at all. The seams above are assigned regardless, because `restart` needs them to
+    // write a parked host's config at the moment `r` starts it.
+    if (selectedHosts.length > 0) {
+      const materialized = await materialize({
+        projectDir,
+        project,
+        baseUrl: hostBaseUrl,
+        hosts: selectedHosts,
+        simulateDelivery: !preflight.live,
+      });
+      for (const line of materialized.notes) emitLine(line);
+      // A host with no config on disk leaves the set here, and that is the whole point of the second
+      // list. Its directory was never created, so `wrangler dev` in it fails on the spawn itself — Node
+      // raises `error`, the handler below tears the session down, and every Worker that was running fine
+      // dies for one capability nobody could resolve. The note said "it will not run"; this is what makes
+      // that true. Its siblings' `<STEM>_ORIGIN` goes with it, because an address nothing listens on is
+      // worse than none: the loopback dispatcher prefers a published origin over the binding.
+      const dropped = new Set(materialized.failed);
+      if (dropped.size > 0) {
+        for (let index = started.length - 1; index >= 0; index -= 1) {
+          if (dropped.has(started[index]?.worker.name ?? "")) started.splice(index, 1);
+        }
+        for (const name of dropped) delete hostPorts[name];
       }
-      for (const name of dropped) delete hostPorts[name];
-    }
-    liveHosts = selectedHosts.filter((host) => !dropped.has(host.worker.name));
-    // A host's `.dev.vars` is generated once its directory exists, from the same project-wide
-    // bootstrap set every Worker gets — the master key above all, since a local host has no Secrets
-    // Store for the resolved template's entries to point at (which is why that block is dropped).
-    // Through the one generator, so a `.dev.vars` value is never written by a second hand.
-    try {
-      await generateInto(liveHosts.map((host) => host.worker.dir));
-    } catch (error) {
-      emitLine(`Capability hosts start without secrets. ${messageOf(error)}`);
+      liveHosts = selectedHosts.filter((host) => !dropped.has(host.worker.name));
+      // A host's `.dev.vars` is generated once its directory exists, from the same project-wide
+      // bootstrap set every Worker gets — the master key above all, since a local host has no Secrets
+      // Store for the resolved template's entries to point at (which is why that block is dropped).
+      // Through the one generator, so a `.dev.vars` value is never written by a second hand.
+      try {
+        await generateInto(liveHosts.map((host) => host.worker.dir));
+      } catch (error) {
+        emitLine(`Capability hosts start without secrets. ${messageOf(error)}`);
+      }
     }
   }
 
@@ -797,14 +950,39 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // in it. Without this a project whose claims have all expired loads every worker's config to resolve
   // targets for a banner that will print nothing.
   const hasDevIdentity = usableDevLogins(devLogins, now()).length > 0;
-  const devLoginWorkers: DevLoginTarget[] =
-    hasDevIdentity && !ci
-      ? await resolveDevLoginTargets(
-          started
-            .filter((s) => !hostNames.has(s.worker.name))
-            .map((s) => ({ name: s.worker.name, dir: s.worker.dir, origin: s.origin })),
-        )
-      : [];
+  /**
+   * Which running workers carry `GET /__pithy/dev-login`, resolved **when something needs them** and
+   * remembered after.
+   *
+   * The optimization is the same one it always was — a project with no dev login never loads a Worker
+   * config to answer a question nobody asked — but it used to be spent at startup against the record as
+   * it stood *then*, and that quietly made the whole feature unavailable for the life of a session that
+   * started unseeded. `pithy seed` in another terminal updated the record, `l` re-read it, found an
+   * identity, and still had nowhere to open it: the targets had been resolved once, to `[]`, because at
+   * that moment there was nothing to open. So the laziness moved to where it belongs.
+   *
+   * Memoized rather than re-resolved per keypress: `started` is fixed for the session and a restart keeps
+   * a worker's pinned port, so no worker's origin can change under it.
+   */
+  let resolvedLoginTargets: DevLoginTarget[] | undefined;
+  const loginTargets = async (): Promise<DevLoginTarget[]> => {
+    // Under CI the route is not registered in any composition, so there is nothing to resolve and
+    // nothing to remember.
+    if (ci) return [];
+    // **Over the whole dev set, not the startup subset.** `started` is what this run spawned, so a
+    // worker that `r` started from a parked row was refused by name by the very key the roster had just
+    // lit up. The same class of bug `originOf` was changed to fix; this one was missed.
+    resolvedLoginTargets ??= await resolveDevLoginTargets(
+      roster
+        .filter((entry) => !hostNames.has(entry.worker.name))
+        .map((entry) => ({ name: entry.worker.name, dir: entry.worker.dir, origin: entry.origin })),
+    );
+    return resolvedLoginTargets;
+  };
+  // **Primed when the record already holds an identity**, which is exactly what the eager version did —
+  // so the banner stays synchronous and a seeded session behaves as it always has. The lazy path above is
+  // for the case this used to get wrong: a seed that arrives after the session is up.
+  if (hasDevIdentity) await loginTargets();
   const childEnv = buildWorkerEnv(config, baseEnv);
   // One local store for the whole project, named in one place — `localDevStateRoot`. This used to compose
   // the path itself, which made three independent statements of one directory (#404).
@@ -835,23 +1013,39 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     if (bannerShown || [...readyState.values()].some((r) => !r)) return;
     bannerShown = true;
     readyWatch.stop();
+    raise({ event: "session-ready" });
     if (!options.json) {
       // Bindings go live with the banner, not before it: `l` opens a URL, and a URL that answers is a
       // worker that has already matched its ready signal. `--json` gets none — its output is being read
       // by a script, and a supervisor that entered raw mode for a machine would be holding a terminal
       // nobody is at.
       startKeys();
-      emitLine("Ready.");
-      for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
+      // Left to the roster when there is one: every row says `ready` and the footer has stopped ticking,
+      // so the word is the same fact a second time. `logs/dev.log` records it either way.
+      if (!options.roster) emitLine("Ready.");
+      // Left to the roster when there is one — the same facts, in a table, one line above. The log
+      // below records them either way.
+      if (!options.roster) for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
       // Said once, where a developer actually looks. Real delivery or the simulator is the difference
       // between a magic link arriving and a rendered file on disk, and nobody should learn it from an
       // inbox that stays empty. Every line of the verdict, action included — a sentence naming the
       // problem without the sentence naming the fix is half a report.
       for (const line of deliveryLines) emitLine(line);
-      // The banner is the discovery mechanism. A seeded session nobody finds has removed no friction, and
-      // the line below is the only place a developer reliably looks after `pithy dev`. It says that there
-      // is a session and how to reach it — never what the session *is*.
-      for (const line of devLoginLines(devLogins, now(), { interactive: keys.active, targets: devLoginWorkers, ci })) {
+      // The banner is the discovery mechanism **when there is no roster**. A seeded session nobody finds
+      // has removed no friction, and without a footer this line is the only place a developer reliably
+      // looks after `pithy dev`. It says that there is a session and how to reach it, never what the
+      // session *is*.
+      //
+      // With a roster, `l login` on the key bar is that discovery, and pressing it says what there is —
+      // so the line is one more sentence under a table that already answers it.
+      for (const line of options.roster
+        ? []
+        : devLoginLines(devLogins, now(), {
+            interactive: keys.active,
+            // Already resolved above when there was an identity to offer; the banner never waits on a disk.
+            targets: resolvedLoginTargets ?? [],
+            ci,
+          })) {
         emitLine(line);
       }
       emitLine(dim(`logs → ${logPath}`));
@@ -867,8 +1061,24 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * work here is saying it and handing the URL over. A failed open is reported and survived: `pithy dev`
    * supervises workers, and no browser is a reason for a sentence, not for tearing a session down.
    */
-  const openIdentity = async (login: DevLogin | undefined): Promise<void> => {
-    const action = devLoginKeyAction(login, now(), devLoginWorkers, ci);
+  const openIdentity = async (login: DevLogin | undefined, worker?: string): Promise<void> => {
+    const targets = await loginTargets();
+    /**
+     * **A named worker is the answer, not a hint.**
+     *
+     * Without one, `devLoginKeyAction` picks: the worker carrying a UI wins and a tie prints the choices.
+     * That is right for a session with nothing to read an intent from. The live roster has a marker on a
+     * row, and an app stack can carry **several** front ends — so when the caller names one, that is the
+     * one, and a name with no dev-login route is refused rather than quietly redirected to a sibling. A
+     * browser signed into an origin you did not ask for is worse than a sentence.
+     */
+    if (worker !== undefined && !targets.some((target) => target.name === worker)) {
+      emitLine(`${worker} serves no dev login — nothing there composes auth.`);
+      if (targets.length > 0) emitLine(dim(`  try: ${targets.map((target) => target.name).join(", ")}`));
+      return;
+    }
+    const scoped = worker === undefined ? targets : targets.filter((target) => target.name === worker);
+    const action = devLoginKeyAction(login, now(), scoped, ci);
     for (const line of action.lines) emitLine(line);
     if (!action.url) return;
     try {
@@ -888,6 +1098,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * declining a choice costs nothing.
    */
   let pendingIdentities: readonly DevLogin[] = [];
+  /** Which worker `l` was pressed on, so the digit that answers it opens that one. */
+  let pendingWorker: string | undefined;
 
   /**
    * `l` — choose who to be, then open a signed-in browser.
@@ -896,22 +1108,57 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * which `DevLogin` {@link openIdentity} is handed; what happens next is the same four shapes it always
    * was. One identity is handed straight over, because a project seeding one user has nothing to choose.
    */
-  const openDevLogin = async (): Promise<void> => {
-    const choice = devLoginChoice(devLogins, now());
+  const openDevLogin = async (worker?: string): Promise<void> => {
+    /**
+     * **Read as the key is pressed, not as the session started.**
+     *
+     * The startup read above is the *banner's* — "so the banner never waits on the disk once the workers
+     * are up" — and that reasoning does not reach a keypress. While this closed over it, `pithy seed` run
+     * against a session already up could never be seen by that session, and the refusal it got said
+     * `Run pithy seed, then press l again` — the one remedy that could not possibly work. A developer
+     * pressed `l` twice against a freshly seeded project and was told both times that nothing was seeded.
+     *
+     * A human just pressed a key, so this can afford a file read; and the record on disk is the truth in
+     * both directions — an identity that expired during a long session stops being offered, too.
+     */
+    const logins = await readDevLogins(projectDir);
+    const choice = devLoginChoice(logins, now());
     if (choice.kind === "only") {
-      await openIdentity(choice.login);
+      await openIdentity(choice.login, worker);
       return;
     }
     // **Before asking who.** Under CI no route is registered, and with nothing composing auth there is
     // nothing to open — neither refusal depends on which identity would have been picked, and making
     // somebody choose first only to tell them that is a worse sentence for the same information.
-    if (ci || devLoginWorkers.length === 0) {
-      await openIdentity(choice.logins[0]);
+    if (ci || (await loginTargets()).length === 0) {
+      await openIdentity(choice.logins[0], worker);
       return;
     }
     if (choice.kind === "keys") {
       pendingIdentities = choice.logins;
+      pendingWorker = worker;
       for (const line of devLoginChoiceLines(choice.logins)) emitLine(line);
+      return;
+    }
+    /**
+     * **With a roster on screen there is no prompt to fall back to — so this never prompts.**
+     *
+     * The branch below hands the terminal to a prompt and takes it back after, which works because
+     * `terminal/keys.ts` owns raw mode and can give it up. Ink cannot: it holds the terminal for the life
+     * of the session, and the reader it is handed is inert, so a prompt and the footer would both read
+     * the keyboard and neither would work.
+     *
+     * **A backstop rather than the path.** `l` under a roster goes to the identity picker
+     * (`dev/tui/identityPicker.tsx`), which reaches every identity with the arrows and never comes here.
+     * This covers a direct `devLogin()` call — the method is public — and it covers it the only way that
+     * works without a prompt: the first nine on the keys, and the overflow named rather than dropped.
+     */
+    if (options.roster) {
+      const offered = choice.logins.slice(0, MAX_KEY_CHOICES);
+      pendingIdentities = offered;
+      pendingWorker = worker;
+      for (const line of devLoginChoiceLines(offered)) emitLine(line);
+      emitLine(dim(`  ${choice.logins.length} identities seeded; name one as \`user\` in dev.json for the rest.`));
       return;
     }
     // Past nine there is no digit left to bind, so it is a prompt — and a prompt reads its own stdin, so
@@ -923,9 +1170,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
         emitLine("Nothing opened.");
         return;
       }
-      const selection = selectDevLogin(devLogins, now(), chosen);
+      const selection = selectDevLogin(logins, now(), chosen);
       for (const line of selection.lines) emitLine(line);
-      if (selection.login) await openIdentity(selection.login);
+      if (selection.login) await openIdentity(selection.login, worker);
     } finally {
       // Unless the session went away underneath the prompt. `shutdown` gave the terminal its own Ctrl-C
       // handling back; starting a reader after it would exit with raw mode on, and a shell that echoes
@@ -935,13 +1182,57 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   };
 
   /** A digit — the identity `l` numbered, when `l` is waiting for one. Inert at every other moment. */
+  /** Park or unpark one worker for this branch. See {@link DevHandle.setAutostart}. */
+  const setAutostart = async (worker: string, enabled: boolean): Promise<void> => {
+    if (!roster.some((entry) => entry.worker.name === worker)) {
+      throw new ValidationError({
+        message: `This project has no worker called ${worker}.`,
+        action: `Its dev set is: ${roster.map((entry) => entry.worker.name).join(", ")}.`,
+      });
+    }
+    const deps = options.ensureDeps ?? {};
+    const registryPath = await (deps.registryPathFor ?? defaultRegistryPath)(projectDir);
+    const root = await (deps.rootFor ?? registryRootFor)(projectDir);
+    const named = await (deps.branchFor ?? defaultBranch)(projectDir);
+    await (options.writeAutostart ?? setWorkerAutostart)({
+      registryPath,
+      root,
+      branch: named ?? `local:${projectDir}`,
+      workers: [worker],
+      enabled,
+    });
+    raise({ event: "autostart", worker, autostart: enabled });
+    const said = enabled
+      ? `${worker} starts on this branch again.`
+      : `${worker} no longer starts on this branch. It keeps running until this session ends.`;
+    // **Recorded always, said only when there is no roster.** With an `autostart` column flipping from
+    // `on` to `off` in front of you, and the row still reading `ready`, the sentence is the same fact a
+    // third time — there is nothing left to guess at. `logs/dev.log` keeps it either way, because a
+    // change to a file the developer cannot see belongs in the record.
+    log.write(said);
+    if (!options.roster) emitLine(said);
+  };
+
+  /** Every usable identity, read now. See {@link DevHandle.listIdentities}. */
+  const listIdentities = async (): Promise<DevIdentity[]> => devLoginIdentities(await readDevLogins(projectDir), now());
+
+  /** Sign in as one named identity. See {@link DevHandle.signInAs}. */
+  const signInAs = async (value: string, worker?: string): Promise<void> => {
+    const logins = await readDevLogins(projectDir);
+    const selection = selectDevLogin(logins, now(), value);
+    for (const line of selection.lines) emitLine(line);
+    if (selection.login) await openIdentity(selection.login, worker);
+  };
+
   const pickIdentity = async (key: string): Promise<void> => {
     if (pendingIdentities.length === 0) return;
     const login = pickDevLoginByKey(pendingIdentities, key);
     // Consumed either way: a digit past the end of the list is an answer to the question, and the question
     // is not asked again until `l` is.
     pendingIdentities = [];
-    if (login) await openIdentity(login);
+    const worker = pendingWorker;
+    pendingWorker = undefined;
+    if (login) await openIdentity(login, worker);
   };
 
   // Scoped to `l` and the digits it hands out. A second *command* is one more entry here — `r` to restart
@@ -961,6 +1252,46 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       onError: (error) => emitLine(messageOf(error)),
     });
   };
+
+  /**
+   * Write a host's generated config before starting it, if it has one and this run never wrote it.
+   *
+   * A capability host does not live in `apps/` — its `wrangler.jsonc` is resolved from the capability's
+   * committed template into `.wrangler/pithy/hosts/<capability>/` on every run, and only for the hosts
+   * the run *starts*: materializing one the run will not touch is a disk write for nothing. That makes
+   * starting a parked host with `r` a two-step act, because `wrangler dev` in a directory that was never
+   * created fails on the spawn itself.
+   *
+   * A no-op for an `apps/` Worker. **Not** for a host already written: there is no such check, so a
+   * second `r` on a running host rewrites its generated config and re-emits its notes. Harmless, since
+   * the write is idempotent in content, but said plainly because the comment is what a later reader
+   * trusts.
+   */
+  const materializeIfHost = async (name: string): Promise<void> => {
+    const host = allHosts.find((candidate) => candidate.worker.name === name);
+    // No project name means no host was materialized on the way up either — `resolveProjectName`'s
+    // guesses are not stable enough to name a resource, and the full run already said so.
+    if (!host || !materializeHosts || project === null) return;
+    try {
+      const written = await materializeHosts({
+        projectDir,
+        project,
+        baseUrl: hostBaseUrl,
+        hosts: [host],
+        simulateDelivery: hostsSimulateDelivery,
+      });
+      for (const line of written.notes) emitLine(line);
+    } catch (error) {
+      // Said, never fatal: a host whose template will not resolve is one worker that does not start,
+      // exactly as it is on a full run.
+      emitLine(`${name}: its config could not be written. ${messageOf(error)}`);
+    }
+  };
+
+  /** Workers being deliberately killed and respawned, so their exits are not read as a crash. */
+  const restarting = new Set<string>();
+  /** Each worker's current child's exit, so a restart can wait for the old one to actually go. */
+  const exitOf = new Map<string, Promise<void>>();
 
   const signalChild = (pid: number | undefined, signal: NodeJS.Signals) => {
     if (!pid) return;
@@ -986,9 +1317,19 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     if (timedOut) {
       emitLine("Children still alive after grace window — sending SIGKILL.");
       for (const { child } of children) signalChild(child.pid, "SIGKILL");
-      await allExited;
+      // **Bounded.** A child that survives SIGKILL — an unkillable process group, a pid already reused,
+      // a platform that will not deliver it — must not keep the supervisor alive on its behalf.
+      const reaped = await Promise.race([allExited.then(() => true), sleep(REAP_TIMEOUT_MS).then(() => false)]);
+      if (!reaped) {
+        // Named, with pids, because what is left is now the operator's to deal with and they cannot act
+        // on "something survived".
+        const survivors = children.map(({ name, child }) => `${name}${child.pid ? ` (${child.pid})` : ""}`);
+        emitLine(`Still alive after SIGKILL: ${survivors.join(", ")}. Stopping anyway — kill them by hand.`);
+      }
     }
-    await Promise.allSettled(pipes);
+    // Bounded for the same reason: a stream that never ends is a teardown that never finishes, and the
+    // log below is flushed either way.
+    await Promise.race([Promise.allSettled(pipes), sleep(REAP_TIMEOUT_MS)]);
     await log.end();
     removeState(statePath, ownPid);
     resolveClosed();
@@ -1062,9 +1403,45 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     }
   };
 
-  emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
+  // The project, before the run: every member with its pinned port and whether this branch starts it.
+  raise({
+    event: "roster",
+    members: roster.map((entry) => ({
+      worker: entry.worker.name,
+      kind: entry.kind,
+      port: entry.port,
+      // **From the live `started`, not from the flag computed before anything was dropped.** A host
+      // whose config will not resolve is spliced out of `started` above, and a roster built from the
+      // earlier answer gave that worker a `building` row nothing could ever move: no spawn, no exit, and
+      // the ready deadline reads `started` too. It kept a spinner under a `Ready.` banner and kept the
+      // 80ms repaint going for the life of the session.
+      starts: started.some((s) => s.worker.name === entry.worker.name),
+      // This branch's own answer, from `dev-ports.json`. Absent means it starts — there is no state
+      // where the file's silence has to be interpreted (#549).
+      autostart: overrides[entry.worker.name] !== false,
+    })),
+    at: now(),
+  });
 
-  for (const { worker, port, origin } of started) {
+  // Same: the roster lists every one of them, by name, with its state. The log keeps the line.
+  if (!options.roster) emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
+
+  /**
+   * **Start one member of the dev set and wire it up.** Called once per worker at startup, and again by
+   * {@link restart} for one of them.
+   *
+   * It exists as a function rather than as the body of the startup loop because a restart has to do
+   * *exactly* this and nothing less: the ready state, the ready regex, the origin a host does not get,
+   * the argv, both carriers of the dev vars, the delivery watch on a host's output, both streams tee'd to
+   * the terminal and to `logs/dev.log`, and the exit handler. A second, shorter spawn path would be a
+   * second set of those decisions, and the first one to drift would be the one nobody ran twice.
+   *
+   * `index` is the worker's position in `started`, and it is passed in rather than read off
+   * `children.length` so **a restarted worker keeps its color**. Derived from the array length, a
+   * replacement would be painted as if it were a new worker, and its rows and its log prefix would stop
+   * matching mid-session.
+   */
+  const startWorker = ({ worker, port, origin }: (typeof started)[number], index: number): void => {
     readyState.set(worker.name, false);
     readyRegex.set(worker.name, readyRegexFor(worker));
     // A host is handed no origin of its own: `materializeHostConfigs` already wrote the app's into its
@@ -1076,7 +1453,20 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // `@pithy-sh/vite` turns it into the same binding.
     const env = childEnvFor(childEnv, ownOrigin);
     const child = spawn(command, args, { cwd: worker.dir, env, detached: hasSetsid });
-    children.push({ name: worker.name, child });
+    // Replaced in place on a restart, so `shutdown` signals the child that is actually running and the
+    // state file names its pid.
+    const seat = children.findIndex((entry) => entry.name === worker.name);
+    if (seat === -1) children.push({ name: worker.name, child });
+    else children[seat] = { name: worker.name, child };
+    // The roster distinguishes an `apps/` Worker from a capability host, so the kind is raised with the
+    // spawn rather than inferred later from a name.
+    raise({
+      event: "spawned",
+      worker: worker.name,
+      kind: hostNames.has(worker.name) ? "host" : "app",
+      port,
+      at: now(),
+    });
 
     const isHost = hostNames.has(worker.name);
     const onLine = (line: string) => {
@@ -1092,20 +1482,33 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           void fallBackToSimulator(worker.name);
         }
       }
-      if (bannerShown || readyState.get(worker.name)) return;
+      /**
+       * **Readiness is per worker and tracked always; the *banner* is what fires once.**
+       *
+       * This opened with `if (bannerShown || …) return`, and the first clause was free until `r` existed:
+       * once every worker had arrived, no later ready signal could matter. With a restart it is a bug —
+       * a respawned worker printed `Ready on http://localhost:8791`, the line was dropped, and its row
+       * stayed on `building` for the rest of the session. `showBannerIfReady` carries the once-only
+       * guard itself, which is where it belongs.
+       */
+      if (readyState.get(worker.name)) return;
       if (readyRegex.get(worker.name)?.test(line)) {
         readyState.set(worker.name, true);
+        raise({ event: "ready", worker: worker.name, at: now() });
         showBannerIfReady();
       }
     };
-    const paint = workerColor(children.length - 1);
+    const paint = workerColor(index);
+    // The worker's name, so a focused roster can filter on a value rather than on a parse of the
+    // `[name]` prefix this has already colorized (#670).
+    const terminal = (line: string) => emitLine(line, worker.name);
     if (child.stdout) {
       pipes.push(
         teeStream({
           stream: child.stdout,
           label: worker.name,
           paint,
-          sinks: { terminal: (l) => emitLine(l), log: (l) => log.write(l), line: onLine },
+          sinks: { terminal, log: (l) => log.write(l), line: onLine },
         }),
       );
     }
@@ -1115,29 +1518,54 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           stream: child.stderr,
           label: worker.name,
           paint,
-          sinks: { terminal: (l) => emitLine(l), log: (l) => log.write(l), line: onLine },
+          sinks: { terminal, log: (l) => log.write(l), line: onLine },
         }),
       );
     }
 
-    exits.push(
-      new Promise<void>((resolve) => {
-        child.once("exit", (code) => {
-          resolve();
-          if (!shuttingDown) void shutdown(`${worker.name} exited (${code})`);
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", (code) => {
+        resolve();
+        // **Whether we caused it.** A teardown exits every child and a restart exits one on purpose, so
+        // neither is a failure — and the live roster only reveals a worker's output for an exit nobody
+        // asked for. Without this, `q` revealed all five at once.
+        raise({ event: "exited", worker: worker.name, code, expected: restarting.has(worker.name) || shuttingDown });
+        // A restart kills this child on purpose, and the whole point is that the session survives it.
+        if (restarting.has(worker.name)) return;
+        if (!shuttingDown) void shutdown(`${worker.name} exited (${code})`);
+      });
+      // A spawn failure (ENOENT for a missing dev.command binary, EACCES, …) emits 'error' and never 'exit'.
+      // Without this listener Node re-throws it as an uncaught error, crashing dev with a raw stack and never
+      // shutting down. Handle it: report it, settle this child's exit, and tear the session down.
+      child.once("error", (error) => {
+        emitLine(`${worker.name} failed to start: ${error.message}`);
+        log.write(`error: ${worker.name} ${error.message}`);
+        resolve();
+        // **A failed spawn is an exit, and has to be raised as one.** Node emits `error` and never
+        // `exit`, so raising nothing left the roster holding a `building` row, spinner and all, with the
+        // footer repainting for a process that does not exist. `null` is the code for the same reason a
+        // signaled child reports it: there was never an exit status to report.
+        raise({
+          event: "exited",
+          worker: worker.name,
+          code: null,
+          expected: restarting.has(worker.name) || shuttingDown,
         });
-        // A spawn failure (ENOENT for a missing dev.command binary, EACCES, …) emits 'error' and never 'exit'.
-        // Without this listener Node re-throws it as an uncaught error, crashing dev with a raw stack and never
-        // shutting down. Handle it: report it, settle this child's exit, and tear the session down.
-        child.once("error", (error) => {
-          emitLine(`${worker.name} failed to start: ${error.message}`);
-          log.write(`error: ${worker.name} ${error.message}`);
-          resolve();
-          if (!shuttingDown) void shutdown(`${worker.name} failed to start`);
-        });
-      }),
+        if (restarting.has(worker.name)) return;
+        if (!shuttingDown) void shutdown(`${worker.name} failed to start`);
+      });
+    });
+    exits.push(exited);
+    exitOf.set(worker.name, exited);
+  };
+
+  // Indexed over the whole set, so a worker's color is its own whether it started with the run or was
+  // started later by `r` — and two runs of the same project paint the same worker the same way.
+  for (const entry of started)
+    startWorker(
+      entry,
+      roster.findIndex((r) => r.worker.name === entry.worker.name),
     );
-  }
 
   // 8. Start the ready deadline, now that every child is running (pithy-sh/pithy#429).
   //
@@ -1174,6 +1602,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     report: (waiting, first) => {
       // Both destinations, the way the banner's own lines go: a report only in the terminal is a report
       // a piped session loses, and `logs/dev.log` is where a developer looks after the fact.
+      raise({ event: "waiting", workers: [...waiting] });
       const lines = stillWaitingLines(waiting, first);
       if (options.json) {
         emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
@@ -1196,11 +1625,135 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   };
   await writeState(statePath, state);
 
+  /**
+   * Re-record the live session.
+   *
+   * A restart replaces a child, so the pid in `.dev-state.json` changes — and that file is what a re-run
+   * reads to reap the previous session. A stale pid there is harmless, because the reaper checks whether
+   * it is alive; a **missing** one leaks a `workerd` that nothing will ever clean up.
+   */
+  const recordState = async (): Promise<void> => {
+    await writeState(statePath, {
+      pid: ownPid,
+      startedAt: state.startedAt,
+      childPids: children.map((c) => c.child.pid).filter((pid): pid is number => typeof pid === "number"),
+      workers: Object.fromEntries(
+        children.map(({ name, child }) => [
+          name,
+          // **From the roster, not from `started`.** A worker `r` started from parked is running — it is
+          // in `children` — but it was never in the subset this run spawned, so looking it up there
+          // recorded `port: 0`, which `DevState` refuses. The ZodError reached the terminal as a raw
+          // issue array, and a re-run would have had no port to reap it on.
+          { port: roster.find((entry) => entry.worker.name === name)?.port ?? 0, pid: child.pid ?? 0 },
+        ]),
+      ),
+    });
+  };
+
+  /**
+   * **Restart one worker, in place.** `docs/commands/dev.md` names the failure this answers: a
+   * `wrangler dev` whose first build fails never rebuilds, so fixing the file and waiting is the one
+   * thing that cannot work — and until now the only remedy was Ctrl-C and restarting the estate.
+   *
+   * The old child's **process group** is signaled, because `wrangler` spawns `workerd` beneath it and
+   * only the group reaches both; then the same grace window `shutdown` uses, then SIGKILL. The
+   * replacement takes the same pinned port, because a worker that moved would break every sibling that
+   * was told its address before it started.
+   */
+  const restart = async (name: string): Promise<void> => {
+    // Respawning into a teardown would leave a child nothing is waiting on and nothing will signal.
+    if (shuttingDown) return;
+    /**
+     * **One restart per worker at a time.**
+     *
+     * `onRestart` fires on every keypress with no debounce, and a restart takes a grace window — so a
+     * second `r` lands inside the first. Without this both calls found the same child, both awaited the
+     * same exit, and both spawned: two `wrangler dev` on one pinned port, with the first replacement
+     * referenced by nothing, so `shutdown` never signaled it and `.dev-state.json` never named it.
+     * Ignored rather than queued: the second press meant *restart it*, which the first is already doing.
+     */
+    if (restarting.has(name)) return;
+    const index = roster.findIndex((entry) => entry.worker.name === name);
+    if (index === -1) {
+      throw new ValidationError({
+        message: `This project has no worker called ${name}.`,
+        action: `Its dev set is: ${roster.map((entry) => entry.worker.name).join(", ")}.`,
+      });
+    }
+    const member = roster[index];
+    if (!member) return;
+
+    restarting.add(name);
+    try {
+      const previous = children.find((entry) => entry.name === name);
+      const gone = exitOf.get(name);
+      // **Nothing to kill when nothing was running.** A worker this branch parked has no child, so `r`
+      // on its row is a *start* — the only way to reach it without restarting the estate.
+      if (!previous) {
+        emitLine(`Starting ${name}...`);
+        await materializeIfHost(name);
+      }
+      if (previous) {
+        emitLine(`Restarting ${name}...`);
+        signalChild(previous.child.pid, "SIGTERM");
+        if (gone) {
+          const timedOut = await Promise.race([gone.then(() => false), sleep(SHUTDOWN_GRACE_MS).then(() => true)]);
+          if (timedOut) {
+            signalChild(previous.child.pid, "SIGKILL");
+            // **Bounded, as `shutdown`'s wait is.** A child that survives SIGKILL hung the restart
+            // forever — and because the `finally` never ran, the worker stayed in `restarting`, which
+            // made the exit handler swallow a later genuine crash of it.
+            await Promise.race([gone, sleep(REAP_TIMEOUT_MS)]);
+          }
+        }
+      }
+      /**
+       * **Re-checked after the waits, not only on entry.**
+       *
+       * Those awaits can span five seconds, and a `q` inside that window runs the whole teardown: it
+       * signals the children of that instant, waits out the exits it snapshotted, removes
+       * `.dev-state.json` and resolves `closed`. Resuming here would then spawn a child nothing is
+       * signaling and rewrite the state file the teardown had just deleted — and the command exits with
+       * that child still running.
+       */
+      if (shuttingDown) return;
+      startWorker(member, index);
+      // **Cleared before the state write, not after it.** `recordState` writes a file, and a
+      // replacement that died inside that window was raised as an *expected* exit: the roster did not
+      // reveal the output explaining it, and the shutdown was suppressed. The restart is over once the
+      // child exists; the bookkeeping after it is not part of it.
+      restarting.delete(name);
+      await recordState();
+    } finally {
+      restarting.delete(name);
+    }
+  };
+
+  // The identity the footer names, and only ever the email — the same omission the banner makes, for the
+  // same reason: a session claim rendered as text is a session claim at rest in a scrollback, a log and a
+  // screenshot (#667). With several seeded identities the footer names the one `l` would reach first;
+  // which identities exist is what `--json` reports.
+  const identities = devLoginIdentities(devLogins, now());
+  // A name only when there is one to name: with several, `l` opens a picker and the roster says how many
+  // rather than choosing for you.
+  raise({
+    event: "login",
+    email: identities.length === 1 ? (identities[0]?.email ?? null) : null,
+    count: identities.length,
+  });
+
   return {
     workers: started.map((s) => ({ name: s.worker.name, port: s.port, origin: s.origin })),
-    identities: devLoginIdentities(devLogins, now()),
+    identities,
     ready,
     closed,
+    restart,
+    devLogin: openDevLogin,
+    originOf: (worker: string) => roster.find((entry) => entry.worker.name === worker)?.origin,
+    setAutostart,
+    listIdentities,
+    signInAs,
+    pickIdentity,
     shutdown,
     state,
   };

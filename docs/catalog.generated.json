@@ -219,6 +219,8 @@
         "--enable-autostart",
         "--enableAutostart",
         "--no-enable-autostart",
+        "--tui",
+        "--no-tui",
         "--json",
         "--no-json"
       ]

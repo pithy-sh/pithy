@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
-import { type DevMemberKind, type DevSetOptions, resolveDevSet, selectDevMembers } from "./devSet";
+import { type DevMemberKind, type DevSetOptions, devMemberLabel, resolveDevSet, selectDevMembers } from "./devSet";
 
 /**
  * **What `pithy dev` would start, without starting it.**
@@ -135,7 +135,7 @@ export function devListingRows(listing: DevListing): { name: string; description
     const why = !member.starts && member.autostartLocal && !member.autostart ? "  off here" : "";
     return {
       name: member.name,
-      description: `${member.kind.padEnd(4)}  ${(member.starts ? "starts" : "skipped").padEnd(7)}  port ${member.port ?? "—"}${why}`,
+      description: `${devMemberLabel(member.kind).padEnd(6)}  ${(member.starts ? "starts" : "skipped").padEnd(7)}  port ${member.port ?? "—"}${why}`,
     };
   });
 }

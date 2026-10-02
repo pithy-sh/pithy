@@ -692,6 +692,28 @@ The comparison covers only values the kit owns. A limiter's `limit` and `period`
 **An environment absent from `domains` resolves to `http://localhost`, never to another environment's origin.** An undeclared environment is an unpublished one, and the only unpublished environment is the local one — so the fallback fails closed: a link that goes nowhere, which is useless rather than harmful. A *deployed* environment must never keep it, and it cannot: `pithy deploy --env <name>` refuses an environment whose config declares no origin, and `pithy doctor` reports it first.
 
 **One origin deliberately does not derive: `controlplane.issuer`.** It is an identity, not an address. A connection stores the issuer it was created with and verification checks that stored value, so a per-environment issuer would make a connection minted in staging unverifiable in production. That may well be the better isolation, but it is a decision about trust rather than about reachability — write it, do not derive it.
+### 3.7 One pinned region, for one command
+
+**§3.1's rule holds everywhere but one place.** `pithy dev` renders a live roster at the foot of a real terminal — a repainting region beneath the session's own output. It is the only command with one, and the exception is written down here rather than left as something a reader has to notice.
+
+The rule it does not break is the one §3.1 and `terminal/progress.ts` actually state: a run's history is printed once and never redrawn. The stream above the roster is exactly that — the roster is **state**, not history, and it collapses nothing. What `progress.ts` refuses is a repainting line that *replaces* the scrollback a developer reads an error out of, and a footer replaces none of it.
+
+Two differences from a plain run are deliberate, and both are narrow. **Worker output is hidden until asked for**, because the roster is what the footer is for and five workers' startup chatter is what buried it — with a worker that fails or stalls revealing itself, so nothing is ever quietly lost. And **the banner leaves out what the roster already says**: the `name: http://localhost:####` list, the `Starting …` line, `Ready.`, and the `Dev login:` line are each the same facts the table and its key bar hold a line below. Everything else a plain run writes, a footer run writes too, byte for byte, in the same order — the delivery verdict and the log path included, the first because the roster cannot carry it and the second because hidden output makes it matter more.
+
+**`logs/dev.log` is byte-identical either way, and that is the half that matters.** It is the record a session is read back from, so nothing a renderer decides may change it — hidden output still goes there in full, and the addresses are written there independently of the banner. `dev/orchestrator.test.ts` holds both halves: the log identical, and the terminal differing by exactly the lines named above.
+
+Why `pithy dev` and nothing else. It is the only command that supervises several long-lived processes at once, so it is the only one whose state is not a line anywhere — it is the fold of every line so far, and by the time a developer wants it those lines have scrolled. `readyWatch`'s `Still waiting on:` line exists because of precisely that, and answers it one deadline at a time. Every other command is a single run with a beginning and an end, and its scrollback **is** its state.
+
+The exception is bounded by four things, and each is a gate rather than a note:
+
+- **Plain is what anything automated gets.** `--json`, a pipe, CI, `TERM=dumb` and `PITHY_NO_TUI` all render the stream and nothing else. A CI log is what §3.1 exists to protect.
+- **The roster adds a region; it never *rewrites* a line.** It omits the lines named above, and nothing else. `dev/orchestrator.test.ts` runs one scripted session through both renderers and fails if `logs/dev.log` differs at all, or if the terminal differs by anything other than the superseded addresses.
+- **No new color.** Every element lands on a tier §3.4 already defines, including the saffron spinner on a worker mid-wait — which is §3.4's own "loading spinner glyphs during long operations", and `progress.ts`'s "single indivisible wait".
+- **Nothing leaves the normal screen buffer.** No alternate screen and no clear-screen, so the session's output is still in the terminal afterwards. `dev/tui/devTui.pty.test.ts` asserts that on a real pty.
+
+A second command wanting a pinned region is a new argument to be made here, not a precedent to inherit.
+
+
 
 ---
 

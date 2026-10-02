@@ -19,6 +19,7 @@ pithy dev --list [--app <name>]… [--json]
 | `--app <name>` | Start exactly the worker named, whatever this branch has turned off. **Repeatable** — the raw argv is read, so several survive. A name is the deployed name, the `apps/<dir>` basename, or a capability name for a host. Literal: naming a worker pulls in no capability host. An unknown name refuses the whole run before anything spawns, naming the valid set. |
 | `--disable-autostart` | Stop `--app`'s workers starting on this branch, on this machine. Writes `dev-ports.json` and **starts nothing**. Default `false`. |
 | `--enable-autostart` | Undo `--disable-autostart` for `--app`'s workers. Removes the key rather than storing `true`. Starts nothing. Default `false`. |
+| `--tui` / `--no-tui` | Render the live roster at a terminal, or don't. Default `true`. `--no-tui` gives the plain stream — every line the roster would have superseded, and no repainting region. **Neither form overrides a pipe, `--json`, `CI` or `TERM=dumb`**: those have no terminal to draw on or a consumer parsing the output, so they are plain regardless. `PITHY_NO_TUI` set to any non-blank value does the same thing as a standing preference, and a typed `--tui` beats it for one run — the same reading `--app` takes over this branch's autostart answer. |
 | `--json` | Machine-readable output. Default `false`. |
 
 ## What it does
@@ -79,6 +80,93 @@ Whether a worker starts locally is not a fact about the project. `pithy.worker.j
 
 **A leftover `dev.autostart` in a manifest:** `true` is accepted and ignored — `pithy worker add` wrote it into every manifest it ever scaffolded, and it agrees with the answer. `false` is **refused**, naming the command above, because it is the one value somebody chose and silently dropping it would start a worker its owner had turned off.
 
+### The live roster
+
+At a real terminal, `pithy dev` pins a roster under the session's output and keeps it current. Every worker, its kind, its port, its state, and how long it took.
+
+```
+──────────────────────────────────────────────────────────────────
+  worker      kind    port   state      time    autostart
+▸ api         app     8787   ready      1.9s    on
+  web         app     8788   ready      2.4s    on
+  email       worker  8789   ⠋ building  14s     on
+  support     worker  8790   waiting     2m14s   on
+  payments    worker  8791   skipped            off
+──────────────────────────────────────────────────────────────────
+  ↑↓ select   r restart   o open   f logs (F all)   a autostart off   l login   q quit
+```
+
+- **Worker output is hidden until you ask for it.** The roster is the point — five workers' startup chatter is what used to bury it — so by default the stream carries the session's own narration and nothing else: a `.dev.vars` refusal, the delivery verdict, `Still waiting on: …`, `l`'s identity list, and the log path. (`Starting …` and `Ready.` are left out too — see below — because the roster says both.) Press `f` for the selected worker's output, or `F` for all of it. Everything goes to `logs/dev.log` either way, whether you ever reveal it or not.
+- **A worker in trouble reveals itself.** Hiding output must not bury the thing you came for, so a worker that exits, or that is still missing at the ready deadline, has its output shown without being asked — along with the last 200 lines it produced while hidden. Quiet when healthy, loud when not.
+- **What you reveal is shown in its own color.** A revealed worker's name on the roster is painted the same color `[api]` carries in the stream, so the rows whose color you can see are the rows whose output you can see.
+- **The output above the roster is unchanged.** Each line is written once, to the terminal, and never redrawn — so your own scrollback, selection and copy work exactly as they always did, and a line longer than the window soft-wraps the way the terminal wraps it rather than being broken in half. Only the roster repaints.
+- **The ready banner shrinks to what the roster cannot say.** Its `name: http://localhost:####` list, its `Starting …` line, its `Ready.` and its `Dev login:` line are all facts the table and its key bar hold a line below, so none of them is printed. What remains is the delivery verdict and the log path: the first because no row carries it, the second because hidden output makes it matter more. `logs/dev.log` records every one of them as it always did. Without a roster — piped, `--json`, CI — the banner is unchanged, because there it is the only place the addresses appear.
+- **A parked worker still gets a row**, marked `skipped` with `autostart` reading `off`, carrying the port it would be pinned to. `pithy dev --list` has always named it; the roster is where you can act on it, and `r` on that row *starts* it rather than restarting it. A capability worker parked this way has its generated config written at that moment, since a run only materializes the hosts it starts.
+- **The key bar sheds the marker hint before it sheds anything else.** At a width that cannot fit the whole bar it drops `↑↓ select` — arrows beside a visible marker are the one hint that explains itself — and only a genuinely narrow terminal collapses it to `? keys`.
+- **There is a header row.** Six columns, two of them numbers — `8787` and `1.9s` read as the same kind of thing until something says which is which. It is dim throughout, §3.4's tier for a section label, and its own labels are part of each column's width so the header and the rows cannot drift apart.
+- **The `autostart` column says `on` or `off`** — whether the next run starts that worker. Words rather than a check and a cross: those need color to read quickly and §3.4 licenses no tier for them.
+- **The kind column says `app` or `worker`.** `app` is one of yours, from `apps/`; `worker` is a capability's own host Worker, resolved from the composition. The code and this page call the second a *host*, which is accurate and reads as a hostname in a six-character column — so the table says `worker`, and `pithy dev --list` says the same thing through the same helper.
+- **A ready worker reports how long it took, not how long it has been up.** `1.9s` is the `Done. (3.2s)` fact, and it stops changing once it is true. A worker still coming up reports elapsed, which is the number that is actually moving.
+- **And the roster stops repainting once the session is quiet.** The clock ticks only while something is still building. A command you leave open for eight hours does not redraw itself for eight hours.
+- **`exited (1)` is a row, not a silence.** One worker exiting still tears the session down — that has not changed — but the roster names which one, and its last frame stays on screen afterwards so a session that stopped still says how.
+
+**The keys.** `↑↓` moves the marker; the verbs act on the marked row. **A key that does nothing on that row is dimmed rather than hidden** — a bar whose contents move as the marker moves has to be re-read on every keystroke, and most of a real roster is capability hosts, which are neither a web page nor a sign-in.
+
+| Key | Does | Dimmed on |
+|---|---|---|
+| `r` | **Restart that worker**, in place, on the same pinned port. This is the answer to the one failure nothing else fixes: a `wrangler dev` whose *first* build fails never rebuilds, so fixing the file and waiting cannot work. Before this, the only remedy was Ctrl-C and restarting everything. | — |
+| `o` | Open its origin in your own browser. | a capability worker |
+| `f` / `F` | **One slot, two keys.** `f` shows that worker's output, replaying the last 200 lines it produced while hidden; press it again to stop, and reveal as many workers as you like. `F` shows **every** running worker's output, or goes back to quiet — it never reveals one this branch parked, which has no output to show. On a row where `f` does not apply the slot reads `F all logs` alone, rather than dimming a merged hint and claiming neither key works. | — |
+| `l` | **Sign in on that worker.** Never dimmed for want of a seed: it is gated on the *worker* being a ready app Worker, and the supervisor answers who. Gating it on a seed made `l` dead for the life of any session that started unseeded, because the identity count is read once before anything spawns — pressing it re-reads the record, opens the only identity, offers the picker, or names `pithy seed`. The marker is the answer to "which worker", which matters because an app stack can carry more than one front end: `l` on `web` signs you into `web`. A worker with no dev-login route is refused by name rather than redirected to a sibling. With more than one seeded identity it opens the picker, below. | a capability worker |
+| `a` | **Turn this branch's autostart for the worker off, or back on** — whether the *next* `pithy dev` starts it. Writes the same `dev-ports.json` key as `--disable-autostart`, scoped by the same three things: this checkout, this branch, this machine, committed nowhere. The label names the state it is moving to. **It does not stop the worker**: turning it off leaves it running, and its row reads `ready` *and* `off`, because those two facts genuinely disagree until the session restarts. | — |
+| `q` | Stop the session. The same path as Ctrl-C. | — |
+| `?` | The key list, when the terminal is too narrow to show it. | — |
+
+Without the roster — a piped run, `--json`, CI — `l` keeps the behavior it always had: the worker carrying a front end wins, and a tie prints the choices rather than guessing.
+
+### Choosing who to sign in as
+
+With more than one seeded identity, `l` replaces the roster with a picker rather than printing the list:
+
+```
+────────────────────────────────────────────────────────
+  Sign in as  tide█   2 of 29
+▸ jonas.villumsen@tidewater.test
+  keziah.mbeki@tidewater.test
+────────────────────────────────────────────────────────
+  ↑↓ select   ⏎ sign in   esc clear
+```
+
+- **Type to filter.** Any printable character narrows the list, matching anywhere in the email *or* the userId, case-insensitively — because what you reach for on a seed spread across five domains is the domain, which is never the prefix. Backspace takes a character back. A query matching nobody says `no match of 29` rather than showing an empty box.
+- **`↑↓` moves, `⏎` signs in, `esc` clears the query and then closes.** Narrowing 29 to 2 and wanting the 29 back is one keystroke, not a reopen.
+- **No digit keys, and the rows are not numbered.** They were, briefly: numbered by their place in the whole list, with a `1–9 jump` hint. Two things were wrong with it. While the window showed rows 8–17 that hint pointed at rows which were not on screen; and an email contains digits, so once typing filters, `1` cannot also mean "jump to row 1". Filtering reaches every identity, so the numbers had no remaining purpose — `dev.json` takes an email or a userId, never an index.
+- **Ten rows at a time.** The window follows the marker and clamps at both ends, and the marked row is always visible.
+- **It replaces the roster rather than sitting under it.** The roster answers *what is running*; this answers *who*, and only one of those is being asked. The roster comes back the moment you choose or cancel.
+- **The roster's own keys are inert while it is open** — `r`, `o`, `f`, `a` and `q` all do nothing, since there is no row on screen to read them against, and `q` especially would tear the session down in answer to a question about signing in. Ctrl-C still stops the session.
+- **Emails only, never a claim.** The same omission the ready banner makes, for the same reason.
+- A seeded session of one identity never asks: `l` opens it. None at all says so, and names `pithy seed`.
+
+Without a roster — piped, `--json`, CI — `l` keeps the behavior it always had: up to nine identities on the digit keys, and a prompt past that.
+
+**`a` is the roster's answer to the same question `--disable-autostart` answers.** `pithy dev --app payments --disable-autostart` still works and still writes the same key; `a` is that, on the row, without stopping to type a worker's name. Either way the answer lives beside the port block — this checkout, this branch, this machine — and `pithy dev --list` reports it as `skipped  off here`.
+
+**Ctrl-C still stops the session**, and still stops it the same way: SIGTERM to every child's process group, a grace window, then SIGKILL, then the state file is removed. The roster is unmounted after that, never instead of it.
+
+**Press it again and it stops waiting.** A teardown is bounded — a child that survives SIGKILL is named, with its pid, and the session exits rather than waiting on it — so this is a backstop rather than the usual path. It exists because the roster holds the terminal: `shutdown` returns early once it has begun, so without a second press there would be no key that does anything while a teardown is in flight, and a child that would not die could not be stopped at all. The footer is unmounted first, which is what hands the terminal back.
+
+**Where you get the plain stream instead.** The roster is for a person at a terminal; everything else reads the output.
+
+| Condition | Why |
+|---|---|
+| `--json` | Every command is agent-drivable, and a machine reads one object per line. |
+| stdout is not a terminal | A pipe or a redirect gets text, with no cursor movement in it. |
+| `CI` is set | A build log is the thing plain output exists for. |
+| `TERM=dumb` | The terminal has said it cannot do this. |
+| `--no-tui` | Asked for, for one run. |
+| `PITHY_NO_TUI` set to any non-blank value | The same, as a standing preference — a shell profile, for a terminal that renders the footer badly. A typed `--tui` overrides it. |
+
+A terminal whose **stdin** is redirected (`pithy dev < /dev/null`) still gets the roster, with no key bar — and the dev-login line prints the URL instead of offering `l`, exactly as it does on the plain path.
+
 ### Signing in: press `l`
 
 `pithy seed` mints a dev login for **every user it seeds** (`docs/commands/seed.md`). `pithy dev` is where you use them.
@@ -87,6 +175,7 @@ Whether a worker starts locally is not a fact about the project. `pithy.worker.j
 - **`l` asks who, then does what it always did.** One identity opens straight away. Two to nine are numbered and one keypress picks: `Which identity? Press 1–4.`, then `1`. Ten or more get a filterable prompt instead, because there is no tenth digit to bind. The choice is over *users*; which worker to open is the separate question below, decided the same way it always was however many identities exist.
 - **An expired claim takes one name out of the list.** Each entry carries its own expiry, so a stale one is absent from the picker and the rest stay usable. When every one has expired, `l` says so and names `pithy seed`, exactly as it did when there was one.
 - **Every seeded user, not a fixed cast.** The source is the auth rows this run seeds, so an adopter's own seed set yields an adopter's own users; the canonical cast is only what `seed.includeExamples` adds to them. The opt-in is still per machine and is the **`user` key** in `~/.config/pithy/<project>/dev.json` — that file has other tenants, so its existence alone mints nothing — and the user it names is the one offered first (`docs/SEED.md`).
+- **The seed is read when you press `l`, not when the session started.** So `pithy seed` in another terminal is picked up by the next keypress, and an identity that expires during a long session stops being offered. This used to be read once at startup, which made the refusal's own advice — `Run pithy seed, then press l again` — the one remedy that could not work: the session held the record as it stood before the seed, and pressing `l` again could never see it.
 - **`l` opens the browser you already use.** It opens `http://localhost:<port>/__pithy/dev-login` with the platform's own opener (`xdg-open`, `open`, `start`) — no browser automation, so it works in whatever browser is default, from a second profile, and from an incognito window. That route sets the cookie and redirects to `/`. Reload nothing; you are signed in.
 - **The route exists only in a `dev` composition, and never under CI.** `@pithy-sh/auth` registers `GET /__pithy/dev-login` behind two independent gates, both at registration rather than inside the handler: the composition's `ENVIRONMENT` must be `dev`, **and** `CI` must be unset or blank. A `staging` or `prod` Worker does not carry the route at all, and neither does a `dev` Worker started by a CI job. It mints an authenticated session with no credential presented, so neither gate is allowed to imply the other. (`pithy dev` forwards `CI` into each Worker as a var, because the host environment does not otherwise cross into workerd.)
 - **Which Worker.** The candidates are the started Workers that compose auth — a cookie is scoped to the origin that set it, so no other origin can be signed in by opening it. With one candidate, `l` opens it. With several, the one carrying a front end (`ui` in its `pithy.worker.jsonc`) wins; if that does not decide, `pithy dev` prints the choices rather than guessing.

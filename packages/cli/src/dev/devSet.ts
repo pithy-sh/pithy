@@ -33,6 +33,19 @@ import {
 /** Which half of the set a member came from: the `apps/` registry, or a composed capability's host. */
 export type DevMemberKind = "app" | "host";
 
+/**
+ * How a member's kind is shown to a person.
+ *
+ * **The model's word is `host` and the displayed word is `worker`.** `host` is right in the code and in
+ * the prose — it is a *capability's host Worker*, resolved from the composition rather than from
+ * `apps/` — and wrong in a four-character column, where it reads as a hostname. Both views of this fact
+ * (`pithy dev --list` and the live roster) go through here, because a table saying `worker` while a
+ * listing says `host` for the same row is the kind of difference that costs somebody an afternoon.
+ */
+export function devMemberLabel(kind: DevMemberKind): string {
+  return kind === "host" ? "worker" : kind;
+}
+
 /** One member of the dev set: the target, where it came from, and whether a plain run would start it. */
 export interface DevSetMember {
   /** The dev-set member itself — an `apps/` Worker or a host, ordinary in every respect either way. */

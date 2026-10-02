@@ -61,6 +61,9 @@ const HEAVY: Record<string, string> = {
     "~290 ms to import: a whole workerd-backed local runtime. Only `pithy migrate --env dev`, `pithy seed --env dev` and the local dev-secrets store ever start one, and each does it inside the function that needs it.",
   cloudflare:
     "~300 ms to import: the official Cloudflare SDK, constructed by `@pithy-sh/cloudflare/src/client/manager`, which every REST manager extends. Anything naming `CloudflareClients` as a value pays it, so the CLI builds one through `cloudflare/clients.ts` instead.",
+  ink: "**~630 ms to import** — measured as the minimum of eight warm runs, and more than twice miniflare's. It is a React reconciler and a Yoga flexbox layout engine, and it would be the heaviest single import in this CLI by some margin. Exactly one surface uses it: `pithy dev`'s live roster (#670), which only a person at a terminal ever sees. `commands/dev.ts` reaches it through `await import` inside the branch that has already decided a footer is wanted, so `pithy dev --json`, a piped `pithy dev`, a CI run and every other command in the tool pay nothing.",
+  react:
+    "~23 ms on its own, which is well under this table's bar — it is listed for reach rather than for weight. Every `.tsx` module imports `react/jsx-runtime` whether or not it names an Ink primitive, so a component that found its way onto a command's static graph having imported no Ink directly would slip past the `ink` entry above and bring the reconciler in behind it anyway. One of the two names catches it; both named means neither has to be the one that happened to be imported.",
 };
 
 /**
