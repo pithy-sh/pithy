@@ -1,5 +1,65 @@
 # @pithy-sh/cli
 
+## 0.13.0
+
+### Minor Changes
+
+- [#669](https://github.com/pithy-sh/pithy/pull/669) [`5a9588d`](https://github.com/pithy-sh/pithy/commit/5a9588db35a3c9bcb023f0065cec268238794f9a) Thanks [@kingmesal](https://github.com/kingmesal)! - Every user your seed creates now has a dev login. Press `l` in `pithy dev` and pick who to be.
+  
+  `pithy seed` minted one claim. `logs/dev-login.json` held a single login, named by a per-machine `dev.json`, and `l` opened a browser as that one user. The seed creates more users than that, and every one of them is somebody you might need to be: to see what a second member sees, to check a screen that renders differently for the account that owns a row, to reproduce what a tester hit. Being any of them meant reseeding first or minting a claim by hand — slow enough that people stop doing it, so the screens only one user can reach stop getting looked at.
+  
+  The artifact is now a record keyed by `userId`, with one entry per seeded auth user. The source is the seeded rows, so an adopter's own seed set yields an adopter's own users, however many that is; the canonical cast is only what `seed.includeExamples` adds to them.
+  
+  `l` scales with how many there are. One identity opens straight away, exactly as before. Two to nine are numbered and one keypress picks. Ten or more get a filterable prompt, because there is no tenth digit to bind. Expiry applies per entry, so a stale claim drops one name out of the picker and leaves the rest working — where it used to be the only claim and took the feature down with it.
+  
+  `pithy dev --json` gains an `identities` array: `userId`, `email` and `expiresAt` per entry, and **no claim, ever**. That is the surface a script selects against; signing in stays the browser's half.
+  
+  **Minting N claims costs nothing a single claim did not.** A claim is a signature over a user id and an expiry — no extra seeded rows, a few hundred bytes each. The three properties that made one acceptable are what make many acceptable, and all three still hold: `logs/` is gitignored by the starter template, the artifact is written `0600`, and a symlink at the target is refused rather than followed.
+  
+  `dev.json` keeps its job as the per-machine opt-in, and the `user` key is what carries it — not the file's existence. That file has other tenants: `pithy dev` writes bootstrap `.dev.vars` values into it, with no `user` and no interest in signing anybody in, so treating its presence as consent would mint a live claim for every seeded user on a machine where nobody asked for a dev login. With the key there, everybody gets a claim and the named user is offered first. A name this run does not seed still fails, listing the users it does.
+  
+  **Nothing migrates.** The single-entry file this replaces has strings where an entry belongs, so it does not parse, and every reader already answers "no dev login" to a file that does not. The banner stays quiet until the next `pithy seed`, which is the whole plan for an artifact that is gitignored and regenerated.
+
+- [#676](https://github.com/pithy-sh/pithy/pull/676) [`c40be1e`](https://github.com/pithy-sh/pithy/commit/c40be1ed93e7624740c54f55ea7443e1b2469ec8) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy dev` now pins a live worker roster beneath its output — each worker's state, port and timing, with keys to restart, open, sign into or show the logs of one, and a row for the workers this branch has parked. Worker output is hidden until asked for, and a worker that fails reveals itself. `l` reads the seeded identities as it is pressed and offers them in a picker, so a `pithy seed` run mid-session is picked up.
+
+- [#672](https://github.com/pithy-sh/pithy/pull/672) [`fc3b4f7`](https://github.com/pithy-sh/pithy/commit/fc3b4f7a86d43d7fb243cee06c2e063846e87cf7) Thanks [@kingmesal](https://github.com/kingmesal)! - `--json` now pretty-prints when a person is reading it and stays one compact line everywhere else.
+  
+  The flag that makes the CLI agent-drivable was the same flag that made it unreadable to the person who typed it. `pithy doctor --json` at a terminal returned a single unbroken line, and reading it meant piping through `jq`.
+  
+  It is decided the way color already is, first match wins: `PITHY_JSON=compact` or `PITHY_JSON=pretty`, then `--pretty` / `--no-pretty`, then `isTTY` on the stream being written. The variable comes first because a TTY is not a reliable "a person is reading this" signal — agent harnesses, tmux-backed runners and some CI images allocate a PTY, and one variable settles a whole session rather than every invocation in it. An unrecognized value is refused, naming the two it takes: a typo reverting to the default is indistinguishable from the variable working.
+  
+  **A piped, redirected or captured run is byte-identical to before.** Every output round-trips through `JSON.parse` to the same value either way.
+  
+  **`pithy dev` is not reshaped.** Its `--json` stdout is a stream — one object per line for the life of a session, which is the only rule a consumer reading it line by line can apply. Those records stay compact and uncolored at a terminal exactly as they are in a pipe. Every other command writes one document, where the trailing newline is a terminator rather than a separator and indenting cannot break a framing that is not there.
+  
+  **Each stream answers for its own reader.** The payload reads `process.stdout.isTTY` and the `{ "error": … }` line reads `process.stderr.isTTY`, so `pithy doctor --json > out.json` at a terminal writes a parseable payload to the file and prints a readable error to the screen.
+  
+  Pretty means two-space indent and restrained syntax color — dim punctuation, cyan literals, plain keys and strings. It routes through the existing color seam, so `NO_COLOR` or a pipe leaves valid indented JSON with no escape byte in it. A stream that is not a terminal is never colored even when it is indented, so `pithy doctor --json --pretty 2> err.txt` writes a parseable error into the file while the screen keeps its color; `FORCE_COLOR` overrides that. Saffron is not spent on structure.
+  
+  `--pretty` and `--no-pretty` are global flags, declared once beside `--help` and `--version` and published in the docs catalog. Both the bare and the `=true` / `=false` spellings are read; a value that is neither is refused, as is either flag without `--json`, since it formats that line and nothing else.
+
+### Patch Changes
+
+- [#664](https://github.com/pithy-sh/pithy/pull/664) [`53b2ec9`](https://github.com/pithy-sh/pithy/commit/53b2ec9cd66f7c54d7d3df82d18c9d41d6cb70f1) Thanks [@kingmesal](https://github.com/kingmesal)! - `isPublicHostname` decides punycode itself, so `pithy seed --host` answers the same on Node 22 and Node 24.
+  
+  `seedHostOrigin` validated a host by handing it to `new URL` and treating a throw as the answer. That covered two different questions at once. One is canonical spelling — the parser reads `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `2130706433` all as `127.0.0.1`, which is what stops loopback arriving in a spelling no pattern here would recognize. The other is whether an `xn--` label is valid punycode, and that one was never ours; it was the parser's, borrowed.
+  
+  Node 24.20.0 stopped lending it. That release bumped Ada from 3.4.4 to 4.0.0 — ICU unchanged at 78.3, so this is the URL parser and not the IDNA tables — and Ada 4 no longer rejects a malformed A-label. `new URL("http://xn--a.test")` throws on Node 22.23.3 and on Node 24.19.0, and returns a URL on Node 24.20.0. So `pithy seed --host xn--a.test` was refused or accepted according to which Node the adopter had installed, from one command, with nothing in the repository having changed.
+  
+  A rule borrowed from a parser changes underneath you, so this one is stated where it can be read: `isPublicHostname` refuses any label beginning `xn--`, on every runtime. Whole labels, so `myxn--a.test` is the ordinary name it looks like.
+  
+  **Every A-label is refused, well-formed or not.** Telling a good one from a bad one is UTS-46, which needs IDNA mapping tables `@pithy-sh/core` is not carrying into a Worker to check a hostname — and `HOSTNAME_PATTERN` is ASCII-only, so a Unicode domain never reached this function to begin with. What closes is the hand-encoded spelling. Internationalized domains are a feature with a specification behind them, not a side effect of which parser shipped.
+  
+  The parser is still asked the question it is good at. A host is taken only in the spelling `new URL` gives back, and a host no parser will take is still refused — the `catch` is for that, not for punycode.
+  
+  The Node 24 leg of CI is a gate and stays one. Its comment claimed otherwise while `test-node` sat in the `ci` job's `needs`, which is how this was caught at all: the nightly on `main` runs both versions, the pull request runs the floor, and a kit that answers differently on two LTS runtimes is broken whichever one is nominally supported.
+- Updated dependencies [[`5a9588d`](https://github.com/pithy-sh/pithy/commit/5a9588db35a3c9bcb023f0065cec268238794f9a), [`53b2ec9`](https://github.com/pithy-sh/pithy/commit/53b2ec9cd66f7c54d7d3df82d18c9d41d6cb70f1)]:
+  - @pithy-sh/core@0.9.0
+  - @pithy-sh/cloudflare@0.4.2
+  - @pithy-sh/email@0.3.11
+  - @pithy-sh/secrets@0.3.2
+  - @pithy-sh/turnstile@0.4.2
+
 ## 0.12.0
 
 ### Minor Changes
