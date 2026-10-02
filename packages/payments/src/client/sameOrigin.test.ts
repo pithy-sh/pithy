@@ -283,8 +283,15 @@ describe("one producer of the same-origin request", () => {
 const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   // The primitive. No imports at all, which is the strongest form the rule can take.
   "src/client/api.ts": [],
-  "src/client/hooks.ts": ["react", "./api", "./checkout", "./paddle"],
+  "src/client/hooks.ts": ["react", "./api", "./checkout", "./paddle", "./paddleLink"],
   "src/client/checkout.ts": ["./api", "./paddle"],
+  // `#680`'s reader. `../data/paddleIds` is the **second** crossing out of `src/client/` on this list and
+  // it earns it the way `wholeUnits.ts` does: that module imports nothing, so a predicate reaches the
+  // bundle with no graph behind it. It was written under `rails/paddle/` first, which made a browser
+  // module read the server rail — this gate refused it, and moving it to `data/` is the fix rather than
+  // an entry added here to quiet the refusal.
+  "src/client/paddleLink.ts": ["../data/paddleIds"],
+  "src/data/paddleIds.ts": [],
   // Paddle.js is the browser SDK a checkout opens with. It is the one third-party import on this side.
   "src/client/paddle.ts": ["@paddle/paddle-js", "./api", "./paddleCache", "./wholeUnits"],
   // The zero-fraction trim. `../data/money` is the **one** import out of `src/client/` on this list, and

@@ -132,6 +132,10 @@ describe("payments route contract", () => {
       "GET /payments/admin/purchases",
       "GET /payments/admin/reconcile-runs",
       "GET /payments/admin/subscriptions",
+      // The one unauthenticated route payments mounts. `#680`: Paddle appends `?_ptxn=` to a seller's
+      // Default payment link, and the buyer following one from a dunning mail is frequently signed out —
+      // which is the population it serves, so `requireAuth()` would break it for exactly them.
+      "GET /payments/checkout/resume",
       "GET /payments/entitlements",
       "GET /payments/pricing",
       "GET /payments/subscription",

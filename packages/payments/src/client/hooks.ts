@@ -14,6 +14,7 @@ import {
   type PaymentsHostedRail,
   type PurchaseView,
   restorePurchases,
+  resumeCheckout,
   startCheckout,
   submitPurchase,
 } from "./api";
@@ -28,6 +29,7 @@ import {
   previewPrices,
   priceQueryKey,
 } from "./paddle";
+import { readPaddleLinkTransaction } from "./paddleLink";
 
 /**
  * The headless client surface: six hooks a paywall, a pricing page, a subscription screen, and a route
@@ -368,6 +370,82 @@ export function usePaddleCheckout(
   }, [transactionId, latest, latestHandoff, live]);
 
   return { inline: handoff?.displayMode === "inline", opening, failure };
+}
+
+/** What {@link usePaddleLink} gives the screen a Paddle payment link lands on. */
+export interface UsePaddleLink {
+  /**
+   * The handoff to open, or null.
+   *
+   * Null covers three different facts and deliberately reads as one: there was no `_ptxn` in the URL, there
+   * was one and it was not a transaction id, or the server has not answered yet. A screen renders its
+   * ordinary state for all three, which is what it was already rendering before this hook existed.
+   */
+  handoff: PaddleCheckoutHandoff | null;
+  /** Whether the resume read is in flight. A screen with nothing to show need not read it. */
+  loading: boolean;
+  /** The refusal, or null. A rail that is off, or a mode that cannot resume. */
+  failure: PaymentsFailure | null;
+}
+
+/**
+ * Resume the checkout a Paddle payment link arrived for.
+ *
+ * **The inbound half of Paddle's *Default payment link*.** Paddle appends `?_ptxn=<transaction_id>` to it
+ * and expects this page to open a checkout for that transaction. Those are the links Paddle sends rather
+ * than ones this kit opened: a past-due dunning mail, a manually-collected invoice, the payment-method
+ * update link minted for a subscription. `useCheckout` cannot serve them — it mints a transaction, and here
+ * one already exists.
+ *
+ * **Pass the result to {@link usePaddleCheckout}, which opens it.** Nothing about opening is reimplemented
+ * here, and that is the point: the one-open-per-transaction guard, the `StrictMode` second pass, and the
+ * `PADDLE_NO_CONTAINER` refusal when an inline container is missing are all inherited by going through the
+ * same hook the minted path goes through.
+ *
+ * **In inline mode the page must already render the container.** Paddle finds it by class name when `open`
+ * is called, so a Default payment link pointing at a page that does not render one produces a refusal
+ * rather than a checkout — which makes the choice of landing page part of configuring this, not a detail.
+ * `docs/paddle.md` says so where an adopter sets the link.
+ *
+ * Reads `location.search` once, on mount. A link is a navigation, so there is no later arrival to watch for.
+ *
+ * **One read per transaction, remembered rather than assumed.** The same rule {@link usePaddleCheckout}
+ * states and for the same reason: `StrictMode` runs every effect, cleans it up and runs it again, and that
+ * is the mode `pithy ui add` scaffolds. Without the ref this asked the server twice on every mount — not
+ * harmful, since the route only echoes config, and still two requests where the file beside it had already
+ * solved the problem.
+ */
+export function usePaddleLink(options?: PaymentsClientOptions): UsePaddleLink {
+  const [handoff, setHandoff] = useState<PaddleCheckoutHandoff | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<PaymentsFailure | null>(null);
+  const latest = useLatest(options);
+  const live = useLive();
+  /** The transaction this hook has already asked about, so a second effect pass asks nothing. */
+  const asked = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Narrowly cast rather than read off a typed global, which is `checkout.ts`'s `documentOf` pattern and
+    // is forced by the same thing: the build's tsconfig gives `globalThis` no DOM index signature, so
+    // `globalThis.location` compiles under `typecheck` and fails the published build with TS7017.
+    const search = (globalThis as { location?: { search?: string } }).location?.search;
+    // No browser, or nothing in the URL. Both are "this page was not reached from a payment link", and a
+    // server render is the first of those rather than a failure worth reporting.
+    const transactionId = search === undefined ? null : readPaddleLinkTransaction(search);
+    if (transactionId === null) return;
+    // StrictMode's second pass, or any remount holding the same URL. One arrival is one read.
+    if (asked.current === transactionId) return;
+    asked.current = transactionId;
+    setLoading(true);
+    void resumeCheckout(transactionId, latest.current).then((outcome) => {
+      if (!live.current) return;
+      setLoading(false);
+      if (outcome.ok) setHandoff(outcome.value);
+      else setFailure(outcome.failure);
+    });
+  }, [latest, live]);
+
+  return { handoff, loading, failure };
 }
 
 /** What {@link usePurchase} gives the screen that submits receipts. */

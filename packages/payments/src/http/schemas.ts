@@ -6,6 +6,7 @@ import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
 import { DiscountCode, DiscountTerms } from "../data/discount";
+import { isPaddleTransactionId } from "../data/paddleIds";
 import { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsHostedRail, PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
@@ -575,3 +576,33 @@ export const AdminSubjectParam = z
   })
   .describe("The `:subjectType/:subjectId` path segments on the per-subject management read.");
 export type AdminSubjectParam = z.output<typeof AdminSubjectParam>;
+
+/**
+ * The transaction a Paddle payment link put in the URL — the `?transaction=` query on the resume read.
+ *
+ * **The id is the whole request, and it came from outside.** Paddle appends `?_ptxn=<transaction_id>` to a
+ * seller's Default payment link; the browser reads it and sends it here. So this is attacker-supplied text
+ * on an unauthenticated route, and the shape check is what makes it safe to echo back into a handoff a page
+ * will hand to `Paddle.Checkout.open`.
+ *
+ * **Checked against the rail's own primitive**, `isPaddleTransactionId`, rather than a regex written here:
+ * `rails/paddle/verify.ts` asks the same question of a submitted receipt, and two copies of one rule is the
+ * defect class this repository has paid for four times.
+ *
+ * **It names no holder, and that is structural rather than remembered.** The resume route takes no session
+ * and resolves no subject, so there is no field here for one — which `routeContract.test.ts`'s subject sweep
+ * asserts from the other side, by finding none.
+ */
+export const PaddleResumeQuery = z
+  .object({
+    transaction: z
+      .string()
+      .refine(isPaddleTransactionId, {
+        message: "Not a Paddle transaction id. Expected the `txn_…` Paddle put in `_ptxn`.",
+      })
+      .describe(
+        "The Paddle transaction to resume — the `_ptxn` value, `txn_…`. Publishable: Paddle itself put it in a URL it mailed to the buyer.",
+      ),
+  })
+  .describe("The resume read's query: which transaction a Paddle payment link arrived for.");
+export type PaddleResumeQuery = z.output<typeof PaddleResumeQuery>;

@@ -117,6 +117,7 @@ import {
   EntitlementRevokeRequest,
   GoogleWebhookNotification,
   LemonSqueezyWebhookNotification,
+  PaddleResumeQuery,
   PaddleWebhookNotification,
   PurchaseSubmission,
   RestoreRequest,
@@ -165,6 +166,8 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *                                                                            (bearer | session)  —
  *   POST /payments/checkout               → a hosted checkout, on whichever rail sells the product
  *                                                                            (bearer | session)  json: CheckoutRequest
+ *   GET  /payments/checkout/resume        → open the transaction a `_ptxn` link arrived for
+ *                                                                            (none)              query: PaddleResumeQuery
  *   POST /payments/portal                 → a billing-portal session         (bearer | session)  —
  *   GET  /payments/subscription           → where the caller's subscription stands, read live
  *                                                                            (bearer | session)  —
@@ -1865,6 +1868,62 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       });
       // The handoff, verbatim. A `redirect` carries a URL; a `paddle` handoff carries the transaction the
       // browser opens in place, because that rail's overlay and inline modes never leave this page.
+      return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
+    });
+
+    /**
+     * PUBLIC READ — Paddle only. What a page needs to resume a transaction Paddle itself created.
+     *
+     * **`#680`.** Paddle appends `?_ptxn=<transaction_id>` to a seller's *Default payment link* and expects
+     * the page it lands on to open a checkout for that transaction. Those links are the ones Paddle sends
+     * rather than the ones this kit opens — a past-due dunning mail, a manually-collected invoice, the
+     * payment-method-update link minted for a subscription — and until this route existed the kit could not
+     * use one: `POST {base}/checkout` mints a transaction, and here the transaction already exists.
+     *
+     * **Unauthenticated, and that is the point rather than an oversight.** The buyer following a dunning
+     * link is frequently signed out — that is the population this serves, so `requireAuth()` would break it
+     * for exactly them. It is safe because it discloses nothing: `clientToken` is publishable by design,
+     * `environment`, `displayMode` and `successUrl` are config constants identical for every transaction,
+     * and the id is the caller's own, echoed. The sum of what a stranger learns is this project's Paddle
+     * account, which every pricing page already ships.
+     *
+     * **It must never read the transaction from Paddle**, and that is the one line to defend in review. A
+     * lookup would turn an unauthenticated route into an oracle for whether a transaction id exists, and
+     * then for what it costs. Shape is checked; existence is Paddle's to tell the buyer, inside the
+     * checkout, where it is already their own transaction.
+     *
+     * **Nothing about a session is read, structurally.** No `requireAuth`, no `requirePaymentsSubject`, and
+     * `PaddleResumeQuery` has no holder field for one — so a resume cannot stamp the current user onto a
+     * transaction that arrived in a URL, which is the way this route could have been used to claim somebody
+     * else's payment.
+     *
+     * **`hosted` refuses.** In that mode this kit never opens a checkout in the page: it redirects to
+     * Paddle's own, at a URL only a transaction read would yield — the read this route may not do. A buyer
+     * on a hosted-mode project is already on Paddle's page, so there is nothing here to resume.
+     */
+    app.get(`${base}/checkout/resume`, zValidator("query", PaddleResumeQuery, validationHook), (c) => {
+      const { transaction } = c.req.valid("query");
+      if (config.paddle === undefined) {
+        throw new PaymentsRailNotConfiguredError({
+          detail: "The paddle rail is off in this project's config, so there is no payment link to resume.",
+        });
+      }
+      if (config.paddle.checkout === "hosted") {
+        throw new PaymentsRailNotConfiguredError({
+          detail:
+            'This project runs `paddle.checkout: "hosted"`, which redirects to Paddle\'s own checkout rather than opening one in the page, so a `_ptxn` arrival has nothing to resume here.',
+        });
+      }
+      const handoff = {
+        kind: "paddle",
+        transactionId: transaction,
+        clientToken: config.paddle.clientToken,
+        environment: config.paddle.environment,
+        displayMode: config.paddle.checkout,
+        // From config, exactly as the minted path takes it, and for the reason stated on the field there:
+        // a client that could name one could send a paying customer to a page it controls.
+        successUrl: config.paddle.successUrl,
+      } as const;
       return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
     });
 

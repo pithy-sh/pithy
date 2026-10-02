@@ -3950,6 +3950,119 @@ describe("POST /payments/checkout — Paddle", () => {
 });
 
 /**
+ * `#680`. The inbound half of Paddle's Default payment link.
+ *
+ * Paddle appends `?_ptxn=<transaction_id>` to that link and expects the page to open a checkout for the
+ * transaction. The links are Paddle's own — past-due dunning mail, a manually-collected invoice, the
+ * payment-method-update link minted for a subscription — so the transaction exists before this kit hears
+ * of it, which is the one thing `POST /payments/checkout` cannot handle.
+ *
+ * **This is the only unauthenticated route payments mounts**, so the cases below are mostly about what a
+ * stranger gets. Two properties carry the whole design: nothing secret or session-derived crosses, and
+ * Paddle is never called — a lookup here would make an open route an oracle for whether a transaction id
+ * exists, and then for what it cost.
+ */
+describe("GET /payments/checkout/resume — a Paddle payment link arrives", () => {
+  const PADDLE_SETTINGS = PADDLE_CATALOG.paddle as NonNullable<PaymentsConfigInput["paddle"]>;
+  const app = (settings: Partial<typeof PADDLE_SETTINGS> = {}) =>
+    makeApp({ ...PADDLE_CATALOG, paddle: { ...PADDLE_SETTINGS, ...settings } });
+
+  const resume = (transaction: string, settings: Partial<typeof PADDLE_SETTINGS> = {}) =>
+    request(app(settings), "GET", `/payments/checkout/resume?transaction=${encodeURIComponent(transaction)}`);
+
+  test("**a signed-out buyer gets the handoff — that is the population this serves**", async () => {
+    // No `user`, deliberately: the buyer following a dunning mail days later is usually not signed in, so
+    // a `requireAuth()` here would refuse exactly the person the route exists for.
+    const response = await resume(PADDLE_TRANSACTION);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      kind: "paddle",
+      transactionId: PADDLE_TRANSACTION,
+      clientToken: "test_1234567890abcdefghij",
+      environment: "production",
+      displayMode: "overlay",
+      successUrl: "https://acme.example/thanks",
+    });
+  });
+
+  test("**Paddle is never called, so an open route cannot become an existence oracle**", async () => {
+    // The id is echoed, never looked up. If this route read the transaction, a stranger could tell a real
+    // `txn_…` from an invented one by the status code, and then read its amount out of the handoff.
+    await resume(PADDLE_TRANSACTION);
+    expect(paddleCalls).toEqual([]);
+    // And an id for a transaction that does not exist answers identically — the route cannot tell, which
+    // is the property. Existence is Paddle's to report, inside the checkout, to its owner.
+    const invented = await resume("txn_01zzzzzzzzzzzzzzzzzzzzzzzz");
+    expect(invented.status).toBe(200);
+    expect(paddleCalls).toEqual([]);
+  });
+
+  test("the display mode and the success URL are the project's config, not the URL's", async () => {
+    // The same rule the minted path is held to, on the one path where a client holds the transaction id
+    // and might reasonably expect to hold the rest of it too.
+    const inline = (await (await resume(PADDLE_TRANSACTION, { checkout: "inline" })).json()) as Record<string, unknown>;
+    expect(inline.displayMode).toBe("inline");
+    expect(inline.successUrl).toBe("https://acme.example/thanks");
+  });
+
+  test("a query naming a success URL cannot redirect a paying buyer", async () => {
+    // `PaddleResumeQuery` is a strict single field, so this is already a type-level impossibility — and it
+    // is asserted on the wire because the escalation it prevents is the worst one available here.
+    const response = await request(
+      app(),
+      "GET",
+      `/payments/checkout/resume?transaction=${PADDLE_TRANSACTION}&successUrl=https://evil.example/thanks`,
+    );
+    expect(response.status).toBe(200);
+    const answered = JSON.stringify(await response.json());
+    expect(answered).not.toContain("evil.example");
+  });
+
+  test("nothing secret crosses to a stranger", async () => {
+    const answered = JSON.stringify(await (await resume(PADDLE_TRANSACTION)).json());
+    expect(answered).not.toContain(PADDLE_TEST_WEBHOOK_SECRET);
+    expect(answered).not.toContain(PADDLE_TEST_API_KEY);
+    // Anti-vacuity, as the minted path's sibling case does it: both are real values this app is
+    // configured with, so neither assertion above is passing on an empty string.
+    expect(PADDLE_TEST_WEBHOOK_SECRET.length).toBeGreaterThan(8);
+    expect(PADDLE_TEST_API_KEY.length).toBeGreaterThan(8);
+  });
+
+  test("**anything that is not a transaction id is a 400, and never reaches a handoff**", async () => {
+    for (const value of ["", "txn_", "sub_01hv8wptq8987qeep44cyrewp9", "javascript:alert(1)", "../../etc/passwd"]) {
+      const response = await resume(value);
+      expect(response.status, `"${value}" must be refused`).toBe(400);
+    }
+    // A missing parameter is the same refusal: there is no request without one.
+    expect((await request(app(), "GET", "/payments/checkout/resume")).status).toBe(400);
+    expect(paddleCalls).toEqual([]);
+  });
+
+  test("`hosted` refuses, because that mode never opens a checkout in the page", async () => {
+    // Hosted redirects to Paddle's own checkout at a URL only a transaction read would yield — the read
+    // this route may not do. A buyer on a hosted project is already on Paddle's page.
+    //
+    // 404 and `payments/rail_not_configured`, which is what the minted path answers for a rail it cannot
+    // serve — the same refusal rather than a second spelling of it. The `detail` naming `hosted` is not
+    // asserted on the wire because the HTTP codec strips it; that is the security boundary, and the
+    // throw-site context stays server-side on purpose.
+    const response = await resume(PADDLE_TRANSACTION, { checkout: "hosted" });
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("payments/rail_not_configured");
+  });
+
+  test("the rail being off refuses rather than answering an empty handoff", async () => {
+    const response = await request(
+      makeApp(CATALOG),
+      "GET",
+      `/payments/checkout/resume?transaction=${PADDLE_TRANSACTION}`,
+    );
+    expect(response.status).toBe(404);
+    expect(await errorCode(response)).toBe("payments/rail_not_configured");
+  });
+});
+
+/**
  * #340. The quoted figure and the charged figure have to resolve location from the same row.
  *
  * Paddle prices in the browser, and a `PricePreview` with no customer id resolves the country from the
