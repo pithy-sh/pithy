@@ -252,7 +252,7 @@ describe("pithy dev --list", () => {
 
   /**
    * The whole point of the flag. A `--list` that assigned a port, generated a `.dev.vars`, wrote a host
-   * config or truncated `logs/dev.log` would have started the run it was asked to describe.
+   * config or truncated a worker's session log would have started the run it was asked to describe.
    */
   test("writes nothing at all", async () => {
     await project(false);
@@ -262,6 +262,28 @@ describe("pithy dev --list", () => {
 
     expect(await readdir(dir)).toEqual(before);
     expect(await readdir(join(dir, "apps", "api"))).toEqual(["pithy.worker.jsonc", "wrangler.jsonc"]);
+  });
+
+  /**
+   * **`--list` opens no session log, and opening one truncates it** (#671).
+   *
+   * The test above proves the *checkout* is untouched, and that stopped covering this the moment the log
+   * moved to `<config>/<project>/logs/`. So the config directory is asserted too, through a throwaway one:
+   * a `--list` that had opened a file would have emptied the session somebody wanted to read.
+   */
+  test("opens no session log — the config directory is untouched too", async () => {
+    await project();
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-dev-cfg-"));
+    const previous = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+    try {
+      await run(false);
+      expect(await readdir(configDir)).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    }
   });
 
   test("a project with no workers says so, and names the command that adds one", async () => {
@@ -370,5 +392,44 @@ describe("pithy dev --list", () => {
         { root: "/gone/app", branches: [{ branch: "main", workers: ["acme-api"] }] },
       ]);
     });
+  });
+});
+
+/**
+ * **`pithy dev logs` must not also start a session.**
+ *
+ * citty runs a parent's `run` *after* dispatching to a subcommand (`citty/dist/index.mjs`'s
+ * `runCommand`, and `dispatch.ts`'s header names the subtlety), and `dev` is the first command in this
+ * tree where bare `run` does real work *and* `subCommands` exists. Without a guard at the top of `run`,
+ * `pithy dev logs` prints its table and then spawns every worker, binds every pinned port, and truncates
+ * every file it had just read.
+ */
+describe("pithy dev logs is dispatched and dev's own run stands down", () => {
+  test("logs is registered as a subcommand", async () => {
+    const declared = dev.subCommands as Record<string, () => Promise<unknown>> | undefined;
+    expect(Object.keys(declared ?? {})).toEqual(["logs"]);
+  });
+
+  test("dev's run returns without reaching the session when the first positional is a subcommand", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await expect(
+        dev.run?.({
+          args: {
+            list: false,
+            app: undefined,
+            "disable-autostart": false,
+            "enable-autostart": false,
+            tui: true,
+            json: false,
+          },
+          rawArgs: ["logs"],
+        } as never),
+      ).resolves.toBeUndefined();
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
   });
 });

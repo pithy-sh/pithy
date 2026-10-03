@@ -14,8 +14,8 @@ import { type DevMemberKind, type DevSetOptions, devMemberLabel, resolveDevSet, 
  * **This module writes nothing, and it is a separate file so it cannot start to.** Ten side effects sit
  * between the top of `startDev` and its first spawn — `.dev.vars` generation, `ensureDevConfig` (which takes
  * the machine-wide port-registry lock), host materialization, stopping the previous session, the orphan
- * sweep, binding every pinned port to verify it, opening `logs/dev.log` (which truncates it merely by being
- * opened), seeding the dev secrets, writing `.dev-state.json`, and the spawn itself. A guard planted above
+ * sweep, binding every pinned port to verify it, opening each worker's session log (which truncates it
+ * merely by being opened), seeding the dev secrets, writing `.dev-state.json`, and the spawn itself. A guard planted above
  * them inside `startDev` would be one moved `await` away from resurrecting one; a module that never imports
  * them cannot regress that way. So this imports `resolveDevSet` and `buildDevConfig` and nothing else.
  *

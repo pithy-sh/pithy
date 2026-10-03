@@ -9,6 +9,7 @@ Start the local development environment — every Worker in `apps/`, plus each c
 ```bash
 pithy dev [--app <name>]… [--json]
 pithy dev --list [--app <name>]… [--json]
+pithy dev logs [--app <name>]… [-n <count>] [--since <when>] [--branch <name>] [--follow] [--timestamps] [--json]
 ```
 
 ## Flags
@@ -22,17 +23,25 @@ pithy dev --list [--app <name>]… [--json]
 | `--tui` / `--no-tui` | Render the live roster at a terminal, or don't. Default `true`. `--no-tui` gives the plain stream — every line the roster would have superseded, and no repainting region. **Neither form overrides a pipe, `--json`, `CI` or `TERM=dumb`**: those have no terminal to draw on or a consumer parsing the output, so they are plain regardless. `PITHY_NO_TUI` set to any non-blank value does the same thing as a standing preference, and a typed `--tui` beats it for one run — the same reading `--app` takes over this branch's autostart answer. |
 | `--json` | Machine-readable output. Default `false`. |
 
+## Subcommands
+
+| Command | Meaning |
+|---|---|
+| `pithy dev logs` | Read a session back, by worker and by time. See [The session log](#the-session-log) and [Reading a session back](#reading-a-session-back). |
+
+A bare `pithy dev` still starts a session: `dev` is the first command in this CLI where `run` does real work *and* a subcommand exists. It takes no positionals, so nothing is shadowed, and a first token that is not `logs` is still an unknown command rather than a worker name.
+
 ## What it does
 
 `pithy dev` runs the whole backend — every Worker in `apps/`, plus any web frontend — under one supervising process, so a developer never hand-juggles terminals or ports. It ports the proven CMS `scripts/dev.ts` design.
 
 - **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. **Every worker starts.** The manifest has no say in it: `dev.autostart` was removed, because which workers one developer is exercising this week is not a fact about the project and did not belong in a committed file. See [Keeping a worker out of your dev set](#keeping-a-worker-out-of-your-dev-set). Add, remove, or rename a worker with `pithy worker add|remove|rename` and the dev set follows automatically.
-- **Runs each composed capability's host Worker too.** `apps/` is the *app* Worker registry; a capability that owns Workflows ships a prebuilt host Worker that `pithy <capability> provision` deploys, and none of them lives in `apps/`. `pithy dev` starts those as well: it reads each app Worker's `pithy.config.ts`, and for every composed capability that owns a host it resolves that capability's committed `wrangler.jsonc` template into a local config under `.wrangler/pithy/hosts/<capability>/` (git-ignored, generated on every run) and starts it. **A host is an ordinary member of the dev set** — its own pinned port from `.dev.config.json`, its own label and color in the terminal and `logs/dev.log`, its own entry in `.dev-state.json`, reaped with everything else. Adding or removing a capability reconciles the feature's port block exactly the way adding or removing a Worker does. It is registered under the capability's own name, so its siblings reach it at `EMAIL_ORIGIN`, `MEDIA_ORIGIN`, and so on; an `apps/` Worker already using that name is refused rather than silently shadowed. Locally a host binds its databases by binding name — the same names `pithy migrate --env dev` filled — so a first `pithy dev` boots rather than erroring on a missing table. This is why mail sent from localhost now goes somewhere: the app Worker's `EMAIL_SENDER` Workflow named a Worker `pithy dev` did not run, so every enqueued message sat `pending` while the UI reported success.
+- **Runs each composed capability's host Worker too.** `apps/` is the *app* Worker registry; a capability that owns Workflows ships a prebuilt host Worker that `pithy <capability> provision` deploys, and none of them lives in `apps/`. `pithy dev` starts those as well: it reads each app Worker's `pithy.config.ts`, and for every composed capability that owns a host it resolves that capability's committed `wrangler.jsonc` template into a local config under `.wrangler/pithy/hosts/<capability>/` (git-ignored, generated on every run) and starts it. **A host is an ordinary member of the dev set** — its own pinned port from `.dev.config.json`, its own label and color in the terminal, its own session log, its own entry in `.dev-state.json`, reaped with everything else. Adding or removing a capability reconciles the feature's port block exactly the way adding or removing a Worker does. It is registered under the capability's own name, so its siblings reach it at `EMAIL_ORIGIN`, `MEDIA_ORIGIN`, and so on; an `apps/` Worker already using that name is refused rather than silently shadowed. Locally a host binds its databases by binding name — the same names `pithy migrate --env dev` filled — so a first `pithy dev` boots rather than erroring on a missing table. This is why mail sent from localhost now goes somewhere: the app Worker's `EMAIL_SENDER` Workflow named a Worker `pithy dev` did not run, so every enqueued message sat `pending` while the UI reported success.
 - **Sends real mail from your machine, and says when it cannot.** The email host's `send_email` binding runs with `remote: true` in `dev` by default, so a magic link you trigger from localhost is delivered through Cloudflare Email Service for real — the same pipeline, the same DKIM, the same delivery logs as production. That needs a Cloudflare login and a sending domain already onboarded. `pithy dev` checks what it cheaply can before spawning anything: with no credentials, or a from address on a domain nobody can onboard, it resolves the host for its local simulator instead, says so with the command that fixes it, and starts the session anyway. The simulator logs the sender, recipient and subject and writes the rendered HTML and text bodies to disk. The verdict is said once, in the ready banner, where a developer looks. The preflight is not the guarantee — a failure that only appears when the binding starts, or at the first send, is caught in the host's own output, rendered as a problem line and an action line, and never kills the session: the host is re-resolved for its simulator on the spot, so the sends that follow are logged and written to disk rather than lost. `email({ devDelivery: "simulator" })` selects the simulator deliberately; every deployed environment always sends for real.
 - **Authenticates every worker as your project's Cloudflare account, not your shell's.** A `wrangler dev` with a remote binding reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` out of its own environment, so `pithy dev` resolves the account this project claims — `<config>/cloudflare.json`, or `cloudflare.<name>.json` when the root `pithy.config.ts` names one — and overlays that pair onto every child it starts. If your shell happens to hold credentials for a different account, the session says so once at startup and uses the project's; `wrangler whoami` will disagree, and the project's is the one that counts. A `cloudflare.accountId` the resolved credentials contradict is refused before any worker spawns rather than discovered later by a send that silently fails. Under `PITHY_OFFLINE` the children are handed no credentials at all, which is what that switch is for.
 
 - **Runs a front end as part of the set.** A Worker scaffolded by `pithy ui add` (`docs/commands/ui.md`) does not get a second process. Its `dev.command` replaces `wrangler dev` with Vite, and Vite serves the SPA *and* the Worker on that worker's one pinned port. The command is argv, and the token **`{port}`** in any argument is substituted with that port at spawn time: `["bun", "x", "vite", "dev", "--configLoader", "runner", "--strictPort", "--port", "{port}"]` runs as `bun x vite dev --configLoader runner --strictPort --port 8787`. `{port}` is the only token substituted.
-- **Supervises N workers.** Spawns each worker in the started set — every worker this branch has not turned off, or exactly what `--app` names — labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
+- **Supervises N workers.** Spawns each worker in the started set — every worker this branch has not turned off, or exactly what `--app` names — labels and colorizes their interleaved output, and tees everything to the terminal *and* that worker's own session log. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Names a worker that starts and never becomes ready.** A child that never matches its `dev.readySignal` is still a *live* child. `wrangler dev` does not exit when a build fails — it prints the error and keeps running — and the same shape covers a startup that hangs, a port that never binds, and a `dev.command` process that comes up wrong. The banner waits on the whole set, so it never fires, and the session used to proceed looking healthy with the real error forty lines up the scrollback. 90 seconds after the last worker is spawned, `pithy dev` says `Still waiting on: support.` — every worker still missing, by name — and repeats the line every 30 seconds while it stays true, because one line at the deadline scrolls away exactly like the error did. The clock starts at the spawn, not at the command: everything before it — `.dev.vars`, the host configs, the previous session, the orphan sweep, both loopback families of every pinned port, the dev secrets — is tens of seconds on a cold project, and none of it is a worker being slow. It is *still waiting*, not *failed*: the first `wrangler dev` of a session pays for a cold bundle, and a slow worker is not a broken one. A worker that arrives late drops out of the next line on its own, and the banner fires as it always would. **The deadline outlives the banner.** A worker restarted with `r` has started and is not ready, so it is named on the same schedule; a session that had been ready once used to fall silent instead. One restarted while the session is still coming up inherits the clock already running, so pressing `r` never restarts the clock for the siblings still waiting. **A worker that never arrives is reported, never killed** — one child exiting tears the whole session down, and stopping every healthy worker over one worker's typo is a worse trade than a line naming it. The report names the mechanism, never a cause it cannot know: the worker is still running, so nothing else in the session was going to mention it, and its own output above says why. It names a restart because a `wrangler dev` whose *first* build fails never rebuilds — fixing the file and waiting is the one thing that cannot work. Under `--json` the report is a record rather than a sentence (`--json`, below).
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Per-feature ports, below), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
@@ -45,7 +54,7 @@ pithy dev --list [--app <name>]… [--json]
 - **Every member, both halves.** The `apps/` Workers and each composed capability's host Worker, each marked by kind. `pithy worker list` cannot answer this: it enumerates `apps/`, which is the registry, and a host is resolved from the composition rather than from a directory. Two commands, two questions — the registry view and the run view.
 - **Each carrying the port it would be pinned to.** Read from `.dev.config.json`, and for a worker added since the last run, computed the way the next run computes it — not guessed. A project that has never run `pithy dev` shows `—` for every port: assigning one is a run's job, and a listing that invented an address nothing had reserved would be a lie.
 - **It honors `--app`.** `pithy dev --list --app board` still lists everything and marks what that selection would start, so it answers *what would that actually give me* before you commit to it.
-- **It writes nothing.** No `.dev.config.json`, no `.dev.vars`, no host config under `.wrangler/pithy/hosts/`, no `logs/dev.log`, no `.dev-state.json`. Nothing is spawned and no port is bound to test it.
+- **It writes nothing.** No `.dev.config.json`, no `.dev.vars`, no host config under `.wrangler/pithy/hosts/`, no session log, no `.dev-state.json`. Nothing is spawned and no port is bound to test it. Opening a session log truncates it merely by being opened, so `--list` opens none.
 - **What it cannot know.** Which hosts actually come up is settled only once their configs are written, which is a run's work — so a host whose template will not resolve is listed here and dropped by the run, which says so at the time.
 
 ### Starting part of it: `--app`
@@ -98,11 +107,11 @@ At a real terminal, `pithy dev` pins a roster under the session's output and kee
   ↑↓ select   r restart   o open   f logs (F all)   a autostart off   l login   q quit
 ```
 
-- **Worker output is hidden until you ask for it.** The roster is the point — five workers' startup chatter is what used to bury it — so by default the stream carries the session's own narration and nothing else: a `.dev.vars` refusal, the delivery verdict, `Still waiting on: …`, `l`'s identity list, and the log path. (`Starting …` and `Ready.` are left out too — see below — because the roster says both.) Press `f` for the selected worker's output, or `F` for all of it. Everything goes to `logs/dev.log` either way, whether you ever reveal it or not.
+- **Worker output is hidden until you ask for it.** The roster is the point — five workers' startup chatter is what used to bury it — so by default the stream carries the session's own narration and nothing else: a `.dev.vars` refusal, the delivery verdict, `Still waiting on: …`, `l`'s identity list, and the log directory. (`Starting …` and `Ready.` are left out too — see below — because the roster says both.) Press `f` for the selected worker's output, or `F` for all of it. Everything goes to that worker's session log either way, whether you ever reveal it or not.
 - **A worker in trouble reveals itself.** Hiding output must not bury the thing you came for, so a worker that exits, or that is still missing at the ready deadline, has its output shown without being asked — along with the last 200 lines it produced while hidden. Quiet when healthy, loud when not.
 - **What you reveal is shown in its own color.** A revealed worker's name on the roster is painted the same color `[api]` carries in the stream, so the rows whose color you can see are the rows whose output you can see.
 - **The output above the roster is unchanged.** Each line is written once, to the terminal, and never redrawn — so your own scrollback, selection and copy work exactly as they always did, and a line longer than the window soft-wraps the way the terminal wraps it rather than being broken in half. Only the roster repaints.
-- **The ready banner shrinks to what the roster cannot say.** Its `name: http://localhost:####` list, its `Starting …` line, its `Ready.` and its `Dev login:` line are all facts the table and its key bar hold a line below, so none of them is printed. What remains is the delivery verdict and the log path: the first because no row carries it, the second because hidden output makes it matter more. `logs/dev.log` records every one of them as it always did. Without a roster — piped, `--json`, CI — the banner is unchanged, because there it is the only place the addresses appear.
+- **The ready banner shrinks to what the roster cannot say.** Its `name: http://localhost:####` list, its `Starting …` line, its `Ready.` and its `Dev login:` line are all facts the table and its key bar hold a line below, so none of them is printed. What remains is the delivery verdict and the log directory: the first because no row carries it, the second because hidden output makes it matter more. **The session logs do not make up for the ones that are gone.** Each worker's file carries its own `spawned` — which holds the port behind that worker's address — and its own `ready`; `Starting …`, the address list as a list, and the `Dev login:` line are terminal-only, by the rule below that a session-scoped fact is never written into a worker's file. Without a roster — piped, `--json`, CI — the banner is unchanged, because there it is the only place the addresses appear.
 - **A parked worker still gets a row**, marked `skipped` with `autostart` reading `off`, carrying the port it would be pinned to. `pithy dev --list` has always named it; the roster is where you can act on it, and `r` on that row *starts* it rather than restarting it. A capability worker parked this way has its generated config written at that moment, since a run only materializes the hosts it starts.
 - **The key bar sheds the marker hint before it sheds anything else.** At a width that cannot fit the whole bar it drops `↑↓ select` — arrows beside a visible marker are the one hint that explains itself — and only a genuinely narrow terminal collapses it to `? keys`.
 - **There is a header row.** Six columns, two of them numbers — `8787` and `1.9s` read as the same kind of thing until something says which is which. It is dim throughout, §3.4's tier for a section label, and its own labels are part of each column's width so the header and the rows cannot drift apart.
@@ -173,7 +182,7 @@ A terminal whose **stdin** is redirected (`pithy dev < /dev/null`) still gets th
 
 `pithy seed` mints a dev login for **every user it seeds** (`docs/commands/seed.md`). `pithy dev` is where you use them.
 
-- **The ready banner names the user, or how many there are.** With one seeded identity: `Dev login: ada@example.com — press l to open a signed-in browser.` With several: `Dev login: 4 identities — press l to choose who to be and open a signed-in browser.` It cannot name *the* user when there is a choice to make, and picking one to name would be making the choice. **No claim and no session cookie is ever printed** on a run where `pithy dev` can open the browser itself, to the terminal or to `logs/dev.log`. It used to be — a `document.cookie = "…"` line to paste into a browser console — and a working session token rendered as text is a working session token at rest in a scrollback, a log, and a screenshot. The value now travels from the Worker to the browser over HTTP and lands nowhere else.
+- **The ready banner names the user, or how many there are.** With one seeded identity: `Dev login: ada@example.com — press l to open a signed-in browser.` With several: `Dev login: 4 identities — press l to choose who to be and open a signed-in browser.` It cannot name *the* user when there is a choice to make, and picking one to name would be making the choice. **No claim and no session cookie is ever printed** on a run where `pithy dev` can open the browser itself, to the terminal or to any session log. It used to be — a `document.cookie = "…"` line to paste into a browser console — and a working session token rendered as text is a working session token at rest in a scrollback, a log, and a screenshot. The value now travels from the Worker to the browser over HTTP and lands nowhere else.
 - **`l` asks who, then does what it always did.** One identity opens straight away. Two to nine are numbered and one keypress picks: `Which identity? Press 1–4.`, then `1`. Ten or more get a filterable prompt instead, because there is no tenth digit to bind. The choice is over *users*; which worker to open is the separate question below, decided the same way it always was however many identities exist.
 - **An expired claim takes one name out of the list.** Each entry carries its own expiry, so a stale one is absent from the picker and the rest stay usable. When every one has expired, `l` says so and names `pithy seed`, exactly as it did when there was one.
 - **Every seeded user, not a fixed cast.** The source is the auth rows this run seeds, so an adopter's own seed set yields an adopter's own users; the canonical cast is only what `seed.includeExamples` adds to them. The opt-in is still per machine and is the **`user` key** in `~/.config/pithy/<project>/dev.json` — that file has other tenants, so its existence alone mints nothing — and the user it names is the one offered first (`docs/SEED.md`).
@@ -190,6 +199,67 @@ A terminal whose **stdin** is redirected (`pithy dev < /dev/null`) still gets th
 - Writes a git-ignored `.dev-state.json` (pid, resolved ports, child pids).
 - A re-run stops the previous session first, then **reaps orphaned `workerd`/`wrangler`** processes still holding the default ports (an `lsof` sweep) so a crashed session can't block startup.
 - Children are spawned via `setsid` so one `kill(-pgid)` tears down the whole `wrangler → workerd` subtree. Teardown is graceful `SIGTERM`, then `SIGKILL` after a short grace window.
+
+### The session log
+
+**One JSONL file per worker, outside every checkout**, at `<config>/<project>/logs/dev.<branch>.<worker>.jsonl`.
+
+It was `logs/dev.log` in the project directory: one plain-text file, `[name] text` with ANSI stripped, every worker interleaved, no timestamps, and nothing in the kit that read it back. Three facts about that file made it a poor thing to read, and the move settles all three.
+
+- **It lives in the Pithy config directory.** The same one `secrets.jsonc`, `dev.json` and `cloudflare.json` already use — `$PITHY_CONFIG_DIR`, then `%APPDATA%\pithy`, then `$XDG_CONFIG_HOME/pithy`, then `~/.config/pithy` — resolved through the same resolver, because two implementations of *where does config live* is a defect with a Windows branch one of them forgets. In the checkout, `pithy feature destroy` deleted the worktree and took the session log with it: precisely the session you then want to read back. There is also nothing left to gitignore, which matters — `.gitignore`'s `*.log` is what ignored the old file, so a rename to `.jsonl` inside the checkout would have left the files untracked *and* unignored, one `git add -A` from committed.
+- **It is one file per worker.** The `[name]` prefix was the only record of which worker spoke, so filtering meant parsing it. The filename carries the name now, and `worker` is deliberately **not** a field: it would be the same fact on every line of the file.
+- **Every record is timestamped.** `{"ts": …}` on every line, which is what `--since` bounds against and what merges two workers' files into one reading.
+
+**The branch segment is the branch name with every path separator, and every character illegal in a Windows filename, replaced by `-`.** So `feature/671-dev-logs-reader` files under `dev.feature-671-dev-logs-reader.<worker>.jsonl`. That is lossy: `feature/a-b` and `feature/a/b` both slug to `feature-a-b` and would share one file, and because a session truncates, the second would take the first's log. It is accepted rather than hashed — a digest in every filename you read and every `--branch` value you type, to separate a pair `pithy feature create` cannot produce, is the worse trade. A detached HEAD files under `detached`.
+
+**The directory is `0700` and every file is owner-only.** `logs/` is the fourth kind of file under `<config>/<project>/`, and it is held to that root's existing rule rather than to a new one. A *listing* of it names every worker a project runs, and the files hold every line those workers wrote.
+
+**Two kinds of record, and nothing else.**
+
+| Record | Shape |
+|---|---|
+| Output | `{"ts": …, "stream": "stdout" \| "stderr", "text": …}` — one line the child wrote, ANSI stripped, newline-normalized |
+| Spawned | `{"ts": …, "event": "spawned", "port": …}` |
+| Ready | `{"ts": …, "event": "ready"}` |
+| Exited | `{"ts": …, "event": "exited", "code": …}` — `null` for a signaled child or a spawn that failed |
+
+A worker restarted with `r` reads as `exited` followed by `spawned`, in that file, because the file is opened once per `pithy dev` invocation and appended to for the life of the session. A *new* session truncates each worker's file, as `flags: "w"` always did — so one file is one session, and there is **no size cap and no rotation**. Each file is smaller than the single one it replaces, this is local dev on your own disk, and `pithy dev logs` reports each file's size so growth stays visible.
+
+**A session-scoped event is never written into a worker's file.** The roster, `Still waiting on:`, the dev-login line, the autostart sentence and `Stopping — …` are all facts about the session or about the next run, not about the worker whose file it would land in — and a copy in each of five files is one fact written five times. They are still said to the terminal exactly as they were, and under `--json` to stderr.
+
+**A stale `logs/dev.log` in your checkout is left alone.** Nothing deletes it, `*.log` still ignores it, and nothing `pithy dev` writes lands under `<project>/logs/` any more. The directory itself stays: `pithy seed` writes `logs/dev-login.json` there and `pithy dev` reads it on every run.
+
+**A project whose root `pithy.config.ts` states no `name` gets no session log**, and one line saying why. `<config>/<project>/` is keyed on that name and there is no stable fallback for it; the same project already gets no capability hosts, for the same reason. A *logging* change is not a reason to make the project name a hard prerequisite for `pithy dev`, and writing into the checkout instead is what this removed.
+
+### Reading a session back
+
+`pithy dev logs` reads those files. It is **`pithy dev logs`, not `pithy logs`** — [`docs/CLI.md`](../CLI.md) §10 reserves `pithy logs` for tailing *deployed* Workers through the admin Worker, which is a different source with a different shape, and a single command would carry flags that only mean something half the time.
+
+```bash
+pithy dev logs                                  # what is readable
+pithy dev logs --app email -n 200               # that worker's session
+pithy dev logs --app email --follow
+pithy dev logs --since 5m --app api --json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--app <name>` | Render this worker's session. **Repeatable** — the raw argv is read, as it is on `pithy dev`, because citty keeps only the last occurrence of a repeated string flag. Several workers merge by `ts`. Omitted, the command lists what is readable instead. |
+| `-n, --lines <count>` | How many records to render, newest last. Default `200`. Bounds the **merge**, not each file: taking each worker's last 200 and then merging would hand a two-worker read 400 records and let a quiet worker crowd out the busy one's recent minutes. |
+| `--since <duration\|instant>` | Only records at or after this point — `30s`, `5m`, `2h`, `1d`, or an absolute instant such as `2026-07-27T09:00:00Z`. Anything else is refused naming both shapes. |
+| `--follow` | Keep reading as the session writes. Ctrl-C ends it. |
+| `--timestamps` | Prefix each rendered line with the record's `ts`. |
+| `--branch <name>` | Read another branch's files. Default: the checked-out branch. The listing is how you learn what else to pass. |
+| `--json` | Machine-readable output — one compact object per line. Default `false`. |
+
+- **With no flags it lists what is readable, across every branch in the directory** — branch, worker, record count, size and last write — and reads no worker's output out. The listing is the answer to *what is there*, and it is the only thing that can answer it: the files outlive the worktrees, so a branch whose worktree is long gone still has a row. Such a row is **listed, not marked and not pruned**: surviving `pithy feature destroy` is the whole point, and deciding "the worktree is gone" would mean a second derivation of *which branches exist* for files that exist precisely to outlive it. `pithy doctor` is where a note about an orphan would belong, by the precedent `<config>/<project>/` already sets.
+- **`--app <name>` renders that worker's session as `[name] text`**, colorized, exactly as it read live. The color is **one stable color per worker**, not a reproduction of that session's palette: `pithy dev` keys a worker's color on its position in the started set, which is not in the file, so the reader recovers the order from the workers' first `spawned` records. A read of a subset therefore starts its palette over, which is the honest promise — the color tells the workers in front of you apart.
+- **A lifecycle record renders as a sentence**: `[api] spawned on port 8787.`, `[api] ready.`, `[api] exited (0).`, `[api] exited (signaled).`
+- **A trailing partial line is tolerated.** A live session is mid-append, so the last line of a file may be half a record. That is not corruption and is never reported as any.
+- **A malformed line in the middle is skipped, and the count is reported once**, on stderr. A truncated write produces a run of them, and a line each would bury the session you came for.
+- **`--follow` tails; it never refuses.** Waiting on a file a `pithy dev` will truncate is the right behavior and the only available one: `.dev-state.json` lives *inside* the checkout, so "is a session running?" is a question the reader can only answer for the branch it was run from — and `--branch` reads a branch whose worktree may be gone. Nothing ends on an `exited` record either, because a restart *is* `exited` then `spawned`; there is no session-end record. When a new session truncates the file, the tail says so by name and follows it from the start.
+- **A worker or branch with no file is an actionable error naming both**, with the listing as the remedy. The branch is the half that is easy to get wrong, because `--branch` defaults to whatever is checked out.
+- **`--pretty` and `--no-pretty` behave exactly as they do on `pithy dev`**, and for the same reason: both flags belong to `bin.ts`, which owns them for every command. Without `--json` either one is refused — it formats that line and nothing else, so it would change nothing at all. With `--json` the reader is a stream, so it stays compact and uncolored whichever was passed.
 
 ### Per-feature ports (run many worktrees at once)
 
@@ -277,7 +347,7 @@ All `pithy dev` output obeys the brand voice (`docs/CLI.md` §3 / `BRAND.md` §5
 
 **Every line on stdout is one object.** A session keeps running, so a script reads `pithy dev --json` line by line rather than waiting for it to end. `pithy dev --list --json` is the other shape: it writes one line and exits.
 
-Everything said to a person moves to stderr under `--json` — the `Starting …` line, the delivery verdict, a `.dev.vars` refusal, and the workers' own output, which is the bulk of the stream and every line wrangler and Vite print. It used to share stdout with the JSON, so `pithy dev --json | jq` choked on the first thing wrangler said and a consumer's only rule was to try each line and skip whatever failed to parse — which skips a JSON line we get wrong just as quietly. Splitting by descriptor costs a person nothing: both halves still reach the terminal, and `logs/dev.log` carries the lot in either mode. A run that stops on an error writes the `{"error": …}` line to stderr, as every `pithy` command does.
+Everything said to a person moves to stderr under `--json` — the `Starting …` line, the delivery verdict, a `.dev.vars` refusal, and the workers' own output, which is the bulk of the stream and every line wrangler and Vite print. It used to share stdout with the JSON, so `pithy dev --json | jq` choked on the first thing wrangler said and a consumer's only rule was to try each line and skip whatever failed to parse — which skips a JSON line we get wrong just as quietly. Splitting by descriptor costs a person nothing: both halves still reach the terminal, and each worker's session log carries its own output in either mode. A run that stops on an error writes the `{"error": …}` line to stderr, as every `pithy` command does.
 
 ### The session line
 
@@ -315,7 +385,7 @@ Written 90 seconds after the last worker is spawned, and every 30 seconds after 
 | `event` | string | `"still-waiting"`. What distinguishes this line from the session line above. |
 | `waiting` | array of string | The workers that have started and not matched their `dev.readySignal` yet, in start order. Read afresh at every report, so a worker that arrives late is gone from the next one. |
 
-**Why the session line cannot carry this.** It is written the moment the children are spawned, and readiness is decided after it — a run whose `support` worker cannot build emits exactly the same session line as a healthy one. Without this second line, an agent driving `pithy dev --json` sits in the position `#426`'s adopter was in: a session that never says it is ready and nothing on the wire naming what is missing. The prose report is not on stdout under `--json` — it goes to stderr and to `logs/dev.log`, both read by a person in either mode.
+**Why the session line cannot carry this.** It is written the moment the children are spawned, and readiness is decided after it — a run whose `support` worker cannot build emits exactly the same session line as a healthy one. Without this second line, an agent driving `pithy dev --json` sits in the position `#426`'s adopter was in: a session that never says it is ready and nothing on the wire naming what is missing. The prose report is not on stdout under `--json` — it goes to stderr, which is where everything a person is told goes there. It is **not** written into any worker's session log: `Still waiting on:` is a fact about the session, and a session log holds one worker's own records.
 
 ### The autostart-stale line
 
@@ -370,6 +440,48 @@ One more object, written by `--disable-autostart` and `--enable-autostart` inste
 
 Notes — a project that states no name, a Worker whose capabilities could not be read, a project with no ports pinned yet — go to stderr, as everything said to a person does under `--json`. Only the line above is on stdout.
 
+### The reader's lines
+
+`pithy dev logs --json` emits **one compact object per line, uncolored, whether or not `--follow` is passed** — `docs/CLI.md` §1.2's standing exception for `pithy dev`, extended to its reader. A consumer's parse must not change with a flag it did not pass, and `--follow` is the flag that makes this a stream half the time.
+
+With no `--app`, one line describing what is readable:
+
+```json
+{"command":"dev","event":"logs","logs":[{"branch":"main","worker":"api","lines":412,"bytes":38104,"lastWrite":"2026-07-27T09:14:02.881Z"}]}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `event` | string | `"logs"`. What distinguishes this line from the three above. |
+| `logs` | array of object | One entry per readable file, across every branch in the directory, sorted by filename. |
+| `logs[].branch` | string | The branch segment of the filename — the slug, which is what `--branch` takes. |
+| `logs[].worker` | string | The worker segment of the filename — what `--app` takes. |
+| `logs[].lines` | number | How many records parsed out of the file. |
+| `logs[].bytes` | number | The file's size on disk. There is no cap and no rotation, so this is how growth stays visible. |
+| `logs[].lastWrite` | string | ISO-8601. When the file was last written. |
+
+With `--app`, **the records themselves**, one per line, exactly as they sit in the file:
+
+```json
+{"ts":"2026-07-27T09:12:00.004Z","event":"spawned","port":8787}
+{"ts":"2026-07-27T09:12:03.411Z","stream":"stdout","text":"Ready on http://localhost:8787"}
+{"ts":"2026-07-27T09:12:03.418Z","event":"ready"}
+{"ts":"2026-07-27T09:14:02.881Z","event":"exited","code":0}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `ts` | string | ISO-8601. When the record was written — what `--since` bounds against, and what merges two workers' files. |
+| `stream` | string | `"stdout"` or `"stderr"`. Present on an output record and on no other kind. |
+| `text` | string | The line the child wrote, ANSI stripped, newline-normalized, with no `[name]` prefix. |
+| `event` | string | `"spawned"`, `"ready"` or `"exited"`. Present on a lifecycle record and on no other kind. |
+| `port` | number | On `spawned`: the port that worker was pinned to in `.dev.config.json`. |
+| `code` | number or null | On `exited`: the exit status, or `null` for a signaled child and for a spawn that failed. |
+
+**There is no `worker` key**, deliberately: the filename carries it, so a field would be the same fact on every line of the file. A consumer reading several workers at once runs one `pithy dev logs --app <name> --json` per worker, or reads the files.
+
+A refusal — a worker or branch with no file — is the one `{"error": …}` line on stderr that every `pithy` command writes, with nothing on stdout.
+
 ## Errors
 
 `pithy dev` supervises, so most of what can go wrong is reported and survived rather than thrown.
@@ -384,6 +496,10 @@ Notes — a project that states no name, a Worker whose capabilities could not b
 - **Two workers deployed under one name.** `--app <that name>` is refused, naming the two directories that tell them apart. The project is already broken in the same way: `.dev.config.json` keys a port by the deployed name, so both workers share one entry.
 - **An `--app` with no name after it.** Refused. An empty selection means *start everything*, so a forgotten name would spawn the whole estate — the opposite of what was typed.
 - **More members than the feature's port block holds.** Refused with the count, and the fix — remove a worker or a capability, or widen the block. A capability's host counts toward it, so removing a capability is as much a fix as removing a Worker. `--list` refuses this too, because it is the same arithmetic the next run does.
+- **A session log that could not be opened.** Named, and every other worker still starts. `pithy dev` supervises Workers; a file it could not write is a reason for a sentence, not for a session that will not run.
+- **`pithy dev logs --app <name>` for a worker with no file.** Refused, naming the worker *and* the branch, with `pithy dev logs` offered as the way to see what there is. Under `--json` it is the one `{"error": …}` line on stderr, with nothing on stdout.
+- **`pithy dev logs --since` with a value that is neither.** Refused, naming both shapes it takes — a duration (`30s`, `5m`, `2h`, `1d`) or an absolute instant.
+- **`pithy dev logs` in a project whose `pithy.config.ts` states no `name`.** Refused: `<config>/<project>/logs/` is keyed on that name, so there is no directory to read. The same project runs `pithy dev` fine and is told it gets no session log.
 
 ## Examples
 
@@ -402,4 +518,19 @@ pithy dev --app board
 
 # What would that actually give me?
 pithy dev --list --app board
+
+# What sessions are readable — every branch, every worker, with size and last write.
+pithy dev logs
+
+# One worker's last two hundred records, rendered as the session read live.
+pithy dev logs --app email
+
+# Follow it as it writes.
+pithy dev logs --app email --follow
+
+# The last five minutes of two workers, merged by time, as one object per line.
+pithy dev logs --app api --app web --since 5m --json
+
+# A branch whose worktree pithy feature destroy already removed.
+pithy dev logs --branch feature/671-dev-logs-reader --app api
 ```

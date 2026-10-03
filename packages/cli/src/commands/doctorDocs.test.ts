@@ -1592,6 +1592,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   name: ["secrets", "token"],
   packageManager: ["add", "ui"],
   project: ["doctor", "migrate"],
+  // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
+  // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
+  port: ["dev", "worker"],
   removed: ["alias", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
@@ -1645,6 +1648,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   manifestFaults: "unknown[]",
   name: "string",
   packageManager: "string",
+  port: "number",
   removed: "boolean",
   routing: "object",
   runs: "object[]",

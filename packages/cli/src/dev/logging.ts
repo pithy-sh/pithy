@@ -4,7 +4,7 @@
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching the ANSI ESC (\x1b) is required to strip color codes.
 const ANSI_RX = /\x1b\[[0-9;]*m/g;
 
-/** Strip ANSI color codes — the terminal keeps color, the `logs/dev.log` file stays plain text. */
+/** Strip ANSI color codes — the terminal keeps color, a session log record stays plain text. */
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_RX, "");
 }
@@ -45,8 +45,14 @@ export function createLineSplitter(onLine: (line: string) => void): {
 export interface TeeSinks {
   /** The prefixed, colorized line for the terminal (`[name] …`). */
   terminal: (line: string) => void;
-  /** The prefixed, ANSI-stripped line for `logs/dev.log`. */
-  log: (line: string) => void;
+  /**
+   * The ANSI-stripped line for this worker's session log — **unprefixed** (#671).
+   *
+   * It carried `[name] ` while every worker shared one `logs/dev.log` file and the prefix was the only
+   * record of which one spoke. One file per worker makes the name the filename, so the prefix would be
+   * the same fact on every line of it; `pithy dev logs` puts it back when it renders.
+   */
+  log: (text: string) => void;
   /** The raw line, for ready-signal matching. */
   line: (line: string) => void;
 }
@@ -58,9 +64,10 @@ export interface DataStream {
 }
 
 /**
- * Tee one child stream to three sinks: a colorized `[label] line` to the terminal, an ANSI-stripped
- * `[label] line` to the log file, and the raw line to ready-signal matching. CR-normalized and line-split
- * so wrangler's spinner and partial chunks each land as clean lines. Resolves when the stream ends.
+ * Tee one child stream to three sinks: a colorized `[label] line` to the terminal, the ANSI-stripped
+ * line on its own to that worker's session log, and the raw line to ready-signal matching. CR-normalized
+ * and line-split so wrangler's spinner and partial chunks each land as clean lines. Resolves when the
+ * stream ends.
  */
 export function teeStream(args: {
   stream: DataStream;
@@ -72,7 +79,7 @@ export function teeStream(args: {
   const prefix = paint(`[${label}]`);
   const splitter = createLineSplitter((raw) => {
     sinks.terminal(`${prefix} ${raw}`);
-    sinks.log(`[${label}] ${stripAnsi(raw)}`);
+    sinks.log(stripAnsi(raw));
     sinks.line(raw);
   });
   return new Promise((resolve) => {

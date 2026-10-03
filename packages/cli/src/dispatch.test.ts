@@ -4,9 +4,9 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { CommandDef } from "citty";
+import type { ArgsDef, CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
-import { usageTarget } from "./dispatch";
+import { dispatchedSubCommand, usageTarget } from "./dispatch";
 import { main } from "./main";
 
 const run = promisify(execFile);
@@ -233,5 +233,47 @@ describe("the walk itself", () => {
   test("a group resolves with the root as its parent, so the usage line reads `pithy secrets`", async () => {
     const target = await usageTarget(main, ["secrets"]);
     expect(target?.parent).toBe(main);
+  });
+});
+
+/**
+ * **A parent with its own `run` has to know whether it was dispatched through** (#671).
+ *
+ * citty runs a parent's `run` *after* handing the invocation to a subcommand, which costs the fifteen
+ * groups in this tree nothing because none of them has a `run`. `pithy dev` is the first command where
+ * bare `run` does real work *and* `subCommands` exists, so without this guard `pithy dev logs` would
+ * print its table and then start a full dev session.
+ */
+describe("dispatchedSubCommand", () => {
+  const args: ArgsDef = {
+    list: { type: "boolean", default: false },
+    app: { type: "string" },
+    json: { type: "boolean", default: false },
+  };
+  const names = ["logs"];
+
+  test("names the subcommand when the first positional is one", () => {
+    expect(dispatchedSubCommand(["logs"], args, names)).toBe("logs");
+    expect(dispatchedSubCommand(["--json", "logs", "--app", "api"], args, names)).toBe("logs");
+  });
+
+  test("a bare run dispatches to nothing, so the parent proceeds", () => {
+    expect(dispatchedSubCommand([], args, names)).toBeUndefined();
+    expect(dispatchedSubCommand(["--list", "--json"], args, names)).toBeUndefined();
+  });
+
+  /** citty's own rule: the token after a declared string flag is its value, not a subcommand name. */
+  test("a declared string flag's value is never read as a subcommand", () => {
+    expect(dispatchedSubCommand(["--app", "logs"], args, names)).toBeUndefined();
+    expect(dispatchedSubCommand(["--app", "api", "logs"], args, names)).toBe("logs");
+    expect(dispatchedSubCommand(["--app=api", "logs"], args, names)).toBe("logs");
+  });
+
+  test("a positional that is not a declared name is citty's to refuse, not this guard's", () => {
+    expect(dispatchedSubCommand(["nonsense"], args, names)).toBeUndefined();
+  });
+
+  test("anything after -- is payload for a child process", () => {
+    expect(dispatchedSubCommand(["--", "logs"], args, names)).toBeUndefined();
   });
 });

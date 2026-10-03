@@ -21,7 +21,8 @@ import type { DevSecretsSeedReport } from "./seed";
  * minted as one no capability declares. A snapshot taken mid-change is not a standing state.
  * `pithy doctor` loads the config fresh, in its own process, and is where both of those live.
  *
- * **A value never appears here.** Names only — these lines reach a terminal scrollback and `logs/dev.log`.
+ * **A value never appears here.** Names only — these lines reach a terminal scrollback, and a scrollback
+ * is a screenshot away from anywhere.
  */
 export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   const lines: string[] = [];

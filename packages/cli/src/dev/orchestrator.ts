@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn as spawnChild } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
@@ -66,6 +64,9 @@ import {
   usableDevLogins,
 } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
+import { devLogDir } from "./devLogPath";
+import type { DevLogRecord } from "./devLogRecord";
+import { createDevLogSinks, type OpenDevLog } from "./devLogSink";
 import { type DevMemberKind, type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
 import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
 import type { DevEvent, DevEvents } from "./events";
@@ -77,7 +78,7 @@ import {
   type MaterializeHostConfigsOptions,
   materializeHostConfigs as materializeHostConfigsDefault,
 } from "./hostWorkers";
-import { type DataStream, stripAnsi, teeStream } from "./logging";
+import { type DataStream, teeStream } from "./logging";
 import {
   isAlive as isAliveDefault,
   type Sleep,
@@ -105,12 +106,6 @@ export type SpawnDev = (
   args: string[],
   options: { cwd: string; env: Record<string, string>; detached: boolean },
 ) => ChildLike;
-
-/** A log destination — the terminal's tee'd copy in `logs/dev.log`, injectable so tests capture lines. */
-export interface LogSink {
-  write: (line: string) => void;
-  end: () => Promise<void> | void;
-}
 
 /** Everything `startDev` needs, every dependency defaulted to its real implementation. */
 /**
@@ -210,7 +205,7 @@ export interface StartDevOptions {
    * Where this session's structured events go, if anyone is listening.
    *
    * **Additive, never a replacement.** Every line this supervisor writes is written whether a sink is
-   * installed or not — the stream is the contract `--json`, a pipe and `logs/dev.log` read, and
+   * installed or not — the stream is the contract `--json` and a pipe read, and
    * `orchestrator.test.ts` holds a run with a sink to writing byte-identical output to a run without one.
    * The sink exists so a live roster can render the state those lines describe (#670); under `--json`
    * there is none.
@@ -228,7 +223,8 @@ export interface StartDevOptions {
    *
    * **The one thing it changes is what the banner says.** With a table of those facts pinned directly
    * below it, the banner's `name: http://localhost:####` list is the same information printed twice, so
-   * it is left out — and `logs/dev.log` still records every address, independently, as it always did.
+   * it is left out — and each worker's own `spawned` record still carries its port, independently, as it
+   * always did.
    *
    * Keyed on this rather than on {@link events} being installed: a consumer that wants the structured
    * feed without rendering anything still gets every line of the stream it would otherwise have had.
@@ -250,7 +246,11 @@ export interface StartDevOptions {
   readKeys?: typeof readKeysDefault;
   /** Seam: hand a URL to the platform's browser opener. */
   openUrl?: (url: string) => Promise<void>;
-  openLog?: (path: string) => LogSink;
+  /**
+   * Seam: how one worker's session log is opened. The real one is `devLogSink.ts`'s, which makes
+   * `<config>/<project>/logs/` 0700 and each file owner-only; a test hands over a writer that remembers.
+   */
+  openLog?: OpenDevLog;
   baseEnv?: NodeJS.ProcessEnv;
   now?: () => Date;
   readState?: (path: string) => Promise<DevState | null>;
@@ -357,16 +357,6 @@ const SHUTDOWN_GRACE_MS = 5000;
 const REAP_TIMEOUT_MS = 2000;
 
 const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** The real log sink: truncate `logs/dev.log` fresh, stream lines to it, flush on close. */
-function openLogDefault(path: string): LogSink {
-  mkdirSync(dirname(path), { recursive: true });
-  const stream = createWriteStream(path, { flags: "w" });
-  return {
-    write: (line) => void stream.write(`${line}\n`),
-    end: () => new Promise<void>((resolve) => stream.end(() => resolve())),
-  };
-}
 
 /** The real spawn: a group-leader child (POSIX `setsid` via `detached`) with piped stdout/stderr. */
 const spawnDefault: SpawnDev = (command, args, options) =>
@@ -585,7 +575,7 @@ function readyRegexFor(worker: WorkerTarget): RegExp {
  * every port is free on both loopback families before spawning anything (a conflict aborts the whole session
  * — it never drifts to another port), stops any previous session and reaps orphaned workers, then spawns each
  * worker as a process-group leader with its siblings' addresses wired into the env. Output is tee'd — colorized
- * to the terminal, plain to `logs/dev.log` — and a single ready banner fires once every worker matches its
+ * to the terminal, plain to that worker's session log — and a single ready banner fires once every worker matches its
  * ready signal. Returns a handle; signal wiring and process exit stay with the caller so the engine is testable.
  */
 export async function startDev(options: StartDevOptions): Promise<DevHandle> {
@@ -607,7 +597,6 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     ((started: readonly { name: string; dir: string; origin: string }[]) => devLoginTargetsDefault({ started }));
   const readKeys = options.readKeys ?? readKeysDefault;
   const openUrl = options.openUrl ?? ((url: string) => openUrlDefault(url));
-  const openLog = options.openLog ?? openLogDefault;
   const now = options.now ?? (() => new Date());
   const readState = options.readState ?? readDevState;
   const writeState = options.writeState ?? writeDevState;
@@ -624,7 +613,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * skip what did not parse — which quietly skips a JSON line we get wrong, too. CLAUDE.md asks every
    * command to be agent-drivable; a stream is only that if a script knows which lines are for it.
    * Splitting by descriptor is the shell's own answer, costs a person nothing (both still reach the
-   * terminal, and `logs/dev.log` has every line in either mode), and gives the rule a consumer can
+   * terminal, and each worker's session log has its own output in either mode), and gives the rule a consumer can
    * actually apply: **every line on stdout is one object.** `docs/commands/dev.md` §`--json` states it.
    */
   const emitLine = (text: string, origin?: string) => (options.json ? stderr : stdout)(`${text}\n`, origin);
@@ -975,14 +964,45 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       return (args: string[]) => execArgs(pm, "wrangler", args);
     })());
 
-  // 7. Open the log, wire the shared env, and spawn.
-  const logPath = join(projectDir, "logs", "dev.log");
+  // 7. Open the session logs, wire the shared env, and spawn.
+  //
+  //    **One JSONL file per worker, under `<config>/<project>/logs/`, not in the checkout** (#671).
+  //    `pithy feature destroy` used to delete the worktree and take the session log with it — precisely
+  //    the session you then want to read back — and there is nothing to gitignore out there either.
+  //    `devLogPath.ts` holds the whole argument, and `pithy dev logs` is what reads these back.
+  //
+  //    **The branch comes from the same seam the port block is keyed on**, never from
+  //    `.dev.config.json`'s own `branch`: that file is only rewritten when a member is unpinned, so a
+  //    config cut on another branch would file this session's records under that branch's name.
+  const branchName = await (options.ensureDeps?.branchFor ?? defaultBranch)(projectDir);
+  //    **A project that states no name has nowhere to put one.** `<config>/<project>/` is keyed on the
+  //    name, `requireProjectName` is the only resolver for it, and `resolveDevSet` already answered
+  //    `null` and said why — the same degradation a composed host gets. Refusing the whole session over
+  //    a *logging* change would make the project name a new hard prerequisite for `pithy dev`, which it
+  //    has never been; writing into the checkout instead is the thing this issue removed.
+  const logDir = project === null ? null : devLogDir(project);
+  const logs = createDevLogSinks({
+    dir: logDir,
+    branch: branchName,
+    ...(options.openLog ? { open: options.openLog } : {}),
+  });
+  if (logDir === null) emitLine("No session log: pithy.config.ts states no name, so there is no place for one.");
   // Read before anything spawns, so the banner never waits on the disk once the workers are up.
   const devLogins = await readDevLogins(projectDir);
-  const log = openLog(logPath);
-  log.write(
-    `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
-  );
+  //    Opened before the spawn loop, so the first record in a file is that worker's own `spawned` and a
+  //    failure to open is one line rather than a session that will not start. A worker started later from
+  //    a parked row opens its file then — see `createDevLogSinks`.
+  for (const member of started) {
+    try {
+      await logs.open(member.worker.name);
+    } catch (error) {
+      emitLine(`${member.worker.name}: its session log could not be opened. ${messageOf(error)}`);
+    }
+  }
+  /** One record into one worker's file. A worker with no open file drops it. */
+  const record = (worker: string, payload: Omit<DevLogRecord, "ts">): void => {
+    logs.writer(worker).record({ ts: now().toISOString(), ...payload } as DevLogRecord);
+  };
   // The credentialed environment from above, not `process.env` again: this is what every child inherits,
   // so the account the session reported is the account the children actually use (#555).
   const baseEnv = cloudflare.env;
@@ -1121,16 +1141,23 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       // every tick, so a worker that arrives late drops out of the next report on its own.
       pending: () => [...readyState].filter(([, isReady]) => !isReady).map(([name]) => name),
       report: (waiting, first) => {
-        // Both destinations, the way the banner's own lines go: a report only in the terminal is a report
-        // a piped session loses, and `logs/dev.log` is where a developer looks after the fact.
+        // Raised for the roster and said to whoever is reading: a report only in the terminal is a report
+        // a piped session loses.
         raise({ event: "waiting", workers: [...waiting] });
         const lines = stillWaitingLines(waiting, first);
-        if (options.json) {
-          emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
-        } else {
-          for (const line of lines) emitLine(line);
-        }
-        for (const line of lines) log.write(stripAnsi(line));
+        if (options.json) emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
+        /**
+         * **Said to a person in both modes** — to stdout, or to stderr under `--json`, which is where
+         * everything a person is told goes there.
+         *
+         * Under `--json` it used to reach them through `logs/dev.log` alone, and that is no longer a
+         * place a session-scoped sentence can go: a session log is one worker's own records, and a
+         * `waiting` report is about the workers that are, between them, its subject (#671).
+         * `docs/commands/dev.md` already promised stderr; this is the line that makes it true.
+         */
+        for (const line of lines) emitLine(line);
+        // **Not written into any worker's file.** `waiting` is about the session, and a copy in each of
+        // five files would be five copies of one fact — about workers that are, between them, the subject.
       },
       schedule: options.schedule,
     });
@@ -1164,7 +1191,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       // nobody is at.
       startKeys();
       // Left to the roster when there is one: every row says `ready` and the footer has stopped ticking,
-      // so the word is the same fact a second time. `logs/dev.log` records it either way.
+      // so the word is the same fact a second time. Each worker's `ready` record carries it either way.
       if (!options.roster) emitLine("Ready.");
       // Left to the roster when there is one — the same facts, in a table, one line above. The log
       // below records them either way.
@@ -1191,9 +1218,8 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           })) {
         emitLine(line);
       }
-      emitLine(dim(`logs → ${logPath}`));
+      if (logDir !== null) emitLine(dim(`logs → ${logDir}`));
     }
-    for (const s of started) log.write(`ready: ${s.worker.name} ${s.origin}`);
     resolveReady();
   };
 
@@ -1348,12 +1374,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     const said = enabled
       ? `${worker} starts on this branch again.`
       : `${worker} no longer starts on this branch. It keeps running until this session ends.`;
-    // **Recorded always, said only when there is no roster.** With an `autostart` column flipping from
-    // `on` to `off` in front of you, and the row still reading `ready`, the sentence is the same fact a
-    // third time — there is nothing left to guess at. `logs/dev.log` keeps it either way, because a
-    // change to a file the developer cannot see belongs in the record.
-    log.write(said);
-    if (!options.roster) emitLine(said);
+    // **Said either way, roster or not** — because it is the only thing said about it at all. It is not
+    // *recorded*: a session log is one worker's own records, and this is a change to the next run rather
+    // than something this worker did. Withholding it under the roster left a change to the registry with
+    // no record anywhere: the `autostart` column flips in a region that repaints away, so the fact lasted
+    // until the next frame. A line above the roster is written once and never redrawn, which is what
+    // makes it a record. The redundancy with the column is the cheaper half of that trade.
+    emitLine(said);
   };
 
   /** Every usable identity, read now. See {@link DevHandle.listIdentities}. */
@@ -1455,7 +1482,6 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // already true above, and `armReadyWatch` reads it.
     stopReadyWatch();
     emitLine(`Stopping — ${reason}.`);
-    log.write(`stopping — ${reason}`);
     for (const { child } of children) signalChild(child.pid, "SIGTERM");
     const allExited = Promise.allSettled(exits);
     const timedOut = await Promise.race([allExited.then(() => false), sleep(SHUTDOWN_GRACE_MS).then(() => true)]);
@@ -1475,7 +1501,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // Bounded for the same reason: a stream that never ends is a teardown that never finishes, and the
     // log below is flushed either way.
     await Promise.race([Promise.allSettled(pipes), sleep(REAP_TIMEOUT_MS)]);
-    await log.end();
+    await logs.end();
     removeState(statePath, ownPid);
     resolveClosed();
   };
@@ -1578,7 +1604,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
    * It exists as a function rather than as the body of the startup loop because a restart has to do
    * *exactly* this and nothing less: the ready state, the ready regex, the origin a host does not get,
    * the argv, both carriers of the dev vars, the delivery watch on a host's output, both streams tee'd to
-   * the terminal and to `logs/dev.log`, and the exit handler. A second, shorter spawn path would be a
+   * the terminal and to that worker's session log, and the exit handler. A second, shorter spawn path would be a
    * second set of those decisions, and the first one to drift would be the one nobody ran twice.
    *
    * `index` is the worker's position in `started`, and it is passed in rather than read off
@@ -1612,6 +1638,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       port,
       at: now(),
     });
+    // The same fact in the file, carrying the port and nothing else: `kind` is a roster column, and the
+    // worker is the filename.
+    record(worker.name, { event: "spawned", port });
 
     const isHost = hostNames.has(worker.name);
     const onLine = (line: string) => {
@@ -1640,6 +1669,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       if (readyRegex.get(worker.name)?.test(line)) {
         readyState.set(worker.name, true);
         raise({ event: "ready", worker: worker.name, at: now() });
+        // Written where readiness is *decided*, not where the banner fires: the banner waits on the whole
+        // set, so recording there would stamp every worker with the last one's arrival.
+        record(worker.name, { event: "ready" });
         showBannerIfReady();
       }
     };
@@ -1653,7 +1685,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           stream: child.stdout,
           label: worker.name,
           paint,
-          sinks: { terminal, log: (l) => log.write(l), line: onLine },
+          sinks: {
+            terminal,
+            log: (text) => record(worker.name, { stream: "stdout", text }),
+            line: onLine,
+          },
         }),
       );
     }
@@ -1663,7 +1699,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           stream: child.stderr,
           label: worker.name,
           paint,
-          sinks: { terminal, log: (l) => log.write(l), line: onLine },
+          sinks: {
+            terminal,
+            log: (text) => record(worker.name, { stream: "stderr", text }),
+            line: onLine,
+          },
         }),
       );
     }
@@ -1675,6 +1715,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
         // neither is a failure — and the live roster only reveals a worker's output for an exit nobody
         // asked for. Without this, `q` revealed all five at once.
         raise({ event: "exited", worker: worker.name, code, expected: restarting.has(worker.name) || shuttingDown });
+        // `expected` is not recorded: a restart reads as `exited` then `spawned`, which is the pair a
+        // developer went to the file for, and a teardown's exits are the last records in every file.
+        record(worker.name, { event: "exited", code });
         // A restart kills this child on purpose, and the whole point is that the session survives it.
         if (restarting.has(worker.name)) return;
         if (!shuttingDown) void shutdown(`${worker.name} exited (${code})`);
@@ -1684,7 +1727,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       // shutting down. Handle it: report it, settle this child's exit, and tear the session down.
       child.once("error", (error) => {
         emitLine(`${worker.name} failed to start: ${error.message}`);
-        log.write(`error: ${worker.name} ${error.message}`);
+        // That worker's own stderr, in its own file: the `exited` record below carries `code: null` and
+        // nothing else, so without this the file would say a child died and never why.
+        record(worker.name, { stream: "stderr", text: `failed to start: ${error.message}` });
         resolve();
         // **A failed spawn is an exit, and has to be raised as one.** Node emits `error` and never
         // `exit`, so raising nothing left the roster holding a `building` row, spinner and all, with the
@@ -1696,6 +1741,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
           code: null,
           expected: restarting.has(worker.name) || shuttingDown,
         });
+        record(worker.name, { event: "exited", code: null });
         if (restarting.has(worker.name)) return;
         if (!shuttingDown) void shutdown(`${worker.name} failed to start`);
       });
@@ -1820,6 +1866,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
        * that child still running.
        */
       if (shuttingDown) return;
+      // **A parked worker's file appears here, not at startup.** The run never spawned it, and an empty
+      // log claiming a session it had no part in is worse than no file. Already-open files are
+      // remembered, so a restart appends — which is what makes `exited` then `spawned` readable.
+      try {
+        await logs.open(name);
+      } catch (error) {
+        emitLine(`${name}: its session log could not be opened. ${messageOf(error)}`);
+      }
       startWorker(member, index);
       // **Cleared before the state write, not after it.** `recordState` writes a file, and a
       // replacement that died inside that window was raised as an *expected* exit: the roster did not

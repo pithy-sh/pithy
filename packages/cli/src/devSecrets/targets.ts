@@ -130,8 +130,8 @@ export interface DevSecretsResolution {
  * One actionable sentence from a thrown failure.
  *
  * `message` and `action` together, never `detail`: `detail` is throw-site context — for
- * {@link loadWorkerConfig} it is the raw module-resolution error — and these lines reach a terminal and
- * `logs/dev.log`.
+ * {@link loadWorkerConfig} it is the raw module-resolution error — and these lines reach a terminal
+ * scrollback, which is a screenshot away from anywhere.
  */
 function messageOf(error: unknown): string {
   if (error instanceof PithyError) return `${error.payload.message} ${error.payload.action ?? ""}`.trim();

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { CommandDef } from "citty";
+import type { ArgsDef, CommandDef } from "citty";
 
 /**
  * **A command that names no action is asking what it can do. Answering it is a success.**
@@ -148,4 +148,48 @@ export async function usageTarget(root: CommandDef, argv: readonly string[]): Pr
   if (!subCommands || Object.keys(subCommands).length === 0) return null;
   if (actsOnItsOwn(cmd)) return null;
   return parent === undefined ? { cmd } : { cmd, parent };
+}
+
+/**
+ * **The subcommand this invocation dispatched to, or `undefined`** — the question a parent with its own
+ * `run` has to ask before doing anything.
+ *
+ * citty runs a parent's `run` *after* dispatching: `runCommand` resolves `subCommands`, hands the
+ * remaining tokens to the one the first positional names, and then falls through to
+ * `if (typeof cmd.run === "function")`. For the fifteen groups in this tree that costs nothing, because
+ * none of them has a `run` — this module's header is why. `pithy dev` is the first command where bare
+ * `run` does real work *and* `subCommands` exists, so without this guard `pithy dev logs` would print
+ * its table and then start a full dev session: every worker spawned, every pinned port bound, and every
+ * log file truncated moments after it was read.
+ *
+ * **Indexed citty's way, not by a second parser.** `findSubCommandIndex` skips flags, and skips the token
+ * after one that is a declared string or enum flag — so `pithy dev --app api logs` dispatches on `logs`
+ * and not on `api`. Asking a different question than citty asks is how a guard comes to be true for
+ * every invocation but one.
+ */
+export function dispatchedSubCommand(
+  rawArgs: readonly string[],
+  args: ArgsDef,
+  names: readonly string[],
+): string | undefined {
+  const takesValue = new Set<string>();
+  for (const [name, def] of Object.entries(args)) {
+    const arg = def as { type?: string; alias?: unknown };
+    if (arg.type !== "string" && arg.type !== "enum") continue;
+    takesValue.add(name);
+    const alias = arg.alias;
+    for (const value of typeof alias === "string" ? [alias] : Array.isArray(alias) ? alias : []) {
+      if (typeof value === "string") takesValue.add(value);
+    }
+  }
+  for (let i = 0; i < rawArgs.length; i++) {
+    const token = rawArgs[i] as string;
+    if (token === "--") return undefined;
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && takesValue.has(token.replace(/^-{1,2}/, ""))) i++;
+      continue;
+    }
+    return names.includes(token) ? token : undefined;
+  }
+  return undefined;
 }

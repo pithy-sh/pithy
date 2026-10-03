@@ -81,7 +81,7 @@ Every command is agent-drivable and supports `--json`, with **one deliberate exc
 
 **`--json` formats for whoever is reading it.** A script, a CI job or an agent gets exactly the compact line it has always parsed; a person at a terminal gets that same document indented two spaces, with restrained syntax color. Nothing about the payload changes, so both round-trip through `JSON.parse` to the same value.
 
-**This applies to a command that writes one document, which is every command but one.** A document can be reshaped for its reader because nothing parses it incrementally: the trailing newline is a terminator rather than a separator, so indenting cannot break a framing that is not there. **`pithy dev` is the exception, and it is not reshaped.** A session never ends, so its `--json` stdout is a *stream* — one object per line, which is the only rule a consumer reading it line by line can apply (`docs/commands/dev.md` §`--json`). Indenting those records would hand that consumer `{` as its first line, so a session's records stay compact and uncolored at a terminal exactly as they are in a pipe. `pithy dev --list --json` writes one document and exits, and is formatted like any other.
+**This applies to a command that writes one document.** A document can be reshaped for its reader because nothing parses it incrementally: the trailing newline is a terminator rather than a separator, so indenting cannot break a framing that is not there. **`pithy dev` is the exception, and it is not reshaped — and nor is `pithy dev logs`, which reads its records back.** A session never ends, so its `--json` stdout is a *stream* — one object per line, which is the only rule a consumer reading it line by line can apply (`docs/commands/dev.md` §`--json`). Indenting those records would hand that consumer `{` as its first line, so a session's records stay compact and uncolored at a terminal exactly as they are in a pipe. The reader inherits the exception for a sharper reason: `pithy dev logs --follow` is a stream and `pithy dev logs -n 50` is not, and a consumer's parse must not change with a flag it did not pass — so both are compact and uncolored. `pithy dev --list --json` writes one document and exits, and is formatted like any other.
 
 **Which one you get is decided the way color already is (§3.4) — first match wins:**
 
@@ -700,14 +700,14 @@ The rule it does not break is the one §3.1 and `terminal/progress.ts` actually 
 
 Two differences from a plain run are deliberate, and both are narrow. **Worker output is hidden until asked for**, because the roster is what the footer is for and five workers' startup chatter is what buried it — with a worker that fails or stalls revealing itself, so nothing is ever quietly lost. And **the banner leaves out what the roster already says**: the `name: http://localhost:####` list, the `Starting …` line, `Ready.`, and the `Dev login:` line are each the same facts the table and its key bar hold a line below. Everything else a plain run writes, a footer run writes too, byte for byte, in the same order — the delivery verdict and the log path included, the first because the roster cannot carry it and the second because hidden output makes it matter more.
 
-**`logs/dev.log` is byte-identical either way, and that is the half that matters.** It is the record a session is read back from, so nothing a renderer decides may change it — hidden output still goes there in full, and the addresses are written there independently of the banner. `dev/orchestrator.test.ts` holds both halves: the log identical, and the terminal differing by exactly the lines named above.
+**The session logs are record-for-record identical either way, and that is the half that matters.** They are the record a session is read back from — one JSONL file per worker under `<config>/<project>/logs/`, read with `pithy dev logs` — so nothing a renderer decides may change them: hidden output still goes there in full, and each worker's port is recorded with its `spawned` event independently of the banner. `dev/orchestrator.test.ts` holds both halves: the records identical, and the terminal differing by exactly the lines named above.
 
 Why `pithy dev` and nothing else. It is the only command that supervises several long-lived processes at once, so it is the only one whose state is not a line anywhere — it is the fold of every line so far, and by the time a developer wants it those lines have scrolled. `readyWatch`'s `Still waiting on:` line exists because of precisely that, and answers it one deadline at a time. Every other command is a single run with a beginning and an end, and its scrollback **is** its state.
 
 The exception is bounded by four things, and each is a gate rather than a note:
 
 - **Plain is what anything automated gets.** `--json`, a pipe, CI, `TERM=dumb` and `PITHY_NO_TUI` all render the stream and nothing else. A CI log is what §3.1 exists to protect.
-- **The roster adds a region; it never *rewrites* a line.** It omits the lines named above, and nothing else. `dev/orchestrator.test.ts` runs one scripted session through both renderers and fails if `logs/dev.log` differs at all, or if the terminal differs by anything other than the superseded addresses.
+- **The roster adds a region; it never *rewrites* a line.** It omits the lines named above, and nothing else. `dev/orchestrator.test.ts` runs one scripted session through both renderers and fails if either one's session logs differ at all, or if the terminal differs by anything other than the superseded addresses.
 - **No new color.** Every element lands on a tier §3.4 already defines, including the saffron spinner on a worker mid-wait — which is §3.4's own "loading spinner glyphs during long operations", and `progress.ts`'s "single indivisible wait".
 - **Nothing leaves the normal screen buffer.** No alternate screen and no clear-screen, so the session's output is still in the terminal afterwards. `dev/tui/devTui.pty.test.ts` asserts that on a real pty.
 
@@ -1081,7 +1081,7 @@ $ pithy add --list --json
 
 ## 6. Local dev orchestration (`pithy dev`)
 
-Moved to [`docs/commands/dev.md`](commands/dev.md).
+Moved to [`docs/commands/dev.md`](commands/dev.md) — including where a session's log lives, what format it is in, and the reader that reads it back (`pithy dev logs`). §10's `pithy logs` entry below is a different command, for *deployed* Workers, and is unbuilt.
 
 §6.5 and §6.6 stay. They specify `pithy worker`, not `pithy dev`, and [`docs/commands/worker.md`](commands/worker.md) cites them.
 

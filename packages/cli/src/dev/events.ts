@@ -7,7 +7,7 @@
  * `pithy dev` already knows every fact a live roster needs — which workers started, on which ports,
  * which have matched their ready signal, which has exited, who the seed can sign in as. It says each of
  * them exactly once, as a line, and that is the right thing for a log file and for a piped consumer: the
- * stream is the session's history and `logs/dev.log` replays it.
+ * stream is the session's history and the session logs replay it, worker by worker.
  *
  * It is the wrong thing for a reader who wants to know *the state the session is in right now*, which is
  * not a line anywhere — it is the fold of every line so far, and by the time a developer wants it the

@@ -226,6 +226,22 @@
       ]
     },
     {
+      "path": "dev logs",
+      "flags": [
+        "--app",
+        "--lines",
+        "-n",
+        "--since",
+        "--follow",
+        "--no-follow",
+        "--timestamps",
+        "--no-timestamps",
+        "--branch",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "docs",
       "flags": []
     },
