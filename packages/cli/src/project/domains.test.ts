@@ -78,6 +78,50 @@ describe("originDrift", () => {
     ]);
   });
 
+  /**
+   * **A refused declaration stops the command (#665).**
+   *
+   * `WorkerDomain` now takes exactly what `isPublicHostname` takes, so a punycode hostname an adopter had
+   * in `pithy.config.ts` is refused — Cloudflare Workers will not route one, which is `#691`. An invalid
+   * domain is a config error, so every reader of the declaration throws with the field named rather than
+   * resolving some other address the adopter never declared.
+   */
+  test("**a refused declaration throws, naming the field and the rule**", async () => {
+    await worker(
+      "board",
+      { env: { prod: { workers_dev: false, routes: [APP_ROUTE] } } },
+      { prod: { pattern: "xn--bcher-kva.example", zone: "xn--bcher-kva.example" } },
+    );
+    await expect(originDrift(dir, ["prod"])).rejects.toThrow(/prod\.pattern/);
+    await expect(originDrift(dir, ["prod"])).rejects.toThrow(/Internationalized domains are not supported/);
+  });
+
+  test("and `pithy deploy` refuses rather than deploying against some other address", async () => {
+    await worker(
+      "board",
+      { env: { prod: { workers_dev: false, routes: [APP_ROUTE], vars: { BASE_URL: "https://app.example.com" } } } },
+      { prod: { pattern: "xn--a.test", zone: "xn--a.test" } },
+    );
+    // A route and a BASE_URL are both present, so the old behavior resolved an address and carried on.
+    await expect(assertOriginsDeclared(dir, "prod")).rejects.toThrow(/Internationalized domains are not supported/);
+  });
+
+  test("a refused block anywhere in the declaration stops it, because the declaration is parsed whole", async () => {
+    // Deliberate: nothing parses, so there is no valid half to prefer. Reporting per environment was
+    // tried and could not be made true for an environment whose own block was fine.
+    await worker(
+      "board",
+      { env: { prod: { workers_dev: false, routes: [APP_ROUTE] } } },
+      { staging: { pattern: "xn--a.test", zone: "xn--a.test" }, prod: APP },
+    );
+    await expect(originDrift(dir, ["prod"])).rejects.toThrow(/staging\.pattern/);
+  });
+
+  test("and a declaration the kit takes is unaffected", async () => {
+    await worker("board", { env: { prod: { workers_dev: false, routes: [APP_ROUTE] } } }, { prod: APP });
+    expect(await originDrift(dir, ["prod"])).toEqual([]);
+  });
+
   test("and the route is the whole difference — with it, the same config is clean", async () => {
     await worker(
       "board",

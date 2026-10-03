@@ -481,6 +481,20 @@ function readReasonRecord(
 }
 
 /**
+ * The first fault, as a clause for the refusal's `message` — the same shape `capabilities/manifests.ts`
+ * uses, and for the same reason: a `ZodError`'s own message is the issue array as JSON, which buries the
+ * one sentence that says what is wrong.
+ */
+function firstDomainFault(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (!issue) return ".";
+  // A top-level issue — `domains` given as an array, say — has no path, and `join` on it rendered the
+  // separator with nothing in front of it: "not valid: — Invalid input".
+  const field = issue.path.join(".");
+  return field === "" ? `: ${issue.message}` : `: ${field} — ${issue.message}`;
+}
+
+/**
  * Read and validate a Worker's `domains` declaration.
  *
  * Parsed rather than cast: `pithy.config.ts` is the adopter's own module, `loadWorkerConfig` imports it
@@ -489,14 +503,36 @@ function readReasonRecord(
  * not produce a `routes` entry Cloudflare rejects at deploy.
  *
  * Absent is not an error; it is the ordinary state of a project that has not wired a domain yet.
+ *
+ * **No reader catches this, and that is the decision (#665).** An invalid domain is a config error: the
+ * adopter said what they meant, the kit will not take it, and nothing downstream can be generated from
+ * it. So every command that reads the declaration stops and names the field, and
+ * `packages/cli/src/ci/hostnameRule.test.ts` is the gate that keeps it that way.
+ *
+ * Softer answers were tried and each one lied. Falling back to the route resolved an address the adopter
+ * never declared. Reporting it as a drift finding and carrying on had to say something about every
+ * *other* environment, because `WorkerDomains` parses whole — and every version of that sentence was
+ * false for an environment whose own block was fine. A refusal is the only answer that is true.
+ *
+ * **What a reader may still forgive is the config not importing at all.** That is a different fact —
+ * *nobody could ask*, usually because dependencies are not installed — and it has its own, better error
+ * one step later. So the load goes inside the `try` and this call goes after it.
  */
 export function loadWorkerDomains(config: WorkerConfig): WorkerDomains | undefined {
   if (config.domains === undefined || config.domains === null) return undefined;
   const parsed = WorkerDomains.safeParse(config.domains);
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
-      message: "This Worker's `domains` declaration is not valid.",
-      action: "Fix `domains` in the Worker's pithy.config.ts. Each entry is `{ pattern, zone }` — bare hostnames.",
+      // **The field's own sentence, in `message`, because that is the only place a person reads it.**
+      // `renderTerminal` prints `message` and `action` and nothing else; `issues` reaches `--json` alone.
+      // So a refusal whose reason was *internationalized domains are not supported* used to render as
+      // "not valid" over an action line about bare hostnames — which is the sentence `#665` exists to
+      // stop being shown, since the hostname it is shown for **is** a bare hostname.
+      message: `This Worker's \`domains\` declaration is not valid${firstDomainFault(parsed.error)}`,
+      // No longer "— bare hostnames". It is true of one of the three rules and misleading for the other
+      // two, and the message above now names whichever one was broken.
+      action: "Fix `domains` in the Worker's pithy.config.ts. Each entry is `{ pattern, zone }`.",
+      detail: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("\n"),
     });
   }
   return parsed.data;

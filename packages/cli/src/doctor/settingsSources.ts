@@ -51,9 +51,9 @@ export async function settingsEnvironments(projectDir: string, workerDir: string
   for (const name of declared) {
     // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
     // nobody could import, or that throws for this environment, is exactly the one that might have declared one.
-    const domains = await composeFor(name, async (load) => loadWorkerDomains(await load(workerDir))).catch(
-      () => undefined,
-    );
+    // The `catch` is the load's alone; a refused declaration throws and `pithy doctor` says so (#665).
+    const workerConfig = await composeFor(name, async (load) => load(workerDir)).catch(() => undefined);
+    const domains = workerConfig === undefined ? undefined : loadWorkerDomains(workerConfig);
     const address = resolveWorkerAddress({ environment: name, domains, stanza: config?.env?.[name] });
     environments.push({ name, origin: address?.url ?? null });
   }

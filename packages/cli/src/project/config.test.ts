@@ -18,10 +18,12 @@ import {
   loadProjectCloudflare,
   loadProjectEnvironments,
   loadWorkerConfig,
+  loadWorkerDomains,
   projectCloudflareAccount,
   projectEnvironments,
   requireProjectName,
   resolveProjectName,
+  type WorkerConfig,
 } from "./config";
 
 // In-package temp dirs (not the OS tmpdir): vitest can only transform the
@@ -995,5 +997,45 @@ describe("the gate on the filter (#228)", () => {
     ).toBeNull();
     // Nor is one that de-colors a log line for display — `dev/logging.ts` does exactly that.
     expect(decidesMessageSafety("const ANSI = /\\u001b\\[[0-9;]*m/g;\nline.replace(ANSI, '');\n")).toBeNull();
+  });
+});
+
+describe("loadWorkerDomains refuses with the rule it broke", () => {
+  /**
+   * **The sentence a person reads, pinned.** `renderTerminal` prints `message` and `action` and nothing
+   * else, so the per-rule reason has to be in `message` — it was in `issues`, which only `--json` carries,
+   * and the throw path printed a generic headline over an action line about bare hostnames. For an
+   * internationalized domain that is the one sentence `#665` exists to stop showing, because the hostname
+   * it is shown for **is** a bare hostname.
+   */
+  const refusal = (domains: unknown): { message: string; action: string } => {
+    try {
+      loadWorkerDomains({ capabilities: [], domains } as WorkerConfig);
+    } catch (cause) {
+      if (cause instanceof PithyError) {
+        return { message: cause.payload.message, action: cause.payload.action ?? "" };
+      }
+    }
+    throw new Error("expected a refusal");
+  };
+
+  test("**an internationalized domain names the rule and Cloudflare, in the message**", () => {
+    const { message, action } = refusal({ prod: { pattern: "xn--bcher-kva.example", zone: "example.com" } });
+    expect(message).toContain("prod.pattern");
+    expect(message).toContain("Internationalized domains are not supported");
+    expect(message).toContain("Cloudflare Workers");
+    // The regression this pins: the action used to say this, and it is false of the hostname shown for.
+    expect(action).not.toContain("bare hostname");
+  });
+
+  test("a name over the DNS limit says so, with the number", () => {
+    const long = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}.example.com`;
+    expect(refusal({ prod: { pattern: long, zone: "example.com" } }).message).toContain("253");
+  });
+
+  test("and a shape failure still names the field's own sentence", () => {
+    expect(refusal({ prod: { pattern: "https://api.example.com", zone: "example.com" } }).message).toContain(
+      "bare hostname",
+    );
   });
 });

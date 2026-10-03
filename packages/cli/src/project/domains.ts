@@ -6,7 +6,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DOMAIN_ENVIRONMENTS, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isSourceEnvironment } from "../provision/featureConfig";
 import { composeFor } from "./composeFor";
-import { loadProject, loadProjectEnvironments, loadWorkerDomains } from "./config";
+import { loadProject, loadProjectEnvironments, loadWorkerDomains, type WorkerConfig } from "./config";
 import {
   type AddressStanza,
   resolveWorkerAddress,
@@ -234,16 +234,20 @@ async function workerDomains(
   workerDir: string,
   environment: string,
 ): Promise<{ domains: WorkerDomains | undefined; loaded: boolean }> {
+  let config: WorkerConfig;
   try {
-    return {
-      domains: await composeFor(environment, async (load) => loadWorkerDomains(await load(workerDir))),
-      loaded: true,
-    };
+    config = await composeFor(environment, async (load) => load(workerDir));
   } catch {
     // A config that will not import has its own, better error waiting one step later — the same rule
     // `unprovisionedBindings` states. This reader gates a deploy; it does not diagnose a broken config.
     return { domains: undefined, loaded: false };
   }
+  // **Outside the catch, and it throws (#665).** A refused declaration is not an absence — nobody has to
+  // guess what this Worker meant, because it said, and the kit will not take it. So the command stops and
+  // names the field. Reporting it as a finding and carrying on was tried and is worse: every answer that
+  // keeps going has to say something about an environment whose own block may be fine, and each version
+  // of that said something false. An invalid domain is a config error, and a config error is fixed.
+  return { domains: loadWorkerDomains(config), loaded: true };
 }
 
 /**

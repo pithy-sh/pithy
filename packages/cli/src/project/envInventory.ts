@@ -8,7 +8,7 @@ import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { StatePathOptions } from "../notifier/state";
-import { loadWorkerConfig, loadWorkerDomains } from "./config";
+import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import { dashboardListUrl, dashboardUrl } from "./dashboard";
 import { resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
@@ -24,9 +24,10 @@ import { readOptionalWranglerConfig } from "./wrangler";
  *
  * Discovery reads `apps/` directly, and the environment set still comes from `wrangler.jsonc` alone — an
  * inventory must print in a project whose dependencies are not installed. A Worker's `pithy.config.ts` is
- * read only for its `domains` declaration, and only ever opportunistically: a config that is missing,
- * unimportable, or carries a malformed `domains` block leaves the declaration unresolved and the
- * wrangler-derived report intact. A discovered process with no `wrangler.jsonc` (a Vite frontend in the
+ * read only for its `domains` declaration, and only ever opportunistically: a config that is missing or
+ * unimportable leaves the declaration unresolved and the wrangler-derived report intact. **A `domains`
+ * block the kit refuses is not that, and it stops the inventory (#665)** — an invalid domain is a config
+ * error, and reporting around one would print an address the adopter never declared. A discovered process with no `wrangler.jsonc` (a Vite frontend in the
  * dev set) has no environments and is skipped.
  */
 
@@ -339,17 +340,18 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
     const raw = await readOptionalWranglerConfig(target.dir);
     if (raw === null) continue;
     const config = raw as RawWrangler;
-    // The declaration, when this Worker has one. Read defensively: `pithy env` reports and does not
-    // gate, so a Worker whose `pithy.config.ts` is missing, unimportable, or carries a malformed
-    // `domains` block must still have its wrangler-derived environments listed rather than fail the
-    // whole inventory. The declaration simply does not contribute for that Worker, and the route
-    // fallback answers instead.
-    let domains: WorkerDomains | undefined;
+    // The declaration, when this Worker has one. **The load is read defensively and the parse is not.**
+    // `pithy env` reports and does not gate, so a Worker whose `pithy.config.ts` is missing or will not
+    // import still has its wrangler-derived environments listed rather than failing the whole inventory —
+    // the declaration does not contribute for that Worker and the route fallback answers instead. A
+    // declaration the kit *refuses* is a different fact: it was read, and it is wrong (#665).
+    let workerConfig: WorkerConfig | undefined;
     try {
-      domains = loadWorkerDomains(await loadWorkerConfig(target.dir));
+      workerConfig = await loadWorkerConfig(target.dir);
     } catch {
-      domains = undefined;
+      workerConfig = undefined;
     }
+    const domains = workerConfig === undefined ? undefined : loadWorkerDomains(workerConfig);
 
     workers.push({
       worker: target.name,

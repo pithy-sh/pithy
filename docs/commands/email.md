@@ -64,7 +64,7 @@ The suppression database is created on the first run **however many environments
 
 Each ready environment's deploy needs two more things resolved, and each missing one is refused rather than deployed around: that Worker's public address for the environment, and the environment's secrets database — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates. Those stay refusals because by the time an environment is ready, a missing one is a genuine failure rather than a not-yet.
 
-The address is resolved through one resolver that prefers the Worker's `domains` declaration, falls back to its route, and then to `vars.BASE_URL`. Tracking and unsubscribe links are built against whatever it returns, so a Worker with none of the three is refused rather than deployed against a guess. A malformed `domains` declaration does not block provisioning off a good route or var — `pithy env` and `pithy deploy` are where that gets reported.
+The address is resolved through one resolver that prefers the Worker's `domains` declaration, falls back to its route, and then to `vars.BASE_URL`. Tracking and unsubscribe links are built against whatever it returns, so a Worker with none of the three is refused rather than deployed against a guess. A `domains` declaration the kit refuses stops provisioning outright: an invalid domain is a config error, and provisioning off the route instead would point a mail Worker somewhere the adopter never declared. What a `pattern` and a `zone` may be is [`docs/CLI.md`'s](../CLI.md) to say, once.
 
 **A run this long says where it got to.** Each environment's email worker is named as it is about to be uploaded — `▸ acme-staging-email...` — the same plain line `pithy deploy` and `pithy provision` print, from the one seam all three share. A worker the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not, since a run in CI is the run whose log most needs this.
 
@@ -186,6 +186,8 @@ Add the prod environment to apps/api/wrangler.jsonc with its DB binding.
 api has no prod address.
 Declare it in the Worker's pithy.config.ts — `domains: { prod: { pattern: "…", zone: "…" } }`. Tracking and unsubscribe links are built against it.
 ```
+
+What a `pattern` and a `zone` may be is [`docs/CLI.md`'s](../CLI.md) to say, once — including that it is an ASCII hostname, and why an internationalized one is refused.
 
 **The secrets database does not exist.**
 

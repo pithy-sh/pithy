@@ -4,7 +4,6 @@
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
-import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type RenderTracking, renderEmail } from "@pithy-sh/email/src/templates/engine";
@@ -29,6 +28,7 @@ import {
   loadWorkerDomains,
   projectCloudflareAccount,
   requireProjectName,
+  type WorkerConfig,
 } from "../project/config";
 import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
@@ -176,14 +176,16 @@ function buildResolveEnv(
     // then to this same var — so an adopter who set it by hand still works, and one who declared a domain
     // is not told to set a var that would only duplicate it. This used to read `vars.BASE_URL` directly
     // with no validation at all, passing whatever string was there through to the deployed email Worker.
-    let domains: WorkerDomains | undefined;
+    // The load may fail for a reason this reader forgives; a refused declaration is not one (#665) — an
+    // address the kit will not take is a config error, and provisioning against a fallback would ship a
+    // widget or a mail Worker pointed somewhere the adopter did not declare.
+    let workerConfig: WorkerConfig | undefined;
     try {
-      domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
+      workerConfig = await loadWorkerConfig(worker.dir);
     } catch {
-      // A malformed declaration must not block provisioning off a good route or var; `pithy env` and
-      // `pithy deploy` are where it gets reported.
-      domains = undefined;
+      workerConfig = undefined;
     }
+    const domains = workerConfig === undefined ? undefined : loadWorkerDomains(workerConfig);
     const address = resolveWorkerAddress({ environment: env, domains, stanza });
     if (!address) {
       throw new ValidationError({

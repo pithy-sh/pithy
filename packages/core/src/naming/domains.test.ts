@@ -5,10 +5,13 @@ import { describe, expect, test } from "vitest";
 import {
   baseUrlFor,
   domainFor,
+  type HostnameProblem,
   isPublicHostname,
   LOCAL_ORIGIN,
   originFor,
+  publicHostnameProblem,
   resolveOrigin,
+  WorkerDomain,
   WorkerDomains,
 } from "./domains";
 
@@ -204,4 +207,99 @@ describe("isPublicHostname", () => {
       expect(isPublicHostname(hostname), hostname).toBe(true);
     }
   });
+});
+
+describe("one hostname rule, reached by every caller", () => {
+  /**
+   * The table both callers are driven through.
+   *
+   * A configured domain is a third caller of the rule `isPublicHostname` states, and it did not go
+   * through it — `WorkerDomain.pattern` and `.zone` handed `HOSTNAME_PATTERN` to `.regex()` directly, so
+   * they took two things the function refuses: a punycode A-label, and a name over the 253-character DNS
+   * limit (#665).
+   */
+  const CASES: { hostname: string; takes: boolean; why: string }[] = [
+    { hostname: "api.example.com", takes: true, why: "an ordinary hostname" },
+    { hostname: "a.b.c.example.com", takes: true, why: "any number of labels" },
+    { hostname: "example.com", takes: true, why: "two labels is the floor" },
+    { hostname: "com", takes: false, why: "one label is not a hostname" },
+    { hostname: "xn--a.test", takes: false, why: "a punycode A-label" },
+    { hostname: "xn--bcher-kva.example", takes: false, why: "a valid A-label is still an A-label" },
+    { hostname: "shop.example.xn--p1ai", takes: false, why: "wherever the A-label sits" },
+    { hostname: "myxn--notpunycode.de", takes: true, why: "a label that merely reads like one" },
+    {
+      hostname: `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}.example.com`,
+      takes: false,
+      why: "over the 253-character DNS limit",
+    },
+    { hostname: "https://api.example.com", takes: false, why: "a URL is not a hostname" },
+    { hostname: "api.example.com:8787", takes: false, why: "a port is not part of a hostname" },
+  ];
+
+  test("**`WorkerDomain` takes exactly what `isPublicHostname` takes**", () => {
+    const disagreements = CASES.filter(({ hostname }) => {
+      // `zone` equal to `pattern` so the containment rule cannot be what refuses it — this test is about
+      // the hostname rule alone.
+      const schema = WorkerDomain.safeParse({ pattern: hostname, zone: hostname }).success;
+      return schema !== isPublicHostname(hostname);
+    }).map(({ hostname, why }) => `${hostname} — ${why}`);
+    expect(disagreements).toEqual([]);
+  });
+
+  test("and the table is not vacuous: it holds both answers", () => {
+    expect(CASES.some((c) => c.takes)).toBe(true);
+    expect(CASES.some((c) => !c.takes)).toBe(true);
+    for (const { hostname, takes, why } of CASES) {
+      expect(isPublicHostname(hostname), `${hostname} — ${why}`).toBe(takes);
+    }
+  });
+
+  test("`zone` is held to the rule too, not only `pattern`", () => {
+    expect(WorkerDomain.safeParse({ pattern: "api.example.com", zone: "xn--bcher-kva.example" }).success).toBe(false);
+  });
+});
+
+describe("a refusal says which rule it broke", () => {
+  const messageFor = (hostname: string): string => {
+    const parsed = WorkerDomain.safeParse({ pattern: hostname, zone: "example.com" });
+    if (parsed.success) throw new Error(`${hostname} was accepted`);
+    return parsed.error.issues.find((issue) => issue.path[0] === "pattern")?.message ?? "";
+  };
+
+  test("**an internationalized domain is named as unsupported, and Cloudflare as the reason**", () => {
+    const message = messageFor("xn--bcher-kva.example");
+    // The sentence an adopter acts on. Not "a domain is a bare hostname" — `xn--bcher-kva.example` is a
+    // bare hostname, so that message would send them hunting a typo they do not have (#665).
+    expect(message).toContain("Internationalized domains are not supported");
+    expect(message).toContain("Cloudflare Workers");
+    expect(message).not.toContain("bare hostname");
+  });
+
+  test("a name over the DNS limit says so, with the number", () => {
+    const message = messageFor(`${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}.example.com`);
+    expect(message).toContain("253");
+    expect(message).not.toContain("Internationalized");
+  });
+
+  test("and a shape failure keeps each field's own sentence", () => {
+    // Folding three rules into one validator must not cost the two messages their specificity.
+    expect(messageFor("https://api.example.com")).toContain("bare hostname");
+    const zoneIssue = WorkerDomain.safeParse({ pattern: "api.example.com", zone: "com" });
+    expect(zoneIssue.success).toBe(false);
+    if (!zoneIssue.success) {
+      expect(zoneIssue.error.issues.find((i) => i.path[0] === "zone")?.message).toContain("registrable domain");
+    }
+  });
+
+  test("every problem the rule can report has a sentence, and none is the generic one", () => {
+    // The enumeration, so a fourth reason cannot be added without a message to go with it.
+    const problems: HostnameProblem[] = ["too-long", "shape", "punycode"];
+    expect(problems.map((p) => publicHostnameProblem(SAMPLES[p]))).toEqual(problems);
+  });
+
+  const SAMPLES: Record<HostnameProblem, string> = {
+    "too-long": `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}.example.com`,
+    shape: "https://api.example.com",
+    punycode: "xn--bcher-kva.example",
+  };
 });
