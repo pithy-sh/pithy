@@ -11,11 +11,15 @@ import { dim } from "../terminal/style";
  * ever going to reach them. The value below is longer than any healthy cold start we have measured and
  * still short enough to arrive while the session is being watched.
  *
- * **It is measured from the spawn, not from the command.** The watch starts after the last child is
- * running, so none of what `pithy dev` does first — `.dev.vars`, the host configs, stopping the previous
- * session, the orphan sweep, both loopback families of every pinned port, the dev secrets — is on this
- * clock. On a cold project that is tens of seconds, and charging it to a worker would make the budget a
- * worker actually gets vary with how much housekeeping the run happened to need.
+ * **It is measured from a spawn, not from the command.** The watch starts as soon as a child is running,
+ * so none of what `pithy dev` does first — `.dev.vars`, the host configs, stopping the previous session,
+ * the orphan sweep, both loopback families of every pinned port, the dev secrets — is on this clock. On a
+ * cold project that is tens of seconds, and charging it to a worker would make the budget a worker
+ * actually gets vary with how much housekeeping the run happened to need.
+ *
+ * A session has as many of these clocks as it needs: `r` puts a worker back to not ready, so the
+ * orchestrator arms another watch and the budget is paid again (#684). One already running is left
+ * alone — see `armReadyWatch` for why re-arming would starve the report this exists for.
  *
  * `docs/commands/dev.md` states it in seconds, and says what it is measured from, in both places it
  * appears; `readyWatchDocs.test.ts` pins both sentences to this constant.
@@ -49,7 +53,9 @@ export const scheduleTimeout: Schedule = (ms, run) => {
  *
  * *Still waiting* rather than *failed*, because the orchestrator does not know which it is — a worker
  * this line names may be one bundle away from the banner. The reason it had to be a deadline that told
- * you is said once, with the first report; the repeats are the short line alone.
+ * you is said with the first report of a watch; the repeats are the short line alone. Once per watch
+ * rather than once per session, now that a restart arms another one: a developer an hour into a healthy
+ * session is reading that report cold, and `reported` lives in the watch for exactly that reason.
  *
  * **The action line names the mechanism, never a cause.** It used to say `wrangler dev keeps running
  * after a build error`, which is true of the case that prompted #429 and of nothing else the same
