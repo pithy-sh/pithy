@@ -103,7 +103,7 @@ One line on stdout, after every Worker has been attempted. A failure inside the 
 | `workers[].name` | string | The Worker's name. |
 | `workers[].ok` | boolean | Whether `wrangler deploy` succeeded for this Worker. |
 | `workers[].versionId` | string, optional | The deployed version id, when wrangler's output carried one. |
-| `workers[].url` | string, optional | The public URL wrangler printed, when it printed one. |
+| `workers[].url` | string, optional | An address wrangler listed under this Worker's deployed triggers — its `workers.dev` host, or the host a custom domain or a route answers on. **Absent** when no trigger is an address: a cron, a queue or a workflow trigger is not one, and neither is a wildcard route. |
 | `workers[].built` | boolean, optional | Whether this Worker's UI build ran and succeeded. **Absent** when the Worker declares no `ui` block — so `false` means the build is what failed and the deploy never ran. |
 | `workers[].error` | string, optional | The failure reason. Present only when `ok` is `false` — the build's output, wrangler's, or the refusal to publish a configuration that is not the requested environment's, which names the file it was about to ship. |
 | `workers[].verification` | string, optional | What probing the declared domain concluded: `"verified"`, `"mismatch"`, `"inconclusive"`, or `"unreachable"`. Absent when there was nothing to check. |
