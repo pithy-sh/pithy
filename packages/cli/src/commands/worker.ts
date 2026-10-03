@@ -5,6 +5,7 @@ import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
+import { describeStaleAutostartRoots } from "../feature/ports";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
@@ -84,9 +85,13 @@ const list = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const workers = await listWorkers({ projectDir: process.cwd() });
+      const { workers, staleAutostart } = await listWorkers({ projectDir: process.cwd() });
+      // Stderr in both modes, on the rule a dev session already states: stdout is the machine's, one
+      // object per line, and this is prose for whoever is reading. It is said before the rows because it
+      // is the answer to the question the rows provoke — *why is the worker I parked starting again*.
+      for (const line of describeStaleAutostartRoots(staleAutostart)) process.stderr.write(`${line}\n`);
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.list", workers })}\n`);
+        process.stdout.write(`${formatJsonLine({ command: "worker.list", workers, staleAutostart })}\n`);
         return;
       }
       if (workers.length === 0) {

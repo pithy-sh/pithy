@@ -24,12 +24,15 @@ import {
 } from "../feature/devConfig";
 import {
   allocatePortBlock,
+  describeStaleAutostartRoots,
   type PortBlock,
   portsRegistryPath,
   readWorkerAutostart,
   reclaimPortBlocks,
   registryRootFor,
+  type StaleAutostartRoot,
   setWorkerAutostart,
+  staleAutostartRoots,
 } from "../feature/ports";
 import { heldReservations } from "../feature/prune";
 import { currentBranch, defaultGit } from "../feature/worktree";
@@ -413,42 +416,78 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
 }
 
 /**
- * This branch's local autostart answers, from the registry the port block already lives in.
+ * The three registry keys this branch's answers are filed under, or `null` when nothing can answer them.
  *
- * The three keys are resolved exactly as {@link ensureDevConfig} resolves them for the block, through
- * the same seams — a test that redirects the registry gets this redirected with it, and there is no
- * second derivation of *which branch am I* to disagree with the first.
+ * Resolved exactly as {@link ensureDevConfig} resolves them for the block, through the same seams — a
+ * test that redirects the registry gets this redirected with it, and there is no second derivation of
+ * *which branch am I* to disagree with the first.
  *
  * Off a branch the key is the checkout path, the same fallback the block uses. Two checkouts of one
  * repository in detached HEAD are two keys, which is the answer a developer would expect and the one
  * the ports already give.
  *
- * **Exported because `--list` has to reach the same answer the run does.** It did not, for one commit:
- * the run resolved this and `printDevSet` called `listDevSet` without it, so a worker turned off still
- * listed as starting. Every test passed, because each injected `autostartOverrides` straight into
- * `listDevSet` and none of them went through the command. One function, both callers.
+ * `null` is a checkout with no repository, no registry, or no readable config directory. That is the
+ * state every project was in before any of this existed, and it is never a reason to refuse a dev run.
  */
-export async function resolveAutostartOverrides(options: {
+async function resolveRegistryKeys(options: {
   projectDir: string;
   ensureDeps?: EnsureDevConfigDeps;
-  autostartOverrides?: Readonly<Record<string, boolean>>;
-}): Promise<Record<string, boolean>> {
-  if (options.autostartOverrides !== undefined) return { ...options.autostartOverrides };
+}): Promise<{ registryPath: string; root: string; branch: string } | null> {
   const deps = options.ensureDeps ?? {};
   try {
     const registryPath = await (deps.registryPathFor ?? defaultRegistryPath)(options.projectDir);
     const root = await (deps.rootFor ?? registryRootFor)(options.projectDir);
     const named = await (deps.branchFor ?? defaultBranch)(options.projectDir);
-    return await readWorkerAutostart({
-      registryPath,
-      root,
-      branch: named ?? `local:${options.projectDir}`,
-    });
+    return { registryPath, root, branch: named ?? `local:${options.projectDir}` };
   } catch {
-    // A checkout with no registry, no repository, or no readable config directory starts everything —
-    // the state every project was in before this existed, and never a reason to refuse a dev run.
-    return {};
+    return null;
   }
+}
+
+/** What the registry says about autostart for this run: this branch's answers, and the lost ones. */
+export interface AutostartResolution {
+  /** Worker name → whether a plain `pithy dev` starts it. Empty when this branch has said nothing. */
+  overrides: Record<string, boolean>;
+  /**
+   * Checkout roots that are gone from disk and still hold autostart answers (#685).
+   *
+   * Reported, never acted on. The dead root's branch key may itself be a path — `local:/old/app`, which
+   * `ensureDevConfig` writes off a branch — so nothing here can match it to the current branch and
+   * there is no worker name to honor a disable *for*. Only a root to name.
+   */
+  stale: StaleAutostartRoot[];
+}
+
+/**
+ * What the registry says about this run's autostart set, and about answers it can no longer reach.
+ *
+ * **Exported because `--list` has to reach the same answer the run does.** It did not, for one commit:
+ * the run resolved this and `printDevSet` called `listDevSet` without it, so a worker turned off still
+ * listed as starting. Every test passed, because each injected `autostartOverrides` straight into
+ * `listDevSet` and none of them went through the command. One function, both callers.
+ *
+ * **`autostartOverrides` short-circuits the answers and deliberately not the stale report.** An injected
+ * set is a caller stating what this branch said; it is not a claim about which checkouts on the machine
+ * still exist. Returning early for both would have made every seam-injecting test blind to the report —
+ * the same divergence the paragraph above is the story of, one field across.
+ */
+export async function resolveAutostart(options: {
+  projectDir: string;
+  ensureDeps?: EnsureDevConfigDeps;
+  autostartOverrides?: Readonly<Record<string, boolean>>;
+}): Promise<AutostartResolution> {
+  const keys = await resolveRegistryKeys(options);
+  const overrides =
+    options.autostartOverrides !== undefined
+      ? { ...options.autostartOverrides }
+      : keys === null
+        ? {}
+        : await readWorkerAutostart(keys).catch(() => ({}) as Record<string, boolean>);
+  const stale =
+    keys === null
+      ? []
+      : await staleAutostartRoots({ registryPath: keys.registryPath, keep: keys.root }).catch(() => []);
+  return { overrides, stale };
 }
 
 /**
@@ -622,7 +661,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //    This branch's own answer about what starts (#549) is resolved here, from the same three values the
   //    port block is keyed on. Best effort by construction: `readWorkerAutostart` never throws, so a
   //    registry that will not parse leaves every Worker starting — which is what it meant before.
-  const overrides = await resolveAutostartOverrides(options);
+  const { overrides, stale } = await resolveAutostart(options);
   const set = await resolveDevSet({
     projectDir,
     discoverWorkers,
@@ -631,6 +670,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     ...(options.discoverHostWorkers ? { discoverHostWorkers: options.discoverHostWorkers } : {}),
   });
   for (const line of set.notes) emitLine(line);
+  //    And the answers this run could *not* reach (#685). Said here, above every write, because the
+  //    question it answers is the one a developer asks the moment the session starts — *why is the
+  //    worker I parked running*. Through `emitLine`, so the prose lands on stderr under `--json` and the
+  //    machine gets its own object instead: one event, not one per root, since a consumer reading a
+  //    stream line by line should not have to correlate several to learn one fact.
+  for (const line of describeStaleAutostartRoots(stale)) emitLine(line);
+  if (options.json && stale.length > 0) emitJson({ command: "dev", event: "autostart-stale", roots: stale });
   const { project, hosts, hostNames } = set;
   const discovered = set.members.filter((m) => m.kind === "app").map((m) => m.worker);
   const members = set.members.map((m) => m.worker);

@@ -12,6 +12,7 @@ import {
   allocatePortBlock,
   BASE_PORT,
   BLOCK_SIZE,
+  describeStaleAutostartRoots,
   freePortBlock,
   LOCK_MAX_ATTEMPTS,
   LOCK_RETRY_DELAY_MS,
@@ -22,6 +23,7 @@ import {
   reclaimPortBlocks,
   resolveMainRepoRoot,
   setWorkerAutostart,
+  staleAutostartRoots,
 } from "./ports";
 import { defaultGit, mainRepoRoot } from "./worktree";
 
@@ -730,5 +732,139 @@ describe("worker autostart", () => {
     await writeFile(registryPath, "{ not json");
 
     expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({});
+  });
+});
+
+/**
+ * **The checkout moved and the key did not (#685.)**
+ *
+ * `readWorkerAutostart` answers `{}` for a key nothing will look up again, which is the same answer it
+ * gives a branch that never said anything — so a developer who parked a worker, renamed their checkout,
+ * and watched it start again had no way to tell the two apart. These cases are the detector that tells
+ * them apart, and the sentence that says it.
+ */
+describe("staleAutostartRoots", () => {
+  let dir: string;
+  let registryPath: string;
+  let root: string;
+
+  /** Write the registry by hand: no writer in this module can produce an entry under a root that is gone. */
+  const writeRegistry = async (registry: PortsRegistry): Promise<void> =>
+    writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+
+  const block = (index: number) => ({ block: index, base: BASE_PORT + index * BLOCK_SIZE, size: BLOCK_SIZE });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-stale-autostart-"));
+    registryPath = join(dir, "dev-ports.json");
+    root = join(dir, "repo");
+    await mkdir(root);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("names a root that is gone from disk and still holds autostart answers", async () => {
+    await writeRegistry({
+      [root]: { main: block(0) },
+      "/gone/app": { main: { ...block(1), autostart: { payments: false, media: false } } },
+    });
+
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([
+      { root: "/gone/app", branches: [{ branch: "main", workers: ["media", "payments"] }] },
+    ]);
+  });
+
+  // A dead root holding only blocks is the pruner's business, and it already frees those on the next
+  // allocation. Nothing was said about a worker there, so there is nothing a developer could re-set.
+  it("ignores a root that is gone but holds only port blocks", async () => {
+    await writeRegistry({ [root]: { main: block(0) }, "/gone/app": { main: block(1) } });
+
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([]);
+  });
+
+  // `pruneDeadRoots`' own rule. The caller's answer to *where am I* is never reported back to it: a seam
+  // may hand over a root that is not on disk, and naming it would tell a developer their live answers
+  // are lost while this very read was using them.
+  it("never names the root being asked about, even when it is not on disk", async () => {
+    await writeRegistry({ "/gone/app": { main: { ...block(0), autostart: { payments: false } } } });
+
+    expect(await staleAutostartRoots({ registryPath, keep: "/gone/app" })).toEqual([]);
+  });
+
+  it("says nothing about a root that is still on disk", async () => {
+    const other = join(dir, "other");
+    await mkdir(other);
+    await writeRegistry({ [other]: { main: { ...block(0), autostart: { payments: false } } } });
+
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([]);
+  });
+
+  // The same contract `readWorkerAutostart` holds, for the same reason: this runs ahead of `pithy dev`,
+  // and a registry nobody can parse is `pithy doctor`'s to report rather than a reason not to start.
+  it("answers nothing for a registry that will not parse", async () => {
+    await writeFile(registryPath, "{ not json");
+
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([]);
+  });
+
+  it("answers nothing when there is no registry at all", async () => {
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([]);
+  });
+
+  it("names every branch under one dead root, whatever its key looks like", async () => {
+    await writeRegistry({
+      "/gone/app": {
+        main: { ...block(0), autostart: { payments: false } },
+        // Off a branch the key is the old checkout's path, so nothing here can match it to a branch name.
+        "local:/gone/app": { ...block(1), autostart: { media: false } },
+      },
+    });
+
+    expect(await staleAutostartRoots({ registryPath, keep: root })).toEqual([
+      {
+        root: "/gone/app",
+        branches: [
+          { branch: "local:/gone/app", workers: ["media"] },
+          { branch: "main", workers: ["payments"] },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("describeStaleAutostartRoots", () => {
+  const rootAt = (root: string, workers: string[]) => ({ root, branches: [{ branch: "main", workers }] });
+
+  it("says nothing when nothing is stale", () => {
+    expect(describeStaleAutostartRoots([])).toEqual([]);
+  });
+
+  // The workers are sorted, not left in the order the file happened to hold them: this line is read
+  // beside the same one from the last run, and a set that reorders itself reads as a change.
+  it("names the root, the workers, and what to do about it", () => {
+    const lines = describeStaleAutostartRoots([rootAt("/gone/app", ["payments", "media"])]);
+
+    expect(lines[0]).toBe(
+      "Autostart answers are recorded for a checkout at /gone/app, which is gone: media, payments.",
+    );
+    expect(lines[1]).toContain("pithy dev --app <name> --disable-autostart");
+  });
+
+  // The registry is machine-wide (#435), so a root that is gone may be another project's deleted clone
+  // and nothing anywhere records where a repository used to be. The sentence has to leave that open.
+  it("never claims the dead checkout is this one", () => {
+    const lines = describeStaleAutostartRoots([rootAt("/gone/app", ["payments"])]);
+
+    expect(lines.join(" ")).toContain("If that was this project");
+  });
+
+  // Several deleted clones on one machine would otherwise print an unbounded list ahead of every run.
+  it("caps the list and points at the command that holds the rest", () => {
+    const lines = describeStaleAutostartRoots(["/a", "/b", "/c", "/d", "/e"].map((root) => rootAt(root, ["payments"])));
+
+    expect(lines.filter((line) => line.startsWith("Autostart answers"))).toHaveLength(3);
+    expect(lines).toContain("And 2 more — pithy doctor lists every root in the registry.");
   });
 });

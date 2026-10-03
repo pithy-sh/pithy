@@ -150,3 +150,110 @@ describe("worker sync", () => {
     expect(said.join("")).toContain("declares neither domains nor an app capability");
   });
 });
+
+/**
+ * **`pithy worker list` says when an answer was recorded under a checkout that is gone (#685).**
+ *
+ * The unit test for this is in `project/workerCommand.test.ts`, and it is not enough on its own: the
+ * command is where a second read, a second derivation of the registry key, or a field left out of the
+ * payload would diverge from it — which is the failure `commands/dev.test.ts` records for `--list`. So
+ * this one drives the real `run`, through a redirected config directory, with nothing stubbed between
+ * the registry on disk and what reaches the terminal.
+ */
+describe("worker list", () => {
+  const list = (worker.subCommands as Record<string, CommandDef>).list as CommandDef;
+
+  let configDir: string;
+  let previousConfigDir: string | undefined;
+
+  /** The registry as a moved checkout leaves it: a root that is gone, still holding an answer. */
+  async function registryWithStaleRoot(): Promise<void> {
+    await writeFile(
+      join(configDir, "dev-ports.json"),
+      `${JSON.stringify({
+        "/gone/app": { main: { block: 0, base: 8787, size: 20, autostart: { "replay-board": false } } },
+      })}\n`,
+    );
+  }
+
+  /** A one-Worker project, with no `domains` block to sync — the listing needs only discovery. */
+  async function listable(): Promise<void> {
+    const workerDir = join(dir, "apps", "board");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "replay" };\n');
+    await writeFile(join(workerDir, "wrangler.jsonc"), `${JSON.stringify({ name: "replay-board" })}\n`);
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
+  }
+
+  /** Run `pithy worker list`, capturing the two streams apart — the prose is the operator's. */
+  async function runList(json: boolean): Promise<{ out: string; err: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      err.push(String(chunk));
+      return true;
+    });
+    try {
+      await list.run?.({ args: { json }, rawArgs: [] } as never);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+    return { out: out.join(""), err: err.join("") };
+  }
+
+  beforeEach(async () => {
+    configDir = await mkdtemp(join(tmpdir(), "pithy-worker-list-cfg-"));
+    previousConfigDir = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+  });
+
+  afterEach(async () => {
+    if (previousConfigDir === undefined) delete process.env.PITHY_CONFIG_DIR;
+    else process.env.PITHY_CONFIG_DIR = previousConfigDir;
+    await rm(configDir, { recursive: true, force: true });
+  });
+
+  test("names the dead checkout and keeps the rows on stdout", async () => {
+    await listable();
+    await registryWithStaleRoot();
+
+    const { out, err } = await runList(false);
+
+    expect(err).toContain("Autostart answers are recorded for a checkout at /gone/app, which is gone: replay-board.");
+    expect(err).toContain("pithy dev --app <name> --disable-autostart");
+    // The listing itself is unchanged: the orphaned answer is under another key, so nothing was said here.
+    expect(out).toContain("replay-board");
+    expect(out).toContain("autostart");
+  });
+
+  test("--json carries the stale roots as a field, so an agent can tell the two states apart", async () => {
+    await listable();
+    await registryWithStaleRoot();
+
+    const { out } = await runList(true);
+    const parsed = JSON.parse(out.trim()) as { command: string; staleAutostart: { root: string }[] };
+
+    expect(parsed.command).toBe("worker.list");
+    expect(parsed.staleAutostart).toEqual([
+      { root: "/gone/app", branches: [{ branch: "main", workers: ["replay-board"] }] },
+    ]);
+  });
+
+  // Acceptance criterion 5. The field is present and empty rather than absent, and the text output gains
+  // nothing at all — a developer whose checkout has not moved sees exactly what they saw before.
+  test("a registry with nothing stale says nothing and carries an empty field", async () => {
+    await listable();
+
+    const { out, err } = await runList(false);
+    expect(err).toBe("");
+    expect(out).toContain("replay-board");
+
+    const parsed = JSON.parse((await runList(true)).out.trim()) as { staleAutostart: unknown[] };
+    expect(parsed.staleAutostart).toEqual([]);
+  });
+});

@@ -1604,6 +1604,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // `skipped`: `pithy ui add` already emits that name for a `string[]` of files it left alone, and a
   // shared name carrying two types is the defect #235 is about.
   skippedEnvironments: ["email", "media", "payments", "storage", "support", "testers"],
+  staleAutostart: ["dev", "worker"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
@@ -1649,6 +1650,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   runs: "object[]",
   shell: "string",
   skippedEnvironments: "object[]",
+  staleAutostart: "object[]",
   storageDeleted: "boolean",
   to: "string",
   worker: "string",

@@ -38,6 +38,8 @@ One gap, stated rather than hidden: `add` writes the new Worker's `tsconfig.json
 
 **`list`** reports the discovered Workers with their autostart state and pinned dev port. It is the **registry view** — which Workers exist under `apps/`, which you have kept out of your local dev set, which port each holds. Every Worker autostarts; a Worker you have turned off on this branch reads `off here`, because that decision is yours and is not in any committed file ([`commands/dev.md`](dev.md#keeping-a-worker-out-of-your-dev-set)). For the **run view** — what `pithy dev` would actually start, capability hosts included — use `pithy dev --list` ([`commands/dev.md`](dev.md)). Two commands, two questions.
 
+It also names **answers recorded for a checkout that is gone**. Those answers are keyed on the checkout's absolute path, so moving or renaming the checkout orphans them and every Worker starts again — and *you never said anything* and *what you said is under a path nothing looks up* used to be the same silence. The line goes to stderr, naming the root and the Workers; `--json` carries the same facts in `staleAutostart`. The registry is machine-wide, so the root may be another project's deleted clone rather than this one's old path, and the line says so rather than guessing. It is a report and nothing more: the Workers still start, and `pithy doctor` lists every root in the registry.
+
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database.
 
 **`sync`** writes what the Worker's `pithy.config.ts` declares into its `wrangler.jsonc`. Two halves, one job — the declaration is the truth, and this is what makes wrangler agree with it.
@@ -84,7 +86,7 @@ $ pithy worker add web --json
 
 ```
 $ pithy worker list --json
-{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"autostartLocal":null,"hasWrangler":true,"port":8787}]}
+{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"autostartLocal":null,"hasWrangler":true,"port":8787}],"staleAutostart":[]}
 ```
 
 | key | type | meaning |
@@ -98,6 +100,11 @@ $ pithy worker list --json
 | `workers[].autostartLocal` | `boolean \| null` | `null` when nothing local was set, so `autostart` is the default. Otherwise what this branch said, on this machine — see [`commands/dev.md`](dev.md#keeping-a-worker-out-of-your-dev-set) |
 | `workers[].hasWrangler` | `boolean` | Whether the directory holds a `wrangler.jsonc`. `false` means a non-Worker process in the dev set, which `pithy deploy` skips |
 | `workers[].port` | `number \| null` | The port pinned in `.dev.config.json`, or `null` when none is assigned — a plain checkout, or an unassigned Worker |
+| `staleAutostart` | `object[]` | Checkout roots that are gone from disk and still hold autostart answers. Empty on a machine where nothing has moved, and never absent |
+| `staleAutostart[].root` | `string` | The absolute checkout root the answers are filed under — a path no longer on disk |
+| `staleAutostart[].branches` | `object[]` | The branches under that root that said something |
+| `staleAutostart[].branches[].branch` | `string` | The branch key. It may be `local:<path>` — what a checkout off a branch is keyed on, which is why nothing can match it to a branch name here |
+| `staleAutostart[].branches[].workers` | `string[]` | The Workers that branch named, sorted |
 
 ```
 $ pithy worker remove web --json
@@ -240,6 +247,16 @@ See what the project has. The deployed script name leads each row; the `apps/` d
 
 ```
 $ pithy worker list
+acme-api  api  autostart  port 8787
+acme-web  web  autostart  port 8788
+```
+
+After a `mv` of the checkout, with the answers left behind under the old path.
+
+```
+$ pithy worker list
+Autostart answers are recorded for a checkout at /home/you/Projects/app, which is gone: acme-web.
+Nothing looks them up again. If that was this project before it moved, re-set them here with pithy dev --app <name> --disable-autostart.
 acme-api  api  autostart  port 8787
 acme-web  web  autostart  port 8788
 ```

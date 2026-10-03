@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
 import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig, writeDevConfig } from "../feature/devConfig";
 import { BASE_PORT, BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
@@ -3807,5 +3807,82 @@ describe("startDev — the dev-login banner under a roster", () => {
     await startDev({ ...h.options, roster: true });
     await ready(h);
     expect(h.stdoutLines.some((l) => l.includes("logs →"))).toBe(true);
+  });
+});
+
+/**
+ * **A session that starts a worker the developer had parked under a previous path says so (#685).**
+ *
+ * `pithy dev` starts it rather than refusing. Refusing would honor the last stated intent, but the
+ * dead root's branch key can itself be a path — `local:/old/app` — so nothing in the moved checkout can
+ * match it to a branch, and there is no worker name to refuse *for*. And `readWorkerAutostart`'s
+ * documented fallback is *every worker autostarts*, which two call sites rest on. So: start, and name
+ * the root.
+ */
+describe("startDev — autostart answers under a checkout that is gone", () => {
+  let dir: string;
+  let registryPath: string;
+
+  /** The registry as a `mv` leaves it: the live root, plus a dead one still holding an answer. */
+  const seedRegistry = async (): Promise<void> => {
+    await mkdir(join(dir, "config"), { recursive: true });
+    await writeFile(
+      registryPath,
+      `${JSON.stringify({
+        [dir]: { main: { block: 0, base: 8787, size: 20 } },
+        "/gone/app": { main: { block: 1, base: 8807, size: 20, autostart: { web: false } } },
+      })}\n`,
+    );
+  };
+
+  const deps = () => ({
+    registryPathFor: async () => registryPath,
+    rootFor: async () => dir,
+    branchFor: async () => "main",
+  });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-dev-stale-"));
+    registryPath = join(dir, "config", "dev-ports.json");
+    await seedRegistry();
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("names the dead root, and still starts every worker", async () => {
+    const h = harness({ projectDir: dir, ensureDeps: deps() });
+
+    await startDev(h.options);
+
+    expect(h.stdoutLines).toContain("Autostart answers are recorded for a checkout at /gone/app, which is gone: web.");
+    // Started, not refused: the answer is under a key nothing looks up, so it narrows nothing.
+    expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/api", "/proj/apps/web"]);
+  });
+
+  // The rule `docs/commands/dev.md` states: under `--json`, every line on stdout is one object. The
+  // prose goes to stderr through `emitLine`, and the machine gets its own event.
+  test("under --json the prose is on stderr and stdout carries one parseable event", async () => {
+    const h = harness({ projectDir: dir, json: true, ensureDeps: deps() });
+
+    await startDev(h.options);
+
+    expect(h.stderrLines).toContain("Autostart answers are recorded for a checkout at /gone/app, which is gone: web.");
+    for (const line of h.stdoutLines) expect(() => JSON.parse(line) as unknown).not.toThrow();
+    expect(h.stdoutLines).toContain(
+      '{"command":"dev","event":"autostart-stale","roots":[{"root":"/gone/app","branches":[{"branch":"main","workers":["web"]}]}]}',
+    );
+  });
+
+  // Acceptance criterion 5, at the session level: a registry whose every root is on disk adds no line
+  // and no event, so a developer who has not moved anything sees the session they always saw.
+  test("a registry with nothing stale adds nothing to the session", async () => {
+    await writeFile(registryPath, `${JSON.stringify({ [dir]: { main: { block: 0, base: 8787, size: 20 } } })}\n`);
+    const h = harness({ projectDir: dir, ensureDeps: deps() });
+
+    await startDev(h.options);
+
+    expect(h.stdoutLines.some((line) => line.includes("Autostart answers are recorded"))).toBe(false);
   });
 });
