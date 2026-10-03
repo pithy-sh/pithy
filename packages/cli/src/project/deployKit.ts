@@ -4,7 +4,6 @@
 import { basename, dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -30,7 +29,7 @@ import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureCon
 import { cloudflareProvisioners } from "../provision/resources";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
-import { loadWorkerConfig, loadWorkerDomains } from "./config";
+import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
 import { type AddressStanza, inheritAddressKeys, resolveWorkerAddress } from "./workerAddress";
 import { discoverWorkers, type WorkerTarget } from "./workers";
@@ -238,13 +237,14 @@ function collectIds(stanzas: readonly KitStanza[], kind: "d1" | "kv"): Record<st
  * than a guess: a kit Worker resolved against an invented origin sends real links to nowhere.
  */
 async function baseUrlFor(worker: WorkerTarget, env: string, stanza: KitStanza | undefined): Promise<string | null> {
-  let domains: WorkerDomains | undefined;
+  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  let config: WorkerConfig | undefined;
   try {
-    domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
+    config = await loadWorkerConfig(worker.dir);
   } catch {
-    // A malformed declaration is `pithy doctor`'s sentence to say. Fall through to the route and var.
-    domains = undefined;
+    config = undefined;
   }
+  const domains = config === undefined ? undefined : loadWorkerDomains(config);
   return resolveWorkerAddress({ environment: env, domains, stanza })?.url ?? null;
 }
 

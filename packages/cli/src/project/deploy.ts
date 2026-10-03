@@ -4,13 +4,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { settleStep, startStep } from "../terminal/progress";
 import { red } from "../terminal/style";
-import { loadWorkerConfig, loadWorkerDomains } from "./config";
+import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import {
   assertCreatesNoResources,
   assertDeploysRequestedEnvironment,
@@ -400,12 +399,14 @@ async function verifyWorkerDeploy(
 ): Promise<VerifyDeployResult | null> {
   if (!env || env === "dev" || !versionId) return null;
 
-  let domains: WorkerDomains | undefined;
+  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  let config: WorkerConfig | undefined;
   try {
-    domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
+    config = await loadWorkerConfig(worker.dir);
   } catch {
-    domains = undefined;
+    config = undefined;
   }
+  const domains = config === undefined ? undefined : loadWorkerDomains(config);
 
   // Through the one stanza reader, never the tracked file directly (#643): a feature's stanza is in the
   // generated config that was just deployed, and a top-level `workers_dev` wrangler inherits is read with it.

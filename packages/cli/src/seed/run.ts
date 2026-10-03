@@ -695,9 +695,11 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
       options.env === FEATURE_ENVIRONMENT
         ? undefined
         : // Composed for this environment, through the one primitive, as `pithy doctor` reads the same answer.
-          await composeFor(options.env, async (load) => loadWorkerDomains(await load(worker.dir))).catch(
-            () => undefined,
-          );
+          // The `catch` is the load's alone: a refused declaration stops the seed rather than seeding
+          // against an address the adopter did not declare (#665).
+          await composeFor(options.env, async (load) => load(worker.dir))
+            .catch(() => undefined)
+            .then((config) => (config === undefined ? undefined : loadWorkerDomains(config)));
     const address = resolveWorkerAddress({
       environment: options.env,
       domains,

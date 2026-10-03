@@ -72,7 +72,73 @@ const PUNYCODE_LABEL = /(^|\.)xn--/;
  * them rather than a side effect of a parser version.
  */
 export function isPublicHostname(hostname: string): boolean {
-  return hostname.length <= 253 && HOSTNAME_PATTERN.test(hostname) && !PUNYCODE_LABEL.test(hostname);
+  return publicHostnameProblem(hostname) === null;
+}
+
+/** The DNS limit on a whole name, and the only length any caller measures. */
+const MAX_HOSTNAME_LENGTH = 253;
+
+/**
+ * Why a string is not a hostname a Worker can answer on — the reason, not a boolean.
+ *
+ * **It exists so a refusal can say which rule it broke.** {@link isPublicHostname} is the answer when the
+ * caller only needs yes or no; `WorkerDomain` needs the reason, because the three are not interchangeable
+ * to the adopter reading the message. A name over the limit is a typo. A name with a scheme on it is a
+ * misunderstanding. An internationalized name is neither — it is a thing this kit cannot do, for a reason
+ * that is not this kit's, and a message about bare hostnames would send that adopter looking for a typo
+ * they do not have (#665).
+ *
+ * Ordered by how specific the answer is. The length check is first because a name that long is over the
+ * limit whatever else is wrong with it, and `punycode` last because it is only reachable for a string that
+ * is otherwise a well-formed hostname.
+ */
+export function publicHostnameProblem(hostname: string): HostnameProblem | null {
+  if (hostname.length > MAX_HOSTNAME_LENGTH) return "too-long";
+  if (!HOSTNAME_PATTERN.test(hostname)) return "shape";
+  if (PUNYCODE_LABEL.test(hostname)) return "punycode";
+  return null;
+}
+
+/** The three ways a string fails {@link publicHostnameProblem}, each with its own sentence to say. */
+export type HostnameProblem = "too-long" | "shape" | "punycode";
+
+/**
+ * What an adopter is told, per reason, for a hostname this kit refuses.
+ *
+ * `shape` is the caller's to say, because what a bare hostname is differs between a `pattern` and a
+ * `zone` and each already had a sentence worth keeping. The other two are the same wherever they are hit.
+ *
+ * **The internationalized-domain sentence names Cloudflare**, and that is deliberate: the limit is not
+ * ours. `pithy-sh/pithy#691` tested it against a real zone — adding `tëst.pithy-sh.com` as a Worker
+ * Custom Domain returns *Internationalized Domain Names not supported* — so the kit refuses what the
+ * platform will not route rather than inventing a rule of its own. `docs/ACCEPTED-LIMITS.md` carries the
+ * evidence and the condition that would lift it.
+ */
+const HOSTNAME_PROBLEM_MESSAGES: Readonly<Record<Exclude<HostnameProblem, "shape">, string>> = {
+  "too-long": `A hostname is at most ${MAX_HOSTNAME_LENGTH} characters — the DNS limit on a whole name.`,
+  punycode:
+    "Internationalized domains are not supported: Cloudflare Workers will not route one, so a Worker could never answer on it. Use an ASCII hostname.",
+};
+
+/**
+ * One `pattern` or `zone` field, held to the one hostname rule.
+ *
+ * **Through {@link publicHostnameProblem}, never `HOSTNAME_PATTERN` directly.** A configured domain was
+ * the third caller of that rule and the only one that did not go through the function — it handed the
+ * pattern to `.regex()`, so it took a punycode A-label and a 267-character name that `pithy seed --host`
+ * refused for the same string. Two answers to one question, forty lines apart (#665). A rule added to the
+ * function now reaches a configured domain without anyone remembering to.
+ */
+function hostnameField(shapeMessage: string): z.ZodString {
+  return z.string().check((ctx) => {
+    const problem = publicHostnameProblem(ctx.value);
+    if (problem === null) return;
+    ctx.issues.push({
+      code: "custom",
+      input: ctx.value,
+      message: problem === "shape" ? shapeMessage : HOSTNAME_PROBLEM_MESSAGES[problem],
+    });
+  });
 }
 
 /** The environments a domain may be declared for — every managed one, never `dev`. */
@@ -81,21 +147,14 @@ export const DOMAIN_ENVIRONMENTS = ENVIRONMENTS.filter((environment) => environm
 /** One environment's public address for one Worker. */
 export const WorkerDomain = z
   .object({
-    pattern: z
-      .string()
-      .regex(
-        HOSTNAME_PATTERN,
-        "A domain is a bare hostname — no scheme, no path, no port (e.g. `api.example.com`, not `https://api.example.com/`).",
-      )
-      .describe(
-        "The hostname this Worker answers on in this environment, e.g. `api.example.com`. Written into `wrangler.jsonc` as a `routes` entry with `custom_domain: true`, and into `vars.BASE_URL` as `https://<pattern>`. A bare hostname rather than a URL, because that is what wrangler's route matcher takes — a scheme here would be silently wrong.",
-      ),
-    zone: z
-      .string()
-      .regex(HOSTNAME_PATTERN, "A zone is the registrable domain on your Cloudflare account, e.g. `example.com`.")
-      .describe(
-        "The Cloudflare zone `pattern` sits under — the registrable domain as it appears on your account, e.g. `example.com` for `api.example.com`. Cloudflare needs it to attach a custom domain, and it is not always derivable from the hostname: a zone can be a subdomain, and a public-suffix guess would be wrong for exactly the adopters who are hardest to debug.",
-      ),
+    pattern: hostnameField(
+      "A domain is a bare hostname — no scheme, no path, no port (e.g. `api.example.com`, not `https://api.example.com/`).",
+    ).describe(
+      "The hostname this Worker answers on in this environment, e.g. `api.example.com`. Written into `wrangler.jsonc` as a `routes` entry with `custom_domain: true`, and into `vars.BASE_URL` as `https://<pattern>`. A bare hostname rather than a URL, because that is what wrangler's route matcher takes — a scheme here would be silently wrong.",
+    ),
+    zone: hostnameField("A zone is the registrable domain on your Cloudflare account, e.g. `example.com`.").describe(
+      "The Cloudflare zone `pattern` sits under — the registrable domain as it appears on your account, e.g. `example.com` for `api.example.com`. Cloudflare needs it to attach a custom domain, and it is not always derivable from the hostname: a zone can be a subdomain, and a public-suffix guess would be wrong for exactly the adopters who are hardest to debug.",
+    ),
   })
   .describe("Where one Worker answers in one environment: the hostname, and the Cloudflare zone it sits under.")
   .check((ctx) => {

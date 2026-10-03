@@ -4,6 +4,8 @@ _The reader's version of this page is [pithy.sh/docs/reference/accepted-limits](
 
 Five rounds of adversarial review hardened the CLI's filesystem writes: exclusive temp creation, uid-ownership containment for symlinks, handle-based `fchmod`, gated recursive deletes, and tripwires that fail the build on a new producer. What remains is a short list of races Node gives no way to close, and one rule that lives in a test because no linter can express it.
 
+One further limit is here for the same reason and is not a race at all: a thing the platform underneath will not do. It is kept separate below, because it has no attacker and the threat model's claim is about its own list.
+
 They are written down here because a limit nobody recorded reads as a limit nobody saw.
 
 Functions are named rather than lines. A line number in a document is wrong by the next commit.
@@ -68,6 +70,22 @@ Biome has `style/noRestrictedImports` and per-path `overrides`, so the capabilit
 
 TypeScript 7 ships no standalone parser. Verified against `typescript@7.0.2`: the package's main export is a version stub, and `typescript/unstable/ast` gives node types, predicates, a visitor and `createScanner`, but nothing that turns a string into a tree. An AST arrives only through `typescript/unstable/sync`, which spawns the compiler server, needs a resolved project, and says in its own specifier that it is unstable.
 
+## Limits that are not ours
+
+**Nothing in this section has an attacker.** These are things Cloudflare will not do, which the kit refuses rather than pretends to support. They are recorded here so a refusal reads as a platform limit rather than as something Pithy could not manage — and so the condition that would lift it is written down beside it.
+
+### Internationalized domain names
+
+A Worker cannot answer on an internationalized domain, so `pithy.config.ts` refuses one. `müller-shop.de` is refused, and so is `xn--mller-shop-9db.de`, which is the same name encoded — the form DNS actually carries.
+
+**The limit is Cloudflare Workers', not ours.** Tested against a live zone on 2026-10-03: adding `tëst.pithy-sh.com` as a Worker **Custom Domain** returns **"Internationalized Domain Names not supported"** in Cloudflare's own dialog. Not a timeout, not a misconfiguration — a stated refusal.
+
+Two things are **not** the cause, and both were checked so nobody looks for the fix in the wrong place. Cloudflare **DNS** accepts an internationalized record; `xn--tst-jma.pithy-sh.com` went into the zone proxied and resolving. And Cloudflare **issues a valid certificate** for a punycode hostname — `curl` to both spellings returned a verified chain. The address resolves and the certificate is good. It is the routing to a Worker that does not exist.
+
+So the kit refuses at the point an adopter declares the domain, where the message can name the reason, rather than letting a `routes` entry reach a deploy that would never answer. `pithy seed --host` refused the same string already; `pithy-sh/pithy#665` is what made the configured domain agree with it.
+
+**If Cloudflare starts routing them, Pithy can support them.** The work is scoped and costed in `pithy-sh/pithy#691`, which closed as *not deliverable* rather than as wrong: the rule to validate an A-label without trusting the runtime is `tr46`, a pure-JavaScript UTS-46 implementation with its own tables, and the issue records why neither `new URL()` nor `url.domainToASCII` can be the foundation — Bun validates nothing with the latter while Node does, and the former changed behavior under this kit once already.
+
 ## What was not accepted
 
 For the record, so this is not read as a shrug. Each of these was reproduced with the real CLI, closed, and pinned by a test.
@@ -87,3 +105,4 @@ For the record, so this is not read as a shrug. Each of these was reproduced wit
 - A linter can express "this operation, in a module that does that". The rules leave the test suite the day one can.
 - TypeScript's parser is reachable from a string, or `typescript/unstable/sync` stabilizes.
 - The threat model changes. A shared build agent whose project directory is writable by an account that cannot already run our code puts every item above back in scope.
+- **Cloudflare Workers supports internationalized custom domains.** `pithy-sh/pithy#691` holds the scoped work, and it is the whole trigger — the kit's side is a validator change, not a redesign.

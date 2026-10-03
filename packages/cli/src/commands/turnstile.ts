@@ -3,7 +3,6 @@
 
 import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileConfig, TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -28,6 +27,7 @@ import {
   loadWorkerDomains,
   projectCloudflareAccount,
   requireProjectName,
+  type WorkerConfig,
 } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
@@ -120,14 +120,14 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
 async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> {
   const stanza = ((await readWranglerConfig(worker.dir)) as { env?: Record<string, AddressStanza | undefined> }).env
     ?.prod;
-  let domains: WorkerDomains | undefined;
+  // The load may fail for a reason this reader forgives; a refused declaration is not one (#665).
+  let workerConfig: WorkerConfig | undefined;
   try {
-    domains = loadWorkerDomains(await loadWorkerConfig(worker.dir));
+    workerConfig = await loadWorkerConfig(worker.dir);
   } catch {
-    // A malformed declaration must not stop a widget being provisioned off a perfectly good route or
-    // var. `pithy env` and `pithy deploy` are where a bad `domains` block gets reported.
-    domains = undefined;
+    workerConfig = undefined;
   }
+  const domains = workerConfig === undefined ? undefined : loadWorkerDomains(workerConfig);
 
   const address = resolveWorkerAddress({ environment: "prod", domains, stanza });
   if (!address) {

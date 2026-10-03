@@ -139,7 +139,7 @@ Cloudflare credentials are missing.
 Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
 ```
 
-**The Worker has no production address.** Nothing resolved — no `domains` declaration, no `env.prod` route, no `vars.BASE_URL`. A malformed `domains` block is not fatal here: it is ignored so a widget can still be provisioned off a perfectly good route, and `pithy env` and `pithy deploy` are where a bad block is reported.
+**The Worker has no production address.** Nothing resolved — no `domains` declaration, no `env.prod` route, no `vars.BASE_URL`. A `domains` block the kit refuses is a separate refusal and is fatal: an invalid domain is a config error, so the widget is not bound to an address the adopter never declared. What a `pattern` and a `zone` may be is [`docs/CLI.md`'s](../CLI.md) to say, once.
 
 ```
 <worker> has no production address.
