@@ -24,6 +24,12 @@ concurrency:
 jobs:
   integration:
     runs-on: ubuntu-24.04
+    # 60, purely so a wedged run cannot bill for GitHub's 360-minute default. It is **not** a
+    # correctness gate: this job deploys and then DELETES real `pithy-secrets-<env>` resources, so a
+    # kill partway through orphans them in the live account — which is also why `cancel-in-progress`
+    # is false above. There are no recorded runs to size this from, so the number is deliberately far
+    # wider than any plausible one. Measure it once a few releases have gone through, then tighten.
+    timeout-minutes: 60
     # Gated on the "E2E Integration Testing" GitHub environment — its secrets (CLOUDFLARE_*,
     # SECRETS_STORE_ID) and any required-reviewer protection apply to this job.
     environment: "E2E Integration Testing"

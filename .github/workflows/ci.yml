@@ -40,6 +40,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# **Every job caps itself at 15 minutes.** Without `timeout-minutes` a job inherits GitHub's default of
+# 360, so one wedged step holds a required check pending for six hours and bills the runner for all of
+# it. Measured on this repo, the slowest job is `Tests (cli)` at 4.7-6.2 minutes, with everything else
+# between 0.1 and 4.2; 15 is ~2.4x the slowest, which is wide enough that it can only ever catch a hang.
+#
+# One number for every job, deliberately. This is a hang backstop, not a per-job performance budget —
+# six hand-tuned values would need revisiting each time a suite grew, and the first one left stale
+# would fail a healthy run. A false kill costs a red PR and a human; 15 wasted minutes on the rare
+# hang costs neither.
+#
+# `/ship --yolo` waits on these checks and gives up at 25 minutes. That ceiling must stay above this
+# timeout plus queue time, so that a hung job is killed *here* and reports a named failing check,
+# rather than tripping the ship loop's ceiling and reporting only "unknown". Move one, check the other.
+
 jobs:
   # What to test, and how to divide it. Every test job hangs off this one output.
   #
@@ -53,6 +67,7 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       any: ${{ steps.plan.outputs.any }}
       count: ${{ steps.plan.outputs.count }}
@@ -188,6 +203,7 @@ jobs:
   verify:
     name: Lint, typecheck, build
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -325,6 +341,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -383,6 +400,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       # Two dimensions, so this crosses: every Node version against every shard. It walked the whole
@@ -471,6 +489,7 @@ jobs:
   clean-room:
     name: Clean room
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -513,6 +532,7 @@ jobs:
     needs: [verify, test, test-node, clean-room]
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Every gate reported
         env:

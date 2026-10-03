@@ -73,6 +73,7 @@ jobs:
   verify:
     name: Gates
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -136,6 +137,7 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       any: ${{ steps.plan.outputs.any }}
       shards: ${{ steps.plan.outputs.shards }}
@@ -174,6 +176,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -204,6 +207,10 @@ jobs:
     name: Release
     needs: [verify, test]
     runs-on: ubuntu-24.04
+    # 30, not 15: this job publishes to npm. The work itself takes 0.8-1.9 minutes, so this can only
+    # ever fire on a hang — and a kill partway through a monorepo publish is the one outcome worth
+    # paying extra headroom to avoid.
+    timeout-minutes: 30
     # **The environment is what pins the ref.** An npm trusted publisher matches on repository and
     # workflow *filename*; it has no branch field. `workflow_dispatch` runs the workflow definition
     # from whichever ref the dispatcher names, so without this, anyone able to push a branch could run
