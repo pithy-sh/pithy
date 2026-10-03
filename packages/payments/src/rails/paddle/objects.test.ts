@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { isPaddleSubscriptionId, isPaddleTransactionId } from "../../data/paddleIds";
 import { encodeSubjectReference } from "../../data/subject";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import { BROWSER_ITEMS_FORGERY, BROWSER_OVERWROTE_SERVER_STAMP } from "./fixtures/browserForged";
@@ -454,8 +455,10 @@ describe("what already parsed still parses (#465 regression guard)", () => {
         const id = (value as { id?: unknown }).id;
         if (typeof id !== "string") continue;
         const where = `${path}#${name}`;
-        if (id.startsWith("sub_")) expect(() => PaddleSubscription.parse(value), where).not.toThrow();
-        else if (id.startsWith("txn_")) expect(() => PaddleTransaction.parse(value), where).not.toThrow();
+        // The primitives rather than a prefix test, so this helper is not a sixth answer to what a
+        // Paddle id is (#681). Every fixture id is well-formed, so the tighter rule routes them all.
+        if (isPaddleSubscriptionId(id)) expect(() => PaddleSubscription.parse(value), where).not.toThrow();
+        else if (isPaddleTransactionId(id)) expect(() => PaddleTransaction.parse(value), where).not.toThrow();
         else continue;
         parsed += 1;
       }

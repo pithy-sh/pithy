@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { isPaddleTransactionId } from "../../data/paddleIds";
 import type { PaymentsPurchase } from "../../data/purchase";
 import { RefundRequest, type RefundRequestOutcome, type RefundRequestStatus } from "../../data/subscription";
 import { PaymentsProviderUnavailableError, PaymentsSubscriptionChangeRefusedError } from "../../error/errors";
@@ -101,10 +102,17 @@ function refuse(detail: string): never {
   });
 }
 
-/** The transaction this purchase row names, or null when it names none. */
+/**
+ * The transaction this purchase row names, or null when it names none.
+ *
+ * **The primitive decides, not a prefix test here.** `startsWith` accepted the bare prefix and Paddle's
+ * alphabet in uppercase, neither of which is an id the store can hold — so a malformed row cost a
+ * `GET /transactions/{id}` and then refused on the 404, naming the store rather than the row (#681).
+ * `data/paddleIds.ts` is the one place that says what a transaction id is.
+ */
 function transactionIdOf(purchase: PaymentsPurchase): string | null {
   const id = purchase.providerTransactionId;
-  return id.startsWith("txn_") ? id : null;
+  return isPaddleTransactionId(id) ? id : null;
 }
 
 /**

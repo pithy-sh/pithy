@@ -353,6 +353,20 @@ describe("readPaddleStanding", () => {
     expect(transport.calls).toHaveLength(0);
   });
 
+  test("a subscription column that only looks like one names no subscription", async () => {
+    // What a bare `startsWith` accepted and `isPaddleSubscriptionId` does not: the prefix on its own, and an
+    // id in an alphabet Paddle does not issue. Both used to reach `GET /subscriptions/{id}` and come back
+    // 404, which this verb reports as "nothing to say" anyway — so the round trip bought nothing.
+    for (const key of ["sub_", SUB.toUpperCase()]) {
+      const transport = paddle({});
+      expect(
+        await readPaddleStanding(purchase({ providerTransactionId: key }), options(transport)),
+        key,
+      ).toBeUndefined();
+      expect(transport.calls, `${key} names no subscription, so it costs no round trip`).toHaveLength(0);
+    }
+  });
+
   test("a subscription Paddle no longer knows is undefined rather than a refusal", async () => {
     const transport = paddle({ refusal: { on: "subscription", status: 404 } });
     expect(await readPaddleStanding(purchase(), options(transport))).toBeUndefined();
@@ -854,6 +868,23 @@ describe("cancelPaddleSubscription", () => {
 
     expect(writes(transport)[0]?.body).toEqual({ effective_from: "immediately" });
     expect(standing.status).toBe("canceled");
+  });
+
+  test("a write verb refuses a column that only looks like a subscription", async () => {
+    // `subscriptionIdOf` is read by all five verbs and only the read path was covered. A row holding the
+    // bare prefix names no subscription, so the cancel is refused where it is free rather than sent to
+    // the store and refused on its answer.
+    const transport = paddle({});
+    const error = await thrown(() =>
+      cancelPaddleSubscription(
+        { purchase: purchase({ providerTransactionId: "sub_" }), timing: "at_period_end" },
+        options(transport),
+      ),
+    );
+
+    expect(error?.payload.code).toBe("payments/subscription_change_refused");
+    expect(error?.payload.detail).toContain("names no Paddle subscription");
+    expect(transport.calls, "a row that names no subscription costs no round trip").toHaveLength(0);
   });
 
   test("canceling what is already scheduled to cancel writes nothing", async () => {

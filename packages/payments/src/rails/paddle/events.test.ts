@@ -397,6 +397,17 @@ describe("refreshPaddlePurchase", () => {
   test("answers undefined for a key prefix a later build wrote", async () => {
     expect(await refreshPaddlePurchase(row("adj_01"), { ...base, transport: stub({}) })).toBeUndefined();
   });
+
+  test("a key that only looks like an id is not one, so nothing is read", async () => {
+    // What `startsWith` accepted. The bare prefix and an id in an alphabet Paddle does not issue are not
+    // keys the store can hold, so they fall through to the contract's "nothing to say about this
+    // purchase" — the same answer `adj_01` gets above — rather than spending a round trip to be told 404.
+    for (const key of ["txn_", "sub_", TXN.toUpperCase(), SUB.toUpperCase()]) {
+      const transport = stub({});
+      expect(await refreshPaddlePurchase(row(key), { ...base, transport }), key).toBeUndefined();
+      expect(transport.calls, `${key} is not a key worth asking about`).toEqual([]);
+    }
+  });
 });
 
 describe("readPaddlePricing", () => {
@@ -432,6 +443,16 @@ describe("readPaddlePricing", () => {
     const transport = stub({ "/subscriptions/": {} });
     expect(await readPaddlePricing(row(TXN), { ...base, transport })).toBeUndefined();
     expect(transport.calls).toHaveLength(0);
+  });
+
+  test("a key that only looks like a subscription is not one, so nothing is read", async () => {
+    // The same tightening on the pricing path. A bare `startsWith` accepted both of these and spent a
+    // round trip asking Paddle what a subscription it cannot have issued is paying.
+    for (const key of ["sub_", SUB.toUpperCase()]) {
+      const transport = stub({ "/subscriptions/": {} });
+      expect(await readPaddlePricing(row(key), { ...base, transport }), key).toBeUndefined();
+      expect(transport.calls, `${key} is not a subscription worth asking about`).toHaveLength(0);
+    }
   });
 });
 
