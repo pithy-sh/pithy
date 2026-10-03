@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { isPaddleSubscriptionId } from "../../data/paddleIds";
 import type { PaymentsPurchase } from "../../data/purchase";
 import { renderMoney } from "../../data/renderMoney";
 import {
@@ -219,12 +220,16 @@ function orNull(value: string | null | undefined): string | null {
  * The subscription this purchase names, or null when it names none.
  *
  * Paddle's ids are globally prefixed, so the row's own key says what it is — `refreshPaddlePurchase`'s rule,
- * and for the same reason: a money row's family key is `sub_…`, and falling back to it would act on a
- * subscription from a row that is not one.
+ * and for the same reason: a money row's family key is the subscription's, and falling back to it would act
+ * on a subscription from a row that is not one.
+ *
+ * **`isPaddleSubscriptionId` rather than a prefix test, and all five callers feel it.** The prefix alone,
+ * and an id in an alphabet Paddle does not issue, used to read as subscriptions here: the read answered
+ * after a wasted round trip, and the other four refused on the store's answer instead of on the row (#681).
  */
 function subscriptionIdOf(purchase: PaymentsPurchase): string | null {
   const id = purchase.providerTransactionId;
-  return id.startsWith("sub_") ? id : null;
+  return isPaddleSubscriptionId(id) ? id : null;
 }
 
 /** The subscription, or a refusal. Used by the write verbs, which have nothing to do without it. */

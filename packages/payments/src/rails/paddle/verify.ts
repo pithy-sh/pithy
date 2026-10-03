@@ -52,19 +52,16 @@ export interface VerifyPaddleTransactionOptions {
   transport: PaddleHttpFetch;
 }
 
-/**
- * Checked before a round trip, so a malformed one costs nothing.
- *
- * The pattern moved to `./transactionId.ts` when the `_ptxn` reader needed the same question answered
- * about a value out of a query string — one rule, two callers, rather than two regexes that drift.
- */
-
 /** Verify one submitted Paddle transaction id, and report who it says it belongs to. */
 export async function verifyPaddleTransaction(
   receipt: string,
   options: VerifyPaddleTransactionOptions,
 ): Promise<VerifiedPurchase> {
   const id = receipt.trim();
+  // **Checked before a round trip, so a malformed receipt costs nothing.** The pattern left this module for
+  // `../../data/paddleIds.ts` when the `_ptxn` reader needed the same question answered about a value out of
+  // a query string — one rule, several callers, rather than regexes that drift. The rest of this rail reads
+  // it now too, and `data/paddleIds.test.ts` is the sweep that keeps it the only answer (#681).
   if (!isPaddleTransactionId(id)) {
     throw new PaymentsInvalidReceiptError({
       message: "That isn't a Paddle transaction.",

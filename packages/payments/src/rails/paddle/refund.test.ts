@@ -489,6 +489,22 @@ describe("requestPaddleRefunds — all-or-nothing before the first write", () =>
     expect(transport.calls).toEqual([]);
   });
 
+  test("a transaction column that only looks like one refuses before it costs a round trip", async () => {
+    // The two values a bare prefix test accepted and `isPaddleTransactionId` does not: the prefix on its
+    // own, which names no transaction, and an id in an alphabet Paddle does not issue. Both used to reach
+    // `GET /transactions/{id}` and refuse on the 404 — a refusal about the store rather than about the row,
+    // and a request somebody paid for.
+    for (const key of ["txn_", TXN_SOLO.toUpperCase()]) {
+      const row = purchase(key, "44444444-4444-4444-8444-444444444444");
+      const transport = paddle({});
+
+      const error = await thrown(() => requestPaddleRefunds({ purchases: [row], reason: REASON }, options(transport)));
+      expect(error?.payload.code, key).toBe("payments/subscription_change_refused");
+      expect(error?.payload.detail, key).toContain("is not a Paddle transaction");
+      expect(transport.calls, `${key} names no transaction, so it costs no round trip`).toEqual([]);
+    }
+  });
+
   test("the first create failing throws, because nothing has been written yet", async () => {
     // The line the whole design sits on: before the first write a failure is an error, after it a
     // report. With nothing raised, an error is the honest and more useful answer.

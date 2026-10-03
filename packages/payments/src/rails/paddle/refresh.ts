@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { SubscriptionPricing } from "../../data/discount";
+import { isPaddleSubscriptionId, isPaddleTransactionId } from "../../data/paddleIds";
 import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { UnboundProviderEvent } from "../contract";
@@ -18,9 +19,12 @@ import { readSubscription, readTransaction } from "./read";
  *
  * ## Which rows it can answer for
  *
- * Paddle's ids are globally prefixed, so the row's own key says what to ask: `sub_…` is a subscription,
- * `txn_…` is a transaction. Both are addressable, so both are re-read — unlike Lemon Squeezy, where a
- * money row records a closed period and has nothing to re-read.
+ * Paddle's ids are globally prefixed, so the row's own key says what to ask: a subscription id is a
+ * subscription, a transaction id is a transaction. Both are addressable, so both are re-read — unlike
+ * Lemon Squeezy, where a money row records a closed period and has nothing to re-read. **What counts as
+ * one of those keys is `data/paddleIds.ts`'s to say**, not this module's: a prefix test here accepted the
+ * bare prefix and an uppercase id, and spent a round trip finding out the store had never issued it
+ * (#681).
  *
  * A **subscription** transaction's money row is born `expired`, which is in the Workflow's terminal set,
  * so the pass never selects one. Should one reach here it is answered honestly rather than skipped: a
@@ -61,20 +65,21 @@ export async function refreshPaddlePurchase(
   const id = purchase.providerTransactionId;
   const environment = options.environment === "production" ? "production" : "sandbox";
 
-  if (id.startsWith("sub_")) {
+  if (isPaddleSubscriptionId(id)) {
     const subscription = await readSubscription(id, read);
     if (subscription === undefined) return undefined;
     return { ...subscriptionEvent(subscription, options.now, environment), providerEventAt: options.now };
   }
 
-  if (id.startsWith("txn_")) {
+  if (isPaddleTransactionId(id)) {
     const transaction = await readTransaction(id, read);
     if (transaction === undefined) return undefined;
     return { ...transactionEvent(transaction, options.now, environment), providerEventAt: options.now };
   }
 
-  // A prefix a later build wrote. Nothing to re-read, which the contract defines as "the store has
-  // nothing to say about this purchase" and which leaves the row exactly as it stands.
+  // A key neither primitive recognizes: a prefix a later build wrote, or a value too mangled to be an
+  // id Paddle issued. Nothing to re-read, which the contract defines as "the store has nothing to say
+  // about this purchase" and which leaves the row exactly as it stands.
   return undefined;
 }
 
@@ -86,15 +91,17 @@ export async function refreshPaddlePurchase(
  * list price. Nothing here multiplies a price by a percentage — a second calculation would be a second
  * answer to the one question a customer checks against their statement.
  *
- * Only a `sub_…` row can be asked. A transaction records one closed period and has no "next", so it
- * answers `undefined` — the same "nothing to say about this purchase" the refresh path uses.
+ * Only a subscription row can be asked, and `data/paddleIds.ts` says which rows those are. A transaction
+ * records one closed period and has no "next", so it answers `undefined` — the same "nothing to say about
+ * this purchase" the refresh path uses, and the same answer a column holding something Paddle never
+ * issued now gets without a round trip (#681).
  */
 export async function readPaddlePricing(
   purchase: PaymentsPurchase,
   options: RefreshPaddleOptions,
 ): Promise<SubscriptionPricing | undefined> {
   const id = purchase.providerTransactionId;
-  if (!id.startsWith("sub_")) return undefined;
+  if (!isPaddleSubscriptionId(id)) return undefined;
 
   const answer = await paddleJson(options.transport ?? paddleHttpFetch, `/subscriptions/${encodeURIComponent(id)}`, {
     what: `subscription ${id}'s pricing`,
