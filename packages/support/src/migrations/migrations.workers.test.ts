@@ -7,10 +7,11 @@ import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { SUPPORT_MIGRATION_ORDER } from "../capability";
-import { supportDatabase } from "../data/tables";
+import { SupportMessage } from "../data/message";
+import { SUPPORT_MESSAGES_TABLE, supportDatabase } from "../data/tables";
 import { SupportThread } from "../data/thread";
 import { indexMessage, reindexThread } from "../store/search";
-import { createSearchIndex, dropSearchIndex } from "../store/searchIndex";
+import { createSearchIndex, dropSearchIndex, SEARCH_TRIGGERS } from "../store/searchIndex";
 import { support_0001_threads } from "./0001_threads";
 
 /**
@@ -105,7 +106,7 @@ const THREAD = {
 const ALL = { "0001_threads": support_0001_threads };
 
 beforeEach(async () => {
-  for (const trigger of ["pithy_support_search_update", "pithy_support_search_delete", "pithy_support_search_insert"]) {
+  for (const trigger of SEARCH_TRIGGERS) {
     await env.DB.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
   }
   for (const table of [
@@ -250,25 +251,135 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
     expect(await tables()).not.toContain("pithy_support_search");
   });
 
-  test("provisioning creates the virtual table, and no triggers", async () => {
+  test("provisioning creates the virtual table and its three triggers", async () => {
     await runMigrations(env.DB, provider(ALL));
     await createSearchIndex(supportDatabase(env.DB));
     expect(await tables()).toContain("pithy_support_search");
-    // Deliberately none — but no longer because triggers are in doubt. D1 runs an authorizer that
-    // rejects SQLite constructs workerd permits (`fts5vocab` is refused on D1 while plain FTS5
-    // succeeds), and `CREATE TRIGGER` used to sit in the undocumented middle: neither listed as
-    // supported nor as refused, so a pass in Miniflare proved nothing about the deployment that
-    // matters. That is settled. **`CREATE TRIGGER` runs on remote D1** — the Leed CMS ships one in
-    // a production migration (`BEFORE UPDATE … WHEN NEW.type <> OLD.type BEGIN SELECT RAISE(ABORT,
-    // …); END`), so the authorizer permits it and `RAISE(ABORT)` inside a trigger body works too.
-    // The one trap is casing: `BEGIN`/`END` must be uppercase, which Miniflare tolerates lowercase
-    // and remote D1 rejects as `incomplete input [code: 7500]`.
-    //
-    // The index is still written by application code, and that is now a choice rather than a
-    // constraint. Moving it onto triggers is a real option worth its own issue — it would keep the
-    // FTS table in step without the write path having to remember — so this assertion pins today's
-    // design, not a limit of the platform.
+    // **The triggers are provisioning, not schema** — created here, beside the table, because the
+    // table itself cannot be a migration (see the test above) and a trigger that exists where the
+    // table does not would fail every message write. `CREATE TRIGGER` used to sit in an undocumented
+    // middle on D1, which is why the index was written from application code instead: D1 runs an
+    // authorizer that rejects SQLite constructs workerd permits (`fts5vocab` is refused on D1 while
+    // plain FTS5 succeeds), so a pass in Miniflare proved nothing about the deployment that matters.
+    // That is settled — the Leed CMS ships a `BEFORE UPDATE … BEGIN SELECT RAISE(ABORT, …); END`
+    // trigger in a production migration — and the remaining trap is casing, which no Workers test
+    // can catch: `BEGIN`/`END` must be uppercase, Miniflare tolerates lowercase and remote D1 rejects
+    // it as `incomplete input [code: 7500]`. `store/searchIndex.test.ts` holds that one.
+    expect(await triggers()).toEqual([...SEARCH_TRIGGERS].sort());
+  });
+
+  test("an inserted message is indexed with no application call at all", async () => {
+    // The whole change, in one assertion. `insertMessage` writes the row directly — no `indexMessage`,
+    // no `deps.fts` guard, nothing that could have remembered.
+    await runMigrations(env.DB, provider(ALL));
+    await createSearchIndex(supportDatabase(env.DB));
+    await insertMessage({ id: "m1", threadId: "t1", subject: "Refund please", body: "I was charged twice" });
+
+    expect(await search("charged")).toEqual(["t1"]);
+    expect(await search("refund")).toEqual(["t1"]);
+  });
+
+  test("an updated message is re-indexed, and only once", async () => {
+    await runMigrations(env.DB, provider(ALL));
+    await createSearchIndex(supportDatabase(env.DB));
+    await insertMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" });
+    await env.DB.prepare("UPDATE pithy_support_messages SET text_body = ? WHERE id = ?")
+      .bind("resolved happily", "m1")
+      .run();
+
+    expect(await search("charged")).toEqual([]);
+    expect(await search("resolved")).toEqual(["t1"]);
+    // The delete in the update body is what keeps this 1. A bare insert would leave two rows and the
+    // thread would appear twice in its own results.
+    const { results } = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM pithy_support_search WHERE message_id = 'm1'",
+    ).all<{ n: number }>();
+    expect(results[0]?.n).toBe(1);
+  });
+
+  test("a deleted message takes its index row with it", async () => {
+    await runMigrations(env.DB, provider(ALL));
+    await createSearchIndex(supportDatabase(env.DB));
+    await insertMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" });
+    // Asserted before the delete, so this cannot pass by never having been indexed at all.
+    expect(await search("charged")).toEqual(["t1"]);
+
+    await env.DB.prepare("DELETE FROM pithy_support_messages WHERE id = ?").bind("m1").run();
+    expect(await search("charged")).toEqual([]);
+  });
+
+  test("a message written through the Kysely builder is findable — the camelCase trap", async () => {
+    // **The test that catches `NEW.textBody`.** `CamelCasePlugin` snake-cases what the builder emits
+    // and never touches a string inside a `sql` template, so the trigger body has to spell the
+    // physical names itself. A camelCase reference compiles, provisions, and then indexes nothing —
+    // and only a write through the real builder proves the two halves agree.
+    await runMigrations(env.DB, provider(ALL));
+    const db = supportDatabase(env.DB);
+    await createSearchIndex(db);
+    await db
+      .insertInto(SUPPORT_MESSAGES_TABLE)
+      .values(
+        SupportMessage.encode({
+          id: "m1",
+          threadId: "t1",
+          direction: "inbound",
+          channel: "email",
+          submittedByUserId: null,
+          context: null,
+          mimeMessageId: null,
+          mimeInReplyTo: null,
+          mimeReferences: null,
+          fromAddress: "ada@example.com",
+          fromName: null,
+          toAddress: "support@help.example.com",
+          subject: "Chargeback notice",
+          textBody: "the payment was reversed",
+          htmlBody: null,
+          emailJobId: null,
+          rawKey: null,
+          rawBytes: null,
+          receivedAt: new Date(1),
+          createdAt: new Date(1),
+        }),
+      )
+      .execute();
+
+    expect(await search("reversed")).toEqual(["t1"]);
+    expect(await search("chargeback")).toEqual(["t1"]);
+  });
+
+  test("a failing index write aborts the message write — the durability contract, inverted", async () => {
+    // **Documented and tested rather than accepted quietly.** The old call sites logged and carried
+    // on, because a second round trip to a separate table can fail on its own. A trigger runs inside
+    // the message's own statement, so it cannot: the body is a delete plus an insert of values already
+    // in `NEW.*`, and the one thing left that can fail is the FTS table being absent. This forces
+    // exactly that state — the table gone, the triggers still there, which is what a hand-run
+    // `DROP TABLE` leaves — and holds the message write to failing with it.
+    await runMigrations(env.DB, provider(ALL));
+    await createSearchIndex(supportDatabase(env.DB));
+    await env.DB.exec("DROP TABLE pithy_support_search");
+
+    await expect(insertMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" })).rejects.toThrow(
+      /pithy_support_search/,
+    );
+    // The message is not half-written: the statement aborted, so the row is not there either.
+    const { results } = await env.DB.prepare("SELECT COUNT(*) AS n FROM pithy_support_messages").all<{ n: number }>();
+    expect(results[0]?.n).toBe(0);
+  });
+
+  test("dropping the index drops the triggers with it, so turning the flag off is not an outage", async () => {
+    // The reason `dropSearchIndex` drops the triggers *first*. If the pair could separate from the
+    // kit's own side, `search.fts: false` would be an outage on the capability's main write path
+    // rather than a feature flag.
+    await runMigrations(env.DB, provider(ALL));
+    const db = supportDatabase(env.DB);
+    await createSearchIndex(db);
+    await dropSearchIndex(db);
+
     expect(await triggers()).toEqual([]);
+    await expect(
+      insertMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" }),
+    ).resolves.toBeUndefined();
   });
 
   test("D1 really has FTS5 — an indexed message is findable by a word in its body", async () => {
@@ -328,12 +439,14 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
   });
 
   test("reindexThread rebuilds from the messages table — the repair path", async () => {
-    // The failure application-side indexing has and triggers would not: a message stored while the
-    // index write failed. This is what fixes it.
+    // **The gap triggers cannot close, which is why `reindexThread` stays.** A message written before
+    // the index was provisioned — an adopter turning `search.fts` on over mail that already exists —
+    // has no trigger to have fired for it, so the index starts behind the table. This is what fixes
+    // it, and it is also what a tokenizer change runs.
     await runMigrations(env.DB, provider(ALL));
     const db = supportDatabase(env.DB);
-    await createSearchIndex(db);
     await insertMessage({ id: "m1", threadId: "t1", subject: "Refund", body: "charged twice" });
+    await createSearchIndex(db);
     expect(await search("charged")).toEqual([]);
 
     expect(await reindexThread(db, "t1")).toBe(1);
@@ -425,8 +538,12 @@ describe("the opt-in FTS5 index — a provisioned resource, not a migration", ()
     expect(await search("charged")).toEqual(["t1"]);
   });
 
-  test("the full set rolls back to nothing", async () => {
+  test("the full set rolls back to nothing, and carried no trigger on the way up", async () => {
+    // The ledger half of the first test in this block, stated as an observation of the database: a
+    // migration set that composed a `CREATE TRIGGER` conditionally on `search.fts` is the corruption
+    // this capability already paid for once. Nothing between `up` and `down` creates one.
     await runMigrations(env.DB, provider(ALL));
+    expect(await triggers()).toEqual([]);
     await rollbackMigration(env.DB, provider(ALL));
     await rollbackMigration(env.DB, provider(ALL));
     expect(await tables()).toEqual([]);

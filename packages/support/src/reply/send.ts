@@ -9,7 +9,6 @@ import { SupportMessage } from "../data/message";
 import { SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, type SupportDatabase } from "../data/tables";
 import { SupportNotFoundError, SupportReplyFailedError } from "../error/errors";
 import { buildReferencesHeader, replySubject } from "../mime/threading";
-import { indexMessage } from "../store/search";
 
 /**
  * Sending a reply — through `@pithy-sh/email`'s durable send path, never directly.
@@ -84,8 +83,6 @@ export interface ReplyDeps {
     inReplyTo?: string;
     references?: string;
   }) => Promise<{ jobId: string }>;
-  /** Whether the full-text index is in use. */
-  fts: boolean;
   /** The audit seam. */
   emit: AuditEmit;
   /** The request logger. */
@@ -275,15 +272,6 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     createdAt: now,
   };
   await deps.db.insertInto(SUPPORT_MESSAGES_TABLE).values(SupportMessage.encode(message)).execute();
-
-  if (deps.fts) {
-    try {
-      await indexMessage(deps.db, { threadId: input.threadId, messageId, subject, body: input.body });
-    } catch (error) {
-      // A search miss, never a lost reply. `reindexThread` is the repair.
-      deps.log.warn("support reply not indexed", { messageId, error });
-    }
-  }
 
   await deps.db
     .updateTable(SUPPORT_THREADS_TABLE)

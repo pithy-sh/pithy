@@ -21,7 +21,6 @@ import { MAX_TEXT_BODY, type ParsedInboundMessage, parseInbound } from "../mime/
 import { htmlToText, sanitizeHtml } from "../mime/sanitize";
 import { parentCandidates } from "../mime/threading";
 import { truncateToBytes } from "../mime/truncate";
-import { indexMessage } from "../store/search";
 import { senderAuthenticity } from "./authenticity";
 import { checkRates, checkSize } from "./guard";
 import { resolveInbox } from "./recipient";
@@ -83,8 +82,6 @@ export interface IngestDeps {
   config: SupportConfig;
   /** The R2 bucket raw messages and attachments are written to. Absent means neither is kept. */
   bucket?: R2Bucket;
-  /** Whether the FTS5 index is composed. False means search runs as a `LIKE` scan and nothing is indexed. */
-  fts: boolean;
   /**
    * Start the classification Workflow for a stored message. Allowed to fail and allowed to decline —
    * an unprovisioned project has no binding, and a thread that stays `uncategorized` is a legitimate
@@ -502,17 +499,6 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
         });
       });
     throw error;
-  }
-
-  // The full-text index, when it is composed. Best-effort by contract: a failed index write must
-  // never lose a customer's message, so it is logged and the ingest continues. The row is stored,
-  // readable, and repairable by `reindexThread` — it is only missing from one search box.
-  if (deps.fts) {
-    try {
-      await indexMessage(deps.db, { threadId, messageId, subject, body: text });
-    } catch (error) {
-      deps.log.warn("support message not indexed", { messageId, error });
-    }
   }
 
   // Guarded for the same reason the index write and the dispatch are, and the consequence here is

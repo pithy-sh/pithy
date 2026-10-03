@@ -41,7 +41,7 @@ function recorder(overrides: Partial<SupportProvisioner> = {}) {
     },
     ensureSearchIndex: async (env) => {
       calls.push(`search:${env}`);
-      return { created: true, dropped: false };
+      return { created: true, dropped: false, repaired: false };
     },
     ensureRoutingRule: async () => {
       calls.push("routing");
@@ -95,7 +95,11 @@ describe("provisionSupport", () => {
     // Reported rather than assumed: this is DDL on the adopter's own database, and a provisioning
     // command whose output cannot be audited is one an operator has to take on faith.
     const { provisioner } = recorder({
-      ensureSearchIndex: async (env) => ({ created: env === "prod", dropped: env === "staging" }),
+      ensureSearchIndex: async (env) => ({
+        created: env === "prod",
+        dropped: env === "staging",
+        repaired: false,
+      }),
     });
     const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
 
@@ -103,10 +107,24 @@ describe("provisionSupport", () => {
     expect(result.search.filter((entry) => entry.dropped).map((entry) => entry.env)).toEqual(["staging"]);
   });
 
-  test("an unchanged index reports neither created nor dropped", async () => {
-    const { provisioner } = recorder({ ensureSearchIndex: async () => ({ created: false, dropped: false }) });
+  test("a repaired index is carried through as its own outcome, not folded into unchanged", async () => {
+    // The upgrade path, reported: an environment whose table was already there and whose triggers were
+    // not is a database the run **changed**, and an operator reading `already correct` would have no
+    // reason to look at why messages stopped being indexed.
+    const { provisioner } = recorder({
+      ensureSearchIndex: async (env) => ({ created: false, dropped: false, repaired: env === "prod" }),
+    });
     const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
-    expect(result.search.every((entry) => !entry.created && !entry.dropped)).toBe(true);
+
+    expect(result.search.filter((entry) => entry.repaired).map((entry) => entry.env)).toEqual(["prod"]);
+  });
+
+  test("an unchanged index reports neither created, dropped nor repaired", async () => {
+    const { provisioner } = recorder({
+      ensureSearchIndex: async () => ({ created: false, dropped: false, repaired: false }),
+    });
+    const result = await provisionSupport(provisioner, DEFAULT_ENVIRONMENTS);
+    expect(result.search.every((entry) => !entry.created && !entry.dropped && !entry.repaired)).toBe(true);
   });
 
   test("a skipped bucket is reported rather than hidden", async () => {

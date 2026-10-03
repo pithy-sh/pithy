@@ -14,6 +14,7 @@ import { SupportMessage } from "../data/message";
 import { SUPPORT_MESSAGES_TABLE, SUPPORT_THREADS_TABLE, supportDatabase } from "../data/tables";
 import { SupportThread } from "../data/thread";
 import { support_0001_threads } from "../migrations/0001_threads";
+import { createSearchIndex } from "../store/searchIndex";
 import { type ReplyDeps, sendReply } from "./send";
 
 /**
@@ -151,7 +152,6 @@ function harness(
       db,
       config: SupportConfig.parse(options.config ?? { inboundAddresses: [INBOX] }),
       enqueue: options.noEmailCapability ? undefined : (options.enqueue ?? recording),
-      fts: false,
       emit: async (event) => {
         events.push(event);
       },
@@ -568,5 +568,23 @@ describe("an email thread never takes the in-app path", () => {
 
     expect(result).toEqual({ channel: "email", messageId: "out-1", jobId: "job-1" });
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe("the full-text index, which this path no longer writes", () => {
+  test("the reply is findable by a word in its body, with no index call in sight", async () => {
+    // **`sendReply` has no `indexMessage` call and no `fts` dep any more.** An answer an operator wrote
+    // is as searchable as the question, and nothing on this path arranges that — the trigger does.
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_support_search");
+    await createSearchIndex(db);
+    await seedMessage({ id: "in-1", direction: "inbound", receivedAt: T0, mimeMessageId: "first@mail.example.com" });
+    const { deps } = harness();
+
+    await sendReply(deps, { threadId: "t1", body: "Your refund is already on its way.", viewer: "ada@ops" });
+
+    const { results } = await env.DB.prepare(
+      "SELECT message_id FROM pithy_support_search WHERE pithy_support_search MATCH 'refund'",
+    ).all<{ message_id: string }>();
+    expect(results.map((row) => row.message_id)).toEqual(["out-1"]);
   });
 });

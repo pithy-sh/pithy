@@ -21,7 +21,6 @@ import {
 import { SupportThread, UNCLASSIFIED } from "../data/thread";
 import { SupportInvalidCategoryError, SupportNotFoundError, SupportRejectedError } from "../error/errors";
 import { safeFilename } from "../mime/parse";
-import { indexMessage } from "../store/search";
 import { checkAccountRate, checkAttachment } from "./guard";
 
 /**
@@ -110,8 +109,6 @@ export interface SubmitDeps {
   categories: SupportCategories;
   /** The R2 bucket attachments are written to. Absent means none are stored. */
   bucket?: R2Bucket;
-  /** Whether the FTS5 index is composed. */
-  fts: boolean;
   /**
    * The submitter's account, by id. Returns null when `@pithy-sh/auth` is absent or the row is gone —
    * both of which contradict the session that got here, so the caller treats it as a fault rather than
@@ -506,14 +503,6 @@ export async function submitFeedback(deps: SubmitDeps, input: SubmitInput): Prom
         });
       });
     throw error;
-  }
-
-  if (deps.fts) {
-    try {
-      await indexMessage(deps.db, { threadId, messageId, subject: input.subject, body: input.body });
-    } catch (error) {
-      deps.log.warn("support submission not indexed", { messageId, error });
-    }
   }
 
   // Best-effort, like the mail path: a bucket that is briefly unavailable costs the attachments, never

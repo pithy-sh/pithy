@@ -341,54 +341,81 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   }
 
   /**
-   * Bring the full-text index in this environment's app database into line with `search.fts`.
+   * Bring the full-text index **and its triggers** in this environment's app database into line with
+   * `search.fts`.
    *
    * Deliberately **not** a migration. The index is derived — every row comes from
    * `pithy_support_messages`, and `reindexThread` rebuilds it on demand — so it is a provisioned
    * resource like the bucket and the routing rule, not schema whose loss loses data. It also has to
    * live here for a second reason: composing it conditionally into the migration set meant turning
    * the flag off removed an already-applied migration, which Kysely reads as corruption and which
-   * blocked `pithy migrate` for **every** capability sharing that database, not just support.
+   * blocked `pithy migrate` for **every** capability sharing that database, not just support. The
+   * triggers inherit both reasons exactly.
    *
-   * Both statements are `IF [NOT] EXISTS`, so this is safe to re-run — and the current state is read
-   * rather than assumed, so the result reports what actually changed instead of what was attempted.
+   * **What is read is the table and its triggers, not the table alone.** This compared one boolean to
+   * one boolean — present against wanted, equal means nothing to do — and that early return is the
+   * state an adopter lands in after taking the release that moved the index onto triggers: the table is
+   * there, the flag is set, the triggers were never created, and no write path calls `indexMessage` any
+   * more. `pithy doctor` names this command for exactly that drift, so this command has to be the one
+   * that clears it. `searchIndexAction` is the decision and is unit-tested in `@pithy-sh/support`.
+   *
+   * Every statement is idempotent, so this is safe to re-run — and the current state is read rather
+   * than assumed, so the result reports what actually changed instead of what was attempted.
    */
-  async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean }> {
-    const { supportDatabase, createSearchIndex, dropSearchIndex, reindexAll, SEARCH_TABLE } = await loadSupportSearch(
-      this.#projectDir,
-    );
+  async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean; repaired: boolean }> {
+    const {
+      supportDatabase,
+      createSearchIndex,
+      dropSearchIndex,
+      reindexAll,
+      searchIndexAction,
+      searchIndexState,
+      SEARCH_OBJECTS,
+      SEARCH_TABLE,
+    } = await loadSupportSearch(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
     const database = this.#cf.d1(appDatabaseId);
 
+    // One read for the table and the three triggers. `sqlite_master` holds both kinds, so the `type`
+    // filter is what the names carry rather than a column — and the names come from the capability, so
+    // a doctor and a provisioner cannot disagree about what provisioned means.
     const listed = await database
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
-      .bind(SEARCH_TABLE)
+      .prepare(`SELECT name FROM sqlite_master WHERE name IN (${SEARCH_OBJECTS.map(() => "?").join(", ")})`)
+      .bind(...SEARCH_OBJECTS)
       .all<{ name: string }>();
-    const present = (listed.results ?? []).length > 0;
-    const wanted = this.#supportConfig.search.fts;
-
-    if (wanted === present) return { created: false, dropped: false };
+    const action = searchIndexAction(
+      searchIndexState((listed.results ?? []).map((row) => row.name)),
+      this.#supportConfig.search.fts,
+    );
+    if (action === "none") return { created: false, dropped: false, repaired: false };
 
     const db = supportDatabase(database);
-    if (wanted) {
-      await createSearchIndex(db);
-      // **Backfilled immediately.** An index created over messages that already exist is empty, and
-      // because the table now exists the runtime's `LIKE` fallback stops firing — so the inbox would
-      // answer "no matches" for a term plainly in the body. Creating without populating turns the
-      // feature on and the results off, which is the one direction a filter must never fail in.
-      await reindexAll(db);
-    } else {
+    if (action === "drop") {
       await dropSearchIndex(db);
+    } else {
+      await createSearchIndex(db);
+      // **Backfilled immediately, on a create and on a repair alike.** An index created over messages
+      // that already exist is empty, and because the table now exists the runtime's `LIKE` fallback
+      // stops firing — so the inbox would answer "no matches" for a term plainly in the body. Creating
+      // without populating turns the feature on and the results off, which is the one direction a
+      // filter must never fail in. A repair has the same hole for the same reason: the messages written
+      // between the deploy and this run had no trigger to fire for them.
+      await reindexAll(db);
     }
     await this.#audit({
       environment: env,
-      action: wanted ? "support/search_index_created" : "support/search_index_dropped",
+      action:
+        action === "drop"
+          ? "support/search_index_dropped"
+          : action === "repair"
+            ? "support/search_triggers_repaired"
+            : "support/search_index_created",
       outcome: "success",
       severity: "info",
       resourceType: "d1_table",
       resourceId: SEARCH_TABLE,
     });
-    return { created: wanted, dropped: !wanted };
+    return { created: action === "create", dropped: action === "drop", repaired: action === "repair" };
   }
 
   /**

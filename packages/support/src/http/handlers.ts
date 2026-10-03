@@ -221,7 +221,6 @@ export async function replyToConversation(
       db: deps.db,
       config: deps.config,
       enqueue: deps.enqueue,
-      fts: deps.fts,
       emit: deps.emit,
       log: deps.log,
       newId: deps.newId,
@@ -353,7 +352,6 @@ export async function submitFeedbackRequest(
       // *stored* belongs with the write, so it holds for every caller and not only for HTTP.
       categories: deps.categories,
       bucket: deps.bucket,
-      fts: deps.fts,
       resolveAccount: (id) => resolveSubmitterAccount(deps.d1, id, deps.peers),
       dispatchClassify: deps.dispatchClassify,
       emit: deps.emit,

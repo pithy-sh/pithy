@@ -87,16 +87,23 @@ export function searchPredicate(term: string, options: { fts: boolean }): Expres
 /**
  * Add a message to the full-text index, replacing any row already there for it.
  *
- * **Remove-then-insert, not a bare insert** — the same shape the CMS `syncFts` uses, and for the
- * reason application-managed indexes always need it: an FTS5 table has no primary key and no unique
- * constraint to lean on, so a second call for the same message would silently add a second copy and
- * the thread would start appearing twice in its own search results. Making the write idempotent means
- * a retry, a reindex, and a first index are all the same operation, which is the property every other
- * write path in this repo is built on.
+ * **No write path calls this any more.** The index is maintained by the triggers `createSearchIndex`
+ * provisions (`store/searchIndex.ts`), so a message is indexed because it was written rather than
+ * because the code that wrote it remembered. This is the **repair** primitive now: {@link reindexThread}
+ * and {@link reindexAll} are its only callers in the kit, and it stays exported because
+ * `package.json` exports `./src/*`, so an adopter may be reaching it.
  *
- * Best-effort by contract: a failed index write must never lose a customer's message, so the caller
- * logs and carries on — the row is still there, still readable, still repairable by
- * {@link reindexThread}, and only missing from one search box.
+ * **Remove-then-insert, not a bare insert** — the same shape the trigger bodies use, and for the
+ * reason an FTS5 table always needs it: it has no primary key and no unique constraint to lean on, so
+ * a second call for the same message would silently add a second copy and the thread would start
+ * appearing twice in its own search results. Making the write idempotent means a retry, a reindex, and
+ * a first index are all the same operation.
+ *
+ * **It no longer carries a swallow contract, because it is no longer on a message write.** A failure
+ * here is a failed repair, and the caller is a command or a route that can say so. The durability
+ * question moved with the index itself: a trigger runs inside the message's own statement, so a
+ * failure in its body takes the message write down with it — which is what `searchIndex.ts` documents
+ * and what the triggers' own tests hold.
  */
 export async function indexMessage(
   db: SupportDatabase,

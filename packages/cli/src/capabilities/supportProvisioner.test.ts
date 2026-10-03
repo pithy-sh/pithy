@@ -304,3 +304,138 @@ describe("teardown refuses an unconfirmed account", () => {
     expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * `ensureSearchIndex`, which is the only step in this file that writes schema — and the one an upgrade
+ * depends on.
+ *
+ * It used to compare one boolean against one boolean: table present against `search.fts` set, equal
+ * means nothing to do. That is precisely the state an adopter is in after taking the release that moved
+ * the index onto triggers — table present, flag set, triggers never created, every write path's
+ * `indexMessage` call gone. The old comparison returned early, so `pithy doctor` would have named a
+ * command that did nothing. The read is of the table **and** its triggers now, and `repaired` is a
+ * reported outcome rather than a silent one.
+ *
+ * The D1 is a recording fake rather than a live database: what is under test is the decision and the
+ * statements it issues, and both halves of the SQL itself are proved against real D1 in
+ * `@pithy-sh/support`'s own suites.
+ */
+function fakeD1(present: readonly string[]) {
+  const statements: string[] = [];
+  const prepare = (sql: string) => {
+    statements.push(sql);
+    let bound: unknown[] = [];
+    const result = {
+      bind: (...params: unknown[]) => {
+        bound = params;
+        return result;
+      },
+      // The only read with an answer worth faking: the `sqlite_master` sweep. Everything else is DDL or
+      // the backfill's paging select, and an empty page is what stops the backfill.
+      all: async () => ({
+        results: /sqlite_master/i.test(sql)
+          ? bound.filter((name) => present.includes(name as string)).map((name) => ({ name }))
+          : [],
+        success: true,
+        meta: {},
+      }),
+      run: async () => ({ success: true, meta: {} }),
+      first: async () => null,
+      raw: async () => [],
+    };
+    return result;
+  };
+  const d1 = { prepare, batch: async () => [], exec: async () => ({ count: 0, duration: 0 }) };
+  return { statements, cf: { d1: () => d1 } as unknown as CloudflareClients };
+}
+
+/** Every statement the run issued, lowercased and whitespace-collapsed, for a `toContain` over shapes. */
+function issued(statements: readonly string[]): string {
+  return statements.join(" | ").replace(/\s+/g, " ").toLowerCase();
+}
+
+describe("ensureSearchIndex", () => {
+  test("creates the table, its triggers and a backfill on a database that has neither", async () => {
+    const { cf, statements } = fakeD1([]);
+    const events: CliAuditEvent[] = [];
+
+    const result = await provisioner(cf, events, { supportConfig: { search: { fts: true } } }).ensureSearchIndex(
+      "prod",
+    );
+
+    expect(result).toEqual({ created: true, dropped: false, repaired: false });
+    expect(issued(statements)).toContain("create virtual table if not exists pithy_support_search");
+    expect(issued(statements)).toContain("create trigger pithy_support_search_ai");
+    expect(events.map((event) => event.action)).toEqual(["support/search_index_created"]);
+  });
+
+  test("a table with no triggers is repaired and backfilled, not read as already correct", async () => {
+    // **The upgrade.** Nothing else in the kit would have noticed this state, and an operator who ran
+    // the command `pithy doctor` names would have been told the index was fine.
+    const { cf, statements } = fakeD1(["pithy_support_search"]);
+    const events: CliAuditEvent[] = [];
+
+    const result = await provisioner(cf, events, { supportConfig: { search: { fts: true } } }).ensureSearchIndex(
+      "prod",
+    );
+
+    expect(result).toEqual({ created: false, dropped: false, repaired: true });
+    expect(issued(statements)).toContain("create trigger pithy_support_search_au");
+    // Backfilled, because the messages written between the deploy and this run had no trigger to fire
+    // for them and no application call either.
+    expect(issued(statements)).toContain("delete from pithy_support_search");
+    expect(events.map((event) => event.action)).toEqual(["support/search_triggers_repaired"]);
+  });
+
+  test("a fully provisioned index is left alone, and audits nothing", async () => {
+    const { cf, statements } = fakeD1([
+      "pithy_support_search",
+      "pithy_support_search_ai",
+      "pithy_support_search_au",
+      "pithy_support_search_ad",
+    ]);
+    const events: CliAuditEvent[] = [];
+
+    const result = await provisioner(cf, events, { supportConfig: { search: { fts: true } } }).ensureSearchIndex(
+      "prod",
+    );
+
+    expect(result).toEqual({ created: false, dropped: false, repaired: false });
+    expect(issued(statements)).not.toContain("create trigger");
+    expect(events).toEqual([]);
+  });
+
+  test("turning the flag off drops the triggers before the table", async () => {
+    // The order is the point: a trigger whose table is gone fails every message write, so the pair can
+    // never be left half-dropped.
+    const { cf, statements } = fakeD1([
+      "pithy_support_search",
+      "pithy_support_search_ai",
+      "pithy_support_search_au",
+      "pithy_support_search_ad",
+    ]);
+    const events: CliAuditEvent[] = [];
+
+    const result = await provisioner(cf, events, { supportConfig: { search: { fts: false } } }).ensureSearchIndex(
+      "prod",
+    );
+
+    expect(result).toEqual({ created: false, dropped: true, repaired: false });
+    const sql = issued(statements);
+    expect(sql).toContain("drop trigger if exists pithy_support_search_ai");
+    expect(sql.indexOf("drop trigger")).toBeLessThan(sql.indexOf("drop table if exists pithy_support_search"));
+    expect(events.map((event) => event.action)).toEqual(["support/search_index_dropped"]);
+  });
+
+  test("triggers left behind by a hand-dropped table are cleared when the flag goes off", async () => {
+    const { cf, statements } = fakeD1(["pithy_support_search_ai"]);
+    const events: CliAuditEvent[] = [];
+
+    const result = await provisioner(cf, events, { supportConfig: { search: { fts: false } } }).ensureSearchIndex(
+      "prod",
+    );
+
+    expect(result).toEqual({ created: false, dropped: true, repaired: false });
+    expect(issued(statements)).toContain("drop trigger if exists pithy_support_search_ai");
+  });
+});

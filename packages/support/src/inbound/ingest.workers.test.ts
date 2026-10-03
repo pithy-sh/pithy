@@ -94,8 +94,6 @@ function harness(
     dispatchClassify?: (messageId: string) => Promise<boolean>;
     linkSender?: (address: string) => Promise<string | null>;
   } = {},
-  /** Overrides for the deps that are not config and not a seam — currently just the index switch. */
-  overrides: { fts?: boolean } = {},
 ): Harness {
   const emitted: AuditEventInput[] = [];
   const classified: string[] = [];
@@ -104,7 +102,6 @@ function harness(
     db: supportDatabase(env.DB),
     config: SupportConfig.parse({ inboundAddresses: [INBOX], ...config }),
     bucket: env.SUPPORT_BUCKET,
-    fts: overrides.fts ?? false,
     dispatchClassify:
       hooks.dispatchClassify ??
       (async (messageId) => {
@@ -712,14 +709,15 @@ describe("ingestInbound, the seams that are allowed to fail", () => {
     expect(records.map((record) => record.msg)).toContain("support classification dispatch failed");
   });
 
-  test("with the FTS index composed, an ingested message is findable by a word in its body", async () => {
-    // The coverage gap that let a refactor silently drop the index write from ingest entirely: every
-    // other test in this file runs with `fts: false`, and the search tests call `indexMessage`
-    // directly — so nothing exercised the one line that connects them.
+  test("with the index provisioned, an ingested message is findable by a word in its body", async () => {
+    // The coverage gap that let a refactor silently drop the index write from ingest entirely. There is
+    // no line here to drop any more — `ingestInbound` makes no index call and takes no `fts` dep — so
+    // what this now holds is the other half: that the trigger provisioned beside the table actually
+    // fires for the real write path.
     await env.DB.exec("DROP TABLE IF EXISTS pithy_support_search");
     await createSearchIndex(supportDatabase(env.DB));
 
-    const { deps } = harness({}, {}, { fts: true });
+    const { deps } = harness();
     const outcome = stored(await ingest(deps, plain({ messageId: "indexed@example.com" })));
 
     const { results } = await env.DB.prepare(
