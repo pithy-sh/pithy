@@ -39,9 +39,17 @@ export interface PortsRegistryEntry {
   /**
    * Whether the root is still on disk, on `registryRootExists`' rule — only a definite `ENOENT` is absence.
    *
-   * `false` is the one line in this report a developer can act on, and the only place it can ever be
-   * said. Pruning cannot tell a deleted checkout from a moved one; it frees the blocks either way and
-   * nothing anywhere reports that it happened. This row is taken **before** the sweep.
+   * `false` is the one line in this report a developer can act on. Pruning cannot tell a deleted checkout
+   * from a moved one; it frees the blocks either way and nothing anywhere reports that it happened. This
+   * row is taken **before** the sweep.
+   *
+   * **It is no longer the only place it can be said, and the two must not disagree.** `pithy worker list`
+   * and `pithy dev` name a dead root that still holds autostart answers (#685), through the same
+   * `registryRootExists` predicate — so one command cannot call a checkout gone while the other calls it
+   * live. They report a strict subset: a root holding only blocks is this listing's to show and theirs to
+   * stay quiet about, because a block freed on the next allocation is not something to act on. This is
+   * still where *every* dead root is enumerated, which is what the overflow line in
+   * `describeStaleAutostartRoots` points at.
    */
   onDisk: boolean;
   /**

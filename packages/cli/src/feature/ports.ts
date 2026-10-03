@@ -548,6 +548,104 @@ export async function readWorkerAutostart(options: Omit<AutostartOptions, "lock"
   return registry[options.root]?.[options.branch]?.autostart ?? {};
 }
 
+/** One checkout root that is gone from disk while the registry still holds its autostart answers. */
+export interface StaleAutostartRoot {
+  /** The absolute checkout root, exactly as the registry keys it — a path no longer on disk. */
+  root: string;
+  /** Every branch under it that said something, each with the workers it named, both sorted. */
+  branches: { branch: string; workers: string[] }[];
+}
+
+/**
+ * Autostart answers filed under a checkout that is gone — the loss {@link readWorkerAutostart} cannot report.
+ *
+ * **Why the read above needs a second function at all (#685).** The registry is keyed on the checkout's
+ * absolute path, so `mv ~/Projects/app ~/Projects/app2` changes the key and orphans everything written
+ * under the old one. `readWorkerAutostart` then answers `{}`, which is the same answer it gives a branch
+ * that never said anything — so a developer who parked a worker, renamed their checkout, and watched it
+ * start again had no way to tell *you never said anything* from *what you said is under a key nothing
+ * looks up any more*. This is the second fact, and it is the whole fix: the key stays as it is.
+ *
+ * **Only roots holding an answer, and the filter runs before the `stat`.** A dead root holding nothing but
+ * port blocks is {@link pruneDeadRoots}' business and is freed on the next allocation, so naming it would
+ * report something a developer cannot act on. Ordering the filter first is also what keeps this cheap
+ * enough for `pithy dev`'s start path: {@link registryRootExists} has no timeout, and a root on a mount
+ * that is not up costs the mount's. Most roots hold only blocks, so the probe is bounded by how many
+ * checkouts ever parked a worker — normally none or one — rather than by how many the machine has seen.
+ *
+ * `keep` is never reported, on {@link pruneDeadRoots}' rule and for a sharper reason: it is the caller's
+ * own answer to *where am I*, so naming it would tell a developer the answers this very read is using
+ * are lost. A seam may hand over a root that is not on disk, and that must stay silent.
+ *
+ * **Best-effort, and it can be erased.** `pruneDeadRoots` deletes dead roots inside every
+ * {@link allocatePortBlock}, answers and all — so `pithy feature create`, a `pithy dev` in a project with
+ * no `.dev.config.json`, and `--disable-autostart` itself each clear what this reports. On the common
+ * path it survives: a settled project takes `ensureDevConfig`'s existing branch, which reclaims and never
+ * prunes. So this is a report, never a guarantee, and nothing may be built on it persisting.
+ *
+ * **Never throws**, exactly as {@link readWorkerAutostart} does not: it runs ahead of `pithy dev`, and a
+ * registry nobody can parse is `pithy doctor`'s to report rather than a reason not to start.
+ */
+export async function staleAutostartRoots(options: {
+  /** Absolute path to the registry — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
+  registryPath: string;
+  /** The root the caller is asking on behalf of. Never reported, whether or not it is on disk. */
+  keep: string;
+}): Promise<StaleAutostartRoot[]> {
+  const registry = await readPortsRegistry(options.registryPath).catch(() => ({}) as PortsRegistry);
+  const stale: StaleAutostartRoot[] = [];
+  for (const [root, branches] of Object.entries(registry)) {
+    if (root === options.keep) continue;
+    const held = Object.entries(branches ?? {})
+      .map(([branch, entry]) => ({ branch, workers: Object.keys(entry.autostart ?? {}).sort() }))
+      .filter((entry) => entry.workers.length > 0)
+      .sort((a, b) => a.branch.localeCompare(b.branch));
+    if (held.length === 0) continue;
+    if (await registryRootExists(root)) continue;
+    stale.push({ root, branches: held });
+  }
+  // Sorted, because this is rendered into a line a test asserts and object key order is the file's.
+  return stale.sort((a, b) => a.root.localeCompare(b.root));
+}
+
+/**
+ * How many stale roots a report names before it summarizes the rest.
+ *
+ * The report has no way to clear itself — see {@link staleAutostartRoots} — so on a machine whose steady
+ * state is `pithy dev` on a branch it already allocated, these lines print before every run. Three roots
+ * is a sentence a reader skims; a machine's whole history of deleted clones is a wall they stop reading,
+ * which costs the first line its one job.
+ */
+const STALE_ROOTS_NAMED = 3;
+
+/**
+ * The report as lines, or nothing at all when nothing is stale.
+ *
+ * One function because it is two sentences, and `pithy worker list`, `pithy dev` and `pithy dev --list`
+ * all say them — which is how three copies of a sentence drift. Same argument as {@link corruptAction}.
+ *
+ * **It never claims the dead checkout is this one.** The registry is machine-wide (#435) and nothing
+ * anywhere records where a repository used to be, so a root that is gone is as likely another project's
+ * deleted clone as this project's old path. *If that was this project* is the honest form, and it is also
+ * what keeps the remedy correct: re-setting the answer only means anything in the checkout that lost it.
+ */
+export function describeStaleAutostartRoots(stale: readonly StaleAutostartRoot[]): string[] {
+  if (stale.length === 0) return [];
+  const named = stale.slice(0, STALE_ROOTS_NAMED);
+  const lines = named.map((entry) => {
+    const workers = [...new Set(entry.branches.flatMap((branch) => branch.workers))].sort();
+    return `Autostart answers are recorded for a checkout at ${entry.root}, which is gone: ${workers.join(", ")}.`;
+  });
+  const rest = stale.length - named.length;
+  // `pithy doctor` already lists every root with `onDisk: false`, so the overflow has somewhere to go
+  // rather than being dropped — see `doctor/portsRegistry.ts`.
+  if (rest > 0) lines.push(`And ${rest} more — pithy doctor lists every root in the registry.`);
+  lines.push(
+    "Nothing looks them up again. If that was this project before it moved, re-set them here with pithy dev --app <name> --disable-autostart.",
+  );
+  return lines;
+}
+
 /**
  * Set or clear this branch's answer for one or more workers, under the lock.
  *

@@ -334,7 +334,7 @@ describe("listWorkers", () => {
       })}\n`,
     );
 
-    const workers = await listWorkers({
+    const { workers } = await listWorkers({
       projectDir: dir,
       discoverWorkers: discoverDeployed(dir, ["app", "web"]),
     });
@@ -364,7 +364,7 @@ describe("listWorkers", () => {
   // There is one source now (#548), so what these cases guard is that the listing did not grow a second
   // one: a target with no dev block starts, and only the branch's own answer subtracts from that.
   test("a worker with no dev block starts, like every other worker", async () => {
-    const workers = await listWorkers({
+    const { workers } = await listWorkers({
       projectDir: dir,
       discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
     });
@@ -385,7 +385,7 @@ describe("listWorkers", () => {
       enabled: false,
     });
 
-    const workers = await listWorkers({
+    const { workers } = await listWorkers({
       projectDir: dir,
       mainRoot: dir,
       branch: "main",
@@ -402,7 +402,7 @@ describe("listWorkers", () => {
   // The floor under the case above: with nothing written, the answer is yes and it is *not* local. A
   // listing that reported `autostartLocal` for every worker would make the column meaningless.
   test("a worker nobody has turned off autostarts, and is not marked local", async () => {
-    const workers = await listWorkers({
+    const { workers } = await listWorkers({
       projectDir: dir,
       mainRoot: dir,
       branch: "main",
@@ -414,6 +414,78 @@ describe("listWorkers", () => {
 
     expect(workers[0]?.autostart).toBe(true);
     expect(workers[0]?.autostartLocal).toBeNull();
+  });
+
+  /**
+   * **The listing says when an answer was recorded under a checkout that is gone (#685).**
+   *
+   * Moving the checkout changes the registry key, so what the developer said is orphaned and
+   * `readWorkerAutostart` answers `{}` — the same answer a branch that said nothing gets. The row for
+   * every worker is unchanged by that, and has to be: the stale root is a second fact beside the
+   * listing, not a correction to it.
+   */
+  test("names a checkout root that is gone and still holds autostart answers", async () => {
+    const registryPath = join(dir, "dev-ports.json");
+    await writeFile(
+      registryPath,
+      `${JSON.stringify({
+        [dir]: { main: { block: 0, base: 8787, size: 20 } },
+        "/gone/app": { main: { block: 1, base: 8807, size: 20, autostart: { "acme-app": false } } },
+      })}\n`,
+    );
+
+    const report = await listWorkers({
+      projectDir: dir,
+      mainRoot: dir,
+      branch: "main",
+      registryPath,
+      discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
+    });
+
+    expect(report.staleAutostart).toEqual([
+      { root: "/gone/app", branches: [{ branch: "main", workers: ["acme-app"] }] },
+    ]);
+    // The orphaned answer is not this branch's, so the worker still starts and is not marked local.
+    expect(report.workers[0]?.autostart).toBe(true);
+    expect(report.workers[0]?.autostartLocal).toBeNull();
+  });
+
+  // The floor under it, and acceptance criterion 5: a matching root behaves exactly as before. The key
+  // is always present rather than omitted when empty, which is the convention every other payload here
+  // follows — a consumer reads a field, never the absence of one.
+  test("reports no stale roots when every root in the registry is on disk", async () => {
+    const registryPath = join(dir, "dev-ports.json");
+    await setWorkerAutostart({ registryPath, root: dir, branch: "main", workers: ["acme-app"], enabled: false });
+
+    const report = await listWorkers({
+      projectDir: dir,
+      mainRoot: dir,
+      branch: "main",
+      registryPath,
+      discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
+    });
+
+    expect(report.staleAutostart).toEqual([]);
+    expect(report.workers[0]?.autostart).toBe(false);
+  });
+
+  // `localAutostart`'s guarantee, extended to the new read: a broken machine yields a listing, never an
+  // error. A registry nobody can parse says nothing about stale roots, which is what it says about
+  // everything else too.
+  test("a registry that will not parse still yields a listing", async () => {
+    const registryPath = join(dir, "dev-ports.json");
+    await writeFile(registryPath, "{ not json");
+
+    const report = await listWorkers({
+      projectDir: dir,
+      mainRoot: dir,
+      branch: "main",
+      registryPath,
+      discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
+    });
+
+    expect(report.staleAutostart).toEqual([]);
+    expect(report.workers).toHaveLength(1);
   });
 });
 
@@ -922,7 +994,7 @@ describe("the five worker subcommands report one identity", () => {
     // The scaffold writes `<project>-<worker>`, so the two names differ from the first command onwards.
     expect(identity(added)).toEqual({ worker: "web", deployedAs: "acme-web" });
 
-    const [listed] = await listWorkers({ projectDir: dir });
+    const [listed] = (await listWorkers({ projectDir: dir })).workers;
     if (!listed) throw new Error("the Worker that was just added must be discoverable.");
     expect(identity(listed)).toEqual(identity(added));
 

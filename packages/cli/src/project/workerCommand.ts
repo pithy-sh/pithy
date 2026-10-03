@@ -9,7 +9,13 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
-import { portsRegistryPath, readWorkerAutostart, registryRootFor } from "../feature/ports";
+import {
+  portsRegistryPath,
+  readWorkerAutostart,
+  registryRootFor,
+  type StaleAutostartRoot,
+  staleAutostartRoots,
+} from "../feature/ports";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
@@ -227,22 +233,63 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
 }
 
 /**
+ * The three keys this listing reads the registry under, or `null` when the machine cannot answer them.
+ *
+ * Resolved once because two reads now need them — this branch's own answers, and the dead roots holding
+ * somebody's orphaned ones (#685). Two derivations of *which key are my answers under* is the defect
+ * `registryRootFor`'s own docblock is about: `pithy dev` and `pithy doctor` each had one, and on a
+ * machine with no `git` they disagreed about whose blocks were whose.
+ */
+async function registryKeys(
+  options: WorkerContext,
+): Promise<{ registryPath: string; root: string; branch: string } | null> {
+  try {
+    const branch = options.branch ?? (await sharedCurrentBranch(options.git ?? defaultGit, options.projectDir));
+    return {
+      registryPath: options.registryPath ?? portsRegistryPath(),
+      root: options.mainRoot ?? (await registryRootFor(options.projectDir)),
+      branch: branch ?? `local:${options.projectDir}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * This branch's local autostart answers, or `{}` when it has none and when anything at all goes wrong.
  *
  * A listing is a read-only report and must survive a broken machine: no repository, no config directory,
  * a registry somebody hand-edited. Each of those means *nothing local was said*, which is the same thing
  * an empty registry means and produces a listing identical to the one this command gave before #548.
+ *
+ * **That reasoning is still right, and it is also what #685 is the cost of.** *Nothing was said* and
+ * *what was said is filed under a path nothing looks up any more* arrive here as the same `{}`, so the
+ * listing cannot tell them apart from this read alone. {@link staleAutostart} is the other half; this
+ * one keeps meaning exactly what it has always meant.
  */
-async function localAutostart(options: WorkerContext): Promise<Record<string, boolean>> {
+async function localAutostart(keys: Awaited<ReturnType<typeof registryKeys>>): Promise<Record<string, boolean>> {
+  if (keys === null) return {};
   try {
-    const branch = options.branch ?? (await sharedCurrentBranch(options.git ?? defaultGit, options.projectDir));
-    return await readWorkerAutostart({
-      registryPath: options.registryPath ?? portsRegistryPath(),
-      root: options.mainRoot ?? (await registryRootFor(options.projectDir)),
-      branch: branch ?? `local:${options.projectDir}`,
-    });
+    return await readWorkerAutostart(keys);
   } catch {
     return {};
+  }
+}
+
+/**
+ * Checkouts that are gone from disk and still hold autostart answers, or `[]` when anything goes wrong.
+ *
+ * Under the same guarantee as {@link localAutostart}, because it is the same report: a machine with no
+ * repository and no readable config directory gets a listing, never an error. `null` keys are that
+ * machine, and they also mean there is no `keep` to withhold — reporting without one risks naming the
+ * very checkout the reader is standing in.
+ */
+async function staleAutostart(keys: Awaited<ReturnType<typeof registryKeys>>): Promise<StaleAutostartRoot[]> {
+  if (keys === null) return [];
+  try {
+    return await staleAutostartRoots({ registryPath: keys.registryPath, keep: keys.root });
+  } catch {
+    return [];
   }
 }
 
@@ -265,26 +312,57 @@ export interface WorkerListing extends WorkerIdentity {
   port: number | null;
 }
 
-/** List the discovered workers with their autostart state and pinned dev port — the logic behind `pithy worker list`. */
-export async function listWorkers(options: WorkerContext): Promise<WorkerListing[]> {
+/** What {@link listWorkers} answers: the rows, and anything about the registry the rows cannot say. */
+export interface WorkerListingReport {
+  /** The discovered workers, in discovery order. Exactly the array this function used to return. */
+  workers: WorkerListing[];
+  /**
+   * Checkout roots that are gone from disk and still hold autostart answers (#685).
+   *
+   * **Beside the rows rather than folded into them, because it is not a fact about any worker.** An
+   * answer orphaned by a move is filed under a key nothing looks up, so it cannot change what any row
+   * says — every row reads exactly as it did before. What it changes is whether the reader knows why a
+   * worker they parked is starting again.
+   *
+   * Always present, `[]` when nothing is stale. The convention every payload in this package follows: a
+   * consumer reads a field, never the absence of one.
+   */
+  staleAutostart: StaleAutostartRoot[];
+}
+
+/**
+ * List the discovered workers with their autostart state and pinned dev port — the logic behind
+ * `pithy worker list` — and say when an answer was recorded under a checkout that has since gone.
+ *
+ * A report rather than the bare array it used to be (#685), on this file's own idiom: `AddWorkerReport`
+ * and `RemoveWorkerReport` are the same shape, for the same reason. The alternative was a second
+ * exported function and a second resolution of the registry keys at the command, which is the
+ * divergence `registryKeys` exists to prevent — a test redirecting `registryPath` into this function
+ * would not have reached a detector the command called for itself.
+ */
+export async function listWorkers(options: WorkerContext): Promise<WorkerListingReport> {
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
   const workers = await discoverWorkers(options.projectDir);
   const config = await readDevConfig(devConfigPath(options.projectDir));
-  // Best effort, and never a reason to refuse a listing: `localAutostart` swallows its own failures and
-  // answers `{}` for a checkout with no registry, no repository, or no readable config directory.
-  const local = await localAutostart(options);
-  return workers.map((worker) => ({
-    ...workerIdentity(worker),
-    dir: worker.dir,
-    // One source now (#548). The manifest key is gone, so there is no second opinion left to disagree
-    // with — which is what this comment used to be about, when an absent `dev` block and a `dev` block
-    // omitting the key meant opposite things.
-    autostart: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? true) : true,
-    autostartLocal: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? null) : null,
-    hasWrangler: worker.hasWrangler !== false,
-    // The registry's key is the deployed name, which is what `workerIdentity` reports as `deployedAs`.
-    port: config?.workers[worker.name]?.port ?? null,
-  }));
+  // Best effort, and never a reason to refuse a listing: both reads swallow their own failures and
+  // answer nothing for a checkout with no registry, no repository, or no readable config directory.
+  const keys = await registryKeys(options);
+  const local = await localAutostart(keys);
+  return {
+    workers: workers.map((worker) => ({
+      ...workerIdentity(worker),
+      dir: worker.dir,
+      // One source now (#548). The manifest key is gone, so there is no second opinion left to disagree
+      // with — which is what this comment used to be about, when an absent `dev` block and a `dev` block
+      // omitting the key meant opposite things.
+      autostart: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? true) : true,
+      autostartLocal: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? null) : null,
+      hasWrangler: worker.hasWrangler !== false,
+      // The registry's key is the deployed name, which is what `workerIdentity` reports as `deployedAs`.
+      port: config?.workers[worker.name]?.port ?? null,
+    })),
+    staleAutostart: await staleAutostart(keys),
+  };
 }
 
 /** The outcome of {@link removeWorker}: what was deleted and whether the feature's ports were reconciled. */

@@ -78,6 +78,8 @@ Whether a worker starts locally is not a fact about the project. `pithy.worker.j
 
 `pithy dev --list` marks such a worker `skipped  off here`, and `pithy worker list` reports it separately from the manifest, so you are never sent to a committed file to undo something that is not written there.
 
+**Move the checkout and the answer is left behind — and `pithy dev` says so.** The key is the checkout's absolute path, so renaming or moving it orphans everything written under the old one: every worker starts again, which is also what *you never said anything* looks like. So a session naming a root that is gone is the fix, not a refusal — the dead root's branch key can itself be a path, so nothing in the moved checkout can match it to a branch and there is no worker to honor a disable for. The lines go to stderr, `--json` adds [an `autostart-stale` line](#the-autostart-stale-line), and `pithy dev --list` says the same thing from the same place. Because `dev-ports.json` is machine-wide, the root may be another project's deleted clone rather than this project's old path, and the wording leaves that open. Re-set the answer with `--disable-autostart` here; `pithy doctor` lists every root in the registry.
+
 **A leftover `dev.autostart` in a manifest:** `true` is accepted and ignored — `pithy worker add` wrote it into every manifest it ever scaffolded, and it agrees with the answer. `false` is **refused**, naming the command above, because it is the one value somebody chose and silently dropping it would start a worker its owner had turned off.
 
 ### The live roster
@@ -315,12 +317,31 @@ Written 90 seconds after the last worker is spawned, and every 30 seconds after 
 
 **Why the session line cannot carry this.** It is written the moment the children are spawned, and readiness is decided after it — a run whose `support` worker cannot build emits exactly the same session line as a healthy one. Without this second line, an agent driving `pithy dev --json` sits in the position `#426`'s adopter was in: a session that never says it is ready and nothing on the wire naming what is missing. The prose report is not on stdout under `--json` — it goes to stderr and to `logs/dev.log`, both read by a person in either mode.
 
+### The autostart-stale line
+
+Written once at the top of a session, and by `pithy dev --list` as a `staleAutostart` key on the list line, when the registry holds autostart answers under a checkout root that is gone from disk ([Keeping a worker out of your dev set](#keeping-a-worker-out-of-your-dev-set)). Not written at all when every root in the registry is on disk.
+
+```json
+{"command":"dev","event":"autostart-stale","roots":[{"root":"/home/you/Projects/app","branches":[{"branch":"main","workers":["payments"]}]}]}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `event` | string | `"autostart-stale"`. What distinguishes this line from the others. |
+| `roots` | array of object | Every checkout root that is gone and still holds answers, sorted by path. One line per session, never one per root. |
+| `roots[].root` | string | The absolute checkout root the answers are filed under — a path no longer on disk. |
+| `roots[].branches` | array of object | The branches under that root that said something, sorted. |
+| `roots[].branches[].branch` | string | The branch key. It may be `local:<path>`, which is what a checkout off a branch is keyed on — and why nothing here can match it to a branch name. |
+| `roots[].branches[].workers` | array of string | The workers that branch named, sorted. |
+
+**A report, and never a guarantee it will be there next run.** Every port allocation prunes roots that are gone, answers and all, so `pithy feature create`, a `pithy dev` in a project with no `.dev.config.json`, and `--disable-autostart` itself each clear what this reports. A settled project's `pithy dev` does not prune, which is the path this line exists for.
+
 ### The list line
 
 Written by `pithy dev --list`, which writes this line and nothing else, then exits.
 
 ```json
-{"command":"dev","event":"list","members":[{"name":"api","kind":"app","autostart":true,"autostartLocal":false,"starts":true,"port":8787,"origin":"http://localhost:8787"}]}
+{"command":"dev","event":"list","members":[{"name":"api","kind":"app","autostart":true,"autostartLocal":false,"starts":true,"port":8787,"origin":"http://localhost:8787"}],"staleAutostart":[]}
 {"command":"dev","event":"autostart","branch":"main","apps":["payments"],"enabled":false,"autostart":{"payments":false}}
 ```
 
@@ -332,6 +353,7 @@ Written by `pithy dev --list`, which writes this line and nothing else, then exi
 | `members[].kind` | string | `"app"` for a Worker in `apps/`, `"host"` for a composed capability's host Worker. |
 | `members[].autostart` | boolean | Whether a plain `pithy dev` starts it. `true` unless this branch has turned it off. |
 | `members[].autostartLocal` | boolean | Whether `autostart` came from this branch's `dev-ports.json` answer rather than being the default. |
+| `staleAutostart` | array of object | Checkout roots that are gone and still hold autostart answers — the same shape as `roots` on [the autostart-stale line](#the-autostart-stale-line). Empty on a machine where nothing has moved, and never absent. |
 
 One more object, written by `--disable-autostart` and `--enable-autostart` instead of a run:
 

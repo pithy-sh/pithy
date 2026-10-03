@@ -214,6 +214,9 @@ describe("pithy dev --list", () => {
     expect(parsed).toEqual({
       command: "dev",
       event: "list",
+      // Present and empty on a machine with nothing stale (#685) — a consumer reads a field, never the
+      // absence of one.
+      staleAutostart: [],
       members: [
         {
           name: "acme-api",
@@ -293,5 +296,79 @@ describe("pithy dev --list", () => {
       ["acme-api", false],
       ["acme-web", true],
     ]);
+  });
+
+  /**
+   * **`--list` names a checkout that is gone, through the same function the run names it with (#685).**
+   *
+   * The same divergence this suite already records for `autostartOverrides`, one field across: `startDev`
+   * says it and `printDevSet` is a separate code path, so a report added only to the run would leave
+   * `pithy dev --list` silent and `--list --json` with no field — and nothing would have failed.
+   */
+  describe("a checkout that is gone", () => {
+    let configDir: string;
+    let previous: string | undefined;
+
+    /** Capture both streams: the prose is the operator's, stdout is the machine's. */
+    async function listBoth(json: boolean): Promise<{ out: string; err: string }> {
+      const out: string[] = [];
+      const err: string[] = [];
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        out.push(String(chunk));
+        return true;
+      });
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+        err.push(String(chunk));
+        return true;
+      });
+      try {
+        await dev.run?.({
+          args: { list: true, app: undefined, "disable-autostart": false, "enable-autostart": false, json },
+          rawArgs: [],
+        } as never);
+      } finally {
+        stdout.mockRestore();
+        stderr.mockRestore();
+      }
+      return { out: out.join(""), err: err.join("") };
+    }
+
+    beforeEach(async () => {
+      configDir = await mkdtemp(join(tmpdir(), "pithy-dev-list-cfg-"));
+      previous = process.env.PITHY_CONFIG_DIR;
+      process.env.PITHY_CONFIG_DIR = configDir;
+      await writeFile(
+        join(configDir, "dev-ports.json"),
+        `${JSON.stringify({
+          "/gone/app": { main: { block: 0, base: 8787, size: 20, autostart: { "acme-api": false } } },
+        })}\n`,
+      );
+    });
+
+    afterEach(async () => {
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    });
+
+    test("prints the sentence to stderr and lists the set unchanged", async () => {
+      await project();
+
+      const { out, err } = await listBoth(false);
+
+      expect(err).toContain("Autostart answers are recorded for a checkout at /gone/app, which is gone: acme-api.");
+      // The row is what it always was: the orphaned answer is under another key, so it narrows nothing.
+      expect(stripAnsi(out)).toContain("app     starts   port 8787");
+    });
+
+    test("--json carries the stale roots beside the members", async () => {
+      await project();
+
+      const parsed = JSON.parse((await listBoth(true)).out.trim()) as { staleAutostart: { root: string }[] };
+
+      expect(parsed.staleAutostart).toEqual([
+        { root: "/gone/app", branches: [{ branch: "main", workers: ["acme-api"] }] },
+      ]);
+    });
   });
 });

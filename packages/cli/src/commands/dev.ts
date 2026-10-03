@@ -6,9 +6,9 @@ import { defineCommand } from "citty";
 import { devCloudflareAccount } from "../dev/delivery";
 import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
-import { type DevHandle, resolveAutostartOverrides, startDev } from "../dev/orchestrator";
+import { type DevHandle, resolveAutostart, startDev } from "../dev/orchestrator";
 import { chooseRenderer, interruptAction, rendererInputsFromProcess } from "../dev/tui/choose";
-import { portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
+import { describeStaleAutostartRoots, portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { openUrl } from "../platform/browser";
 import { formatJsonLine, formatJsonStreamLine, formatList, withErrorReporting } from "../terminal/output";
@@ -71,22 +71,24 @@ export function collectAppFlags(rawArgs: string[]): string[] {
 async function printDevSet(projectDir: string, apps: string[], json: boolean): Promise<void> {
   // The same resolution `startDev` makes, through the same function. `--list` promises to describe the
   // run this command would make, and a second way of answering *what starts* is a second answer.
-  const listing = await listDevSet({
-    projectDir,
-    apps,
-    autostartOverrides: await resolveAutostartOverrides({ projectDir }),
-  });
+  const { overrides, stale: staleAutostart } = await resolveAutostart({ projectDir });
+  const listing = await listDevSet({ projectDir, apps, autostartOverrides: overrides });
   const members = listing.members;
+  // Resolved here rather than carried on `DevListing.notes`, because `listDev.ts` imports `resolveDevSet`
+  // and `buildDevConfig` and nothing else — on purpose, so a listing can never start to write. Reaching
+  // the registry from inside it would put every writer in `feature/ports.ts` back into that module's
+  // import graph, which is the one thing its header forbids.
+  const notes = [...listing.notes, ...describeStaleAutostartRoots(staleAutostart)];
 
   if (json) {
-    process.stdout.write(`${formatJsonLine({ command: "dev", event: "list", members })}\n`);
+    process.stdout.write(`${formatJsonLine({ command: "dev", event: "list", members, staleAutostart })}\n`);
     // Notes are the operator's, and stdout is the machine's — one object per line, as a session's own
     // output already promises.
-    for (const note of listing.notes) process.stderr.write(`${note}\n`);
+    for (const note of notes) process.stderr.write(`${note}\n`);
     return;
   }
 
-  for (const note of listing.notes) process.stderr.write(`${note}\n`);
+  for (const note of notes) process.stderr.write(`${note}\n`);
   if (members.length === 0) {
     process.stdout.write("No workers. Run pithy worker add <name>, or pithy init.\n");
     return;
