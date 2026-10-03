@@ -205,25 +205,88 @@ function trimmed(token: string): string {
 }
 
 /**
+ * What a wrangler target has to look like to be a host.
+ *
+ * Dotted labels and nothing else. A target that is not an address is a sentence (`Producer for
+ * emails`), a prefixed value (`schedule: <cron>`, `workflow: Onboarding`) or a count (`event
+ * triggers: 2`), and none of those survives this. A wildcard route — `*.acme.com` with any path — is
+ * rejected on purpose: it names a shape of host rather than a host, so there is no address to report.
+ */
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i;
+
+/**
+ * One target from wrangler's triggers block as an address, or nothing when it is not one.
+ *
+ * **Everything under that heading is a trigger, and only some triggers are addresses.** The block
+ * carries crons, queue producers and consumers, workflows and an event-trigger count beside the
+ * routes, so a target is accepted only when it is a URL wrangler already wrote a scheme on — it does
+ * that for `workers.dev` and for nothing else — or a bare host.
+ *
+ * **A custom domain or a route arrives scheme-less and annotated.** Wrangler prints
+ * `staging.app.pithy.sh (custom domain - zone name: pithy.sh)`, and a route adds the path it matches:
+ * `api.acme.com/v1/*`. The first whitespace-delimited token drops the annotation, the host is what
+ * precedes the path, and `https://` is the scheme — a Cloudflare custom domain or proxied route is
+ * always TLS. So a path-scoped route reports the host that answers for the Worker rather than the
+ * pattern the route matched, which is the one inference here wrangler did not itself assert.
+ */
+function workerAddress(target: string): string | undefined {
+  const token = trimmed(target.trim().split(/\s+/, 1)[0] ?? "");
+  if (/^https?:\/\//i.test(token)) return token;
+  const host = token.split("/")[0] ?? "";
+  return HOSTNAME.test(host) ? `https://${host}` : undefined;
+}
+
+/**
+ * The Worker's address out of `wrangler deploy`'s own triggers block, or nothing.
+ *
+ * **Anchored on wrangler's label, the way the version id already is (#683).** This used to take the
+ * last URL anywhere in stdout, under a comment asserting that the last one is the deployed one. It is
+ * not: `wrangler deploy` prints a telemetry notice after the deploy summary — once per wrangler
+ * version per machine, and only where telemetry is enabled, which is why the report read as "on
+ * occasion" — and that notice's documentation link was reported as a Worker's public address.
+ *
+ * Wrangler prints `Deployed <name> triggers (<time>)` and then every target indented beneath it, so
+ * the block is that heading and the indented lines under it. The first target that is an address
+ * wins, and the first un-indented line ends the block — which is what keeps `Current Version ID:`
+ * and everything printed after it, the notice included, out of the answer.
+ */
+function deployedAddress(stdout: string): string | undefined {
+  const lines = stdout.split("\n");
+  const heading = lines.findIndex((line) => /^Deployed .+ triggers\b/.test(line));
+  if (heading === -1) return undefined;
+  for (const line of lines.slice(heading + 1)) {
+    if (!/^\s+\S/.test(line)) return undefined;
+    const address = workerAddress(line);
+    if (address !== undefined) return address;
+  }
+  return undefined;
+}
+
+/**
  * Scrape the version id and public url from `wrangler deploy` output — best-effort, both optional.
  *
  * **Neither is a contract.** Wrangler is free to reword this output in any release, and these two
  * patterns are the whole of what reads it. Finding nothing is an ordinary outcome: the summary line
- * prints without the detail and the deploy is unaffected, which is why nothing here throws.
+ * prints without the detail and the deploy is unaffected, which is why nothing here throws. A
+ * confidently wrong answer is not an ordinary outcome, and that is the half #683 had to fix.
  */
 function parseDeployOutput(stdout: string): { versionId?: string; url?: string } {
   const summary: { versionId?: string; url?: string } = {};
   const version = stdout.match(/Version ID:\s*(\S+)/);
   if (version?.[1]) summary.versionId = trimmed(version[1]);
-  // The deployed URL is the last one wrangler prints (after upload), not an earlier docs/dashboard link.
-  const urls = stdout.match(/https?:\/\/\S+/g);
-  const last = urls?.[urls.length - 1];
-  if (last) summary.url = trimmed(last);
+  const url = deployedAddress(stdout);
+  if (url !== undefined) summary.url = url;
   return summary;
 }
 
-/** The scrape, for the test that holds it to the shapes wrangler actually prints. */
-export const deployOutput = { parse: parseDeployOutput };
+/**
+ * The scrape, for the test that holds it to the shapes wrangler actually prints.
+ *
+ * `address` is the per-target decision, exposed beside `parse` because that is where the judgment
+ * about what counts as an address lives — a cron and a custom domain are told apart one target at a
+ * time, and testing it through a whole stdout only says which target won.
+ */
+export const deployOutput = { parse: parseDeployOutput, address: workerAddress };
 
 /**
  * The failure reason for a thrown deploy. For a `PithyError` (how `runWrangler` reports a non-zero

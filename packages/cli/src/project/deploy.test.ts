@@ -31,6 +31,41 @@ function wranglerOutput(name: string, version: string): string {
 }
 
 /**
+ * Wrangler's telemetry notice, verbatim, as `wrangler deploy` prints it after the deploy summary.
+ *
+ * It is gated on `metricsConfig.permission.enabled && permission.bannerLastShown !== wranglerVersion`
+ * (wrangler 4.125.0, `cli.js:179249-179258`), so it appears once per wrangler version per machine and
+ * only where telemetry is on — which is why #683 read as "on occasion" rather than every deploy.
+ */
+const TELEMETRY_NOTICE =
+  "\nCloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md";
+
+/**
+ * The staging deploy that produced #683: one custom domain, `workers_dev: false`, and the telemetry
+ * notice as the only `https://` anywhere in the capture.
+ *
+ * **A reconstruction, and the issue's own second criterion cannot be met.** `pithy deploy` captures
+ * wrangler's stdout rather than streaming it, so the CI log of `pithy-sh/dashboard` run 37073087026
+ * holds only pithy's own `--json` row; wrangler's raw output was never written anywhere and cannot be
+ * recovered. Every line here is instead quoted from the printers in wrangler 4.125.0 — the version
+ * this repo resolves — `Total Upload:` (`cli.js:143316`), `Worker Startup Time:` (`cli.js:150645`),
+ * the triggers block and its two-space-indented target (`cli.js:142868-142871`), `renderRoute`'s
+ * custom-domain suffix (`cli.js:141870-141871`) and `Current Version ID:` (`cli.js:143479`). The
+ * worker name, version id, domain and zone come from that run's JSON row and the dashboard's own
+ * `wrangler.jsonc`. The version is named so the next wrangler rewording is traceable.
+ */
+function wranglerOutputWithTelemetryNotice(): string {
+  return [
+    "Total Upload: 1234.56 KiB / gzip: 234.56 KiB",
+    "Worker Startup Time: 14 ms",
+    "Deployed dash-board triggers (3.42 sec)",
+    "  staging.app.pithy.sh (custom domain - zone name: pithy.sh)",
+    "Current Version ID: 0a4402fb-d36e-408d-b461-c6502ee34c16",
+    TELEMETRY_NOTICE,
+  ].join("\n");
+}
+
+/**
  * A stand-in for `vite build` through `@cloudflare/vite-plugin`, faithful to the three behaviors #579
  * turns on — measured against the plugin at 1.54.7 and wrangler at 4.125.0, not assumed:
  *
@@ -963,34 +998,75 @@ describe("pendingWarning", () => {
 });
 
 /**
- * The scrape of wrangler's own output — `#612`.
+ * The scrape of wrangler's own output — `#612`, then `#683`.
  *
- * A deploy reported `https://staging.app.pithy.sh")` as the address a Worker had been deployed to,
- * because `\S+` runs to the next space and wrangler had wrapped the address in a quote and a bracket.
- * An address that reaches nothing when copied is worse than no address at all: the line is read as a
- * fact and the punctuation is invisible at a glance.
+ * #612: a deploy reported `https://staging.app.pithy.sh")` as the address a Worker had been deployed
+ * to, because `\S+` runs to the next space and wrangler had wrapped the address in a quote and a
+ * bracket. An address that reaches nothing when copied is worse than no address at all: the line is
+ * read as a fact and the punctuation is invisible at a glance.
+ *
+ * #683: the same deploy later reported wrangler's telemetry documentation as the address, because the
+ * scrape took the last URL anywhere in stdout and `wrangler deploy` prints a telemetry notice after
+ * the deploy summary. The address now comes from wrangler's own `Deployed <name> triggers` block and
+ * only from a target that is an address, so every case below is written the way wrangler prints it —
+ * a heading with its targets indented beneath it — rather than as a sentence wrangler never emits.
  */
 describe("what a deploy reports, scraped out of wrangler's prose", () => {
   const parse = deployOutput.parse;
+  const address = deployOutput.address;
 
-  test("an address wrapped by the sentence around it comes back as an address", () => {
-    // The shape that produced the report, quoted inside a bracket.
-    expect(parse('Deployed dash-board ("https://staging.app.pithy.sh")\nVersion ID: 7908726e').url).toBe(
+  /** Wrangler's triggers block around some targets — the shape every address it reports arrives in. */
+  function triggers(...targets: string[]): string {
+    return ["Deployed dash-board triggers (0.50 sec)", ...targets.map((target) => `  ${target}`)].join("\n");
+  }
+
+  test("wrangler's telemetry notice is never reported as the Worker's address", () => {
+    // The deploy of 2026-10-02 that reported the telemetry doc as a Worker's public address.
+    expect(parse(wranglerOutputWithTelemetryNotice())).toEqual({
+      versionId: "0a4402fb-d36e-408d-b461-c6502ee34c16",
+      url: "https://staging.app.pithy.sh",
+    });
+  });
+
+  test("a workers.dev target is the address wrangler already wrote a scheme on", () => {
+    expect(address("https://dash-board.pithy.workers.dev")).toBe("https://dash-board.pithy.workers.dev");
+  });
+
+  test("a custom domain is the host it answers on, without wrangler's annotation", () => {
+    expect(address("staging.app.pithy.sh (custom domain - zone name: pithy.sh)")).toBe("https://staging.app.pithy.sh");
+    // `renderRoute` appends the enabled/previews flags too, when the route declares them.
+    expect(address("staging.app.pithy.sh (custom domain - zone id: 9f1) [enabled, previews: disabled]")).toBe(
       "https://staging.app.pithy.sh",
     );
-    expect(parse("  https://dash-board.pithy.workers.dev\n").url).toBe("https://dash-board.pithy.workers.dev");
-    expect(parse('Uploaded to "https://acme.example.com"').url).toBe("https://acme.example.com");
-    expect(parse("Deployed to (https://acme.example.com).").url).toBe("https://acme.example.com");
-    expect(parse("Live at https://acme.example.com, version 3.").url).toBe("https://acme.example.com");
+  });
+
+  test("a route reports the host it answers on, not the pattern it matches", () => {
+    expect(address("api.acme.com/v1/* (zone name: acme.com)")).toBe("https://api.acme.com");
+    // A wildcard names a shape of host rather than a host, so there is no address to report.
+    expect(address("*.acme.com/*")).toBeUndefined();
+  });
+
+  test("a trigger that is not an address is not reported as one", () => {
+    expect(address("schedule: */5 * * * *")).toBeUndefined();
+    expect(address("Producer for emails")).toBeUndefined();
+    expect(address("Consumer for emails")).toBeUndefined();
+    expect(address("workflow: Onboarding")).toBeUndefined();
+    expect(address("event triggers: 2")).toBeUndefined();
+    expect(address("...and 3 more routes")).toBeUndefined();
+  });
+
+  test("an address wrapped by the sentence around it comes back as an address", () => {
+    // #612's shape, quoted inside a bracket, now read as the target it would have been.
+    expect(parse(triggers('("https://staging.app.pithy.sh")')).url).toBe("https://staging.app.pithy.sh");
   });
 
   test("a bracket the address itself opened is part of the address", () => {
     // Legal, rare, and somebody's real path. The trailing bracket is dropped only when the token
     // holds no opener to match it.
-    expect(parse("https://example.com/wiki/Thing_(disambiguation)").url).toBe(
+    expect(address("https://example.com/wiki/Thing_(disambiguation)")).toBe(
       "https://example.com/wiki/Thing_(disambiguation)",
     );
-    expect(parse('("https://example.com/wiki/Thing_(disambiguation)")').url).toBe(
+    expect(address('("https://example.com/wiki/Thing_(disambiguation)")')).toBe(
       "https://example.com/wiki/Thing_(disambiguation)",
     );
   });
@@ -1002,15 +1078,40 @@ describe("what a deploy reports, scraped out of wrangler's prose", () => {
     expect(parse('Version ID: "7908726e".').versionId).toBe("7908726e");
   });
 
-  test("finding nothing is an ordinary answer, not a failure", () => {
-    expect(parse("Total Upload: 512 KiB\n")).toEqual({});
-  });
-
-  test("the last address is the deployed one, not an earlier link", () => {
+  test("the address comes out of the block, not out of a link printed before it", () => {
     const stdout = [
       "See https://developers.cloudflare.com/workers for help.",
-      "Deployed to https://acme.example.com",
+      triggers("https://acme-api.acme.workers.dev"),
+      "Current Version ID: v1",
+      TELEMETRY_NOTICE,
     ].join("\n");
-    expect(parse(stdout).url).toBe("https://acme.example.com");
+    expect(parse(stdout)).toEqual({ versionId: "v1", url: "https://acme-api.acme.workers.dev" });
+  });
+
+  test("the first target that is an address is the one reported", () => {
+    const block = triggers("schedule: */5 * * * *", "staging.app.pithy.sh (custom domain - zone name: pithy.sh)");
+    expect(parse(block).url).toBe("https://staging.app.pithy.sh");
+  });
+
+  test("the block ends where wrangler stops indenting", () => {
+    // Nothing below `Current Version ID:` is a target, however much it looks like one.
+    const stdout = [triggers("schedule: */5 * * * *"), "Current Version ID: v1", "  https://not.a-target.example"].join(
+      "\n",
+    );
+    expect(parse(stdout)).toEqual({ versionId: "v1" });
+  });
+
+  test("no targets deployed is no address, not the notice below it", () => {
+    const stdout = ["No targets deployed for dash-board (0.50 sec)", "Current Version ID: v1", TELEMETRY_NOTICE].join(
+      "\n",
+    );
+    expect(parse(stdout)).toEqual({ versionId: "v1" });
+  });
+
+  test("finding nothing is an ordinary answer, not a failure", () => {
+    expect(parse("Total Upload: 512 KiB\n")).toEqual({});
+    expect(parse(["Total Upload: 512 KiB", "Current Version ID: v1", TELEMETRY_NOTICE].join("\n"))).toEqual({
+      versionId: "v1",
+    });
   });
 });
