@@ -14,13 +14,14 @@ import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig, writeDevC
 import { BASE_PORT, BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
 import type { WorkerTarget } from "../project/workers";
+import { parseDevLogFileName } from "./devLogPath";
+import type { DevLogRecord } from "./devLogRecord";
 import type { DevEvent } from "./events";
 import type { MaterializeHostConfigsOptions } from "./hostWorkers";
 import {
   type ChildLike,
   type EnsureDevConfigOptions,
   ensureDevConfig,
-  type LogSink,
   type SpawnDev,
   type StartDevOptions,
   startDev,
@@ -77,7 +78,17 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
   const killCalls: { pid: number; signal: string }[] = [];
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
-  const logLines: string[] = [];
+  /**
+   * Every record written into a worker's session log, and which file it went to (#671).
+   *
+   * One file per worker now, so the log is no longer a flat list of lines: the assertions are about a
+   * record set per worker, and the *file* is what carries the name. The paths are kept too, because
+   * where they are is half of what this change is about.
+   */
+  const logRecords: { worker: string; record: DevLogRecord }[] = [];
+  const logPaths: string[] = [];
+  /** Which workers' files were flushed and closed, in the order the teardown closed them. */
+  const logEnded: string[] = [];
   const livePids = new Set<number>();
   let seq = 5000;
 
@@ -100,7 +111,21 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     }
   };
 
-  const logSink: LogSink = { write: (l) => logLines.push(l), end: () => {} };
+  /**
+   * Opened per worker, exactly as the real one is, with the worker read back off the filename.
+   *
+   * **`end` is recorded, not discarded.** The flush is the teardown's last act on the record a session is
+   * read back from, so a fake that swallowed it left the test of that flush passing with the flush
+   * deleted.
+   */
+  const openLog = async (path: string) => {
+    logPaths.push(path);
+    const worker = parseDevLogFileName(path.split("/").pop() ?? "")?.worker ?? path;
+    return {
+      record: (record: DevLogRecord) => logRecords.push({ worker, record }),
+      end: () => void logEnded.push(worker),
+    };
+  };
 
   // A hand-driven clock for the ready deadline, so no case waits ninety real seconds and none leaves a
   // live timer behind. `advance` fires whatever is due.
@@ -172,7 +197,10 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     hasSetsid: true,
     stdout: (t) => stdoutLines.push(t.replace(/\n$/, "")),
     stderr: (t) => stderrLines.push(t.replace(/\n$/, "")),
-    openLog: () => logSink,
+    openLog,
+    // A named branch, because the log file is named for one: the default seam asks real git, and the
+    // branch this repository happens to be on is not a fixture.
+    ensureDeps: { branchFor: async () => "main" },
     baseEnv: { PATH: "/usr/bin" },
     now: () => new Date("2026-07-27T00:00:00.000Z"),
     readState: async () => stored,
@@ -196,7 +224,13 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     killCalls,
     stdoutLines,
     stderrLines,
-    logLines,
+    logRecords,
+    logPaths,
+    logEnded,
+    /** Each worker's records, in order — what a `pithy dev logs --app <name>` read would see. */
+    recordsFor: (worker: string) => logRecords.filter((entry) => entry.worker === worker).map((e) => e.record),
+    /** Every output record's text, whichever worker wrote it — the old flat `logLines`, prefix dropped. */
+    logTexts: () => logRecords.flatMap(({ record }) => ("stream" in record ? [record.text] : [])),
     written,
     removed,
     livePids,
@@ -570,7 +604,7 @@ describe("startDev — spawn commands and env", () => {
       }),
     });
     await startDev(h.options);
-    const said = [...h.stdoutLines, ...h.logLines].join("");
+    const said = [...h.stdoutLines, ...h.logTexts()].join("");
     expect(said).not.toContain("CLOUDFLARE_API_TOKEN");
     expect(said).not.toContain("acct-1");
   });
@@ -1042,7 +1076,7 @@ describe("startDev — ready banner", () => {
     );
   });
 
-  test("no session cookie reaches the terminal or logs/dev.log", async () => {
+  test("no session cookie reaches the terminal or a session log", async () => {
     // The reason this feature exists. `pithy dev`'s output is read, piped, tee'd and screenshotted, so a
     // session token printed once is a session token at rest. Since `#572` the seed mints none at all.
     const h = harness({ readDevLogins: seededLogin });
@@ -1050,7 +1084,7 @@ describe("startDev — ready banner", () => {
     await signalReady(h);
     await handle.ready;
 
-    for (const line of [...h.stdoutLines, ...h.logLines]) {
+    for (const line of [...h.stdoutLines, ...h.logTexts()]) {
       expect(line).not.toContain("better-auth.session_token");
       expect(line).not.toContain("document.cookie");
     }
@@ -1065,7 +1099,7 @@ describe("startDev — ready banner", () => {
     await signalReady(h);
     await handle.ready;
 
-    for (const line of [...h.stdoutLines, ...h.logLines]) expect(line).not.toContain(CLAIM);
+    for (const line of [...h.stdoutLines, ...h.logTexts()]) expect(line).not.toContain(CLAIM);
   });
 
   test("offers the keypress where there is a terminal to press it on", async () => {
@@ -1132,14 +1166,22 @@ describe("startDev — ready deadline", () => {
     expect(h.stdoutLines.filter((line) => line === "Still waiting on: web.")).toHaveLength(3);
   });
 
-  test("the report lands in logs/dev.log too, and carries no color when it gets there", async () => {
-    // **Forcing color on is what makes this testable at all.** `terminal/style.ts` latches its decision
-    // at import from `process.stdout.isTTY`, and no test runner has a TTY — so under the ordinary import
-    // `dim()` is the identity function, nothing on this path ever produces an escape sequence, and
-    // "the log carries no ANSI" is equally true of a build that strips it and one that never did. The
-    // assertion was empty for exactly that reason. With `FORCE_COLOR` set and the module graph rebuilt,
-    // the action lines really are wrapped, the terminal and the log say different bytes, and only one of
-    // them may carry the escape — which is the claim.
+  /**
+   * **The report is the terminal's, and no worker's file carries it** (#671).
+   *
+   * It used to go to the single `logs/dev.log` as well, because that file was the session's record and
+   * `Still waiting on:` is a session-scoped fact. One file per worker has nowhere to put it: `waiting`
+   * is *about* the workers that are its subject, so a copy in each of their files would be one fact
+   * written five times, into five files it is not a statement about.
+   *
+   * **Forcing color on is what makes the second half testable at all.** `terminal/style.ts` latches its
+   * decision at import from `process.stdout.isTTY`, and no test runner has a TTY — so under the ordinary
+   * import `dim()` is the identity function, nothing on this path ever produces an escape sequence, and
+   * "the log carries no ANSI" is equally true of a build that strips it and one that never did. With
+   * `FORCE_COLOR` set and the module graph rebuilt, the terminal really is wrapped and a worker's own
+   * records still are not.
+   */
+  test("the report is the terminal's alone, and a worker's own records carry no color", async () => {
     vi.stubEnv("NO_COLOR", undefined);
     vi.stubEnv("FORCE_COLOR", "1");
     vi.resetModules();
@@ -1148,21 +1190,22 @@ describe("startDev — ready deadline", () => {
     const h = harness();
     await startDevInColor(h.options);
     const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
-    api.stdout.write("Ready on http://localhost:8787\n");
+    api.stdout.write("\x1b[34mReady on http://localhost:8787\x1b[0m\n");
     await flush();
     h.advance(READY_DEADLINE_MS);
 
     const action = "  A worker that never becomes ready keeps running, so nothing else reports it.";
     // The guard on the guard: color really is on for this run, so nothing below can pass vacuously.
     expect(h.stdoutLines).toContain(`\x1b[2m${action}\x1b[22m`);
-    expect(h.logLines).toContain("Still waiting on: web.");
-    expect(h.logLines).toContain(action);
-    expect(h.logLines.filter((line) => line.includes("\x1b"))).toEqual([]);
+    expect(h.logTexts().some((text) => text.startsWith("Still waiting on:"))).toBe(false);
+    expect(h.logTexts()).toContain("Ready on http://localhost:8787");
+    expect(h.logTexts().filter((text) => text.includes("\x1b"))).toEqual([]);
   });
 
   test("--json gets a record, not the prose — the agent's half of the report", async () => {
     // A session that never emits its ready line, read by a script: the sentence a person gets is not an
-    // answer, so the deadline writes one JSON line per report. `logs/dev.log` still gets the prose.
+    // answer, so the deadline writes one JSON line per report. The prose goes to stderr, where a person
+    // reads it in either mode.
     const { h } = await halfReady({ json: true });
     h.advance(READY_DEADLINE_MS);
 
@@ -1170,7 +1213,7 @@ describe("startDev — ready deadline", () => {
     expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["web"] }]);
     // And no prose report on stdout to confuse a reader parsing line by line.
     expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
-    expect(h.logLines).toContain("Still waiting on: web.");
+    expect(h.stderrLines).toContain("Still waiting on: web.");
   });
 
   /**
@@ -1275,14 +1318,83 @@ describe("startDev — --json is a stream a script can parse", () => {
 });
 
 describe("startDev — log tee", () => {
-  test("log lines are ANSI-stripped and CR-normalized, prefixed with the worker name", async () => {
+  /**
+   * **The `[name]` prefix is gone, because the file is the name** (#671).
+   *
+   * It carried one while every worker shared `logs/dev.log` and the prefix was the only record of which
+   * one spoke. `dev.<branch>.<worker>.jsonl` carries it in the filename, so a field — or a prefix — would
+   * be the same fact on every line of the file. `pithy dev logs` puts it back when it renders.
+   */
+  test("an output record is {ts, stream, text}, ANSI-stripped, CR-normalized, with no worker field", async () => {
     const h = harness();
     await startDev(h.options);
     const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
     api.stdout.write("\x1b[34mspinner\x1b[0m\rdone\n");
     await flush();
-    expect(h.logLines).toContain("[api] spinner");
-    expect(h.logLines).toContain("[api] done");
+
+    const output = h.recordsFor("api").filter((record) => "stream" in record);
+    expect(output).toEqual([
+      { ts: "2026-07-27T00:00:00.000Z", stream: "stdout", text: "spinner" },
+      { ts: "2026-07-27T00:00:00.000Z", stream: "stdout", text: "done" },
+    ]);
+    // And nothing of it reached any other worker's file.
+    expect(h.recordsFor("web")).toEqual([{ ts: "2026-07-27T00:00:00.000Z", event: "spawned", port: 8788 }]);
+  });
+
+  test("a worker's stderr is recorded as stderr, which is the only thing the two tees differ in", async () => {
+    const h = harness();
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
+    api.stderr.write("something went wrong\n");
+    await flush();
+
+    expect(h.recordsFor("api")).toContainEqual({
+      ts: "2026-07-27T00:00:00.000Z",
+      stream: "stderr",
+      text: "something went wrong",
+    });
+  });
+
+  /**
+   * **One file per worker, under the config directory, named for the branch.** The whole point of #671:
+   * `pithy feature destroy` deletes the worktree, and the session you then want to read back used to go
+   * with it.
+   */
+  test("each started worker gets its own file under <config>/<project>/logs/", async () => {
+    const h = harness({ ensureDeps: { branchFor: async () => "feature/671-dev-logs" } });
+    await startDev(h.options);
+
+    expect(h.logPaths.map((path) => path.split("/").slice(-3).join("/"))).toEqual([
+      "acme/logs/dev.feature-671-dev-logs.api.jsonl",
+      "acme/logs/dev.feature-671-dev-logs.web.jsonl",
+    ]);
+    // Nothing under the checkout. That is the criterion, and a path is the only way to state it.
+    expect(h.logPaths.filter((path) => path.startsWith("/proj"))).toEqual([]);
+  });
+
+  /** A project that states no name has nowhere under `<config>/<project>/` to put a log, and says so. */
+  test("a project with no name opens no file and says why, rather than writing into the checkout", async () => {
+    const h = harness({ projectName: async () => null });
+    await startDev(h.options);
+
+    expect(h.logPaths).toEqual([]);
+    expect(h.stdoutLines).toContain("No session log: pithy.config.ts states no name, so there is no place for one.");
+  });
+
+  /** `spawned` carries the port, `ready` is written where readiness is decided, `exited` carries the code. */
+  test("a worker's lifecycle reads spawned, ready, exited — and no session-scoped event at all", async () => {
+    const h = harness();
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+    await handle.shutdown("stopped");
+
+    expect(h.recordsFor("api")).toEqual([
+      { ts: "2026-07-27T00:00:00.000Z", event: "spawned", port: 8787 },
+      { ts: "2026-07-27T00:00:00.000Z", stream: "stdout", text: "Ready on http://localhost:8787" },
+      { ts: "2026-07-27T00:00:00.000Z", event: "ready" },
+      { ts: "2026-07-27T00:00:00.000Z", event: "exited", code: 0 },
+    ]);
   });
 });
 
@@ -2015,12 +2127,17 @@ describe("startDev — capability hosts", () => {
     expect(h.stdoutLines.join("\n")).toContain("pithy init");
   });
 
-  test("its output is labeled and tee'd like every other worker's", async () => {
+  test("its output is labeled and tee'd like every other worker's, into its own file", async () => {
     const h = hosted();
     await startDev(h.options);
     h.spawned[2]?.child.stdout.write("workflow started\n");
     await flush();
-    expect(h.logLines.some((l) => l.startsWith("[email] workflow started"))).toBe(true);
+    expect(h.recordsFor("email")).toContainEqual({
+      ts: "2026-07-27T00:00:00.000Z",
+      stream: "stdout",
+      text: "workflow started",
+    });
+    expect(h.logPaths.some((path) => path.endsWith("/logs/dev.main.email.jsonl"))).toBe(true);
   });
 
   test("a delivery failure in the host's output is rendered, and the session survives it", async () => {
@@ -2342,7 +2459,7 @@ describe("startDev — session events", () => {
 
     expect(observed.stdoutLines).toEqual(plain.stdoutLines);
     expect(observed.stderrLines).toEqual(plain.stderrLines);
-    expect(observed.logLines).toEqual(plain.logLines);
+    expect(observed.logRecords).toEqual(plain.logRecords);
     expect(c.events.length).toBeGreaterThan(0);
   });
 });
@@ -2763,8 +2880,8 @@ describe("startDev — the parked half of the dev set", () => {
  * that holds them. So the exception is narrow, declared, and keyed on `roster` rather than on the event
  * sink: a consumer that installs events without rendering a roster still gets every line.
  *
- * **`logs/dev.log` stays byte-identical in both.** That is the half worth protecting — it is the record
- * a session is read back from, and it already writes each address independently of the banner.
+ * **The session logs stay record-for-record identical in both.** That is the half worth protecting — they
+ * are the record a session is read back from, and nothing a renderer decides may change them.
  */
 describe("startDev — what a roster supersedes", () => {
   const ready = async (h: ReturnType<typeof harness>) => {
@@ -2798,7 +2915,7 @@ describe("startDev — what a roster supersedes", () => {
     expect(h.stdoutLines).not.toContain("Ready.");
   });
 
-  test("logs/dev.log is byte-identical with the roster and without it", async () => {
+  test("the session logs are record-for-record identical with the roster and without it", async () => {
     const plain = harness();
     await startDev(plain.options);
     await ready(plain);
@@ -2807,9 +2924,15 @@ describe("startDev — what a roster supersedes", () => {
     await startDev({ ...rostered.options, roster: true });
     await ready(rostered);
 
-    expect(rostered.logLines).toEqual(plain.logLines);
-    // Named explicitly: the record carries each address whether the banner printed it or not.
-    expect(rostered.logLines).toContain("ready: api http://localhost:8787");
+    expect(rostered.logRecords).toEqual(plain.logRecords);
+    // Named explicitly: each worker's readiness is recorded in its own file whether the banner printed
+    // the address or not. The address itself is derivable from `spawned`'s port, which is beside it.
+    expect(rostered.recordsFor("api")).toContainEqual({ ts: "2026-07-27T00:00:00.000Z", event: "ready" });
+    expect(rostered.recordsFor("api")).toContainEqual({
+      ts: "2026-07-27T00:00:00.000Z",
+      event: "spawned",
+      port: 8787,
+    });
   });
 
   test("the superseded lines are the *only* difference the roster makes to the stream", async () => {
@@ -2972,8 +3095,11 @@ describe("startDev — the ready deadline survives a restart", () => {
 
     const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
     expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["api"] }]);
-    // The prose still reaches the log, which is where a person reads a session back in either mode.
-    expect(h.logLines).toContain("Still waiting on: api.");
+    // **And the person's half still arrives, on stderr.** It reached them through `logs/dev.log` when
+    // that file was the session's record; a session-scoped sentence has no worker's file to go in now,
+    // so under `--json` it goes to stderr — the destination `docs/commands/dev.md` already promised
+    // (#671). The claim #684 made here is unchanged: `--json` does not stop reporting at the banner.
+    expect(h.stderrLines).toContain("Still waiting on: api.");
   });
 
   test("the waiting event is raised again, so a live roster has something to render", async () => {
@@ -3132,14 +3258,19 @@ describe("startDev — a teardown that cannot hang", () => {
     expect(h.removed).toEqual([4242]);
   });
 
-  test("a teardown that gave up still flushes the log", async () => {
-    // The record is what the session is read back from, so the bound must not cost it.
+  test("a teardown that gave up still flushes every worker's log", async () => {
+    // The record is what the session is read back from, so the bound must not cost it. There is no
+    // session-end record — `stopping — <reason>` is a sentence about the session, and a session log is one
+    // worker's own records — so the flush itself is what is asserted: `end` on each worker's writer, which
+    // is the call that gets the buffered records onto the disk. Deleting `await logs.end()` fails this.
     const h = immortal();
     const handle = await startDev(h.options);
 
     await handle.shutdown("stopped");
 
-    expect(h.logLines).toContain("stopping — stopped");
+    expect(h.logPaths).toHaveLength(2);
+    expect([...h.logEnded].sort()).toEqual(["api", "web"]);
+    expect(h.recordsFor("api")[0]).toEqual({ ts: "2026-07-27T00:00:00.000Z", event: "spawned", port: 8787 });
   });
 
   // Deliberately not tested here: that a *clean* teardown awaits its children rather than racing past
@@ -3377,7 +3508,7 @@ describe("startDev — the banner under a roster", () => {
     expect(h.stdoutLines.some((l) => l.includes("logs →"))).toBe(true);
   });
 
-  test("and logs/dev.log still records the lot", async () => {
+  test("and the session logs still record the lot", async () => {
     const plain = harness();
     await startDev(plain.options);
     await ready(plain);
@@ -3386,7 +3517,7 @@ describe("startDev — the banner under a roster", () => {
     await startDev({ ...rostered.options, roster: true });
     await ready(rostered);
 
-    expect(rostered.logLines).toEqual(plain.logLines);
+    expect(rostered.logRecords).toEqual(plain.logRecords);
   });
 });
 
@@ -3451,6 +3582,21 @@ describe("startDev — parking a worker", () => {
     // Both halves have to be said or `p` looks like it did nothing.
     const { h } = parked();
     const handle = await startDev(h.options);
+
+    await handle.setAutostart("web", false);
+
+    expect(h.stdoutLines.some((l) => l.includes("web") && l.includes("keeps running"))).toBe(true);
+  });
+
+  /**
+   * **A state change with no record is what this closes.** Under the roster — the default at a terminal —
+   * the sentence was withheld because the `autostart` column says the same thing, and nothing records it:
+   * a session log is one worker's own records, and this is a change to the next run. So the only trace of
+   * a write to `dev-ports.json` was a column in a region that repaints away.
+   */
+  test("and it says so under the roster too, because the column repaints away and nothing else keeps it", async () => {
+    const { h } = parked();
+    const handle = await startDev({ ...h.options, roster: true });
 
     await handle.setAutostart("web", false);
 

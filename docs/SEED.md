@@ -191,7 +191,7 @@ A fixture that registers something pointing back at the app — a self-connectio
 if (!context.origin) {
   throw new ValidationError({
     message: "This set registers a self-connection and needs the origin this Worker answers on.",
-    action: "Run pithy dev once in this checkout to allocate its ports, then seed again.",
+    action: "Run pithy dev, then seed again — it allocates this checkout's ports.",
   });
 }
 return { d1: [d1SeedGroup("app", "connections", Connection, [{ id: 1, url: context.origin }])] };

@@ -138,8 +138,8 @@ function StreamLine({ line }: { line: CommittedLine }): React.ReactElement {
  * pinned underneath it.
  *
  * Everything above the footer is `<Static>`, which writes each line to real stdout and never touches it
- * again — so the terminal's scroll, selection and copy work exactly as they do on the plain path, and
- * `logs/dev.log` is unaffected in both. Only the footer repaints.
+ * again — so the terminal's scroll, selection and copy work exactly as they do on the plain path, and the
+ * session logs are unaffected in both. Only the footer repaints.
  */
 export function DevTui(props: {
   store: DevStore;

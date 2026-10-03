@@ -277,7 +277,7 @@ describe("generateDevVars", () => {
   });
 
   test("no value ever reaches the report", async () => {
-    // These lines go to a terminal scrollback and to `logs/dev.log`.
+    // These lines go to a terminal scrollback and to a session log, which `pithy dev logs` reads back.
     const board = await worker("board");
     await writeFile(join(board, ".dev.vars"), "MINE=1\n");
 

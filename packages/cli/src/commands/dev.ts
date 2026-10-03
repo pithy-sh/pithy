@@ -8,6 +8,7 @@ import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
 import { type DevHandle, resolveAutostart, startDev } from "../dev/orchestrator";
 import { chooseRenderer, interruptAction, rendererInputsFromProcess } from "../dev/tui/choose";
+import { dispatchedSubCommand } from "../dispatch";
 import { describeStaleAutostartRoots, portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { openUrl } from "../platform/browser";
@@ -19,7 +20,8 @@ import { dim } from "../terminal/style";
  *
  * Discovers the workers from `apps/` plus the host Worker of every capability they compose, resolves each
  * one's pinned port from `.dev.config.json` (verifying it is free, never drifting), spawns them as process
- * groups, tees their labeled output to the terminal and `logs/dev.log`, and prints one ready banner. Ctrl-C
+ * groups, tees their labeled output to the terminal and to one JSONL session log per worker, and prints one
+ * ready banner. Ctrl-C
  * (SIGINT) or SIGTERM tears the whole session down; any worker exiting brings the rest down with it. The
  * real work lives in `startDev`; this stays thin.
  *
@@ -301,37 +303,71 @@ async function runSession(handle: DevHandle, json: boolean): Promise<void> {
   await handle.closed;
 }
 
+/**
+ * `pithy dev`'s own flags, named so the subcommand guard can be asked citty's own question (#671).
+ *
+ * `dispatchedSubCommand` needs the parser to know which tokens are a flag's *value* — `pithy dev --app
+ * api logs` dispatches on `logs`, not on `api` — and reading them off a literal inside `defineCommand`
+ * would mean a second copy of this list.
+ */
+const DEV_ARGS = {
+  list: { type: "boolean", default: false, description: "Print the workers a run would start, and start nothing" },
+  app: {
+    type: "string",
+    description: "Start only the worker named, whatever its dev.autostart says (repeatable)",
+  },
+  "disable-autostart": {
+    type: "boolean",
+    default: false,
+    description: "Stop --app's workers starting on this branch, on this machine. Starts nothing",
+  },
+  "enable-autostart": {
+    type: "boolean",
+    default: false,
+    description: "Undo --disable-autostart for --app's workers. Starts nothing",
+  },
+  tui: {
+    type: "boolean",
+    default: true,
+    description: "Render the live roster at a terminal",
+    // citty renders a `--no-<name>` line for any boolean defaulting true, and takes its text from
+    // here. Left unset it prints the flag with no description at all — which is most of the way back
+    // to the undiscoverable environment variable this flag exists to replace.
+    negativeDescription: "Use the plain stream instead of the live roster",
+  },
+  json: { type: "boolean", default: false, description: "Machine-readable output" },
+} as const;
+
+/**
+ * `pithy dev`'s subcommands — the session reader, and nothing else.
+ *
+ * **`dev` is the first command in this tree where bare `run` does real work *and* `subCommands` exists.**
+ * It takes no positionals today, so nothing is shadowed: a token that is not `logs` still reaches citty's
+ * own `E_UNKNOWN_COMMAND`. Behind `await import` because the reader pulls in nothing a session needs.
+ */
+const DEV_SUBCOMMANDS = {
+  logs: () => import("../dev/logsCommand").then((m) => m.default),
+};
+
 export default defineCommand({
   meta: { name: "dev", description: "Run every worker locally under one supervisor" },
-  args: {
-    list: { type: "boolean", default: false, description: "Print the workers a run would start, and start nothing" },
-    app: {
-      type: "string",
-      description: "Start only the worker named, whatever its dev.autostart says (repeatable)",
-    },
-    "disable-autostart": {
-      type: "boolean",
-      default: false,
-      description: "Stop --app's workers starting on this branch, on this machine. Starts nothing",
-    },
-    "enable-autostart": {
-      type: "boolean",
-      default: false,
-      description: "Undo --disable-autostart for --app's workers. Starts nothing",
-    },
-    tui: {
-      type: "boolean",
-      default: true,
-      description: "Render the live roster at a terminal",
-      // citty renders a `--no-<name>` line for any boolean defaulting true, and takes its text from
-      // here. Left unset it prints the flag with no description at all — which is most of the way back
-      // to the undiscoverable environment variable this flag exists to replace.
-      negativeDescription: "Use the plain stream instead of the live roster",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
+  args: DEV_ARGS,
+  subCommands: DEV_SUBCOMMANDS,
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
+      /**
+       * **Dispatched already — stand down.** (#671)
+       *
+       * citty runs a parent's `run` after handing the invocation to a subcommand, so `pithy dev logs`
+       * reaches here having already printed its table. Proceeding would spawn every worker, bind every
+       * pinned port and truncate every file the reader had just read.
+       *
+       * **Above `collectAppFlags`**, because that refuses a `--app` with no value — so a `pithy dev logs
+       * --app` typo would otherwise be refused by the session rather than by the reader, with the
+       * session's remedy attached.
+       */
+      if (dispatchedSubCommand(rawArgs, DEV_ARGS, Object.keys(DEV_SUBCOMMANDS)) !== undefined) return;
+
       const projectDir = process.cwd();
       const apps = collectAppFlags(rawArgs);
 
@@ -391,15 +427,15 @@ export default defineCommand({
           json: args.json,
           apps,
           // Ink owns the cursor, so a line written behind its back corrupts the frame: under the footer
-          // the supervisor's output is committed through the store instead. `logs/dev.log` is written by
-          // the orchestrator either way and is not affected.
+          // the supervisor's output is committed through the store instead. The session logs are written
+          // by the orchestrator either way and are not affected.
           ...(tui
             ? {
                 stdout: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
                 stderr: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
                 events: tui.store.event,
                 // The roster carries every worker's state, port and address, so the banner leaves its
-                // own list of them out. `logs/dev.log` records them either way.
+                // own list of them out. Each worker's `spawned` record carries its port either way.
                 roster: true,
                 // `terminal/keys.ts` and Ink's `useInput` both claim raw mode, and only one may. The
                 // reader is stubbed out with `active` reporting whether there is in fact a keyboard, so

@@ -29,6 +29,15 @@ describe("createLineSplitter", () => {
 });
 
 describe("teeStream", () => {
+  /**
+   * **The log tee carries no `[name]` prefix** (#671).
+   *
+   * It carried one while every worker shared `logs/dev.log`, where the prefix was the only record of
+   * which worker spoke. One file per worker — `dev.<branch>.<worker>.jsonl` — makes the name the
+   * filename, so a prefix would be the same fact on every line of the file; `pithy dev logs` puts it
+   * back when it renders. The terminal still gets it, colorized, because there every worker's output is
+   * still interleaved.
+   */
   test("ANSI-strips and CR-normalizes the log tee, colorizes the terminal, feeds raw lines", async () => {
     const stream = new PassThrough();
     const terminal: string[] = [];
@@ -51,7 +60,7 @@ describe("teeStream", () => {
     await done;
 
     expect(terminal).toEqual(["<c>[api]</c> \x1b[34mReady on http://localhost\x1b[0m"]);
-    expect(log).toEqual(["[api] Ready on http://localhost"]);
+    expect(log).toEqual(["Ready on http://localhost"]);
     expect(raw).toEqual(["\x1b[34mReady on http://localhost\x1b[0m"]);
   });
 });

@@ -536,3 +536,37 @@ describe("refusePrettyFlags — the `=value` spelling", () => {
     expect((thrown as ValidationError).payload.message).toContain("--pretty=maybe");
   });
 });
+
+/**
+ * **`pithy dev logs` is walked into, so the reader's flags are checked against the reader** (#671).
+ *
+ * `dev` is the first command with a `run` of its own *and* subcommands, so it is also the first time this
+ * walk's "a group owns the flags before its first positional" clause meets a command that is not a group.
+ */
+describe("the dev logs reader", () => {
+  test("a flag the reader declares is accepted on it, and the session's own are not", async () => {
+    expect(await undeclaredFlags(main, ["dev", "logs", "--follow", "--timestamps", "-n", "50"])).toBeNull();
+    expect((await undeclaredFlags(main, ["dev", "logs", "--list"]))?.undeclared).toEqual(["--list"]);
+    expect((await undeclaredFlags(main, ["dev", "logs", "--list"]))?.path).toEqual(["dev", "logs"]);
+  });
+
+  test("the session still owns the flags before the subcommand name", async () => {
+    expect((await undeclaredFlags(main, ["dev", "--since", "5m", "logs"]))?.undeclared).toEqual(["--since"]);
+  });
+
+  test("bare pithy dev is unaffected by gaining a subcommand", async () => {
+    expect(await undeclaredFlags(main, ["dev", "--app", "api", "--json"])).toBeNull();
+    expect((await undeclaredFlags(main, ["dev", "--bogus"]))?.undeclared).toEqual(["--bogus"]);
+  });
+
+  /**
+   * **The `--pretty` rule needs no code on the reader**, which is the point: `bin.ts` owns both flags for
+   * every command, so without `--json` either is refused as formatting a line that is not being written.
+   * With `--json` the reader is a stream and stays compact, exactly as `pithy dev` does.
+   */
+  test("--pretty without --json is refused on the reader by the one rule that covers every command", () => {
+    expect(() => refusePrettyFlags(["dev", "logs", "--pretty"])).toThrow(ValidationError);
+    expect(() => refusePrettyFlags(["dev", "logs", "--no-pretty"])).toThrow(ValidationError);
+    expect(() => refusePrettyFlags(["dev", "logs", "--json", "--pretty"])).not.toThrow();
+  });
+});
