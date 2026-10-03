@@ -119,6 +119,26 @@ describe("the React 19 stub", () => {
     }
   });
 
+  test("the Vite environment is prefixed and computed, so a kebab-case worker name still parses", async () => {
+    // `WORKER_NAME` is `^[a-z0-9]+(?:-[a-z0-9]+)*$` — a worker directory is kebab-case, and `apps/my-api`
+    // is an ordinary name rather than an edge case. An unquoted `my-api:` is a syntax error, and the
+    // whole scaffolded config fails to parse: `TS1005: ',' expected`. Nothing else in this template
+    // substitutes the token into a position where that mattered — the title is HTML text and the two
+    // `tsBuildInfoFile` uses are inside JSON strings — so the quoting is this block's own requirement.
+    const files = await loadStubFiles(reactStub, {
+      worker: "my-api",
+      auth: false,
+      payments: false,
+      organization: false,
+      packageManager: "bun",
+    });
+    expect(files["vite.config.ts"]).toContain('["worker_my-api"]: {');
+    expect(files["vite.config.ts"]).toContain('viteEnvironment: { name: "worker_my-api" }');
+    // The two have to name the same environment: a key naming one that does not exist is dropped in
+    // silence, and the only symptom is a dev server slower than it should be.
+    expect(files["vite.config.ts"]).not.toMatch(/^\s*worker_my-api:/m);
+  });
+
   test("every client file is .tsx, so the worker's own tsconfig ignores the whole client", () => {
     // The worker's tsconfig includes `src/**/*.ts`, which does not match `.tsx`. The ambient
     // declarations sit at the worker root for the same reason — `.d.ts` WOULD match that glob.

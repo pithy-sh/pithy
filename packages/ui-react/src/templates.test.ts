@@ -155,10 +155,28 @@ describe("the React template library", () => {
       const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
       if (text.includes(WORKER_TOKEN)) users.push(path);
     }
-    // Three templates need the worker's name: the document title, and each tsconfig's `tsBuildInfoFile`.
+    // Four templates need the worker's name: the document title, each tsconfig's `tsBuildInfoFile`, and
+    // the Vite config, which pins the Worker's environment name and then keys `environments` on it.
     // The build-state files sit together under the project's `dist/`, so they are named after the Worker
     // they belong to — two composite programs pointing at one file overwrite each other's state.
-    expect(users).toEqual(["index.html", "tsconfig.client.json", "tsconfig.node.json"]);
+    expect(users).toEqual(["index.html", "tsconfig.client.json", "tsconfig.node.json", "vite.config.ts"]);
+  });
+
+  test("the Worker's Vite environment is pinned, and keyed on the same token it is pinned to", async () => {
+    const text = await readFile(join(TEMPLATE_DIR, "vite.config.ts"), "utf8");
+    // `@cloudflare/vite-plugin` names the environment after the DEPLOYED worker — `<project>-<worker>`
+    // with hyphens swapped for underscores — which this scaffolder does not know: `UiStubContext` carries
+    // the directory name and says in as many words that it is not the deployed one. So the config pins
+    // the name instead of guessing it, and keys `environments` on the same token.
+    //
+    // **The pin is what makes the key safe.** A key naming an environment that does not exist is not an
+    // error in Vite; the block is dropped and the only symptom is a dev server that is slower than it
+    // should be. Both sides being one token is what removes that failure.
+    expect(text).toContain(`viteEnvironment: { name: "worker_${WORKER_TOKEN}" }`);
+    // A computed key, prefixed. Bare `worker_my-api:` is a syntax error, and a quoted key is stripped by
+    // Biome's `quoteProperties: "asNeeded"` on the next format, which restores that error.
+    expect(text).toContain(`["worker_${WORKER_TOKEN}"]: {`);
+    expect(text).toContain("pithy-deps");
   });
 
   test("no template reaches for a token that nothing substitutes", async () => {
