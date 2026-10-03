@@ -1004,15 +1004,112 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   });
   let shuttingDown = false;
 
-  // The ready deadline's timer, replaced by the live watch once the children are spawned. Declared here
-  // for the same reason `keys` is: the banner and the shutdown both stop it, and both are written above
-  // the spawn loop that starts it.
+  // The ready deadline's timer, replaced by the live watch as soon as a child is running, and whether a
+  // watch is currently armed. Declared here for the same reason `keys` is: the banner and the shutdown
+  // both stop it, and both are written above the `startWorker` that arms it.
   let readyWatch: ReadyWatch = { stop: () => {} };
+  let watching = false;
+
+  /**
+   * **Start the ready deadline for whoever has not arrived, unless one is already running**
+   * (pithy-sh/pithy#429, #684).
+   *
+   * `wrangler dev` does not exit when a build fails — it prints the error and keeps running. So a worker
+   * that cannot build is a live child that never matches its ready signal: the banner waits on the whole
+   * set and never fires, and the session proceeds looking healthy with the real error forty lines up the
+   * scrollback, interleaved with every sibling's startup. Three capability workers reached an adopter
+   * that way (#426). The deadline names whoever has not arrived, and keeps naming them.
+   *
+   * **A child that fails to build is deliberately not treated as dead — it is reported, and left.** The
+   * tempting alternative loses on three counts. A death here is not local: the exit handler tears the
+   * *whole* session down when any child exits, so condemning one broken build would stop every healthy
+   * worker for one worker's typo, which is a worse trade than a line naming it. The verdict would have to
+   * be read out of wrangler's own output (`Build failed with 1 error`), which is version-coupled prose,
+   * and a false positive kills a working session — while a `dev.command` worker is not wrangler at all,
+   * and Vite does recover from a bad build. And the deadline already catches strictly more than a build
+   * failure: a port that never binds, a binding that never resolves, a startup that hangs. So the watch
+   * reports; it never condemns.
+   *
+   * It does say what a restart cannot be avoided for. A `wrangler dev` whose **first** build fails never
+   * rebuilds — fixing the file changes nothing, measured, so the report's action line names `pithy dev`
+   * rather than implying the session will heal itself.
+   *
+   * **`--json` gets a record, not the prose.** CLAUDE.md makes every command agent-drivable, and the
+   * agent driving `pithy dev --json` is in exactly the position #426's adopter was: a session that never
+   * emits its ready line, and nothing on the wire saying which worker is missing. A sentence it would
+   * have to regex is not an answer, so the deadline emits one JSON line per report — the same
+   * line-per-object shape as the handshake, `event` naming which kind of line it is. That is the one
+   * place `pithy dev`'s streaming surface owes a machine something the handshake cannot carry: the
+   * handshake is written the moment the children are spawned, and readiness is decided after it. It is
+   * also the *only* thing on that stream after the handshake — `exited`, `spawned` and `ready` are
+   * `DevEvent`s, and the event sink is wired from the roster, which `--json` never renders. The prose
+   * still goes to `logs/dev.log` in both modes; the log is read by a person either way.
+   *
+   * **Called per spawn, and idempotent — never a stop and re-arm (#684).** Every spawn runs through
+   * {@link startWorker}, startup and `restart` alike, which is the one path the two cannot diverge on.
+   * The guard is what makes that safe: `r` is reachable before the banner — `commands/dev.ts` mounts the
+   * roster first and `startDev` returns before every worker is ready — so re-arming would hand a worker
+   * eighty-nine seconds into its budget another ninety, and pressing `r` repeatedly would starve the
+   * report #426 exists for indefinitely. The price, stated: a worker restarted into a live watch inherits
+   * that clock and can be named with little budget of its own. A line that arrives early beats a report
+   * that never arrives.
+   *
+   * The flag cannot drift from the watch. `watchReady` only ends itself when its pending set is empty at
+   * a tick (`readyWatch.test.ts`, *goes quiet once the set empties*), and every transition to ready runs
+   * through {@link showBannerIfReady}, which is where the flag is cleared when that set empties.
+   *
+   * **The deadline is measured from a spawn, as `docs/commands/dev.md` says — now the first rather than
+   * the last.** The startup loop is synchronous, so on a cold start the two are the same instant to
+   * within a fraction of a millisecond; what moved is which function owns the decision.
+   */
+  const armReadyWatch = () => {
+    // A spawn racing a teardown must not leave a timer the session no longer owns. `restart` re-checks
+    // `shuttingDown` before it spawns, so this is belt and braces for the one that does not.
+    if (watching || shuttingDown) return;
+    watching = true;
+    readyWatch = watchReady({
+      // **Read off `readyState`, not off the subset this run spawned.** A worker `r` started from a
+      // parked row is running and not ready, and sourcing `started` meant it could never be named —
+      // while the all-ready check below already waited on it, so the banner and the deadline disagreed
+      // about who counts. `docs/commands/dev.md` §`--json` already describes the wider set. Live at
+      // every tick, so a worker that arrives late drops out of the next report on its own.
+      pending: () => [...readyState].filter(([, isReady]) => !isReady).map(([name]) => name),
+      report: (waiting, first) => {
+        // Both destinations, the way the banner's own lines go: a report only in the terminal is a report
+        // a piped session loses, and `logs/dev.log` is where a developer looks after the fact.
+        raise({ event: "waiting", workers: [...waiting] });
+        const lines = stillWaitingLines(waiting, first);
+        if (options.json) {
+          emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
+        } else {
+          for (const line of lines) emitLine(line);
+        }
+        for (const line of lines) log.write(stripAnsi(line));
+      },
+      schedule: options.schedule,
+    });
+  };
+
+  /**
+   * Stop the reporter, and say that none is running.
+   *
+   * Deliberately not the same act as showing the banner. They were one call for as long as a session
+   * reached *every worker ready* once, and `r` made that false: a restarted worker is not ready, so the
+   * deadline has work again while `bannerShown` must stay true (#684).
+   */
+  const stopReadyWatch = () => {
+    watching = false;
+    readyWatch.stop();
+  };
 
   const showBannerIfReady = () => {
-    if (bannerShown || [...readyState.values()].some((r) => !r)) return;
+    if ([...readyState.values()].some((r) => !r)) return;
+    // Everything has arrived, so the reporter has nothing left to say — whether or not this is the first
+    // time it has been true. Above the `bannerShown` return, because stopping the watch is the half that
+    // has to happen on every arrival.
+    stopReadyWatch();
+    if (bannerShown) return;
     bannerShown = true;
-    readyWatch.stop();
     raise({ event: "session-ready" });
     if (!options.json) {
       // Bindings go live with the banner, not before it: `l` opens a URL, and a URL that answers is a
@@ -1308,7 +1405,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // First, before anything can take time: give the terminal back. A session that died with the
     // terminal in raw mode leaves a shell that echoes nothing.
     keys.stop();
-    readyWatch.stop();
+    // Through the helper, so nothing can arm a replacement watch behind the teardown: `shuttingDown` is
+    // already true above, and `armReadyWatch` reads it.
+    stopReadyWatch();
     emitLine(`Stopping — ${reason}.`);
     log.write(`stopping — ${reason}`);
     for (const { child } of children) signalChild(child.pid, "SIGTERM");
@@ -1557,6 +1656,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     });
     exits.push(exited);
     exitOf.set(worker.name, exited);
+    // **Last, after the child exists**, so the deadline is measured from a worker that is actually
+    // running. Here rather than after the startup loop because `restart` spawns through this same
+    // function, and a watch armed in one place and not the other is the divergence this function's
+    // docblock exists to prevent — the bug #684 fixed was exactly that, one field over.
+    armReadyWatch();
   };
 
   // Indexed over the whole set, so a worker's color is its own whether it started with the run or was
@@ -1567,54 +1671,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       roster.findIndex((r) => r.worker.name === entry.worker.name),
     );
 
-  // 8. Start the ready deadline, now that every child is running (pithy-sh/pithy#429).
-  //
-  //    `wrangler dev` does not exit when a build fails — it prints the error and keeps running. So a
-  //    worker that cannot build is a live child that never matches its ready signal: the banner waits on
-  //    the whole set and never fires, and the session proceeds looking healthy with the real error forty
-  //    lines up the scrollback, interleaved with every sibling's startup. Three capability workers reached
-  //    an adopter that way (#426). The deadline names whoever has not arrived, and keeps naming them.
-  //
-  //    **A child that fails to build is deliberately not treated as dead — it is reported, and left.**
-  //    The tempting alternative loses on three counts. A death here is not local: the exit handler above
-  //    tears the *whole* session down when any child exits, so condemning one broken build would stop
-  //    every healthy worker for one worker's typo, which is a worse trade than a line naming it. The
-  //    verdict would have to be read out of wrangler's own output (`Build failed with 1 error`), which
-  //    is version-coupled prose, and a false positive kills a working session — while a `dev.command`
-  //    worker is not wrangler at all, and Vite does recover from a bad build. And the deadline already
-  //    catches strictly more than a build failure: a port that never binds, a binding that never
-  //    resolves, a startup that hangs. So the watch reports; it never condemns.
-  //
-  //    It does say what a restart cannot be avoided for. A `wrangler dev` whose **first** build fails
-  //    never rebuilds — fixing the file changes nothing, measured, so the report's action line names
-  //    `pithy dev` rather than implying the session will heal itself.
-  //
-  //    **`--json` gets a record, not the prose.** CLAUDE.md makes every command agent-drivable, and the
-  //    agent driving `pithy dev --json` is in exactly the position #426's adopter was: a session that
-  //    never emits its ready line, and nothing on the wire saying which worker is missing. A sentence it
-  //    would have to regex is not an answer, so the deadline emits one JSON line per report — the same
-  //    line-per-object shape as the handshake above it, `event` naming which kind of line it is. That is
-  //    the one place `pithy dev`'s streaming surface owes a machine something the handshake cannot carry:
-  //    the handshake is written the moment the children are spawned, and readiness is decided after it.
-  //    The prose still goes to `logs/dev.log` in both modes — the log is read by a person either way.
-  readyWatch = watchReady({
-    pending: () => started.map((s) => s.worker.name).filter((name) => !readyState.get(name)),
-    report: (waiting, first) => {
-      // Both destinations, the way the banner's own lines go: a report only in the terminal is a report
-      // a piped session loses, and `logs/dev.log` is where a developer looks after the fact.
-      raise({ event: "waiting", workers: [...waiting] });
-      const lines = stillWaitingLines(waiting, first);
-      if (options.json) {
-        emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
-      } else {
-        for (const line of lines) emitLine(line);
-      }
-      for (const line of lines) log.write(stripAnsi(line));
-    },
-    schedule: options.schedule,
-  });
-
-  // 9. Record the live session so a re-run can stop it and reap its children.
+  // 8. Record the live session so a re-run can stop it and reap its children.
   const state: DevState = {
     pid: ownPid,
     startedAt: now().toISOString(),

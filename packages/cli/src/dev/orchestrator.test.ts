@@ -2918,6 +2918,164 @@ describe("startDev — readiness after the banner", () => {
 });
 
 /**
+ * **The ready deadline outlives the banner, because a restart puts a worker back where #426's adopter was.**
+ *
+ * The watch was armed once after the spawn loop and stopped forever at the first banner, so a worker
+ * restarted with `r` that never came back ready reported *nothing*: the session looked healthy, the
+ * roster kept its last row, and an agent driving `pithy dev --json` saw the records stop. It is now
+ * armed from `startWorker` — the one path both the startup loop and `restart` go through — and stopped
+ * whenever every worker is ready, which is no longer the same decision as having shown the banner.
+ */
+describe("startDev — the ready deadline survives a restart", () => {
+  /** Both fake workers past their ready signals, so the banner fires and the watch stops. */
+  const allReady = async (h: ReturnType<typeof harness>) => {
+    h.spawned[0]?.child.stdout.write("Ready on http://localhost:8787\n");
+    h.spawned[1]?.child.stdout.write("ready in 412\n");
+    await flush();
+  };
+
+  /** A session that was ready, then `api` restarted and never heard from again. */
+  async function restartedAndSilent(overrides: Partial<StartDevOptions> = {}) {
+    const h = harness(overrides);
+    const events: DevEvent[] = [];
+    const handle = await startDev({ ...h.options, events: (e) => events.push(e) });
+    await allReady(h);
+    await handle.ready;
+    // The state the bug hid in: everything arrived, so nothing is ticking any more.
+    expect(h.pendingTimers()).toBe(0);
+    // The replacement spawns and says nothing — a `wrangler dev` whose first build has just failed.
+    await handle.restart("api");
+    return { h, handle, events };
+  }
+
+  test("names the worker that was restarted and never came back", async () => {
+    const { h } = await restartedAndSilent();
+
+    h.advance(READY_DEADLINE_MS);
+
+    expect(h.stdoutLines).toContain("Still waiting on: api.");
+  });
+
+  test("repeats it on the schedule a cold start uses — one line scrolls away either way", async () => {
+    const { h } = await restartedAndSilent();
+
+    h.advance(READY_DEADLINE_MS);
+    h.advance(READY_REMINDER_MS);
+
+    expect(h.stdoutLines.filter((line) => line === "Still waiting on: api.")).toHaveLength(2);
+  });
+
+  test("--json keeps reporting too — the agent's half does not stop at the banner either", async () => {
+    const { h } = await restartedAndSilent({ json: true });
+
+    h.advance(READY_DEADLINE_MS);
+
+    const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
+    expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["api"] }]);
+    // The prose still reaches the log, which is where a person reads a session back in either mode.
+    expect(h.logLines).toContain("Still waiting on: api.");
+  });
+
+  test("the waiting event is raised again, so a live roster has something to render", async () => {
+    const { h, events } = await restartedAndSilent();
+
+    h.advance(READY_DEADLINE_MS);
+
+    expect(events.filter((e) => e.event === "waiting").at(-1)).toEqual({ event: "waiting", workers: ["api"] });
+  });
+
+  test("a worker started from parked that never arrives is named", async () => {
+    // The set the deadline read used to be `started`, the subset this run spawned — so a worker `r`
+    // started from a parked row could never appear in a report even with the watch re-armed. The
+    // banner's own all-ready check already read the wider set, and the page already describes it.
+    const h = harness();
+    const handle = await startDev({ ...h.options, autostartOverrides: { web: false } });
+    h.spawned[0]?.child.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+    await handle.ready;
+
+    await handle.restart("web");
+    h.advance(READY_DEADLINE_MS);
+
+    expect(h.stdoutLines).toContain("Still waiting on: web.");
+  });
+
+  test("a replacement that does arrive stops the watch again, and re-announces nothing", async () => {
+    const { h, events } = await restartedAndSilent();
+
+    h.spawned[2]?.child.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+
+    expect(h.pendingTimers()).toBe(0);
+    h.advance(READY_DEADLINE_MS * 10);
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+    // `bannerShown` is still doing its own job: a second `Ready.` would say the session had restarted
+    // when one worker had.
+    expect(h.stdoutLines.filter((line) => line === "Ready.")).toHaveLength(1);
+    expect(events.filter((e) => e.event === "session-ready")).toHaveLength(1);
+  });
+
+  test("a second restart arms the watch again", async () => {
+    // Arming is guarded by a flag, and a flag that stopped tracking the watch would leave the second
+    // episode unreported. Every path that empties the pending set runs through `showBannerIfReady`,
+    // which is the only place the flag is cleared outside a teardown.
+    const { h, handle } = await restartedAndSilent();
+    h.spawned[2]?.child.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+
+    await handle.restart("api");
+    h.advance(READY_DEADLINE_MS);
+
+    expect(h.stdoutLines).toContain("Still waiting on: api.");
+  });
+
+  test("a restart during a cold start does not reset the clock on the workers already waiting", async () => {
+    // **Arming is idempotent, never a stop and re-arm.** `r` is reachable before the banner — the
+    // roster is mounted first and `startDev` returns before every worker is ready — so a stop and
+    // re-arm would hand the innocent stuck worker another ninety seconds, and a developer pressing `r`
+    // repeatedly would starve the report #426 exists for indefinitely.
+    //
+    // The trade it buys, stated: a worker restarted while a watch is already live inherits that clock
+    // and can be named almost at once. One line that arrives early beats a report that never arrives.
+    const h = harness();
+    const handle = await startDev(h.options);
+    h.spawned[0]?.child.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+
+    h.advance(READY_DEADLINE_MS - 1);
+    await handle.restart("api");
+    h.advance(1);
+
+    // In start order, which a restart does not change: `api` was re-spawned, not re-added.
+    expect(h.stdoutLines).toContain("Still waiting on: api, web.");
+  });
+
+  test("each episode explains itself once — a re-armed watch says why again", async () => {
+    // Decided rather than accidental. `reported` lives inside `watchReady`, so a re-armed watch's first
+    // report carries the two action lines again. A developer who has been in a healthy session for an
+    // hour reads this report cold; hoisting `reported` out of the watch would be a change to
+    // `watchReady`, which this issue puts out of scope.
+    const { h } = await restartedAndSilent();
+
+    h.advance(READY_DEADLINE_MS);
+    h.advance(READY_REMINDER_MS);
+
+    const explained = h.stdoutLines.filter((line) => line.includes("keeps running, so nothing else reports it"));
+    expect(explained).toHaveLength(1);
+  });
+
+  test("shutdown after a restart leaves no timer behind", async () => {
+    const { h, handle } = await restartedAndSilent();
+
+    await handle.shutdown("interrupted");
+
+    expect(h.pendingTimers()).toBe(0);
+    h.advance(READY_DEADLINE_MS * 2);
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+  });
+});
+
+/**
  * **A teardown must end. A child that will not die must not take the supervisor with it.**
  *
  * `shutdown` awaited two things without a bound: every child's exit after SIGKILL, and every stream's
