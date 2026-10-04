@@ -121,6 +121,22 @@ describe("checkSupportSearchTriggers", () => {
     expect(describeSupportSearchTriggers(check).every((line) => line.includes("some of its triggers"))).toBe(true);
   });
 
+  test("triggers left behind without their table is drift, and the line says writes abort", async () => {
+    // The worst state this check can meet, and the one `state: "ok"` used to swallow. A trigger body
+    // inserts into `pithy_support_search`; with the table gone the insert raises `no such table`, and
+    // under this issue's contract that abort takes the message write down with it. So every reply and
+    // every inbound message fails, and the pair that must never separate has separated. A hand-dropped
+    // table, a half-finished provision or a restored D1 backup all land here. Reporting it `ok` is the
+    // one answer that cannot be right. Distinct from no index at all, which stays `ok` by design.
+    const check = await checkSupportSearchTriggers(options({ readSearchObjects: async () => [...SEARCH_TRIGGERS] }));
+
+    expect(check.state).toBe("findings");
+    expect(check.environments.every((entry) => entry.state === "orphaned-triggers")).toBe(true);
+    const lines = describeSupportSearchTriggers(check);
+    expect(lines.every((line) => line.includes("every message write fails"))).toBe(true);
+    expect(lines.every((line) => line.includes("pithy support provision"))).toBe(true);
+  });
+
   test("an environment with no app database says so, and is never read", async () => {
     const readSearchObjects = vi.fn(async () => [...SEARCH_OBJECTS]);
     const check = await checkSupportSearchTriggers(

@@ -84,6 +84,18 @@ export type EnvironmentSearchIndex =
   | {
       env: string;
       worker: string;
+      /**
+       * The triggers are there and the table they write into is not. Worse than `drift`: a trigger body
+       * inserts into `pithy_support_search`, so with the table gone every message write raises
+       * `no such table` and the abort takes the message with it.
+       */
+      state: "orphaned-triggers";
+      /** How much of the trigger set outlived the table. Either amount fails every write. */
+      triggers: "some" | "all";
+    }
+  | {
+      env: string;
+      worker: string;
       /** That environment's stanza names no app database, so there is nothing to ask. */
       state: "not-provisioned";
     }
@@ -270,10 +282,23 @@ export async function checkSupportSearchTriggers(
         continue;
       }
       const state = names.searchIndexState(present);
-      // **A table that is not there is not drift.** `search.fts` on with no index at all is the state
-      // the runtime already answers for — `listThreads` falls back to a `LIKE` scan and logs the same
-      // remedy — and reporting it here would double a finding that is not this check's.
-      if (!state.table || state.triggers === "all") {
+      // **A table that is not there is not drift — unless its triggers outlived it.** `search.fts` on
+      // with no index at all is the state the runtime already answers for: `listThreads` falls back to a
+      // `LIKE` scan and logs the same remedy, so reporting it here would double a finding that is not
+      // this check's. Triggers standing over a missing table is the opposite case and the worst one the
+      // check can meet — the trigger body inserts into `pithy_support_search`, and under this issue's
+      // contract that `no such table` aborts the message write rather than being swallowed. So every
+      // reply and every inbound message fails. Collapsing it into `ok` on the strength of `!state.table`
+      // called a total write outage healthy.
+      if (!state.table) {
+        if (state.triggers === "none") {
+          answers.push({ ...here, state: "ok" });
+          continue;
+        }
+        answers.push({ ...here, state: "orphaned-triggers", triggers: state.triggers });
+        continue;
+      }
+      if (state.triggers === "all") {
         answers.push({ ...here, state: "ok" });
         continue;
       }
@@ -282,7 +307,9 @@ export async function checkSupportSearchTriggers(
   }
 
   if (answers.length === 0) return { state: "not-applicable", environments: [] };
-  if (answers.some((answer) => answer.state === "drift")) return { state: "findings", environments: answers };
+  if (answers.some((answer) => answer.state === "drift" || answer.state === "orphaned-triggers")) {
+    return { state: "findings", environments: answers };
+  }
   if (answers.every((answer) => answer.state === "ok")) return { state: "ok", environments: answers };
   return { state: "could-not-check", environments: answers };
 }
@@ -305,6 +332,11 @@ export function describeSupportSearchTriggers(check: SupportSearchTriggersCheck)
           answer.triggers === "none"
             ? `${answer.env}: pithy_support_search is provisioned and has no triggers, so nothing indexes a new message. Run pithy support provision.`
             : `${answer.env}: pithy_support_search has only some of its triggers, so some writes are not indexed. Run pithy support provision.`,
+        );
+        break;
+      case "orphaned-triggers":
+        lines.push(
+          `${answer.env}: pithy_support_search is gone and its triggers are not, so every message write fails. Run pithy support provision.`,
         );
         break;
       case "not-provisioned":
