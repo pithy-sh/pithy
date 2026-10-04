@@ -128,10 +128,15 @@ describe("a migration run names the database it is waiting on", () => {
 
   test("back: a rollback names each database and each migration it reverses", async () => {
     const options = await staging(storeProbe());
-    await migrateProject(options);
+    await migrateProject({ ...options, group: "release-7" });
 
     const probe = storeProbe();
-    const rollback = { ...(await staging(probe)), rollback: true, confirmRollback: rollbackConfirmPhrase("staging") };
+    const rollback = {
+      ...(await staging(probe)),
+      rollback: true,
+      group: "release-7",
+      confirmRollback: rollbackConfirmPhrase("staging"),
+    };
     await probe.run(() => migrateProject(rollback));
 
     expect(probe.trips.length).toBeGreaterThan(5);

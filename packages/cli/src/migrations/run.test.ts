@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { readMigrationGroups } from "@pithy-sh/core/src/migrations/groups";
 import { Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -15,9 +16,19 @@ import {
   migrateHarness,
   multiplayerCapability,
   pendingFrom,
+  withLocalD1,
 } from "../test-utils/migrateHarness";
 import { rollbackConfirmPhrase } from "./confirm";
 import { dropCapabilityTables, migrateProject, previewReset, readProjectLedger, resetProject } from "./run";
+
+/** The group a run generated for itself, read back from the database it recorded it in. */
+async function generatedGroupIn(projectDir: string, binding: string): Promise<string> {
+  return withLocalD1(projectDir, binding, async (db) => {
+    const [newest] = (await readMigrationGroups(db)).map((entry) => entry.group);
+    if (newest === undefined) throw new Error(`no migration group recorded on ${binding}`);
+    return newest;
+  });
+}
 
 describe("migrateProject", () => {
   const h = migrateHarness();
@@ -61,7 +72,8 @@ describe("migrateProject", () => {
     });
     expect(second[0]?.databases[0]?.results).toEqual([]);
 
-    // --rollback steps the latest back.
+    // --rollback reverses the group that applied it — the generated one, read back from the ledger's
+    // group bookkeeping exactly as the refusal or `--json` would hand it to an operator (#694).
     const rolledBack = await migrateProject({
       account: null,
       projectDir: h.projectDir,
@@ -69,6 +81,7 @@ describe("migrateProject", () => {
       env: "dev",
       project: "acme",
       rollback: true,
+      group: await generatedGroupIn(h.projectDir, "DB"),
     });
     expect(rolledBack[0]?.databases[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["1000_app_0001_things", "Down", "Success"],
@@ -423,10 +436,12 @@ describe("migrateProject", () => {
         const second = await migrateProject(opts);
         expect(second[0]?.databases[0]?.results).toEqual([]);
 
-        // Outside dev a rollback states its phrase (#588).
+        // Outside dev a rollback states its phrase (#588), and names the group it reverses (#694).
+        const [group] = (await readMigrationGroups(remote)).map((entry) => entry.group);
         const rolledBack = await migrateProject({
           ...opts,
           rollback: true,
+          group,
           confirmRollback: rollbackConfirmPhrase("staging"),
         });
         expect(rolledBack[0]?.databases[0]?.results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([

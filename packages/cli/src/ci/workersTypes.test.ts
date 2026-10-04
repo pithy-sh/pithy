@@ -115,15 +115,16 @@ const DECLARED_ONLY: Record<string, string> = {
  * population — is what a `toBeGreaterThan(3)` here would be. A scan that came back with three packages
  * would be reporting on a tree other than this one, and every assertion below it would be worthless.
  *
- * Measured 2026-08-22. A file added or removed moves a count, which is the point: the number is a second
- * reader of the same change.
+ * Measured 2026-08-22, last moved 2026-10-03 by the migration-group bookkeeping (#694): `core`'s
+ * `migrations/groups.ts` and `cli`'s `test-utils/migrateHarness.ts`. A file added or removed moves a
+ * count, which is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/audit": 2,
   "packages/auth": 4,
-  "packages/cli": 11,
+  "packages/cli": 12,
   "packages/cloudflare": 2,
-  "packages/core": 13,
+  "packages/core": 14,
   "packages/email": 9,
   "packages/leaderboard": 5,
   "packages/ledger": 4,

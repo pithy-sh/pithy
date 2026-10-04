@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Migration } from "kysely/migration";
@@ -41,6 +42,44 @@ export const pendingFrom = async (options: MigrationFanOutOptions): Promise<numb
   }
   return ledger.pending;
 };
+
+/** The local Miniflare store `pithy migrate` persists a project's `dev` databases to. */
+export function persistDir(projectDir: string): string {
+  return join(projectDir, ".wrangler", "state", "v3", "d1");
+}
+
+/**
+ * Run `body` against the project's local D1 for `binding`, then release the store.
+ *
+ * Shared, because two suites need the same thing for two reasons: #588's asks what rows a retained table
+ * still holds, and #694's asks which group the bookkeeping recorded. Both are "open the store migrate just
+ * wrote and look", and a second copy of that drifts on the persistence path — which is the one detail in it
+ * that is a product decision rather than a test's.
+ */
+export async function withLocalD1<T>(
+  projectDir: string,
+  binding: string,
+  body: (db: D1Database) => Promise<T>,
+): Promise<T> {
+  const { Miniflare } = await import("miniflare");
+  const mf = new Miniflare({
+    modules: true,
+    script: "export default {};",
+    d1Databases: { D: binding },
+    d1Persist: persistDir(projectDir),
+  });
+  try {
+    return await body((await mf.getD1Database("D")) as unknown as D1Database);
+  } finally {
+    await mf.dispose();
+  }
+}
+
+/** The applied migration names in a database's ledger, sorted by name. */
+export async function ledgerOf(db: D1Database): Promise<string[]> {
+  const { results } = await db.prepare("select name from pithy_migrations order by name").all<{ name: string }>();
+  return results.map((row) => row.name);
+}
 
 /** Creates a one-column table — the smallest migration that proves `up`/`down` ran. */
 export const createTable = (name: string): Migration => ({

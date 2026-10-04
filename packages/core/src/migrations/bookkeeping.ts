@@ -3,7 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { DatabaseIntrospector, DatabaseMetadataOptions, SchemaMetadata, TableMetadata } from "kysely";
-import { CamelCasePlugin, Kysely } from "kysely";
+import { CamelCasePlugin, Kysely, sql } from "kysely";
 import { D1Dialect } from "kysely-d1";
 
 /**
@@ -42,8 +42,17 @@ export const MIGRATION_LOCK_TABLE = "pithy_migrations_lock";
  */
 export const MIGRATION_OWNER_TABLE = "pithy_migrations_owner";
 
+/**
+ * Which run applied each migration — one row per applied migration, written by the runner from the
+ * `MigrationResult[]` Kysely hands back (`./groups`). Beside the ledger for the same reason the owner
+ * stamp is: Kysely creates `pithy_migrations` and its insert sets `name` and `timestamp` only, so there
+ * is nowhere in it to put a group — and a group is not a migration, so a rollback or a full reset must
+ * not remove the table. A reversed group's own rows go; the table stays.
+ */
+export const MIGRATION_GROUP_TABLE = "pithy_migrations_groups";
+
 /** Pithy's bookkeeping tables — hidden by the introspector the way Kysely hides its own defaults. */
-const INTERNAL_TABLES = [MIGRATION_TABLE, MIGRATION_LOCK_TABLE, MIGRATION_OWNER_TABLE];
+const INTERNAL_TABLES = [MIGRATION_TABLE, MIGRATION_LOCK_TABLE, MIGRATION_OWNER_TABLE, MIGRATION_GROUP_TABLE];
 
 /** Table names from `sqlite_master` only — no pragma joins, no column metadata. */
 class D1Introspector implements DatabaseIntrospector {
@@ -82,4 +91,32 @@ export class D1MigrationDialect extends D1Dialect {
 /** A Kysely over one D1 binding, with Pithy's dialect and `CamelCasePlugin` — the one way in. */
 export function migrationKysely<DB = unknown>(database: D1Database): Kysely<DB> {
   return new Kysely<DB>({ dialect: new D1MigrationDialect({ database }), plugins: [new CamelCasePlugin()] });
+}
+
+/**
+ * The applied migrations, **in the order Kysely steps down from them** — oldest first, tip last.
+ *
+ * Kysely's `Migrator` sorts the ledger by `timestamp`, breaks a tie on the name, and reverses that list to
+ * decide what the next `migrateDown()` reverses. So anything that asks *is this the top of the chain* has
+ * to read the same order: concluding it from the order some other table was written in answers a different
+ * question, and the answer only differs in the cases that matter (`./groups`, #694).
+ *
+ * Empty when the ledger table does not exist — a database nothing has migrated. Existence is checked
+ * against `sqlite_master`, a plain select D1 permits, rather than by catching the read's error, so a
+ * genuine read failure surfaces instead of being read as "nothing applied".
+ */
+export async function appliedMigrationChain<DB>(db: Kysely<DB>): Promise<string[]> {
+  const present = await sql<{
+    name: string;
+  }>`select name from sqlite_master where type = 'table' and name = ${MIGRATION_TABLE}`.execute(db);
+  if (present.rows.length === 0) return [];
+  const { rows } = await sql<{ name: string; timestamp: string }>`select name, timestamp from ${sql.table(
+    MIGRATION_TABLE,
+  )}`.execute(db);
+  return [...rows]
+    .sort((left, right) => {
+      const elapsed = new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime();
+      return elapsed === 0 ? left.name.localeCompare(right.name) : elapsed;
+    })
+    .map((row) => row.name);
 }

@@ -13,6 +13,7 @@ import {
   sentenceOf,
   ValidationError,
 } from "@pithy-sh/core/src/error/pithyError";
+import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
@@ -27,12 +28,13 @@ import {
 } from "@pithy-sh/core/src/migrations/retained";
 import {
   dropMigrations,
+  type MigrationGroupStep,
   type MigrationLedger,
   type MigrationTarget,
   type RetainedConsent,
   readMigrationLedger,
   resetMigrations,
-  rollbackMigration,
+  reverseMigrationGroup,
   runMigrations,
 } from "@pithy-sh/core/src/migrations/runner";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
@@ -47,6 +49,7 @@ import { isPlaceholder } from "../project/envInventory";
 import { provisionConfigPath, wranglerConfigPath } from "../provision/featureConfig";
 import { startStep } from "../terminal/progress";
 import { assertRollbackConfirmed } from "./confirm";
+import { planGroupRollback, requireMigrationGroup, sharedGroupRefusal } from "./groups";
 import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
 
@@ -116,9 +119,10 @@ export interface MigrationFanOutOptions {
   /** Narrow the fan-out to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
   /**
-   * Narrow the run to the one database behind this D1 binding (#588). A rollback steps back every database
-   * in scope, so this is how an operator steps back the one they meant. Combines with `worker`; a binding
-   * no Worker in scope declares is refused by name.
+   * Narrow the run to the one database behind this D1 binding (#588). A rollback reverses its group in every
+   * database in scope, so this is how an operator reverses the one they meant — and the way to reverse the
+   * portion that can come down when the group also reaches a database another environment binds (#694).
+   * Combines with `worker`; a binding no Worker in scope declares is refused by name.
    */
   binding?: string;
   /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
@@ -147,7 +151,20 @@ export interface MigrateProjectOptions extends MigrationFanOutOptions {
    * project may later claim. A caller that cannot resolve a stable name has no business writing here.
    */
   project: string;
-  /** Step every database in scope back one migration instead of running forward. */
+  /**
+   * The migration group this run belongs to (#694) — `pithy migrate --group <value>`.
+   *
+   * **Forward:** every migration the run applies is recorded under it, in every database it touches, so
+   * one run is one group however many databases it spans. Absent, the run generates an ISO-8601
+   * timestamp for itself; passing the same value twice **extends** that group, which is what a release
+   * whose migrate half-failed is retried with.
+   *
+   * **Reversing (`rollback`):** the group to reverse, and it is **required** — a rollback with no group
+   * reverses nothing and refuses, naming the group on top (`./groups`). Only the group at the top of a
+   * database's chain can be reversed, because Kysely steps down from the tip.
+   */
+  group?: string;
+  /** Reverse the named `group` instead of running forward. Refused without one. */
   rollback?: boolean;
   /**
    * The phrase that unlocks a rollback outside `dev` — `rollbackConfirmPhrase(env)`, exactly. Checked by the
@@ -772,7 +789,18 @@ interface MigrationPass {
     provider: MigrationProvider,
     target: MigrationTarget,
     consent: RetainedConsent,
+    step: MigrationGroupStep | undefined,
   ) => Promise<MigrationResult[]>;
+  /**
+   * Set by a **group rollback** alone, and its presence is what makes the pass one (#694): the group the
+   * caller named, or `undefined` when they named none, which is the refusal.
+   *
+   * It buys the group pre-flight — every database's position in the group read, and every condition that
+   * could stop one `down` met, before the first one runs — so `step` arrives per database and a group
+   * reverses completely or not at all. A reset and a capability drop reverse migrations without being a
+   * group rollback and leave it off; they get `undefined` for `step` and reverse what they always did.
+   */
+  group?: { requested: string | undefined };
   /**
    * Whether the pass runs `down`s — a rollback, a reset, a drop. Required, so a new pass says which it is.
    *
@@ -882,7 +910,14 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
   // Named on purpose, a shared database is refused rather than quietly skipped: the operator asked for
   // exactly the thing this run will not do.
   const [named] = context.binding !== undefined ? kept : [];
-  if (named) throw sharedRefusal(named, context.env);
+  // A group rollback says which group it was refused for, here as in the pre-flight: the operator asked
+  // for a group, and "nothing in it was reversed" is the fact they act on (#694).
+  if (named) {
+    const requested = pass.group?.requested;
+    throw requested === undefined
+      ? sharedRefusal(named, context.env)
+      : sharedGroupRefusal(named.binding, named.boundBy, context.env, requested);
+  }
   const groups = scoped.filter((group) => !kept.includes(group));
   if (groups.length === 0) {
     for (const group of kept) record(report, group, [], group.boundBy);
@@ -892,11 +927,27 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
   // Before the driver and the preflight, which on a remote environment are round trips of their own: the
   // claim, the ledger and the retained count each read every database before the first write (#583).
   startStep(`Checking ${[...new Set(groups.map((group) => group.binding))].join(", ")}`);
-  const driver = await driverFor(context, groups);
+  // Over `scoped`, not `groups`: a kept database is never written to, and is still read — the group
+  // pre-flight asks whether one of them holds part of the group it was asked to reverse (#694).
+  const driver = await driverFor(context, scoped);
   try {
     await claimGroups(context, driver, groups);
     if (pass.spansLedger) await assertLedgerDeclared({ env: context.env, driver, groups });
-    if (pass.reverses) await assertRetainedCounted(context, driver, groups);
+    // The group pre-flight before the retained count, because it decides which databases the count is
+    // over: a database holding none of the group reverses nothing there, so its retained rows are not
+    // at risk and demanding a budget for them would refuse a rollback that was never going to touch them.
+    const steps = pass.group
+      ? await planGroupRollback({
+          env: context.env,
+          driver,
+          databases: groups,
+          kept,
+          requested: pass.group.requested,
+        })
+      : undefined;
+    if (pass.reverses) {
+      await assertRetainedCounted(context, driver, steps ? groups.filter((group) => steps.has(group)) : groups);
+    }
     // The operator's number, spent across the whole run by the runner's own guard — never the count the
     // preflight just made, which would make the floor agree with whatever the check above it concluded.
     const budget = new RetainedBudget(context.destroyRetained);
@@ -915,7 +966,13 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
       // handing back a database that is not there, a provider that will not build — is not a rejected
       // promise, and a `.catch()` would not see it (#371).
       try {
-        results = await pass.execute(driver.database(group), narrateMigrations(group, context.env), target, { budget });
+        results = await pass.execute(
+          driver.database(group),
+          narrateMigrations(group, context.env),
+          target,
+          { budget },
+          steps?.get(group),
+        );
       } catch (error) {
         // The guard takes no binding. The two names are what an operator acts on; what a migration
         // throws is already on the error being rethrown, untouched.
@@ -950,7 +1007,13 @@ function narrateMigrations(group: DatabaseGroup, env: string): MigrationProvider
   });
 }
 
-/** The refusal for a database another environment binds — named, and never reversed (#588). */
+/**
+ * The refusal for a database another environment binds — named, and never reversed (#588).
+ *
+ * A **group** rollback has its own wording, raised in the group pre-flight, because it has one more fact
+ * to carry: which group was asked for, and that none of it was reversed (`./groups`,
+ * {@link sharedGroupRefusal}). This is the one for a reset and for the floor below every `down`.
+ */
 function sharedRefusal(group: DatabaseGroup, env: string): ValidationError {
   const others = group.boundBy.join(", ");
   return downRefusal(
@@ -966,7 +1029,9 @@ function sharedRefusal(group: DatabaseGroup, env: string): ValidationError {
  *
  * `EMAIL_SUPPRESSIONS` is one database, bound identically by every environment, so `pithy migrate --env
  * staging --rollback` dropped production's suppression list. A reversing pass sets these groups aside in
- * its preflight; this is the floor under that, for a pass that runs a `down` without saying it reverses.
+ * its preflight — and a **group** rollback refuses outright when a kept database holds part of the group
+ * it was asked to reverse, because a group that cannot come down whole does not come down at all (#694).
+ * This is the floor under both, for a pass that runs a `down` without saying it reverses.
  *
  * Reach: every provider {@link runGroups} hands a pass, which is every `down` the CLI runs. It does not see
  * a database two environments share *without* one `database_id` — two ids for one intent is a split
@@ -1084,22 +1149,46 @@ async function contextFor(
 }
 
 /**
- * Run (or roll back) every Worker's migration registry — the logic behind `pithy migrate`. Each Worker
+ * Run (or reverse) every Worker's migration registry — the logic behind `pithy migrate`. Each Worker
  * contributes its own capabilities; Workers bound to the same physical D1 merge into one run so a shared
  * database migrates once. Locally that D1 is a Miniflare store under the project root's `.wrangler/state`
  * (shared with `wrangler dev`); for staging/prod it is the remote database over the D1 REST API.
  * The registries, ordering, and per-database runs are identical — only the driver differs.
+ *
+ * **Two passes, because the directions are no longer symmetrical (#694).** Forward, the run resolves one
+ * group — `options.group`, else a generated timestamp — and records it against every migration it applies
+ * in every database. Reversing, it reverses the group the caller named and refuses without one: the
+ * pre-flight reads each database's position in that group, meets every condition that could stop a `down`
+ * across all of them, and only then reverses, so a group comes down completely or not at all.
  */
 export async function migrateProject(options: MigrateProjectOptions): Promise<WorkerMigrationRun[]> {
   const rollback = options.rollback ?? false;
   // Before anything resolves: an unconfirmed rollback outside dev has no business reading a config (#588).
   if (rollback) assertRollbackConfirmed(options.env, options.confirmRollback);
   const context = await contextFor(options);
+  // Trimmed, and refused when blank, before it reaches a database: an empty group is the unset-variable
+  // mistake, and it would otherwise record and quietly collect every run that made it (#694).
+  const named = requireMigrationGroup(options.group);
+  if (rollback) {
+    return runGroups(context, {
+      spansLedger: true,
+      reverses: true,
+      // Carried, undefined and all: a rollback with no group is refused by the pre-flight, where the
+      // databases can be read and the group on top named (#694).
+      group: { requested: named },
+      execute: (database, provider, target, consent, step) =>
+        // No step is a database holding none of this group: a narrowed rollback, or a release that never
+        // touched it. Nothing to reverse there is not the same as a group half-reversed.
+        step ? reverseMigrationGroup(database, provider, step, target, consent) : Promise.resolve([]),
+    });
+  }
+  // One value for the whole run, resolved once here rather than per database, so one run is one group
+  // however many databases it spans. A caller that names none gets the moment it ran.
+  const group = named ?? generatedMigrationGroup();
   return runGroups(context, {
     spansLedger: true,
-    reverses: rollback,
-    execute: (database, provider, target, consent) =>
-      rollback ? rollbackMigration(database, provider, target, consent) : runMigrations(database, provider, target),
+    reverses: false,
+    execute: (database, provider, target) => runMigrations(database, provider, target, { group }),
   });
 }
 

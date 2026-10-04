@@ -58,6 +58,7 @@ describe("migrate command", () => {
       "env",
       "worker",
       "binding",
+      "group",
       "rollback",
       "confirm-rollback",
       "destroy-retained",
@@ -108,6 +109,50 @@ describe("migrate command", () => {
     expect((options as MigrateProjectOptions).account).toEqual(ACCOUNT);
   });
 
+  describe("the run's group", () => {
+    /** Run the command headlessly and hand back the options the run was given and the lines written. */
+    async function invoke(args: Record<string, unknown>): Promise<{ options: MigrateProjectOptions; out: string }> {
+      const written: string[] = [];
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+        written.push(String(chunk));
+        return true;
+      });
+      try {
+        await migrate.run?.({ args } as never);
+      } finally {
+        stdout.mockRestore();
+      }
+      const [options] = vi.mocked(migrateProject).mock.calls.at(-1) ?? [];
+      return { options: options as MigrateProjectOptions, out: plain(written.join("")) };
+    }
+
+    test("a run with no --group is given a generated ISO-8601 timestamp", async () => {
+      const { options } = await invoke({ env: "dev", rollback: false, json: true });
+      expect(options.group).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    });
+
+    test("--group is handed through verbatim — the caller's own release stamp", async () => {
+      const { options } = await invoke({ env: "dev", rollback: false, group: "release-7", json: true });
+      expect(options.group).toBe("release-7");
+    });
+
+    test("a rollback with no --group is handed none, so the run refuses and names the group on top", async () => {
+      // The command does not invent one here: generating a group for a rollback would ask to reverse a
+      // group that never applied anything.
+      const { options } = await invoke({ env: "dev", rollback: true, json: true });
+      expect(options.group).toBeUndefined();
+      expect(options.rollback).toBe(true);
+    });
+
+    test("--json reports the group in both directions", async () => {
+      const forward = await invoke({ env: "dev", rollback: false, group: "release-7", json: true });
+      expect(JSON.parse(forward.out)).toMatchObject({ rollback: false, group: "release-7" });
+
+      const back = await invoke({ env: "dev", rollback: true, group: "release-7", json: true });
+      expect(JSON.parse(back.out)).toMatchObject({ rollback: true, group: "release-7" });
+    });
+  });
+
   describe("output", () => {
     test("groups by worker, one aligned line each", () => {
       const report = formatMigrateReport(
@@ -138,6 +183,41 @@ describe("migrate command", () => {
         "api     0100_auth_0002 rolled back.",
         "collab  nothing to roll back.",
       ]);
+    });
+
+    test("a successful migrate prints the group it applied under, on one line", () => {
+      const report = formatMigrateReport([run("api", "app", "DB", ["0100_auth_0001"])], {
+        project: "acme",
+        env: "dev",
+        rollback: false,
+        json: false,
+        group: "2026-10-03T19:52:47.611Z",
+      });
+      // It is the handle to everything groups add, and the alternative is making somebody run the wrong
+      // command once in order to learn the right one.
+      expect(plain(report)).toBe("api  0100_auth_0001 applied.\nGroup: 2026-10-03T19:52:47.611Z\nDone.\n");
+    });
+
+    test("a run that applied nothing names no group — nothing belongs to it", () => {
+      const report = formatMigrateReport([run("api", "app", "DB", [])], {
+        project: "acme",
+        env: "dev",
+        rollback: false,
+        json: false,
+        group: "2026-10-03T19:52:47.611Z",
+      });
+      expect(plain(report)).not.toContain("Group:");
+    });
+
+    test("a rollback does not print the group — the operator typed it", () => {
+      const report = formatMigrateReport([run("api", "app", "DB", ["0100_auth_0001"])], {
+        project: "acme",
+        env: "dev",
+        rollback: true,
+        json: false,
+        group: "release-7",
+      });
+      expect(plain(report)).not.toContain("Group:");
     });
 
     test("a project with nothing to migrate says so once", () => {

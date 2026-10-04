@@ -5,9 +5,10 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { type Kysely, sql } from "kysely";
 import { type MigrationProvider, type MigrationResult, Migrator, NO_MIGRATIONS } from "kysely/migration";
 import { causeMessage } from "../error/cause";
-import { InternalError } from "../error/pithyError";
+import { InternalError, ValidationError } from "../error/pithyError";
 import { batchedProvider } from "./batch";
-import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookkeeping";
+import { appliedMigrationChain, MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookkeeping";
+import { forgetMigrationGroups, generatedMigrationGroup, readGroupPosition, recordMigrationGroup } from "./groups";
 import { guardRetained, isDownRefusal, RetainedBudget } from "./retained";
 
 /**
@@ -33,6 +34,12 @@ import { guardRetained, isDownRefusal, RetainedBudget } from "./retained";
  * are argued.** The short version: a migration is now all-or-nothing where it used to be able to
  * half-apply, and nothing across a migration boundary changed, because the ledger names migrations
  * and a partial chain has to stay representable in it.
+ *
+ * **Every run belongs to a group, and a reversal names one — see `./groups` (#694).** A forward run
+ * records the group it applied each migration under, in a table beside the ledger;
+ * {@link reverseMigrationGroup} reverses one group's portion of one database, in reverse chain order and
+ * nothing outside it. {@link rollbackMigration} is still the single step underneath, for a caller holding
+ * one migration rather than a release — it is not what `pithy migrate --rollback` runs any more.
  */
 
 /**
@@ -105,13 +112,63 @@ function guardOptions(
   return { binding: target?.binding ?? "this database", budget: consent?.budget ?? new RetainedBudget(undefined) };
 }
 
-/** Run every pending migration to latest. An empty provider resolves to `[]`. */
+/**
+ * What a forward run records about itself (#694) — see `./groups`.
+ *
+ * Optional, and absent still records: a run with no group named is a group of its own, stamped with the
+ * moment it ran. There is always a group, so a rollback never has to fall back to counting migrations.
+ */
+export interface RunGroupOptions {
+  /**
+   * The group every migration this run applies is recorded under. Absent, a generated ISO-8601 timestamp
+   * is used — per run, by construction. A caller spanning several databases passes **one** value to all
+   * of them, so one run is one group however many databases it touches.
+   */
+  group?: string;
+}
+
+/**
+ * Run every pending migration to latest, recording the run's group against each one. An empty provider
+ * resolves to `[]` and records nothing.
+ *
+ * **The group is written from what Kysely hands back, and before the failure is raised.** A run that
+ * half-applies is retried with the key it already has, so the migrations that stuck have to be in the
+ * group — otherwise the retry's group would sit on top of an ungrouped migration, and reversing the
+ * retry would leave half a release applied with nothing recording it.
+ */
 export async function runMigrations(
   database: D1Database,
   provider: MigrationProvider,
   target?: MigrationTarget,
+  options?: RunGroupOptions,
 ): Promise<MigrationResult[]> {
   const { error, results } = await migrator(database, provider, target, undefined).migrateToLatest();
+  const applied = (results ?? [])
+    .filter((result) => result.direction === "Up" && result.status === "Success")
+    .map((result) => result.migrationName);
+  try {
+    await recordMigrationGroup(database, {
+      group: options?.group ?? generatedMigrationGroup(),
+      migrations: applied,
+    });
+  } catch (cause) {
+    // A migration failure is the operator's first problem and wins the throw; `settle` raises it below.
+    // With the run otherwise clean, a ledger that records a migration no group claims is its own fault.
+    if (error === undefined) {
+      throw new InternalError(
+        {
+          message: `Applied ${applied.length === 1 ? "a migration" : `${applied.length} migrations`}${on(target)}, then couldn't record the group.`,
+          detail: `${where(target)} ${reasonOf(cause)}`,
+          // Never "run pithy migrate again to record the group": the second run has nothing pending, so it
+          // records nothing and prints `Nothing to migrate.` while the group stays lost. The honest fact is
+          // what these migrations can no longer be — the group they were applied under is gone (#694).
+          action:
+            "Check the database is writable. A second pithy migrate records nothing for them, so they cannot be reversed by group.",
+        },
+        { cause },
+      );
+    }
+  }
   return settle("run", error, results, target);
 }
 
@@ -153,9 +210,17 @@ export async function readMigrationLedger(database: D1Database, provider: Migrat
 }
 
 /**
- * Step this database's latest applied migration back — one step, per database. `pithy migrate --rollback`
- * calls it once for **every** database in its fan-out. Refused while a retained table here holds rows the
- * caller has not counted in `consent` (#588).
+ * Step this database's latest applied migration back — **one** step, in **one** database.
+ *
+ * It is no longer what `pithy migrate --rollback` runs: a rollback names a group and reverses that
+ * group's portion of each database ({@link reverseMigrationGroup}, #694). What this is, is the single
+ * step underneath — the primitive every capability's "its `down` is the inverse of its `up`" suite
+ * reverses one migration with, and the honest answer for a caller holding one migration rather than a
+ * release.
+ *
+ * It forgets the reversed migration's group row, so the group bookkeeping follows the ledger whichever
+ * way a migration came down. Refused while a retained table here holds rows the caller has not counted in
+ * `consent` (#588).
  */
 export async function rollbackMigration(
   database: D1Database,
@@ -164,7 +229,113 @@ export async function rollbackMigration(
   consent?: RetainedConsent,
 ): Promise<MigrationResult[]> {
   const { error, results } = await migrator(database, provider, target, consent).migrateDown();
+  await forgetReversed(database, results);
   return settle("rollback", error, results, target);
+}
+
+/** What one database reverses of a group: the group, and its migrations newest first. */
+export interface MigrationGroupStep {
+  /** The group being reversed — what the caller passed to `--group`. */
+  group: string;
+  /**
+   * This database's portion of it, in the order it comes down: newest first. The caller reads it from
+   * `readGroupPosition`, which is also what proves the group is the top of this database's chain. It says
+   * **whether** there is anything to reverse here; what comes down is read from the ledger again below, so
+   * a step that named a migration from the group underneath could not reverse it on the caller's word.
+   */
+  migrations: readonly string[];
+}
+
+/**
+ * **Reverse one group's portion of one database — the operation behind `pithy migrate --rollback
+ * --group` (#694).**
+ *
+ * Kysely steps down from the tip, so this is `migrateDown()` once per migration in the group, in reverse
+ * chain order, and **nothing outside it**. Both halves of that are read from the ledger here, not taken on
+ * the caller's word: the group has to be the ledger's own tail before the first `down`, and what each step
+ * brings down has to be one of the migrations that read said the group holds — anything else is an
+ * internal fault and throws rather than carrying on. **And a migration with no `down` stops the group**:
+ * Kysely reports one as `NotExecuted` and leaves it applied, so counting it as reversed is how a group
+ * reported itself fully rolled back with half of it still in the database. The caller's pre-flight is what
+ * makes a group reverse completely or not at all across databases; this is the floor under it.
+ *
+ * **One migrator for the whole group**, so the retained guard clears once and the caller's budget is spent
+ * once across every `down` it covers (#588). Each migration's group row is forgotten as it comes down —
+ * before the step's failure is raised — so a group reversal that dies partway can be re-run under the
+ * same group and reverses what is left.
+ */
+export async function reverseMigrationGroup(
+  database: D1Database,
+  provider: MigrationProvider,
+  step: MigrationGroupStep,
+  target?: MigrationTarget,
+  consent?: RetainedConsent,
+): Promise<MigrationResult[]> {
+  if (step.migrations.length === 0) return [];
+  // Asked of the ledger before the first `down`, so the ordinary ways to get this wrong — another group
+  // applied over this one, or a migration applied under no group at all — are refused rather than
+  // diagnosed afterwards, from under a `down` that has already run.
+  const position = await readGroupPosition(database, step.group);
+  if (position.state !== "top") {
+    throw new InternalError({
+      message: `Group "${step.group}" is not the top of ${target?.binding ?? "this database"}'s chain.`,
+      detail: `${where(target)} ${position.state === "absent" ? "It records nothing under that group." : `Applied over it: ${overIt(position.above, position.ungrouped)}.`}`,
+      action: "Run pithy doctor to see where each database stands.",
+    });
+  }
+  // What comes down is what the ledger says this group holds, never the caller's list: a step naming a
+  // migration the group does not hold would otherwise be reversed on the caller's word.
+  const remaining = new Set(position.migrations);
+  const runner = migrator(database, provider, target, consent);
+  const reversed: MigrationResult[] = [];
+  while (remaining.size > 0) {
+    const { error, results } = await runner.migrateDown();
+    await forgetReversed(database, results);
+    const settled = settle("rollback", error, results, target);
+    if (settled.length === 0) break;
+    for (const result of settled) {
+      // **A migration with no `down` is a refusal, not a reversal.** Kysely's `#migrateDown` runs the body
+      // and deletes the ledger row only `if (migration.down)`, so one without it comes back `NotExecuted`
+      // — no error, row intact — and `./batch` preserves that shape deliberately. Counted as reversed, the
+      // group reported itself fully rolled back while part of it was still applied and still carried its
+      // group rows; and when the `down`-less migration was the group's newest, the next pass got the same
+      // tip back and the throw below blamed the chain's order for a missing `down`. So it stops here, in
+      // the one wording that names the cause, before the rest of the group comes down around it.
+      if (result.status !== "Success") {
+        throw new ValidationError({
+          message: `Migration "${result.migrationName}" has no down, so group "${step.group}" cannot be reversed${on(target)}.`,
+          action: `Give ${result.migrationName} a down, then reverse the group again.`,
+          // What already came down stays down, and the operator needs it by name to know where they are —
+          // the same fact `settle` reports for a forward run that failed partway.
+          detail: [
+            where(target),
+            reversed.length === 0
+              ? "Nothing was reversed. A group reverses completely or not at all."
+              : `Reversed before the refusal: ${reversed.map((entry) => `"${entry.migrationName}"`).join(", ")}. The rest of the group is still applied.`,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        });
+      }
+      if (!remaining.delete(result.migrationName)) {
+        throw new InternalError({
+          message: `Reversing group "${step.group}"${on(target)} would have reversed "${result.migrationName}", which is not in it.`,
+          detail: `${where(target)} The group was not the top of this database's chain. Kysely steps down from the tip, so only the newest group can be reversed.`,
+          action: "Run pithy doctor to see where each database stands.",
+        });
+      }
+      reversed.push(result);
+    }
+  }
+  return reversed;
+}
+
+/** Forget the group rows of whatever actually came down, whether or not the step then failed. */
+async function forgetReversed(database: D1Database, results: MigrationResult[] | undefined): Promise<void> {
+  const names = (results ?? [])
+    .filter((result) => result.direction === "Down" && result.status === "Success")
+    .map((result) => result.migrationName);
+  await forgetMigrationGroups(database, names);
 }
 
 /**
@@ -175,6 +346,16 @@ export async function rollbackMigration(
  * skip-if-exists) simply work afterward — there is no per-row identity problem to solve. An empty
  * ledger rolls back nothing; an empty provider reapplies nothing. Refused, before the first `down`, while a
  * retained table here holds rows the caller has not counted in `consent` (#588).
+ *
+ * **It leaves the group bookkeeping exactly as it was (#694).** The table is not a migration, so the `down`
+ * pass cannot remove it, and rewriting the rows would restamp somebody's release as having happened during
+ * a `seed --redo`. Every group row still describes a migration this reset reapplied.
+ *
+ * **What it does not do is record a group for the rest.** A reset reapplies everything *declared*, which
+ * includes migrations that were pending when it started, and those come back applied under no group — this
+ * takes no group and invents none. Such a migration sits over the groups below it, so a `--rollback
+ * --group` of one of them is refused by name (`./groups`, `readGroupPosition`) rather than reversing a
+ * migration nobody recorded.
  */
 export async function resetMigrations(
   database: D1Database,
@@ -191,17 +372,12 @@ export async function resetMigrations(
 }
 
 /**
- * The applied migration names recorded in the ledger — empty when the ledger table doesn't exist yet.
- * Existence is checked against `sqlite_master` (a plain select D1 permits) rather than by catching the
- * read's error, so a genuine read failure surfaces instead of being silently treated as "none applied".
+ * The applied migration names recorded in the ledger — empty when the ledger table doesn't exist yet. The
+ * set half of `appliedMigrationChain`, which is the one read of the ledger: order matters to a group
+ * rollback and not at all to a membership test, and two reads of one table would drift.
  */
 async function appliedMigrationNames(db: Kysely<unknown>): Promise<Set<string>> {
-  const present = await sql<{
-    name: string;
-  }>`select name from sqlite_master where type = 'table' and name = ${MIGRATION_TABLE}`.execute(db);
-  if (present.rows.length === 0) return new Set();
-  const { rows } = await sql<{ name: string }>`select name from ${sql.table(MIGRATION_TABLE)}`.execute(db);
-  return new Set(rows.map((row) => row.name));
+  return new Set(await appliedMigrationChain(db));
 }
 
 /**
@@ -264,6 +440,9 @@ export async function dropMigrations(
     try {
       await down(db);
       await sql`delete from ${sql.table(MIGRATION_TABLE)} where name = ${name}`.execute(db);
+      // The group bookkeeping follows the ledger row it describes: a dropped migration is not applied,
+      // so nothing may go on recording which run applied it.
+      await forgetMigrationGroups(database, [name]);
       results.push({ migrationName: name, direction: "Down", status: "Success" });
     } catch (error) {
       // A refusal is not a failed drop: nothing is broken, and "fix the migration's down" would be a lie.
@@ -292,8 +471,10 @@ const VOICE = {
   rollback: {
     failed: (key: string) => `Couldn't roll back "${key}"`,
     fallback: "The rollback failed",
-    // Never "run --rollback again": a rollback steps back every database, so a second one after a partial
-    // failure reverses a second migration in each database that already moved (#588).
+    // Still not a bare "run --rollback again" — that command reverses nothing now, and before #694 it
+    // stepped a second migration back in every database that had already moved (#588). Re-running the
+    // *same group* is the safe retry: each migration's group row is forgotten as it comes down, so a
+    // second pass reverses what is left and nothing else. The group is on the command, not here.
     action: "Fix the migration's down. Run pithy doctor to see where each database stands.",
   },
   resetDown: {
@@ -307,6 +488,16 @@ const VOICE = {
     action: "Fix the migration. Run pithy seed --redo again.",
   },
 } as const;
+
+/**
+ * What sits over a buried group, groups and ungrouped migrations alike, newest first.
+ *
+ * An ungrouped migration is named with its state, because the two are different problems: another group is
+ * something to reverse first, while a migration no group claims cannot be reversed by group at all.
+ */
+function overIt(above: readonly string[], ungrouped: readonly string[]): string {
+  return [...above, ...ungrouped.map((name) => `${name} (ungrouped)`)].join(", ");
+}
 
 /** ` on DB`, or nothing at all — every problem line here ends with this and then a period. */
 function on(target: MigrationTarget | undefined): string {
