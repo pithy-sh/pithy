@@ -23,6 +23,7 @@ import { SupportThread } from "../data/thread";
 import { checkRates } from "../inbound/guard";
 import { support_0001_threads } from "../migrations/0001_threads";
 import { safeFilename } from "../mime/parse";
+import { createSearchIndex } from "../store/searchIndex";
 import { type SubmitDeps, submissionMessageId, submitFeedback } from "./submit";
 
 /**
@@ -76,7 +77,6 @@ function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps {
     categories: resolveCategories({
       tournament_dispute: "The sender is contesting a tournament result, a disqualification, or a prize.",
     }),
-    fts: false,
     resolveAccount: async (userId) =>
       userId === ADA ? { email: "ada@example.com", name: "Ada Lovelace" } : { email: "grace@example.com" },
     dispatchClassify: async (messageId) => {
@@ -559,5 +559,23 @@ describe("attachments on a submission", () => {
     const outcome = await submit({ attachments: [png] });
     expect(outcome.attachments).toBe(0);
     expect(await db.selectFrom(SUPPORT_MESSAGES_TABLE).selectAll().execute()).toHaveLength(1);
+  });
+});
+
+describe("the full-text index, which this path no longer writes", () => {
+  test("a submitted report is findable by a word in its body, with no index call in sight", async () => {
+    // **`submitFeedback` has no `indexMessage` call and no `fts` dep any more.** The index follows the
+    // messages table, so the one thing left to prove is that it does — through the real write path,
+    // because a trigger body that named a camelCase column would pass every statement-level test and
+    // index nothing here.
+    await env.DB.exec("DROP TABLE IF EXISTS pithy_support_search");
+    await createSearchIndex(db);
+
+    const outcome = await submit({ body: "The export produced an empty spreadsheet." });
+
+    const { results } = await env.DB.prepare(
+      "SELECT thread_id FROM pithy_support_search WHERE pithy_support_search MATCH 'spreadsheet'",
+    ).all<{ thread_id: string }>();
+    expect(results.map((row) => row.thread_id)).toEqual([outcome.threadId]);
   });
 });

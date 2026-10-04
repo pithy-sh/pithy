@@ -210,7 +210,7 @@ vi.mock("../capabilities/supportProvisioner", async (importOriginal) => ({
       return step("support:deployWorker", env, undefined);
     }
     async ensureSearchIndex(env: ManagedEnvironment) {
-      return step("support:searchIndex", env, { created: false, dropped: false });
+      return step("support:searchIndex", env, { created: false, dropped: false, repaired: false });
     }
     async ensureRoutingRule() {
       return step("support:routingRule", null, { created: true, skipped: false });

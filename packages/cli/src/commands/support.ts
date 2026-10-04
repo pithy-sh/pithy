@@ -224,7 +224,16 @@ const provision = defineCommand({
         formatEnvironmentOutcomes(
           environmentOutcomes(readiness, (env) => {
             const entry = search.get(env);
-            const index = entry?.created ? ", search index created" : entry?.dropped ? ", search index dropped" : "";
+            // Three outcomes, not two. A repair is a database this run **changed** — its table was
+            // there and its triggers were not — and reading that as "already matches" is what would
+            // leave an operator with no reason to look at why messages stopped being indexed.
+            const index = entry?.created
+              ? ", search index created"
+              : entry?.dropped
+                ? ", search index dropped"
+                : entry?.repaired
+                  ? ", search index triggers restored and backfilled"
+                  : "";
             return `classification worker deployed${index}`;
           }),
         ),
@@ -234,7 +243,7 @@ const provision = defineCommand({
       // command that silently creates or drops a table is one an operator cannot audit by reading its
       // output. The per-environment lines above carry a create or a drop; silence there means it already
       // matched the config, which is also worth saying out loud.
-      if (result.search.every((entry) => !entry.created && !entry.dropped)) {
+      if (result.search.every((entry) => !entry.created && !entry.dropped && !entry.repaired)) {
         process.stdout.write("Search index already matches your config.\n");
       }
       // Say plainly when no rule was made. Everything else can be right and the inbox still receive

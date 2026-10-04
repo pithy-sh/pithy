@@ -84,15 +84,22 @@ export interface SupportProvisioner {
   /** Deploy the prebuilt classification worker for this environment. */
   deployWorker(env: ManagedEnvironment): Promise<void>;
   /**
-   * Create or drop the full-text index in this environment's app database, to match `search.fts`.
+   * Create or drop the full-text index **and its triggers** in this environment's app database, to
+   * match `search.fts`.
    *
    * A provisioning step rather than a migration, because the index is **derived** — every row in it
    * comes from `pithy_support_messages` and `reindexThread` rebuilds it on demand. That is the line a
    * migration is for: schema whose loss loses data. Keeping it here is also what makes the flag safe
    * to toggle at all, since a config-conditional migration removed from the set is corruption to
-   * Kysely and blocks `pithy migrate` for every capability sharing the database.
+   * Kysely and blocks `pithy migrate` for every capability sharing the database. The triggers inherit
+   * that constraint exactly: they exist only where the table does, so they are provisioning too.
+   *
+   * **Three outcomes, not two.** `repaired` is a database whose table was already there and whose
+   * triggers were not — an adopter who took the release that moved the index onto triggers and deployed
+   * without re-provisioning. Nothing in the kit maintains that index, so the run creates the triggers
+   * and backfills the gap, and says which of the three it did.
    */
-  ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean }>;
+  ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean; repaired: boolean }>;
   /**
    * Ensure the inbound Email Routing rule that delivers the support address to the app worker.
    * Idempotent, keyed on the rule name. Returns `skipped: true` when no routing config was supplied.
@@ -106,8 +113,8 @@ export interface SupportProvisionResult {
   bucket: { bucket: string; created: boolean; skipped: boolean };
   /** The environments a classification worker was deployed for. */
   environments: ManagedEnvironment[];
-  /** What the full-text index did, per environment — created, dropped, or already correct. */
-  search: Array<{ env: ManagedEnvironment; created: boolean; dropped: boolean }>;
+  /** What the full-text index did, per environment — created, dropped, repaired, or already correct. */
+  search: Array<{ env: ManagedEnvironment; created: boolean; dropped: boolean; repaired: boolean }>;
   /** Whether the inbound routing rule was created, already present, or skipped. */
   routing: { created: boolean; skipped: boolean };
 }

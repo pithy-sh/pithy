@@ -77,6 +77,12 @@ import {
 import { doctorSettingsCheck } from "../doctor/settingsSources";
 import { checkSharedRuntimes, describeSharedRuntimes, type SharedRuntimesCheck } from "../doctor/sharedRuntimes";
 import {
+  checkSupportSearchTriggers,
+  describeSupportSearchTriggers,
+  type SupportSearchTriggersCheck,
+  type SupportSearchTriggersOptions,
+} from "../doctor/supportSearchTriggers";
+import {
   type ComposeWorkerFor,
   checkTurnstileSitekeys,
   describeTurnstileSitekeys,
@@ -314,6 +320,15 @@ export interface DoctorReport {
    * `pithy.config.ts` is in this state by construction.
    */
   turnstileSitekeys: TurnstileSitekeysCheck | null;
+  /**
+   * Where `pithy_support_search` is provisioned with no triggers maintaining it — the one upgrade gap
+   * left by moving the support full-text index off its three hand-written call sites. `null` outside a
+   * project, and `not-applicable` on every project that composes no support or leaves `search.fts` off.
+   *
+   * **It reports and fails the exit only on a finding.** A skipped remote read still prints its line,
+   * because a skip that printed nothing would be indistinguishable from a healthy project.
+   */
+  supportSearchTriggers: SupportSearchTriggersCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -739,6 +754,11 @@ export interface DoctorReportOptions {
    * environment — no account call. Handed the compositions this report took, when it took them.
    */
   checkTurnstileSitekeys?: (projectDir: string, options?: TurnstileSitekeysOptions) => Promise<TurnstileSitekeysCheck>;
+  /**
+   * Support search-index seam; defaults to {@link checkSupportSearchTriggers}. One `sqlite_master` read per
+   * deployed environment whose composition turns `search.fts` on, and none at all otherwise.
+   */
+  checkSupportSearchTriggers?: (options: SupportSearchTriggersOptions) => Promise<SupportSearchTriggersCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -910,6 +930,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
+  const probeSupportSearchTriggers = options.checkSupportSearchTriggers ?? checkSupportSearchTriggers;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -1044,6 +1065,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // the health block (#595): the Turnstile check reads each environment's widget from it rather than composing
   // again, or composing for none. Unset when the project would not resolve; that probe then composes its own.
   let composeWorkerFor: ComposeWorkerFor | undefined;
+  // The deployed environments this project declares, kept for the probes that run after the project block.
+  // Empty is a declaration that would not parse, and an empty sweep is the honest answer to it: `Environments:`
+  // reports the declaration, and no probe below may invent a name the project did not write (#586).
+  let declaredEnvironments: readonly string[] = [];
   // Whether that list is the project's composition or merely the value it was initialized to. An empty
   // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
   // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
@@ -1067,6 +1092,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     } catch {
       declared = [];
     }
+    declaredEnvironments = declared;
     const installedCaps = await listCapabilities(options.projectDir);
     const packageSpecs = await (options.declaredSpecs ?? declaredSpecs)(options.projectDir);
     const packageManager = await detectPackageManager(options.projectDir);
@@ -1276,6 +1302,33 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         },
       )
     : null;
+  // Where the support full-text index is provisioned with nothing maintaining it (#678). The one check here
+  // that reads a deployed database rather than a file, so it takes the same `remoteSkip` the migration lines
+  // do and says which environments it therefore did not reach. A project composing no support, or composing
+  // it with `search.fts` off, reaches nothing and prints nothing.
+  const supportSearchTriggers =
+    inProject && workersResolved
+      ? await probed<SupportSearchTriggersCheck>(
+          () =>
+            probeSupportSearchTriggers({
+              projectDir: options.projectDir,
+              environments: declaredEnvironments,
+              workers: resolvedWorkers.map((worker) => ({ name: worker.name, dir: worker.dir })),
+              account,
+              remoteSkip,
+              composeWorker:
+                composeWorkerFor ??
+                (async (worker, environment) => {
+                  const found = await resolve(environment, { projectDir: options.projectDir, worker: worker.name });
+                  const match = found.find((candidate) => candidate.dir === worker.dir);
+                  if (match === undefined)
+                    throw new ValidationError({ message: `${worker.name} did not resolve for ${environment}.` });
+                  return { capabilities: match.capabilities };
+                }),
+            }),
+          { state: "could-not-check", environments: [] },
+        )
+      : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
   // throw under another (#548). Files only once more — the composition is taken in this process, and
@@ -1392,6 +1445,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     environments,
     environmentInheritance,
     turnstileSitekeys,
+    supportSearchTriggers,
     environmentConfigs,
     origins,
     workflows,
@@ -1492,6 +1546,13 @@ export function doctorExitCode(report: DoctorReport): number {
   // An unwritable declaration is the same standard once more — the declaration itself is what no command
   // can act on. `could-not-check` establishes nothing and carries no drift, so it never reaches here.
   if (report.workflows && report.workflows.drift.length > 0) return 1;
+  // The same standard, met the way `Settings:` meets it rather than the way the file checks do (#678): the
+  // fault is established by a **database that answered**, so it is the finding that gates and never the
+  // state. A provisioned `pithy_support_search` with no triggers is the only fault in this report whose
+  // symptom is that search silently under-returns — every message stored, none indexed, nothing logged —
+  // and the remedy is the `pithy support provision` an upgrade was going to run anyway. A read that was
+  // skipped or threw contributes no drift, so an offline run cannot fail here.
+  if (report.supportSearchTriggers?.state === "findings") return 1;
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a
   // fault this machine's own disk establishes: the file is there, and nothing will ever read anything out of
   // it. `absent` is the documented default — no file, no session, magic links only — so it never gates, and
@@ -2461,6 +2522,17 @@ function turnstileSitekeysBlock(check: TurnstileSitekeysCheck): string {
 }
 
 /**
+ * The `Support search:` lines — shown on a drift **and** on a read that did not happen.
+ *
+ * Both, because the finding this block exists for is silent by nature: a provisioned
+ * `pithy_support_search` with no triggers stores every message and indexes none, and nothing else in the
+ * kit says so. A skipped read printing nothing would read exactly like the project that is fine.
+ */
+function supportSearchTriggersBlock(check: SupportSearchTriggersCheck): string {
+  return ["Support search:", ...describeSupportSearchTriggers(check).map((line) => `  ${line}`)].join("\n");
+}
+
+/**
  * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
  * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
  *
@@ -2773,6 +2845,13 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // A blocked sign-in is worth the ink and not a red CI, on the rule above: every project provisioned before
   // #590 is in this state by construction.
   const turnstileSitekeysOk = report.turnstileSitekeys?.state !== "findings";
+  // Worth the ink and worth a red CI, on the same rule as the Workflow block: the whole symptom of an index
+  // nothing maintains is that nothing happens. A `could-not-check` keeps the report verbose and leaves the
+  // exit alone — an offline run has learned nothing, and a green doctor turned red by a train is a surprise.
+  const supportSearchTriggersQuiet =
+    report.supportSearchTriggers === null ||
+    report.supportSearchTriggers.state === "ok" ||
+    report.supportSearchTriggers.state === "not-applicable";
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -2831,6 +2910,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     environmentsOk &&
     environmentInheritanceOk &&
     turnstileSitekeysOk &&
+    supportSearchTriggersQuiet &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -3040,6 +3120,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(turnstileSitekeysBlock(report.turnstileSitekeys));
   }
 
+  // Straight after it, because it is the same shape of fault one capability over: a project that is
+  // provisioned and still cannot do the thing it was provisioned for, with nothing failing to say so.
+  if (report.supportSearchTriggers && !supportSearchTriggersQuiet) {
+    blocks.push(supportSearchTriggersBlock(report.supportSearchTriggers));
+  }
+
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
   // environments has a `pithy.config.ts` that throws when it is composed. The reader meets it here, near
   // the top, as a config that does not load — never as a footnote under the secret lists it also narrows.
@@ -3229,6 +3315,11 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // Its own key: the lines are the report's sentences, and the two lists are what a script acts on.
     turnstileSitekeys: report.turnstileSitekeys
       ? { ...report.turnstileSitekeys, detail: describeTurnstileSitekeys(report.turnstileSitekeys) }
+      : null,
+    // Per environment, because that is the grain the fix has: a project whose staging was re-provisioned and
+    // whose production was not is two different answers, and a single verdict would hide the one that matters.
+    supportSearchTriggers: report.supportSearchTriggers
+      ? { ...report.supportSearchTriggers, detail: describeSupportSearchTriggers(report.supportSearchTriggers) }
       : null,
     environmentInheritance: report.environmentInheritance
       ? {
