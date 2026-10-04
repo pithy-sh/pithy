@@ -437,6 +437,7 @@
         "--env",
         "--worker",
         "--binding",
+        "--group",
         "--rollback",
         "--no-rollback",
         "--confirm-rollback",

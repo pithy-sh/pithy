@@ -78,6 +78,8 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
     env: "dev",
     project: "smoke-app",
     rollback: false,
+    // The group this run stamped itself with (#694): generated, so matched by shape.
+    group: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
     workers: [{ worker: "smoke-app-api", databases: [] }],
   });
 });

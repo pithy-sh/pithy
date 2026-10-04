@@ -121,7 +121,17 @@ describe("project ownership", () => {
     await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
     await expect(
-      migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "beta", rollback: true }),
+      migrateProject({
+        account: null,
+        projectDir: h.projectDir,
+        workers,
+        env: "dev",
+        project: "beta",
+        rollback: true,
+        // Named, so what refuses is the ownership stamp rather than the missing group (#694): whose
+        // database this is comes before what is in it.
+        group: "release-7",
+      }),
     ).rejects.toThrow(/acme/);
 
     expect(await hasTable("things")).toBe(true);

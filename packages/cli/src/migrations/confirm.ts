@@ -7,11 +7,15 @@ import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 /**
  * **A rollback outside `dev` is asked for in words (#588).**
  *
- * `pithy migrate --rollback` steps back one migration in every database the environment binds, and
- * `migrate` had no confirmation at all — `seed --redo` asked for a typed phrase while the command that
- * emptied staging's vault asked for nothing. The phrase names its environment, the same shape
+ * `pithy migrate --rollback` reverses a named group of migrations in every database the environment binds
+ * (#694), and `migrate` had no confirmation at all — `seed --redo` asked for a typed phrase while the
+ * command that emptied staging's vault asked for nothing. The phrase names its environment, the same shape
  * `resetConfirmPhrase` and `provisionConfirmPhrase` have, so one typed for `staging` cannot be pasted into
  * a command aimed at `prod`.
+ *
+ * **It is orthogonal to `--group`, and both are required outside `dev`.** `--group` says *what* comes down;
+ * this says *yes, really, in this environment*. The phrase is checked first, before anything resolves a
+ * config, because an unconfirmed rollback has no business reading one.
  *
  * `dev` stays free: a local Miniflare store is what a rollback is for.
  */
@@ -33,7 +37,7 @@ export function assertRollbackConfirmed(env: string, phrase: string | undefined)
   throw new ValidationError({
     message:
       phrase === undefined
-        ? `Rolling back ${env} steps back every database it binds.`
+        ? `Rolling back ${env} reverses a group of migrations in every database it binds.`
         : `That is not the confirmation phrase for rolling back ${env}.`,
     action: `Pass --confirm-rollback "${expected}" to roll back ${env}.`,
   });

@@ -39,7 +39,14 @@ import { CloudflareSecretsDeprovisioner } from "../capabilities/secretsProvision
 import { seedProjectDevSecrets } from "../devSecrets/seed";
 import { localDevStorePath } from "../devSecrets/store";
 import type { StatePathOptions } from "../notifier/state";
-import { appCapability, createTable, migrateHarness } from "../test-utils/migrateHarness";
+import {
+  appCapability,
+  createTable,
+  ledgerOf,
+  migrateHarness,
+  persistDir,
+  withLocalD1 as withLocal,
+} from "../test-utils/migrateHarness";
 import { rollbackConfirmPhrase } from "./confirm";
 import { dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
 
@@ -56,26 +63,6 @@ import { dropCapabilityTables, migrateProject, previewReset, resetProject } from
  * survived. They are written against the real `secrets()` and `email()` capabilities, so what they prove is
  * that the tables those capabilities ship are declared retained — not that a fixture declared something.
  */
-
-/** The local Miniflare store `pithy migrate` persists to for this project. */
-function persistDir(projectDir: string): string {
-  return join(projectDir, ".wrangler", "state", "v3", "d1");
-}
-
-/** Run `body` against the project's local D1 for `binding`, then release the store. */
-async function withLocal<T>(projectDir: string, binding: string, body: (db: D1Database) => Promise<T>): Promise<T> {
-  const mf = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { D: binding },
-    d1Persist: persistDir(projectDir),
-  });
-  try {
-    return await body((await mf.getD1Database("D")) as unknown as D1Database);
-  } finally {
-    await mf.dispose();
-  }
-}
 
 /** Store `count` sealed secrets, the way the vault holds them. */
 async function storeSecrets(db: D1Database, count: number): Promise<void> {
@@ -99,12 +86,6 @@ async function rowsIn(db: D1Database, table: string): Promise<number | null> {
   return (await db.prepare(`select count(*) as n from ${table}`).first<{ n: number }>())?.n ?? 0;
 }
 
-/** The applied migration names in a database's ledger. */
-async function ledgerOf(db: D1Database): Promise<string[]> {
-  const { results } = await db.prepare("select name from pithy_migrations order by name").all<{ name: string }>();
-  return results.map((row) => row.name);
-}
-
 /** What a rejected promise threw, as a `PithyError` — or a failed assertion when it resolved. */
 async function refusal(promise: Promise<unknown>): Promise<PithyError> {
   const outcome = await promise.then(
@@ -114,6 +95,13 @@ async function refusal(promise: Promise<unknown>): Promise<PithyError> {
   expect(outcome).toBeInstanceOf(PithyError);
   return outcome as PithyError;
 }
+
+/**
+ * The group every forward run in this file applies under, and every rollback reverses (#694). A rollback
+ * names its group now, so each case states one rather than leaning on a bare `--rollback` — which
+ * reverses nothing. What #588 is about is which rows a reversal may destroy, and that is unchanged.
+ */
+const RELEASE = "release-7";
 
 /** The kit's real secrets capability, with nothing but its own master key declared. */
 const vault = (): Capability => secrets({ registry: {} });
@@ -163,10 +151,10 @@ describe("the reproduction (#588)", () => {
 
   test("migrate → rollback → migrate: the rollback refuses, naming the table and the count, and the vault survives", async () => {
     const workers = [h.api([vault(), appCapability()])];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 5));
 
-    const error = await refusal(migrateProject({ ...base(), workers, rollback: true }));
+    const error = await refusal(migrateProject({ ...base(), workers, rollback: true, group: RELEASE }));
     expect(error.payload.message).toContain("pithy_secrets_system_secrets");
     expect(error.payload.message).toContain("5");
     expect(error.payload.action).toContain("--destroy-retained 5");
@@ -188,15 +176,15 @@ describe("the reproduction (#588)", () => {
     // The runner's own guard refuses at the vault's `down`, which in fan-out order comes after the app
     // database has already stepped back. The preflight is what makes the refusal arrive before anything.
     const workers = [h.api([appCapability(), vault()])];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 1));
 
-    await refusal(migrateProject({ ...base(), workers, rollback: true }));
+    await refusal(migrateProject({ ...base(), workers, rollback: true, group: RELEASE }));
     await withLocal(h.projectDir, "DB", async (db) => expect(await ledgerOf(db)).toEqual(["1000_app_0001_things"]));
   });
 
   test("rollback with pending app migrations: still refused, still intact", async () => {
-    await migrateProject({ ...base(), workers: [h.api([vault(), appCapability()])] });
+    await migrateProject({ ...base(), workers: [h.api([vault(), appCapability()])], group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
 
     const grown = defineCapability({
@@ -214,7 +202,7 @@ describe("the reproduction (#588)", () => {
         },
       },
     });
-    await refusal(migrateProject({ ...base(), workers: [h.api([vault(), grown])], rollback: true }));
+    await refusal(migrateProject({ ...base(), workers: [h.api([vault(), grown])], rollback: true, group: RELEASE }));
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(2),
     );
@@ -222,10 +210,10 @@ describe("the reproduction (#588)", () => {
 
   test("a later database whose down throws: the vault was never the first thing destroyed", async () => {
     const workers = [h.api([vault(), brokenDown()])];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 3));
 
-    await refusal(migrateProject({ ...base(), workers, rollback: true }));
+    await refusal(migrateProject({ ...base(), workers, rollback: true, group: RELEASE }));
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(3),
     );
@@ -233,16 +221,18 @@ describe("the reproduction (#588)", () => {
 
   test("the override is the printed count, exactly — a different number refuses", async () => {
     const workers = [h.api([vault()])];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
 
-    const wrong = await refusal(migrateProject({ ...base(), workers, rollback: true, destroyRetained: 3 }));
+    const wrong = await refusal(
+      migrateProject({ ...base(), workers, rollback: true, group: RELEASE, destroyRetained: 3 }),
+    );
     expect(wrong.payload.action).toContain("--destroy-retained 2");
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(2),
     );
 
-    const runs = await migrateProject({ ...base(), workers, rollback: true, destroyRetained: 2 });
+    const runs = await migrateProject({ ...base(), workers, rollback: true, group: RELEASE, destroyRetained: 2 });
     expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["0100_secrets_0001_init"]);
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBeNull(),
@@ -251,8 +241,8 @@ describe("the reproduction (#588)", () => {
 
   test("an empty vault rolls back without an override — there is nothing retained to lose", async () => {
     const workers = [h.api([vault()])];
-    await migrateProject({ ...base(), workers });
-    const runs = await migrateProject({ ...base(), workers, rollback: true });
+    await migrateProject({ ...base(), workers, group: RELEASE });
+    const runs = await migrateProject({ ...base(), workers, rollback: true, group: RELEASE });
     expect(runs[0]?.databases[0]?.results.map((r) => r.direction)).toEqual(["Down"]);
   });
 
@@ -374,10 +364,17 @@ describe("the reproduction (#588)", () => {
 
   test("a rollback narrowed to one binding leaves every other database alone", async () => {
     const workers = [h.api([vault(), appCapability()])];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 1));
 
-    const runs = await migrateProject({ ...base(), workers, worker: "api", binding: "DB", rollback: true });
+    const runs = await migrateProject({
+      ...base(),
+      workers,
+      worker: "api",
+      binding: "DB",
+      rollback: true,
+      group: RELEASE,
+    });
     expect(runs[0]?.databases.map((d) => [d.binding, d.results.map((r) => r.migrationName)])).toEqual([
       ["DB", ["1000_app_0001_things"]],
     ]);
@@ -385,7 +382,9 @@ describe("the reproduction (#588)", () => {
       expect(await ledgerOf(db)).toEqual(["0100_secrets_0001_init"]),
     );
 
-    const unknown = await refusal(migrateProject({ ...base(), workers, binding: "NOPE", rollback: true }));
+    const unknown = await refusal(
+      migrateProject({ ...base(), workers, binding: "NOPE", rollback: true, group: RELEASE }),
+    );
     expect(unknown.payload.message).toContain("NOPE");
   });
 
@@ -415,8 +414,8 @@ describe("the reproduction (#588)", () => {
 
   test("a failed rollback's remedy never invites a second rollback", async () => {
     const workers = [h.api([brokenDown()])];
-    await migrateProject({ ...base(), workers });
-    const error = await refusal(migrateProject({ ...base(), workers, rollback: true }));
+    await migrateProject({ ...base(), workers, group: RELEASE });
+    const error = await refusal(migrateProject({ ...base(), workers, rollback: true, group: RELEASE }));
     expect(error.payload.action).not.toMatch(/--rollback/);
   });
 });
@@ -462,7 +461,17 @@ describe("a database other environments bind (#588)", () => {
 
   const mail = (): Capability => email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" });
 
-  test("a staging rollback reverses staging's database and keeps the one prod binds too", async () => {
+  /**
+   * **A group that reaches a database prod binds comes down whole or not at all (#694).**
+   *
+   * The rule is #588's and unchanged: a `staging` rollback never reverses the suppression list prod reads.
+   * What the group changes is *when* that is said and what it costs. The refusal fires in the pre-flight,
+   * names the group it was asked to reverse, and reverses nothing anywhere — rather than reversing
+   * staging's own database and quietly leaving the rest of the group applied, which is a release half
+   * undone and the state groups exist to prevent. `--binding` is how the operator asks for exactly the
+   * portion that *can* come down.
+   */
+  test("a group holding a database prod binds is refused whole, and --binding reverses staging's own portion", async () => {
     await writeStanzas();
     const { mf, byId } = await remotes();
     try {
@@ -474,36 +483,96 @@ describe("a database other environments bind (#588)", () => {
         workers: [h.api([mail()])],
         remoteD1: ({ databaseId }: { databaseId: string }) => byId(databaseId),
       };
-      await migrateProject(options);
+      await migrateProject({ ...options, group: RELEASE });
 
+      const refused = await refusal(
+        migrateProject({
+          ...options,
+          rollback: true,
+          group: RELEASE,
+          confirmRollback: rollbackConfirmPhrase("staging"),
+        }),
+      );
+      expect(refused.payload.message).toContain("EMAIL_SUPPRESSIONS");
+      expect(refused.payload.message).toContain("prod");
+      // It names the group it was asked to reverse, which is what makes the message advice rather than
+      // an explanation of damage: nothing in it was reversed, in either database.
+      expect(refused.payload.message).toContain(RELEASE);
+      expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
+      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init"]);
+
+      // Narrowed to the database only staging binds, that portion of the group comes down and the rest
+      // of the group stays applied.
       const runs = await migrateProject({
         ...options,
+        binding: "DB",
         rollback: true,
+        group: RELEASE,
         confirmRollback: rollbackConfirmPhrase("staging"),
       });
-      const kept = runs[0]?.databases.find((d) => d.binding === "EMAIL_SUPPRESSIONS");
-      expect(kept?.results).toEqual([]);
-      expect(kept?.boundBy).toEqual(["prod"]);
+      expect(runs[0]?.databases.map((d) => [d.binding, d.results.map((r) => r.migrationName)])).toEqual([
+        ["DB", ["0200_email_0001_init"]],
+      ]);
       expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
       expect(await rowsIn(byId("global-suppressions"), "pithy_email_suppressions")).toBe(0);
 
-      // Named explicitly, it is refused rather than quietly skipped.
+      // Named explicitly, the shared database is refused rather than quietly skipped.
       const named = await refusal(
         migrateProject({
           ...options,
           binding: "EMAIL_SUPPRESSIONS",
           rollback: true,
+          group: RELEASE,
           confirmRollback: rollbackConfirmPhrase("staging"),
         }),
       );
       expect(named.payload.message).toContain("prod");
+      expect(named.payload.message).toContain(RELEASE);
 
-      // And seed --redo's reset keeps it the same way.
-      await migrateProject(options);
+      // And seed --redo's reset keeps it the same way — it names no group and never has.
+      await migrateProject({ ...options, group: RELEASE });
       const preview = await previewReset(options);
       expect(preview.find((entry) => entry.binding === "EMAIL_SUPPRESSIONS")?.boundBy).toEqual(["prod"]);
       await resetProject(options);
       expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
+    } finally {
+      await mf.dispose();
+    }
+  });
+
+  test("a group that touched only staging's own database reverses, and the kept one is reported as kept", async () => {
+    await writeStanzas();
+    const { mf, byId } = await remotes();
+    try {
+      const options = {
+        account: null,
+        projectDir: h.projectDir,
+        env: "staging",
+        project: "acme",
+        remoteD1: ({ databaseId }: { databaseId: string }) => byId(databaseId),
+      };
+      // The first release migrated both databases; the second added a capability on `DB` alone.
+      await migrateProject({ ...options, workers: [h.api([mail()])], group: "release-6" });
+      const workers = [h.api([mail(), appCapability()])];
+      await migrateProject({ ...options, workers, group: RELEASE });
+
+      const runs = await migrateProject({
+        ...options,
+        workers,
+        rollback: true,
+        group: RELEASE,
+        confirmRollback: rollbackConfirmPhrase("staging"),
+      });
+
+      expect(runs[0]?.databases.map((d) => [d.binding, d.results.map((r) => r.migrationName)])).toEqual([
+        ["DB", ["1000_app_0001_things"]],
+        ["EMAIL_SUPPRESSIONS", []],
+      ]);
+      // `EMAIL_SUPPRESSIONS` holds none of this group, so it is left alone and said to be — the row every
+      // report has carried for a database another environment binds.
+      expect(runs[0]?.databases.find((d) => d.binding === "EMAIL_SUPPRESSIONS")?.boundBy).toEqual(["prod"]);
+      expect(await ledgerOf(byId("global-suppressions"))).toEqual(["0100_email_0001_suppressions"]);
+      expect(await ledgerOf(byId("staging-db"))).toEqual(["0200_email_0001_init"]);
     } finally {
       await mf.dispose();
     }
@@ -521,13 +590,22 @@ describe("a database other environments bind (#588)", () => {
         workers: [h.api([appCapability()])],
         remoteD1: ({ databaseId }: { databaseId: string }) => byId(databaseId),
       };
-      await migrateProject(options);
-      const refused = await refusal(migrateProject({ ...options, rollback: true }));
+      await migrateProject({ ...options, group: RELEASE });
+      // The phrase is checked before anything resolves, so it refuses ahead of the missing group too.
+      const refused = await refusal(migrateProject({ ...options, rollback: true, group: RELEASE }));
       expect(refused.payload.action).toContain(rollbackConfirmPhrase("staging"));
       expect(await ledgerOf(byId("staging-db"))).toEqual(["1000_app_0001_things"]);
 
-      await refusal(migrateProject({ ...options, rollback: true, confirmRollback: rollbackConfirmPhrase("prod") }));
-      await migrateProject({ ...options, rollback: true, confirmRollback: rollbackConfirmPhrase("staging") });
+      await refusal(
+        migrateProject({ ...options, rollback: true, group: RELEASE, confirmRollback: rollbackConfirmPhrase("prod") }),
+      );
+      // A non-dev group rollback needs both: the group says what, the phrase says yes, really, here.
+      await migrateProject({
+        ...options,
+        rollback: true,
+        group: RELEASE,
+        confirmRollback: rollbackConfirmPhrase("staging"),
+      });
       expect(await ledgerOf(byId("staging-db"))).toEqual([]);
     } finally {
       await mf.dispose();
@@ -657,14 +735,14 @@ describe("the link-signing key survives the vault (#596)", () => {
 
   test("a rollback that destroys the vault leaves the key, and a link minted before it still verifies", async () => {
     const workers = [h.api(composed())];
-    await migrateProject({ ...base(), workers });
+    await migrateProject({ ...base(), workers, group: RELEASE });
     await seed();
     await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 3));
     const key = (await bound()) ?? "";
     const link = await mintedUnder(key);
     const held = (await withLocal(h.projectDir, "SECRETS", (db) => rowsIn(db, "pithy_secrets_system_secrets"))) ?? 0;
 
-    await migrateProject({ ...base(), workers, rollback: true, destroyRetained: held });
+    await migrateProject({ ...base(), workers, rollback: true, group: RELEASE, destroyRetained: held });
 
     await withLocal(h.projectDir, "SECRETS", async (db) =>
       expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBeNull(),

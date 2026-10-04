@@ -212,14 +212,17 @@ describe("pithy migrate", () => {
 
     // The run is grouped per worker — the scaffold's single `apps/api` worker, with no databases yet.
     const { stdout } = await run("bun", [bin, "migrate", "--json"], { cwd: target });
+    // `group` is the timestamp this run stamped itself with (#694) — generated, so matched by shape.
     expect(JSON.parse(stdout.trim())).toEqual({
       command: "migrate",
       env: "dev",
       project: "app",
       rollback: false,
+      group: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
       workers: [{ worker: "app-api", databases: [] }],
     });
 
+    // A scaffold binds no database, so there is nothing a rollback could reverse and no group to name.
     const rollback = await run("bun", [bin, "migrate", "--rollback", "--json"], { cwd: target });
     expect(JSON.parse(rollback.stdout.trim())).toEqual({
       command: "migrate",

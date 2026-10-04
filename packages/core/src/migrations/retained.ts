@@ -12,8 +12,8 @@ import { declareRetainedDown, retainedTablesOf, retainedTablesOfDown } from "./r
  *
  * A migration's `down` is the tested inverse of its `up`, and for schema that is exactly right. For a
  * vault it is a `drop table` on the only copy of a credential Google issued. `0100_secrets_0001_init` is
- * the whole history of the secrets database, so one `pithy migrate --rollback` — which steps back one
- * migration in every composed database — emptied it in place, on staging, with nothing said first.
+ * the whole history of the secrets database, so one `pithy migrate --rollback` — which then stepped back
+ * one migration in every composed database — emptied it in place, on staging, with nothing said first.
  *
  * So a capability **declares** a table retained, beside the migrations that create it
  * (`DatabaseSpec.retained`), and the declaration is recorded on those migrations' own `down` functions
