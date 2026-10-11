@@ -1556,6 +1556,8 @@ function sharedKeys(pages: Record<string, string[]>): Record<string, string[]> {
  * would have said it. Neither claim can be made by accident, which is the whole point.
  */
 const SHARED_JSON_KEYS: Record<string, string[]> = {
+  // The Pithy block in `AGENTS.md`: `init` writes it and `upgrade` refreshes it, through one merge (#697).
+  agents: ["init", "upgrade"],
   branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
   changed: ["secrets", "ui"],
@@ -1665,6 +1667,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
  * type is telling the truth about how much it says.
  */
 const SHARED_JSON_KEY_TYPES: Record<string, string> = {
+  agents: "object",
   branch: "string",
   changed: "boolean",
   command: "string",

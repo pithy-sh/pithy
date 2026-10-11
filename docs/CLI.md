@@ -170,6 +170,16 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy vector` | [`commands/vector.md`](commands/vector.md) — Provision and manage Vectorize indexes |
 | `pithy worker` | [`commands/worker.md`](commands/worker.md) — Manage the project's Workers under `apps/` |
 
+### 1.5 The agent instructions a project carries
+
+**A project tells the agent working in it how to drive this CLI.** `pithy init` writes a marked Pithy block into the project's `AGENTS.md`, and `pithy upgrade` rewrites it as the CLI changes. It says five things: `pithy schema --json` describes every command the installed version takes; `PITHY_JSON=compact` keeps every `--json` document on one line; `PITHY_NONINTERACTIVE=1` means no prompt waits; `--dry-run` comes before a command that changes anything; and `pithy remove` and every typed confirmation phrase belong to a person. Under them is the exit-code table of §3.8, rendered from the same rows `pithy schema` publishes, so the two cannot drift.
+
+**The block is the only part of `AGENTS.md` Pithy owns.** It runs from a line starting `<!-- pithy:begin` to the line `<!-- pithy:end -->`, both HTML comments, so a rendered file shows neither. A write replaces those lines and nothing either side of them, byte for byte; a file without the block gains it at the end, after a blank line; a current block is not rewritten, so a re-run moves no mtime. Markers Pithy cannot read unambiguously — an open with no close, a close first, two blocks — are refused and reported, never guessed at, as §2.5 refuses to guess at a shell rc file. A symlinked `AGENTS.md` is refused too: a cloned repository can ship the link, and the write would follow it out of the project.
+
+**`CLAUDE.md` gets one line, from `pithy init` alone.** Claude Code reads its own file and not the shared one, so `init` appends `Agent instructions for this project, Pithy's included: @AGENTS.md` — `@AGENTS.md` is Claude Code's import — to a `CLAUDE.md` the repository already has, or creates `CLAUDE.md` holding just that line. A file already importing `@AGENTS.md` is left alone, and so is a `CLAUDE.md` that is a link to `AGENTS.md`, or the reverse: one file read under both names needs no pointer. `pithy upgrade` touches `AGENTS.md`'s block and nothing else, so a `CLAUDE.md` it finds is never edited.
+
+Neither file is in the starter template. `pithy init` refuses a target that already holds a file it would copy, and `AGENTS.md` is the file a cloned repository is likeliest to carry, so both are merged after the scaffold instead. A refusal of either is reported — a line for a person, a `refused` state under `--json` — and never fails the run.
+
 ---
 
 ## 2. The alias system
@@ -1120,7 +1130,7 @@ That line is the difference between `upgrade` and `doctor` agreeing and not. Rep
 
 **`--packages` is what moves a version; `pithy upgrade` alone never did.** It moves every `@pithy-sh/*` dependency to the newest version its range admits and reinstalls, then reconciles. A version beyond a breaking boundary — a new major, or a new minor under `0.x` — is held and named, and `--latest` is the explicit opt-in that crosses it. Doctor names whichever of the two clears its line, and names none when no `pithy` command would.
 
-`pithy upgrade --json` carries five fields, and a sixth, `packages`, only when `--packages` was passed. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`.
+`pithy upgrade --json` carries six fields, and a seventh, `packages`, only when `--packages` was passed. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`. `agents` says what happened to the Pithy block in `AGENTS.md` — `added`, `updated`, `unchanged` or `refused` — and is absent only when `--packages` moved `@pithy-sh/cli` and left the reconcile to the new one (§1.5).
 
 `pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
 

@@ -19,6 +19,13 @@ import {
 } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
 import { stateDir } from "../notifier/state";
+import {
+  agentsLine,
+  claudeLine,
+  InstructionsFile,
+  syncAgentsBlock,
+  syncClaudePointer,
+} from "../project/agentInstructions";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
@@ -445,6 +452,8 @@ const InitPayload = z
       .array(z.string().describe("An environment."))
       .describe("Every environment the project deploys to, in declaration order."),
     domains: WorkerDomains.nullable().describe("Where the first Worker answers, or `null` when none was declared."),
+    agents: InstructionsFile.describe("`AGENTS.md`, and what happened to the Pithy block in it."),
+    claude: InstructionsFile.describe("`CLAUDE.md`, and whether it now points at `AGENTS.md`."),
   })
   .describe("What `pithy init` scaffolded.");
 
@@ -499,6 +508,12 @@ export default withContract(
 
         const appName = name.value;
         await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
+        // The agent instructions, straight after the scaffold and before any question that can be
+        // canceled, so a project never exists without them. Outside `scaffoldProject` on purpose: these
+        // merge into files a cloned repository may already carry, which a template file could only collide
+        // with. `pithy upgrade` runs the same merge on the block.
+        const agents = await syncAgentsBlock(targetDir, { dryRun: false });
+        const claude = await syncClaudePointer(targetDir);
 
         // Asked before the zones are, because listing them needs the token — and the same token answers
         // which account this project is for, so the two questions collapse into one.
@@ -528,11 +543,14 @@ export default withContract(
 
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null })}\n`,
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null, agents, claude })}\n`,
           );
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
+        for (const line of [agentsLine(agents, false), claudeLine(claude)]) {
+          if (line !== null) process.stdout.write(`${line}\n`);
+        }
         if (declared && !declared.declared && account.block) {
           process.stdout.write(
             `Could not write the cloudflare block into pithy.config.ts. Add it by hand:\n${renderCloudflareBlock(account.block)}`,

@@ -60,7 +60,17 @@ Over every composed capability, not only the ones with a missing binding — a p
 
 A dry run resolves no project name and proposes none, so nothing can be written. An apply resolves the name from the root `pithy.config.ts`, because a capability wired by `upgrade` must get the same `<project>-<env>-<binding>` resource name it would have got from `add`. With `--migrate`, the name is required and checked first, so a nameless project fails having written nothing rather than mid-fan-out.
 
-`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, and — with `--migrate` — the database for `--env`. With `--packages` it also writes the `package.json` files it moves and runs one install.
+**The Pithy block in `AGENTS.md` is refreshed too**, once per run, project-wide, after the Workers resolve — so `upgrade` in a directory that is not a project fails on that and writes nothing. The block is what `pithy init` writes for the agent working in the project (`docs/CLI.md` §1.5), and a newer CLI has newer things to say. Only the lines from `<!-- pithy:begin` through `<!-- pithy:end -->` are replaced; every byte outside them is left exactly as it was. A project scaffolded before the block existed gets it, appended after a blank line, or a new `AGENTS.md` holding it. A current block is not rewritten and gets no line. `--worker` does not narrow it, because the file is the project's. `--dry-run` says what it would do and writes nothing. Markers already there and broken — an open with no close, two blocks — and a symlinked `AGENTS.md` are refused and named, never guessed at, and the run's exit is unchanged by it. `CLAUDE.md` is never touched: its pointer is `init`'s, and a line you removed stays removed.
+
+```
+$ pithy upgrade
+AGENTS.md: Pithy block refreshed.
+board:
+  Nothing to upgrade.
+Done.
+```
+
+`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, the Pithy block in `AGENTS.md`, and — with `--migrate` — the database for `--env`. With `--packages` it also writes the `package.json` files it moves and runs one install.
 
 ## `--packages`
 
@@ -91,7 +101,7 @@ Done.
 
 **One install, at the root.** The rewritten manifests and the lockfile are one rollback scope: an install that fails puts every `package.json` and a text lockfile back byte for byte, and the run ends there. `bun.lockb` is binary and is not restored; `bun install` settles it. After the install, every moved package is read back from where its manifest resolves it. A package manager that resolved something else is a mismatch, named, and the run exits 1.
 
-**When `@pithy-sh/cli` itself moves, the reconcile waits.** The process running is the old CLI, and reconciling with its engine would write the old answer into a project that just asked for the new one. It says so, naming the project's own CLI through its package manager — `@pithy-sh/cli moved to 0.10.0. Run bun x pithy upgrade to reconcile with it.` — and exits 0. A bare `pithy` may be a global install, which is the old CLI.
+**When `@pithy-sh/cli` itself moves, the reconcile waits.** The process running is the old CLI, and reconciling with its engine would write the old answer into a project that just asked for the new one. So does the `AGENTS.md` block, for the same reason, and `agents` is absent from `--json`. It says so, naming the project's own CLI through its package manager — `@pithy-sh/cli moved to 0.10.0. Run bun x pithy upgrade to reconcile with it.` — and exits 0. A bare `pithy` may be a global install, which is the old CLI.
 
 **A registry that does not answer moves nothing.** Every packument is read before any is acted on, and one that fails or will not parse makes the step `unavailable`: nothing is written or installed, the reconcile still runs, and the exit is 1. A plan built from the packages that did answer would move half of a group that is released together.
 
@@ -121,12 +131,12 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null}}
 ```
 
 ```
 $ pithy upgrade --json
-{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"unchanged","reason":null}}
 ```
 
 ### The envelope
@@ -142,6 +152,10 @@ $ pithy upgrade --json
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
 | `packages` | object | Present only with `--packages`. What the package step did — below |
+| `agents` | object | The Pithy block in `AGENTS.md`. Absent only when `--packages` moved `@pithy-sh/cli`, which leaves the block to the new CLI |
+| `agents.path` | string | `"AGENTS.md"`, relative to the project root |
+| `agents.state` | `"added"` \| `"updated"` \| `"unchanged"` \| `"refused"` | `added` — there was no block, and now there is. `updated` — the block was stale and was rewritten in place. `unchanged` — already current, and the file was not written. `refused` — not written, and `reason` says why; the exit is unchanged by it. On a dry run, what a write would do |
+| `agents.reason` | string or `null` | Why it was refused, in one line that never quotes the file. `null` otherwise |
 
 ### `packages`
 

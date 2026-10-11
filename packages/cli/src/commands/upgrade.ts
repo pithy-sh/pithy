@@ -22,6 +22,7 @@ import { withContract } from "../contract/commandContract";
 import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
 import type { RegistryFetch } from "../kitPackages/registry";
 import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
+import { agentsLine, InstructionsFile, syncAgentsBlock } from "../project/agentInstructions";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
@@ -99,6 +100,8 @@ export interface UpgradeRunOptions {
   registryFetch?: RegistryFetch;
   /** Test seam: the package manager `--packages` runs. Defaults to the real `<pm> install`. */
   runInstall?: InstallRunner;
+  /** Test seam: the `AGENTS.md` refresh. Defaults to {@link syncAgentsBlock}, which `pithy init` runs too. */
+  refreshAgents?: (projectDir: string, options: { dryRun: boolean }) => Promise<InstructionsFile>;
 }
 
 /**
@@ -175,6 +178,11 @@ export interface UpgradeRun {
   manifestFaults: ManifestFault[];
   /** What `--packages` did. Absent without the flag, so a run without it is the run it always was. */
   packages?: PackagesReport;
+  /**
+   * The Pithy block in `AGENTS.md` (#697). Absent only when `--packages` moved `@pithy-sh/cli` and the
+   * reconcile was left to the new one — which writes its own block, not this binary's.
+   */
+  agents?: InstructionsFile;
 }
 
 /**
@@ -235,7 +243,12 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
     packages.reconciled = true;
   }
   const reconciled = await reconcileWorkers(options);
-  return packages ? { ...reconciled, packages } : reconciled;
+  // **After the reconcile, never before it.** Resolving the Workers is what establishes that this is a
+  // project, so `pithy upgrade` in the wrong directory fails on that and leaves no `AGENTS.md` behind. Not
+  // narrowed by `--worker`: the file is the project's, one merge is idempotent, and a refusal is reported
+  // rather than failing the run — a hand-broken marker is the project's to fix, not a reconcile that failed.
+  const agents = await (options.refreshAgents ?? syncAgentsBlock)(options.projectDir, { dryRun: options.dryRun });
+  return { ...reconciled, ...(packages ? { packages } : {}), agents };
 }
 
 /** The reconcile, every Worker in scope — the whole of `pithy upgrade` before #634. */
@@ -645,6 +658,9 @@ function sectionLines(section: TemplateSection, noted: boolean): string[] {
 export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
   const lines: string[] = [];
   if (run.packages) lines.push(...packageLines(run.packages, dryRun), ...templateLines(run.packages));
+  // Project-wide, so above the Workers like the manifest faults. Silent when the block was already current.
+  const agents = run.agents ? agentsLine(run.agents, dryRun) : null;
+  if (agents !== null) lines.push(agents);
   lines.push(...renderUpgrade(run));
   const cli = run.packages?.moves.find((move) => move.name === "@pithy-sh/cli");
   if (run.packages && !run.packages.reconciled && cli) {
@@ -659,7 +675,8 @@ export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
 
 /**
  * The `--json` line. `packages` rides only when `--packages` was passed: `formatJsonLine` drops an
- * `undefined`, so a run without the flag is the five-field line it always was.
+ * `undefined`, so a run without the flag carries no `packages` key at all. `agents` rides on every run but
+ * the one whose `--packages` moved `@pithy-sh/cli`, for the same reason.
  */
 export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): string {
   // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
@@ -683,6 +700,7 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): 
     workers,
     manifestFaults: run.manifestFaults,
     packages: run.packages,
+    agents: run.agents,
   });
 }
 
@@ -711,6 +729,9 @@ const UpgradePayload = z
       .looseObject({})
       .optional()
       .describe("What `--packages` moved and reinstalled. Present only when `--packages` was passed."),
+    agents: InstructionsFile.optional().describe(
+      "`AGENTS.md`, and what happened to the Pithy block in it. Absent only when `--packages` moved `@pithy-sh/cli` and the reconcile was left to the new one.",
+    ),
   })
   .describe("What `pithy upgrade` reconciled.");
 

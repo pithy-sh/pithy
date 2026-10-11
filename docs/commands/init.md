@@ -21,13 +21,15 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 ## What it does
 
-**Check the target first.** Before a single question is asked, so a doomed run fails fast instead of after you have answered. The check is collision, not emptiness: a directory holding only `.git`, a README, a license, or an editor config is not a project, and refusing it would mean `pithy init` could not scaffold into a repo you just cloned — which is how projects normally start. It refuses only if something `init` would write is already there. The two paths the scaffold *moves* rather than copies — `apps/api` and `apps/<worker>`, when `--worker` is not the default — are held to emptiness instead, because a rename is not a merge.
+**Check the target first.** Before a single question is asked, so a doomed run fails fast instead of after you have answered. The check is collision, not emptiness: a directory holding only `.git`, a README, a license, or an editor config is not a project, and refusing it would mean `pithy init` could not scaffold into a repo you just cloned — which is how projects normally start. It refuses only if something `init` would write is already there. An `AGENTS.md` or a `CLAUDE.md` is never a collision: both are merged into, below. The two paths the scaffold *moves* rather than copies — `apps/api` and `apps/<worker>`, when `--worker` is not the default — are held to emptiness instead, because a rename is not a merge.
 
 **Ask the names**, when a human is attached and a flag did not supply them. The project name comes with the reasoning printed above it, because both halves of it are hard to undo: the name leads every Cloudflare resource this project provisions, teardown recomputes those names rather than storing them, and the scope decision behind it — one project or two? — cannot be fixed by editing a string later. One project per set of apps that share users or data. Another app is another Worker, not another project. The first Worker is named too, because every Worker lives in `apps/<name>` and `api` is only a default.
 
 **Ask which environments this project deploys to.** `["staging", "prod"]` is offered as the default, so one keypress is the whole answer. It is asked here for the same reason the project name is: `<project>-<env>-<thing>` has a 33-character ceiling, `name` is capped at 26 against it, and the environment is the *other* segment of that budget — it sits in the middle of every Cloudflare name this project will compose. Like `name`, it is effectively permanent: renaming an environment does not rename anything provisioned under the old name, it orphans it. What you answer is written into each Worker's `env.<name>` stanzas, and — only when it differs from the default — into the root `pithy.config.ts` as `environments`. An answer the naming rule refuses is re-asked rather than accepted; `dev` is refused outright, because it is local, always present, and never deployed.
 
 **Write the scaffold.** The root `pithy.config.ts`, the root `package.json`, `biome.jsonc`, `.gitignore`, the `.dev.vars.example` and `.dev.secrets.example.jsonc` templates, the two Grit plugins, and the configs CI gates on — `tsconfig.json` (a solution file), `tsconfig.tools.json`, `vitest.config.ts`, and `vitest.workers.config.ts`. Then `apps/<worker>/` with its own `pithy.config.ts`, `wrangler.jsonc`, `pithy.worker.jsonc`, `tsconfig.json`, `package.json`, `src/index.ts`, `src/cloudflare-test.d.ts`, and a `src/bindings.workers.test.ts` that runs against real D1 and KV through Miniflare.
+
+**Write the agent instructions.** Straight after the scaffold, before any question that can be canceled, so a project never exists without them. `AGENTS.md` gets a marked Pithy block telling the agent working in this project how to drive the CLI: `pithy schema --json`, `PITHY_JSON=compact`, `PITHY_NONINTERACTIVE=1`, `--dry-run` before a change, the exit codes, and that `pithy remove` and every typed confirmation phrase are a person's. `CLAUDE.md` gets one line importing it — `Agent instructions for this project, Pithy's included: @AGENTS.md` — because Claude Code reads its own file and not the shared one. Either file is created when the target has none. When a cloned repository brought its own, every byte of it stays and the block, or the line, is appended after a blank line. A `CLAUDE.md` that already imports `@AGENTS.md`, or that is a link to `AGENTS.md`, is left alone. A symlinked file, or an `AGENTS.md` whose markers are already there and broken, is refused and said so, and the scaffold still completes. `pithy upgrade` refreshes the block from then on; `docs/CLI.md` §1.5 has the rules.
 
 **Record the Cloudflare credentials and discover the account.** This is the one moment you are holding the token, which is why it belongs here: listing zones two prompts later needs it, and so does every command after this. The token is written to `$PITHY_CONFIG_DIR/cloudflare.<name>.json` — `0600`, in a `0700` directory, **outside every checkout**. Nothing secret goes into the project. The account is discovered rather than asked for: the token lists the accounts it can see, one is a confirmation and several are a picker, and choosing the account is what supplies both its id and the nickname for its credentials file. A narrowly scoped token that cannot list falls back to asking for an account id, and `init` still completes. What lands in `pithy.config.ts` is at most a `cloudflare` block naming the account — its nickname, and, if you accept the offer, the account id as a pin. An account id is an identifier, not a secret, and pinning it is what stops another machine's nickname from meaning a different account.
 
@@ -47,7 +49,7 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null}
+{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 | key | type | meaning |
@@ -64,6 +66,14 @@ $ pithy init --name replay --worker board --json
 | `domains.prod` | object | Where the Worker answers in `prod`, if it has a domain yet |
 | `domains.prod.pattern` | string | The hostname, as above |
 | `domains.prod.zone` | string | The zone it sits under, as above |
+| `agents` | object | `AGENTS.md`, and what happened to the Pithy block in it |
+| `agents.path` | string | `"AGENTS.md"`, relative to the project root |
+| `agents.state` | `"added"` \| `"updated"` \| `"unchanged"` \| `"refused"` | `added` — the block was written, into a new file or after the text of one the repository brought. `updated` and `unchanged` — the repository already carried a Pithy block, and it was rewritten or was already current. `refused` — nothing was written, and `reason` says why |
+| `agents.reason` | string or `null` | Why it was refused, in one line that never quotes the file. `null` otherwise |
+| `claude` | object | `CLAUDE.md`, and whether it now imports `AGENTS.md` |
+| `claude.path` | string | `"CLAUDE.md"`, relative to the project root |
+| `claude.state` | `"added"` \| `"unchanged"` \| `"linked"` \| `"refused"` | `added` — the line was written, into a new file or after an existing one's text. `unchanged` — it already imported `@AGENTS.md`. `linked` — it is the same file as `AGENTS.md`, through a symlink either way. `refused` — not written, and `reason` says why |
+| `claude.reason` | string or `null` | Why it was refused. `null` otherwise |
 
 `domains` is reported with the shape it takes in `pithy.config.ts` so that a `--json` consumer and a hand-written config describe the same thing. Both environment keys are optional: a project with staging wired and production not is legitimate. `dev` is absent by design — local runs answer on `http://localhost:<port>` from the port pinned in `.dev.config.json`.
 
@@ -101,6 +111,8 @@ Shorten `name` in pithy.config.ts to 26 characters or fewer.
 
 **A name in the reserved test namespace.** Refused before anything is written — the debris reaper deletes on that prefix alone.
 
+**An `AGENTS.md` or `CLAUDE.md` that cannot be merged into** — a symlink, a file that will not open, or Pithy markers already there and broken — is not an error. The scaffold completes, the file is left as it was, and the run says so in one line (`AGENTS.md is a symlink. Not written.`) or as `refused` under `--json`.
+
 **A canceled prompt.** `Canceled.` on stderr, exit 130. Nothing proceeds on a value you did not choose.
 
 ## Examples
@@ -115,6 +127,8 @@ The name leads every Cloudflare resource this project provisions. Changing it la
 Project name: replay
 First worker (apps/<name>): board
 …
+AGENTS.md: Pithy block added.
+CLAUDE.md: points at AGENTS.md.
 Done.
 
 Want a shortcut? Type `p.` instead of `pithy`.
@@ -126,7 +140,7 @@ Scaffold headlessly. Both names given, so nothing is asked.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null}
+{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 Scaffold into a directory that does not exist yet. It is created.

@@ -110,7 +110,11 @@ describe("pithy init", () => {
       worker: "api",
       environments: ["staging", "prod"],
       domains: null,
+      // The agent instructions (#697): a cloned repo with neither file gets both.
+      agents: { path: "AGENTS.md", state: "added", reason: null },
+      claude: { path: "CLAUDE.md", state: "added", reason: null },
     });
+    expect(await readFile(join(target, "AGENTS.md"), "utf8")).toContain("<!-- pithy:begin");
 
     const pkg = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as { name: string };
     expect(pkg.name).toBe("smoke");

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { declineRefusal, type ReconcileApplied, type ReconcilePlan } from "../capabilities/reconcile";
 import { declaredSpecs } from "../kitPackages/ranges";
 import type { RegistryFetch } from "../kitPackages/registry";
+import { AGENTS_FILE, BLOCK_CLOSE, BLOCK_OPEN, renderAgentsBlock, syncAgentsBlock } from "../project/agentInstructions";
 import { scaffoldProject } from "../project/scaffold";
 import { doctorHarness } from "../test-utils/doctorHarness";
 import { fakeInstall, fakePackument, fakeRegistry } from "../test-utils/fakeInstall";
@@ -882,6 +883,9 @@ describe("runUpgrade --packages", () => {
     const installed = join(boardDir, "node_modules", "@pithy-sh", "ui-react", "templates", "src", "routes", "pithy");
     await mkdir(installed, { recursive: true });
     await writeFile(join(installed, "sign-in.tsx"), SIGN_IN_020);
+    // The block is current, so the report below is the package step's alone. The block's own lines are
+    // held in "runUpgrade — agent instructions".
+    await syncAgentsBlock(dir, { dryRun: false });
   });
 
   afterEach(async () => {
@@ -910,7 +914,7 @@ describe("runUpgrade --packages", () => {
     expect(run.packages).toBeUndefined();
     expect(upgradeText(run, false)).toEqual([...__test.renderUpgrade(run), "Done."]);
     const json = JSON.parse(upgradeJsonLine(run, "dev", false)) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults"]);
+    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "agents"]);
     await expectConforms("upgrade", upgradeJsonLine(run, "dev", false));
     expect(await readFile(join(dir, "package.json"), "utf8")).toContain('"@pithy-sh/auth": "^0.2.0"');
   });
@@ -1069,7 +1073,7 @@ describe("runUpgrade --packages", () => {
     expect(text).toContain("  Reconciled against the current install. The moves above are not installed.");
     expect(text.at(-1)).toBe("Dry run. Nothing written.");
     const json = JSON.parse(upgradeJsonLine(dry, "dev", true)) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "packages"]);
+    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "packages", "agents"]);
     await expectConforms("upgrade", upgradeJsonLine(dry, "dev", true));
   });
 
@@ -1126,6 +1130,8 @@ describe("runUpgrade --packages", () => {
     });
     expect(resolveWorkers).not.toHaveBeenCalled();
     expect(run.workers).toEqual([]);
+    // Nor does the old CLI write its own block: the new one, run next, writes its own.
+    expect(run.agents).toBeUndefined();
     expect(run.packages?.reconciled).toBe(false);
     expect(upgradeFailed(run)).toBe(false);
     expect(upgradeText(run, false).slice(-2)).toEqual([
@@ -1138,6 +1144,109 @@ describe("runUpgrade --packages", () => {
       reconciled: false,
       installed: true,
     });
+  });
+});
+
+/**
+ * **The Pithy block in `AGENTS.md`, refreshed by every upgrade (#697).** A project scaffolded before the
+ * block existed gets it; a stale one is rewritten in place, with every byte outside the markers as it was;
+ * a current one is not written. The merge itself is `project/agentInstructions.test.ts`'s; these hold
+ * `runUpgrade` to calling it, in the right tense, at the right moment, and never failing the run over it.
+ */
+describe("runUpgrade — agent instructions", () => {
+  let dir: string;
+  const agents = () => join(dir, AGENTS_FILE);
+  const ledger = async () => ({ state: "read" as const, pending: 0, undeclared: [] });
+  const workers = async (): Promise<UpgradeWorker[]> => [
+    { name: "api", dir: join(dir, "apps", "api"), capabilities: [] },
+  ];
+  const run = (dryRun: boolean, extra: { worker?: string } = {}) =>
+    runUpgrade({
+      account: null,
+      env: "dev",
+      migrate: false,
+      readLedger: ledger,
+      projectDir: dir,
+      dryRun,
+      resolveWorkers: workers,
+      ...extra,
+    });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-upgrade-agents-"));
+    // `scaffoldProject` writes no AGENTS.md — `init` does, after it — so this is a project from before #697.
+    await scaffoldProject({ targetDir: dir, appName: "agents-test" });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a project without the block gets it, says so above the Workers, and --json carries it", async () => {
+    const result = await run(false);
+    expect(result.agents).toEqual({ path: AGENTS_FILE, state: "added", reason: null });
+    expect(await readFile(agents(), "utf8")).toBe(`${renderAgentsBlock()}\n`);
+    const text = upgradeText(result, false);
+    expect(text[0]).toBe("AGENTS.md: Pithy block added.");
+    expect(text.indexOf("api:")).toBeGreaterThan(0);
+    expect(JSON.parse(upgradeJsonLine(result, "dev", false)).agents).toEqual(result.agents);
+    await expectConforms("upgrade", upgradeJsonLine(result, "dev", false));
+  });
+
+  test("a stale block is refreshed, and the text outside it is byte-identical", async () => {
+    const before = "# Our agents\n\nRun the tests first.\n\n";
+    const after = "\n## Release\n\nNever tag by hand.\n";
+    await writeFile(agents(), `${before}${BLOCK_OPEN}\nRun pithy catalog.\n${BLOCK_CLOSE}${after}`);
+    const result = await run(false);
+    expect(result.agents?.state).toBe("updated");
+    expect(upgradeText(result, false)[0]).toBe("AGENTS.md: Pithy block refreshed.");
+    expect(await readFile(agents(), "utf8")).toBe(`${before}${renderAgentsBlock()}${after}`);
+  });
+
+  test("a second run finds it current, writes nothing and says nothing about it", async () => {
+    await run(false);
+    const second = await run(false);
+    expect(second.agents?.state).toBe("unchanged");
+    expect(upgradeText(second, false).some((line) => line.startsWith("AGENTS.md"))).toBe(false);
+  });
+
+  test("a dry run says what it would do and writes nothing", async () => {
+    const result = await run(true);
+    expect(result.agents?.state).toBe("added");
+    expect(upgradeText(result, true)[0]).toBe("AGENTS.md: would add the Pithy block.");
+    await expect(readFile(agents(), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("--worker narrows the Workers, not the project: the block is still refreshed", async () => {
+    expect((await run(false, { worker: "api" })).agents?.state).toBe("added");
+  });
+
+  test("a refused AGENTS.md is reported and does not fail the run", async () => {
+    const document = `${BLOCK_OPEN}\nmine\n`;
+    await writeFile(agents(), document);
+    const result = await run(false);
+    expect(result.agents?.state).toBe("refused");
+    expect(upgradeText(result, false)[0]).toMatch(
+      /^AGENTS\.md has a pithy:begin marker without its pithy:end\..* Not written\.$/,
+    );
+    expect(upgradeFailed(result)).toBe(false);
+    expect(await readFile(agents(), "utf8")).toBe(document);
+  });
+
+  test("a run that cannot resolve its Workers writes no block — it may not be a project at all", async () => {
+    await expect(
+      runUpgrade({
+        account: null,
+        env: "dev",
+        migrate: false,
+        projectDir: dir,
+        dryRun: false,
+        resolveWorkers: async () => {
+          throw new ValidationError({ message: "No apps/ here." });
+        },
+      }),
+    ).rejects.toThrow("No apps/ here.");
+    await expect(readFile(agents(), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
