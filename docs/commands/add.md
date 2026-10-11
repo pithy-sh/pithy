@@ -42,11 +42,11 @@ Each one is a real `pithy add`: its package installed, its config and bindings w
 
 - **A terminal.** One question, for the whole cascade: `auth requires secrets, email. Compose them too?` A nested prerequisite is never asked about again — one intent, one question. Declining refuses the run.
 - **`--with-prerequisites`.** Composes them without asking. The deterministic answer, and the one to put in a script.
-- **Anything else** — `--json`, no TTY, an agent — is **refused**, exit 1, naming the exact commands in the order they must run. Nothing is wired: an install has happened, because that is how the manifest was readable, and the config is untouched.
+- **Anything else** — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no TTY, an agent — is **refused** `input/required` with `"flag": "--with-prerequisites"`, exit 1, naming the exact commands in the order they must run. Declining at the prompt is a different refusal, `validation/invalid_input`: somebody was asked and said no. Nothing is wired: an install has happened, because that is how the manifest was readable, and the config is untouched.
 
 ```
 $ pithy add auth --json
-{"error":{…,"message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
 ```
 
 Composing something nobody asked for is not a thing to do behind an adopter's back. Reporting `Done.` on a project that cannot boot is worse. A prompt where there is someone to ask and a flag where there is not is how the rest of this CLI settles that (§`--worker`, `pithy init`'s domains).
@@ -65,7 +65,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Scaffold the config options.** Values come from `--set` first, then from a prompt when a human is attached. An option whose default is an object or an array is left as the manifest scaffolds it — a secrets registry is not something anyone types at a prompt.
 
-**An option with no default is required.** That is the whole declaration: a capability that states a default has an answer the kit is willing to pick, and one that states none has an answer only you can give. A prompt asks it with nothing to accept by pressing enter, and a run with no human is refused unless it carries `--set key=value`. `payments.billingSubject` is the first — whether an entitlement is held by a person or a company, which lands in a column and a UNIQUE index — and nothing guesses it. An option that also states its choices is asked as a list, and `--set` refuses anything outside them.
+**An option with no default is required.** That is the whole declaration: a capability that states a default has an answer the kit is willing to pick, and one that states none has an answer only you can give. A prompt asks it with nothing to accept by pressing enter, and a run with no human is refused `input/required` unless it carries `--set key=value` — `"flag": "--set"`, with every `key=value` the first unanswered option takes in `choices`. `payments.billingSubject` is the first — whether an entitlement is held by a person or a company, which lands in a column and a UNIQUE index — and nothing guesses it. An option that also states its choices is asked as a list, and `--set` refuses anything outside them.
 
 **Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present. That install is named as it starts, the same way.
 
@@ -77,7 +77,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **The project needs a `name`.** It leads every resource name `add` proposes, and it claims the database the closing dev migration writes to. A project without one is told to set it before anything is installed, rather than left half-configured around an unowned database.
 
-**Which Worker.** `--worker` names it. A single-Worker project needs no ceremony. A project with several never guesses: it prompts a human, and raises an actionable error for anyone else — an agent driving `--json` is told what to pass rather than hanging on a question it cannot answer.
+**Which Worker.** `--worker` names it. A single-Worker project needs no ceremony. A project with several never guesses: it prompts a human, and fails `input/required` for anyone else, naming `--worker` and every Worker in `choices` — an agent driving `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` is told what to pass rather than hanging on a question it cannot answer.
 
 Idempotent. A second `pithy add auth` changes nothing. Adding the same capability to a second Worker reuses the installed package and writes only that Worker's config and bindings.
 
@@ -159,7 +159,7 @@ Run pithy add --list to see what's available.
 
 ```
 $ pithy add audit --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"This project has several workers, so which one to wire is ambiguous.","action":"Pass --worker <name>. Known: relay-deck, relay-tally."}}
+{"error":{"code":"input/required","status":400,"flag":"--worker","choices":["relay-deck","relay-tally"],"message":"This project has several workers, so which one to wire is ambiguous.","action":"Pass --worker <name>. Known: relay-deck, relay-tally."}}
 ```
 
 **A `--worker` that names nothing.**
@@ -198,7 +198,7 @@ Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 
 ```
 $ pithy add payments --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
+{"error":{"code":"input/required","status":400,"flag":"--set","choices":["billingSubject=user","billingSubject=organization"],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
 ```
 
 **A choice whose other half is code.** Some values compose only alongside a function — `pithy add` renders JSON into `pithy.config.ts`, not behavior. Where the kit knows what that function's file looks like, it writes one: the choice is taken, a seam module is scaffolded beside it, and the Worker refuses to boot until you have finished the module.
@@ -231,7 +231,7 @@ Pass one of: user, organization.
 
 ```
 $ pithy add auth --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
 ```
 
 **A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with `Run pithy add <name> to install it.`

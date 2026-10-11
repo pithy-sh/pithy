@@ -85,6 +85,28 @@ const InvalidInputPublic = z
   })
   .describe("Input failed validation at a boundary (400).");
 
+const InputRequiredPublic = z
+  .object({
+    code: z
+      .literal("input/required")
+      .describe(
+        "A run that may not prompt reached a question with no answer. `PITHY_NONINTERACTIVE=1`, `--no-input` and `--json` each forbid a prompt; this is what one turns into, so an agent is told what to pass rather than left waiting on a question nobody will answer.",
+      ),
+    status: z.literal(400).describe("Bad Request — the call left out something it has to say."),
+    flag: z
+      .string()
+      .nullable()
+      .describe(
+        "The flag that answers the question, as it is typed (`--worker`). `null` when no flag can: only a person, or a document piped to stdin, answers it.",
+      ),
+    choices: z
+      .array(z.string().describe("One value the flag takes."))
+      .optional()
+      .describe("Every value the flag takes, when the set is known. Absent when it is open, such as a name."),
+    ...publicFields,
+  })
+  .describe("A run that may not prompt needed an answer it was not given (400).");
+
 const InvalidTokenPublic = z
   .object({
     code: z.literal("auth/invalid_token").describe("The bearer/session credential is missing, expired, or invalid."),
@@ -1555,6 +1577,7 @@ const TestersNotConfiguredPublic = z
 export const KitPublicErrorPayload = z
   .discriminatedUnion("code", [
     InvalidInputPublic,
+    InputRequiredPublic,
     InvalidTokenPublic,
     ForbiddenPublic,
     AuthProviderUnavailablePublic,
@@ -1690,6 +1713,7 @@ export const KitPublicErrorPayload = z
 // The full members: each public member plus the operator-only `action` and `detail`. Built as explicit consts
 // (not mapped) so the `code`-literal discriminated-union types survive for `Extract` narrowing.
 const InvalidInput = InvalidInputPublic.extend(internalFields).describe(InvalidInputPublic.description ?? "");
+const InputRequired = InputRequiredPublic.extend(internalFields).describe(InputRequiredPublic.description ?? "");
 const InvalidToken = InvalidTokenPublic.extend(internalFields).describe(InvalidTokenPublic.description ?? "");
 const Forbidden = ForbiddenPublic.extend(internalFields).describe(ForbiddenPublic.description ?? "");
 const AuthProviderUnavailable = AuthProviderUnavailablePublic.extend(internalFields).describe(
@@ -2053,6 +2077,7 @@ const SupportReplyFailed = SupportReplyFailedPublic.extend(internalFields).descr
 export const KitErrorPayload = z
   .discriminatedUnion("code", [
     InvalidInput,
+    InputRequired,
     InvalidToken,
     Forbidden,
     AuthProviderUnavailable,

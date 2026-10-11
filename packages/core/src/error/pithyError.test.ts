@@ -8,6 +8,7 @@ import {
   ConflictError,
   ForbiddenError,
   fromZodError,
+  InputRequiredError,
   InternalError,
   NotFoundError,
   PithyError,
@@ -51,6 +52,7 @@ describe("subclasses (sugar over the same payload)", () => {
     { Cls: InternalError, code: "core/internal", status: 500 },
     { Cls: UpstreamError, code: "core/upstream_failed", status: 502 },
     { Cls: UpstreamTimeoutError, code: "core/upstream_timeout", status: 504 },
+    { Cls: InputRequiredError, code: "input/required", status: 400 },
   ] as const;
 
   test("every subclass is both a PithyError and its own type, with matching code/status", () => {
@@ -85,6 +87,19 @@ describe("subclasses (sugar over the same payload)", () => {
     const err = new UpstreamError({ detail: "GET https://customer.example/admin/users → 503" });
     expect(err.payload.status).toBe(502);
     expect(err.payload.message).not.toContain("customer.example");
+  });
+
+  test("InputRequiredError carries the flag that answers it and its choices", () => {
+    const err = new InputRequiredError({ flag: "--worker", choices: ["api", "admin"], action: "Pass --worker." });
+    expect(err.payload.flag).toBe("--worker");
+    expect(err.payload.choices).toEqual(["api", "admin"]);
+    expect(err.payload.action).toBe("Pass --worker.");
+  });
+
+  test("InputRequiredError with no flag says so with null, and leaves `choices` off", () => {
+    const err = new InputRequiredError();
+    expect(err.payload.flag).toBeNull();
+    expect("choices" in err.payload).toBe(false);
   });
 
   test("ValidationError narrows to carry issues", () => {

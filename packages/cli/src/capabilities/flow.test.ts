@@ -654,6 +654,10 @@ describe("runAdd prerequisites", () => {
     // The action, not just the message: the commands and their order are the part an adopter acts on,
     // and `pithy add email` before `pithy add secrets` reproduces the defect one capability along.
     expect((error as PithyError).payload).toMatchObject({
+      // Nobody could be asked, so the answer is missing rather than wrong (#697): `input/required`,
+      // naming the flag that gives it.
+      code: "input/required",
+      flag: "--with-prerequisites",
       message: `auth requires secrets and email, which ${DEFAULT_WORKER} does not compose.`,
       action:
         "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
@@ -687,9 +691,13 @@ describe("runAdd prerequisites", () => {
   });
 
   test("declining is a refusal, not a partial add", async () => {
-    await expect(runAdd({ ...base(), askPrerequisites: async () => false })).rejects.toThrow(
-      "auth requires secrets and email",
-    );
+    const error = await runAdd({ ...base(), askPrerequisites: async () => false }).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(PithyError);
+    // Asked and declined is an answer, refused as one — not a question this run could not ask.
+    const payload = (error as PithyError).payload as unknown as Record<string, unknown>;
+    expect(payload.code).toBe("validation/invalid_input");
+    expect(payload).not.toHaveProperty("flag");
+    expect(payload.message).toContain("auth requires secrets and email");
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     for (const capability of ["secrets", "email", "auth"]) {
       expect(config).not.toMatch(new RegExp(`^\\s*${capability}\\(`, "m"));

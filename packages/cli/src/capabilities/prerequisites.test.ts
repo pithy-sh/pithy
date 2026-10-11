@@ -3,7 +3,13 @@
 
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, test } from "vitest";
-import { isRegistered, missingPrerequisites, prerequisiteClosure, prerequisiteRefusal } from "./prerequisites";
+import {
+  isRegistered,
+  missingPrerequisites,
+  prerequisiteClosure,
+  prerequisiteRefusal,
+  prerequisiteRequired,
+} from "./prerequisites";
 
 /** The real graph, in miniature: auth ⇒ secrets + email, email ⇒ secrets, secrets ⇒ nothing. */
 const MANIFESTS = [
@@ -111,6 +117,30 @@ describe("prerequisiteRefusal", () => {
     expect(error.payload.message).toBe("email requires secrets, which board does not compose.");
     expect(error.payload.action).toBe(
       "Run pithy add email --with-prerequisites, or compose it first: pithy add secrets.",
+    );
+  });
+});
+
+/**
+ * A run that could not ask is told it needs `--with-prerequisites`, as `input/required` (#697). A person
+ * who was asked and said no gets {@link prerequisiteRefusal}: that is an answer, not a missing one.
+ */
+describe("prerequisiteRequired", () => {
+  test("is input/required naming --with-prerequisites, with the refusal's own words", () => {
+    const options = { capability: "auth", worker: "board", missing: ["secrets", "email"] };
+    const required = prerequisiteRequired(options);
+    const refused = prerequisiteRefusal(options);
+    expect(required.payload.code).toBe("input/required");
+    if (required.payload.code !== "input/required") throw new Error("narrowing failed");
+    expect(required.payload.flag).toBe("--with-prerequisites");
+    expect(required.payload.choices).toBeUndefined();
+    expect(required.payload.message).toBe(refused.payload.message);
+    expect(required.payload.action).toBe(refused.payload.action);
+  });
+
+  test("a no is still a validation refusal, because somebody answered", () => {
+    expect(prerequisiteRefusal({ capability: "email", worker: "board", missing: ["secrets"] }).payload.code).toBe(
+      "validation/invalid_input",
     );
   });
 });

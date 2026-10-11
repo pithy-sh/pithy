@@ -37,7 +37,7 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, or without a TTY.** Not the names, not the environments, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 

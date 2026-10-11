@@ -29,6 +29,7 @@ function payloadOf(member: (typeof KitErrorPayload.options)[number]): ErrorPaylo
     detail: THROW_SITE_CONTEXT,
   };
   if ("issues" in member.shape) instance.issues = [];
+  if ("flag" in member.shape) instance.flag = null;
   return ErrorPayload.parse(instance);
 }
 

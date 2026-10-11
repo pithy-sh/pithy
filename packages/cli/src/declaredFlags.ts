@@ -6,7 +6,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { HIDDEN_ROOT_FLAGS } from "./commands/alias";
 import { findSubCommand, type SubCommand } from "./dispatch";
-import { malformedPrettyFlag, ROOT_FLAGS, wantsPretty } from "./rootFlags";
+import { malformedNoInputFlag, malformedPrettyFlag, ROOT_FLAGS, wantsPretty } from "./rootFlags";
 
 /**
  * **Every flag an invocation carries is a flag its command declares.** (#594)
@@ -308,5 +308,22 @@ export function refusePrettyFlags(argv: readonly string[]): void {
     message: `${flag} needs --json. It formats that line and nothing else.`,
     action: `Add --json, or drop ${flag}.`,
     issues: [{ path: [flag], code: "unrecognized_keys", message: `${flag} is only read alongside --json.` }],
+  });
+}
+
+/**
+ * Refuse a `--no-input` carrying a value it cannot mean (#697). `--no-input=1` quietly read as "not
+ * typed" would leave a prompt open for the agent that typed it to stop one.
+ *
+ * Unlike `--pretty`, it needs no `--json`: forbidding prompts is a statement about the run, not about
+ * a format. Here beside {@link refusePrettyFlags} for the same dependency direction.
+ */
+export function refuseNoInputFlag(argv: readonly string[]): void {
+  const malformed = malformedNoInputFlag(argv);
+  if (malformed === undefined) return;
+  throw new ValidationError({
+    message: `${malformed} is not a value --no-input takes.`,
+    action: "Write --no-input on its own, or --no-input=true or --no-input=false.",
+    issues: [{ path: ["--no-input"], code: "invalid_value", message: "--no-input takes true or false." }],
   });
 }

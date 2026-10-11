@@ -15,6 +15,7 @@ import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
 import { workerIdentity } from "../project/workerIdentity";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { targetWorker } from "./add";
@@ -38,7 +39,7 @@ const add = defineCommand({
         projectDir,
         account: await projectCloudflareAccount(projectDir),
         workerName: report.worker,
-        interactive: !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
+        interactive: mayPrompt(args.json),
       });
       // A declaration the writer could not place must not vanish. `writeDomains` still generates the
       // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
@@ -225,7 +226,7 @@ const sync = defineCommand({
       // First, before any config is loaded: an illegal environment must cost nothing.
       const env = args.env === undefined ? undefined : requireEnvironment(args.env);
       const projectDir = process.cwd();
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
       // Composed for `--env` when one is named. Without it every environment is reconciled from the
       // composition for dev: a `domains` or `app` declaration that differs by environment is written from
       // dev's value into every stanza. That is this command's limit, not a composition for none.

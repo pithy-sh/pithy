@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
 
 /**
@@ -150,9 +150,11 @@ export async function assertResetConfirmed(options: ConfirmResetOptions): Promis
     });
   }
 
-  throw new ValidationError({
+  // Nobody could be asked (#697): `input/required`, naming the flag that carries the phrase.
+  throw new InputRequiredError({
     message: `Resetting ${options.env} destroys all of its data.`,
     action: `Pass --confirm-reset "${expected}" to drop and recreate the ${options.env} schema.`,
+    flag: "--confirm-reset",
   });
 }
 
@@ -192,9 +194,10 @@ export async function assertSeedConfirmed(options: ConfirmSeedOptions): Promise<
 
   // No flag: only an interactive prompt can unlock production. `--json` (or a missing prompt) forbids it.
   if (options.json || !options.prompt) {
-    throw new ValidationError({
+    throw new InputRequiredError({
       message: "Seeding production needs an explicit confirmation phrase.",
       action: `Pass --confirm-production "${PRODUCTION_CONFIRM_PHRASE}" to seed production.`,
+      flag: "--confirm-production",
     });
   }
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import {
   clientById,
@@ -24,6 +24,7 @@ import {
   status,
   targetFor,
 } from "../mcp/connect";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -79,11 +80,6 @@ const GENERIC_SNIPPET = `{
 }
 `;
 
-/** Whether a human is attached — the only condition under which this command prompts for anything. */
-function interactive(json: boolean): boolean {
-  return !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-}
-
 /** Write one line to stdout. */
 function emit(line: string): void {
   process.stdout.write(`${line}\n`);
@@ -113,11 +109,21 @@ function requireScope(value: string): Scope {
   return scope;
 }
 
-/** The refusal an unattended run gets when it named no scope. */
-function scopeRequired(): ValidationError {
-  return new ValidationError({
+/**
+ * The `--scope` gate both subcommands run before they touch anything: a named scope needs no question, and
+ * with none a run that may not ask fails {@link scopeRequired}. One that may ask goes on to be asked.
+ */
+export function requireScopeAnswerable(flagged: Scope | undefined, json: boolean): void {
+  if (flagged === undefined && !mayPrompt(json)) throw scopeRequired();
+}
+
+/** The refusal an unattended run gets when it named no scope: `input/required`, naming the flag (#697). */
+function scopeRequired(): InputRequiredError {
+  return new InputRequiredError({
     message: "--scope is required when nothing can be asked.",
     action: "Pass --scope project to commit it for the team, or --scope user for yourself.",
+    flag: "--scope",
+    choices: SCOPES,
   });
 }
 
@@ -174,10 +180,12 @@ async function resolveClients(
     });
   }
   if (args.client !== undefined) return [requireClient(args.client)];
-  if (!args.all && !interactive(json)) {
-    throw new ValidationError({
+  if (!args.all && !mayPrompt(json)) {
+    throw new InputRequiredError({
       message: "Name what to connect.",
       action: "Pass --client <id> for one, or --all for every client detected here.",
+      flag: "--client",
+      choices: MCP_CLIENTS.map((client) => client.id),
     });
   }
   return detectedClients(options);
@@ -309,7 +317,7 @@ const connectCommand = defineCommand({
       // machine with no clients as on one with ten. A CI step that passes only because nothing happened
       // to be installed is a CI step that will fail on somebody's laptop.
       const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
-      if (flagged === undefined && !interactive(args.json)) throw scopeRequired();
+      requireScopeAnswerable(flagged, args.json);
 
       if (chosen.length === 0) {
         if (args.json) {
@@ -349,7 +357,7 @@ const disconnectCommand = defineCommand({
       const options = optionsOf();
       const chosen = await resolveClients(args, args.json, options);
       const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
-      if (flagged === undefined && !interactive(args.json)) throw scopeRequired();
+      requireScopeAnswerable(flagged, args.json);
       const asked = chosen.length === 0 ? "user" : (flagged ?? (await askScopeOrExit()));
 
       const disconnected: DisconnectResult[] = [];

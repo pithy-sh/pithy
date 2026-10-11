@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assembleSecretValue,
   fieldKey,
@@ -88,7 +88,7 @@ export interface ReadSecretValueOptions {
   /** Whether an update is being written — an update replaces the whole secret, which the operator is told. */
   mode: "create" | "update";
   /**
-   * **May interactive UI be rendered?** `!--json && process.stdout.isTTY`, and nothing about stdin: a
+   * **May interactive UI be rendered?** `mayDraw` (`terminal/inputMode.ts`), and nothing about stdin: a
    * prompt is drawn on stdout, and `--json` promises a caller one parseable line. It is never *is there
    * a document* — that is {@link stdin}'s `isTTY`, and conflating the two is what made a redirected
    * stdout read a credential off the operator's terminal in silence.
@@ -141,10 +141,12 @@ function documentIsPiped(stdin: SecretValueStdin): boolean {
  * given, and a remedy that drops one an operator typed is worse than one that shows the shape.
  */
 function refuseWithNoWayToAsk(options: ReadSecretValueOptions): never {
-  throw new ValidationError({
-    message: `No value was piped for '${options.name}', and this run cannot prompt for one — stdout is not a terminal, or --json was passed.`,
+  throw new InputRequiredError({
+    message: `No value was piped for '${options.name}', and this run cannot prompt for one — stdout is not a terminal, --json was passed, or prompts are forbidden.`,
     action: `Pipe the value in: printf '%s' "$VALUE" | pithy secrets ${options.mode} ${options.name}`,
-    detail: `readSecretValue('${options.name}'): stdin is a TTY and canPrompt is false (--json, or stdout is not a terminal)`,
+    detail: `readSecretValue('${options.name}'): stdin is a TTY and canPrompt is false (--json, --no-input, PITHY_NONINTERACTIVE, or stdout is not a terminal)`,
+    // No flag carries a secret: a value on the command line lands in shell history and `ps`.
+    flag: null,
   });
 }
 

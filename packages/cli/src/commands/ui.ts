@@ -5,6 +5,7 @@ import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { workerIdentity } from "../project/workerIdentity";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
@@ -63,7 +64,7 @@ const add = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
       // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
       // from. Each environment's route allowlist is composed for that environment by the flow itself.
       const target = await targetWorker(LOCAL_ENVIRONMENT, {
@@ -149,7 +150,7 @@ const sync = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
       // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
       // from. Each environment's route allowlist is composed for that environment by the flow itself.
       const target = await targetWorker(LOCAL_ENVIRONMENT, {

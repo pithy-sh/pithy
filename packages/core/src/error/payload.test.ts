@@ -91,6 +91,55 @@ describe("ErrorPayload (the kit taxonomy)", () => {
   });
 });
 
+describe("input required (a run that may not ask)", () => {
+  test("`input/required` names the flag that answers it, and every value that flag takes", () => {
+    const parsed = ErrorPayload.parse({
+      code: "input/required",
+      status: 400,
+      message: "Which worker? This run may not ask.",
+      flag: "--worker",
+      choices: ["api", "admin"],
+    });
+    if (parsed.code !== "input/required") throw new Error("narrowing failed");
+    expect(parsed.flag).toBe("--worker");
+    expect(parsed.choices).toEqual(["api", "admin"]);
+  });
+
+  test("`flag` is null when only a person or a piped document can answer, and `choices` may be absent", () => {
+    const parsed = ErrorPayload.parse({ code: "input/required", status: 400, message: "m", flag: null });
+    if (parsed.code !== "input/required") throw new Error("narrowing failed");
+    expect(parsed.flag).toBeNull();
+    expect(parsed.choices).toBeUndefined();
+  });
+
+  test("`flag` and `choices` cross to the operator's `--json` line, because they are public fields", () => {
+    const wire = PublicErrorPayload.parse({
+      code: "input/required",
+      status: 400,
+      message: "m",
+      flag: "--scope",
+      choices: ["project", "user"],
+      action: "Pass --scope.",
+      detail: "internal",
+    });
+    expect(wire).toEqual({
+      code: "input/required",
+      status: 400,
+      message: "m",
+      flag: "--scope",
+      choices: ["project", "user"],
+    });
+  });
+
+  test("a payload that omits `flag` is refused — saying nothing is not the same as saying no flag exists", () => {
+    expect(() => ErrorPayload.parse({ code: "input/required", status: 400, message: "m" })).toThrow();
+  });
+
+  test("it is a 400 and nothing else", () => {
+    expect(() => KitErrorPayload.parse({ code: "input/required", status: 409, message: "m", flag: null })).toThrow();
+  });
+});
+
 describe("upstream failure (a dependency we do not control)", () => {
   test("`core/upstream_failed` is a 502 — the dependency answered, and unusably", () => {
     const parsed = ErrorPayload.parse({
@@ -244,7 +293,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 130;
+const KIT_ERROR_CODE_COUNT = 131;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

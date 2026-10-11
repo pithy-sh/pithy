@@ -80,7 +80,15 @@ $ pithy remove auth --drop --env production
 Use `prod`.
 ```
 
-**Several Workers, none named.** With a TTY the command prompts; without one it raises the same resolution error `pithy add` does.
+**`--drop` where nobody may be asked.** No terminal, `--no-input`, or `PITHY_NONINTERACTIVE=1`. There is no flag that answers a drop for you, so the run stops before anything is read. Exit 1.
+
+```
+$ pithy remove auth --drop --no-input
+Dropping auth's tables needs a person to confirm it.
+Run pithy remove auth --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.
+```
+
+**Several Workers, none named.** With a TTY the command prompts; without one, or under `--no-input` or `PITHY_NONINTERACTIVE=1`, it raises the same `input/required` refusal `pithy add` does.
 
 ```
 This project has several workers, so which one to wire is ambiguous.

@@ -41,6 +41,7 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 export const esErrors: MessageCatalog = {
   // Core: the codes every capability throws, and the ones a caller meets most.
   "validation/invalid_input": "Los datos enviados no son válidos.",
+  "input/required": "Falta una respuesta obligatoria y no se puede preguntar por ella.",
   "auth/invalid_token": "Tu sesión no es válida o ha caducado. Vuelve a iniciar sesión.",
   "auth/forbidden": "No tienes permiso para hacer esto.",
   "auth/provider_unavailable": "Este método de acceso no está disponible ahora. Prueba con otro.",

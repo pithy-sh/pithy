@@ -7,7 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createCliAudit } from "../audit/cliAudit";
@@ -37,6 +37,7 @@ import { loadProject, projectCloudflareAccount, requireProjectName } from "../pr
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities } from "../project/workerScope";
 import { isProductionEnv } from "../seed/safety";
+import { mayPrompt, mayReadKeys } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -244,9 +245,9 @@ export function formatStatusReport(report: StatusReport, options: { json: boolea
   return `${parts.join("\n")}\n`;
 }
 
-/** True only at a real terminal without `--json` — the one condition a prompt is answerable. */
+/** True only when this run may prompt (`terminal/inputMode.ts`) — the one condition a prompt is answerable. */
 function isInteractive(json: boolean): boolean {
-  return !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  return mayPrompt(json);
 }
 
 /** The streams {@link offerIsAnswerable} reads. Injectable, because a test cannot redirect this process's. */
@@ -268,7 +269,7 @@ export interface OfferStreams {
  * costs something — `2> log` would have stated a key nobody could see while raw mode was on.
  */
 export function offerIsAnswerable(json: boolean, streams: OfferStreams): boolean {
-  return !json && Boolean(streams.stdin.isTTY) && Boolean(streams.stderr.isTTY);
+  return mayReadKeys(json, streams);
 }
 
 /** The two flags an announcement reads: whether output is machine-readable, and whether opening is wanted. */
@@ -486,7 +487,6 @@ export async function promptScopes(
   return answer as ControlPlaneScope[];
 }
 
-/** Confirm a revocation at a terminal. `--yes` skips it, which is how CI runs the same command. */
 /** What `revoke-key` did — enough for `--json` to be actionable without a second call. */
 export interface RevokeKeyReport {
   environment: string;
@@ -514,18 +514,64 @@ export function formatRevokeKeyReport(report: RevokeKeyReport, options: { json: 
   return `Revoked ${report.keyId} on ${report.environment}.\n${stranded}${formatDone()}\n`;
 }
 
+/** What {@link confirmOrRefuse} asks, and how it answers when it cannot ask. */
+export interface ConfirmOrRefuseOptions {
+  /** The question, which is also the refusal's problem line when nobody can be asked. */
+  message: string;
+  /** How to answer it without a prompt. Names `--yes`. */
+  action: string;
+  /** Whether the command answers `--json`. */
+  json: boolean;
+  /** `--yes`: the confirmation is already answered. */
+  yes: boolean;
+  /** Ask the person. Ends the run on a no. */
+  ask: () => Promise<void>;
+}
+
+/**
+ * Confirm a destructive step: `--yes` answers it, a person at a terminal is asked, and anything else fails
+ * `input/required`, naming `--yes` (#697).
+ *
+ * **A run that cannot ask is refused, never taken as yes.** The confirmation's own default is no
+ * (`initialValue: false`), so there is no default for a non-interactive run to take. These two used to
+ * proceed in silence whenever no terminal was attached — which made `PITHY_NONINTERACTIVE=1`, the switch
+ * that means *do not ask me*, quietly mean *yes*. CI already passes `--yes`; that is what the flag is for.
+ */
+export async function confirmOrRefuse(options: ConfirmOrRefuseOptions): Promise<void> {
+  if (options.yes) return;
+  if (!isInteractive(options.json)) {
+    throw new InputRequiredError({ message: options.message, action: options.action, flag: "--yes" });
+  }
+  await options.ask();
+}
+
+/** The confirmation `revoke-key` asks, and the refusal it gives when it cannot. */
+function revokeKeyQuestion(keyId: string, env: string): Pick<ConfirmOrRefuseOptions, "message" | "action"> {
+  return { message: `Revoke key ${keyId} on ${env}?`, action: "Pass --yes to revoke it without asking." };
+}
+
+/** The confirmation `disconnect` asks, and the refusal it gives when it cannot. */
+function disconnectQuestion(env: string): Pick<ConfirmOrRefuseOptions, "message" | "action"> {
+  return {
+    message: `Disconnect the management client from ${env}?`,
+    action: "Pass --yes to disconnect it without asking.",
+  };
+}
+
+/** Confirm a revocation at a terminal. `--yes` skips it, which is how CI runs the same command. */
 async function confirmRevokeKey(keyId: string, env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
-  const answer = await confirm({ message: `Revoke key ${keyId} on ${env}?`, initialValue: false });
+  const answer = await confirm({ message: revokeKeyQuestion(keyId, env).message, initialValue: false });
   if (isCancel(answer) || answer !== true) {
     process.stderr.write("Canceled.\n");
     process.exit(1);
   }
 }
 
+/** Confirm a disconnect at a terminal. `--yes` skips it, which is how CI runs the same command. */
 async function confirmDisconnect(env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
-  const answer = await confirm({ message: `Disconnect the management client from ${env}?`, initialValue: false });
+  const answer = await confirm({ message: disconnectQuestion(env).message, initialValue: false });
   if (isCancel(answer) || answer !== true) {
     process.stderr.write("Canceled.\n");
     process.exit(1);
@@ -712,7 +758,12 @@ const disconnect = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      if (isInteractive(args.json) && !args.yes) await confirmDisconnect(args.env);
+      await confirmOrRefuse({
+        ...disconnectQuestion(args.env),
+        json: args.json,
+        yes: args.yes,
+        ask: () => confirmDisconnect(args.env),
+      });
 
       const report = await withRegistry(args, async (registry) =>
         disconnectDashboard({
@@ -746,7 +797,12 @@ const revokeKey = defineCommand({
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      if (isInteractive(args.json) && !args.yes) await confirmRevokeKey(args["key-id"], args.env);
+      await confirmOrRefuse({
+        ...revokeKeyQuestion(args["key-id"], args.env),
+        json: args.json,
+        yes: args.yes,
+        ask: () => confirmRevokeKey(args["key-id"], args.env),
+      });
 
       const report = await withRegistry(args, async (registry) => {
         const updated = await registry.revokeKey(args["key-id"], new Date());

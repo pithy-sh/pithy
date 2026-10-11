@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "./config";
 import {
@@ -219,9 +219,13 @@ describe("resolveSingleWorker", () => {
       loadConfig: configs({ "/proj/apps/api": API, "/proj/apps/collab": COLLAB }),
     }).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(ValidationError);
-    // The action line tells an agent exactly what to pass, and which names are valid.
-    expect((error as ValidationError).payload.action).toMatch(/--worker <name>.*api, collab/s);
+    expect(error).toBeInstanceOf(InputRequiredError);
+    // The action line tells an agent exactly what to pass, and which names are valid — and so does the
+    // payload, as data: `input/required` names the flag and its choices (#697).
+    const payload = (error as InputRequiredError).payload;
+    expect(payload.action).toMatch(/--worker <name>.*api, collab/s);
+    expect(payload.flag).toBe("--worker");
+    expect(payload.choices).toEqual(["api", "collab"]);
   });
 
   test("--worker loads that worker's config and no other", async () => {

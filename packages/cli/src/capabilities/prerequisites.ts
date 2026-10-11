@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 
 /**
@@ -145,8 +145,23 @@ export interface PrerequisiteRefusalOptions {
   missing: readonly string[];
 }
 
+/** The two lines both refusals say: what is missing, and the commands that compose it, in order. */
+function prerequisiteLines(options: PrerequisiteRefusalOptions): { message: string; action: string; detail: string } {
+  const { capability, worker, missing } = options;
+  const commands = missing.map((name) => `pithy add ${name}`);
+  const sequence =
+    commands.length > 1
+      ? `${commands.slice(0, -1).join(", ")}, then ${commands[commands.length - 1]}`
+      : commands.join("");
+  return {
+    message: `${capability} requires ${andList(missing)}, which ${worker} does not compose.`,
+    action: `Run pithy add ${capability} --with-prerequisites, or compose ${missing.length === 1 ? "it" : "them"} first: ${sequence}.`,
+    detail: `${capability}'s manifest declares peerCapabilities ${JSON.stringify(missing)}; createBackend refuses to assemble without them.`,
+  };
+}
+
 /**
- * The refusal a run that cannot ask takes.
+ * The refusal a person who was asked, and declined, takes.
  *
  * **It names the commands, in dependency order.** A refusal that says only "auth requires secrets" makes
  * the adopter guess the order, and guessing wrong reproduces the defect one capability along. The flag
@@ -154,15 +169,14 @@ export interface PrerequisiteRefusalOptions {
  * decide each one, which is the honest half of composing something nobody asked for.
  */
 export function prerequisiteRefusal(options: PrerequisiteRefusalOptions): ValidationError {
-  const { capability, worker, missing } = options;
-  const commands = missing.map((name) => `pithy add ${name}`);
-  const sequence =
-    commands.length > 1
-      ? `${commands.slice(0, -1).join(", ")}, then ${commands[commands.length - 1]}`
-      : commands.join("");
-  return new ValidationError({
-    message: `${capability} requires ${andList(missing)}, which ${worker} does not compose.`,
-    action: `Run pithy add ${capability} --with-prerequisites, or compose ${missing.length === 1 ? "it" : "them"} first: ${sequence}.`,
-    detail: `${capability}'s manifest declares peerCapabilities ${JSON.stringify(missing)}; createBackend refuses to assemble without them.`,
-  });
+  return new ValidationError(prerequisiteLines(options));
+}
+
+/**
+ * The same words for a run that could not ask: `input/required`, naming `--with-prerequisites` (#697).
+ * Kept apart from {@link prerequisiteRefusal} because "nobody was asked" and "somebody said no" are
+ * different facts, and an agent reading the code should be able to tell which one it got.
+ */
+export function prerequisiteRequired(options: PrerequisiteRefusalOptions): InputRequiredError {
+  return new InputRequiredError({ ...prerequisiteLines(options), flag: "--with-prerequisites" });
 }

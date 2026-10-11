@@ -35,11 +35,11 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--key-id <id>` | `connect` | the JWK's `kid` | With `--public-key`: the key id, if the JWK carries none. Rejected off that path |
 | `--key-id <id>` | `revoke-key` | required | The key to revoke, as `status` reports it |
 | `--project <name>` | `connect` | `pithy.config.ts`'s `name` | Override the project name sent to the management client |
-| `--yes` | `revoke-key`, `disconnect` | `false` | Skip the confirmation. How CI runs the same command |
+| `--yes` | `revoke-key`, `disconnect` | `false` | Answer the confirmation. How CI runs the same command, and required wherever nothing can be asked: without it, `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1` or a run with no terminal fails `input/required` rather than going ahead |
 | `--local` | `disconnect` | `false` | Delete the row without telling the management client |
 | `--verify` | `status` | `false` | Prove the connection with a signed ping |
 | `--no-open` | all five, acting on the four that sign in | offers | Never offer to open the approval page. `PITHY_NO_OPEN`, at any value, does the same |
-| `--json` | all five | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown |
+| `--json` | all five | `false` | One line of machine-readable output. Implies non-interactive: no prompt is ever shown. `--no-input` and `PITHY_NONINTERACTIVE=1` do the same without `--json`, and the `o` key is not offered |
 
 Every subcommand writes its machine output to stdout and its diagnostics — the device code, the waiting line — to stderr, so a `--json` consumer parses one clean line.
 
@@ -228,6 +228,13 @@ Each one is a `PithyError` — the problem, then the action. Under `--json` they
 ```
 No worker resolves the DB binding for this environment.
 Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.
+```
+
+**A confirmation nobody could answer.** `revoke-key` and `disconnect` ask before they act, and the answer they default to is no. So a run that cannot ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no terminal — and did not pass `--yes` is refused before the registry is opened, never taken as yes.
+
+```
+$ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --json
+{"error":{"code":"input/required","status":400,"flag":"--yes","message":"Revoke key cpk_2026_07 on prod?","action":"Pass --yes to revoke it without asking."}}
 ```
 
 **Nothing is connected.** `rotate` against an environment with no registration raises `controlplane/not_connected`, whose action names `pithy dashboard connect --env <environment>`.

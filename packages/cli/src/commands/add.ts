@@ -16,6 +16,7 @@ import {
   collectSetFlags,
   isHandWritten,
   type PrerequisitePrompt,
+  type RunAddOptions,
   runAdd,
 } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
@@ -26,6 +27,7 @@ import type { DatabaseRun } from "../migrations/run";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import type { ResolvedWorker, ResolveOptions } from "../project/workerScope";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
 /** What {@link buildAudit} needs, plus the factory seam a test observes. */
@@ -80,7 +82,7 @@ export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEm
 
 /**
  * Pick the Worker interactively when a project has several and none was named. Supplied only when a
- * human is attached — an agent run (`--json`, no TTY) gets the actionable error from
+ * human is attached — an agent run (`--json`, `--no-input`, no TTY) gets the `input/required` error from
  * {@link resolveSingleWorker} instead of a prompt it cannot answer.
  */
 export async function promptWorker(choices: ResolvedWorker[]): Promise<string> {
@@ -284,6 +286,16 @@ const promptPrerequisites: PrerequisitePrompt = async ({ capability, missing }) 
   return answer === true;
 };
 
+/**
+ * The prompts `pithy add` hands the add flow: both when this run may ask (`terminal/inputMode.ts`), neither
+ * when it may not. The flow asks only through what it is handed, so with neither it reaches its own
+ * refusals instead — `input/required`, naming `--set` for a required option and `--with-prerequisites`
+ * for a missing prerequisite (#697).
+ */
+export function addPrompts(interactive: boolean): Pick<RunAddOptions, "prompt" | "askPrerequisites"> {
+  return interactive ? { prompt: promptConfigValues, askPrerequisites: promptPrerequisites } : {};
+}
+
 export default defineCommand({
   meta: { name: "add", description: "Add a capability" },
   args: {
@@ -325,7 +337,7 @@ export default defineCommand({
         });
       }
 
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
       // Which Worker gets the wiring. One worker needs no ceremony; several never guess. Composed for dev,
       // because what is read off it is dev's: the audit below names dev, and the migrate add finishes with
       // is dev's. The wiring itself is file edits, composed by the add flow for itself.
@@ -348,9 +360,8 @@ export default defineCommand({
         account,
         capability: args.capability,
         setFlags: collectSetFlags(rawArgs),
-        prompt: interactive ? promptConfigValues : undefined,
+        ...addPrompts(interactive),
         withPrerequisites: args["with-prerequisites"],
-        askPrerequisites: interactive ? promptPrerequisites : undefined,
         eject: args.eject,
         force: args.force,
         audit: await buildAudit({

@@ -7,17 +7,19 @@ import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { type ArgsDef, type CommandDef, parseArgs } from "citty";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { readSource } from "../ci/sourceFiles";
 import { authorizeDashboard } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { defaultGrant, grantableScopes } from "../dashboard/grant";
 import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
+import { latchInputMode } from "../terminal/inputMode";
 import type { KeyStream } from "../terminal/keys";
 import { readKeys } from "../terminal/keys";
 import dashboard, {
   announceFor,
   collectScopeFlags,
+  confirmOrRefuse,
   formatConnectReport,
   formatDisconnectReport,
   formatRotateReport,
@@ -593,5 +595,94 @@ describe("the offer to open the approval page", () => {
 
     expect(token).toBe("ct_1");
     expect(lines).toContain("spawn xdg-open ENOENT");
+  });
+});
+
+/**
+ * **`--yes` answers the two confirmations, and a run that may not ask must pass it (#697).**
+ *
+ * `disconnect` and `revoke-key` each confirm at a terminal, and each used to proceed in silence whenever no
+ * terminal was attached — so `PITHY_NONINTERACTIVE=1`, the switch that means *do not ask me*, quietly
+ * meant *yes*. A confirmation's own default is no, so a run that cannot ask has no default to take: it
+ * fails `input/required`, naming `--yes`, before the registry is opened.
+ */
+describe("the --yes confirmations", () => {
+  const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+  afterEach(() => {
+    latchInputMode(false);
+    process.stdin.isTTY = tty.stdin;
+    process.stdout.isTTY = tty.stdout;
+    vi.restoreAllMocks();
+  });
+
+  /** Attach a terminal on both ends a prompt uses, so only the latch or `--json` can forbid. */
+  function attachTerminal(): void {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+  }
+
+  const question = { message: "Revoke key k1 on prod?", action: "Pass --yes to revoke it without asking." };
+
+  test("--yes answers it: nothing is asked and nothing refused", async () => {
+    latchInputMode(true);
+    const ask = vi.fn(async () => {});
+    await expect(confirmOrRefuse({ ...question, json: true, yes: true, ask })).resolves.toBeUndefined();
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("at a terminal, with nothing forbidding it, the person is asked", async () => {
+    attachTerminal();
+    const ask = vi.fn(async () => {});
+    await confirmOrRefuse({ ...question, json: false, yes: false, ask });
+    expect(ask).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ["PITHY_NONINTERACTIVE or --no-input", true, false],
+    ["--json", false, true],
+  ])("under %s, without --yes, it fails input/required naming --yes", async (_name, latched, json) => {
+    attachTerminal();
+    latchInputMode(latched);
+    const ask = vi.fn(async () => {});
+    const failure = await confirmOrRefuse({ ...question, json, yes: false, ask }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload).toMatchObject({ code: "input/required", flag: "--yes", ...question });
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  test("with no terminal at all, without --yes, it is refused rather than taken as yes", async () => {
+    process.stdin.isTTY = false;
+    process.stdout.isTTY = false;
+    const failure = await confirmOrRefuse({ ...question, json: false, yes: false, ask: async () => {} }).catch(
+      (error: unknown) => error,
+    );
+    expect((failure as PithyError).payload).toMatchObject({ code: "input/required", flag: "--yes" });
+  });
+
+  /**
+   * The command, not just the helper: run each subcommand in-process with input forbidden and a terminal
+   * attached, and read the refusal it reports. The gate is the first thing the body does, so nothing here
+   * reaches a registry — a command that skipped it would fail on the missing project instead.
+   */
+  test.each([
+    ["disconnect", { env: "prod", yes: false, local: true }, "Disconnect the management client from prod?"],
+    ["revoke-key", { env: "prod", yes: false, "key-id": "k1" }, "Revoke key k1 on prod?"],
+  ])("%s refuses under the switch, naming --yes, before it opens anything", async (name, args, message) => {
+    attachTerminal();
+    latchInputMode(true);
+    const written: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    const run = subCommands()[name]?.run;
+    await expect(
+      run?.({ args: { ...args, json: true, open: false, _: [] }, rawArgs: [], cmd: {} } as never),
+    ).rejects.toThrow(/^exit /);
+    const line = JSON.parse(written.join("").trim()) as { error: Record<string, unknown> };
+    expect(line.error).toMatchObject({ code: "input/required", flag: "--yes", message });
   });
 });

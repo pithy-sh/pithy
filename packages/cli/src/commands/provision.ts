@@ -53,6 +53,7 @@ import {
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { commandProgress } from "../terminal/progress";
 
@@ -547,7 +548,7 @@ async function provisionDeclared(
   // that nothing else in the CLI would ever look for again. It is also what closes `--env feature`:
   // that name is a legal stanza key and an illegal declaration, so no project can admit it.
   const environment = requireManagedEnvironment(env, loadProjectEnvironments(config));
-  const interactive = !options.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  const interactive = mayPrompt(options.json);
   const project = requireProjectName(config);
   // The scope carries both the names and the stanza. There is no second argument to disagree with.
   const scope = environmentScope(project, environment);

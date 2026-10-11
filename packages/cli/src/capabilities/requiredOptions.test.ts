@@ -53,6 +53,21 @@ describe("requiredOptionRefusal", () => {
     expect(error.payload.action).toContain("--set region=<value>");
   });
 
+  test("it is input/required, naming --set and every key=value it takes for the first unanswered option", () => {
+    const error = requiredOptionRefusal({ capability: "payments", missing: [BILLING, OPEN] });
+    expect(error.payload.code).toBe("input/required");
+    if (error.payload.code !== "input/required") throw new Error("narrowing failed");
+    expect(error.payload.flag).toBe("--set");
+    expect(error.payload.choices).toEqual(["billingSubject=user", "billingSubject=organization"]);
+  });
+
+  test("an open first option carries no choices, rather than an empty list claiming it takes none", () => {
+    const error = requiredOptionRefusal({ capability: "payments", missing: [OPEN] });
+    if (error.payload.code !== "input/required") throw new Error("narrowing failed");
+    expect(error.payload.flag).toBe("--set");
+    expect(error.payload.choices).toBeUndefined();
+  });
+
   test("the detail is the throw site's — it says why there is nothing to render", () => {
     const error = requiredOptionRefusal({ capability: "payments", missing: [BILLING] });
     expect(error.payload.detail).toContain("no default");

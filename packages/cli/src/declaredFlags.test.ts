@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
-import { flagsOf, refusePrettyFlags, refuseUndeclaredFlags, undeclaredFlags } from "./declaredFlags";
+import { flagsOf, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags, undeclaredFlags } from "./declaredFlags";
 import { ownNamesOnly } from "./dispatch";
 import { main } from "./main";
 
@@ -568,5 +568,33 @@ describe("the dev logs reader", () => {
     expect(() => refusePrettyFlags(["dev", "logs", "--pretty"])).toThrow(ValidationError);
     expect(() => refusePrettyFlags(["dev", "logs", "--no-pretty"])).toThrow(ValidationError);
     expect(() => refusePrettyFlags(["dev", "logs", "--json", "--pretty"])).not.toThrow();
+  });
+});
+
+/** `--no-input` needs no `--json`, but a value it cannot mean is refused rather than ignored (#697). */
+describe("refuseNoInputFlag", () => {
+  test("the bare flag and =true / =false pass, on any command, with or without --json", () => {
+    expect(() => refuseNoInputFlag(["init", "--no-input"])).not.toThrow();
+    expect(() => refuseNoInputFlag(["init", "--no-input=false", "--json"])).not.toThrow();
+    expect(() => refuseNoInputFlag(["remove", "auth", "--no-input=true"])).not.toThrow();
+  });
+
+  test("a malformed value is refused, naming the token and the spellings it takes", () => {
+    let thrown: unknown;
+    try {
+      refuseNoInputFlag(["init", "--no-input=1"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ValidationError);
+    const payload = (thrown as ValidationError).payload;
+    expect(payload.message).toBe("--no-input=1 is not a value --no-input takes.");
+    expect(payload.action).toBe("Write --no-input on its own, or --no-input=true or --no-input=false.");
+    expect(payload.issues[0]?.path).toEqual(["--no-input"]);
+  });
+
+  test("--no-input is declared on every command, so the undeclared-flag check lets it through", async () => {
+    expect(await undeclaredFlags(ownNamesOnly(main), ["add", "auth", "--no-input"])).toBeNull();
+    expect(await undeclaredFlags(ownNamesOnly(main), ["worker", "list", "--no-input=false"])).toBeNull();
   });
 });

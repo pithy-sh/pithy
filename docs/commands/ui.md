@@ -20,7 +20,7 @@ pithy ui list [--json]
 | `--worker <name>` | `add`, `sync` | resolved — see Resolving the Worker | The Worker under `apps/` to scaffold into, or to re-derive |
 | `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
 | `--auth` / `--no-auth` | `add` | see The auth screens | Scaffold the sign-in screens, or leave them out |
-| `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set |
+| `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set, nor under `--no-input` or `PITHY_NONINTERACTIVE=1` |
 
 **There are no provider flags.** No `--google`, no `--github`, no `--turnstile`. Which social providers exist, and whether a humanity check gates sign-in, is already declared in that Worker's `pithy.config.ts`. A flag would be a second source of truth, frozen at scaffold time, that drifts the moment someone enables a provider in config. The scaffolded screens read the composed config at runtime instead (see `docs/UI.md`), so enabling a provider stays a one-line config edit and a redeploy — no CLI run, no file to regenerate, nothing to keep in step.
 
@@ -30,7 +30,7 @@ pithy ui list [--json]
 
 ### Resolving the Worker
 
-`ui add` and `ui sync` wire exactly one Worker, so they take `--worker <name>` and follow the same rule as `add` and `remove` (`docs/CLI.md` §1.1): with a single Worker under `apps/` the flag is optional and that Worker is used; with several, the CLI prompts at a terminal and **fails with an actionable error under `--json`** rather than guessing. Scaffolding a front end into the wrong Worker would put an `assets` stanza and an asset-routing allowlist on a script that serves no browser.
+`ui add` and `ui sync` wire exactly one Worker, so they take `--worker <name>` and follow the same rule as `add` and `remove` (`docs/CLI.md` §1.1): with a single Worker under `apps/` the flag is optional and that Worker is used; with several, the CLI prompts at a terminal and **fails `input/required`, naming `--worker`, when it may not ask** (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`) rather than guessing. Scaffolding a front end into the wrong Worker would put an `assets` stanza and an asset-routing allowlist on a script that serves no browser.
 
 `ui list` takes no `--worker`: it reports the framework stubs `ui add` can scaffold, not the Workers that already carry one. For the per-Worker view — which Workers exist, which autostart, which port each holds — use `pithy worker list`.
 

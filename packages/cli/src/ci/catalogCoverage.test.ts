@@ -107,7 +107,7 @@ const CODES = KitErrorPayload.options.map((member) => member.shape.code.value);
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 130;
+const KIT_ERROR_CODE_COUNT = 131;
 
 /**
  * The domain segment a *catalog key* must carry: a capability's `name`, or `app`.
@@ -120,7 +120,8 @@ const KIT_ERROR_CODE_COUNT = 130;
 const CAPABILITY_DOMAINS = new Set<string>([...CATALOG.map((entry) => entry.name), "app"]);
 
 /**
- * The four domains the **error taxonomy** owns that no capability is named after.
+ * The five domains the **error taxonomy** owns that no capability is named after. `input` is the CLI's:
+ * `input/required` is how a run that may not prompt refuses a question it cannot ask (#697).
  *
  * **A frozen literal, and that is the whole point.** The previous version of this file built its
  * permitted domain set partly from `CODES.map(messageDomain)` while `CODES` was one of the sets making
@@ -129,10 +130,10 @@ const CAPABILITY_DOMAINS = new Set<string>([...CATALOG.map((entry) => entry.name
  * by construction, including the typo'd one the check was for.
  *
  * Written down, `aut/invalid_token` is in neither set and fails. And the equality below keeps the list
- * from rotting: a fifth non-capability domain is a diff a human reads, which is the moment to ask
+ * from rotting: a sixth non-capability domain is a diff a human reads, which is the moment to ask
  * whether it is a new seam or a mistake.
  */
-const ERROR_ONLY_DOMAINS = ["cloudflare", "core", "rate_limit", "validation"];
+const ERROR_ONLY_DOMAINS = ["cloudflare", "core", "input", "rate_limit", "validation"];
 
 /**
  * The one domain a **browser SDK** owns, which no capability is named after and the taxonomy never sends.
@@ -590,12 +591,12 @@ describe("every key is namespaced to the domain that owns it", () => {
     expect(stray, `Known domains: ${[...CAPABILITY_DOMAINS].sort().join(", ")}.`).toEqual([]);
   });
 
-  test("every error code's domain is a capability's name or one of the four the taxonomy owns", () => {
+  test("every error code's domain is a capability's name or one of the five the taxonomy owns", () => {
     const stray = CODES.filter((code) => !KIT_DOMAINS.has(messageDomain(code)));
     expect(stray, `Known domains: ${[...KIT_DOMAINS].sort().join(", ")}.`).toEqual([]);
   });
 
-  test("and those four are exactly the taxonomy's own — a fifth is a diff somebody reads", () => {
+  test("and those five are exactly the taxonomy's own — a sixth is a diff somebody reads", () => {
     // The tripwire that keeps {@link ERROR_ONLY_DOMAINS} from rotting into a list nobody re-reads.
     // Equality rather than a subset: a domain that stops being thrown belongs out of the literal, and
     // a new one belongs in it deliberately rather than by a check that admitted it automatically.
@@ -603,7 +604,7 @@ describe("every key is namespaced to the domain that owns it", () => {
     expect(beyond).toEqual([...ERROR_ONLY_DOMAINS].sort());
   });
 
-  test("none of the four is a capability name, so each really is extra", () => {
+  test("none of the five is a capability name, so each really is extra", () => {
     expect(ERROR_ONLY_DOMAINS.filter((domain) => CAPABILITY_DOMAINS.has(domain))).toEqual([]);
   });
 

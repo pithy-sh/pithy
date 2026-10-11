@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { type MigrateProjectOptions, migrateProject, type WorkerMigrationRun } from "../migrations/run";
-import migrate, { formatMigrateReport } from "./migrate";
+import { latchInputMode } from "../terminal/inputMode";
+import migrate, { formatMigrateReport, rollbackPhrase } from "./migrate";
 
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
 const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
@@ -323,5 +324,48 @@ describe("migrate command", () => {
       };
       expect(parsed.workers.map((worker) => worker.databases[0]?.sharedWith)).toEqual([["collab"], ["api"]]);
     });
+  });
+});
+
+/**
+ * **Where a rollback's phrase comes from (#697).** The flag wherever it is present; otherwise a person at a
+ * terminal is asked; otherwise nothing, and `assertRollbackConfirmed` refuses the missing answer as
+ * `input/required`. Under the switch the prompt is never opened, terminal or not.
+ */
+describe("rollbackPhrase", () => {
+  const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+  afterEach(() => {
+    latchInputMode(false);
+    process.stdin.isTTY = tty.stdin;
+    process.stdout.isTTY = tty.stdout;
+  });
+
+  test("the flag is the phrase, whether or not anybody could be asked", async () => {
+    latchInputMode(true);
+    await expect(
+      rollbackPhrase({
+        env: "staging",
+        json: false,
+        rollback: true,
+        flagged: "yes, i really want to roll back staging",
+      }),
+    ).resolves.toBe("yes, i really want to roll back staging");
+  });
+
+  test("a run that is not a rollback has no phrase", async () => {
+    await expect(rollbackPhrase({ env: "staging", json: false, rollback: false })).resolves.toBeUndefined();
+  });
+
+  test("under the switch, with a terminal attached, nothing is asked", async () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    latchInputMode(true);
+    await expect(rollbackPhrase({ env: "staging", json: false, rollback: true })).resolves.toBeUndefined();
+  });
+
+  test("dev is never asked", async () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    await expect(rollbackPhrase({ env: "dev", json: false, rollback: true })).resolves.toBeUndefined();
   });
 });

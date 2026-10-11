@@ -1,90 +1,92 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename, resolve } from "node:path";
+import { basename, relative, resolve } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
 
 /**
- * **Every command decides whether to prompt the same way, and the way has three terms.**
+ * **Whether a run may ask anybody anything is decided in one place: `terminal/inputMode.ts`.**
  *
- * `!args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY)` — `add`, `worker`,
- * `seed`, `ui`, `vector`, `dashboard`, `provision` and `init` each write it, and they agree because
- * every term answers a different question. `--json` because a machine-readable run has a caller that
- * parses one line, and a prompt is not it. **stdin** because that is where an answer would come from.
- * **stdout** because that is where the question goes, and a prompt written into a pipe is a question
- * nobody can see in front of a process that never returns.
+ * This gate used to hold the opposite rule. Each command wrote its own
+ * `!args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY)`, and the gate checked
+ * that every copy carried all three terms — because `secrets` once wrote one of the three, and the cost
+ * of a missing term was paid by whoever later put a bigger prompt behind it (#516).
  *
- * `secrets` wrote one of the three, and got away with it while the prompt behind the gate was a single
- * answerable text question: a driver under a pty typed a value and the run completed. #516 replaced that
- * with a keyboard-navigated multiselect and one masked prompt per field, and the same driver now hangs —
- * an agent-drivability regression that `docs/CLI.md`'s rule exists to prevent, produced without touching
- * the gate. That is the shape this gate is for: the cost of the missing terms is paid by whoever *later*
- * puts something bigger behind them.
+ * Every copy was right about its terms and wrong about its premise. A TTY does not prove a person is
+ * present: an agent harness that allocates a PTY and runs without `--json` passed all three and waited
+ * on a question nobody would answer. The fix is a fourth term — `PITHY_NONINTERACTIVE=1` and `--no-input`
+ * — and a fourth term written into fifteen copies is fifteen chances to miss one. So the copies are gone
+ * (#697): `mayPrompt`, `mayDraw`, `mayReadKeys` and `stdinTakesInput` are the seam, and nothing else in
+ * `src/` reads `process.stdin.isTTY`. The three terms still matter, and `terminal/inputMode.test.ts`
+ * holds the seam to every one of them.
  *
- * **The one exception is written down rather than pattern-matched.** `remove` is human-only and refuses
- * `--json` outright (`rejectJson`), so its gate has nothing to consult — the file is exempted by the
- * call it makes, which means an exception has to be argued in code rather than typed into a list here.
+ * **stdin is the stream this scans for**, because it is the one only an interactivity decision reads.
+ * Stdout's `isTTY` is also read to shape output (`style.ts`, `bin.ts`), which is not a question about a
+ * person and stays where it is.
  *
- * **`secrets` has since left this scan, and the reason is the point of the scan rather than a hole in
- * it.** The three-term gate collapses two questions into one, which is right for every command here
- * because none of them reads a document: a pipe on `add`'s stdin means only *no human*. `secrets` reads
- * one, so for it stdin answers *is a document coming* and stdout plus `--json` answer *may I draw a
- * prompt* — and the first remedy for #516 wrote both as the single `interactive`, which made
- * `--json` on a terminal, and any run with stdout redirected to a file, take the *document is piped*
- * branch and silently read the operator's terminal for a credential. So `commands/secrets.ts` now writes
- * only the output half (`canPrompt`) and never touches `process.stdin.isTTY`, which is why nothing here
- * matches it. `commands/secretsInteractive.test.ts` holds both halves, under a real pty, and asserts
- * that this file's regex has nothing to find in `secrets.ts` — so the coverage moved rather than lapsed.
+ * `secrets` keeps its two-question split through the seam: `mayDraw` asks stdout alone, and whether a
+ * document is arriving is the stdin *stream's* own `isTTY`, read by `readSecretValue` off the stream it
+ * is handed. `commands/secretsInteractive.test.ts` holds that half.
  */
 
-/** The repo root, four levels up from `packages/cli/src/ci`. */
-const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
+/** The CLI's source root. */
+const SRC = resolve(import.meta.dirname, "..");
 
-/** Where a command lives. Nothing outside it defines a `pithy <command>`. */
-const COMMANDS = resolve(REPO_ROOT, "packages", "cli", "src", "commands");
+/** The one module allowed to read stdin's TTY-ness. */
+const SEAM = resolve(SRC, "terminal", "inputMode.ts");
 
-/**
- * One expression that consults `process.stdin.isTTY`, as much of it as decides the gate.
- *
- * Bounded by the statement or property it sits in — a `;`, a `}`, or a `,` that ends an object entry —
- * so the two other terms have to be in the same expression rather than anywhere in the file.
- */
-const GATE = /[^;{}\n]*process\.stdin\.isTTY[^;}]*/g;
+/** A read of stdin's TTY-ness, the raw material of every hand-written interactivity gate. */
+const STDIN_TTY = /process\.stdin\.isTTY/;
 
-/** Every command source, comments blanked so prose about a TTY is not read as code. */
-function commandSources(): { name: string; code: string }[] {
-  return sourcePaths(COMMANDS)
-    .filter((path) => path.endsWith(".ts") && !isTestFile(basename(path)))
+/** What a caller of the seam writes. */
+const SEAM_CALL = /\b(?:mayPrompt|mayDraw|mayReadKeys|stdinTakesInput|inputForbidden)\(/;
+
+/** Every shipped source under `src/`, comments blanked so prose about a TTY is not read as code. */
+function shippedSources(): { path: string; code: string }[] {
+  return sourcePaths(SRC)
+    .filter((path) => (path.endsWith(".ts") || path.endsWith(".tsx")) && !isTestFile(basename(path)))
     .flatMap((path) => {
       const source = readSource(path);
-      return source === null ? [] : [{ name: basename(path), code: blankComments(source) }];
+      return source === null ? [] : [{ path, code: blankComments(source) }];
     });
 }
 
-describe("the interactive gate", () => {
-  test("is written by more than one command, so this measures something", () => {
-    // A scan that matches nothing passes. This is the assertion that says it did not.
-    const gates = commandSources().flatMap(({ name, code }) => (code.match(GATE) ?? []).map(() => name));
-    expect(new Set(gates).size).toBeGreaterThanOrEqual(6);
+/** The files that read stdin's TTY-ness outside the seam, as `src`-relative paths. */
+function offenders(sources: readonly { path: string; code: string }[]): string[] {
+  return sources
+    .filter(({ path, code }) => path !== SEAM && STDIN_TTY.test(code))
+    .map(({ path }) => relative(SRC, path));
+}
+
+describe("the interactivity seam", () => {
+  test("is the only module that reads process.stdin.isTTY", () => {
+    expect(offenders(shippedSources())).toEqual([]);
   });
 
-  test("asks about stdout as well as stdin, in every command that asks at all", () => {
-    const offenders = commandSources().flatMap(({ name, code }) =>
-      (code.match(GATE) ?? [])
-        .filter((gate) => !gate.includes("process.stdout.isTTY"))
-        .map((gate) => `${name}: ${gate.trim()}`),
-    );
-    expect(offenders).toEqual([]);
+  test("reads it itself, so the rule above is about a real read and not an empty file", () => {
+    const seam = shippedSources().find(({ path }) => path === SEAM);
+    expect(seam?.code).toMatch(/process\.stdin/);
   });
 
-  test("consults --json, unless the command refuses --json outright", () => {
-    const offenders = commandSources().flatMap(({ name, code }) =>
-      code.includes("rejectJson(")
-        ? []
-        : (code.match(GATE) ?? []).filter((gate) => !/\bjson\b/.test(gate)).map((gate) => `${name}: ${gate.trim()}`),
-    );
-    expect(offenders).toEqual([]);
+  test("is what the commands call, in enough places that this measures something", () => {
+    // A seam nobody calls would pass the rule above trivially. Commands, platform helpers and the dev
+    // renderer all ask it; fewer than this many callers means a site went back to deciding for itself.
+    const callers = shippedSources().filter(({ path, code }) => path !== SEAM && SEAM_CALL.test(code));
+    expect(callers.length).toBeGreaterThanOrEqual(15);
+    const commands = callers.filter(({ path }) => relative(SRC, path).startsWith("commands/"));
+    expect(commands.length).toBeGreaterThanOrEqual(12);
+  });
+
+  test("a hand-written gate is caught — the planted defect this scan exists for", () => {
+    const planted = [
+      {
+        path: resolve(SRC, "commands", "planted.ts"),
+        code: "const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);",
+      },
+      { path: SEAM, code: "return Boolean(process.stdin.isTTY);" },
+    ];
+    expect(offenders(planted)).toEqual(["commands/planted.ts"]);
   });
 });

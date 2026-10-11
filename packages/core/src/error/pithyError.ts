@@ -61,6 +61,36 @@ export class ValidationError extends PithyError {
   }
 }
 
+/**
+ * A run that may not prompt reached a question nobody gave it the answer to (#697).
+ *
+ * `flag` is the flag that answers it, or `null` when no flag can — a person, or a document on stdin, is
+ * the only answer. `choices` is every value the flag takes when that set is known, and is left off the
+ * payload rather than written empty when it is not: an empty list would claim the flag takes nothing.
+ */
+export class InputRequiredError extends PithyError {
+  declare readonly payload: Extract<ErrorPayload, { code: "input/required" }>;
+
+  constructor(
+    args: ErrorArgs & { flag?: string | null; choices?: readonly string[] } = {},
+    options?: { cause?: unknown },
+  ) {
+    super(
+      {
+        code: "input/required",
+        status: 400,
+        message: args.message ?? "An answer is required, and this run may not ask for it.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+        flag: args.flag ?? null,
+        ...(args.choices === undefined ? {} : { choices: [...args.choices] }),
+      },
+      options,
+    );
+  }
+}
+
 export class UnauthorizedError extends PithyError {
   declare readonly payload: Extract<ErrorPayload, { code: "auth/invalid_token" }>;
 

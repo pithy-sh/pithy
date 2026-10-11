@@ -4,7 +4,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { mayPrompt } from "../terminal/inputMode";
 
 /**
  * The one place Pithy decides what "open this in your editor" means (#157).
@@ -142,12 +143,14 @@ export function resolveEditor(options: EditorEnvironment = {}): ResolvedEditor {
  * rather than in a second command.
  */
 export function requireEditor(file: string, options: EditorEnvironment = {}): ResolvedEditor {
-  const interactive = options.interactive ?? (Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY));
+  // The seam's answer (#697): no terminal, or a run that forbade prompts, is nobody to open an editor for.
+  const interactive = options.interactive ?? mayPrompt(false);
   if (!interactive) {
-    throw new ValidationError({
+    throw new InputRequiredError({
       message: `No terminal here, so there is no editor to open ${file} in.`,
       action: "Run this at a terminal, or edit that file directly.",
-      detail: `editor requested for '${file}' with no TTY on stdin and stdout`,
+      detail: `editor requested for '${file}' with no TTY on stdin and stdout, or with prompts forbidden`,
+      flag: null,
     });
   }
   return resolveEditor(options);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { latchInputMode } from "./inputMode";
 import { type KeyStream, readKeys } from "./keys";
 
 /** A stdin double that records every mode change, so "never entered raw mode" is an assertion. */
@@ -129,6 +130,20 @@ describe("no terminal", () => {
     expect(stdin.listeners).toBe(0);
     expect(stdin.resumed).toBe(0);
     reader.stop();
+  });
+
+  test("a run that forbade input reads no keys, even on a terminal (#697)", () => {
+    // PITHY_NONINTERACTIVE=1 under a PTY: a terminal is not a person, so raw mode is never entered.
+    latchInputMode(true);
+    try {
+      const stdin = fakeStdin(true);
+      const reader = readKeys({ stdin, bindings: [{ key: "l", run: () => {} }], onInterrupt: () => {} });
+      expect(reader.active).toBe(false);
+      expect(stdin.rawModes).toEqual([]);
+      expect(stdin.listeners).toBe(0);
+    } finally {
+      latchInputMode(false);
+    }
   });
 
   test("a stream with no setRawMode at all is treated as no terminal", () => {

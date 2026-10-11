@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
+import { stdinTakesInput } from "../../terminal/inputMode";
 
 /**
  * The facts the renderer choice turns on, passed in rather than read here.
@@ -80,7 +81,8 @@ export function chooseRenderer(inputs: RendererInputs): { tui: boolean; keys: bo
 export function rendererInputsFromProcess(json: boolean, tui = true, tuiExplicit = false): RendererInputs {
   return {
     stdoutIsTTY: Boolean(process.stdout.isTTY),
-    stdinIsTTY: Boolean(process.stdin.isTTY),
+    // Stdin as a source of keys: a run that forbade input has none, terminal or not (#697).
+    stdinIsTTY: stdinTakesInput(),
     json,
     tui,
     tuiExplicit,

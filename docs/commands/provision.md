@@ -198,7 +198,7 @@ A `cf-secrets-store` secret the registry calls arbitrary — the email link-sign
 pithy provision --env prod --yes --confirm "yes, i really want to provision prod"
 ```
 
-The phrase names its environment, so one typed for `staging` cannot be pasted into a command targeting `prod`. Interactively the CLI asks for it; under `--json` it must arrive by flag, so a headless production provision happens only when a human wrote the phrase into the pipeline.
+The phrase names its environment, so one typed for `staging` cannot be pasted into a command targeting `prod`. Interactively the CLI asks for it; under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` it must arrive by flag, so a headless production provision happens only when a human wrote the phrase into the pipeline. Without it, that run is refused `input/required`, naming `--confirm`.
 
 ## Deploy refuses, it does not provision
 

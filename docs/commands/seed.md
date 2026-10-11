@@ -75,7 +75,7 @@ Every other flag in Pithy follows the same rule everywhere: `--json` means non-i
 
 - `dev` never asks for anything.
 - `staging` (and any other non-`dev`, non-production environment) needs `--yes`.
-- `prod` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, CI, no TTY), there is no prompt — pass it directly:
+- `prod` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, CI, no TTY), there is no prompt — pass it directly. Omitting it there is refused `input/required`, naming `--confirm-production`:
 
   ```
   pithy seed --env prod --yes --confirm-production "yes, i really want to seed production"
@@ -178,8 +178,8 @@ Every refusal here is a gate rather than a fault, and each one names the flag th
 |---|---|
 | `--env production` | Refused at the flag. The environment is `prod` (§1.2). |
 | A non-`dev` environment without `--yes` | Refused before anything opens. |
-| `prod` without the confirmation phrase, non-interactively | Refused before anything opens — see the production exception above. |
-| A non-`dev` `--redo` without `--confirm-reset "yes, i really want to reset <env>"` | Refused. The phrase names its environment, so one authorizing `staging` cannot be pasted into a command targeting another. |
+| `prod` without the confirmation phrase, non-interactively | Refused `input/required`, naming `--confirm-production`, before anything opens — see the production exception above. |
+| A non-`dev` `--redo` without `--confirm-reset "yes, i really want to reset <env>"` | Refused — `input/required`, naming `--confirm-reset`, when nobody could be asked. The phrase names its environment, so one authorizing `staging` cannot be pasted into a command targeting another. |
 | A `--redo` over a retained table that holds rows, without `--destroy-retained <n>` equal to them | Refused before any database moves. The refusal names each table and the count to pass. |
 | A Worker that was supposed to get a generated `.dev.vars` and did not | The fixtures still run — they are the rest of the run and they are worth doing — and the exit code is 1. The refusal names the file and offers `.dev.vars.local`. |
 

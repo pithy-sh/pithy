@@ -993,6 +993,7 @@
   ],
   "globalFlags": [
     "--help",
+    "--no-input",
     "--no-pretty",
     "--pithier",
     "--pithiest",
@@ -1121,6 +1122,10 @@
     {
       "code": "email/template_not_found",
       "status": 404
+    },
+    {
+      "code": "input/required",
+      "status": 400
     },
     {
       "code": "leaderboard/board_immutable",

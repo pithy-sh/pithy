@@ -67,6 +67,14 @@ export const WORKERS_ENV_SETUP = fileURLToPath(new URL("./vitest.workers.setup.t
 const OFFLINE_ENV = "PITHY_OFFLINE";
 
 /**
+ * The switch that forbids prompts — `NONINTERACTIVE_ENV` in `@pithy-sh/cli`'s `terminal/inputMode`
+ * (#697). Spelled here for the reason {@link OFFLINE_ENV} is, and gated where that one should be:
+ * `packages/cli/src/ci/testIsolation.test.ts` imports the real constant and holds every unit project to
+ * pinning it blank.
+ */
+const NONINTERACTIVE_ENV = "PITHY_NONINTERACTIVE";
+
+/**
  * Every Cloudflare credential key, blanked — the whole of {@link CLOUDFLARE_ENV_KEYS}, never a copy of
  * today's four names. A fifth key is covered by the commit that adds it, which is the only reason this
  * is derived rather than written out.
@@ -88,12 +96,18 @@ const OFFLINE_ENV = "PITHY_OFFLINE";
  * restores the resolution those suites already assume, and a test that wants the offline path sets it
  * itself with `vi.stubEnv` — where the reader of that test can see it.
  *
+ * **{@link NONINTERACTIVE_ENV} is pinned for the same sentence.** An agent exports
+ * `PITHY_NONINTERACTIVE=1` once, as its brief tells it to, and every in-process suite that attaches a
+ * fake terminal to reach a prompt would then reach a refusal instead — red on a shell, green in CI.
+ * A test that wants the forbidden path latches it itself (`latchInputMode`), where its reader can see it.
+ *
  * **Unit configs only.** An integration config that blanked the credentials would have nothing to test,
  * and one that pinned this would be answering for a suite whose whole point is the network.
  */
 export const NO_ACCOUNT: Readonly<Record<string, string>> = Object.fromEntries([
   ...CLOUDFLARE_ENV_KEYS.map((key) => [key, ""]),
   [OFFLINE_ENV, ""],
+  [NONINTERACTIVE_ENV, ""],
 ]);
 
 /**

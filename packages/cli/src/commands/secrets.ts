@@ -82,6 +82,7 @@ import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretB
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
+import { mayDraw } from "../terminal/inputMode";
 import {
   formatDone,
   formatError,
@@ -329,11 +330,11 @@ function loadCloudflareCreds(
  * silently read the operator's terminal for a credential with no prompt and no masking. Two questions,
  * two answers, and neither derivable from the other.
  *
- * `ci/interactiveGate.test.ts` holds the three-term gate for every command that writes one, and records
- * why this file no longer appears in its scan.
+ * The rule itself is `mayDraw` in `terminal/inputMode.ts`, the seam every command reads, so
+ * `PITHY_NONINTERACTIVE=1` and `--no-input` forbid this prompt like every other (#697).
  */
 export function canPrompt(json: boolean): boolean {
-  return !json && Boolean(process.stdout.isTTY);
+  return mayDraw(json);
 }
 
 /**

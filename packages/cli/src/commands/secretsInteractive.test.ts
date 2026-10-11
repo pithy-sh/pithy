@@ -173,7 +173,7 @@ describe.skipIf(!PTY)("under a real pty", () => {
     expect(run.stdoutIsTTY).toBeNull();
     expect(run.asked).toEqual([]);
     expect(run.outcome).toBe("refused");
-    expect(run.code).toBe("validation/invalid_input");
+    expect(run.code).toBe("input/required");
     expect(run.action).toContain("| pithy secrets create GOOGLE_CLIENT_SECRET");
   });
 
@@ -265,18 +265,29 @@ describe("canPrompt", () => {
 /**
  * **The guard against re-merging them, stated about the source.**
  *
- * `ci/interactiveGate.test.ts` scans every command for a `process.stdin.isTTY` expression and demands the
- * other two terms beside it. `secrets` no longer appears in that scan, because the pipe question moved to
- * the stream `readSecretValue` is handed — so this is the assertion that keeps the departure honest: the
- * command must not read stdin's TTY-ness at all. A future `!process.stdin.isTTY` here is either a fourth
- * variant of the gate or the merge that produced the regression, and both fail this.
+ * `ci/interactiveGate.test.ts` holds every command to the one seam, `terminal/inputMode.ts` (#697).
+ * `secrets` reads that seam's `mayDraw`, which asks stdout and `--json` and the forbidden bit, never
+ * stdin — the pipe question stays with the stream `readSecretValue` is handed. So this is the assertion
+ * that keeps the departure honest: the command reads `mayDraw` rather than `mayPrompt`, and neither the
+ * command nor `mayDraw` reads stdin's TTY-ness. Either one doing so is the merge that produced the
+ * regression.
  */
 describe("commands/secrets.ts", () => {
-  test("asks stdout and --json about prompting, and never asks stdin anything", () => {
+  test("asks the seam's mayDraw about prompting, and never asks stdin anything", () => {
     const source = readSource(join(CLI_SRC, "commands", "secrets.ts"));
     if (source === null) throw new Error("commands/secrets.ts did not read");
     const code = blankComments(source);
-    expect(code).toContain("process.stdout.isTTY");
+    expect(code).toContain("mayDraw(json)");
+    expect(code).not.toContain("mayPrompt(");
     expect(code).not.toContain("process.stdin.isTTY");
+  });
+
+  test("mayDraw itself reads no stdin", () => {
+    const source = readSource(join(CLI_SRC, "terminal", "inputMode.ts"));
+    if (source === null) throw new Error("terminal/inputMode.ts did not read");
+    const body = /export function mayDraw\([^)]*\)[^{]*\{([^}]*)\}/.exec(blankComments(source))?.[1];
+    expect(body).toBeDefined();
+    expect(body).toContain("stdout.isTTY");
+    expect(body).not.toContain("stdin");
   });
 });

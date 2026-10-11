@@ -19,7 +19,7 @@ import { bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { availableManifests, loadManifest } from "./manifests";
-import { isRegistered, prerequisiteClosure, prerequisiteRefusal } from "./prerequisites";
+import { isRegistered, prerequisiteClosure, prerequisiteRefusal, prerequisiteRequired } from "./prerequisites";
 import { locateRegistration } from "./reconcile";
 import { requiredOptionRefusal, unsettledOptions } from "./requiredOptions";
 
@@ -405,11 +405,12 @@ async function composePrerequisites(
   // takes `--worker <dir>`, and a refusal that names `replay-board` sends the adopter to a flag value
   // that does not resolve.
   const named = workerIdentity({ name: worker, dir: workerDir }).worker;
-  const agreed =
-    options.withPrerequisites === true ||
-    (options.askPrerequisites !== undefined &&
-      (await options.askPrerequisites({ capability: manifest.name, worker: named, missing })));
-  if (!agreed) throw prerequisiteRefusal({ capability: manifest.name, worker: named, missing });
+  const refusal = { capability: manifest.name, worker: named, missing };
+  if (options.withPrerequisites !== true) {
+    // Nobody to ask is `input/required` (#697); somebody asked who said no is a refusal of its own.
+    if (options.askPrerequisites === undefined) throw prerequisiteRequired(refusal);
+    if (!(await options.askPrerequisites(refusal))) throw prerequisiteRefusal(refusal);
+  }
 
   const composed: ComposedPrerequisites = { names: [], notes: [], kvNamespaces: [] };
   for (const name of missing) {

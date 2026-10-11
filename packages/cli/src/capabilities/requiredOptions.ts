@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
  * **An option a manifest states no `default` for is a required option.** That is the whole model.
@@ -76,12 +76,22 @@ export interface RequiredOptionRefusalOptions {
  * "you must pass one of these" with something that cannot be passed.
  */
 function flagsFor(option: RequiredOption): string {
-  const needsCode = option.choicesNeedingCode ?? {};
-  const choices = option.choices?.filter((choice) => needsCode[choice] === undefined);
-  if (choices === undefined || choices.length === 0) return `--set ${option.key}=<value>`;
-  const flags = choices.map((choice) => `--set ${option.key}=${choice}`);
+  const choices = setChoices(option);
+  if (choices === undefined) return `--set ${option.key}=<value>`;
+  const flags = choices.map((choice) => `--set ${choice}`);
   if (flags.length === 1) return flags[0] as string;
   return `${flags.slice(0, -1).join(", ")} or ${flags[flags.length - 1]}`;
+}
+
+/**
+ * Every `key=value` `--set` takes for this option, or `undefined` for an open one. The same filter
+ * {@link flagsFor} applies, so the action line and the `choices` an agent reads cannot disagree.
+ */
+function setChoices(option: RequiredOption): string[] | undefined {
+  const needsCode = option.choicesNeedingCode ?? {};
+  const choices = option.choices?.filter((choice) => needsCode[choice] === undefined);
+  if (choices === undefined || choices.length === 0) return undefined;
+  return choices.map((choice) => `${option.key}=${choice}`);
 }
 
 /** `a`, `a and b`, `a, b and c` — for a sentence, never for a command line. */
@@ -98,10 +108,16 @@ function andList(names: readonly string[]): string {
  * driving `pithy add --json` has one line to correct itself from, and "billingSubject is required" is not
  * that line — `--set billingSubject=user or --set billingSubject=organization` is.
  */
-export function requiredOptionRefusal(options: RequiredOptionRefusalOptions): ValidationError {
+export function requiredOptionRefusal(options: RequiredOptionRefusalOptions): InputRequiredError {
   const { capability, missing } = options;
   const keys = missing.map((option) => option.key);
-  return new ValidationError({
+  // `choices` describes the first unanswered option; the action line names every one. A field is one
+  // flag's answer set, and several options are several flags that share a spelling.
+  const [first] = missing;
+  const choices = first === undefined ? undefined : setChoices(first);
+  return new InputRequiredError({
+    flag: "--set",
+    ...(choices === undefined ? {} : { choices }),
     message: `${capability} needs a value for ${andList(keys)}, and nothing in this run names one.`,
     action: `Pass ${missing.map(flagsFor).join(", and ")}.`,
     detail: `${capability}'s manifest declares ${JSON.stringify(keys)} with no default, which is how a capability says the answer is the adopter's. There is nothing to render and nothing to accept by pressing enter.`,

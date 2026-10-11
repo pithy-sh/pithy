@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
 import { parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, withErrorReporting } from "../terminal/output";
 import { buildAudit, targetWorker } from "./add";
 
@@ -43,6 +44,21 @@ export function dropConfirm(capability: string, env: string): () => Promise<bool
   };
 }
 
+/**
+ * Refuse a `--drop` that nobody can be asked to confirm, before anything is read or changed (#697).
+ *
+ * There is no bypass flag, so `flag` is `null`: the only answer is a person at a terminal. Without this,
+ * a run under `--no-input` or with no terminal reached {@link dropConfirm}'s prompt anyway.
+ */
+export function requireDropConfirmable(capability: string, options: { drop: boolean; interactive: boolean }): void {
+  if (!options.drop || options.interactive) return;
+  throw new InputRequiredError({
+    message: `Dropping ${capability}'s tables needs a person to confirm it.`,
+    action: `Run pithy remove ${capability} --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
+    flag: null,
+  });
+}
+
 export default defineCommand({
   meta: { name: "remove", description: "Remove a capability — the manual, interactive inverse of add" },
   args: {
@@ -68,8 +84,11 @@ export default defineCommand({
 
       const projectDir = process.cwd();
       const env = requireEnvironment(args.env);
+      // Who confirms a drop is settled before anything is read: a run nobody may be asked in stops here.
+      const interactive = mayPrompt(false);
+      requireDropConfirmable(args.capability, { drop: args.drop, interactive });
 
-      // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever a TTY is.
+      // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever one may be drawn.
       //
       // Composed for the environment the removal is about (#595): `--drop`'s, whose database the reversed
       // migrations are read off this composition for, and dev otherwise, which is what the audit below names.
@@ -78,7 +97,7 @@ export default defineCommand({
       const about = args.drop ? env : LOCAL_ENVIRONMENT;
       const target = await targetWorker(about, {
         projectDir,
-        interactive: Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY),
+        interactive,
         ...(args.worker === undefined ? {} : { worker: args.worker }),
       });
       const capabilities = target.capabilities;

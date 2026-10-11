@@ -18,7 +18,12 @@
  * `style.ts` and `progress.ts`. It spent its first life under `dev/`, which had had one caller and so
  * looked like a `pithy dev` detail; that filing is why `pithy dashboard` could not reach it (#607).
  * `ci/opener.test.ts` holds the reader to being the only one, and its two callers to being argued.
+ *
+ * **A run that forbade input reads no keys either** (#697). `PITHY_NONINTERACTIVE=1` under an agent's PTY
+ * has a terminal and no person, and raw mode there would swallow the harness's own Ctrl-C handling.
  */
+
+import { inputForbidden } from "./inputMode";
 
 /** The `\x03` byte Ctrl-C becomes once raw mode has taken the terminal's own handling away. */
 const ETX = "\x03";
@@ -72,7 +77,7 @@ const inert: KeyReader = { active: false, stop: () => {} };
 export function readKeys(options: ReadKeysOptions): KeyReader {
   const stdin = options.stdin ?? (process.stdin as unknown as KeyStream);
   const setRawMode = stdin.setRawMode;
-  if (!stdin.isTTY || typeof setRawMode !== "function") return inert;
+  if (inputForbidden() || !stdin.isTTY || typeof setRawMode !== "function") return inert;
 
   const onError = options.onError ?? (() => {});
   const bindings = new Map(options.bindings.map((binding) => [binding.key, binding.run]));

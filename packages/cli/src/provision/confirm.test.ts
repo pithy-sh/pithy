@@ -82,3 +82,60 @@ describe("assertProvisionConfirmed", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+/**
+ * **Nobody to ask and a wrong answer are two failures (#697).** A production provision with no phrase and
+ * no prompt fails `input/required`, naming `--confirm`; a phrase that was typed and is wrong stays
+ * `validation/invalid_input`, because the caller has already answered.
+ */
+describe("assertProvisionConfirmed's refusals, by kind", () => {
+  /** The payload a run rejected with. */
+  async function payloadOf(run: Promise<void>): Promise<Record<string, unknown>> {
+    const failure = await run.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PithyError);
+    return (failure as PithyError).payload as unknown as Record<string, unknown>;
+  }
+
+  test("production with no phrase and nobody to ask is input/required, naming --confirm", async () => {
+    expect(await payloadOf(assertProvisionConfirmed({ env: "prod", yes: true, json: true }))).toMatchObject({
+      code: "input/required",
+      flag: "--confirm",
+      action: `Pass --confirm "${provisionConfirmPhrase("prod")}".`,
+    });
+  });
+
+  test("a prompt is never asked under --json, even when one is supplied", async () => {
+    let asked = false;
+    const payload = await payloadOf(
+      assertProvisionConfirmed({
+        env: "prod",
+        yes: true,
+        json: true,
+        prompt: async () => {
+          asked = true;
+          return provisionConfirmPhrase("prod");
+        },
+      }),
+    );
+    expect(payload.code).toBe("input/required");
+    expect(asked).toBe(false);
+  });
+
+  test("a wrong --confirm is invalid input, not a missing answer", async () => {
+    const payload = await payloadOf(
+      assertProvisionConfirmed({ env: "prod", yes: true, json: true, confirmPhrase: "yes" }),
+    );
+    expect(payload.code).toBe("validation/invalid_input");
+    expect(payload).not.toHaveProperty("flag");
+  });
+
+  test("a wrong phrase typed at the prompt is invalid input too", async () => {
+    const payload = await payloadOf(
+      assertProvisionConfirmed({ env: "prod", yes: true, json: false, prompt: async () => "yes" }),
+    );
+    expect(payload).toMatchObject({
+      code: "validation/invalid_input",
+      message: "Provisioning prod was not confirmed.",
+    });
+  });
+});

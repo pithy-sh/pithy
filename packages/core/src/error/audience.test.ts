@@ -34,6 +34,7 @@ function wireInstanceOf(member: (typeof KitPublicErrorPayload.options)[number]):
     message: "Public wording.",
   };
   if ("issues" in member.shape) instance.issues = [];
+  if ("flag" in member.shape) instance.flag = null;
   return instance;
 }
 

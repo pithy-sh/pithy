@@ -14,6 +14,7 @@ import { loadProject, loadProjectCloudflare, requireProjectName } from "../proje
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { saffron } from "../terminal/style";
 
@@ -179,7 +180,7 @@ export default defineCommand({
       const account = loadProjectCloudflare(config) ?? null;
       const dryRun = args["dry-run"];
       const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
 
       // Resolved once: the fan-out seeds these workers, and the audit emitter needs their capabilities
       // to know whether the project composes `audit` at all.

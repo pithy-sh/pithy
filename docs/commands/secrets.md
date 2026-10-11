@@ -114,12 +114,12 @@ A schema this cannot render — a union, a record, a list of objects — falls b
 
 **Piped input is unchanged by any of it.** A pipe takes one whole JSON document, exactly as it always has. Per-field prompting is the interactive path only, because the non-interactive one is what CI and agents drive.
 
-**What decides which of the two you get is stdin, and only stdin.** A pipe, a heredoc, a file, `< /dev/null` — anything that is not a terminal on stdin — is a document, and it is read exactly the same way with `--json`, with output redirected to a file, and with neither. Whether a *prompt* can be drawn is a separate question with separate inputs: `--json` off, and a terminal on stdout.
+**What decides which of the two you get is stdin, and only stdin.** A pipe, a heredoc, a file, `< /dev/null` — anything that is not a terminal on stdin — is a document, and it is read exactly the same way with `--json`, with output redirected to a file, and with neither. Whether a *prompt* can be drawn is a separate question with separate inputs: `--json` off, `--no-input` and `PITHY_NONINTERACTIVE=1` unset, and a terminal on stdout.
 
-**So there is a third case, and it says so rather than guessing.** stdin is your terminal, so no document is coming; and the run cannot draw a prompt, because you passed `--json` or redirected the output to a file. Reading your terminal anyway would be an unmasked, unannounced request for a credential, and waiting on it would be a hang. It refuses instead, and names the way in that works from there:
+**So there is a third case, and it says so rather than guessing.** stdin is your terminal, so no document is coming; and the run cannot draw a prompt, because you passed `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, or redirected the output to a file. Reading your terminal anyway would be an unmasked, unannounced request for a credential, and waiting on it would be a hang. It refuses instead — `input/required` with `"flag": null`, because no flag carries a secret — and names the way in that works from there:
 
 ```
-No value was piped for 'STRIPE_SECRET_KEY', and this run cannot prompt for one — stdout is not a terminal, or --json was passed.
+No value was piped for 'STRIPE_SECRET_KEY', and this run cannot prompt for one — stdout is not a terminal, --json was passed, or prompts are forbidden.
   Pipe the value in: printf '%s' "$VALUE" | pithy secrets create STRIPE_SECRET_KEY
 ```
 
@@ -234,7 +234,7 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 `ls` lists the declared names with their routing facts, offline. It reads the registry and nothing else — no credentials, no network.
 
-`edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write.
+`edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write. With no terminal, or under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, it opens no editor at all: it refuses `input/required` with `"flag": null` and names the file to edit directly.
 
 `provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op.
 

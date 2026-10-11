@@ -28,7 +28,7 @@ pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] 
 | `--filter <json>` | `reprocess` | — | Narrow the run to matching documents, as a JSON metadata object: `'{"ownerId":"ada"}'`. Parsed here, so a malformed filter fails in this terminal rather than inside a running Workflow |
 | `--json` | all three | `false` | One line of machine-readable output |
 
-**There is no `--yes` on `reset`, deliberately.** `--yes` elsewhere means "yes, this is not dev", and it was designed to authorize additive writes. A reset deletes every vector in an index, so it carries the stricter gate of `docs/CLI.md` §8.5 — the same one `pithy seed --redo` uses, imported rather than re-implemented. `dev` is free; every other environment needs the exact phrase, and a headless run without `--confirm-reset` is refused.
+**There is no `--yes` on `reset`, deliberately.** `--yes` elsewhere means "yes, this is not dev", and it was designed to authorize additive writes. A reset deletes every vector in an index, so it carries the stricter gate of `docs/CLI.md` §8.5 — the same one `pithy seed --redo` uses, imported rather than re-implemented. `dev` is free; every other environment needs the exact phrase, and a headless run without `--confirm-reset` — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or no terminal — is refused `input/required`, naming `--confirm-reset`.
 
 ## What it does
 

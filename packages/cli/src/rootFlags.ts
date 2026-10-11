@@ -18,10 +18,16 @@ const PRETTY = "--pretty";
 const NO_PRETTY = "--no-pretty";
 
 /**
+ * Forbid every prompt for this one call (#697). Only the negative spelling exists: input is allowed
+ * unless something forbids it, so a positive `--input` would be a flag that can only restate a default.
+ */
+const NO_INPUT = "--no-input";
+
+/**
  * Every spelling this module answers to, for anything that has to enumerate the CLI's flags.
  *
  * Exported so `docs/catalog.ts` composes the docs catalog's `globalFlags` from the sets that decide,
- * rather than restating them. These six are in no command's `args` — citty answers one builtin and
+ * rather than restating them. These seven are in no command's `args` — citty answers one builtin and
  * this module answers the rest, all before a command is dispatched — so a walk of the command tree
  * finds none of them, and a check reading only that walk would call `pithy add --help` a typo.
  *
@@ -29,7 +35,7 @@ const NO_PRETTY = "--no-pretty";
  * spelling for free; a flag answered before citty parses is not a citty boolean and gets nothing for
  * free, so the negation is a member of this list like any other.
  */
-export const ROOT_FLAGS: readonly string[] = [...HELP_FLAGS, ...VERSION_FLAGS, PRETTY, NO_PRETTY];
+export const ROOT_FLAGS: readonly string[] = [...HELP_FLAGS, ...VERSION_FLAGS, PRETTY, NO_PRETTY, NO_INPUT];
 
 /**
  * Whether this invocation is asking for the version, on any command.
@@ -121,6 +127,43 @@ export function wantsPretty(argv: readonly string[]): boolean | undefined {
 export function malformedPrettyFlag(argv: readonly string[]): string | undefined {
   for (const token of flagTokens(argv)) {
     const read = readPretty(token);
+    if (read !== null && "invalid" in read) return token;
+  }
+  return undefined;
+}
+
+/** One `--no-input` token, read: whether it forbids, `invalid`, or `null` when it is not one. */
+function readNoInput(token: string): { forbids: boolean } | { invalid: true } | null {
+  const equals = token.indexOf("=");
+  const name = equals === -1 ? token : token.slice(0, equals);
+  if (name !== NO_INPUT) return null;
+  if (equals === -1) return { forbids: true };
+  const value = token.slice(equals + 1);
+  if (value !== "true" && value !== "false") return { invalid: true };
+  return { forbids: value === "true" };
+}
+
+/**
+ * Whether this invocation typed `--no-input`: `true` for the bare flag or `=true`, `false` for `=false`,
+ * `undefined` when it was not typed. Last wins, as {@link wantsPretty} does.
+ *
+ * `false` grants nothing. `PITHY_NONINTERACTIVE=1` and `--json` each forbid prompts on their own, and
+ * `terminal/inputMode.ts` lets any one of the three forbid; the `=false` spelling is read only so a shell
+ * alias carrying `--no-input` can be overridden in the one case nothing else forbade.
+ */
+export function wantsNoInput(argv: readonly string[]): boolean | undefined {
+  let asked: boolean | undefined;
+  for (const token of flagTokens(argv)) {
+    const read = readNoInput(token);
+    if (read !== null && "forbids" in read) asked = read.forbids;
+  }
+  return asked;
+}
+
+/** The first `--no-input` carrying a value that is neither `true` nor `false`, as typed — or `undefined`. */
+export function malformedNoInputFlag(argv: readonly string[]): string | undefined {
+  for (const token of flagTokens(argv)) {
+    const read = readNoInput(token);
     if (read !== null && "invalid" in read) return token;
   }
   return undefined;

@@ -182,6 +182,11 @@ describe("requireEditor — nothing to open it with", () => {
     expect(error.payload.action ?? "").not.toContain("--wait");
   });
 
+  test("the refusal is input/required with no flag, because only a person at a terminal can answer it", () => {
+    const error = refusal(() => requireEditor("/tmp/replay/secrets.jsonc", { ...posix, interactive: false }));
+    expect(error.payload).toMatchObject({ code: "input/required", flag: null });
+  });
+
   test("a terminal with an editor resolves", () => {
     expect(requireEditor("/tmp/x", { ...posix, env: { EDITOR: "nano" } })).toEqual({
       command: "nano",

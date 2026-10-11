@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 
 /**
@@ -34,13 +34,16 @@ export function assertRollbackConfirmed(env: string, phrase: string | undefined)
   if (env === LOCAL_ENVIRONMENT) return;
   const expected = rollbackConfirmPhrase(env);
   if (phrase !== undefined && phrase.trim().toLowerCase() === expected) return;
-  throw new ValidationError({
-    message:
-      phrase === undefined
-        ? `Rolling back ${env} reverses a group of migrations in every database it binds.`
-        : `That is not the confirmation phrase for rolling back ${env}.`,
-    action: `Pass --confirm-rollback "${expected}" to roll back ${env}.`,
-  });
+  const action = `Pass --confirm-rollback "${expected}" to roll back ${env}.`;
+  // No phrase at all is a question this run could not ask (#697); a wrong one is an answer, refused.
+  if (phrase === undefined) {
+    throw new InputRequiredError({
+      message: `Rolling back ${env} reverses a group of migrations in every database it binds.`,
+      action,
+      flag: "--confirm-rollback",
+    });
+  }
+  throw new ValidationError({ message: `That is not the confirmation phrase for rolling back ${env}.`, action });
 }
 
 /**

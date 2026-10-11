@@ -15,6 +15,7 @@ import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../pro
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { assertResetConfirmed, resetConfirmPhrase } from "../seed/safety";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -306,7 +307,7 @@ const reset = defineCommand({
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
-      const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+      const interactive = mayPrompt(args.json);
 
       // The gate first, before a single Cloudflare call. `--yes` deliberately does not appear here.
       await assertResetConfirmed({

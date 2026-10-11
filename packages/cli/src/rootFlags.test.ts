@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { malformedPrettyFlag, ROOT_FLAGS, wantsPretty, wantsVersion } from "./rootFlags";
+import {
+  malformedNoInputFlag,
+  malformedPrettyFlag,
+  ROOT_FLAGS,
+  wantsNoInput,
+  wantsPretty,
+  wantsVersion,
+} from "./rootFlags";
 
 describe("wantsVersion", () => {
   test("answers the bare root flags", () => {
@@ -139,7 +146,54 @@ describe("malformedPrettyFlag", () => {
  * restated in either. Two flags went missing from the catalog exactly once, by being written out twice.
  */
 describe("ROOT_FLAGS", () => {
-  test("carries both pretty spellings beside --help and --version", () => {
-    expect([...ROOT_FLAGS].sort()).toEqual(["--help", "--no-pretty", "--pretty", "--version", "-h", "-v"]);
+  test("carries both pretty spellings and --no-input beside --help and --version", () => {
+    expect([...ROOT_FLAGS].sort()).toEqual([
+      "--help",
+      "--no-input",
+      "--no-pretty",
+      "--pretty",
+      "--version",
+      "-h",
+      "-v",
+    ]);
+  });
+});
+
+/** `--no-input` forbids prompts for one call (#697), read off the raw tokens like `--pretty`. */
+describe("wantsNoInput", () => {
+  test("absent is undefined, so the variable and --json decide", () => {
+    expect(wantsNoInput(["init"])).toBeUndefined();
+    expect(wantsNoInput([])).toBeUndefined();
+  });
+
+  test("the bare flag forbids, on any command and on either side of a positional", () => {
+    expect(wantsNoInput(["--no-input", "init"])).toBe(true);
+    expect(wantsNoInput(["add", "auth", "--no-input"])).toBe(true);
+  });
+
+  test("=true and =false are read, and the last one wins", () => {
+    expect(wantsNoInput(["init", "--no-input=true"])).toBe(true);
+    expect(wantsNoInput(["init", "--no-input=false"])).toBe(false);
+    expect(wantsNoInput(["init", "--no-input", "--no-input=false"])).toBe(false);
+  });
+
+  test("a malformed value is no answer here; malformedNoInputFlag reports it", () => {
+    expect(wantsNoInput(["init", "--no-input=maybe"])).toBeUndefined();
+  });
+
+  test("anything after -- is a child's, and look-alikes are not it", () => {
+    expect(wantsNoInput(["dev", "--", "--no-input"])).toBeUndefined();
+    expect(wantsNoInput(["init", "--no-inputs", "--input"])).toBeUndefined();
+  });
+});
+
+describe("malformedNoInputFlag", () => {
+  test("names the first token whose value is neither true nor false", () => {
+    expect(malformedNoInputFlag(["init", "--no-input=1", "--no-input=x"])).toBe("--no-input=1");
+  });
+
+  test("well-formed spellings and payload after -- are not malformed", () => {
+    expect(malformedNoInputFlag(["init", "--no-input", "--no-input=false"])).toBeUndefined();
+    expect(malformedNoInputFlag(["dev", "--", "--no-input=x"])).toBeUndefined();
   });
 });

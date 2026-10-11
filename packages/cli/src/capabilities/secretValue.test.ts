@@ -686,7 +686,7 @@ describe("the two questions", () => {
       prompter: askedNothing,
     }).catch((error: unknown) => error);
     const payload = (thrown as { payload: { code: string; message: string; action?: string } }).payload;
-    expect(payload.code).toBe("validation/invalid_input");
+    expect(payload.code).toBe("input/required");
     expect(payload.message).toContain("GOOGLE_CLIENT_SECRET");
     expect(payload.action).toContain("printf '%s' \"$VALUE\" | pithy secrets create GOOGLE_CLIENT_SECRET");
   });
@@ -718,5 +718,18 @@ describe("the two questions", () => {
         prompter: askedNothing,
       }),
     ).rejects.toThrow(/No value was piped/);
+  });
+
+  test("the refusal is input/required with no flag: the value comes on stdin, never as a flag", async () => {
+    const thrown = await readSecretValue({
+      name: "payments-provider-credentials",
+      mode: "update",
+      entry: CREDENTIALS,
+      branches: ["stripe", "paddle"],
+      canPrompt: false,
+      stdin: terminal(),
+      prompter: askedNothing,
+    }).catch((error: unknown) => error);
+    expect((thrown as { payload?: unknown }).payload).toMatchObject({ code: "input/required", flag: null });
   });
 });

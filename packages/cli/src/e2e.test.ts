@@ -143,9 +143,9 @@ test("pithy add auth on a bare project refuses non-interactively, naming the exa
   expect(refused.code).not.toBe(0);
   expect(JSON.parse(refused.stderr.trim())).toEqual({
     error: {
-      code: "validation/invalid_input",
+      code: "input/required",
       status: 400,
-      issues: [],
+      flag: "--with-prerequisites",
       message: "auth requires secrets and email, which board does not compose.",
       action:
         "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",

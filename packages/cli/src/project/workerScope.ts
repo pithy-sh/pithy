@@ -4,7 +4,7 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { messageOf, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { composeCapabilities } from "../capabilities/compose";
 import { allCapabilities, loadWorkerConfig, type WorkerConfig } from "./config";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
@@ -387,8 +387,11 @@ export async function resolveSingleWorker(options: ResolveSingleOptions): Promis
     if (found) return found;
   }
 
-  throw new ValidationError({
+  // `input/required`, because it is: a question with an answer this run could not ask for (#697).
+  throw new InputRequiredError({
     message: "This project has several workers, so which one to wire is ambiguous.",
     action: `Pass --worker <name>. Known: ${workers.map((w) => w.name).join(", ")}.`,
+    flag: "--worker",
+    choices: workers.map((w) => w.name),
   });
 }

@@ -21,6 +21,7 @@ import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { installAlias } from "./alias";
@@ -39,17 +40,12 @@ async function offerAlias(): Promise<void> {
   if (!isCancel(wants) && wants) await installAlias({ silent: true });
 }
 
-/** Whether a human is attached — the only condition under which `init` prompts for anything. */
-function interactive(json: boolean): boolean {
-  return !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-}
-
 /**
  * Ask one question, falling back to `fallback` when there is nobody to ask. A cancel aborts the whole
  * run rather than proceeding on a value the user did not choose.
  */
 async function ask(message: string, fallback: string, json: boolean): Promise<{ value: string; prompted: boolean }> {
-  if (!interactive(json)) return { value: fallback, prompted: false };
+  if (!mayPrompt(json)) return { value: fallback, prompted: false };
   const { isCancel, text } = await import("@clack/prompts");
   const answer = await text({ message, defaultValue: fallback, placeholder: fallback });
   if (isCancel(answer)) {
@@ -465,7 +461,7 @@ export default defineCommand({
       // Said before the question, not after it. The name leads every Cloudflare resource this project
       // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
       // scope decision behind it — one project or two — cannot be undone by editing a string later.
-      if (!args.name && interactive(args.json)) {
+      if (!args.name && mayPrompt(args.json)) {
         process.stdout.write(
           `${dim("One project per set of apps that share users or data. Another app? Add a worker, not a project.")}\n${dim("The name leads every Cloudflare resource this project provisions. Changing it later orphans them.")}\n\n`,
         );
@@ -483,14 +479,14 @@ export default defineCommand({
       // the environment is the second segment of every Cloudflare name this project will compose, and
       // renaming one after provisioning orphans what was created under the old one. The scaffold writes
       // each Worker's `env.<name>` stanzas from it.
-      const environments = await askEnvironments({ interactive: interactive(args.json) });
+      const environments = await askEnvironments({ interactive: mayPrompt(args.json) });
 
       const appName = name.value;
       await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
 
       // Asked before the zones are, because listing them needs the token — and the same token answers
       // which account this project is for, so the two questions collapse into one.
-      const account = await askCloudflareAccount({ interactive: interactive(args.json) });
+      const account = await askCloudflareAccount({ interactive: mayPrompt(args.json) });
       const credentials = [...account.notes];
       // The block goes into the config the scaffold just wrote, so `loadProject` reads it on the very
       // next command. A config it could not be placed in is printed rather than dropped.
@@ -505,7 +501,7 @@ export default defineCommand({
         // `cloudflare.json` happens to hold on this machine.
         account: account.block,
         workerName: worker.value,
-        interactive: interactive(args.json),
+        interactive: mayPrompt(args.json),
       });
       // A declaration the writer could not place must not vanish. `writeDomains` still generates the
       // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
@@ -542,8 +538,8 @@ export default defineCommand({
       // Set Done. off from the prompt's gutter; a flagged run has nothing above it.
       process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);
 
-      // Offer the shortcut only to a human at a terminal — never in a --json or piped run.
-      if (!args.json && process.stdin.isTTY && process.stdout.isTTY) {
+      // Offer the shortcut only to a human at a terminal — never in a --json, piped or --no-input run.
+      if (mayPrompt(args.json)) {
         await offerAlias();
         // And the docs server, which says nothing when this machine runs no AI client (#652).
         await offerDocs();

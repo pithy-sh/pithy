@@ -84,7 +84,7 @@ The refusal is database-wide. Any `down` against a database holding retained row
 
 **A database other environments bind is never reversed.** `EMAIL_SUPPRESSIONS` is one database, bound by every environment's stanza. A `--env staging` rollback reversing it would reverse production's suppression list. A group that holds part of such a database is refused whole — `EMAIL_SUPPRESSIONS is bound by prod too. A staging rollback of group release-7 does not reverse it.` — because the group cannot come down completely, so none of it comes down. A group that holds none of it leaves it alone and says so: `EMAIL_SUPPRESSIONS kept. prod binds it too.` `seed --redo`'s reset keeps it the same way.
 
-**Outside `dev`, a rollback is asked for in words.** The phrase names its environment, so one typed for `staging` cannot be pasted into a command aimed at `prod`. Interactively the prompt asks; in CI pass `--confirm-rollback`.
+**Outside `dev`, a rollback is asked for in words.** The phrase names its environment, so one typed for `staging` cannot be pasted into a command aimed at `prod`. Interactively the prompt asks; in CI pass `--confirm-rollback`. A run that may not ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or no terminal — and passed no phrase is refused `input/required`, naming `--confirm-rollback`; a wrong phrase is refused as `validation/invalid_input`.
 
 **After a rollback fails partway, fix the `down` before anything else.** The databases that already moved stay moved. Each migration's group row is forgotten as it comes down, so re-running the *same* `--group` reverses what is left of it and nothing else — but `pithy doctor` is what shows where each database stands first.
 

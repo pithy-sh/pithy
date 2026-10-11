@@ -10,7 +10,8 @@ import { clientById, DOCS_MCP_URL, MCP_CLIENTS, type McpClient, type Scope, scop
 import { snippetFor, targetFor, targetsFor } from "../mcp/connect";
 import { FIXTURES } from "../mcp/fixtures";
 import type { HomeOptions, PathBase } from "../mcp/home";
-import docs, { offerDocs } from "./docs";
+import { latchInputMode } from "../terminal/inputMode";
+import docs, { offerDocs, requireScopeAnswerable } from "./docs";
 
 /**
  * `pithy docs connect | disconnect | status`, exercised as the operator runs them.
@@ -481,6 +482,35 @@ describe("pithy docs disconnect", () => {
     expect(exitCode).toBe(1);
     expect(JSON.parse(err).error.message).toContain("--scope is required");
   });
+
+  test("the refusal is input/required, naming --scope and both scopes, so an agent can answer it", async () => {
+    const { err } = await run("disconnect", { all: true, json: true });
+    expect(JSON.parse(err).error).toMatchObject({
+      code: "input/required",
+      flag: "--scope",
+      choices: ["project", "user"],
+    });
+  });
+
+  test("naming nothing to connect is input/required for --client, with every client id", async () => {
+    const { err } = await run("connect", { scope: "user", json: true });
+    expect(JSON.parse(err).error).toMatchObject({
+      code: "input/required",
+      flag: "--client",
+      choices: [
+        "claude-code",
+        "cursor",
+        "vscode",
+        "gemini",
+        "claude-desktop",
+        "cline",
+        "zed",
+        "codex",
+        "goose",
+        "continue",
+      ],
+    });
+  });
 });
 
 describe("pithy docs status", () => {
@@ -733,5 +763,41 @@ describe("pithy docs at a terminal, with no flag naming a client", () => {
     const { out, exitCode } = await run("disconnect", { client: "cursor", scope: "user" });
     expect(exitCode).toBe(1);
     expect(out).toBe(`Cursor  refused  ${path} — The file is not valid JSON, so nothing was written.\n`);
+  });
+});
+
+/**
+ * **The `--scope` gate both subcommands run (#697).** A named scope needs no question; with none, a run
+ * that may ask goes on to ask, and one that may not fails `input/required`, naming `--scope` and its two
+ * values. The switch forbids it with a terminal attached on both ends, so the latch is what decides.
+ */
+describe("requireScopeAnswerable", () => {
+  const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+  afterEach(() => {
+    latchInputMode(false);
+    process.stdin.isTTY = tty.stdin;
+    process.stdout.isTTY = tty.stdout;
+  });
+
+  test("a named scope passes, whatever forbids asking", () => {
+    latchInputMode(true);
+    expect(() => requireScopeAnswerable("user", true)).not.toThrow();
+  });
+
+  test("at a terminal with nothing forbidding it, no scope is a question to ask", () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    expect(() => requireScopeAnswerable(undefined, false)).not.toThrow();
+  });
+
+  test("under the switch, no scope fails input/required naming --scope", () => {
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
+    latchInputMode(true);
+    expect(() => requireScopeAnswerable(undefined, false)).toThrow(
+      expect.objectContaining({
+        payload: expect.objectContaining({ code: "input/required", flag: "--scope", choices: ["project", "user"] }),
+      }),
+    );
   });
 });

@@ -60,7 +60,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 
 Two consequences worth stating outright:
 
-- **Commands that wire one Worker take `--worker <name>`** (`add`, `remove`). With a single-Worker project the flag is optional; with several, the CLI prompts at a terminal and **fails with an actionable error under `--json`** rather than guessing — wiring a capability into the wrong Worker would put its bindings and DO class migrations on the wrong script. Commands that operate on the whole project (`migrate`, `seed`, `upgrade`, `doctor`, `env`) **fan out over every Worker** and accept `--worker` to narrow.
+- **Commands that wire one Worker take `--worker <name>`** (`add`, `remove`). With a single-Worker project the flag is optional; with several, the CLI prompts when the run may ask and otherwise **fails `input/required`, naming `--worker` and every Worker it takes** (§1.2), rather than guessing — wiring a capability into the wrong Worker would put its bindings and DO class migrations on the wrong script. Commands that operate on the whole project (`migrate`, `seed`, `upgrade`, `doctor`, `env`) **fan out over every Worker** and accept `--worker` to narrow.
 - **Workers share a resource by declaring the same binding name.** Feature resource names derive from `(project, issue, slug, binding, kind)` with no Worker segment, so two Workers that both declare `DB` are backed by one D1; a Worker wanting its own declares a different binding (e.g. `COLLAB_DB`). Locally this is why Miniflare state persists at the project root — per-Worker state would silently split a shared database.
 
 ### 1.2 Flag conventions
@@ -72,12 +72,29 @@ Two consequences worth stating outright:
 - **A flag the command does not declare is refused, on every command.** `pithy doctor --bogus-flag yes` exits 1 with `Unknown flag: --bogus-flag.` and, under it, the flags `pithy doctor` does take. Under `--json` the refusal is the one `{ "error": … }` line on stderr — `validation/invalid_input`, one `unrecognized_keys` issue per flag — and nothing on stdout. It is checked once, in `bin.ts`, before anything answers the invocation: before citty, which would parse the flag without a word, and before `--version`, which would print over it. A flag is the command's wherever it is typed, before its positional or after it: `pithy secrets rotate API_KEY --dry-rn` is refused exactly as `pithy secrets rotate --dry-rn API_KEY` is. A group takes no flags, so `pithy token --json` is refused rather than answered with usage. "Declares" means what the docs catalog publishes for that command: each arg's name, its camelCase spelling, its aliases, `--no-<name>` on a boolean, and the flags below that work everywhere. A declared string flag takes the next token as its value even when it starts with a dash; anything else meant for a child process goes after `--`
 - `--help` / `-h` and `--version` / `-v` work on any command. citty answers its version builtin only when it is the *sole* argument, so `bin.ts` answers it first and `pithy add --version` prints the version instead of running `add`. It fires on a bare `--version` or `-v` anywhere before a `--` separator; a value that is literally the string passes as `--flag=--version` or after `--`
 - **`--pretty` / `--no-pretty` work on any command that takes `--json`, and format that line.** They are answered in `bin.ts` before citty parses, like `--version`, so no command declares them and every command accepts them; the docs catalog publishes both under `globalFlags`. `--pretty` indents the `--json` document two spaces and adds restrained syntax color; `--no-pretty` keeps it on one line. Neither means anything without `--json`, so either one alone is refused — `pithy doctor --pretty` exits 1 with `--pretty needs --json.`, and so does `pithy remove --pretty`, since `remove` is the one command that takes no `--json` at all. Only a bare, exactly-matching token counts, on the same rule as `--version`
+- **`--no-input` works on every command, and forbids every prompt for that call.** It is answered in `bin.ts` like `--pretty` and published under `globalFlags`, but it needs no `--json`: forbidding prompts is a statement about the run, not about a format. `--no-input=true` and `--no-input=false` are read too, and any other value is refused. `=false` grants nothing that `PITHY_NONINTERACTIVE=1` or `--json` forbade. There is no `--input`, because asking is already the default
 
 **`--env` takes `dev`, `staging`, or `prod`, and it is validated at the flag.** It defaults to `dev`, because every command is safe there. It is **not** `production`: the environment sits verbatim in the middle of every Cloudflare name the project composes, so each of its characters costs one character of project name, one for one — and `--env production` is answered with an error naming `prod`. A custom environment is allowed (`live`, `eu-prod`), held to the same charset and to a hard maximum of 7 characters, the length of `staging`. Every project-name budget is derived against that 7, and a provisioned project cannot be renamed, so a longer environment is refused rather than quietly shrinking a cap projects were already accepted under.
 
 **Which of them this project has is declared**, once, as `environments` in the root `pithy.config.ts` — `["staging", "prod"]` unless it says otherwise, asked at `pithy init` with that default. A command that deploys or provisions refuses an `--env` the project does not declare, naming the ones it does; `dev` is never declared, because it is local and always there. See `docs/NAMING.md`.
 
-Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
+Every command is agent-drivable and supports `--json`, with **one deliberate exception**: `pithy remove` is destructive, so it is **manual, interactive-only** — passing `--json` fast-fails with a clear error before anything changes. Its `--drop` confirmations are typed at a real terminal; there is no headless path. A `--drop` that nobody may be asked to confirm — no terminal, `--no-input`, or `PITHY_NONINTERACTIVE=1` — fails `input/required` with `"flag": null` before anything is read. Automated teardown of an ephemeral environment is a different command (the `feature` lifecycle), not `remove`.
+
+**A run may be told it may not ask anything.** `PITHY_NONINTERACTIVE=1` forbids every prompt for the session, `--no-input` forbids them for one call, and `--json` forbids them implicitly, because a caller parsing one line is not reading a question. All three are resolved once, in `bin.ts`, and every command reads that one answer instead of deciding for itself. Any one of them forbids; none of them can grant what another forbade:
+
+| Signal | Effect |
+|---|---|
+| `PITHY_NONINTERACTIVE=1` | Forbids prompts for the whole session. Empty is unset. Any other value is refused, naming the one it takes |
+| `--no-input` | Forbids prompts for this invocation |
+| `--json` | Forbids prompts for this invocation, as it always has |
+| none of them | A prompt opens only when stdin and stdout are both a terminal |
+
+**The variable exists because a TTY does not prove a person is present**, for the reason `PITHY_JSON` exists: an agent harness that allocates a PTY and runs without `--json` used to reach a prompt and wait for an answer nobody would give. With input forbidden, a prompt never opens, and what happens instead depends on whether its question has a default:
+
+- **A question with a default takes it**, exactly as a piped run always has. `pithy init` scaffolds with the directory's name, `api` and the default environments, and asks for no account or domain.
+- **A question with no default fails `input/required`**, a 400 that names the flag answering it and, when the set is known, every value that flag takes. Under `--json` it is the one `{ "error": … }` line: `{ "code": "input/required", "flag": "--worker", "choices": ["api", "admin"], … }`. `flag` is `null` when no flag can answer — a `--drop` confirmation, or a secret, which comes on stdin and never on the command line.
+
+The flag that answers each one is named on the command's page. `docs/commands/*.md` calls them out where a prompt is described; `packages/cli/src/ci/promptSites.test.ts` enumerates every prompt in the CLI and holds each to one kind or the other.
 
 **`--json` formats for whoever is reading it.** A script, a CI job or an agent gets exactly the compact line it has always parsed; a person at a terminal gets that same document indented two spaces, with restrained syntax color. Nothing about the payload changes, so both round-trip through `JSON.parse` to the same value.
 
@@ -471,6 +488,12 @@ Check your CLOUDFLARE_API_TOKEN and try again.
 - Last line: the action the user should take
 - Color: ANSI basic-16 red (terminal-themed) for the first line; default otherwise. See Section 3.4.
 
+**A question this run could not ask is `input/required`.** Under `PITHY_NONINTERACTIVE=1`, `--no-input` or `--json` (§1.2), a prompt with no default fails instead of opening. The problem and action lines read as any other refusal; the `--json` line also carries `flag`, the flag that answers the question (`null` when only a person or a piped document can), and `choices`, every value that flag takes when the set is known. `choices` is absent rather than empty when it is not:
+
+```json
+{ "error": { "code": "input/required", "status": 400, "flag": "--worker", "choices": ["api", "admin"], "message": "This project has several workers, so which one to wire is ambiguous.", "action": "Pass --worker <name>. Known: api, admin." } }
+```
+
 **When the failure came from a service Pithy does not control, that service's own answer is carried on the problem line, after the words `Cloudflare said:`** — its code, its sentence, and its documentation link, entries separated by semicolons. Pithy reports it rather than paraphrasing it. A refusal that names only what Pithy was attempting cannot tell a missing permission from a dead credential from an outage, and each of those has a different remedy:
 
 ```
@@ -601,6 +624,8 @@ Default values shown in brackets. `Y/n` means default yes; `y/N` means default n
 **A prompt that can be answered from the account, is.** `pithy init` and `pithy worker add` ask where a Worker will answer, per environment, and offer the account's real Cloudflare zones rather than a free-text field — so a typo fails at `init` with a list of what exists, instead of at `deploy` with a Cloudflare error to decode. Where the account cannot be reached — no credentials, a token without `Zone:Read`, an offline laptop — the prompt says so in one line and falls back to free text. Scaffolding has never required the network, and this does not change that.
 
 **Every one of these is skippable.** A project without a domain yet is legitimate, and most are on the first day; an empty answer writes no `domains` block at all, and adding one later is a config edit plus a deploy, never a rescaffold. A non-interactive run asks nothing and declares nothing — `domains` goes in `pithy.config.ts` directly, which is exactly what the prompt writes.
+
+**A non-interactive run is one that may not ask (§1.2):** no terminal on stdin and stdout, `--json`, `--no-input`, or `PITHY_NONINTERACTIVE=1`. Every prompt is one of two kinds there. A prompt with a default — every question `pithy init` asks, the domain prompt, the screen sets `pithy ui add` offers, the scopes `pithy dashboard connect` grants — takes it silently. A prompt with no default — which Worker, a required `--set` option, a confirmation phrase, the yes-or-no `pithy dashboard revoke-key` and `disconnect` ask before acting — fails `input/required`, naming its flag (§3.3). A confirmation defaults to no, so a run that cannot ask is never taken as yes: it passes `--yes`, or the phrase, or it is refused. No prompt waits on a person who was not asked for.
 
 **And the declaration is the only place an origin is written down.** Every capability that needs a public origin asks the same question: `auth.baseURL` builds OAuth callbacks, magic-link URLs and the CSRF allowed-origin; `email.baseUrl` builds tracking and unsubscribe links; `payments`' Stripe return URLs decide where Checkout sends the browser back. Write a URL into any of them and you have written *one* environment's origin into all of them — which is how a staging deploy mails real users links into production, an unsubscribe from a staging test unsubscribes that person in production, and a staging payer lands in production on an account that bought nothing. Three capabilities, one mistake, three separate discoveries.
 
@@ -1149,7 +1174,7 @@ Moved to [`docs/commands/seed.md`](commands/seed.md).
 - **Line endings:** Write `\n` on POSIX, `\r\n` on Windows. Detect via `os.EOL`.
 - **File permissions:** Created rc files get `0644` on POSIX; on Windows, default ACLs.
 - **Terminal width:** Detect via `process.stdout.columns`; fall back to 80 if undefined.
-- **TTY detection:** Use `process.stdout.isTTY` to enable color and interactive prompts. Non-TTY (piped) output must be plain text and parseable.
+- **TTY detection:** Use `process.stdout.isTTY` to enable color (§3.4). Whether to prompt is never read off a stream directly: every command asks `terminal/inputMode.ts`, which also reads `PITHY_NONINTERACTIVE` and `--no-input` (§1.2). Non-TTY (piped) output must be plain text and parseable.
 
 ---
 

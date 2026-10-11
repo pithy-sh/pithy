@@ -14,6 +14,7 @@ import {
 } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -141,7 +142,7 @@ export function formatMigrateProgress(progress: MigrationProgress, options: Migr
  * group on top.
  */
 async function promptRollback(env: string, json: boolean, group: string | undefined): Promise<string | undefined> {
-  const interactive = !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  const interactive = mayPrompt(json);
   if (!interactive || env === LOCAL_ENVIRONMENT) return undefined;
   const { isCancel, text } = await import("@clack/prompts");
   const subject = group === undefined ? "a group of migrations" : `group ${group}`;
@@ -149,6 +150,30 @@ async function promptRollback(env: string, json: boolean, group: string | undefi
     message: `This reverses ${subject} in every database ${env} binds. Type "${rollbackConfirmPhrase(env)}" to confirm:`,
   });
   return isCancel(answer) ? "" : answer;
+}
+
+/** What {@link rollbackPhrase} decides from. */
+export interface RollbackPhraseOptions {
+  /** The environment being migrated. */
+  env: string;
+  /** Whether the command answers `--json`. */
+  json: boolean;
+  /** Whether this run is a `--rollback`. */
+  rollback: boolean;
+  /** The `--confirm-rollback` value, when one was passed. */
+  flagged?: string;
+  /** The group the rollback reverses, for the prompt to name. */
+  group?: string;
+}
+
+/**
+ * The phrase a rollback is confirmed with: the flag wherever it is present, a person at a terminal
+ * otherwise, and nothing when nobody may be asked — which `assertRollbackConfirmed` refuses as
+ * `input/required`, naming `--confirm-rollback` (#697).
+ */
+export async function rollbackPhrase(options: RollbackPhraseOptions): Promise<string | undefined> {
+  if (!options.rollback || options.flagged !== undefined) return options.flagged;
+  return promptRollback(options.env, options.json, options.group);
 }
 
 export default defineCommand({
@@ -203,10 +228,13 @@ export default defineCommand({
       const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       // A rollback outside dev is asked for in words (#588). The flag wins wherever it is present; a
       // terminal without it is asked; a script without it is refused by `migrateProject`, which checks.
-      const confirmRollback =
-        args.rollback && args["confirm-rollback"] === undefined
-          ? await promptRollback(env, args.json, group)
-          : args["confirm-rollback"];
+      const confirmRollback = await rollbackPhrase({
+        env,
+        json: args.json,
+        rollback: args.rollback,
+        ...(args["confirm-rollback"] === undefined ? {} : { flagged: args["confirm-rollback"] }),
+        ...(group === undefined ? {} : { group }),
+      });
       let workers: WorkerMigrationRun[];
       try {
         workers = await migrateProject({

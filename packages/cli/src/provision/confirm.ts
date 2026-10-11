@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isProductionEnv } from "../seed/safety";
 
 /**
@@ -97,8 +97,10 @@ export async function assertProvisionConfirmed(options: ConfirmProvisionOptions)
     });
   }
 
-  throw new ValidationError({
+  // Nobody could be asked (#697): `input/required`, naming the flag that carries the phrase.
+  throw new InputRequiredError({
     message: `${options.env} is a production environment.`,
     action: `Pass --confirm "${expected}".`,
+    flag: "--confirm",
   });
 }

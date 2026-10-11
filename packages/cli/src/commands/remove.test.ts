@@ -8,7 +8,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RemoveCapabilityOptions } from "../capabilities/remove";
 import { collectMigrationSets } from "../migrations/registry";
-import remove, { rejectJson } from "./remove";
+import remove, { rejectJson, requireDropConfirmable } from "./remove";
 
 /** What `pithy remove` handed the removal: the drop's environment, and the composition it reverses from. */
 const seen = vi.hoisted(() => ({ calls: [] as { drop: string | undefined; migrations: string[] }[] }));
@@ -68,6 +68,33 @@ describe("rejectJson", () => {
  * staging alone had that migration left out of a drop against staging's database. The environments gate did
  * not see it, because the composition was carried out of `add.ts` by a function `remove.ts` called.
  */
+/**
+ * `--drop` asks a person, and there is no flag that answers for one. A run that may not prompt is refused
+ * before anything is read — it used to reach the clack prompt whatever the terminal state (#697).
+ */
+describe("requireDropConfirmable", () => {
+  test("a run that may prompt, or one not dropping, passes", () => {
+    expect(() => requireDropConfirmable("auth", { drop: true, interactive: true })).not.toThrow();
+    expect(() => requireDropConfirmable("auth", { drop: false, interactive: false })).not.toThrow();
+  });
+
+  test("--drop where nobody may be asked is input/required with no flag, because none exists", () => {
+    let thrown: unknown;
+    try {
+      requireDropConfirmable("auth", { drop: true, interactive: false });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PithyError);
+    const payload = (thrown as PithyError).payload;
+    expect(payload).toMatchObject({ code: "input/required", flag: null });
+    expect(payload.message).toBe("Dropping auth's tables needs a person to confirm it.");
+    expect(payload.action).toBe(
+      "Run pithy remove auth --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.",
+    );
+  });
+});
+
 describe("remove --drop composes for the environment it drops", () => {
   let dir: string;
 
@@ -99,12 +126,19 @@ describe("remove --drop composes for the environment it drops", () => {
   async function run(args: Record<string, unknown>): Promise<void> {
     const cwd = vi.spyOn(process, "cwd").mockReturnValue(dir);
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    // A person at a terminal: `--drop` is refused before anything is read when nobody may be asked
+    // (`requireDropConfirmable`), and this suite is about what a drop composes, not who confirms it.
+    const tty = { stdin: process.stdin.isTTY, stdout: process.stdout.isTTY };
+    process.stdin.isTTY = true;
+    process.stdout.isTTY = true;
     try {
       await remove.run?.({
         args: { capability: "app", json: false, drop: false, env: "dev", ...args },
         rawArgs: [],
       } as never);
     } finally {
+      process.stdin.isTTY = tty.stdin;
+      process.stdout.isTTY = tty.stdout;
       cwd.mockRestore();
       stdout.mockRestore();
     }

@@ -4,12 +4,13 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CreateCliAuditOptions } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
 import type { WorkerTarget } from "../project/workers";
-import add, { buildAudit, targetWorker } from "./add";
+import { latchInputMode, mayPrompt } from "../terminal/inputMode";
+import add, { addPrompts, buildAudit, targetWorker } from "./add";
 
 /** Discovery seam: the `apps/*` set, without a filesystem. */
 function discovery(...names: string[]) {
@@ -133,9 +134,11 @@ describe("targetWorker", () => {
       loadConfig,
     }).catch((error: unknown) => error);
 
-    expect(failure).toBeInstanceOf(ValidationError);
-    expect((failure as ValidationError).payload.action).toContain("--worker");
-    expect((failure as ValidationError).payload.action).toContain("api, edge");
+    expect(failure).toBeInstanceOf(InputRequiredError);
+    const payload = (failure as InputRequiredError).payload;
+    expect(payload.action).toContain("--worker");
+    expect(payload.action).toContain("api, edge");
+    expect(payload).toMatchObject({ code: "input/required", flag: "--worker", choices: ["api", "edge"] });
   });
 
   test("an unknown --worker fails, naming the known ones", async () => {
@@ -181,5 +184,29 @@ describe("targetWorker", () => {
 
     expect(failure).toBeInstanceOf(NotFoundError);
     expect((failure as NotFoundError).payload.action).toContain("pithy init");
+  });
+});
+
+/**
+ * **The two prompts `pithy add` hands its flow, and when (#697).** The flow asks only through what it is
+ * handed, so this is the whole gate: both prompts when the run may ask, neither when it may not, and the
+ * flow's own refusals — `input/required`, naming `--set` or `--with-prerequisites` — do the rest.
+ */
+describe("addPrompts", () => {
+  afterEach(() => latchInputMode(false));
+
+  test("a run that may ask hands the flow both prompts", () => {
+    const prompts = addPrompts(true);
+    expect(typeof prompts.prompt).toBe("function");
+    expect(typeof prompts.askPrerequisites).toBe("function");
+  });
+
+  test("a run that may not ask hands it neither", () => {
+    expect(addPrompts(false)).toEqual({});
+  });
+
+  test("the switch reaches it through the seam, terminal or not", () => {
+    latchInputMode(true);
+    expect(addPrompts(mayPrompt(false, { stdin: { isTTY: true }, stdout: { isTTY: true } }))).toEqual({});
   });
 });

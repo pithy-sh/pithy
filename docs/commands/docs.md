@@ -23,7 +23,7 @@ pithy docs status [--json]
 | `--print` | boolean | `false` | `connect` only. Print the snippet and write nothing |
 | `--json` | boolean | `false` | Machine-readable output |
 
-`--client` and `--all` are mutually exclusive. `--scope` is required whenever nothing can be asked — a run under `--json`, or with no terminal attached.
+`--client` and `--all` are mutually exclusive. `--scope` is required whenever nothing can be asked — a run under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, or with no terminal attached — and so is `--client` or `--all`. Each refusal is `input/required`, naming the flag and every value it takes (`docs/CLI.md` §1.2).
 
 `disconnect` takes the same target flags without `--print`. `status` takes `--json` and nothing else: it reads.
 
@@ -70,7 +70,7 @@ A **project** file is committed. It hands the docs to everyone who checks the re
 
 A **user** file is yours. It follows you into every project you open, and nobody else on the team gets it.
 
-Those are different decisions with different blast radii, so the command asks rather than picking. An interactive run prints both sentences and asks *Who is this for?*; a run that cannot ask — `--json`, or no terminal — is refused unless `--scope` says. The flag path holds the same line the prompt does.
+Those are different decisions with different blast radii, so the command asks rather than picking. An interactive run prints both sentences and asks *Who is this for?*; a run that cannot ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or no terminal — is refused unless `--scope` says. The flag path holds the same line the prompt does.
 
 A client that declares one scope takes it whatever `--scope` said. Claude Desktop, Cline and Goose have no project configuration to write, so `--scope project` against them is a question with one answer, and refusing over it would make `--all --scope project` unusable on a machine that happens to run Goose.
 
@@ -211,7 +211,7 @@ Pass one of: claude-code, cursor, vscode, gemini, claude-desktop, cline, zed, co
 
 ```
 $ pithy docs connect --all --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"--scope is required when nothing can be asked.","action":"Pass --scope project to commit it for the team, or --scope user for yourself."}}
+{"error":{"code":"input/required","status":400,"flag":"--scope","choices":["project","user"],"message":"--scope is required when nothing can be asked.","action":"Pass --scope project to commit it for the team, or --scope user for yourself."}}
 ```
 
 **A scope that is not one of the two.** Exit 1.
@@ -226,7 +226,7 @@ Pass --scope project to commit it for the team, or --scope user for yourself.
 
 ```
 $ pithy docs connect --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"Name what to connect.","action":"Pass --client <id> for one, or --all for every client detected here."}}
+{"error":{"code":"input/required","status":400,"flag":"--client","choices":["claude-code","cursor","vscode","gemini","claude-desktop","cline","zed","codex","goose","continue"],"message":"Name what to connect.","action":"Pass --client <id> for one, or --all for every client detected here."}}
 ```
 
 **A file that will not parse** is not one of these. It is a `refused` row, per client, and the run carries on to the rest. Exit 1 only if every client asked for refused.

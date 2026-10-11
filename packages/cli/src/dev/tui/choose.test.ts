@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test, vi } from "vitest";
+import { latchInputMode } from "../../terminal/inputMode";
 import { chooseRenderer, interruptAction, rendererInputsFromProcess, ticking } from "./choose";
 
 /**
@@ -123,6 +124,21 @@ describe("rendererInputsFromProcess", () => {
     } finally {
       if (out) Object.defineProperty(process.stdout, "isTTY", out);
       if (inp) Object.defineProperty(process.stdin, "isTTY", inp);
+    }
+  });
+});
+
+describe("rendererInputsFromProcess — a run that forbade input", () => {
+  test("offers no keys on a terminal when prompts are forbidden (#697)", () => {
+    const inp = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    latchInputMode(true);
+    try {
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      expect(rendererInputsFromProcess(false).stdinIsTTY).toBe(false);
+    } finally {
+      latchInputMode(false);
+      if (inp) Object.defineProperty(process.stdin, "isTTY", inp);
+      else Reflect.deleteProperty(process.stdin, "isTTY");
     }
   });
 });

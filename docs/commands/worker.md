@@ -26,7 +26,7 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 | `<from> <to>` | `rename` | required | The Worker to rename, and its new kebab-case name |
 | `--skip-install` | `add` | `false` | Skip the workspace install after scaffolding |
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
-| `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and raise an actionable error under `--json` |
+| `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
 | `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all five | `false` | One line of machine-readable output |
 
