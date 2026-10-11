@@ -227,7 +227,7 @@ async function load<T>(capability: string, pkg: string, projectDir: string, impo
   try {
     return await importer();
   } catch (error) {
-    throw capabilityLoadError(capability, pkg, error, projectDir);
+    throw await capabilityLoadError(capability, pkg, error, projectDir);
   }
 }
 

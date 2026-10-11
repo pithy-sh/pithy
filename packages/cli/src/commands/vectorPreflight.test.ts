@@ -10,6 +10,7 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { EXIT } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
 import vector from "./vector";
 
@@ -219,8 +220,8 @@ async function runSubcommand(name: string, args: Record<string, unknown>): Promi
 }
 
 /** The `--json` error payload a refused run reported. */
-function refusal(run: Run): { code: string; message: string } {
-  return (JSON.parse(run.stderr) as { error: { code: string; message: string } }).error;
+function refusal(run: Run): { code: string; message: string; fix?: string } {
+  return (JSON.parse(run.stderr) as { error: { code: string; message: string; fix?: string } }).error;
 }
 
 /** The arguments each subcommand needs to reach its first Cloudflare call, for a given environment. */
@@ -266,11 +267,38 @@ describe("pithy vector refuses an unready environment before it creates or destr
       // And in fact nothing at all: the gate is a local file read, so it lands before the REST clients
       // are even constructed.
       expect(cf.calls).toEqual([]);
-      expect(run.exitCode).toBe(1);
+      expect(run.exitCode).toBe(EXIT.precondition);
       expect(refusal(run).message).toBe(`${WORKER}'s wrangler.jsonc has no DB database_id for ${UNREADY}.`);
-      expect(refusal(run).code).toBe("validation/invalid_input");
+      expect(refusal(run).code).toBe("core/precondition_failed");
+      // Production is brought up by a person, with the `--confirm` phrase, so there is no command an agent
+      // could run as written: no `fix`, and the action line says what to do (#697).
+      expect(refusal(run).fix).toBeUndefined();
     },
   );
+
+  /**
+   * `dev` reads the top-level bindings, and `pithy provision` refuses `dev` — it is a legal environment
+   * and not a legal target. So a `dev` refusal names no `fix`: the only command it could name is one
+   * guaranteed to fail validation, which is worse than none.
+   */
+  test("a dev refusal carries no fix, because pithy provision refuses dev", async () => {
+    const config = (await readWranglerConfig(fixture.workerDir)) as Stanza;
+    const before = config.d1_databases;
+    config.d1_databases = [{ binding: "DB" }];
+    await writeWranglerConfig(fixture.workerDir, config);
+    try {
+      const run = await runSubcommand("provision", argsFor("provision", "dev"));
+
+      expect(run.exitCode).toBe(EXIT.precondition);
+      expect(refusal(run).message).toBe(`${WORKER}'s wrangler.jsonc has no DB database_id for dev.`);
+      expect(refusal(run)).not.toHaveProperty("fix");
+    } finally {
+      const restored = (await readWranglerConfig(fixture.workerDir)) as Stanza;
+      if (before === undefined) delete restored.d1_databases;
+      else restored.d1_databases = before;
+      await writeWranglerConfig(fixture.workerDir, restored);
+    }
+  });
 
   /**
    * The other half, and the one that keeps the gate honest: a refusal that refuses everything is not a

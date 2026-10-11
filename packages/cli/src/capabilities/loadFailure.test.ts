@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { describe, expect, test } from "vitest";
-import { capabilityLoadError, classifyCapabilityLoadFailure } from "./loadFailure";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
+import { capabilityLoadError, capabilityLoadErrorNow, classifyCapabilityLoadFailure } from "./loadFailure";
 
 /**
  * The loader classifier, against the error shapes each runtime actually throws.
@@ -180,13 +184,13 @@ describe("classifyCapabilityLoadFailure", () => {
 });
 
 describe("capabilityLoadError", () => {
-  test("the target reaches detail and never action — detail is throw-site context", () => {
+  test("the target reaches detail and never action — detail is throw-site context", async () => {
     const cause = {
       name: "ResolveMessage",
       message: "Cannot find package 'stripe' from '/p/node_modules/@pithy-sh/payments/src/x.ts'",
       specifier: "stripe",
     };
-    const error = capabilityLoadError("payments", "@pithy-sh/payments/src/capability", cause);
+    const error = await capabilityLoadError("payments", "@pithy-sh/payments/src/capability", cause);
     expect(error).toBeInstanceOf(PithyError);
     expect(error.payload.detail).toContain("@pithy-sh/payments/src/capability");
     expect(error.payload.detail).toContain("dependency-unresolved");
@@ -194,15 +198,61 @@ describe("capabilityLoadError", () => {
     expect(error.cause).toBe(cause);
   });
 
-  test("the capability package is derived from the target, so a deep subpath still classifies", () => {
-    const cause = {
-      name: "ResolveMessage",
-      message: "Cannot find package '@pithy-sh/testers/src/workflows/worker'",
-      code: "ERR_MODULE_NOT_FOUND",
-      specifier: "@pithy-sh/testers/src/workflows/worker",
-    };
-    const error = capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", cause);
+  const missingTesters = {
+    name: "ResolveMessage",
+    message: "Cannot find package '@pithy-sh/testers/src/workflows/worker'",
+    code: "ERR_MODULE_NOT_FOUND",
+    specifier: "@pithy-sh/testers/src/workflows/worker",
+  };
+
+  test("the capability package is derived from the target, so a deep subpath still classifies", async () => {
+    const error = await capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", missingTesters);
     expect(error.payload.message).toBe("The testers capability is not installed.");
     expect(error.payload.action).toContain("pithy add testers");
+  });
+
+  // A capability the project never installed is one it does not compose: the call was right, the project is
+  // missing what it depends on. Exit 3 and `pithy add` as the fix, as `notComposed.ts` answers it — never exit
+  // 2, which says a different spelling would have worked (#697, docs/CLI.md §3.8).
+  describe("a capability that is not installed is a precondition, with pithy add as its fix", () => {
+    let dir: string;
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), "pithy-load-failure-"));
+      await mkdir(join(dir, "apps", "api"), { recursive: true });
+      await writeFile(join(dir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "demo-api" }));
+      await writeFile(join(dir, "apps", "api", "pithy.config.ts"), "export default {};\n");
+    });
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    test("exit 3, core/precondition_failed, and the add that installs and composes it", async () => {
+      const error = await capabilityLoadError("testers", "@pithy-sh/testers", missingTesters, dir);
+      expect(error.payload.code).toBe("core/precondition_failed");
+      expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
+      expect(fixOf(error)).toBe("pithy add testers --with-prerequisites");
+      expect(error.cause).toBe(missingTesters);
+    });
+
+    test("two Workers and nothing saying which: still exit 3, and no fix", async () => {
+      await mkdir(join(dir, "apps", "admin"), { recursive: true });
+      await writeFile(join(dir, "apps", "admin", "wrangler.jsonc"), JSON.stringify({ name: "demo-admin" }));
+      await writeFile(join(dir, "apps", "admin", "pithy.config.ts"), "export default {};\n");
+      const error = await capabilityLoadError("testers", "@pithy-sh/testers", missingTesters, dir);
+      expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
+      expect(fixOf(error)).toBeUndefined();
+    });
+
+    test("the synchronous form is the same class, with no fix", () => {
+      const error = capabilityLoadErrorNow("testers", "@pithy-sh/testers", missingTesters, dir);
+      expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
+      expect(fixOf(error)).toBeUndefined();
+    });
+
+    test("every other kind stays a usage error", async () => {
+      const cause = { name: "SyntaxError", message: "Unexpected token" };
+      const error = await capabilityLoadError("testers", "@pithy-sh/testers", cause, dir);
+      expect(error.payload.code).toBe("validation/invalid_input");
+    });
   });
 });

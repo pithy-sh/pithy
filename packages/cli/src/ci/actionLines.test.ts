@@ -59,14 +59,18 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 
 /**
- * An `action:` value, or a host-env provider's `command:`, as a string or template literal. Interpolation is
- * blanked, never guessed at.
+ * An `action:` value, a host-env provider's `command:`, or a `fix:` (`terminal/exitClass.ts`'s `withFix`), as
+ * a string or template literal. Interpolation is blanked, never guessed at.
+ *
+ * `fix:` because it is the one remedy an agent is told to run without reading (#697): the `--json` error
+ * line carries it as a command, so a flag it names that the command does not declare is a refusal the
+ * agent walks straight into.
  *
  * `command:` because a host renders it as guidance in the same breath: `Run <command>.`, at boot and in
  * `pithy doctor` (`@pithy-sh/core`'s `hostEnvProviderSentence`). The key also names the `--json` payload's
  * own command (`command: "secrets deprovision"`), which carries no `pithy ` and so cites nothing below.
  */
-const ACTION = /\b(?:action|command):\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+const ACTION = /\b(?:action|command|fix):\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
 
 /**
  * `pithy <word>` where the sentence is telling you to run it.
@@ -231,6 +235,40 @@ describe("every action line names something that exists", () => {
     expect(ACTIONS.length).toBeGreaterThan(300);
     const citations = ACTIONS.flatMap((one) => [...one.text.matchAll(IMPERATIVE)]);
     expect(citations.length).toBeGreaterThan(50);
+  });
+
+  test("a fix is read like an action, so its command and flags are held to the same rule (#697)", () => {
+    const planted = 'throw withFix(error, { fix: "pithy provision --env staging --yes" });';
+    const [match] = [...planted.matchAll(ACTION)];
+    ACTION.lastIndex = 0;
+    expect(match?.[1]).toBe('"pithy provision --env staging --yes"');
+    // Few by design: every "provision this environment" remedy is written once, in `provision/provisionFix.ts`.
+    expect(ACTIONS.filter((one) => /^pithy /.test(one.text)).length).toBeGreaterThan(3);
+  });
+
+  /**
+   * The scan reads a `fix:` only when its value is written at the key. A `{ fix }` shorthand, a `fix:` read
+   * off a variable, or a ternary between two commands slips past it with both commands unchecked — the one
+   * remedy an agent runs without reading. So every `withFix(` call in shipped source must be matched by a
+   * literal `fix:` in the same file: a site that needs two commands throws twice.
+   */
+  test("every withFix call writes its fix as a literal, so the scan above reads it", () => {
+    const CALL = /\bwithFix\(/g;
+    const DEFINITION = /\bfunction withFix\(/g;
+    const LITERAL_FIX = /\bfix:\s*[`"']/g;
+    const short: string[] = [];
+    let calls = 0;
+    for (const pkg of readdirSync(join(REPO_ROOT, "packages"))) {
+      for (const path of sourcePaths(join(REPO_ROOT, "packages", pkg, "src"), { keep: isShippedSource })) {
+        const code = blankComments(readSource(path) ?? "");
+        const sites = (code.match(CALL)?.length ?? 0) - (code.match(DEFINITION)?.length ?? 0);
+        calls += sites;
+        if (sites > (code.match(LITERAL_FIX)?.length ?? 0)) short.push(relative(REPO_ROOT, path).split(sep).join("/"));
+      }
+    }
+    // Few by design: every "provision this environment" remedy is written once, in `provision/provisionFix.ts`.
+    expect(calls).toBeGreaterThan(3);
+    expect(short).toEqual([]);
   });
 
   test("every command an action tells you to run is a command", async () => {

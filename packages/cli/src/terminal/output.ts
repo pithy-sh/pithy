@@ -4,6 +4,7 @@
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
+import { EXIT_CLASSES, exitClassOf, exitCodeOf, fixOf } from "./exitClass";
 import { encodeJson, plainPaint, stylePaint } from "./jsonEncode";
 import type { JsonStream } from "./jsonMode";
 import { commandProgress, narrate } from "./progress";
@@ -100,16 +101,23 @@ export function formatError(payload: ErrorPayload): string {
  * the operator the remedy was written for. Reusing `HttpError.encode` here would have
  * classified `action` by the encoder that happened to be shared rather than by who reads
  * the line — and taken the fix out of a scripted `pithy` run for no gain anywhere.
+ *
+ * **And it says what to do next (#697).** `exit` is the code the process ends with, `retryable` is
+ * whether the same call can succeed unchanged, and `fix` — present only when the throw site knew the
+ * cause — is the `pithy` command that rights it. It is written as handed: `fixOf` in `exitClass.ts` is the one
+ * place a person's step is kept from carrying one, and the funnel below hands only what it answers.
  */
-export function formatErrorJson(payload: ErrorPayload): string {
+export function formatErrorJson(payload: ErrorPayload, fix?: string): string {
+  const { exit, retryable } = EXIT_CLASSES[exitClassOf(payload)];
+  const remedy = fix !== undefined ? { fix } : {};
   // `stderr`, not `stdout`: this line is written to stderr, so it is stderr's reader it answers to.
-  return encodeJson({ error: operatorError(payload) }, encodingFor(streams.stderr));
+  return encodeJson({ error: { ...operatorError(payload), exit, retryable, ...remedy } }, encodingFor(streams.stderr));
 }
 
 /**
- * Run a command body; on `PithyError`, report it to stderr and exit 1 — as the
- * `{ error: … }` JSON line when `json` is set, otherwise the problem/action
- * lines. Anything else is a CLI bug and keeps its stack trace.
+ * Run a command body; on `PithyError`, report it to stderr and exit with its class's code
+ * (`exitClass.ts`) — as the `{ error: … }` JSON line when `json` is set, otherwise the
+ * problem/action lines. Anything else is a CLI bug and keeps its stack trace.
  *
  * **And it opens the run's narrated span (#578).** Every command body goes through here and every
  * command body already hands over the one thing the narration gate consults, so this is where a long
@@ -123,7 +131,7 @@ export async function withErrorReporting(json: boolean, work: () => Promise<void
     await narrate(commandProgress({ json }), work);
   } catch (error) {
     if (!(error instanceof PithyError)) throw error;
-    process.stderr.write(`${json ? formatErrorJson(error.payload) : formatError(error.payload)}\n`);
-    process.exit(1);
+    process.stderr.write(`${json ? formatErrorJson(error.payload, fixOf(error)) : formatError(error.payload)}\n`);
+    process.exit(exitCodeOf(error.payload));
   }
 }

@@ -11,7 +11,9 @@ import {
   InputRequiredError,
   InternalError,
   NotFoundError,
+  PersonRequiredError,
   PithyError,
+  PreconditionFailedError,
   RateLimitError,
   sentenceOf,
   UnauthorizedError,
@@ -53,6 +55,8 @@ describe("subclasses (sugar over the same payload)", () => {
     { Cls: UpstreamError, code: "core/upstream_failed", status: 502 },
     { Cls: UpstreamTimeoutError, code: "core/upstream_timeout", status: 504 },
     { Cls: InputRequiredError, code: "input/required", status: 400 },
+    { Cls: PreconditionFailedError, code: "core/precondition_failed", status: 412 },
+    { Cls: PersonRequiredError, code: "core/person_required", status: 403 },
   ] as const;
 
   test("every subclass is both a PithyError and its own type, with matching code/status", () => {

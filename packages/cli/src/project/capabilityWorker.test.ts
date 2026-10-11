@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { fixOf } from "../terminal/exitClass";
 import { resolveCapabilityWorker } from "./capabilityWorker";
 import type { WorkerConfig } from "./config";
 
@@ -62,6 +64,31 @@ describe("resolveCapabilityWorker", () => {
         action: expect.stringContaining("--worker"),
       },
     });
+  });
+
+  // Named, a different --worker is the fix, so it stays exit 2 (above). Unnamed, the one Worker there is lacks
+  // it: the project is missing what the call depends on, exit 3, and pithy add is the step (#697).
+  test("the only Worker, unnamed, not composing the capability is a precondition with pithy add as its fix", async () => {
+    const only = { ...seams, discoverWorkers: async () => [{ name: "docs", dir: "/proj/apps/docs" }] };
+    const failure = (await resolveCapabilityWorker({ ...only, name: "vector", is: isVector }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    expect(failure.payload).toMatchObject({
+      code: "core/precondition_failed",
+      message: "docs does not compose the vector capability.",
+    });
+    // No manifest is installed under /proj, so nothing rules prerequisites out (`notComposed.test.ts`).
+    expect(fixOf(failure)).toBe("pithy add vector --worker docs --with-prerequisites");
+  });
+
+  test("the fix and the action name the apps/ directory, never the deployed script name", async () => {
+    const only = { ...seams, discoverWorkers: async () => [{ name: "demo-docs", dir: "/proj/apps/docs" }] };
+    const failure = (await resolveCapabilityWorker({ ...only, name: "vector", is: isVector }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    expect(fixOf(failure)).toBe("pithy add vector --worker docs --with-prerequisites");
+    expect(failure.payload.action).toContain("pithy add vector --worker docs");
+    expect(failure.payload.action).not.toContain("demo-docs");
   });
 
   test("several Workers and none named is the resolver's own refusal, never a guess", async () => {

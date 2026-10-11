@@ -8,6 +8,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { canceled } from "../terminal/exitClass";
 import { applyDomains } from "./applyDomains";
 import { writeFileAtomic } from "./atomic";
 import {
@@ -106,10 +107,7 @@ export async function askDomains(options: {
       // through to a route or `BASE_URL`, exactly as it does for a project predating the declaration.
       defaultValue: "",
     });
-    if (isCancel(hostname)) {
-      process.stderr.write("Canceled.\n");
-      process.exit(1);
-    }
+    if (isCancel(hostname)) canceled();
     const value = String(hostname ?? "").trim();
     if (!value) continue;
 
@@ -124,10 +122,7 @@ export async function askDomains(options: {
         options: zones.map((candidate) => ({ value: candidate.name, label: describeZone(candidate) })),
         ...(owning ? { initialValue: owning.name } : {}),
       });
-      if (isCancel(choice)) {
-        process.stderr.write("Canceled.\n");
-        process.exit(1);
-      }
+      if (isCancel(choice)) canceled();
       zone = String(choice);
     }
 

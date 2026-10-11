@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import { parse } from "comment-json";
@@ -10,6 +10,7 @@ import { NO_PROVISION_ARG, stanzaOf, wranglerEnvironment } from "../project/effe
 import { readOptionalFile } from "../project/readOptionalFile";
 import { discoverWorkers } from "../project/workers";
 import { wranglerConfigPath } from "./featureConfig";
+import { withProvisionFix } from "./provisionFix";
 
 /**
  * **Which of the bindings a deploy would ship still have no resource behind them.**
@@ -152,14 +153,26 @@ function remedy(env: string | undefined): string {
  * and the resources it would create are the long-lived ones. wrangler would have: its default is to create
  * what it cannot find, and a deploy now turns that off, so what reaches wrangler fails there instead — on
  * a field nobody wrote. This moves that failure to one sentence, before anything is built.
+ *
+ * **Two kinds of refusal (#697).** For a named environment the call is right and the account is not ready:
+ * `core/precondition_failed`, exit 3, with the provisioning command as its `fix` — none for a production
+ * environment, whose provisioning needs a person's `--confirm` phrase (see {@link withProvisionFix}). For a
+ * bare deploy or `--env dev` the call itself aimed at a stanza that never has resources: a usage error,
+ * exit 2. `productionEnvironments` is the project's `seed.productionEnvironments`.
  */
-export async function assertEnvironmentProvisioned(projectDir: string, env: string | undefined): Promise<void> {
+export async function assertEnvironmentProvisioned(
+  projectDir: string,
+  env: string | undefined,
+  productionEnvironments?: readonly string[],
+): Promise<void> {
   const missing = await unprovisionedBindings(projectDir, env);
   if (missing.length === 0) return;
   const stanza = env === undefined ? "The top-level stanza" : env;
-  throw new ValidationError({
+  const refusal = {
     message: `${stanza} declares bindings with no Cloudflare resource behind them: ${describeUnprovisioned(missing)}.`,
     action: remedy(env),
     detail: `A deploy runs wrangler with ${NO_PROVISION_ARG}, so a binding with no id fails inside wrangler rather than creating a resource.`,
-  });
+  };
+  if (env === undefined || env === LOCAL_ENVIRONMENT) throw new ValidationError(refusal);
+  throw withProvisionFix(new PreconditionFailedError(refusal), env, productionEnvironments);
 }

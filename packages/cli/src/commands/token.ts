@@ -10,7 +10,7 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
@@ -63,7 +63,7 @@ function loadCreds(account: CloudflareAccountSelection | null): {
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (the bootstrap token) to mint tokens.",
     });

@@ -10,6 +10,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
 import { featureConfigPath } from "../provision/featureConfig";
+import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
 import { composedForGrant, resolveConnectScopes, resolveConnectTarget } from "./resolveTarget";
 
 /** A capability that declares nothing but an admin surface — enough for a grant to be derived from it. */
@@ -110,6 +111,37 @@ describe("resolveConnectScopes", () => {
     expect((await refusalOf(resolveConnectScopes(addressless([support])))).message).toContain(
       "does not compose the control-plane seam",
     );
+  });
+});
+
+/**
+ * **Two different mistakes, as `project/capabilityWorker.ts` tells them apart (#697).** A Worker the caller named
+ * with `--worker` that composes no seam is a call another `--worker` fixes: exit 2. The Worker the project
+ * resolved to on its own lacks what the call depends on: exit 3, with `pithy add controlplane` as the step.
+ */
+describe("a Worker composing no seam", () => {
+  async function thrown(call: Promise<unknown>): Promise<PithyError> {
+    const error = await call.catch((caught: unknown) => caught);
+    if (!(error instanceof PithyError)) throw new Error("the call resolved where a refusal was expected");
+    return error;
+  }
+
+  test("resolved by the project, is a precondition with pithy add controlplane, naming the apps/ directory", async () => {
+    const project = {
+      ...addressless([support]),
+      discoverWorkers: async () => [{ name: "demo-api", dir: "/project/apps/api" }],
+    };
+    const error = await thrown(resolveConnectScopes(project));
+    expect(error.payload.code).toBe("core/precondition_failed");
+    expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
+    expect(fixOf(error)).toMatch(/^pithy add controlplane --worker api\b/);
+  });
+
+  test("named with --worker, is the call's mistake: exit 2, and no add", async () => {
+    const error = await thrown(resolveConnectScopes({ ...addressless([support]), worker: "api" }));
+    expect(error.payload.code).toBe("validation/invalid_input");
+    expect(exitCodeOf(error.payload)).toBe(EXIT.usage);
+    expect(fixOf(error)).toBeUndefined();
   });
 });
 

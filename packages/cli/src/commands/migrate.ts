@@ -14,6 +14,7 @@ import {
 } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -100,7 +101,7 @@ function keptLines(workers: WorkerMigrationRun[]): string[] {
  * A fan-out has no transaction across databases: the third one throws and the first two are already
  * ahead of it. Until now the throw took the whole report with it, so the operator was told a migration
  * failed and nothing about which schemas had moved — on the one command where that is the first
- * question. `withErrorReporting` writes the failure to stderr and exits 1; this writes what the run did
+ * question. `withErrorReporting` writes the failure to stderr and exits by its kind; this writes what the run did
  * to stdout first, so both streams and the exit code agree that it failed and name what it changed.
  *
  * The three states are kept apart on purpose. A database that migrated, the one that failed, and one
@@ -149,7 +150,8 @@ async function promptRollback(env: string, json: boolean, group: string | undefi
   const answer = await text({
     message: `This reverses ${subject} in every database ${env} binds. Type "${rollbackConfirmPhrase(env)}" to confirm:`,
   });
-  return isCancel(answer) ? "" : answer;
+  if (isCancel(answer)) canceled();
+  return answer;
 }
 
 /** What {@link rollbackPhrase} decides from. */
@@ -169,7 +171,7 @@ export interface RollbackPhraseOptions {
 /**
  * The phrase a rollback is confirmed with: the flag wherever it is present, a person at a terminal
  * otherwise, and nothing when nobody may be asked — which `assertRollbackConfirmed` refuses as
- * `input/required`, naming `--confirm-rollback` (#697).
+ * `core/person_required`, naming `--confirm-rollback` (#697). Ctrl-C at the prompt ends the run, exit 130.
  */
 export async function rollbackPhrase(options: RollbackPhraseOptions): Promise<string | undefined> {
   if (!options.rollback || options.flagged !== undefined) return options.flagged;
@@ -207,7 +209,8 @@ export default defineCommand({
       // The non-guessing name: it is stamped into every database this run touches, and a later run
       // checks against it, so a fallback that differs between checkouts would lock a project out of
       // its own database. `requireProjectName` refuses to guess (docs/CLI.md §3.3).
-      const project = requireProjectName(await loadProject(projectDir));
+      const config = await loadProject(projectDir);
+      const project = requireProjectName(config);
       // And the account this project belongs to, before anything resolves a credential. `migrateProject`
       // states the hazard in its own words: a remote migration alters a real schema, so the wrong
       // account's credentials would run it against another company's database (#206). This command is
@@ -248,11 +251,14 @@ export default defineCommand({
           rollback: args.rollback,
           ...(confirmRollback !== undefined ? { confirmRollback } : {}),
           ...(destroyRetained !== undefined ? { destroyRetained } : {}),
+          ...(config.seed?.productionEnvironments
+            ? { productionEnvironments: config.seed.productionEnvironments }
+            : {}),
         });
       } catch (error) {
         // A run that failed on the third database has already moved the first two, and until #380 the
         // report of it died with the throw. What ran is printed here, then the same error is rethrown
-        // unchanged for `withErrorReporting` to render and exit 1 on.
+        // unchanged for `withErrorReporting` to render and exit by its kind.
         const progress = migratedBeforeFailure(error);
         if (progress) process.stdout.write(formatMigrateProgress(progress, render));
         throw error;

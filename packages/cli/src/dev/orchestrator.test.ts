@@ -1775,7 +1775,7 @@ describe("startDev — naming what starts", () => {
     const h = harness({ ensureDevConfig: ensure, loadDevConfig: async () => null });
 
     await expect(startDev({ ...h.options, openLog, apps: ["nope"] })).rejects.toMatchObject({
-      payload: { code: "core/not_found" },
+      payload: { code: "validation/invalid_input" },
     });
     expect(h.spawned).toHaveLength(0);
     expect(ensure).not.toHaveBeenCalled();

@@ -3,6 +3,8 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { capabilityNotComposed } from "../capabilities/notComposed";
+import { workerIdentity } from "./workerIdentity";
 import { type ResolvedWorker, type ResolveSingleOptions, resolveSingleWorker } from "./workerScope";
 
 /**
@@ -47,10 +49,16 @@ export async function resolveCapabilityWorker<C extends Capability>(
   const worker = await resolveSingleWorker(resolve);
   const capability = worker.capabilities.find(is);
   if (!capability) {
-    throw new ValidationError({
+    // Named by its apps/ directory, the value every `--worker` in the sentence takes.
+    const dir = workerIdentity(worker).worker;
+    const refusal = {
       message: `${worker.name} does not compose the ${name} capability.`,
-      action: `Add \`${name}({ ... })\` to ${worker.name}'s pithy.config.ts (run \`pithy add ${name}\`), or name the Worker that composes it with --worker.`,
-    });
+      action: `Add \`${name}({ ... })\` to ${dir}'s pithy.config.ts (run \`pithy add ${name} --worker ${dir}\`), or name the Worker that composes it with --worker.`,
+    };
+    // **Two different mistakes (#697).** A Worker the caller named is a call another `--worker` fixes: exit 2. The
+    // Worker the project resolved to on its own lacks what the call depends on: exit 3, and `pithy add` is the step.
+    if (resolve.worker !== undefined) throw new ValidationError(refusal);
+    throw await capabilityNotComposed(name, refusal, { projectDir: resolve.projectDir, workerDir: worker.dir });
   }
   return { worker, capability };
 }

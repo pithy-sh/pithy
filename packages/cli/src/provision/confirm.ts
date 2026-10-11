@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PersonRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isProductionEnv } from "../seed/safety";
 
 /**
@@ -54,7 +54,10 @@ export interface ConfirmProvisionOptions {
 }
 
 /**
- * Enforce the gate. Resolves when the run is authorized, throws a `ValidationError` otherwise.
+ * Enforce the gate. Resolves when the run is authorized. A missing `--yes` is a `ValidationError` — the
+ * call is wrong, and CI fixes it by passing the flag. **Every refusal at the phrase is
+ * `core/person_required` (exit 5, #697)**: missing, mistyped, or unanswerable, the phrase is a person's to
+ * give, and an agent that met it should stop and ask rather than try variations.
  *
  * - Any environment → requires `--yes`. Provisioning is never the accidental result of a bare command.
  * - Authorized, and the run has something to say → {@link ConfirmProvisionOptions.announce} prints the
@@ -83,7 +86,7 @@ export async function assertProvisionConfirmed(options: ConfirmProvisionOptions)
   // The flag is authoritative wherever present (CI or interactive).
   if (options.confirmPhrase !== undefined) {
     if (matches(options.confirmPhrase)) return;
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: `That is not the confirmation phrase for provisioning ${options.env}.`,
       action: `Pass --confirm "${expected}".`,
     });
@@ -91,16 +94,15 @@ export async function assertProvisionConfirmed(options: ConfirmProvisionOptions)
 
   if (!options.json && options.prompt) {
     if (matches(await options.prompt())) return;
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: `Provisioning ${options.env} was not confirmed.`,
       action: `Type the exact phrase, or pass --confirm "${expected}".`,
     });
   }
 
-  // Nobody could be asked (#697): `input/required`, naming the flag that carries the phrase.
-  throw new InputRequiredError({
+  // Nobody could be asked, and the phrase is a person's to give (#697): stop, rather than guess at it.
+  throw new PersonRequiredError({
     message: `${options.env} is a production environment.`,
     action: `Pass --confirm "${expected}".`,
-    flag: "--confirm",
   });
 }

@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { isErrorCode } from "@pithy-sh/core/src/error/extend";
-import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  PithyError,
+  PreconditionFailedError,
+  UpstreamError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -28,6 +33,7 @@ import {
   mintReportLines,
   storeSecretMinter,
 } from "../capabilities/mintSecrets";
+import { withAddFix } from "../capabilities/notComposed";
 import {
   EXIT_ROLLED_NOT_RECORDED,
   rotationReportLines,
@@ -77,11 +83,12 @@ import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migration
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import { confineTeardown } from "../project/teardown";
-import { resolveWorkers } from "../project/workerScope";
+import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
+import { canceled } from "../terminal/exitClass";
 import { mayDraw } from "../terminal/inputMode";
 import {
   formatDone,
@@ -100,10 +107,11 @@ import {
  * name, not just the alphabetically-first Worker's. A Worker that does not compose `secrets` simply
  * contributes nothing; when no Worker does, the capability's own actionable error is what surfaces.
  */
-async function projectSecrets(
+export async function mergedProjectSecrets(
   projectDir: string,
+  resolve: (options: { projectDir: string }) => Promise<ResolvedWorker[]> = resolveWorkers,
 ): Promise<{ registry: SecretRegistry; branches: SecretBranches; complete: boolean }> {
-  const workers = await resolveWorkers({ projectDir });
+  const workers = await resolve({ projectDir });
   const registries: SecretRegistry[] = [];
   let branches: SecretBranches = {};
   let absent: unknown;
@@ -133,7 +141,14 @@ async function projectSecrets(
     branches = mergeSecretBranches(branches, secretBranchDeclarations(worker.capabilities));
   }
   const first = registries[0];
-  if (!first) throw absent;
+  if (!first) {
+    // No Worker composes `secrets`: the project is missing what every subcommand depends on, and `pithy add
+    // secrets` is the step — named for this project's Workers, runnable as written, or not at all (#697).
+    if (absent instanceof PithyError && isErrorCode(absent.payload, "core/not_found")) {
+      throw await withAddFix(absent, "secrets", { projectDir, workerDirs: workers.map((worker) => worker.dir) });
+    }
+    throw absent;
+  }
   return {
     registry: registries.length === 1 ? first : (Object.assign({}, ...registries) as SecretRegistry),
     branches,
@@ -145,9 +160,9 @@ async function projectSecrets(
   };
 }
 
-/** The project's merged secret registry. See {@link projectSecrets}. */
+/** The project's merged secret registry. See {@link mergedProjectSecrets}. */
 async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry> {
-  return (await projectSecrets(projectDir)).registry;
+  return (await mergedProjectSecrets(projectDir)).registry;
 }
 
 /**
@@ -299,13 +314,13 @@ function loadCloudflareCreds(
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (options.requireStore && !storeId) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "The CF Secrets Store id is missing.",
       action: "Run pithy add secrets to record SECRETS_STORE_ID (create a Secrets Store in the Cloudflare dashboard).",
     });
@@ -362,10 +377,7 @@ async function readValue(
     // asked where the document would be read.
     stdin: process.stdin,
   });
-  if (value === null) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (value === null) canceled();
   return value;
 }
 
@@ -428,7 +440,7 @@ async function write(
   args: { name: string; env?: string; json: boolean; backend?: string },
 ): Promise<void> {
   const projectDir = process.cwd();
-  const { registry, branches } = await projectSecrets(projectDir);
+  const { registry, branches } = await mergedProjectSecrets(projectDir);
   const environments = await projectEnvironments(projectDir);
   // `--env` as the operator gave it, or nothing. Not resolved to a default: the absence is the whole
   // difference between *narrow this write* and *say nothing*, and it is what the rule turns on.
@@ -454,7 +466,7 @@ async function write(
     // **A fan-out has no rollback, so what it wrote is said before the error is.** Three environments and
     // the third throws leaves the first two holding the new value; without this the operator reads a
     // failure and has no way to know that. `withErrorReporting` then puts `{ error }` on stderr and exits
-    // 1 — the streams agree, and neither reports success.
+    // by the failure's kind (`terminal/exitClass.ts`) — the streams agree, and neither reports success.
     const written = environmentsWrittenBeforeFailure(error);
     if (written.length > 0) {
       const landed = mode === "delete" ? "removed from" : "written to";
@@ -636,24 +648,14 @@ const rotate = defineCommand({
       if (outcome.status === "unrecorded") {
         const failure = unrecordedFailure(entry, outcome, env);
         process.stderr.write(`${args.json ? formatErrorJson(failure.payload) : formatError(failure.payload)}\n`);
-        // Not a throw: `withErrorReporting` would exit 1, and 1 is the status that means *the previous
-        // credential is still live*. This state is the one thing in the command that is not that.
+        // Not a throw: the report above is already on stdout, and `withErrorReporting`'s `process.exit` does
+        // not wait for a pipe to drain. The status is the same 5 the line's `exit` names.
         process.exitCode = EXIT_ROLLED_NOT_RECORDED;
         return;
       }
       if (outcome.status === "failed") {
         // Ordinary: nothing was rolled, so the previous value is still live and the run can be repeated.
-        // The cause is what the operator needs, and `withErrorReporting` puts it on stderr with exit 1. The
-        // fallback is not decoration — `throw undefined` would exit non-zero with a blank stderr, which is
-        // the one report worse than a bad one.
-        throw (
-          outcome.cause ??
-          new ValidationError({
-            message: `Secret '${args.name}' was not rotated.`,
-            action: "Run it again. The previous value is still live.",
-            detail: `rotate '${args.name}': store refused with no recorded cause`,
-          })
-        );
+        throw rotationFailure(args.name, outcome.cause);
       }
       if (args.json) return;
       if (dryRun) {
@@ -667,6 +669,24 @@ const rotate = defineCommand({
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
+
+/**
+ * What a rotation that failed before anything rolled throws: its recorded cause, which `withErrorReporting` puts on
+ * stderr and exits by its own kind, or a refusal of its own when none was recorded. The fallback is not decoration —
+ * `throw undefined` would exit non-zero with a blank stderr, the one report worse than a bad one. It is an upstream
+ * failure (#697): nothing rolled, the previous value is still live, and its action says to run it again, so the exit
+ * says a retry can clear it. A `ValidationError` exited 2, which tells a script only a different call can work.
+ */
+export function rotationFailure(name: string, cause: unknown): unknown {
+  return (
+    cause ??
+    new UpstreamError({
+      message: `Secret '${name}' was not rotated.`,
+      action: "Run it again. The previous value is still live.",
+      detail: `rotate '${name}': store refused with no recorded cause`,
+    })
+  );
+}
 
 const ls = defineCommand({
   meta: { name: "ls", description: "List the secrets this project's configuration actually uses" },
@@ -799,7 +819,7 @@ const verify = defineCommand({
       else for (const line of verificationReportLines(report)) process.stdout.write(`${line}\n`);
 
       // **The finding decides, and it decides before the fault does.** One flaky environment beside one
-      // broken store must not exit 1 — that is the code a cron retries, and this is the state no retry
+      // broken store must not exit 4 — that is the code a cron retries, and this is the state no retry
       // fixes. Only a run that found nothing rethrows, and only then does the exit status belong to
       // whatever went wrong.
       const verdict = verificationVerdict(report);
@@ -832,7 +852,7 @@ async function storeSweep(
     });
     const project = requireProjectName(await loadProject(projectDir));
     const managed = managedEnvironments(environments);
-    const { registry, complete } = await projectSecrets(projectDir);
+    const { registry, complete } = await mergedProjectSecrets(projectDir);
     const cf = await cloudflareClients({ accountId, apiToken });
     // A `deleted` entry is not in the store (#643). Classifying one would report debris that Cloudflare
     // has already removed.
@@ -947,7 +967,7 @@ const provision = defineCommand({
       // environment, so a fault after the first write leaves key material behind — and until #324 the
       // report of it was assembled after the loop and died with the throw. So what landed is caught and
       // printed *before* the error is rethrown: `withErrorReporting` then writes the failure to stderr
-      // and exits 1, and stdout carries what the run actually did. Both streams, and the exit code,
+      // and exits by its kind, and stdout carries what the run actually did. Both streams, and the exit code,
       // agree that it failed and name what it wrote on the way.
       const managers = await buildDispatcher(projectDir);
       let generated: MintedSecret[];

@@ -4,7 +4,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NotFoundError, type PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import type { WorkerTarget } from "../project/workers";
 import { dim } from "../terminal/style";
@@ -252,9 +252,10 @@ describe("selectDevMembers", () => {
       selectDevMembers(await members(), ["nope"]);
       expect.unreachable("an unknown name must refuse");
     } catch (error) {
-      expect(error).toBeInstanceOf(NotFoundError);
+      // The call's mistake, exit 2: the name came from the caller, and there is nothing to run first.
+      expect(error).toBeInstanceOf(ValidationError);
       const { payload } = error as PithyError;
-      expect(payload.code).toBe("core/not_found");
+      expect(payload.code).toBe("validation/invalid_input");
       expect(payload.message).toBe('No worker named "nope".');
       expect(payload.action).toBe(
         "Run pithy dev --list to see this project's dev set. Known: acme-api, batch, web, email.",
@@ -265,7 +266,7 @@ describe("selectDevMembers", () => {
   // Nothing partial comes back, so nothing half-starts and then dies.
   test("one unknown name among known ones refuses the whole selection", async () => {
     const all = await members();
-    expect(() => selectDevMembers(all, ["api", "nope", "web"])).toThrow(NotFoundError);
+    expect(() => selectDevMembers(all, ["api", "nope", "web"])).toThrow(ValidationError);
     expect(() => selectDevMembers(all, ["api", "nope", "web"])).toThrow(/No worker named "nope"/);
   });
 

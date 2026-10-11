@@ -7,6 +7,7 @@ import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/c
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { settleStep, startStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
@@ -22,7 +23,7 @@ import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
 import { readAddressStanza, resolveWorkerAddress } from "./workerAddress";
 import { parseWorkerManifest } from "./workerManifest";
 import { discoverWorkers, type WorkerTarget } from "./workers";
-import { runWrangler } from "./wrangler";
+import { refusesTheRun, runWrangler } from "./wrangler";
 
 /** The `wrangler deploy` runner for one worker — injectable so tests exercise orchestration without wrangler. */
 export type RunDeploy = (target: WorkerTarget, args: string[]) => Promise<string>;
@@ -142,6 +143,11 @@ export interface WorkerDeploy {
   built?: boolean;
   /** The failure reason, present only when `ok` is false. */
   error?: string;
+  /**
+   * The exit a classified failure carries: 3 when Cloudflare refused the credentials or wrangler would not start,
+   * met after an earlier Worker already had a row. Absent on an ordinary failure, which exits 1.
+   */
+  exit?: number;
   /**
    * What probing the **declared** domain concluded about the version just shipped.
    *
@@ -533,12 +539,20 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         metadata: { versionId: deploy.versionId ?? null, verification: deploy.verification ?? null },
       });
     } catch (error) {
+      // **Credentials Cloudflare refused, or a wrangler that will not start, are the run's, not this Worker's
+      // (#697)**, on the first Worker: every Worker after it asks with the same pair and the same program.
+      // Thrown, it exits 3 as the one precondition it is, where a row per Worker exited 1 as N failures. Once
+      // any Worker has a row — shipped or failed on its own — thrown would lose that row from the report, so
+      // the refusal is this Worker's row instead, carrying its exit, and the report exits with it.
+      const refusal = refusesTheRun(error);
+      if (refusal && deploys.length === 0) throw error;
       const reason = reasonOf(error);
       const failure: WorkerDeploy = {
         name: worker.name,
         ok: false,
         ...(built === undefined ? {} : { built }),
         error: reason,
+        ...(refusal ? { exit: exitCodeOf(error.payload) } : {}),
       };
       deploys.push(failure);
       // A failure settles too. The one thing worse than a silent deploy is a silent deploy whose one
@@ -601,4 +615,13 @@ export function pendingWarning(pending: number | undefined, env: string): string
   if (!pending || pending <= 0) return undefined;
   const plural = pending === 1 ? "" : "s";
   return `${pending} migration${plural} unapplied for ${env}. Deploy does not migrate — run pithy migrate --env ${env}.`;
+}
+
+/**
+ * The exit a report with a failed Worker ends with: the class a classified row carries, or 1. A refusal recorded as
+ * a row is the run's precondition, and nothing after it can succeed until it is met, so it outranks an ordinary
+ * failure beside it — the caller's next step is the credentials, whatever else failed.
+ */
+export function deployFailureExit(deploys: readonly WorkerDeploy[]): number {
+  return deploys.find((deploy) => !deploy.ok && deploy.exit !== undefined)?.exit ?? EXIT.failed;
 }

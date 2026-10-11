@@ -160,34 +160,34 @@ async function payloadOf(run: Promise<void>): Promise<Record<string, unknown>> {
 }
 
 /**
- * **Nobody to ask and a wrong answer are two failures (#697).** Each gate's no-phrase, no-prompt refusal is
- * `input/required`, naming the flag that carries the phrase. A phrase that arrived — by flag or at the
- * prompt — and is wrong stays `validation/invalid_input`.
+ * **A confirmation phrase is a person's to give (#697).** Missing with nobody to ask, mistyped by flag, or
+ * mistyped at the prompt, every refusal at the phrase is `core/person_required` — exit 5, so an agent stops
+ * and asks rather than trying variations. The action line still names the flag, for the person.
  */
 describe("assertSeedConfirmed's refusals, by kind", () => {
-  test("production with no phrase and nobody to ask is input/required, naming --confirm-production", async () => {
+  test("production with no phrase and nobody to ask needs a person, and the action names --confirm-production", async () => {
     expect(await payloadOf(assertSeedConfirmed({ env: "prod", yes: true, json: true }))).toMatchObject({
-      code: "input/required",
-      flag: "--confirm-production",
+      code: "core/person_required",
       action: `Pass --confirm-production "${PRODUCTION_CONFIRM_PHRASE}" to seed production.`,
     });
-    expect((await payloadOf(assertSeedConfirmed({ env: "prod", yes: true, json: false }))).code).toBe("input/required");
+    expect((await payloadOf(assertSeedConfirmed({ env: "prod", yes: true, json: false }))).code).toBe(
+      "core/person_required",
+    );
   });
 
-  test("a wrong --confirm-production is invalid input", async () => {
+  test("a wrong --confirm-production needs a person too", async () => {
     const payload = await payloadOf(
       assertSeedConfirmed({ env: "prod", yes: true, json: true, confirmProduction: "yes please" }),
     );
-    expect(payload.code).toBe("validation/invalid_input");
-    expect(payload).not.toHaveProperty("flag");
+    expect(payload.code).toBe("core/person_required");
   });
 
-  test("a wrong phrase typed at the prompt is invalid input, and still says it did not match", async () => {
+  test("a wrong phrase typed at the prompt needs a person, and still says it did not match", async () => {
     const payload = await payloadOf(
       assertSeedConfirmed({ env: "prod", yes: true, json: false, prompt: async () => "no" }),
     );
     expect(payload).toMatchObject({
-      code: "validation/invalid_input",
+      code: "core/person_required",
       message: "The production confirmation phrase did not match.",
     });
   });
@@ -198,10 +198,9 @@ describe("assertResetConfirmed", () => {
     await expect(assertResetConfirmed({ env: "dev", json: true })).resolves.toBeUndefined();
   });
 
-  test("no phrase and nobody to ask is input/required, naming --confirm-reset", async () => {
+  test("no phrase and nobody to ask needs a person, and the action names --confirm-reset", async () => {
     expect(await payloadOf(assertResetConfirmed({ env: "staging", json: true }))).toMatchObject({
-      code: "input/required",
-      flag: "--confirm-reset",
+      code: "core/person_required",
       message: "Resetting staging destroys all of its data.",
       action: `Pass --confirm-reset "${resetConfirmPhrase("staging")}" to drop and recreate the staging schema.`,
     });
@@ -209,23 +208,25 @@ describe("assertResetConfirmed", () => {
 
   test("--json never asks, even when a prompt is supplied", async () => {
     const prompt = vi.fn(async () => resetConfirmPhrase("staging"));
-    expect((await payloadOf(assertResetConfirmed({ env: "staging", json: true, prompt }))).code).toBe("input/required");
+    expect((await payloadOf(assertResetConfirmed({ env: "staging", json: true, prompt }))).code).toBe(
+      "core/person_required",
+    );
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  test("a wrong --confirm-reset is invalid input", async () => {
+  test("a wrong --confirm-reset needs a person", async () => {
     const payload = await payloadOf(
       assertResetConfirmed({ env: "staging", json: true, confirmReset: resetConfirmPhrase("prod") }),
     );
     expect(payload).toMatchObject({
-      code: "validation/invalid_input",
+      code: "core/person_required",
       message: "That is not the confirmation phrase for resetting staging.",
     });
   });
 
-  test("a wrong phrase typed at the prompt is invalid input", async () => {
+  test("a wrong phrase typed at the prompt needs a person", async () => {
     const payload = await payloadOf(assertResetConfirmed({ env: "staging", json: false, prompt: async () => "nope" }));
-    expect(payload).toMatchObject({ code: "validation/invalid_input", message: "Reset of staging not confirmed." });
+    expect(payload).toMatchObject({ code: "core/person_required", message: "Reset of staging not confirmed." });
   });
 
   test("the exact phrase unlocks it, by flag or at the prompt", async () => {

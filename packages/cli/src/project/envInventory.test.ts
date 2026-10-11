@@ -223,12 +223,13 @@ describe("buildEnvInventory — per Worker", () => {
     expect(byDir.workers.map((worker) => worker.worker)).toEqual(["acme-collab"]);
   });
 
+  // By apps/ directory, which is what `--worker` is documented to take, never the deployed script name (#697).
   test("an unknown --worker names the known ones", async () => {
     await writeWorker("api", { name: "acme-api" });
     await expect(
       buildEnvInventory({ projectDir: dir, paths: paths(), account: null, worker: "nope" }),
     ).rejects.toMatchObject({
-      payload: { code: "core/not_found", action: expect.stringContaining("acme-api") },
+      payload: { code: "validation/invalid_input", action: expect.stringMatching(/Known: api\.$/) },
     });
   });
 

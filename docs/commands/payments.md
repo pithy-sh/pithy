@@ -72,7 +72,7 @@ $ pithy payments provision --json
 | `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
 
 ```
 $ pithy payments reconcile --env staging --json
@@ -101,16 +101,18 @@ $ pithy payments reconcile --env staging --json
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **The Worker does not compose `payments`.** The target, `--worker` or the project's only Worker, has no `payments(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the reconcile worker is deployed with the catalog of the Worker whose stanza gets `PAYMENTS_RECONCILE`.
 
 ```
 <worker> does not compose the payments capability.
-Add `payments({ ... })` to <worker>'s pithy.config.ts (run `pithy add payments`), or name the Worker that composes it with --worker.
+Add `payments({ ... })` to <worker>'s pithy.config.ts (run `pithy add payments --worker <worker>`), or name the Worker that composes it with --worker.
 ```
 
-`reconcile` writes into no Worker, and reads the first Worker composing `payments`. With none:
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with no `fix`: `pithy add payments` needs `--set billingSubject=…`, which has no default and is yours to choose, so no command runs as written (`docs/CLI.md` §3.8). `<worker>` is the Worker's `apps/` directory.
+
+`reconcile` writes into no Worker, and reads the first Worker composing `payments`. With none it is `core/precondition_failed`, exit 3, and no `fix`, for the same reason:
 
 ```
 The payments capability is not configured.
@@ -138,13 +140,13 @@ Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts 
 This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead.
 ```
 
-**No environment is ready.** Every declared environment was skipped, so nothing was deployed and the run exits 1: `No environment is ready — staging and prod have no DB database_id.` A run where some environment was ready exits 0 and reports the rest as skipped.
+**No environment is ready.** Every declared environment was skipped, so nothing was deployed and the run exits 3, `core/precondition_failed`, with `pithy provision --env <first> --yes` as its `fix`: `No environment is ready — staging and prod have no DB database_id.` A run where some environment was ready exits 0 and reports the rest as skipped.
 
 **The environment has no wrangler stanza at all.** `api's wrangler.jsonc has no env.<env> stanza.` — config drift rather than provisioning state, so it is refused rather than skipped; `pithy provision --env <name>` does not write a stanza.
 
 **The environment's secrets database does not exist.** `The <env> secrets database (<name>) does not exist.` Run `pithy secrets provision` first.
 
-**The project has no name.** Every deployed name leads with it, and it is never guessed: a wrong one dispatches into a Workflow nothing deployed.
+**The project has no name.** Every deployed name leads with it, and it is never guessed: a wrong one dispatches into a Workflow nothing deployed. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 **The Workflow did not finish.** `reconcile` polls a dispatched instance and raises a `cloudflare/*` error when it ends `errored` or `terminated`, or when it is still running at the poll cap.
 

@@ -21,6 +21,7 @@ import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
+import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -48,10 +49,7 @@ async function ask(message: string, fallback: string, json: boolean): Promise<{ 
   if (!mayPrompt(json)) return { value: fallback, prompted: false };
   const { isCancel, text } = await import("@clack/prompts");
   const answer = await text({ message, defaultValue: fallback, placeholder: fallback });
-  if (isCancel(answer)) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
   return { value: answer, prompted: true };
 }
 

@@ -3,7 +3,7 @@
 
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
@@ -394,7 +394,8 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
       dirname(worker.dir) === appsDir && (worker.name === options.name || basename(worker.dir) === options.name),
   );
   if (!target) {
-    throw new NotFoundError({
+    // The call's mistake (exit 2): nothing to run first, only a different name to pass.
+    throw new ValidationError({
       message: `No worker named "${options.name}" under apps/.`,
       action: "Run pithy worker list to see the workers this project has.",
     });
@@ -577,7 +578,8 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
       dirname(worker.dir) === appsDir && (worker.name === options.from || basename(worker.dir) === options.from),
   );
   if (!target) {
-    throw new NotFoundError({
+    // The call's mistake (exit 2): nothing to run first, only a different name to pass.
+    throw new ValidationError({
       message: `No worker named "${options.from}" under apps/.`,
       action: "Run pithy worker list to see the workers this project has.",
     });

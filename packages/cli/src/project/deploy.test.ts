@@ -9,8 +9,10 @@ import { promisify } from "node:util";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import {
+  deployFailureExit,
   deployOutput,
   deployProject,
   deploySeverity,
@@ -19,6 +21,7 @@ import {
   summarizeDeploy,
   uiBuildEnvironment,
 } from "./deploy";
+import { WranglerCredentialsError } from "./wrangler";
 
 /** Representative `wrangler deploy` output — the lines deploy scrapes for the version id and url. */
 function wranglerOutput(name: string, version: string): string {
@@ -296,6 +299,87 @@ describe("deployProject", () => {
     expect(results[0]?.error).toMatch(/upload failed/);
     // The second worker still deployed — one failure doesn't abort the batch.
     expect(results[1]).toMatchObject({ name: "pithy-web", ok: true, versionId: "v2" });
+  });
+
+  /**
+   * **Credentials Cloudflare refused stop the run, exit 3, while nothing has shipped (#697).** They are the
+   * same for every Worker, so the first refusal is every Worker's: a row per Worker would report one
+   * precondition as N failures and exit 1. Once a Worker has shipped, the credentials were good for it, so a
+   * later refusal is that Worker's row — and the report of what is already live is not thrown away.
+   */
+  test("credentials refused before anything shipped end the run as the precondition they are", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+    const attempted: string[] = [];
+    const refusal = new WranglerCredentialsError({ message: "wrangler deploy failed.", action: "Fix the token." });
+
+    const failure = await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "staging",
+      runDeploy: async (target) => {
+        attempted.push(target.name);
+        throw refusal;
+      },
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBe(refusal);
+    expect(exitCodeOf((failure as PithyError).payload)).toBe(3);
+    expect(attempted).toEqual(["pithy-api"]);
+  });
+
+  test("credentials refused after a Worker shipped are that Worker's row", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+
+    const results = await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "staging",
+      runDeploy: async (target) => {
+        if (target.name === "pithy-web") throw new WranglerCredentialsError({ message: "wrangler deploy failed." });
+        return wranglerOutput(target.name, "v3");
+      },
+    });
+
+    expect(results.map((row) => [row.name, row.ok])).toEqual([
+      ["pithy-api", true],
+      ["pithy-web", false],
+    ]);
+  });
+
+  /**
+   * **A refusal after an earlier Worker's own failure keeps that failure's row (#697 review).** Thrown, the run
+   * would exit 3 with nothing on stdout, and `--json` would never report that `pithy-api`'s build had failed. The
+   * run stops only when no Worker has a row yet; after that, the refusal is its Worker's row, carrying the exit its
+   * class names, and the report exits with that class.
+   */
+  test("credentials refused after an earlier Worker failed keep both rows, and the run exits 3", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeUi("api");
+    await writeWorker("web", "pithy-web");
+    const attempted: string[] = [];
+
+    const results = await deployProject({
+      account: null,
+      projectDir: dir,
+      env: "staging",
+      runBuild: async () => {
+        throw new Error("vite build failed.");
+      },
+      runDeploy: async (target) => {
+        attempted.push(target.name);
+        throw new WranglerCredentialsError({ message: "wrangler deploy failed.", action: "Fix the token." });
+      },
+    });
+
+    expect(attempted).toEqual(["pithy-web"]);
+    expect(results).toEqual([
+      expect.objectContaining({ name: "pithy-api", ok: false, built: false }),
+      expect.objectContaining({ name: "pithy-web", ok: false, exit: EXIT.precondition }),
+    ]);
+    expect(results[0]).not.toHaveProperty("exit");
+    expect(deployFailureExit(results)).toBe(EXIT.precondition);
   });
 
   test("surfaces wrangler's captured stderr (PithyError detail), not just the generic message", async () => {

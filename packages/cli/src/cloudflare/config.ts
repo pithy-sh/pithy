@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { statesNoVanishingKey } from "@pithy-sh/core/src/capability/vanishingKey";
-import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, fromZodError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -514,7 +514,7 @@ export function cloudflareCredentials(options: CloudflareConfigOptions): Cloudfl
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action:
         "Run pithy init to store this account's credentials, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment.",

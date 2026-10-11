@@ -12,7 +12,20 @@ import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager"
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { featureConfigPath } from "../provision/featureConfig";
+import { fixOf } from "../terminal/exitClass";
 import { openSeedDriver, resolveStoreIds } from "./drivers";
+
+/** The `PithyError` a call raised. */
+function refusalOf(call: () => unknown): PithyError {
+  try {
+    call();
+  } catch (error) {
+    if (error instanceof PithyError) return error;
+    throw error;
+  }
+  throw new Error("expected a refusal");
+}
 
 describe("openSeedDriver", () => {
   let dir: string;
@@ -225,6 +238,49 @@ describe("openSeedDriver", () => {
       expect(() => driver.d1("DB")).toThrow(/database_id|DB/);
     });
 
+    /**
+     * The id is missing because the environment was never provisioned, so the refusal is exit 3 and names
+     * the command that provisions it (#697) — the feature form for a feature, since `pithy provision`
+     * refuses `--env feature`.
+     */
+    test.each([
+      ["staging", "pithy provision --env staging --yes"],
+      ["feature", "pithy provision --feature"],
+    ])("a missing id on %s is a precondition whose fix is %s", async (env, fix) => {
+      const config = JSON.stringify({ env: { [env]: { kv_namespaces: [{ binding: "CACHE" }] } } });
+      if (env === "feature") {
+        await mkdir(join(workerDir, ".wrangler", "pithy"), { recursive: true });
+        await writeFile(featureConfigPath(workerDir), config);
+      } else {
+        await writeFile(join(workerDir, "wrangler.jsonc"), config);
+      }
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env });
+
+      const error = refusalOf(() => driver.kv("CACHE"));
+      expect(error.payload.code).toBe("core/precondition_failed");
+      expect(fixOf(error)).toBe(fix);
+    });
+
+    // Provisioning production needs the `--confirm` phrase too, a person's to give, so `--yes` alone would
+    // end exit 5. A `fix` is runnable as written; production gets none (#697).
+    test.each([
+      ["prod", undefined],
+      ["live", ["live"]],
+    ])("a missing id on %s, a production environment, carries no fix", async (env, productionEnvironments) => {
+      await writeWrangler({ env: { [env]: { kv_namespaces: [{ binding: "CACHE" }] } } });
+      const driver = await openSeedDriver({
+        account: null,
+        workerDir,
+        persistRoot: dir,
+        env,
+        ...(productionEnvironments ? { productionEnvironments } : {}),
+      });
+
+      const error = refusalOf(() => driver.kv("CACHE"));
+      expect(error.payload.code).toBe("core/precondition_failed");
+      expect(fixOf(error)).toBeUndefined();
+    });
+
     test("missing credentials fail when the default REST client is built", async () => {
       vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
@@ -232,6 +288,23 @@ describe("openSeedDriver", () => {
 
       const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "staging" });
       expect(() => driver.d1("DB")).toThrow(/credentials/i);
+    });
+
+    // A missing R2_CREDENTIALS is the same kind of failure as a missing Cloudflare pair: the call is right
+    // and the environment it needs is not set up yet. Exit 3, not 2 — there is no different call to make.
+    test("missing R2 credentials are an unmet precondition", async () => {
+      vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
+      vi.stubEnv("CLOUDFLARE_API_TOKEN", "token");
+      vi.stubEnv("R2_CREDENTIALS", "");
+      await writeWrangler({ env: { staging: { r2_buckets: [{ binding: "ASSETS", bucket_name: "assets-staging" }] } } });
+
+      const driver = await openSeedDriver({ account: null, workerDir, persistRoot: dir, env: "staging" });
+      const error = refusalOf(() => driver.r2("ASSETS"));
+      expect(error.payload).toMatchObject({
+        code: "core/precondition_failed",
+        message: "R2 credentials are missing.",
+        action: "Set R2_CREDENTIALS (the S3 access-key/secret-key pair) to seed R2 objects.",
+      });
     });
   });
 

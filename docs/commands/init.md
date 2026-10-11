@@ -71,7 +71,7 @@ The `--json` line carries no `cloudflare` block. The account's nickname and id g
 
 ## Errors
 
-Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr and exit 1.
+Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **Something `init` would write is already there.** The collision list names every path, sorted.
 
@@ -101,7 +101,7 @@ Shorten `name` in pithy.config.ts to 26 characters or fewer.
 
 **A name in the reserved test namespace.** Refused before anything is written — the debris reaper deletes on that prefix alone.
 
-**A canceled prompt.** `Canceled.` on stderr, exit 1. Nothing proceeds on a value you did not choose.
+**A canceled prompt.** `Canceled.` on stderr, exit 130. Nothing proceeds on a value you did not choose.
 
 ## Examples
 

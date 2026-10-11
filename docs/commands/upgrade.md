@@ -259,7 +259,7 @@ Every *other* Worker still reports in full. A run that loses four Workers' repor
 
 ## Errors
 
-Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr and exit 1.
+Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **An environment that does not exist.** Validated at the flag, before anything is read.
 

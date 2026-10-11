@@ -2,8 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { HttpError } from "@pithy-sh/core/src/error/http";
-import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  ConflictError,
+  InternalError,
+  NotFoundError,
+  PersonRequiredError,
+  PreconditionFailedError,
+  UpstreamTimeoutError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { EXIT, fixOf, withFix } from "./exitClass";
 import {
   formatDone,
   formatError,
@@ -69,7 +78,14 @@ describe("latchJsonFormat", () => {
     const rendered = formatErrorJson(new ConflictError({ message: "Taken.", action: "Pick another." }).payload);
     expect(rendered).toContain("\n");
     expect(JSON.parse(rendered)).toEqual({
-      error: { code: "core/conflict", status: 409, message: "Taken.", action: "Pick another." },
+      error: {
+        code: "core/conflict",
+        status: 409,
+        message: "Taken.",
+        action: "Pick another.",
+        exit: 3,
+        retryable: false,
+      },
     });
   });
 
@@ -109,7 +125,14 @@ describe("withErrorReporting under a pretty stderr", () => {
     const rendered = written.join("");
     expect(rendered).toContain("\n  ");
     expect(JSON.parse(rendered)).toEqual({
-      error: { code: "core/conflict", status: 409, message: "Taken.", action: "Pick another." },
+      error: {
+        code: "core/conflict",
+        status: 409,
+        message: "Taken.",
+        action: "Pick another.",
+        exit: 3,
+        retryable: false,
+      },
     });
     vi.restoreAllMocks();
   });
@@ -131,7 +154,14 @@ describe("formatErrorJson", () => {
   test("wraps the operator payload under `error` — the remedy the terminal prints, in JSON", () => {
     const error = new ConflictError({ message: "Taken.", action: "Pick another." });
     expect(JSON.parse(formatErrorJson(error.payload))).toEqual({
-      error: { code: "core/conflict", status: 409, message: "Taken.", action: "Pick another." },
+      error: {
+        code: "core/conflict",
+        status: 409,
+        message: "Taken.",
+        action: "Pick another.",
+        exit: 3,
+        retryable: false,
+      },
     });
   });
 
@@ -153,6 +183,27 @@ describe("formatErrorJson", () => {
     const parsed = JSON.parse(formatErrorJson(error.payload)) as { error: Record<string, unknown> };
     expect(parsed.error.action).toBe("Bind a D1 database named DB in wrangler.jsonc.");
     expect(JSON.stringify(HttpError.encode(error.payload))).not.toContain("wrangler.jsonc");
+  });
+});
+
+describe("formatErrorJson: what to do next (#697)", () => {
+  test("every line says its exit code and whether a retry can help", () => {
+    const parsed = JSON.parse(formatErrorJson(new UpstreamTimeoutError({ message: "Slow." }).payload));
+    expect(parsed.error).toMatchObject({ code: "core/upstream_timeout", exit: 4, retryable: true });
+  });
+
+  test("a fix is carried when one is given, and absent — not null, not empty — when none is", () => {
+    const payload = new PreconditionFailedError({ message: "Not yet." }).payload;
+    expect(JSON.parse(formatErrorJson(payload, "pithy login")).error.fix).toBe("pithy login");
+    expect("fix" in JSON.parse(formatErrorJson(payload)).error).toBe(false);
+  });
+
+  /** The rule lives in `fixOf` alone (`exitClass.test.ts` pins it); the line writes what the funnel hands it. */
+  test("a person's step carries no fix, because fixOf hands the line none", () => {
+    const error = withFix(new PersonRequiredError({ message: "Ask." }), { fix: "pithy provision --env prod --yes" });
+    const line = JSON.parse(formatErrorJson(error.payload, fixOf(error))).error;
+    expect(line).toMatchObject({ exit: 5, retryable: false });
+    expect("fix" in line).toBe(false);
   });
 });
 
@@ -186,24 +237,65 @@ describe("withErrorReporting", () => {
     return written;
   }
 
-  test("a PithyError prints the text problem/action lines and exits 1", async () => {
+  test("a PithyError prints the text problem/action lines and exits by its class", async () => {
     const written = captureStderr();
     await withErrorReporting(false, async () => {
       throw new NotFoundError({ message: "Gone.", action: "Look elsewhere." });
     });
     expect(written.join("")).toBe("Gone.\nLook elsewhere.\n");
-    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(process.exit).toHaveBeenCalledWith(EXIT.precondition);
   });
 
-  test("with json, a PithyError prints the envelope and exits 1", async () => {
+  test.each([
+    ["a validation failure", new ValidationError({ message: "Bad." }), EXIT.usage],
+    ["a precondition", new PreconditionFailedError({ message: "Not yet." }), EXIT.precondition],
+    ["an upstream timeout", new UpstreamTimeoutError({ message: "Slow." }), EXIT.upstream],
+    ["a person's step", new PersonRequiredError({ message: "Ask." }), EXIT.person],
+    ["our own failure", new InternalError({ message: "Broke." }), EXIT.failed],
+  ])("%s exits %s", async (_name, error, code) => {
+    captureStderr();
+    await withErrorReporting(false, async () => {
+      throw error;
+    });
+    expect(process.exit).toHaveBeenCalledWith(code);
+  });
+
+  test("with json, the line carries the fix the throw site attached", async () => {
+    const written = captureStderr();
+    await withErrorReporting(true, async () => {
+      throw withFix(new PreconditionFailedError({ message: "Not provisioned." }), {
+        fix: "pithy provision --env staging --yes",
+      });
+    });
+    expect(JSON.parse(written.join("").trim()).error.fix).toBe("pithy provision --env staging --yes");
+  });
+
+  test("the text path stays two lines — a fix is for the --json reader, and the action line already says it", async () => {
+    const written = captureStderr();
+    await withErrorReporting(false, async () => {
+      throw withFix(new PreconditionFailedError({ message: "Not provisioned.", action: "Run provision." }), {
+        fix: "pithy provision --env staging --yes",
+      });
+    });
+    expect(written.join("")).toBe("Not provisioned.\nRun provision.\n");
+  });
+
+  test("with json, a PithyError prints the envelope and exits by its class", async () => {
     const written = captureStderr();
     await withErrorReporting(true, async () => {
       throw new ConflictError({ message: "Taken.", action: "Pick another." });
     });
     expect(JSON.parse(written.join("").trim())).toEqual({
-      error: { code: "core/conflict", status: 409, message: "Taken.", action: "Pick another." },
+      error: {
+        code: "core/conflict",
+        status: 409,
+        message: "Taken.",
+        action: "Pick another.",
+        exit: 3,
+        retryable: false,
+      },
     });
-    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(process.exit).toHaveBeenCalledWith(EXIT.precondition);
   });
 
   test("a non-PithyError is re-thrown — a CLI bug keeps its stack", async () => {

@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { PithyError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import type { StoreVerification } from "@pithy-sh/secrets/src/admin/verifyStore";
 import type { SecretStoreVerifier } from "@pithy-sh/secrets/src/cli/dispatch";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
+import { EXIT, EXIT_CLASSES, exitClassOf, exitCodeOf } from "../terminal/exitClass";
 import { EXIT_ROLLED_NOT_RECORDED } from "./rotateSecrets";
 import { storeEntryCensus } from "./storeEntryCensus";
 import {
@@ -17,6 +19,7 @@ import {
   type VerificationReport,
   verificationExitCode,
   verificationJson,
+  verificationOutcome,
   verificationReportLines,
   verificationVerdict,
 } from "./verifySecrets";
@@ -96,6 +99,52 @@ describe("runSecretsVerification", () => {
     const answers = await runSecretsVerification({ verifier, environments: ["prod"] });
 
     expect(firstUnreachable({ environments: answers, sweep: null, notSwept: null })).toBe(cause);
+  });
+});
+
+/**
+ * **One run, one outcome (#697).** `--json` wrote the document — `exitCode: 0` — and then rethrew the unreachable
+ * environment's fault, so stdout said 0 and the process exited by the fault: two lines that disagreed. The
+ * outcome is decided once now. A report, whose `exitCode` is the process's; or a fault, which is the error line
+ * alone, with nothing on stdout.
+ */
+describe("the outcome", () => {
+  const unreachable = (cause: unknown) => ({
+    env: "staging" as ManagedEnvironment,
+    state: "unreachable" as const,
+    cause,
+  });
+
+  test("a clean run is a report that exits 0", () => {
+    expect(verificationOutcome(report())).toEqual({ kind: "report", exitCode: 0 });
+  });
+
+  test("a finding is a report that exits 5, even beside an unreachable environment — a finding outranks a fault", () => {
+    const sweep = sweepStoreEntries(["acme-staging-secrets-encryption-keys"], census());
+    const outcome = verificationOutcome(
+      report({ sweep, environments: [verified("prod"), unreachable(new Error("x"))] }),
+    );
+    expect(outcome).toEqual({ kind: "report", exitCode: EXIT.person });
+  });
+
+  test("an unreachable environment and no finding is a fault: an upstream, exit 4, retryable", () => {
+    const outcome = verificationOutcome(
+      report({ environments: [verified("prod"), unreachable(new Error("socket hang up"))] }),
+    );
+    expect(outcome.kind).toBe("fault");
+    if (outcome.kind !== "fault") return;
+    expect(outcome.error.payload.code).toBe("core/upstream_failed");
+    expect(exitCodeOf(outcome.error.payload)).toBe(EXIT.upstream);
+    expect(EXIT_CLASSES[exitClassOf(outcome.error.payload)].retryable).toBe(true);
+    expect(outcome.error.payload.message).toContain("staging");
+    expect(outcome.error.payload.action).toMatch(/again/);
+  });
+
+  test("a fault that already says what it is keeps its own class — a credentials fault is not retried", () => {
+    const denied = new UnauthorizedError({ message: "The token was refused." });
+    const outcome = verificationOutcome(report({ environments: [unreachable(denied)] }));
+    expect(outcome).toEqual({ kind: "fault", error: denied });
+    expect(outcome.kind === "fault" && outcome.error instanceof PithyError).toBe(true);
   });
 });
 
@@ -214,10 +263,14 @@ describe("the exit codes", () => {
     expect(verificationExitCode("key-unreadable")).toBe(EXIT_MASTER_KEY_UNREADABLE);
   });
 
-  test("a finding is distinguishable from every other status a secrets command produces", () => {
-    // 1 is "could not run, try again", 2 is citty's usage error, 3 is rolled-not-recorded. A script has
-    // to be able to tell a finding from any of them without parsing a message.
-    expect(new Set([1, 2, EXIT_ROLLED_NOT_RECORDED, EXIT_STORE_UNVERIFIED, EXIT_MASTER_KEY_UNREADABLE]).size).toBe(5);
+  test("a finding needs a person, as rolled-not-recorded does — never a status a script retries", () => {
+    // 1 is unclassified and 4 is "retry with backoff". A finding is neither: it is 5, the kit-wide code for
+    // a step only a person can take, and the `--json` verdict says which finding it was.
+    for (const code of [EXIT_ROLLED_NOT_RECORDED, EXIT_STORE_UNVERIFIED, EXIT_MASTER_KEY_UNREADABLE]) {
+      expect(code).toBe(EXIT.person);
+    }
+    expect(EXIT.person).not.toBe(EXIT.failed);
+    expect(EXIT.person).not.toBe(EXIT.upstream);
   });
 });
 

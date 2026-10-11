@@ -5,9 +5,10 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ArgsDef, CommandDef } from "citty";
-import { describe, expect, test } from "vitest";
-import { dispatchedSubCommand, usageTarget } from "./dispatch";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { commandAt, dispatchedSubCommand, runTree, usageTarget } from "./dispatch";
 import { main } from "./main";
+import { EXIT } from "./terminal/exitClass";
 
 const run = promisify(execFile);
 const bin = join(import.meta.dirname, "bin.ts");
@@ -161,17 +162,17 @@ describe("a command that names no action", () => {
     }
   }, 120_000);
 
-  test("an unknown command is still a mistake — named, and non-zero", async () => {
+  test("an unknown command is still a mistake — named, and a usage error (2)", async () => {
     const { code, stdout, stderr } = await pithy("nonsense");
     expect(`${stdout}${stderr}`).toContain("nonsense");
     expect(stdout).toContain("USAGE");
-    expect(code).not.toBe(0);
+    expect(code).toBe(EXIT.usage);
   });
 
   test("an unknown subcommand of a real group is a mistake too", async () => {
     const { code, stdout, stderr } = await pithy("secrets", "nonsense");
     expect(`${stdout}${stderr}`).toContain("nonsense");
-    expect(code).not.toBe(0);
+    expect(code).toBe(EXIT.usage);
   });
 });
 
@@ -275,5 +276,105 @@ describe("dispatchedSubCommand", () => {
 
   test("anything after -- is payload for a child process", () => {
     expect(dispatchedSubCommand(["--", "logs"], args, names)).toBeUndefined();
+  });
+});
+
+/**
+ * **citty's own refusals are usage errors, and exit 2 (#697).**
+ *
+ * `runMain` catches every `CLIError` — an unknown command, a missing positional — into usage plus the
+ * message plus `process.exit(1)`, which put a typo in the same bucket as a Cloudflare outage. `runTree` is
+ * the same catch with the classified code, and under `--json` the refusal is the one error line rather
+ * than a usage screen in the stdout a caller is parsing.
+ */
+describe("runTree", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A citty usage refusal, recognizable the way citty's own is: by name, since the class is not exported. */
+  function cittyRefusal(message: string): Error {
+    const error = new Error(message);
+    error.name = "CLIError";
+    return error;
+  }
+
+  const leaf: CommandDef = { meta: { name: "leaf" }, run: async () => {} };
+  const tree: CommandDef = { meta: { name: "pithy" }, subCommands: { group: { subCommands: { leaf } } } };
+
+  function capture() {
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    return { stderr, exit };
+  }
+
+  test("a clean run exits nothing and shows nothing", async () => {
+    const { exit } = capture();
+    const showUsage = vi.fn(async () => {});
+    await runTree(tree, ["group", "leaf"], { json: false, showUsage, run: async () => ({}) });
+    expect(exit).not.toHaveBeenCalled();
+    expect(showUsage).not.toHaveBeenCalled();
+  });
+
+  test("a usage refusal shows the usage of where it happened, names the problem, and exits 2", async () => {
+    const { stderr, exit } = capture();
+    const showUsage = vi.fn(async () => {});
+    await runTree(tree, ["group", "nonsense"], {
+      json: false,
+      showUsage,
+      run: async () => {
+        throw cittyRefusal("Unknown command nonsense");
+      },
+    });
+    expect(showUsage).toHaveBeenCalledWith(expect.objectContaining({ subCommands: { leaf } }), tree);
+    expect(stderr.join("")).toBe("Unknown command nonsense\n");
+    expect(exit).toHaveBeenCalledWith(EXIT.usage);
+  });
+
+  test("under --json it is the one error line on stderr, with no usage screen in stdout", async () => {
+    const { stderr, exit } = capture();
+    const showUsage = vi.fn(async () => {});
+    await runTree(tree, ["group", "nonsense", "--json"], {
+      json: true,
+      showUsage,
+      run: async () => {
+        throw cittyRefusal("Unknown command \u001b[36mnonsense\u001b[39m");
+      },
+    });
+    expect(showUsage).not.toHaveBeenCalled();
+    const line = JSON.parse(stderr.join("")) as { error: Record<string, unknown> };
+    expect(line.error).toMatchObject({ code: "validation/invalid_input", exit: 2, retryable: false });
+    expect(line.error.message).toBe("Unknown command nonsense.");
+    expect(exit).toHaveBeenCalledWith(EXIT.usage);
+  });
+
+  test("anything else is a crash: printed whole, and exits 1, as citty always did", async () => {
+    const { stderr, exit } = capture();
+    await runTree(tree, ["group", "leaf"], {
+      json: false,
+      showUsage: async () => {},
+      run: async () => {
+        throw new TypeError("boom");
+      },
+    });
+    expect(stderr.join("")).toContain("TypeError: boom");
+    expect(exit).toHaveBeenCalledWith(EXIT.failed);
+  });
+});
+
+describe("commandAt", () => {
+  const leaf: CommandDef = { meta: { name: "leaf" }, run: async () => {} };
+  const group: CommandDef = { meta: { name: "group" }, subCommands: { leaf } };
+  const tree: CommandDef = { meta: { name: "pithy" }, subCommands: { group } };
+
+  test("walks to the deepest command the tokens name, with its parent", async () => {
+    expect(await commandAt(tree, ["group", "leaf", "--json"])).toEqual({ cmd: leaf, parent: group });
+  });
+
+  test("stops at the last name it knows, so an unknown one is shown its parent's usage", async () => {
+    expect(await commandAt(tree, ["group", "nonsense"])).toEqual({ cmd: group, parent: tree });
+    expect(await commandAt(tree, ["nonsense"])).toEqual({ cmd: tree });
   });
 });

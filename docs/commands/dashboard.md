@@ -221,14 +221,23 @@ $ pithy dashboard status --env prod --json
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1. A `needs_reconnect` is **not** an error: the registration succeeded, the round-trip did not, and the command reports both and exits 0.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8). A `needs_reconnect` is **not** an error: the registration succeeded, the round-trip did not, and the command reports both and exits 0.
 
-**No Worker resolves the database.** Every subcommand opens the registry, so this is the one door the check sits behind.
+**No Worker resolves the database.** Every subcommand opens the registry, so this is the one door the check sits behind. It is `core/precondition_failed`, exit 3: the project is missing what the call depends on, and the remedy is an edit, so it names no `fix`.
 
 ```
 No worker resolves the DB binding for this environment.
 Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.
 ```
+
+**The Worker composes no control-plane seam.** `connect` targets the Worker that composes `controlplane()`, and this one does not, so there is nothing to connect.
+
+```
+<worker> does not compose the control-plane seam, so there is nothing to connect.
+Add `controlplane()` to that Worker's pithy.config.ts, deploy, then run connect again.
+```
+
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The Worker the project resolved on its own is `core/precondition_failed`, exit 3, with `pithy add controlplane --worker <worker>` as its `fix`, `<worker>` being the Worker's `apps/` directory (`docs/CLI.md` §3.8).
 
 **A confirmation nobody could answer.** `revoke-key` and `disconnect` ask before they act, and the answer they default to is no. So a run that cannot ask — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no terminal — and did not pass `--yes` is refused before the registry is opened, never taken as yes.
 

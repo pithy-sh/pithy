@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { join } from "node:path";
-import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { withProvisionFix } from "../provision/provisionFix";
 import { formatList } from "../terminal/output";
 import type { AddressStanza } from "./workerAddress";
 import { readWranglerConfig } from "./wrangler";
@@ -89,6 +90,8 @@ export interface EnvironmentReadiness {
   skipped: SkippedEnvironment[];
   /** The resolved stanza per ready environment — read once here rather than again per phase. */
   stanzas: ReadonlyMap<ManagedEnvironment, ReadyStanza>;
+  /** The project's `seed.productionEnvironments`, which decides whether a refusal can name a `fix`. */
+  productionEnvironments?: readonly string[];
 }
 
 /**
@@ -120,6 +123,8 @@ export async function environmentReadiness(options: {
   label: string;
   /** The project's declaration from the root `pithy.config.ts`, in order. */
   environments: DeclaredEnvironments | readonly string[];
+  /** The project's `seed.productionEnvironments`, carried for {@link requireReadyEnvironments}. */
+  productionEnvironments?: readonly string[] | undefined;
 }): Promise<EnvironmentReadiness> {
   const path = join(options.workerDir, "wrangler.jsonc");
   const config = (await readWranglerConfig(options.workerDir)) as WranglerConfig;
@@ -148,7 +153,14 @@ export async function environmentReadiness(options: {
     stanzas.set(env, { appDatabaseId: id, stanza });
   }
 
-  return { path, declared: managedEnvironments(options.environments), ready, skipped, stanzas };
+  return {
+    path,
+    declared: managedEnvironments(options.environments),
+    ready,
+    skipped,
+    stanzas,
+    ...(options.productionEnvironments ? { productionEnvironments: options.productionEnvironments } : {}),
+  };
 }
 
 /**
@@ -171,6 +183,7 @@ export function narrowReadiness(
     ready,
     skipped: readiness.skipped.filter((entry) => wanted.has(entry.env)),
     stanzas: new Map(ready.map((env) => [env, readyStanza(readiness, env)])),
+    ...(readiness.productionEnvironments ? { productionEnvironments: readiness.productionEnvironments } : {}),
   };
 }
 
@@ -231,17 +244,19 @@ export function formatEnvironmentOutcomes(rows: readonly { env: string; outcome:
  *
  * Nothing was provisioned, and reporting success for a run that did nothing is the failure mode
  * skip-and-report would otherwise introduce — the operator would read `Done.` and believe production has a
- * worker. Exit 1, naming which environments were skipped, why, and the command that resolves the first of
- * them. Call it **after** the report is written, so `--json` still carries the per-environment structure on
+ * worker. `core/precondition_failed`, exit 3, naming which environments were skipped, why, and — as its
+ * `fix` — the command that resolves the first of them. Call it **after** the report is written, so `--json` still carries the per-environment structure on
  * stdout beside the `{"error":…}` line on stderr.
  */
 export function requireReadyEnvironments(readiness: EnvironmentReadiness, command: string): void {
   if (readiness.ready.length > 0) return;
   const names = readiness.skipped.map((entry) => entry.env);
   const first = names[0];
-  throw new ValidationError({
+  const refusal = new PreconditionFailedError({
     message: `No environment is ready — ${names.join(" and ")} ${names.length === 1 ? "has" : "have"} no DB database_id.`,
     action: `Run pithy provision --env ${first} to create its app database, then run ${command} again.`,
     detail: `${readiness.path}: no DB database_id for ${names.join(", ")}`,
   });
+  // Nothing ready and nothing skipped is a project that declared no environment: there is none to provision.
+  throw first === undefined ? refusal : withProvisionFix(refusal, first, readiness.productionEnvironments);
 }

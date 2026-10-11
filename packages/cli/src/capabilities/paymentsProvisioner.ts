@@ -65,7 +65,7 @@ export async function loadPayments(projectDir: string): Promise<PaymentsModule> 
     ]);
     return { ...resolve, ...capability, ...specs, ...subject };
   } catch (error) {
-    throw capabilityLoadError("payments", "@pithy-sh/payments", error, projectDir);
+    throw await capabilityLoadError("payments", "@pithy-sh/payments", error, projectDir);
   }
 }
 
@@ -74,7 +74,7 @@ async function paymentsWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/payments/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error, projectDir);
   }
 }
 

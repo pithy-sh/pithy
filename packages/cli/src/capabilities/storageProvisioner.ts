@@ -67,7 +67,7 @@ export async function loadStorage(projectDir: string): Promise<StorageModule> {
     ]);
     return { ...provision, ...resolve, ...registry, ...capability, ...specs };
   } catch (error) {
-    throw capabilityLoadError("storage", "@pithy-sh/storage", error, projectDir);
+    throw await capabilityLoadError("storage", "@pithy-sh/storage", error, projectDir);
   }
 }
 
@@ -338,7 +338,7 @@ async function storageWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/storage/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error, projectDir);
   }
 }
 

@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { EXIT } from "./terminal/exitClass";
 
 /**
  * **A run that may not prompt exits instead of waiting — measured on a real pty (#697).**
@@ -125,16 +126,18 @@ describe.skipIf(!PTY)("PITHY_NONINTERACTIVE=1 at a real terminal, with no --json
   test("a required prompt fails input/required instead of opening: docs connect names --client", () => {
     const run = underPty("docs connect --scope user", { env: "PITHY_NONINTERACTIVE=1" });
     expect(run.timedOut).toBe(false);
-    expect(run.code).not.toBe(0);
+    // 2: usage — an agent fixes the call by passing the flag it names (#697).
+    expect(run.code).toBe(EXIT.usage);
     expect(run.shown).toContain("Name what to connect.");
     expect(run.shown).toContain("--client <id>");
   });
 
-  test("remove --drop, which only a person may confirm, stops before it reads anything", () => {
-    const run = underPty("remove auth --drop", { env: "PITHY_NONINTERACTIVE=1" });
+  test("remove, which belongs to a person, stops before it reads anything", () => {
+    const run = underPty("remove auth", { env: "PITHY_NONINTERACTIVE=1" });
     expect(run.timedOut).toBe(false);
-    expect(run.code).not.toBe(0);
-    expect(run.shown).toContain("Dropping auth's tables needs a person to confirm it.");
+    // 5: needs a person — no flag answers it, so an agent stops and asks (#697).
+    expect(run.code).toBe(EXIT.person);
+    expect(run.shown).toContain("pithy remove is a manual command, and this run forbids prompts.");
   });
 
   test("a value other than 1 is refused, and the run asks nothing", () => {

@@ -48,3 +48,12 @@ export interface WorkerIdentity {
 export function workerIdentity(target: Pick<WorkerTarget, "name" | "dir">): WorkerIdentity {
   return { worker: basename(target.dir), deployedAs: target.name };
 }
+
+/**
+ * A Worker as `--worker` is documented to take it, and as every `Known:` list and `choices` names it: the
+ * apps/ directory (#697). The deployed script name resolves too, but it is not what a remedy names — a Worker
+ * whose `wrangler.jsonc` says `demo-api` is still `apps/api`.
+ */
+export function workerDirName(worker: { dir: string }): string {
+  return basename(worker.dir);
+}

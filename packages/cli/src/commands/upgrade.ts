@@ -24,6 +24,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { execArgs, type InstallRunner } from "../project/packageManager";
+import { EXIT } from "../terminal/exitClass";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -723,7 +724,7 @@ export default defineCommand({
 
       // A Worker that could not be read establishes nothing, so the run does not exit 0 around it. Set
       // before either renderer, so the two paths cannot disagree about whether the run succeeded.
-      if (upgradeFailed(run)) process.exitCode = 1;
+      if (upgradeFailed(run)) process.exitCode = EXIT.failed;
 
       if (args.json) {
         process.stdout.write(`${upgradeJsonLine(run, env, dryRun)}\n`);

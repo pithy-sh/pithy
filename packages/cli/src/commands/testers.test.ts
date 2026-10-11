@@ -38,7 +38,7 @@ vi.mock("../project/config", async (importOriginal) => ({
 const roster = vi.hoisted(() => ({ readCohortCalls: [] as unknown[][], passDeps: [] as Record<string, unknown>[] }));
 
 /** What the stubbed project's one Worker composes beside testers. Swapped per case. */
-const project = vi.hoisted(() => ({ siblings: [] as Record<string, unknown>[] }));
+const project = vi.hoisted(() => ({ siblings: [] as Record<string, unknown>[], composesTesters: true }));
 
 const COHORT = { id: "c1", name: "closed-test", targetSize: 20, windowDays: 14, closedAt: null };
 
@@ -74,7 +74,10 @@ vi.mock("../project/workerScope", async (importOriginal) => ({
     {
       name: "api",
       dir: "/does/not/exist",
-      capabilities: [{ name: "testers", testersConfig: { activeWithinDays: 7 } }, ...project.siblings],
+      capabilities: [
+        ...(project.composesTesters ? [{ name: "testers", testersConfig: { activeWithinDays: 7 } }] : []),
+        ...project.siblings,
+      ],
     },
   ],
 }));
@@ -124,8 +127,29 @@ describe("pithy testers", () => {
 
   test("provision refuses a project with no name, before it reaches Cloudflare", async () => {
     const error = await failure("provision", { json: true });
-    expect(error.code).toBe("validation/invalid_input");
+    // The call is right and the project is missing its name: a precondition, exit 3 (#697).
+    expect(error.code).toBe("core/precondition_failed");
     expect(error.message).toBe("pithy.config.ts has no `name`.");
+  });
+
+  /**
+   * **A project composing no testers is missing what the call depends on (#697).** `pithy testers list --env dev`
+   * was right as typed; `pithy add testers` is the step. Exit 3 with that as its `fix`, never 2.
+   */
+  test("a project composing no testers is a precondition, with pithy add testers as its fix", async () => {
+    project.composesTesters = false;
+    try {
+      const error = (await failure("list", { json: true, env: "dev" })) as Record<string, unknown>;
+      expect(error).toMatchObject({
+        code: "core/precondition_failed",
+        message: "The testers capability is not configured.",
+        exit: 3,
+        // testers declares `email`, so the add composes it too, with nobody to ask (#697).
+        fix: "pithy add testers --with-prerequisites",
+      });
+    } finally {
+      project.composesTesters = true;
+    }
   });
 
   test("deprovision refuses a project with no name rather than deleting nothing and exiting 0", async () => {

@@ -168,7 +168,7 @@ $ pithy feature destroy --json
 | `manifestPath` | `string` | Where that manifest is — read, or merely named when `manifestRead` is `false` |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |
 | `branchDeleted` | `boolean` | Whether the feature branch was deleted. Only when it has been merged |
-| `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is 1 |
+| `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is non-zero by the failure's kind (`docs/CLI.md` §3.8) |
 
 ```
 $ pithy feature prune --json
@@ -190,7 +190,7 @@ A teardown deletes real infrastructure one resource at a time, with no transacti
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **A bad issue number.** Checked before the branch or worktree exists, so nothing is left behind.
 
@@ -220,7 +220,7 @@ Cloudflare credentials are missing, so the feature's resources cannot be deleted
 Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, or pass --local-only to remove just the worktree and its ports.
 ```
 
-**The project has no name.** `pithy.config.ts`'s `name` is the first segment of every feature resource name and the only key teardown has to find them by, so it is required with no guessed fallback: a wrong guess means `destroy` computes names that match nothing, deletes nothing, and exits 0.
+**The project has no name.** `pithy.config.ts`'s `name` is the first segment of every feature resource name and the only key teardown has to find them by, so it is required with no guessed fallback: a wrong guess means `destroy` computes names that match nothing, deletes nothing, and exits 0. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 **The branch is not a feature branch.** `sync` and `destroy` derive the issue and slug from the checked-out branch, so they must be run from inside the worktree — as does `pithy provision --feature`.
 

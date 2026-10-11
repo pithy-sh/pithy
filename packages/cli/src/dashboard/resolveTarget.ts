@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { isControlPlaneCapability } from "@pithy-sh/core/src/controlPlane/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
 import { describeAddressSource, readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
@@ -86,10 +87,17 @@ async function resolveSeamWorker(options: ConnectWorkerOptions): Promise<{ worke
 
   const basePath = composedBasePath(worker);
   if (basePath === null) {
-    throw new ValidationError({
+    const refusal = {
       message: `${worker.name} does not compose the control-plane seam, so there is nothing to connect.`,
       action: "Add `controlplane()` to that Worker's pithy.config.ts, deploy, then run connect again.",
       detail: `no controlplane capability in ${worker.dir}'s composed set`,
+    };
+    // `capabilityWorker.ts`'s rule (#697): a Worker named with --worker is a call another --worker fixes, exit 2;
+    // the Worker the project resolved to on its own lacks what connect depends on, exit 3, and adding it is the step.
+    if (options.worker !== undefined) throw new ValidationError(refusal);
+    throw await capabilityNotComposed("controlplane", refusal, {
+      projectDir: options.projectDir,
+      workerDir: worker.dir,
     });
   }
   return { worker, basePath };

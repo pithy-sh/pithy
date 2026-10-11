@@ -4,9 +4,16 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { InputRequiredError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  InputRequiredError,
+  messageOf,
+  NotFoundError,
+  PithyError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { composeCapabilities } from "../capabilities/compose";
 import { allCapabilities, loadWorkerConfig, type WorkerConfig } from "./config";
+import { workerDirName } from "./workerIdentity";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 
 /**
@@ -248,9 +255,11 @@ export async function resolveWorkerSet(options: ResolveOptions): Promise<WorkerS
 function pick(targets: WorkerTarget[], name: string): WorkerTarget {
   const found = targets.find((target) => target.name === name || target.dir.endsWith(`/${name}`));
   if (!found) {
-    throw new NotFoundError({
+    // A name that matches nothing is the call's mistake (exit 2), as an unknown `--client` is: there is no
+    // command to run first, only a different name to pass.
+    throw new ValidationError({
       message: `No worker named "${name}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${targets.map((t) => t.name).join(", ")}.`,
+      action: `Run pithy worker list to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
     });
   }
   return found;
@@ -369,7 +378,7 @@ export async function resolveSingleWorker(options: ResolveSingleOptions): Promis
   if (options.worker !== undefined) {
     const [found] = await resolveWorkers({ projectDir: options.projectDir, worker: options.worker, ...seams });
     // Unreachable: the single-Worker path either resolves one or throws. Narrowed for the type, not the case.
-    if (!found) throw new NotFoundError({ message: `No worker named "${options.worker}".` });
+    if (!found) throw new ValidationError({ message: `No worker named "${options.worker}".` });
     return found;
   }
 
@@ -390,8 +399,8 @@ export async function resolveSingleWorker(options: ResolveSingleOptions): Promis
   // `input/required`, because it is: a question with an answer this run could not ask for (#697).
   throw new InputRequiredError({
     message: "This project has several workers, so which one to wire is ambiguous.",
-    action: `Pass --worker <name>. Known: ${workers.map((w) => w.name).join(", ")}.`,
+    action: `Pass --worker <name>. Known: ${workers.map(workerDirName).join(", ")}.`,
     flag: "--worker",
-    choices: workers.map((w) => w.name),
+    choices: workers.map(workerDirName),
   });
 }

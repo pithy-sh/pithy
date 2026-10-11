@@ -4,7 +4,8 @@
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CommandDef } from "citty";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import email, { resolveRouting } from "./email";
+import { fixOf } from "../terminal/exitClass";
+import email, { loadEmailCapability, resolveRouting } from "./email";
 
 /** The three flags, in the order the refusal names them. */
 const ROUTING_FLAGS = ["--routing-zone", "--inbound-address", "--app-worker"] as const;
@@ -67,7 +68,8 @@ describe("pithy email", () => {
 
   test("provision refuses a project with no name, before it reaches Cloudflare", async () => {
     const error = await failure("provision", { json: true });
-    expect(error.code).toBe("validation/invalid_input");
+    // The call is right and the project is missing its name: a precondition, exit 3 (#697).
+    expect(error.code).toBe("core/precondition_failed");
     expect(error.message).toBe("pithy.config.ts has no `name`.");
   });
 
@@ -167,4 +169,34 @@ describe("email provision's routing flags are all three or none", () => {
     expect(error.code).toBe("validation/invalid_input");
     expect(error.message).toBe("The inbound routing options are incomplete.");
   });
+});
+
+/**
+ * **A project composing no email is missing what the call depends on (#697).** The call was right; `pithy add
+ * email` is the step. Exit 3 with that as its `fix`, never the 2 a bad flag gets.
+ */
+test("a project composing no email is a precondition, with pithy add email as its fix", async () => {
+  const one = async () =>
+    [{ name: "acme-api", dir: "/nowhere/apps/api", config: {}, capabilities: [], target: {} }] as never[];
+  const failure = (await loadEmailCapability("/nowhere", one).catch((error: unknown) => error)) as {
+    payload: { code: string; message: string };
+  };
+  expect(failure.payload).toMatchObject({
+    code: "core/precondition_failed",
+    message: "The email capability is not configured.",
+  });
+  // No manifest under /nowhere rules prerequisites out, and email declares `secrets` anyway (`notComposed.ts`).
+  expect(fixOf(failure as never)).toBe("pithy add email --with-prerequisites");
+});
+
+test("with no Worker, or several, nothing says where email goes, so there is no fix — still exit 3", async () => {
+  const none = (await loadEmailCapability("/nowhere", async () => []).catch((error: unknown) => error)) as never;
+  expect(fixOf(none)).toBeUndefined();
+  const two = async () =>
+    [
+      { name: "acme-api", dir: "/nowhere/apps/api", config: {}, capabilities: [], target: {} },
+      { name: "acme-web", dir: "/nowhere/apps/web", config: {}, capabilities: [], target: {} },
+    ] as never[];
+  const several = (await loadEmailCapability("/nowhere", two).catch((error: unknown) => error)) as never;
+  expect(fixOf(several)).toBeUndefined();
 });

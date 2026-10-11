@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -17,6 +17,7 @@ import {
   CloudflareEmailProvisioner,
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
@@ -47,6 +48,7 @@ import {
   resolveSingleWorker,
   resolveWorkers,
 } from "../project/workerScope";
+import { secretsDatabaseMissing } from "../provision/missingDatabase";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -89,13 +91,17 @@ export async function loadEmailCapability(
 ): Promise<EmailCapability> {
   // A hook that refuses here refuses for the same reason the Worker would refuse to boot, which is
   // worth knowing before a host is deployed for it rather than after.
-  const capabilities = await resolve({ projectDir }).then(composedProjectCapabilities);
-  const cap = capabilities.find(isEmailCapability);
+  const workers = await resolve({ projectDir });
+  const cap = (await composedProjectCapabilities(workers)).find(isEmailCapability);
   if (!cap) {
-    throw new ValidationError({
-      message: "The email capability is not configured.",
-      action: "Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).",
-    });
+    throw await capabilityNotComposed(
+      "email",
+      {
+        message: "The email capability is not configured.",
+        action: "Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).",
+      },
+      { projectDir, workerDirs: workers.map((worker) => worker.dir) },
+    );
   }
   return cap;
 }
@@ -122,13 +128,13 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "The CF Secrets Store id is missing.",
       action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).",
     });
@@ -201,11 +207,11 @@ function buildResolveEnv(
       find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
     });
     if (!secretsDb) {
-      throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
-        action:
-          "Run `pithy secrets provision` first — the email worker binds it, and that run creates the link-signing key it signs with.",
-      });
+      throw secretsDatabaseMissing(
+        env,
+        managerWorkerName(project, env),
+        "the email worker binds it, and that run creates the link-signing key it signs with.",
+      );
     }
     return { appDatabaseId, secretsDatabaseId: secretsDb.uuid, baseUrl };
   };
@@ -298,6 +304,7 @@ const provision = defineCommand({
         workerDir: appWorker.dir,
         label: `${appWorker.name}'s wrangler.jsonc`,
         environments,
+        productionEnvironments: config.seed?.productionEnvironments,
       });
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareEmailProvisioner({

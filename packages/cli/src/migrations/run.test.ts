@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
@@ -9,6 +9,8 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationGroups } from "@pithy-sh/core/src/migrations/groups";
 import { Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { featureConfigPath } from "../provision/featureConfig";
+import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
 import {
   appCapability,
   createTable,
@@ -19,7 +21,14 @@ import {
   withLocalD1,
 } from "../test-utils/migrateHarness";
 import { rollbackConfirmPhrase } from "./confirm";
-import { dropCapabilityTables, migrateProject, previewReset, readProjectLedger, resetProject } from "./run";
+import {
+  dropCapabilityTables,
+  migrateProject,
+  previewReset,
+  readProjectLedger,
+  resetProject,
+  resolveWorkerScopes,
+} from "./run";
 
 /** The group a run generated for itself, read back from the database it recorded it in. */
 async function generatedGroupIn(projectDir: string, binding: string): Promise<string> {
@@ -42,6 +51,23 @@ describe("migrateProject", () => {
       project: "acme",
     });
     expect(runs).toEqual([{ worker: "api", databases: [] }]);
+  });
+
+  // A `--worker` that names nothing is the call's mistake: exit 2, with the known names in the action.
+  test("a --worker that names no worker is a usage error", async () => {
+    const refusal = await resolveWorkerScopes({
+      projectDir: h.projectDir,
+      env: "dev",
+      worker: "ghost",
+      workers: [h.api([])],
+    }).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(PithyError);
+    expect((refusal as PithyError).payload).toMatchObject({
+      code: "validation/invalid_input",
+      message: 'No worker named "ghost".',
+      action: expect.stringContaining("Known: api."),
+    });
+    expect(exitCodeOf((refusal as PithyError).payload)).toBe(EXIT.usage);
   });
 
   test("runs, persists, and rolls back against local D1", async () => {
@@ -510,6 +536,61 @@ describe("migrateProject", () => {
 
       expect(failure).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.message).toMatch(/api: .*env\.staging/);
+    });
+
+    /**
+     * An unprovisioned database is a precondition, and its `fix` is the command that provisions it (#697)
+     * — the feature form for a feature, since `pithy provision` refuses `--env feature`.
+     */
+    test.each([
+      ["staging", "pithy provision --env staging --yes"],
+      ["feature", "pithy provision --feature"],
+    ])("a database with no id on %s is a precondition whose fix is %s", async (env, fix) => {
+      const config = JSON.stringify({ d1_databases: [], env: { [env]: { d1_databases: [{ binding: "DB" }] } } });
+      if (env === "feature") {
+        await mkdir(join(h.projectDir, "apps", "api", ".wrangler", "pithy"), { recursive: true });
+        await writeFile(featureConfigPath(join(h.projectDir, "apps", "api")), config);
+      } else {
+        await writeFile(join(h.projectDir, "apps", "api", "wrangler.jsonc"), config);
+      }
+      await writeCreds();
+
+      const failure = await migrateProject({
+        account: null,
+        projectDir: h.projectDir,
+        workers: [h.api([appCapability()])],
+        env,
+        project: "acme",
+        remoteD1: () => {
+          throw new Error("must not build a client when the id is missing");
+        },
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(PithyError);
+      expect((failure as PithyError).payload.code).toBe("core/precondition_failed");
+      expect(fixOf(failure as PithyError)).toBe(fix);
+    });
+
+    // Provisioning production needs the `--confirm` phrase too, a person's to give, so `--yes` alone would
+    // end exit 5. A `fix` is runnable as written; production gets none (#697).
+    test("a database with no id on prod is a precondition with no fix", async () => {
+      const config = JSON.stringify({ d1_databases: [], env: { prod: { d1_databases: [{ binding: "DB" }] } } });
+      await writeFile(join(h.projectDir, "apps", "api", "wrangler.jsonc"), config);
+      await writeCreds();
+
+      const failure = await migrateProject({
+        account: null,
+        projectDir: h.projectDir,
+        workers: [h.api([appCapability()])],
+        env: "prod",
+        project: "acme",
+        remoteD1: () => {
+          throw new Error("must not build a client when the id is missing");
+        },
+      }).catch((error: unknown) => error);
+
+      expect((failure as PithyError).payload.code).toBe("core/precondition_failed");
+      expect(fixOf(failure as PithyError)).toBeUndefined();
     });
 
     test("missing CF credentials fail with an actionable error", async () => {

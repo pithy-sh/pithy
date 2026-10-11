@@ -52,7 +52,7 @@ export async function loadTesters(projectDir: string): Promise<TestersModule> {
     ]);
     return { ...capability, ...tables, ...read, ...write, ...daily, ...view, ...config };
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
+    throw await capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
   }
 }
 

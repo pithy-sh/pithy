@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import { HIDDEN_ROOT_FLAGS } from "../commands/alias";
 import { ROOT_FLAGS } from "../rootFlags";
+import { EXIT_CLASSES, exitClassOf } from "../terminal/exitClass";
 import { buildDocsCatalog, CATALOG_PATH, renderDocsCatalog, walkCommands } from "./catalog";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
@@ -119,11 +120,35 @@ describe("buildDocsCatalog", () => {
 
   test("names every error code the kit defines, with the status it pins", async () => {
     const built = await buildDocsCatalog();
-    expect(built.errorCodes).toEqual(
+    expect(built.errorCodes.map(({ code, status }) => ({ code, status }))).toEqual(
       KitErrorPayload.options
         .map((member) => ({ code: member.shape.code.value, status: member.shape.status.value }))
         .sort((a, b) => a.code.localeCompare(b.code)),
     );
+  });
+
+  /**
+   * **And what a caller should do about each one (#697)** — the exit class the CLI ends with, its number,
+   * whether a retry can help, and the remedy that class names. Beside `code` and `status`, never in place
+   * of them: the site's checker reads those two by name.
+   */
+  test("gives every error code its exit class, exit code, retryability and remedy, from the one table", async () => {
+    const built = await buildDocsCatalog();
+    for (const entry of built.errorCodes) {
+      const exitClass = exitClassOf({ code: entry.code });
+      expect(entry).toEqual({
+        code: entry.code,
+        status: entry.status,
+        exitClass,
+        exit: EXIT_CLASSES[exitClass].exit,
+        retryable: EXIT_CLASSES[exitClass].retryable,
+        remedy: EXIT_CLASSES[exitClass].agentShould,
+      });
+    }
+    expect(built.errorCodes.find((entry) => entry.code === "core/upstream_timeout")).toMatchObject({
+      exit: 4,
+      retryable: true,
+    });
   });
 
   /**
@@ -193,7 +218,16 @@ describe("renderDocsCatalog", () => {
       capabilities: [{ name: "auth", package: "@pithy-sh/auth" }],
       commands: [{ path: "add", flags: ["--json"] }],
       globalFlags: ["--help"],
-      errorCodes: [{ code: "core/not_found", status: 404 }],
+      errorCodes: [
+        {
+          code: "core/not_found",
+          status: 404,
+          exitClass: "precondition",
+          exit: 3,
+          retryable: false,
+          remedy: "Run the `fix` command",
+        },
+      ],
     });
     expect(() => JSON.parse(rendered) as unknown).not.toThrow();
     expect(rendered.endsWith("\n")).toBe(true);

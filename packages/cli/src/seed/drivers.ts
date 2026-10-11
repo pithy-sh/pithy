@@ -10,10 +10,11 @@ import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imag
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { type CloudflareAccountSelection, cloudflareCredentials, cloudflareEnv } from "../cloudflare/config";
 import { wranglerConfigPath } from "../provision/featureConfig";
+import { withProvisionFix } from "../provision/provisionFix";
 
 /**
  * The seed driver resolves each backend a seed set touches to a live handle — the only thing that
@@ -111,6 +112,11 @@ export interface SeedDriverOptions {
   images?: ImagesFactory;
   /** Test seam for the (always-remote) Stream client. */
   stream?: StreamFactory;
+  /**
+   * The project's `seed.productionEnvironments`. Read only to decide whether an unprovisioned refusal can
+   * name a `fix`: provisioning production needs a person's `--confirm` phrase, so it gets none.
+   */
+  productionEnvironments?: readonly string[] | undefined;
 }
 
 /**
@@ -283,16 +289,16 @@ function remoteId(
   env: string,
   kind: string,
   idField: string,
+  productionEnvironments: readonly string[] | undefined,
 ): string {
   const entry = entries?.find((candidate) => candidate.binding === binding);
   const value = entry ? read(entry) : undefined;
-  if (!value) {
-    throw new ValidationError({
-      message: `wrangler.jsonc env.${env} has no ${idField} for the "${binding}" ${kind} binding.`,
-      action: `Provision the ${env} ${kind} and set its ${idField} on ${binding}. Run pithy seed --env ${env} again.`,
-    });
-  }
-  return value;
+  if (value) return value;
+  const refusal = new PreconditionFailedError({
+    message: `wrangler.jsonc env.${env} has no ${idField} for the "${binding}" ${kind} binding.`,
+    action: `Provision the ${env} ${kind} and set its ${idField} on ${binding}. Run pithy seed --env ${env} again.`,
+  });
+  throw withProvisionFix(refusal, env, productionEnvironments);
 }
 
 /**
@@ -320,6 +326,7 @@ function openRemoteDriver(options: SeedDriverOptions, clients: LazyClients, asse
         options.env,
         "D1",
         "database_id",
+        options.productionEnvironments,
       );
       return d1({ binding, databaseId });
     },
@@ -331,6 +338,7 @@ function openRemoteDriver(options: SeedDriverOptions, clients: LazyClients, asse
         options.env,
         "KV",
         "id",
+        options.productionEnvironments,
       );
       return { kind: "remote", manager: kv({ binding, namespaceId }) };
     },
@@ -342,6 +350,7 @@ function openRemoteDriver(options: SeedDriverOptions, clients: LazyClients, asse
         options.env,
         "R2",
         "bucket_name",
+        options.productionEnvironments,
       );
       return { kind: "remote", manager: r2({ binding, bucketName }) };
     },
@@ -398,7 +407,9 @@ async function lazyClients(
     r2Credentials() {
       const raw = env().R2_CREDENTIALS;
       if (!raw) {
-        throw new ValidationError({
+        // Unset is an environment not yet set up (exit 3), as a missing Cloudflare pair is; malformed,
+        // below, is a value someone wrote wrong (exit 2).
+        throw new PreconditionFailedError({
           message: "R2 credentials are missing.",
           action: "Set R2_CREDENTIALS (the S3 access-key/secret-key pair) to seed R2 objects.",
         });

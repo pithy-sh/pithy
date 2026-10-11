@@ -6,11 +6,10 @@ import { describe, expect, test } from "vitest";
 import { assertRollbackConfirmed, rollbackConfirmPhrase } from "./confirm";
 
 /**
- * **A missing phrase and a wrong phrase are different failures (#697).**
+ * **The rollback phrase is a person's to give (#697).**
  *
- * No phrase at all means nobody was asked: the run could not prompt, so it fails `input/required` and
- * names `--confirm-rollback`, the flag that answers it. A wrong phrase is an answer, and it is refused as
- * one — `validation/invalid_input` — because a caller that typed something has nothing left to supply.
+ * Missing or mistyped, the refusal is `core/person_required` — exit 5 — so an agent stops and asks rather
+ * than trying variations. The action line names `--confirm-rollback` and the phrase, for the person.
  */
 
 /** What a thunk threw, as its payload. Fails the test when it threw something else, or nothing. */
@@ -25,28 +24,26 @@ function payloadOf(run: () => void): Record<string, unknown> {
 }
 
 describe("assertRollbackConfirmed", () => {
-  test("no phrase is a question this run could not ask: input/required, naming --confirm-rollback", () => {
+  test("no phrase needs a person, and the action names --confirm-rollback", () => {
     expect(payloadOf(() => assertRollbackConfirmed("staging", undefined))).toMatchObject({
-      code: "input/required",
-      flag: "--confirm-rollback",
+      code: "core/person_required",
       message: "Rolling back staging reverses a group of migrations in every database it binds.",
       action: `Pass --confirm-rollback "${rollbackConfirmPhrase("staging")}" to roll back staging.`,
     });
   });
 
-  test("a wrong phrase is an answer, refused as invalid input", () => {
+  test("a wrong phrase needs a person too", () => {
     const payload = payloadOf(() => assertRollbackConfirmed("staging", "yes"));
     expect(payload).toMatchObject({
-      code: "validation/invalid_input",
+      code: "core/person_required",
       message: "That is not the confirmation phrase for rolling back staging.",
       action: `Pass --confirm-rollback "${rollbackConfirmPhrase("staging")}" to roll back staging.`,
     });
-    expect(payload).not.toHaveProperty("flag");
   });
 
   test("a phrase for another environment does not unlock this one", () => {
     expect(payloadOf(() => assertRollbackConfirmed("prod", rollbackConfirmPhrase("staging"))).code).toBe(
-      "validation/invalid_input",
+      "core/person_required",
     );
   });
 

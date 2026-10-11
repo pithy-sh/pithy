@@ -113,7 +113,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
 | `routing.skipped` | boolean | True when the routing flags were absent or incomplete, or when no environment was ready, so no rule was made |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
 
 `pithy email deprovision`
 
@@ -133,13 +133,13 @@ When **every** environment was skipped the line above is still written to stdout
 | `from` | string | The address it was sent from: `--from` when given, otherwise the configured `fromAddress` |
 | `messageId` | string | The id Cloudflare assigned the message. **Absent from the line** when the API returned none — the key is omitted rather than emitted as null |
 
-A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the same public payload the HTTP surface encodes, with `detail` stripped.
+A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (`docs/CLI.md` §3.8) — the same public payload the HTTP surface encodes, with `detail` stripped, plus `exit`, `retryable` and, where the cause is known, `fix`.
 
 ## Errors
 
 Each is a `PithyError`: the problem, then the action.
 
-**The capability is not configured.** No Worker's `pithy.config.ts` composes `email`.
+**The capability is not configured.** No Worker's `pithy.config.ts` composes `email`. It is `core/precondition_failed`, exit 3. With one Worker its `fix` is `pithy add email --with-prerequisites` — email declares `secrets` — and with several there is no `fix`, because nothing says which Worker should compose it (`docs/CLI.md` §3.8).
 
 ```
 The email capability is not configured.
@@ -160,13 +160,13 @@ The CF Secrets Store id is missing.
 Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).
 ```
 
-**The project has no name.** The suppression database is found by name and reused, so a guessed name would adopt another project's opt-out list.
+**The project has no name.** The suppression database is found by name and reused, so a guessed name would adopt another project's opt-out list. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 ```
 pithy.config.ts has no `name`.
 ```
 
-**No environment is ready.** Nothing was provisioned, so this exits 1 rather than reporting a success for a run that did nothing. A run where *some* environment was ready exits 0 and reports the rest as skipped.
+**No environment is ready.** Nothing was provisioned, so this exits 3, `core/precondition_failed`, with `pithy provision --env <first> --yes` as its `fix`, rather than reporting a success for a run that did nothing. A run where *some* environment was ready exits 0 and reports the rest as skipped.
 
 ```
 No environment is ready — staging and prod have no DB database_id.

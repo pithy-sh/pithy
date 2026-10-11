@@ -75,7 +75,7 @@ Every other flag in Pithy follows the same rule everywhere: `--json` means non-i
 
 - `dev` never asks for anything.
 - `staging` (and any other non-`dev`, non-production environment) needs `--yes`.
-- `prod` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, CI, no TTY), there is no prompt — pass it directly. Omitting it there is refused `input/required`, naming `--confirm-production`:
+- `prod` needs `--yes` **and** the exact phrase `yes, i really want to seed production`, matched case-insensitively after trimming. Interactively, `pithy seed` prompts for it with `@clack/prompts`. Non-interactively (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, CI, no TTY), there is no prompt — pass it directly. Omitting it there is refused `core/person_required`, exit 5, and the action names `--confirm-production` — the phrase is a person's to give, so an agent stops and asks:
 
   ```
   pithy seed --env prod --yes --confirm-production "yes, i really want to seed production"
@@ -172,15 +172,15 @@ $ pithy seed --env dev --dry-run --json
 
 ## Errors
 
-Every refusal here is a gate rather than a fault, and each one names the flag that opens it.
+Every refusal here is a gate rather than a fault, and each one names the flag that opens it. Each exits by its kind (`docs/CLI.md` §3.8): 2 for a flag to pass or fix, 5 for a phrase only a person may give. Ctrl-C at either confirmation prompt exits 130.
 
 | Condition | Effect |
 |---|---|
-| `--env production` | Refused at the flag. The environment is `prod` (§1.2). |
-| A non-`dev` environment without `--yes` | Refused before anything opens. |
-| `prod` without the confirmation phrase, non-interactively | Refused `input/required`, naming `--confirm-production`, before anything opens — see the production exception above. |
-| A non-`dev` `--redo` without `--confirm-reset "yes, i really want to reset <env>"` | Refused — `input/required`, naming `--confirm-reset`, when nobody could be asked. The phrase names its environment, so one authorizing `staging` cannot be pasted into a command targeting another. |
-| A `--redo` over a retained table that holds rows, without `--destroy-retained <n>` equal to them | Refused before any database moves. The refusal names each table and the count to pass. |
+| `--env production` | Refused at the flag, exit 2. The environment is `prod` (§1.2). |
+| A non-`dev` environment without `--yes` | Refused before anything opens, exit 2. |
+| `prod` without the confirmation phrase, non-interactively | Refused `core/person_required`, exit 5, naming `--confirm-production` in the action, before anything opens — see the production exception above. |
+| A non-`dev` `--redo` without `--confirm-reset "yes, i really want to reset <env>"` | Refused `core/person_required`, exit 5, naming `--confirm-reset` in the action, when nobody could be asked or the phrase is wrong. The phrase names its environment, so one authorizing `staging` cannot be pasted into a command targeting another. |
+| A `--redo` over a retained table that holds rows, without `--destroy-retained <n>` equal to them | Refused before any database moves, exit 2. The refusal names each table and the count to pass. |
 | A Worker that was supposed to get a generated `.dev.vars` and did not | The fixtures still run — they are the rest of the run and they are worth doing — and the exit code is 1. The refusal names the file and offers `.dev.vars.local`. |
 
 ## Examples

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
-import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { loadProject, requireProjectName } from "../project/config";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { dim } from "../terminal/style";
@@ -201,7 +201,8 @@ export function selectDevMembers(members: readonly DevSetMember[], names: readon
     const only = matched[0];
     if (only === undefined) {
       const known = members.map((m) => m.worker.name).join(", ");
-      throw new NotFoundError({
+      // The call's mistake (exit 2): nothing to run first, only a different name to pass.
+      throw new ValidationError({
         message: `No worker named "${name}".`,
         // `pithy dev --list`, not `pithy worker list`: the registry view names no capability host, and a
         // host's capability name is one of the three forms this accepts.

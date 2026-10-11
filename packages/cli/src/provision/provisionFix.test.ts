@@ -1,0 +1,45 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { describe, expect, test } from "vitest";
+import { fixOf } from "../terminal/exitClass";
+import { withProvisionFix } from "./provisionFix";
+
+/**
+ * **A `fix` is runnable as written, so a production environment gets none (#697).**
+ *
+ * Five refusals end "this environment has nothing provisioned behind it" and used to name the same
+ * `pithy provision --env <env> --yes` as their `fix`. For a production environment that command is refused
+ * in turn, `core/person_required`, exit 5, because provisioning production also needs the `--confirm`
+ * phrase, and the phrase is a person's to give. `docs/CLI.md` §3.3 says a `fix` rights the failure as
+ * written, so a production environment carries no `fix`: its action line still says what to do, for the
+ * person who has to do it.
+ */
+function refusal(): PreconditionFailedError {
+  return new PreconditionFailedError({ message: "Nothing is provisioned.", action: "Provision it." });
+}
+
+describe("withProvisionFix", () => {
+  test("a staging refusal names the provisioning command", () => {
+    expect(fixOf(withProvisionFix(refusal(), "staging"))).toBe("pithy provision --env staging --yes");
+  });
+
+  test("a feature refusal names the feature form, since provision refuses --env feature", () => {
+    expect(fixOf(withProvisionFix(refusal(), "feature"))).toBe("pithy provision --feature");
+  });
+
+  test.each(["prod", "production", "PROD"])("%s, production by name, gets no fix", (env) => {
+    expect(fixOf(withProvisionFix(refusal(), env))).toBeUndefined();
+  });
+
+  test("an environment the project declares production gets no fix", () => {
+    expect(fixOf(withProvisionFix(refusal(), "live", ["live"]))).toBeUndefined();
+  });
+
+  test("the error is the same one, so the caller throws what it built", () => {
+    const error = refusal();
+    expect(withProvisionFix(error, "prod")).toBe(error);
+    expect(withProvisionFix(error, "staging")).toBe(error);
+  });
+});

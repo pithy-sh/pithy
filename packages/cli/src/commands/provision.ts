@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -53,6 +53,7 @@ import {
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
+import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { commandProgress } from "../terminal/progress";
@@ -203,13 +204,14 @@ async function buildAudit(
 }
 
 /** The interactive confirm prompt for a production environment. Names what is about to happen first. */
-function confirmPrompt(env: string): () => Promise<string> {
+export function confirmPrompt(env: string): () => Promise<string> {
   return async () => {
     const { isCancel, text } = await import("@clack/prompts");
     const answer = await text({
       message: `This creates Cloudflare resources in ${env}. Type "${provisionConfirmPhrase(env)}" to confirm:`,
     });
-    return isCancel(answer) ? "" : answer;
+    if (isCancel(answer)) canceled();
+    return answer;
   };
 }
 
@@ -220,7 +222,7 @@ async function requireProvisioners(
 ): Promise<ResourceProvisioners> {
   const provisioners = await buildProvisioners(account);
   if (provisioners) return provisioners;
-  throw new ValidationError({
+  throw new PreconditionFailedError({
     message: "Cloudflare credentials are missing.",
     action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision ${target}.`,
   });

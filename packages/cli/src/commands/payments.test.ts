@@ -138,10 +138,38 @@ describe("pithy payments", () => {
     scope.workers = [];
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   test("provision refuses a project with no name, before it reaches Cloudflare", async () => {
     const error = await failure("provision", { json: true });
-    expect(error.code).toBe("validation/invalid_input");
+    // The call is right and the project is missing its name: a precondition, exit 3 (#697).
+    expect(error.code).toBe("core/precondition_failed");
     expect(error.message).toBe("pithy.config.ts has no `name`.");
+  });
+
+  // The call is right and nothing composes payments: a precondition, exit 3 (#697). And no `fix`: `pithy add
+  // payments` refuses without `--set billingSubject=…`, which has no default and is the adopter's to choose
+  // (#412), so no command runs as written. The manifest read is the installed one under the runner's cwd.
+  test("reconcile in a project composing no payments is a precondition, with no fix a run could follow", async () => {
+    root.config = { name: "acme" };
+    scope.workers = [
+      { name: "board", dir: "/nowhere/apps/board", config: {}, capabilities: [], target: {} },
+    ] as unknown as ResolvedWorker[];
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct-1");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
+    vi.stubEnv("SECRETS_STORE_ID", "store-1");
+    const error = (await failure("reconcile", { json: true, env: "staging", "dry-run": true })) as Record<
+      string,
+      unknown
+    >;
+    expect(error).toMatchObject({
+      code: "core/precondition_failed",
+      message: "The payments capability is not configured.",
+      exit: 3,
+    });
+    expect(error).not.toHaveProperty("fix");
   });
 
   test("reconcile refuses a project with no name rather than dispatching to a guessed worker", async () => {

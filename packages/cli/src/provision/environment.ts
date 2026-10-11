@@ -20,6 +20,7 @@ import { migrateProject } from "../migrations/run";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
 import type { KitWorkerDeploy } from "../project/deployKit";
+import { workerDirName } from "../project/workerIdentity";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import type { MintedThisRun } from "./mintedThisRun";
@@ -541,7 +542,7 @@ function resolveServiceTarget(workers: readonly ProvisionWorker[], target: strin
   if (!found) {
     throw new ValidationError({
       message: `A service binding targets "${target}", which is not one of this project's workers.`,
-      action: `Name the target as its apps/<name> directory. Known: ${workers.map((worker) => worker.name).join(", ") || "none"}.`,
+      action: `Name the target as its apps/<name> directory. Known: ${workers.map(workerDirName).join(", ") || "none"}.`,
     });
   }
   return found.name;

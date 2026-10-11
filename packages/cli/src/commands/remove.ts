@@ -2,28 +2,43 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
-import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PersonRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { defaultRemoveSteps, removeCapability } from "../capabilities/remove";
 import { parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
-import { mayPrompt } from "../terminal/inputMode";
+import { inputForbidden, mayPrompt } from "../terminal/inputMode";
 import { formatDone, withErrorReporting } from "../terminal/output";
 import { buildAudit, targetWorker } from "./add";
 
 /**
  * `remove` is the deliberate exception to the agent-drivable / `--json` convention: it is destructive,
- * so it is human-only. `--json` fast-fails here — before anything is read or changed.
+ * so it is human-only. `--json` fast-fails here — before anything is read or changed — as
+ * `core/person_required`, exit 5 (#697): no other call would be right, so an agent should stop and ask.
  */
 export function rejectJson(json: boolean): void {
   if (json) {
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: "pithy remove is a manual command. --json is not supported.",
       action: "Run pithy remove <capability> at a terminal.",
     });
   }
+}
+
+/**
+ * Refuse a run that said outright nobody is at the keyboard — `--no-input` or `PITHY_NONINTERACTIVE=1` —
+ * before anything is read or changed (#697). `remove` belongs to a person, so the switch is answered the
+ * way `--json` is: `core/person_required`, exit 5. A run that merely has no terminal is not the switch,
+ * and still unwires.
+ */
+export function rejectNoInput(forbidden: boolean, capability: string): void {
+  if (!forbidden) return;
+  throw new PersonRequiredError({
+    message: "pithy remove is a manual command, and this run forbids prompts.",
+    action: `Run pithy remove ${capability} at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
+  });
 }
 
 /**
@@ -47,15 +62,15 @@ export function dropConfirm(capability: string, env: string): () => Promise<bool
 /**
  * Refuse a `--drop` that nobody can be asked to confirm, before anything is read or changed (#697).
  *
- * There is no bypass flag, so `flag` is `null`: the only answer is a person at a terminal. Without this,
- * a run under `--no-input` or with no terminal reached {@link dropConfirm}'s prompt anyway.
+ * There is no bypass flag: the only answer is a person at a terminal, so it is `core/person_required`,
+ * exit 5. Without this, a run under `--no-input` or with no terminal reached {@link dropConfirm}'s prompt
+ * anyway.
  */
 export function requireDropConfirmable(capability: string, options: { drop: boolean; interactive: boolean }): void {
   if (!options.drop || options.interactive) return;
-  throw new InputRequiredError({
+  throw new PersonRequiredError({
     message: `Dropping ${capability}'s tables needs a person to confirm it.`,
     action: `Run pithy remove ${capability} --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
-    flag: null,
   });
 }
 
@@ -81,6 +96,7 @@ export default defineCommand({
   run: ({ args }) =>
     withErrorReporting(false, async () => {
       rejectJson(args.json);
+      rejectNoInput(inputForbidden(), args.capability);
 
       const projectDir = process.cwd();
       const env = requireEnvironment(args.env);

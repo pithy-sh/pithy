@@ -789,6 +789,7 @@ async function writeWorker(
     remoteR2: options.remoteR2,
     images: options.images,
     stream: options.stream,
+    productionEnvironments: options.productionEnvironments,
   });
   try {
     const databases = composeDatabases(entry.worker.capabilities);

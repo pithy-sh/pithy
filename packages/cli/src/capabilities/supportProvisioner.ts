@@ -75,7 +75,7 @@ export async function loadSupport(projectDir: string): Promise<SupportModule> {
     ]);
     return { ...provision, ...resolve, ...capability, ...config };
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
+    throw await capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
 }
 
@@ -104,7 +104,7 @@ async function loadSupportSearch(
     ]);
     return { ...searchIndex, ...tables, ...search };
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
+    throw await capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
 }
 
@@ -290,7 +290,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   async deployWorker(env: ManagedEnvironment): Promise<void> {
     const { supportWorkerName, resolveSupportConfig } = await loadSupport(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
-    const dir = supportWorkerDir(this.#projectDir);
+    const dir = await supportWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveSupportConfig(template, {
       project: this.#project,
@@ -458,11 +458,11 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 }
 
 /** The directory of the prebuilt support worker inside the installed `@pithy-sh/support` package (holds wrangler.jsonc). */
-function supportWorkerDir(projectDir: string): string {
+async function supportWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/support/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error, projectDir);
   }
 }
 

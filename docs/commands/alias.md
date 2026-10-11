@@ -123,7 +123,7 @@ This path used to carry no `action` at all — so the one case where the command
 
 ## Errors
 
-**Both `--remove` and `--status`.** The only error this command raises. Exit 1.
+**Both `--remove` and `--status`.** The only error this command raises. Exit 2.
 
 ```
 $ pithy alias --remove --status
@@ -134,7 +134,7 @@ Choose one.
 Under `--json`:
 
 ```
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"Pass either --remove or --status, not both.","action":"Choose one."}}
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"Pass either --remove or --status, not both.","action":"Choose one.","exit":2,"retryable":false}}
 ```
 
 Nothing else here fails. An undetected shell, a missing rc file, and a remove with nothing to remove are all ordinary outcomes with exit 0.

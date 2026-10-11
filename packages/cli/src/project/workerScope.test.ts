@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { InputRequiredError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "./config";
 import {
@@ -119,6 +119,19 @@ describe("resolveWorkers", () => {
         loadConfig: configs({ "/proj/apps/api": API }),
       }),
     ).rejects.toThrow(/No worker named "ghost"/);
+  });
+
+  // A `--worker` value that names nothing is the call's mistake, as an unknown `--client` is: exit 2, not
+  // "not found" (exit 3), whose remedy is a command to run first and there is none.
+  test("an unknown --worker is a usage error, not a missing precondition", async () => {
+    await expect(
+      resolveWorkers({
+        projectDir: "/proj",
+        worker: "ghost",
+        discoverWorkers: async () => [target("api")],
+        loadConfig: configs({ "/proj/apps/api": API }),
+      }),
+    ).rejects.toThrow(ValidationError);
   });
 });
 
@@ -260,8 +273,45 @@ describe("resolveSingleWorker", () => {
       },
     }).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(NotFoundError);
-    expect((error as NotFoundError).payload.action).toMatch(/Known: api, collab/);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).payload.action).toMatch(/Known: api, collab/);
+  });
+
+  /**
+   * **The choices are what `--worker` is documented to take: the apps/ directory (#697).** `docs/CLI.md` §3.3's
+   * sample shows `["api", "admin"]`, and every remedy in the kit names the directory; a script name such as
+   * `demo-api` is accepted too, but a Worker renamed in `wrangler.jsonc` is still `apps/api`.
+   */
+  test("choices and Known: name each Worker by its apps/ directory, never its deployed script name", async () => {
+    const deployed = async () => [
+      { name: "demo-api", dir: "/proj/apps/api" },
+      { name: "demo-collab", dir: "/proj/apps/collab" },
+    ];
+    const ambiguous = (await resolveSingleWorker({
+      projectDir: "/proj",
+      discoverWorkers: deployed,
+      loadConfig: configs({ "/proj/apps/api": API, "/proj/apps/collab": COLLAB }),
+    }).catch((caught: unknown) => caught)) as InputRequiredError;
+    expect(ambiguous.payload.choices).toEqual(["api", "collab"]);
+    expect(ambiguous.payload.action).toBe("Pass --worker <name>. Known: api, collab.");
+
+    const unknown = (await resolveSingleWorker({
+      projectDir: "/proj",
+      worker: "ghost",
+      discoverWorkers: deployed,
+    }).catch((caught: unknown) => caught)) as ValidationError;
+    expect(unknown.payload.action).toMatch(/Known: api, collab\.$/);
+
+    // And each one it offers resolves.
+    for (const choice of ambiguous.payload.choices ?? []) {
+      const picked = await resolveSingleWorker({
+        projectDir: "/proj",
+        worker: choice,
+        discoverWorkers: deployed,
+        loadConfig: configs({ "/proj/apps/api": API, "/proj/apps/collab": COLLAB }),
+      });
+      expect(picked.dir).toBe(`/proj/apps/${choice}`);
+    }
   });
 
   test("prompts when one is offered (an interactive run)", async () => {

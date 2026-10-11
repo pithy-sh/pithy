@@ -56,9 +56,11 @@ const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
 export function resolveSecretRegistry(config: WorkerConfig): SecretRegistry {
   const capabilities = allCapabilities(config);
   if (!capabilities.some(isSecretsCapability)) {
+    // Exit 3 already, as `core/not_found`. No `fix` here: one Worker's config cannot say which Worker `pithy add
+    // secrets` should wire, so the caller that holds the project names it (`commands/secrets.ts`, #697).
     throw new NotFoundError({
       message: "The secrets capability isn't enabled in this worker.",
-      action: "Add secrets({ registry }) to the worker's pithy.config.ts capabilities, or pass --worker.",
+      action: "Add secrets({ registry }) to a Worker's pithy.config.ts capabilities (run `pithy add secrets`).",
     });
   }
   return aggregateSecretRegistries(capabilities);

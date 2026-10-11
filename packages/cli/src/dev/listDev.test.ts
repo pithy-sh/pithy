@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import { buildDevConfig, type DevConfig } from "../feature/devConfig";
 import type { WorkerTarget } from "../project/workers";
@@ -177,7 +177,7 @@ describe("listDevSet", () => {
   });
 
   test("an unknown --app name refuses the listing too", async () => {
-    await expect(listDevSet(options({ apps: ["nope"] }))).rejects.toBeInstanceOf(NotFoundError);
+    await expect(listDevSet(options({ apps: ["nope"] }))).rejects.toBeInstanceOf(ValidationError);
   });
 
   test("a project with no name lists no hosts, and carries the note saying why", async () => {

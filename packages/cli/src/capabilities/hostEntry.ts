@@ -5,7 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { packageInstalledFrom } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
-import { capabilityLoadError } from "./loadFailure";
+import { capabilityLoadErrorNow } from "./loadFailure";
 
 /**
  * **A host Worker's composition, written as the entry it is deployed from** (#645).
@@ -82,7 +82,7 @@ function source(projectDir: string, specifier: string): string {
     return kitSource(projectDir, specifier);
   } catch (error) {
     const pkg = packageOf(specifier);
-    throw capabilityLoadError(pkg.replace("@pithy-sh/", ""), pkg, error, projectDir);
+    throw capabilityLoadErrorNow(pkg.replace("@pithy-sh/", ""), pkg, error, projectDir);
   }
 }
 

@@ -3,7 +3,8 @@
 
 import { readdir } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
-import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
@@ -162,10 +163,14 @@ async function resolveScreens(
     wanted = options.prompt ? await options.prompt({ screens, suggestion: composed }) : composed;
   if (wanted && !composed) {
     const worker = workerName(options.workerDir);
-    throw new ValidationError({
-      message: `The ${screens} screens need the ${screens} capability, and ${worker} doesn't compose it.`,
-      action: `Run pithy add ${screens} --worker ${worker} first, or leave them out with --no-${screens}.`,
-    });
+    throw await capabilityNotComposed(
+      screens,
+      {
+        message: `The ${screens} screens need the ${screens} capability, and ${worker} doesn't compose it.`,
+        action: `Run pithy add ${screens} --worker ${worker} first, or leave them out with --no-${screens}.`,
+      },
+      { projectDir: options.projectDir, workerDir: options.workerDir },
+    );
   }
   return wanted;
 }

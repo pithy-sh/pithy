@@ -10,6 +10,7 @@ import { clientById, DOCS_MCP_URL, MCP_CLIENTS, type McpClient, type Scope, scop
 import { snippetFor, targetFor, targetsFor } from "../mcp/connect";
 import { FIXTURES } from "../mcp/fixtures";
 import type { HomeOptions, PathBase } from "../mcp/home";
+import { EXIT } from "../terminal/exitClass";
 import { latchInputMode } from "../terminal/inputMode";
 import docs, { offerDocs, requireScopeAnswerable } from "./docs";
 
@@ -303,7 +304,7 @@ describe("pithy docs connect --print", () => {
  * The refusals, and the one property they share: nothing is on disk afterwards.
  *
  * `withErrorReporting` catches the `PithyError` these throw, renders the problem and action lines to
- * stderr and exits 1 — so a command test asserts on what the operator reads rather than on the throw.
+ * stderr and exits by its class — so a command test asserts on what the operator reads rather than on the throw.
  * The two lines are the payload's `message` and `action`, in that order.
  */
 describe("pithy docs connect refuses before it writes", () => {
@@ -314,7 +315,7 @@ describe("pithy docs connect refuses before it writes", () => {
         "Pass --scope project to commit it for the team, or --scope user for yourself.\n",
     );
     expect(out).toBe("");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
     expect(existsSync(pathOf("cursor", "user"))).toBe(false);
   });
 
@@ -324,19 +325,19 @@ describe("pithy docs connect refuses before it writes", () => {
     expect(err).toContain(
       "Pass one of: claude-code, cursor, vscode, gemini, claude-desktop, cline, zed, codex, goose, continue.",
     );
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
   });
 
   test("--client and --all together is a choice the operator has to make", async () => {
     const { err, exitCode } = await run("connect", { client: "cursor", all: true, scope: "user" });
     expect(err).toBe("Pass either --client or --all, not both.\nChoose one.\n");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
   });
 
   test("a bare unattended run names the two flags that would have told it what to connect", async () => {
     const { err, exitCode } = await run("connect", { scope: "user" });
     expect(err).toBe("Name what to connect.\nPass --client <id> for one, or --all for every client detected here.\n");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
   });
 
   test("a --scope that is neither scope is refused with both of them, on every path that reads the flag", async () => {
@@ -346,17 +347,17 @@ describe("pithy docs connect refuses before it writes", () => {
 
     const connected = await run("connect", { client: "cursor", scope: "everyone" });
     expect(connected.err).toBe(refusal);
-    expect(connected.exitCode).toBe(1);
+    expect(connected.exitCode).toBe(EXIT.usage);
 
     // `--print` writes nothing either way, so it would have been the easy one to leave unvalidated.
     const printed = await run("connect", { print: true, client: "cursor", scope: "everyone" });
     expect(printed.err).toBe(refusal);
-    expect(printed.exitCode).toBe(1);
+    expect(printed.exitCode).toBe(EXIT.usage);
     expect(printed.out).toBe("");
 
     const removed = await run("disconnect", { client: "cursor", scope: "everyone" });
     expect(removed.err).toBe(refusal);
-    expect(removed.exitCode).toBe(1);
+    expect(removed.exitCode).toBe(EXIT.usage);
 
     expect(existsSync(pathOf("cursor", "user"))).toBe(false);
   });
@@ -479,7 +480,7 @@ describe("pithy docs disconnect", () => {
     // The same command must refuse the same way on a laptop with ten clients and a runner with none.
     // Deciding it on what happens to be installed is how a green CI step fails on somebody's desk.
     const { err, exitCode } = await run("disconnect", { all: true, json: true });
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
     expect(JSON.parse(err).error.message).toContain("--scope is required");
   });
 
@@ -600,7 +601,7 @@ describe("pithy docs connect over a document it will not rewrite", () => {
 
     const { out, err, exitCode } = await run("connect", { client: "cursor", scope: "user" });
     expect(err).toBe("");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.failed);
     expect(out).toBe(
       `Cursor  refused  ${path} — The file is not valid JSON, so nothing was written.\n` +
         "\n" +
@@ -615,7 +616,7 @@ describe("pithy docs connect over a document it will not rewrite", () => {
 
     const { out, exitCode } = await run("connect", { all: true, scope: "user" });
     expect(out).not.toContain("Done.");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.failed);
     expect(out).toContain(`Cursor       refused  ${pathOf("cursor", "user")}`);
     expect(out).toContain(`Claude Code  refused  ${pathOf("claude-code", "user")}`);
   });
@@ -652,13 +653,13 @@ describe("the scope question a human is asked", () => {
     expect(existsSync(pathOf("cursor", "user"))).toBe(false);
   });
 
-  test("a canceled question ends the run on stderr with exit 1, and writes nothing", async () => {
+  test("a canceled question ends the run on stderr with exit 130, and writes nothing", async () => {
     attachTerminal();
     prompt.select = prompt.cancel;
 
     const { out, err, exitCode } = await run("connect", { client: "cursor" });
     expect(err).toBe("Canceled.\n");
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.interrupted);
     expect(out).not.toContain("Done.");
     expect(existsSync(pathOf("cursor", "project"))).toBe(false);
     expect(existsSync(pathOf("cursor", "user"))).toBe(false);
@@ -761,7 +762,7 @@ describe("pithy docs at a terminal, with no flag naming a client", () => {
     const path = await seedMalformed("cursor", "user");
 
     const { out, exitCode } = await run("disconnect", { client: "cursor", scope: "user" });
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.failed);
     expect(out).toBe(`Cursor  refused  ${path} — The file is not valid JSON, so nothing was written.\n`);
   });
 });

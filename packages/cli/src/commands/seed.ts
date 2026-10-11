@@ -14,6 +14,7 @@ import { loadProject, loadProjectCloudflare, requireProjectName } from "../proje
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
+import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { saffron } from "../terminal/style";
@@ -119,24 +120,26 @@ async function buildSeedAudit(
 }
 
 /** The interactive reset-confirm prompt. Names the destruction plainly before asking for the phrase. */
-function resetPrompt(env: string): () => Promise<string> {
+export function resetPrompt(env: string): () => Promise<string> {
   return async () => {
     const { isCancel, text } = await import("@clack/prompts");
     const answer = await text({
       message: `DESTRUCTIVE: this drops every table in ${env} and all data is lost. Type "${resetConfirmPhrase(env)}" to confirm:`,
     });
-    return isCancel(answer) ? "" : answer;
+    if (isCancel(answer)) canceled();
+    return answer;
   };
 }
 
 /** The interactive production-confirm prompt: an `@clack/prompts` text field asking for the exact phrase. */
-function productionPrompt(): () => Promise<string> {
+export function productionPrompt(): () => Promise<string> {
   return async () => {
     const { isCancel, text } = await import("@clack/prompts");
     const answer = await text({
       message: `This writes to production. Type "${PRODUCTION_CONFIRM_PHRASE}" to confirm:`,
     });
-    return isCancel(answer) ? "" : answer;
+    if (isCancel(answer)) canceled();
+    return answer;
   };
 }
 
@@ -206,7 +209,7 @@ export default defineCommand({
       // that was supposed to get one has not got one, and that is a failed run. The lines above already
       // name the file and point at `.dev.vars.local`; this is what makes a script notice. Not a throw:
       // the fixtures below are the rest of the run and they are worth doing.
-      if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = 1;
+      if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = EXIT.failed;
 
       const report = await seedProject({
         projectDir,

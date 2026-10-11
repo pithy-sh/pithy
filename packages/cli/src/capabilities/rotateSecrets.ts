@@ -19,6 +19,7 @@ import {
 } from "@pithy-sh/secrets/src/rotation/rotateValue";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { EXIT } from "../terminal/exitClass";
 
 /**
  * **`pithy secrets rotate` — the command side of the rotation core.**
@@ -48,16 +49,14 @@ import type { CliAuditEmit } from "../audit/cliAudit";
  */
 
 /**
- * The exit status for **rolled at the issuer, not recorded**.
+ * The exit status for **rolled at the issuer, not recorded**: 5, needs a person (`terminal/exitClass.ts`).
  *
- * Distinct from `1`, which every ordinary failure uses, because the two need different reactions and a
+ * Distinct from `1`, which an ordinary failure uses, because the two need different reactions and a
  * script cannot tell them apart from a message. `1` means the previous credential is still live and the
- * command can be run again. `3` means it is not, and nothing automated will fix it.
- *
- * `2` is left alone: shells and citty both use it for usage errors, and a status that could mean either
- * "you typed it wrong" or "a production credential is dead" is no signal at all.
+ * command can be run again. `5` means it is not, and nothing automated will fix it — the same class as
+ * the `secrets/rotation_unrecorded` code it reports, so the `--json` line's `exit` and the process agree.
  */
-export const EXIT_ROLLED_NOT_RECORDED = 3;
+export const EXIT_ROLLED_NOT_RECORDED = EXIT.person;
 
 /**
  * What a rotation needs from the manager: the write, **the refusals asked before it**, and the ledger row

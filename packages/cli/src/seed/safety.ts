@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PersonRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
 
 /**
@@ -136,7 +136,7 @@ export async function assertResetConfirmed(options: ConfirmResetOptions): Promis
   // The flag is authoritative wherever present (CI or interactive).
   if (options.confirmReset !== undefined) {
     if (matches(options.confirmReset)) return;
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: `That is not the confirmation phrase for resetting ${options.env}.`,
       action: `Pass --confirm-reset "${expected}" to drop and recreate the ${options.env} schema.`,
     });
@@ -144,17 +144,16 @@ export async function assertResetConfirmed(options: ConfirmResetOptions): Promis
 
   if (!options.json && options.prompt) {
     if (matches(await options.prompt())) return;
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: `Reset of ${options.env} not confirmed.`,
       action: `Type the exact phrase, or pass --confirm-reset "${expected}".`,
     });
   }
 
-  // Nobody could be asked (#697): `input/required`, naming the flag that carries the phrase.
-  throw new InputRequiredError({
+  // Nobody could be asked, and the phrase is a person's to give (#697): stop, rather than guess at it.
+  throw new PersonRequiredError({
     message: `Resetting ${options.env} destroys all of its data.`,
     action: `Pass --confirm-reset "${expected}" to drop and recreate the ${options.env} schema.`,
-    flag: "--confirm-reset",
   });
 }
 
@@ -186,7 +185,7 @@ export async function assertSeedConfirmed(options: ConfirmSeedOptions): Promise<
   // Production: the flag is authoritative wherever it is present (CI or interactive).
   if (options.confirmProduction !== undefined) {
     if (phraseMatches(options.confirmProduction)) return;
-    throw new ValidationError({
+    throw new PersonRequiredError({
       message: "The production confirmation phrase did not match.",
       action: `Pass --confirm-production "${PRODUCTION_CONFIRM_PHRASE}" to seed production.`,
     });
@@ -194,15 +193,14 @@ export async function assertSeedConfirmed(options: ConfirmSeedOptions): Promise<
 
   // No flag: only an interactive prompt can unlock production. `--json` (or a missing prompt) forbids it.
   if (options.json || !options.prompt) {
-    throw new InputRequiredError({
+    throw new PersonRequiredError({
       message: "Seeding production needs an explicit confirmation phrase.",
       action: `Pass --confirm-production "${PRODUCTION_CONFIRM_PHRASE}" to seed production.`,
-      flag: "--confirm-production",
     });
   }
 
   if (phraseMatches(await options.prompt())) return;
-  throw new ValidationError({
+  throw new PersonRequiredError({
     message: "The production confirmation phrase did not match.",
     action: `Type "${PRODUCTION_CONFIRM_PHRASE}" exactly to seed production.`,
   });

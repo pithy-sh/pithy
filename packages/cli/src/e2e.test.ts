@@ -149,6 +149,8 @@ test("pithy add auth on a bare project refuses non-interactively, naming the exa
       message: "auth requires secrets and email, which board does not compose.",
       action:
         "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
+      exit: 2,
+      retryable: false,
     },
   });
 

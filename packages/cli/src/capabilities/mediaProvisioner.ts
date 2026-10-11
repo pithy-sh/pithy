@@ -61,7 +61,7 @@ export async function loadMedia(projectDir: string): Promise<MediaModule> {
     ]);
     return { ...provision, ...resolve, ...registry, ...capability };
   } catch (error) {
-    throw capabilityLoadError("media", "@pithy-sh/media", error, projectDir);
+    throw await capabilityLoadError("media", "@pithy-sh/media", error, projectDir);
   }
 }
 
@@ -379,7 +379,7 @@ async function mediaWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/media/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("media", "@pithy-sh/media/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("media", "@pithy-sh/media/src/workflows/worker", error, projectDir);
   }
 }
 

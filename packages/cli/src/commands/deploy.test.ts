@@ -4,10 +4,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import type { MigrationFanOutOptions } from "../migrations/run";
-import deploy, { assertDeployFlags, deploySelection } from "./deploy";
+import { EXIT, exitCodeOf } from "../terminal/exitClass";
+import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } from "./deploy";
 
 /**
  * **`pithy deploy`'s pending-migration count resolved credentials for nobody in particular (#226).**
@@ -228,6 +229,60 @@ describe("deploySelection", () => {
 
   test("both named is both, spelled out", () => {
     expect(deploySelection({ apps: true, kit: true })).toEqual({ apps: true, kit: true });
+  });
+});
+
+/**
+ * **An environment the project never declared is a usage error, exit 2, before anything is built (#697).**
+ * It reached `wrangler deploy --env qa`, which failed every Worker on a missing stanza, and the run exited 1
+ * as N per-Worker failures. `dev` and `feature` are not declared and are still targets: the first is the
+ * top-level stanza, the second a branch's generated one.
+ */
+describe("requireDeployEnvironment", () => {
+  const declared = async () => ["staging", "prod"];
+  /** Whether the project was read: `dev`, `feature` and a bare deploy must not need it. */
+  const unread = async (): Promise<string[]> => {
+    throw new Error("the project was read");
+  };
+
+  test("a declared environment, dev, feature and no --env at all pass", async () => {
+    expect(await requireDeployEnvironment("staging", declared)).toBe("staging");
+    expect(await requireDeployEnvironment("dev", unread)).toBe("dev");
+    expect(await requireDeployEnvironment("feature", unread)).toBe("feature");
+    expect(await requireDeployEnvironment(undefined, unread)).toBeUndefined();
+  });
+
+  test("one the project never declared is refused, naming what it has", async () => {
+    const thrown = await requireDeployEnvironment("qa", declared).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(PithyError);
+    const payload = (thrown as PithyError).payload;
+    expect(payload.code).toBe("validation/invalid_input");
+    expect(exitCodeOf(payload)).toBe(EXIT.usage);
+    expect(payload.message).toBe('--env must be one of staging, prod. Got "qa".');
+  });
+
+  test("the command refuses it before either half runs", async () => {
+    ran.apps = 0;
+    ran.kit.length = 0;
+    const stderr: string[] = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    try {
+      await expect(
+        deploy.run?.({ args: { env: "qa", json: true, apps: false, kit: false, force: false }, rawArgs: [] } as never),
+      ).rejects.toThrow(`exit ${EXIT.usage}`);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(exit).toHaveBeenCalledWith(EXIT.usage);
+    expect(stderr.join("")).toContain('"code":"validation/invalid_input"');
+    expect(ran.apps).toBe(0);
+    expect(ran.kit).toEqual([]);
   });
 });
 
@@ -572,7 +627,7 @@ describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
     "%s refuses before anything is built, naming the binding and the environments that have resources",
     async (_name, args) => {
       const { err, exitCode } = await refusal(args);
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(EXIT.usage);
       expect(ran.apps).toBe(0);
       expect(err).toContain("board.DB (d1)");
       expect(err).toContain("--env staging or --env prod");
@@ -589,7 +644,7 @@ describe("a deploy of apps/ refuses a stanza whose bindings have no id", () => {
   ])("%s with no selector refuses too, before the kit half says anything", async (_name, args) => {
     const kit = ran.kit.length;
     const { err, exitCode } = await refusal({ json: false, apps: false, ...args });
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(EXIT.usage);
     expect(ran.apps).toBe(0);
     expect(ran.kit.length).toBe(kit);
     expect(err).toContain("board.DB (d1)");

@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { format, stripVTControlCharacters } from "node:util";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
+import { EXIT } from "./terminal/exitClass";
+import { formatErrorJson } from "./terminal/output";
 
 /**
  * **A command that names no action is asking what it can do. Answering it is a success.**
@@ -172,6 +176,17 @@ export function dispatchedSubCommand(
   args: ArgsDef,
   names: readonly string[],
 ): string | undefined {
+  const index = subCommandIndex(rawArgs, args);
+  if (index === -1) return undefined;
+  const token = rawArgs[index] as string;
+  return names.includes(token) ? token : undefined;
+}
+
+/**
+ * Where the first positional sits, citty's way: flags skipped, the token after a declared string or enum
+ * flag skipped with it, and nothing past `--`. `-1` when there is none.
+ */
+function subCommandIndex(rawArgs: readonly string[], args: ArgsDef): number {
   const takesValue = new Set<string>();
   for (const [name, def] of Object.entries(args)) {
     const arg = def as { type?: string; alias?: unknown };
@@ -184,12 +199,90 @@ export function dispatchedSubCommand(
   }
   for (let i = 0; i < rawArgs.length; i++) {
     const token = rawArgs[i] as string;
-    if (token === "--") return undefined;
+    if (token === "--") return -1;
     if (token.startsWith("-")) {
       if (!token.includes("=") && takesValue.has(token.replace(/^-{1,2}/, ""))) i++;
       continue;
     }
-    return names.includes(token) ? token : undefined;
+    return i;
   }
-  return undefined;
+  return -1;
+}
+
+/**
+ * The deepest command these tokens name, and its parent — the usage a refusal is shown beside.
+ *
+ * citty's `resolveSubCommand`, which it does not export: walk while the first positional names a
+ * subcommand, and stop at the last one known. So `pithy secrets nonsense` is answered with `pithy secrets`'
+ * usage, and `pithy nonsense` with the root's.
+ */
+export async function commandAt(root: CommandDef, argv: readonly string[]): Promise<UsageTarget> {
+  let cmd = root;
+  let parent: CommandDef | undefined;
+  let rest = [...argv];
+  for (;;) {
+    const subCommands = (typeof cmd.subCommands === "function" ? await cmd.subCommands() : await cmd.subCommands) as
+      | Record<string, SubCommand>
+      | undefined;
+    if (!subCommands || Object.keys(subCommands).length === 0) break;
+    const args = (typeof cmd.args === "function" ? await cmd.args() : await cmd.args) ?? {};
+    const index = subCommandIndex(rest, args);
+    if (index === -1) break;
+    const next = await findSubCommand(subCommands, rest[index] as string);
+    if (!next) break;
+    parent = cmd;
+    cmd = next;
+    rest = rest.slice(index + 1);
+  }
+  return parent === undefined ? { cmd } : { cmd, parent };
+}
+
+/** What {@link runTree} needs from its caller. */
+export interface RunTreeOptions {
+  /** Whether the invocation asked for `--json`: a refusal is then the one error line, not a usage screen. */
+  json: boolean;
+  /** Render a command's usage — the root's screen or citty's, as `bin.ts` decides. */
+  showUsage: (cmd: CommandDef, parent?: CommandDef) => Promise<void>;
+  /** Run the tree. citty's `runCommand`; a test hands its own. */
+  run?: (cmd: CommandDef, options: { rawArgs: string[] }) => Promise<unknown>;
+}
+
+/** Whether `error` is citty's own usage refusal. Its `CLIError` class is not exported, so it is known by name. */
+function isCittyUsageError(error: unknown): error is Error {
+  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "CLIError";
+}
+
+/**
+ * **Run the tree, and exit 2 when citty refuses the call (#697).**
+ *
+ * citty's `runMain` is this plus one decision this kit makes differently: it catches every `CLIError` — an
+ * unknown command, a missing positional — into usage, the message and `process.exit(1)`, the code that now
+ * means *unclassified*. A call citty could not parse is a usage error, so it exits 2 like every other.
+ * Under `--json` the refusal is the `validation/invalid_input` error line, so a caller parsing stdout is not
+ * handed a usage screen. Anything else is a crash and is printed whole with exit 1, as citty printed it.
+ */
+export async function runTree(root: CommandDef, argv: readonly string[], options: RunTreeOptions): Promise<void> {
+  const run = options.run ?? (await import("citty")).runCommand;
+  try {
+    await run(root, { rawArgs: [...argv] });
+  } catch (error) {
+    if (!isCittyUsageError(error)) {
+      process.stderr.write(`${format(error, "\n")}\n`);
+      process.exit(EXIT.failed);
+      return;
+    }
+    if (options.json) {
+      const plain = stripVTControlCharacters(error.message).trim();
+      const refusal = new ValidationError({
+        message: /[.!?]$/.test(plain) ? plain : `${plain}.`,
+        action: "Run pithy --help for the commands, or the command with --help for what it takes.",
+      });
+      process.stderr.write(`${formatErrorJson(refusal.payload)}\n`);
+    } else {
+      const target = await commandAt(root, argv);
+      await options.showUsage(target.cmd, target.parent);
+      process.stderr.write(`${error.message}\n`);
+    }
+    process.exit(EXIT.usage);
+  }
 }

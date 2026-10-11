@@ -174,35 +174,41 @@ $ pithy ui list --json
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action (`docs/CLI.md` §3.3).
+Each one is a `PithyError` — the problem, then the action (`docs/CLI.md` §3.3) — and the process exits by its kind (`docs/CLI.md` §3.8): 2 for a call to fix, 3 for something in the way that has to change first. `pithy ui sync --check` exits 1 when it finds something, because its report is the answer, and Ctrl-C at the screens prompt exits 130.
 
-**Unknown framework.**
+**Unknown framework.** Exit 2.
 
 ```
 $ pithy ui add svelte --worker api
-Unknown UI framework: svelte.
-Run `pithy ui add react` — react is the only stub Pithy ships.
+No UI stub named "svelte".
+Run pithy ui list to see the frameworks you can add. Known: react.
 ```
 
-**A UI is already there.**
+**A UI is already there.** Exit 3.
 
 ```
 $ pithy ui add react --worker api
-apps/api already has a UI.
-Run `pithy ui sync --worker api` to re-derive its asset routing.
+api already has a react front end.
+Add screens by dropping files into src/routes/app/. Run pithy ui sync to re-derive its route allowlist.
 ```
 
-The check is the manifest's `ui` block, not the presence of files. The stub is scaffolded once; a second `add` would create nothing and imply otherwise.
+The check is the manifest's `ui` block, not the presence of files. The stub is scaffolded once; a second `add` would create nothing and imply otherwise. A Worker carrying a different stub is refused the same way, exit 3: one Worker, one front end.
 
-**`--auth` without the auth capability.**
+**A template file already on disk.** Exit 3. Pithy never overwrites a file it did not just write, so a first scaffold that finds one names every such file and writes nothing.
+
+**`--auth` without the auth capability.** Exit 3, `core/precondition_failed`, with `pithy add auth --worker api --with-prerequisites` as its `fix`, since auth declares `secrets` and `email`: the Worker is missing what the screens depend on.
 
 ```
 $ pithy ui add react --worker api --auth
-apps/api does not compose the auth capability.
-Run `pithy add auth --worker api`, then re-run `pithy ui add react --worker api`.
+The auth screens need the auth capability, and api doesn't compose it.
+Run pithy add auth --worker api first, or leave them out with --no-auth.
 ```
 
-**Several Workers, no `--worker`, under `--json`.** The resolution error from 7.2 — the same one `pithy add` raises, naming the Workers it found.
+**`pithy ui sync` on a Worker with no front end.** Exit 3, and the action is `pithy ui add react --worker <name>`.
+
+**Several Workers, no `--worker`, where nobody may be asked.** The resolution error from 7.2 — the same `input/required` refusal `pithy add` raises, naming the Workers it found. Exit 2.
+
+**`pithy ui sync --check` finding an uncovered route or an unstyled screen.** Exit 1. Not an error line: the report above is the finding.
 
 ## Examples
 

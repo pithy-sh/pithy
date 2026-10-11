@@ -11,6 +11,7 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { EXIT } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
 import vector from "./vector";
 
@@ -288,9 +289,9 @@ describe("pithy vector provision reads and writes the app worker's wrangler.json
   test("an environment with no DB id is refused, by the worker's name", async () => {
     const run = await runProvision({ env: "prod", json: true });
 
-    expect(run.exitCode).toBe(1);
+    expect(run.exitCode).toBe(EXIT.precondition);
     const failure = JSON.parse(run.stderr) as { error: { code: string; message: string } };
-    expect(failure.error.code).toBe("validation/invalid_input");
+    expect(failure.error.code).toBe("core/precondition_failed");
     expect(failure.error.message).toBe(`${WORKER}'s wrangler.jsonc has no DB database_id for prod.`);
   });
 });
@@ -326,7 +327,7 @@ describe("pithy vector provision --worker names a Worker that composes no vector
 
     const run = await runProvision({ env: "staging", json: true, worker: "web" });
 
-    expect(run.exitCode).toBe(1);
+    expect(run.exitCode).toBe(EXIT.usage);
     const failure = JSON.parse(run.stderr) as { error: { message: string } };
     expect(failure.error.message).toBe("web does not compose the vector capability.");
     expect(recorded.envs).toEqual([]);

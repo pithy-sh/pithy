@@ -815,6 +815,10 @@ describe("a gate is keyed on what it reads", () => {
         "It sweeps `packages/cli/src` for reads of `process.stdin.isTTY` outside `terminal/inputMode.ts`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that asks a person anything. Turbo's default inputs are already exactly right for it.",
       "promptSites.test.ts":
         "It sweeps `packages/cli/src` for the modules that import `@clack/prompts`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that opens a prompt. Turbo's default inputs are already exactly right for it.",
+      "exitCodes.test.ts":
+        "It sweeps `packages/cli/src` for `process.exit` and `process.exitCode` written with a number of their own, and for a `fix` attached to a person's step. The population really is one package's: `@pithy-sh/cli` is the only thing in this repository that ends a process with a code a script reads. Turbo's default inputs are already exactly right for it.",
+      "thrownPromises.test.ts":
+        "It sweeps `packages/cli/src` for a `throw` of an un-awaited call to an async callable, and the population really is one package's: the async error builders it exists for — `capabilityLoadError`, `capabilityNotComposed`, `withAddFix` — are `@pithy-sh/cli`'s own, and nothing outside it can call them. Turbo's default inputs are already exactly right for it.",
       "distTypes.test.ts":
         "It is the mechanism half of the shipped-declaration gate, and the only file it opens is `distTypes.ts` beside it. Its subject looks repo-wide and is not: the population — every shipped table, read out of `packages/*/dist` — is checked by `auditCoverage` inside `bun run dist-types`, which CI runs after `Build` because there is nothing to read before `dist` exists. What it asserts about another package it asserts by *importing* it (`@pithy-sh/core`'s codecs), which turbo's dependency graph already plans on.",
     };

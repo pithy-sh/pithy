@@ -171,7 +171,7 @@ That split holds across every command that reports a Worker, `pithy add`, `pithy
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **No such Worker.** `remove` and `rename`, when nothing under `apps/` answers to the name.
 
@@ -219,7 +219,7 @@ Declare `domains` or `app` in the worker's pithy.config.ts. This writes what the
 
 **An illegal `--env`.** Checked first, before any config is loaded — an illegal environment costs nothing.
 
-**The project has no name.** `sync` requires `pithy.config.ts`'s `name` and never guesses it: a Workflow name is account-scoped and stable forever once deployed, so a guessed project would name a Workflow another project owns.
+**The project has no name.** `sync` requires `pithy.config.ts`'s `name` and never guesses it: a Workflow name is account-scoped and stable forever once deployed, so a guessed project would name a Workflow another project owns. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 **Several Workers, no `--worker`, under `--json`.** The same resolution error `pithy add` raises, naming the Workers it found.
 

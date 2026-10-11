@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
+import { EXIT } from "./terminal/exitClass";
 
 /**
  * **`--json` formats for whoever is reading it — measured on the real bin, end to end.**
@@ -88,9 +89,9 @@ describe("PITHY_JSON", () => {
    * A typo'd variable reverting to the ambient default is indistinguishable from the variable working,
    * which is the surprise this whole feature exists to close. So it is refused, in both output shapes.
    */
-  test("an unrecognized value exits 1 and names the two it takes", async () => {
+  test("an unrecognized value exits 2 and names the two it takes", async () => {
     const { code, stderr, stdout } = await pithy(["doctor"], cleanEnv({ PITHY_JSON: "prety" }));
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     expect(stderr).toContain("PITHY_JSON");
     expect(stderr).toContain("compact");
@@ -99,7 +100,7 @@ describe("PITHY_JSON", () => {
 
   test("and under --json it is the one standard { error } line", async () => {
     const { code, stderr, stdout } = await pithy(["doctor", "--json"], cleanEnv({ PITHY_JSON: "prety" }));
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     const parsed = JSON.parse(stderr) as { error: { code: string; message: string; action: string } };
     expect(parsed.error.code).toBe("validation/invalid_input");
@@ -111,7 +112,7 @@ describe("PITHY_JSON", () => {
 describe("--pretty is paired with --json", () => {
   test("`pithy doctor --pretty` is refused, and says which flag it needs", async () => {
     const { code, stderr } = await pithy(["doctor", "--pretty"]);
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stderr).toContain("--pretty");
     expect(stderr).toContain("--json");
   });
@@ -119,13 +120,13 @@ describe("--pretty is paired with --json", () => {
   /** `remove` is the one command with no `--json` at all (docs/CLI.md §1.2). */
   test("`pithy remove --pretty` is refused", async () => {
     const { code, stderr } = await pithy(["remove", "auth", "--pretty"]);
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stderr).toContain("--pretty");
   });
 
   test("a value that is neither true nor false is refused, naming the token", async () => {
     const { code, stderr } = await pithy(["doctor", "--json", "--pretty=maybe"]);
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     const parsed = JSON.parse(stderr) as { error: { message: string; action: string } };
     expect(parsed.error.message).toContain("--pretty=maybe");
     expect(parsed.error.action).toContain("true");
@@ -141,12 +142,12 @@ describe("--pretty is paired with --json", () => {
 
   test("`--pretty=false` without --json is still refused — the pairing rule reads it too", async () => {
     const { code } = await pithy(["doctor", "--pretty=false"]);
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
   });
 
   test("`--no-pretty` alone is refused on the same rule", async () => {
     const { code, stderr } = await pithy(["doctor", "--no-pretty"]);
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stderr).toContain("--no-pretty");
   });
 });

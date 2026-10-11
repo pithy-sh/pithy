@@ -42,7 +42,7 @@ Each one is a real `pithy add`: its package installed, its config and bindings w
 
 - **A terminal.** One question, for the whole cascade: `auth requires secrets, email. Compose them too?` A nested prerequisite is never asked about again — one intent, one question. Declining refuses the run.
 - **`--with-prerequisites`.** Composes them without asking. The deterministic answer, and the one to put in a script.
-- **Anything else** — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no TTY, an agent — is **refused** `input/required` with `"flag": "--with-prerequisites"`, exit 1, naming the exact commands in the order they must run. Declining at the prompt is a different refusal, `validation/invalid_input`: somebody was asked and said no. Nothing is wired: an install has happened, because that is how the manifest was readable, and the config is untouched.
+- **Anything else** — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, no TTY, an agent — is **refused** `input/required` with `"flag": "--with-prerequisites"`, exit 2, naming the exact commands in the order they must run. Declining at the prompt is a different refusal, `validation/invalid_input`: somebody was asked and said no. Nothing is wired: an install has happened, because that is how the manifest was readable, and the config is untouched.
 
 ```
 $ pithy add auth --json
@@ -145,7 +145,7 @@ $ pithy add secrets --json
 
 ## Errors
 
-Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr and exit 1.
+Each one is a `PithyError`: the problem, then the action. Under `--json` it is a single `{"error":{…}}` line on stderr, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **No capability named.**
 
@@ -194,7 +194,7 @@ secrets option "registry" is not settable from the command line.
 Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 ```
 
-**A required option nobody answered**, in a run that cannot be asked. Exit 1, and the action names the flag and every value it takes.
+**A required option nobody answered**, in a run that cannot be asked. Exit 2, and the action names the flag and every value it takes.
 
 ```
 $ pithy add payments --json
@@ -227,7 +227,7 @@ payments option "billingSubject" does not take "team".
 Pass one of: user, organization.
 ```
 
-**A prerequisite this Worker does not compose**, in a run that cannot be asked. Exit 1, and the commands come back in dependency order.
+**A prerequisite this Worker does not compose**, in a run that cannot be asked. Exit 2, and the commands come back in dependency order.
 
 ```
 $ pithy add auth --json

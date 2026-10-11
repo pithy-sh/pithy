@@ -28,7 +28,7 @@ pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] 
 | `--filter <json>` | `reprocess` | — | Narrow the run to matching documents, as a JSON metadata object: `'{"ownerId":"ada"}'`. Parsed here, so a malformed filter fails in this terminal rather than inside a running Workflow |
 | `--json` | all three | `false` | One line of machine-readable output |
 
-**There is no `--yes` on `reset`, deliberately.** `--yes` elsewhere means "yes, this is not dev", and it was designed to authorize additive writes. A reset deletes every vector in an index, so it carries the stricter gate of `docs/CLI.md` §8.5 — the same one `pithy seed --redo` uses, imported rather than re-implemented. `dev` is free; every other environment needs the exact phrase, and a headless run without `--confirm-reset` — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or no terminal — is refused `input/required`, naming `--confirm-reset`.
+**There is no `--yes` on `reset`, deliberately.** `--yes` elsewhere means "yes, this is not dev", and it was designed to authorize additive writes. A reset deletes every vector in an index, so it carries the stricter gate of `docs/CLI.md` §8.5 — the same one `pithy seed --redo` uses, imported rather than re-implemented. `dev` is free; every other environment needs the exact phrase, and a headless run without `--confirm-reset` — `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or no terminal — is refused `core/person_required`, exit 5, and the action names `--confirm-reset`.
 
 ## What it does
 
@@ -106,14 +106,16 @@ $ pithy vector reprocess --env staging --index docs --json
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **The Worker does not compose `vector`.** The target, `--worker` or the project's only Worker, has no `vector(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the indexes created are the ones the Worker holding the `VECTOR_PROVISIONED` record declares.
 
 ```
 <worker> does not compose the vector capability.
-Add `vector({ ... })` to <worker>'s pithy.config.ts (run `pithy add vector`), or name the Worker that composes it with --worker.
+Add `vector({ ... })` to <worker>'s pithy.config.ts (run `pithy add vector --worker <worker>`), or name the Worker that composes it with --worker.
 ```
+
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with `pithy add vector --worker <worker>` as its `fix`, `<worker>` being the Worker's `apps/` directory.
 
 **Cloudflare credentials are missing.**
 
@@ -148,7 +150,7 @@ Resetting staging destroys all of its data.
 Pass --confirm-reset "yes, i really want to reset staging" to drop and recreate the staging schema.
 ```
 
-A supplied-but-wrong phrase is refused separately, and the phrase names its environment — one authorizing a `staging` reset cannot be pasted into a command targeting another.
+A supplied-but-wrong phrase is refused separately, and the phrase names its environment — one authorizing a `staging` reset cannot be pasted into a command targeting another. Either refusal is `core/person_required`, exit 5: the phrase is a person's to give.
 
 **An unknown `--index`.** Raised for every named index before the first run starts.
 
@@ -159,7 +161,7 @@ Pick one of: docs, notes.
 
 **A malformed `--filter`.** `--filter is not valid JSON.` or `--filter must be a JSON object.` — an array and a bare scalar are both refused.
 
-**The project has no name.** An index is found by name and reused, so the name must be identical on every run, and it is never guessed: a wrong one adopts another project's corpus.
+**The project has no name.** An index is found by name and reused, so the name must be identical on every run, and it is never guessed: a wrong one adopts another project's corpus. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 **The Workflow did not finish.** `reset` and `reprocess` wait on dispatched instances and raise a `cloudflare/*` error when one ends `errored` or `terminated`, or is still running at the poll cap.
 

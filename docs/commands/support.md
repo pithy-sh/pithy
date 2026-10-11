@@ -61,7 +61,7 @@ The refusal exists because enabling Email Routing on a zone points its MX at Clo
 
 An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after the bucket and staging's worker already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
 
-The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing.
+The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 3 (`core/precondition_failed`, with a `fix`) rather than reporting a success for a run that did nothing.
 
 `deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
@@ -113,7 +113,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
 | `routing.skipped` | boolean | True when no routing flags were supplied, or when no environment was ready, so no rule was made |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
 
 `pithy support deprovision`
 
@@ -124,7 +124,7 @@ When **every** environment was skipped the line above is still written to stdout
 | `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether the bucket and everything in it was deleted |
 | `routingZone` | string \| null | The zone id the rule was removed from, or `null` when `--routing-zone` was not passed and the rule was left in place |
 
-A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the same public payload the HTTP surface encodes, with `detail` stripped.
+A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (`docs/CLI.md` §3.8) — the same public payload the HTTP surface encodes, with `detail` stripped, plus `exit`, `retryable` and, where the cause is known, `fix`.
 
 ## Errors
 
@@ -141,8 +141,10 @@ Pass --routing-zone, --inbound-address, and --app-worker together, or none of th
 
 ```
 <worker> does not compose the support capability.
-Add `support({ ... })` to <worker>'s pithy.config.ts (run `pithy add support`), or name the Worker that composes it with --worker.
+Add `support({ ... })` to <worker>'s pithy.config.ts (run `pithy add support --worker <worker>`), or name the Worker that composes it with --worker.
 ```
+
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with `pithy add support --worker <worker> --with-prerequisites` as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because support declares prerequisites in its manifest; a `fix` runs with nobody to ask.
 
 **The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/support` missing answers `The support capability is not installed.` with `pithy add support`; the package present with one of its own imports unresolved answers `The support capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The support capability is installed and will not load.`
 
@@ -153,7 +155,7 @@ Cloudflare credentials are missing.
 Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
 ```
 
-**The project has no name.** The bucket is found by name and reused, so a guessed name would adopt another project's inbox.
+**The project has no name.** The bucket is found by name and reused, so a guessed name would adopt another project's inbox. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 ```
 pithy.config.ts has no `name`.

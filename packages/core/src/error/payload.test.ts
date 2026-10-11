@@ -140,6 +140,28 @@ describe("input required (a run that may not ask)", () => {
   });
 });
 
+describe("precondition and person (two refusals the CLI tells apart by exit code)", () => {
+  test("`core/precondition_failed` is a 412 and nothing else", () => {
+    expect(ErrorPayload.parse({ code: "core/precondition_failed", status: 412, message: "m" }).status).toBe(412);
+    expect(() => KitErrorPayload.parse({ code: "core/precondition_failed", status: 400, message: "m" })).toThrow();
+  });
+
+  test("`core/person_required` is a 403 and nothing else", () => {
+    expect(ErrorPayload.parse({ code: "core/person_required", status: 403, message: "m" }).status).toBe(403);
+    expect(() => KitErrorPayload.parse({ code: "core/person_required", status: 400, message: "m" })).toThrow();
+  });
+
+  test("both keep `action` off the wire, like every other kit code", () => {
+    for (const [code, status] of [
+      ["core/precondition_failed", 412],
+      ["core/person_required", 403],
+    ] as const) {
+      const wire = PublicErrorPayload.parse({ code, status, message: "m", action: "Run pithy provision." });
+      expect(wire).toEqual({ code, status, message: "m" });
+    }
+  });
+});
+
 describe("upstream failure (a dependency we do not control)", () => {
   test("`core/upstream_failed` is a 502 — the dependency answered, and unusably", () => {
     const parsed = ErrorPayload.parse({
@@ -293,7 +315,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 131;
+const KIT_ERROR_CODE_COUNT = 133;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

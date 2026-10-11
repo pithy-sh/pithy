@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { TurnstileConfig, TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -30,7 +30,7 @@ import {
   type WorkerConfig,
 } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
-import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
+import { type ResolvedWorker, type ResolveSingleOptions, resolveSingleWorker } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -60,6 +60,22 @@ export async function resolveTurnstileTarget(
     is: isTurnstileCapability,
   });
   return { worker, config: capability.turnstileConfig };
+}
+
+/**
+ * The Worker a deprovision acts on, and its turnstile config — `null` when it composes none (#697).
+ *
+ * Not {@link resolveTurnstileTarget}'s refusal. The modes deleted are this Worker's own declaration, never a
+ * sibling's, so a Worker declaring none has no widget to name: nothing to remove, which `pithy remove` and every
+ * idempotent teardown answer with exit 0. A refusal naming `pithy add turnstile` would send a teardown to compose
+ * what it is tearing down. A Worker that does not exist is still refused, by the resolver.
+ */
+export async function resolveTurnstileDeprovisionTarget(
+  options: ResolveSingleOptions,
+): Promise<{ worker: ResolvedWorker; config: TurnstileConfig | null }> {
+  const worker = await resolveSingleWorker(options);
+  const capability = worker.capabilities.find(isTurnstileCapability);
+  return { worker, config: capability ? capability.turnstileConfig : null };
 }
 
 /** The widget modes declared in config, or an actionable error when none are. */
@@ -94,7 +110,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });

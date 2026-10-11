@@ -15,7 +15,7 @@ import {
   ControlPlaneKeyConflictError,
   ControlPlaneNotConnectedError,
 } from "@pithy-sh/core/src/controlPlane/error/errors";
-import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit, CliAuditEvent } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareCredentials } from "../cloudflare/config";
 import { discoverWorkers } from "../project/workers";
@@ -511,7 +511,8 @@ export async function openConnectionRegistry(options: OpenConnectionRegistryOpti
   // `detail`. `detail` is stripped at the display boundary and always will be; an operator staring at
   // "add the DB binding" on a project that has one needs to be told which Worker said what.
   const why = refusals.length === 0 ? "No workers under apps/." : `Skipped: ${refusals.join("; ")}.`;
-  throw new ValidationError({
+  // The project's state, not the call's: no Worker answers for the app database. Exit 3 (#697).
+  throw new PreconditionFailedError({
     message: "No worker resolves the DB binding for this environment.",
     action: `${why} Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.`,
     detail: `env ${options.env}; ${refusals.length === 0 ? "no workers under apps/" : refusals.join("; ")}`,

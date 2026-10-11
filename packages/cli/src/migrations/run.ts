@@ -10,6 +10,7 @@ import {
   InternalError,
   NotFoundError,
   PithyError,
+  PreconditionFailedError,
   sentenceOf,
   ValidationError,
 } from "@pithy-sh/core/src/error/pithyError";
@@ -46,7 +47,9 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkersFor } from "../project/composeFor";
 import { isPlaceholder } from "../project/envInventory";
+import { workerDirName } from "../project/workerIdentity";
 import { provisionConfigPath, wranglerConfigPath } from "../provision/featureConfig";
+import { withProvisionFix } from "../provision/provisionFix";
 import { startStep } from "../terminal/progress";
 import { assertRollbackConfirmed } from "./confirm";
 import { planGroupRollback, requireMigrationGroup, sharedGroupRefusal } from "./groups";
@@ -127,6 +130,11 @@ export interface MigrationFanOutOptions {
   binding?: string;
   /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
   remoteD1?: RemoteD1Factory;
+  /**
+   * The project's `seed.productionEnvironments`. Read only to decide whether an unprovisioned refusal can
+   * name a `fix`: provisioning production needs a person's `--confirm` phrase, so it gets none.
+   */
+  productionEnvironments?: readonly string[];
   /**
    * The Workers to run against, already resolved. Skips `apps/` discovery for the run's **scope** — for a
    * caller that resolved the set itself (`pithy add` hands over the one Worker it just wired), and for
@@ -571,7 +579,7 @@ async function defaultRemoteD1(env: string, account: CloudflareAccountSelection 
   // (an operator mints it with `pithy token mint ci-system` and sets it as CI's CLOUDFLARE_API_TOKEN).
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to migrate --env ${env}.`,
     });
@@ -593,6 +601,7 @@ async function remoteDriver(
   groups: DatabaseGroup[],
   account: CloudflareAccountSelection | null,
   override?: RemoteD1Factory,
+  productionEnvironments?: readonly string[],
 ): Promise<MigrationDriver> {
   // Build the REST-backed D1 per binding; the default reaches for creds, an override bypasses them.
   const resolveD1: RemoteD1Factory = override ?? (await defaultRemoteD1(env, account));
@@ -600,10 +609,11 @@ async function remoteDriver(
   const cache = new Map<string, D1Database>();
   for (const group of groups) {
     if (!group.databaseId) {
-      throw new ValidationError({
+      const refusal = new PreconditionFailedError({
         message: `wrangler.jsonc env.${env} has no database_id for the "${group.binding}" binding.`,
         action: `Provision the ${env} D1 and set its id on ${group.binding}. Run pithy migrate --env ${env} again.`,
       });
+      throw withProvisionFix(refusal, env, productionEnvironments);
     }
     cache.set(group.id, resolveD1({ binding: group.binding, databaseId: group.databaseId }));
   }
@@ -644,13 +654,15 @@ interface RunContext {
   destroyRetained?: number;
   /** Test seam for the remote D1 client. */
   remoteD1?: RemoteD1Factory;
+  /** The project's `seed.productionEnvironments`, carried from the run's options. */
+  productionEnvironments?: readonly string[];
 }
 
 /** Pick the driver for the target environment: Miniflare for `dev`, the D1 REST API otherwise. */
 function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<MigrationDriver> {
   return context.env === "dev"
     ? localDriver(context.persistRoot, groups)
-    : remoteDriver(context.env, groups, context.account, context.remoteD1);
+    : remoteDriver(context.env, groups, context.account, context.remoteD1, context.productionEnvironments);
 }
 
 /**
@@ -679,9 +691,10 @@ export async function resolveWorkerScopes(options: {
     (candidate) => candidate.name === options.worker || candidate.dir.endsWith(`/${options.worker}`),
   );
   if (found.length === 0) {
-    throw new NotFoundError({
+    // The call's mistake (exit 2): nothing to run first, only a different `--worker` to pass.
+    throw new ValidationError({
       message: `No worker named "${options.worker}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${options.workers.map((w) => w.name).join(", ")}.`,
+      action: `Run pithy worker list to see this project's workers. Known: ${options.workers.map(workerDirName).join(", ")}.`,
     });
   }
   return found;
@@ -1145,6 +1158,7 @@ async function contextFor(
     ...(options.binding !== undefined ? { binding: options.binding } : {}),
     ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
+    ...(options.productionEnvironments ? { productionEnvironments: options.productionEnvironments } : {}),
   };
 }
 

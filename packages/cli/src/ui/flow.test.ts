@@ -11,6 +11,7 @@ import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
+import { fixOf } from "../terminal/exitClass";
 import { listStubs, runUiAdd, runUiSync } from "./flow";
 
 /** A capability mounting one route under `base` — enough to appear in the composed route table. */
@@ -272,6 +273,10 @@ describe("pithy ui", () => {
       const payload = (error as PithyError).payload;
       expect(payload.action).toContain("pithy add auth");
       expect(payload.action).toContain("--no-auth");
+      // The worker lacks what the screens depend on: exit 3, with the command that composes it (#697).
+      expect(payload.code).toBe("core/precondition_failed");
+      // auth declares `secrets` and `email`, so the add composes them too, with nobody to ask.
+      expect(fixOf(error as PithyError)).toMatch(/^pithy add auth --worker \S+ --with-prerequisites$/);
     }
     // Nothing was scaffolded.
     await expect(readFile(join(workerDir, "vite.config.ts"), "utf8")).rejects.toThrow();

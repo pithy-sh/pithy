@@ -4,7 +4,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InputRequiredError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CreateCliAuditOptions } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
@@ -150,8 +150,9 @@ describe("targetWorker", () => {
       loadConfig,
     }).catch((error: unknown) => error);
 
-    expect(failure).toBeInstanceOf(NotFoundError);
-    expect((failure as NotFoundError).payload.message).toContain("ghost");
+    // The call's mistake, exit 2: a different `--worker`, not something to set up first.
+    expect(failure).toBeInstanceOf(ValidationError);
+    expect((failure as ValidationError).payload.message).toContain("ghost");
   });
 
   test("a project with no workers fails with the worker-add action", async () => {

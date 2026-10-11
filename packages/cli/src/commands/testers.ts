@@ -4,7 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -15,6 +15,7 @@ import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 import { loadTesters, testersAuth } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
@@ -40,6 +41,7 @@ import {
   resolveSingleWorker,
   resolveWorkers,
 } from "../project/workerScope";
+import { suppressionDatabaseMissing } from "../provision/missingDatabase";
 import { openSeedDriver } from "../seed/drivers";
 import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -176,6 +178,18 @@ function readerLog(json: boolean): Logger {
   return createCliLogger({ json }).child("testers");
 }
 
+/** The refusal for a project that composes no testers, with the `pithy add` that composes it. */
+function testersNotComposed(projectDir: string, workers: readonly { dir: string }[]) {
+  return capabilityNotComposed(
+    "testers",
+    {
+      message: "The testers capability is not configured.",
+      action: "Add `testers({ baseUrl: '...' })` to pithy.config.ts (run `pithy add testers`).",
+    },
+    { projectDir, workerDirs: workers.map((worker) => worker.dir) },
+  );
+}
+
 /** Resolve the app D1 for an environment, plus the resolved testers config. */
 async function openTesters(requested: string) {
   // The roster commands' one door, so the `--env` check lives here rather than nine times over.
@@ -184,12 +198,7 @@ async function openTesters(requested: string) {
   const workers = await resolveWorkers({ projectDir });
   const { isTestersCapability } = await loadTesters(projectDir);
   const capability = projectCapabilities(workers).find(isTestersCapability);
-  if (!capability) {
-    throw new ValidationError({
-      message: "The testers capability is not configured.",
-      action: "Add `testers({ baseUrl: '...' })` to pithy.config.ts (run `pithy add testers`).",
-    });
-  }
+  if (!capability) throw await testersNotComposed(projectDir, workers);
   // Capabilities live per Worker; the roster is one project-wide thing, so the first Worker composing
   // testers supplies both the config and the database binding.
   const worker = workers.find((entry) => entry.capabilities?.some(isTestersCapability)) ?? workers[0];
@@ -377,7 +386,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // account nothing claims answers exactly that way about a host that is still running.
   const account: ConfirmedAccount = { accountId, confirmation: cloudflareAccountConfirmation({ account: selection }) };
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
@@ -389,12 +398,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   const capabilities = composedProjectCapabilities(workers);
   const { isTestersCapability } = await loadTesters(projectDir);
   const testers = capabilities.find(isTestersCapability);
-  if (!testers) {
-    throw new ValidationError({
-      message: "The testers capability is not configured.",
-      action: "Add `testers({ baseUrl: '...' })` to pithy.config.ts (run `pithy add testers`).",
-    });
-  }
+  if (!testers) throw await testersNotComposed(projectDir, workers);
 
   // Undefined when no email capability is composed. The pass then advances state and writes its
   // snapshot but sends nothing — a real state, and better than deploying a host that mails from a
@@ -442,6 +446,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
           workerDir: appWorker.dir,
           label: `${appWorker.name}'s wrangler.jsonc`,
           environments,
+          productionEnvironments: config.seed?.productionEnvironments,
         }),
       };
     })();
@@ -490,13 +495,14 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
  */
 function buildResolveEnv(
   /** Memoized, so `deprovision` — which shares this builder and never resolves an environment — reads no file. */
-  appReadiness: () => Promise<{ readiness: EnvironmentReadiness }>,
+  appReadiness: () => Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }>,
   project: string,
   cf: CloudflareClients,
   account: ConfirmedAccount,
 ) {
   return async (env: ManagedEnvironment) => {
-    const { appDatabaseId } = readyStanza((await appReadiness()).readiness, env);
+    const { appWorker, readiness } = await appReadiness();
+    const { appDatabaseId } = readyStanza(readiness, env);
 
     // One suppression database per project, shared across that project's environments, matching how
     // `@pithy-sh/email` provisions it: an unsubscribe in production has to stop staging too. So it is
@@ -508,10 +514,12 @@ function buildResolveEnv(
       find: () => cf.d1Provisioner().findDatabaseByName(suppressionName),
     });
     if (!suppression) {
-      throw new ValidationError({
-        message: `This project's email-suppression database (${suppressionName}) does not exist.`,
-        action: "Run `pithy email provision` first — the daily pass reads it to reconcile bounced addresses.",
-      });
+      // The Worker this run resolved, so the `fix` runs in a project with several (#697).
+      throw suppressionDatabaseMissing(
+        suppressionName,
+        "the daily pass reads it to reconcile bounced addresses.",
+        appWorker.dir,
+      );
     }
     return { appDatabaseId, suppressionDatabaseId: suppression.uuid };
   };

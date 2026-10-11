@@ -50,6 +50,8 @@ describe("UI_STUBS", () => {
       expect(payload.message).toContain("svelte");
       expect(payload.action).toContain("pithy ui list");
       expect(payload.action).toContain("react");
+      // A name that matches nothing is the call's to fix, exit 2 (docs/CLI.md §3.8), not a missing resource.
+      expect(payload.code).toBe("validation/invalid_input");
     }
   });
 });

@@ -37,6 +37,7 @@ import { loadProject, projectCloudflareAccount, requireProjectName } from "../pr
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities } from "../project/workerScope";
 import { isProductionEnv } from "../seed/safety";
+import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt, mayReadKeys } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -480,10 +481,7 @@ export async function promptScopes(
     initialValues: preselected,
     required: false,
   });
-  if (isCancel(answer)) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
   return answer as ControlPlaneScope[];
 }
 
@@ -558,24 +556,29 @@ function disconnectQuestion(env: string): Pick<ConfirmOrRefuseOptions, "message"
   };
 }
 
+/**
+ * A person at the prompt answered no. Not an interrupt, so not 130, and not one of the classified failures
+ * either: they were asked, and declined. `Canceled.` and exit 1, as it has always read.
+ */
+function declined(): never {
+  process.stderr.write("Canceled.\n");
+  process.exit(EXIT.failed);
+}
+
 /** Confirm a revocation at a terminal. `--yes` skips it, which is how CI runs the same command. */
-async function confirmRevokeKey(keyId: string, env: string): Promise<void> {
+export async function confirmRevokeKey(keyId: string, env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
   const answer = await confirm({ message: revokeKeyQuestion(keyId, env).message, initialValue: false });
-  if (isCancel(answer) || answer !== true) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
+  if (answer !== true) declined();
 }
 
 /** Confirm a disconnect at a terminal. `--yes` skips it, which is how CI runs the same command. */
-async function confirmDisconnect(env: string): Promise<void> {
+export async function confirmDisconnect(env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
   const answer = await confirm({ message: disconnectQuestion(env).message, initialValue: false });
-  if (isCancel(answer) || answer !== true) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
+  if (answer !== true) declined();
 }
 
 /** `pithy dashboard connect` — register a management client, or re-point the one already registered. */

@@ -10,13 +10,20 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
 import { readProjectLedger } from "../migrations/run";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
-import { deployProject, deployVerificationFailed, pendingWarning } from "../project/deploy";
+import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
+import {
+  deployFailureExit,
+  deployProject,
+  deployVerificationFailed,
+  pendingWarning,
+  type WorkerDeploy,
+} from "../project/deploy";
 import { deployKitWorkers, type KitDeployReport, kitDeployFailed, summarizeKitProblem } from "../project/deployKit";
 import { assertOriginsDeclared } from "../project/domains";
-import { optionalEnvArg, requireEnvironment } from "../project/environment";
+import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
+import { EXIT } from "../terminal/exitClass";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -142,6 +149,23 @@ export function assertDeployFlags(args: { apps: boolean; kit: boolean; force: bo
   }
 }
 
+/**
+ * The `--env` a deploy may name: none, `dev` (the top-level stanza), `feature` (a branch's generated one), or
+ * one the root `pithy.config.ts` declares (#697). Anything else is refused as the usage error it is, exit 2,
+ * naming the declared set — rather than reaching `wrangler deploy --env qa`, which failed every Worker on a
+ * stanza nobody wrote and exited 1 as that many separate failures.
+ */
+export async function requireDeployEnvironment(
+  value: string | undefined,
+  declared: () => Promise<readonly string[]>,
+): Promise<string | undefined> {
+  if (value === undefined) return undefined;
+  const env = requireEnvironment(value);
+  // Asked for only here, so a bare or a dev deploy reads no project it did not read before.
+  if (env === LOCAL_ENVIRONMENT || env === FEATURE_ENVIRONMENT) return env;
+  return requireManagedEnvironment(env, await declared());
+}
+
 /** The line a bare `pithy deploy` prints instead of deploying kit Workers it has no environment for. */
 const NO_ENV_FOR_KIT =
   "No --env, so the kit's Workers were not deployed. They are per environment — pass --env to ship them.";
@@ -171,8 +195,10 @@ export default defineCommand({
     withErrorReporting(args.json, async () => {
       // Optional here, and only here: a bare `pithy deploy` ships each worker's top-level stanza, which
       // is not an environment at all. A value that *is* given is held to the same rule as everywhere else.
-      const env = args.env === undefined ? undefined : requireEnvironment(args.env);
       const projectDir = process.cwd();
+      const env = await requireDeployEnvironment(args.env, async () =>
+        loadProjectEnvironments(await loadProject(projectDir)),
+      );
       assertDeployFlags(args);
       const selection = deploySelection(args);
       // **A rate-limit namespace in the feature range is nobody's to declare (#643)**, for any selection and any
@@ -200,7 +226,12 @@ export default defineCommand({
       // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
       // looked for an `env.dev` no project may declare. The deploy's argv now creates nothing either way;
       // this is what says so in a sentence instead of in wrangler's stderr.
-      if (selection.apps) await assertEnvironmentProvisioned(projectDir, env);
+      // The project's production policy decides only whether the refusal can name a `fix`: production is
+      // provisioned with a person's `--confirm` phrase, so it gets none.
+      if (selection.apps) {
+        const { seed } = await loadProject(projectDir);
+        await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
+      }
       // And the other half of "is this environment ready to be real": does its config name every origin
       // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
       // the environment and the config, and this is the last moment before a staging Worker starts
@@ -276,7 +307,7 @@ export default defineCommand({
             kitProblems: kit?.problems ?? null,
           })}\n`,
         );
-        if (failed) process.exitCode = 1;
+        if (failed) process.exitCode = runExit(deploys, appsFailed);
         return;
       }
 
@@ -295,12 +326,17 @@ export default defineCommand({
         process.stdout.write(`${env === LOCAL_ENVIRONMENT ? KIT_IS_LOCAL_IN_DEV : NO_ENV_FOR_KIT}\n`);
       }
       if (failed) {
-        process.exitCode = 1; // The per-worker failure lines are the report; exit non-zero for CI.
+        process.exitCode = runExit(deploys, appsFailed); // The per-worker lines are the report; non-zero for CI.
         return;
       }
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
+
+/** The exit a failed run ends with: a classified Worker row's, when the apps half failed with one, or 1. */
+function runExit(deploys: readonly WorkerDeploy[], appsFailed: boolean): number {
+  return appsFailed ? deployFailureExit(deploys) : EXIT.failed;
+}
 
 /** The feature a `--env feature` deploy is, read off the branch — or nothing, which the kit pass refuses by name. */
 async function featureOf(projectDir: string, env: string): Promise<{ feature?: FeatureIdentity }> {

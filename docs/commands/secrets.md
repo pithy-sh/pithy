@@ -149,7 +149,7 @@ Under `--json` that is `environments` naming every environment that reads it, pl
 partner-webhook-secret written to staging, canary before this failed.
 ```
 
-Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and exit code 1. Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
+Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and a non-zero exit by the failure's kind (`docs/CLI.md` §3.8). Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
 
 ### Moving a secret off D1
 
@@ -213,14 +213,14 @@ REPLAY_PROVIDER_TOKEN rolled at cloudflare and recorded nowhere.
 prod still holds a credential cloudflare has retired.
 ```
 
-and on stderr, with exit code **3**:
+and on stderr, with exit code **5**:
 
 ```
 REPLAY_PROVIDER_TOKEN was rolled at cloudflare and its new value was not stored. prod holds a credential cloudflare has retired.
 The new value is gone. It existed only in this process, and printing it would leave a live credential in your shell history. Roll it again at cloudflare, then record it with pithy secrets update REPLAY_PROVIDER_TOKEN --env prod. https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/
 ```
 
-**Exit `3` is its own status, distinct from `1`.** `1` means the previous credential is still live and the command can simply be run again — a `local` mint whose store refused, a refusal, a missing token. `3` means it is not, and nothing automated will fix it. A script cannot tell those apart from a message, and the two need opposite reactions. `2` is left alone: shells and citty use it for usage errors, and a status that might mean *you typed it wrong* or *a production credential is dead* is no signal at all.
+**Exit `5` is its own status: it needs a person.** It is the kit-wide code for that (`docs/CLI.md` §3.8), and `secrets/rotation_unrecorded` is in that class. An ordinary failure — a `local` mint whose store refused, a refusal, a missing token — exits by its own kind, and the previous credential is still live, so the command can be run again. Exit `5` means it is not, and nothing automated will fix it. A script cannot tell those apart from a message, and the two need opposite reactions. Before #697 this was `3`, which now means a precondition.
 
 #### What happens to the value, said plainly
 
@@ -228,7 +228,7 @@ The new value is gone. It existed only in this process, and printing it would le
 
 That is a real cost and it is worth stating the alternative rather than implying there wasn't one. Printing it would put a live production credential in shell scrollback, in the CI log, in the terminal-recording buffer, and in whatever ships those elsewhere — permanently, and for a value that is by construction the most sensitive thing this command touches. Writing it to a file is the same leak with a filename. Against that, a rolled-and-unrecorded credential is an outage with a known remedy the declaration can name: the issuer has a console, `origin` and `rotation` both record where it is, and the failure prints it. The three store attempts are what make reaching this point rare; the refusal to pretend otherwise is what makes it survivable.
 
-**A rotator that *throws* is reported differently, and the difference is not cosmetic.** A rotator that returned and a store that refused means the credential was rolled. A rotator that threw means it *may* have been — the call reached the issuer and the answer did not. Both exit `3` and both need a human at the issuer, but only one may be described as rolled, and a report that says so of both is wrong half the time about the one fact being acted on. So the second says *may have been rolled at cloudflare*, and its remedy starts with checking rather than with rolling again — because rolling again on an issuer that already rolled produces a second orphan. It does not claim the value is gone either: whether this process ever held it is itself unknown when the rotator threw, and a second guess stacked on the first is how a message stops being trusted.
+**A rotator that *throws* is reported differently, and the difference is not cosmetic.** A rotator that returned and a store that refused means the credential was rolled. A rotator that threw means it *may* have been — the call reached the issuer and the answer did not. Both exit `5` and both need a human at the issuer, but only one may be described as rolled, and a report that says so of both is wrong half the time about the one fact being acted on. So the second says *may have been rolled at cloudflare*, and its remedy starts with checking rather than with rolling again — because rolling again on an issuer that already rolled produces a second orphan. It does not claim the value is gone either: whether this process ever held it is itself unknown when the rotator threw, and a second guess stacked on the first is how a message stops being trusted.
 
 **Two gaps, named rather than left to be discovered.** Nothing here verifies the new value against the issuer before treating it as current — a verification seam no rotator implements would be a step that always passes. And a crash between the roll returning and the store accepting leaves the same state with no report at all; that window is far smaller than the store's, and it is not zero. Both belong to the rotation Workflow this command will eventually enter rather than to the command.
 
@@ -289,11 +289,13 @@ An unscoped name says nothing about which project wrote it. Find out before remo
 | Code | Meaning | What to do |
 |---|---|---|
 | `0` | Verified, or withheld. Nothing was found. | Nothing. Under `--json`, `verdict` says which of the two. |
-| `1` | The command could not run — an environment's manager did not answer. | Run it again. |
-| `4` | A finding: a row that will not open, a key version rows reference and the config does not hold, a pointer the key set does not hold, or an entry nothing accounts for. | Somebody has to look. Retrying changes nothing. |
-| `5` | `SECRETS_ENCRYPTION_KEYS` will not resolve for an environment. Nothing in that store can be read. | Check what the binding resolves to. This is the one state no retry ever fixes, which is why it is not `1`. |
+| `4` | Nothing was found, and an environment's manager did not answer. The error line is the whole answer: under `--json` nothing is written to stdout, and the line carries `retryable: true`. A fault that says what it is keeps its own class instead — a refused credential exits by its kind with `retryable: false` (`docs/CLI.md` §3.8). | Run it again in a moment. For a credentials fault, fix them first. |
+| `5` | A finding: a row that will not open, a key version rows reference and the config does not hold, a pointer the key set does not hold, or an entry nothing accounts for. | Somebody has to look. Retrying changes nothing. |
+| `5` | `SECRETS_ENCRYPTION_KEYS` will not resolve for an environment. Nothing in that store can be read. | Check what the binding resolves to. No retry ever fixes it. |
 
-**A finding outranks a fault.** One unreachable environment beside one broken store exits `4`, not `1` — the unreachable environment keeps its own line, and the finding decides the status. `1` is the code a cron retries, and masking a finding behind it is how a broken store gets retried nightly forever.
+Both findings exit `5`, the kit-wide code for a step that needs a person. `verdict` under `--json` tells them apart: `failed` for a finding, `key-unreadable` for the master key. Before #697 they were `4` and `5`; `4` now means *retry with backoff*, which is the one reaction a finding must never get.
+
+**A finding outranks a fault.** One unreachable environment beside one broken store exits `5`, not the unreachable environment's code — that environment keeps its own line, and the finding decides the status. A retryable code is what a cron retries, and masking a finding behind it is how a broken store gets retried nightly forever.
 
 ## `--json`
 
@@ -302,14 +304,14 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 ### `secrets verify`
 
 ```json
-{"command":"secrets verify","verdict":"failed","verified":false,"exitCode":4,"environments":[{"env":"prod","state":"verified","verification":{"keySet":"resolved","rows":14,"readable":12,"unreadable":2,"keyVersions":[{"keyVersion":2,"rows":2},{"keyVersion":3,"rows":12}],"heldVersions":[3],"currentVersion":3,"currentVersionHeld":true,"missingVersions":[2],"rotationInProgress":false}}],"sweep":{"counts":{"accounted":9,"unscoped":1,"orphan":0,"key-material":0,"unknown-scope":0,"feature":0,"foreign":3},"unscoped":["SECRETS_ENCRYPTION_KEYS"],"orphans":[],"keyMaterial":[],"unknownScope":[],"withheld":null}}
+{"command":"secrets verify","verdict":"failed","verified":false,"exitCode":5,"environments":[{"env":"prod","state":"verified","verification":{"keySet":"resolved","rows":14,"readable":12,"unreadable":2,"keyVersions":[{"keyVersion":2,"rows":2},{"keyVersion":3,"rows":12}],"heldVersions":[3],"currentVersion":3,"currentVersionHeld":true,"missingVersions":[2],"rotationInProgress":false}}],"sweep":{"counts":{"accounted":9,"unscoped":1,"orphan":0,"key-material":0,"unknown-scope":0,"feature":0,"foreign":3},"unscoped":["SECRETS_ENCRYPTION_KEYS"],"orphans":[],"keyMaterial":[],"unknownScope":[],"withheld":null}}
 ```
 
 | Key | Type | Meaning |
 |---|---|---|
 | `verdict` | string | `"verified"`, `"withheld"`, `"failed"` or `"key-unreadable"`. The field to key a gate on. |
 | `verified` | boolean | `true` only for `"verified"`. A withheld run asserted nothing about the store and must never read as a clean one. |
-| `exitCode` | number | The status this run exits with — 0, 4 or 5. Stated so a caller reading the line need not also read `$?`. |
+| `exitCode` | number | The status this run exits with — 0 or 5. Stated so a caller reading the line need not also read `$?`. A run that ends on an unreachable environment writes no document at all, so this is never contradicted by the exit. |
 | `environments[].state` | string | `"verified"` when that environment's manager answered, whatever it said; `"unreachable"` when it did not. |
 | `environments[].verification` | object | Present only when it answered. `keySet` is `"resolved"` or `"unreadable"`; an `"unreadable"` one carries `rows`, `keyVersions` and `rotationInProgress` alone, because nothing was opened. |
 | `sweep` | object | Present only when a sweep ran. `counts` is complete; the name arrays carry only what this project may name. |
@@ -327,7 +329,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | `command` | string | `"secrets create"`, `"secrets update"`, or `"secrets delete"` — `rm` reports the mode it ran, which is `delete`. |
 | `name` | string | The secret name given on the command line. |
 | `environments` | string[] | The managed environments the write reached: `"staging"`, `"prod"`, or both. What landed, never what was planned — on an interrupted fan-out it names only the environments actually written. |
-| `interrupted` | boolean | Present and `true` only on a `global` fan-out that failed after at least one environment was written. `environments` then names what landed, the `{ "error": … }` line is on stderr, and the exit code is 1. Absent on a run that finished, and absent on a failure that wrote nothing. |
+| `interrupted` | boolean | Present and `true` only on a `global` fan-out that failed after at least one environment was written. `environments` then names what landed, the `{ "error": … }` line is on stderr, and the exit is non-zero by the failure's kind (`docs/CLI.md` §3.8). Absent on a run that finished, and absent on a failure that wrote nothing. |
 
 ### `secrets rotate`
 
@@ -337,7 +339,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | `name` | string | The secret name given on the command line. |
 | `rotations` | object[] | One record per secret. Always one today, because there is no `--all` — the shape is per secret so that no aggregate field can ever be added beside it and disagree. |
 | `rotations[].name` | string | The secret's registry name. Never its value; this payload has no field that could carry one. |
-| `rotations[].status` | string | `"rotated"`, `"unchanged"`, `"unrecorded"`, or `"failed"`. `unrecorded` is the issuer-rolled-and-not-stored state, and it is the only one that exits `3`. |
+| `rotations[].status` | string | `"rotated"`, `"unchanged"`, `"unrecorded"`, or `"failed"`. `unrecorded` is the issuer-rolled-and-not-stored state, and it is the only one that exits `5`. |
 | `rotations[].rotation` | string | How the registry says the secret is replaced: `"local"`, `"provider"`, or `"manual"`. |
 | `rotations[].rolled` | boolean | Whether a third party's credential was actually changed. `true` only for a `provider` rotation that reached its rotator — and `true` on the failure path too, which is the point of the field. |
 | `rotations[].rollFailed` | boolean | Present and `true` when the **rotator itself** failed rather than the store after it. Then `rolled` is a guess: the call reached the issuer and the answer did not come back, and nothing can tell a request that never landed from a response that was lost. The report says *may have been rolled* rather than *was*, and the remedy starts with checking at the issuer instead of rolling again. |
@@ -345,7 +347,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | `rotations[].stranded` | string[] | The environments the new value never reached. Empty on a run that finished. On an `unrecorded` run these are the environments now holding a credential the issuer has retired. |
 | `rotations[].reason` | string | `"manual"` or `"dry-run"`. Present only when `status` is `unchanged` — why nothing was called. |
 
-An `unrecorded` run also writes one `{ "error": … }` line to stderr with code `secrets/rotation_unrecorded`, and exits `3`. A `failed` run writes the store's own failure and exits `1`. Nothing on either stream carries a value.
+An `unrecorded` run also writes one `{ "error": … }` line to stderr with code `secrets/rotation_unrecorded`, and exits `5`. A `failed` run writes the store's own failure and exits by its kind (`docs/CLI.md` §3.8). Nothing on either stream carries a value.
 
 ### `secrets ls`
 
@@ -390,13 +392,13 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | `generated[].name` | string | The secret's registry name. Never its value — nothing here, or in the audit trail, carries one. |
 | `generated[].environments` | string[] | Where the secret belongs: one environment for an `environment`-scoped secret, every declared one for a `global` secret. |
 | `generated[].created` | string[] | The environments this run **created** it in. A subset of `environments`, and empty on every run after the first. Separate from `environments`, because "sent" is not "made" — this is the field that answers *did this run generate a production signing key*. |
-| `interrupted` | boolean | Present and `true` only on a run that failed part-way through creating the `d1` secrets. `generated` then names what landed before the failure, the `{ "error": … }` line is on stderr, and the exit code is 1. Absent on a run that finished. |
+| `interrupted` | boolean | Present and `true` only on a run that failed part-way through creating the `d1` secrets. `generated` then names what landed before the failure, the `{ "error": … }` line is on stderr, and the exit is non-zero by the failure's kind (`docs/CLI.md` §3.8). Absent on a run that finished. |
 
 **`provision` creates every secret the registry says nobody chooses.** A registry entry declares whether its value is *arbitrary* — a session signing key, a link signing key: any random string works, because nothing outside the project validates one. Provisioning creates those rather than printing a `pithy secrets create` line for each. A `cf-secrets-store` secret is written and bound in the same pass (`wired[].created`); for a `d1` secret every environment's manager is **asked first** — it holds the master key and is the only thing that can say whether a value is already there — and only then written to (`generated`). **An existing value is never replaced, on either path.** Replacing a session secret signs everyone out, replacing a link key stops verifying links already in inboxes, and replacing a key-encryption key orphans everything sealed under it — so creating a missing secret and replacing a live one are different acts, and only the first happens here. A secret whose value must match something issued elsewhere — an OAuth client secret, a payment rail's key — declares nothing, and stays a question for the person who can answer it.
 
 **A `global` secret has one value in every environment, or the command stops.** `global` is the promise that every environment reads one value, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
 
-**A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with exit code 1. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
+**A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with a non-zero exit by its kind. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
 
 **`provision` also writes the adopter's `secrets_store_secrets` stanza.** `pithy add secrets` cannot: a `secret` binding needs a `store_id` and a `secret_name` that do not exist until an account has been reached, and `ensureSecretsStoreId` records nothing in five further cases. That deferral was right and nothing came back for it, so a project deployed to staging and its Worker booted without `SECRETS_ENCRYPTION_KEYS`, failing at the first request with no message anywhere. Provisioning is when the store certainly exists and every entry has certainly been written, so it is where the stanza is written or corrected — upserting by binding, never duplicating, and leaving a binding the registry does not declare exactly where the adopter put it.
 
@@ -411,13 +413,13 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 
 ## Errors
 
-- **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read.
+- **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read. `core/not_found`, exit 3. With one Worker its `fix` is `pithy add secrets`; with several there is none, because nothing says which Worker should compose it. The action names no `--worker`: no `pithy secrets` subcommand takes one.
 - **`Secret '<name>' is not declared in the registry.`** Add it to the registry first. Nothing writes a name the registry has never heard of.
 - **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them, and it writes them with `putKeyed`.
 - **`Secret '<name>' does not declare how it rotates.`** `rotate` only. Add a `rotation` to its registry entry, or replace the value with `pithy secrets update`.
 - **`Secret '<name>' rotates by calling <issuer>, and this project supplies no rotator for it.`** `rotate` only. The declaration is right and the code is missing: attach a rotator to the entry, or roll it at the issuer by hand and record it with `pithy secrets update`.
 - **`Secret '<name>' is the key every other secret is read through, so nothing replaces it in place.`** `rotate` only, and only for `SECRETS_ENCRYPTION_KEYS`. It rotates on its own axis, inside the manager, on the manager's own cron. Replacing it here would leave every stored secret sealed under a key nothing holds.
-- **`<name> was rolled at <issuer> and its new value was not stored.`** `rotate` only, exit code `3`. The one failure this command cannot undo. Roll again at the issuer, then `pithy secrets update`.
+- **`<name> was rolled at <issuer> and its new value was not stored.`** `rotate` only, exit code `5`. The one failure this command cannot undo. Roll again at the issuer, then `pithy secrets update`.
 - **`Secret '<name>' is environment-scoped — choose an environment.`** Pass `--env staging` or `--env prod`.
 - **`Secret '<name>' is global. It holds one value across every environment, so --env cannot narrow it.`** Run it again without `--env`. Nothing was dispatched, so nothing was written — the re-run is the confirmation, and there is no flag that skips it. `rm` says *remove it from every environment* instead of *set it in*.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.

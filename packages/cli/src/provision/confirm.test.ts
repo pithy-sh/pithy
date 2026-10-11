@@ -84,9 +84,9 @@ describe("assertProvisionConfirmed", () => {
 });
 
 /**
- * **Nobody to ask and a wrong answer are two failures (#697).** A production provision with no phrase and
- * no prompt fails `input/required`, naming `--confirm`; a phrase that was typed and is wrong stays
- * `validation/invalid_input`, because the caller has already answered.
+ * **The production phrase is a person's to give (#697).** With no phrase and nobody to ask, a wrong
+ * `--confirm`, or a wrong phrase at the prompt, the refusal is `core/person_required` — exit 5, so an agent
+ * stops and asks rather than trying variations. The action line still names `--confirm`, for the person.
  */
 describe("assertProvisionConfirmed's refusals, by kind", () => {
   /** The payload a run rejected with. */
@@ -96,10 +96,9 @@ describe("assertProvisionConfirmed's refusals, by kind", () => {
     return (failure as PithyError).payload as unknown as Record<string, unknown>;
   }
 
-  test("production with no phrase and nobody to ask is input/required, naming --confirm", async () => {
+  test("production with no phrase and nobody to ask needs a person, and the action names --confirm", async () => {
     expect(await payloadOf(assertProvisionConfirmed({ env: "prod", yes: true, json: true }))).toMatchObject({
-      code: "input/required",
-      flag: "--confirm",
+      code: "core/person_required",
       action: `Pass --confirm "${provisionConfirmPhrase("prod")}".`,
     });
   });
@@ -117,24 +116,23 @@ describe("assertProvisionConfirmed's refusals, by kind", () => {
         },
       }),
     );
-    expect(payload.code).toBe("input/required");
+    expect(payload.code).toBe("core/person_required");
     expect(asked).toBe(false);
   });
 
-  test("a wrong --confirm is invalid input, not a missing answer", async () => {
+  test("a wrong --confirm needs a person, not another guess", async () => {
     const payload = await payloadOf(
       assertProvisionConfirmed({ env: "prod", yes: true, json: true, confirmPhrase: "yes" }),
     );
-    expect(payload.code).toBe("validation/invalid_input");
-    expect(payload).not.toHaveProperty("flag");
+    expect(payload.code).toBe("core/person_required");
   });
 
-  test("a wrong phrase typed at the prompt is invalid input too", async () => {
+  test("a wrong phrase typed at the prompt needs a person too", async () => {
     const payload = await payloadOf(
       assertProvisionConfirmed({ env: "prod", yes: true, json: false, prompt: async () => "yes" }),
     );
     expect(payload).toMatchObject({
-      code: "validation/invalid_input",
+      code: "core/person_required",
       message: "Provisioning prod was not confirmed.",
     });
   });

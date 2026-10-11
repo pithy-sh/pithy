@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { EXIT } from "./terminal/exitClass";
 
 const run = promisify(execFile);
 const bin = join(import.meta.dirname, "bin.ts");
@@ -361,8 +362,9 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(result.stderr).toContain("pithy secrets update REPLAY_PROVIDER_TOKEN --env prod");
     // The declaration's own documentation URL, composed rather than guessed.
     expect(result.stderr).toContain("https://developers.cloudflare.com/api/resources/user/");
-    // 3, not 1. `1` means the previous credential is still live; this state is the one thing that is not.
-    expect(result.code).toBe(3);
+    // 5, not 1. `1` means the previous credential is still live; this state is the one thing that is not,
+    // and no automated retry fixes it — a person has to (#697).
+    expect(result.code).toBe(EXIT.person);
     // **One roll against three store attempts.** A second here is the defect the retry was meant to
     // prevent, arriving by way of the retry: a third credential issued and the second one lost.
     expect(await rolls()).toBe(before + 1);
@@ -390,7 +392,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect((JSON.parse(result.stderr.trim()) as { error: { code: string } }).error.code).toBe(
       "secrets/rotation_unrecorded",
     );
-    expect(result.code).toBe(3);
+    expect(result.code).toBe(EXIT.person);
   }, 120_000);
 
   test("a local secret whose store refuses is an ordinary failure — exit 1, previous value still live", async () => {
@@ -403,7 +405,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     const before = await rolls();
     const result = await cli(["secrets", "rotate", "NOT_DECLARED", "--env", "prod", "--json"], refusing);
     expect((JSON.parse(result.stderr.trim()) as { error: { code: string } }).error.code).toBe("core/not_found");
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(EXIT.precondition);
     expect(await rolls()).toBe(before);
   }, 60_000);
 

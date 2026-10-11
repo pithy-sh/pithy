@@ -17,6 +17,7 @@ import type { CommandDef } from "citty";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { EXIT } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
 
 /**
@@ -478,10 +479,10 @@ describe("a run in which every environment was skipped", () => {
     expect(fanOutCommands()).toEqual(["email", "media", "payments", "storage", "support", "testers"]);
   });
 
-  test.each(fanOutCommands())("pithy %s provision exits 1 and names every skipped environment", async (command) => {
+  test.each(fanOutCommands())("pithy %s provision exits 3 and names every skipped environment", async (command) => {
     const run = await runProvision(command, false);
 
-    expect(run.exitCode).toBe(1);
+    expect(run.exitCode).toBe(EXIT.precondition);
     expect(run.stdout).toContain(
       "  staging  skipped — env.staging has no DB database_id. Run pithy provision --env staging.",
     );
@@ -501,14 +502,16 @@ describe("a run in which every environment was skipped", () => {
     async (command) => {
       const run = await runProvision(command, true);
 
-      expect(run.exitCode).toBe(1);
+      expect(run.exitCode).toBe(EXIT.precondition);
       const report = JSON.parse(run.stdout) as { command: string; skippedEnvironments: { env: string }[] };
       expect(report.command).toBe(`${command} provision`);
       // Per-environment structure, not one aggregate — the report must answer "did production get its worker".
       expect(report.skippedEnvironments.map((entry) => entry.env)).toEqual(["staging", "prod"]);
       const failure = JSON.parse(run.stderr) as { error: { code: string; message: string } };
-      expect(failure.error.code).toBe("validation/invalid_input");
+      expect(failure.error.code).toBe("core/precondition_failed");
       expect(failure.error.message).toBe("No environment is ready — staging and prod have no DB database_id.");
+      // The command that rights it, runnable as written (#697).
+      expect((failure.error as { fix?: string }).fix).toBe("pithy provision --env staging --yes");
     },
   );
 
@@ -714,7 +717,7 @@ describe("a --worker that does not compose the capability", () => {
 
       const run = await runProvision(command, true, { worker: "web" });
 
-      expect(run.exitCode).toBe(1);
+      expect(run.exitCode).toBe(EXIT.usage);
       const failure = JSON.parse(run.stderr) as { error: { message: string } };
       expect(failure.error.message).toBe(`web does not compose the ${command} capability.`);
       expect(recorded.calls).toEqual([]);

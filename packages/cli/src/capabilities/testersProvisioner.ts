@@ -56,7 +56,7 @@ export async function loadTestersProvisioning(projectDir: string): Promise<Teste
     ]);
     return { ...provision, ...resolve, ...specs };
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
+    throw await capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
   }
 }
 
@@ -70,7 +70,7 @@ async function testersWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/testers/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error, projectDir);
   }
 }
 

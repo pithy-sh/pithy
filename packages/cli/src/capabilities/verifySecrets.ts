@@ -7,22 +7,22 @@
  * Kept out of the command body for the reason `rotateSecrets.ts` is: a state and the sentence describing
  * it need one producer each, or a partial run gets phrased as a complete one.
  *
- * ## Four exit codes, because a script has to tell a finding from a fault
+ * ## The exit codes, because a script has to tell a finding from a fault
  *
  * - **0** — verified, or *withheld*. Nothing was found. `--json` still says which, and a withheld verdict
  *   never reads as a clean one in the field an agent keys on.
- * - **1** — the command could not run: an environment's manager did not answer. Retryable, and the code
- *   every ordinary failure already uses.
- * - **4** — {@link EXIT_STORE_UNVERIFIED}. Something was found. Nobody should retry this; somebody has to
- *   look.
- * - **5** — {@link EXIT_MASTER_KEY_UNREADABLE}. The master key will not resolve. Its own code because it
- *   is its own repair, and because reporting it as 1 tells a cron to keep retrying the one state that
- *   will never fix itself (D15).
+ * - **Non-zero by its class** — the command could not run: an environment's manager did not answer, and
+ *   the error it raised exits as every other does (`terminal/exitClass.ts`) — 4 when the manager was
+ *   unreachable, so a cron may retry it.
+ * - **5** — {@link EXIT_STORE_UNVERIFIED} and {@link EXIT_MASTER_KEY_UNREADABLE}: something was found, or
+ *   the master key will not resolve. Both need a person, which is what 5 means kit-wide; nobody should
+ *   retry either, and reporting them as a failure a cron retries is the one thing this must never do
+ *   (D15). The `--json` `verdict` still tells the two apart.
  *
  * **A finding outranks a fault.** One flaky environment beside one broken store used to exit 1 —
  * the finding masked by the fault, which is exactly what a distinct code exists to prevent. So the
  * verdict is taken over every environment that *did* answer, and the unreachable one keeps its own
- * rendered line. (It also keeps the report out of `withErrorReporting`'s `process.exit(1)`, which does
+ * rendered line. (It also keeps the report out of `withErrorReporting`'s `process.exit`, which does
  * not flush a pending write to a pipe — under `| tee` the report printed first could be truncated.)
  *
  * ## What is printed
@@ -35,27 +35,27 @@
  * somebody deletes one.
  */
 
+import { PithyError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import type { StoreVerification } from "@pithy-sh/secrets/src/admin/verifyStore";
 import type { SecretStoreVerifier } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { EXIT } from "../terminal/exitClass";
 import { classifyStoreEntry, type StoreEntryCensus, type StoreEntryClass } from "./storeEntryCensus";
 
 /**
- * The exit status for **the store was read and something is wrong with it**.
+ * The exit status for **the store was read and something is wrong with it**: 5, needs a person.
  *
- * Distinct from `1`, which means the command could not run and the operator should try again, and from
- * `3` (`EXIT_ROLLED_NOT_RECORDED`), which is a different irreversible state entirely. `2` stays with
- * citty and the shell for usage errors.
+ * Not `1`, which an ordinary failure uses, and not `4`, which tells a script to retry. Somebody has to look.
  */
-export const EXIT_STORE_UNVERIFIED = 4;
+export const EXIT_STORE_UNVERIFIED = EXIT.person;
 
 /**
- * The exit status for **`SECRETS_ENCRYPTION_KEYS` will not resolve** (D15).
+ * The exit status for **`SECRETS_ENCRYPTION_KEYS` will not resolve** (D15): 5, needs a person.
  *
  * The #647 end state, and the one thing in this command that must never be reported as retryable. The
  * remedy is to look at what the binding resolves to, which no number of retries performs.
  */
-export const EXIT_MASTER_KEY_UNREADABLE = 5;
+export const EXIT_MASTER_KEY_UNREADABLE = EXIT.person;
 
 /** One environment's answer, or the fact that it gave none. */
 export interface EnvironmentVerification {
@@ -206,6 +206,39 @@ export function verificationExitCode(verdict: VerificationVerdict): number {
 /** The first environment that gave no answer, for the caller to rethrow once nothing was found. */
 export function firstUnreachable(report: VerificationReport): unknown | undefined {
   return report.environments.find((entry) => entry.state === "unreachable")?.cause;
+}
+
+/**
+ * **What a run ends as — one outcome, decided once (#697).**
+ *
+ * A `report` is the document (or the lines), and its `exitCode` is the process's: 0, or 5 for a finding. A
+ * `fault` is a run that found nothing and could not ask every environment: under `--json` it is the error line
+ * alone, and nothing on stdout, because a document beside it would say `exitCode: 0` for a process exiting
+ * otherwise. A finding outranks a fault, so a fault is only ever reached with nothing found.
+ *
+ * The fault's class is its own when it says what it is: a refused credential is not a retry. A cause that says
+ * nothing is an environment's manager that did not answer — upstream, exit 4, retryable — and the action says so.
+ */
+export type VerificationOutcome = { kind: "report"; exitCode: number } | { kind: "fault"; error: PithyError };
+
+/** The outcome of `report`. See {@link VerificationOutcome}. */
+export function verificationOutcome(report: VerificationReport): VerificationOutcome {
+  const exitCode = verificationExitCode(verificationVerdict(report));
+  if (exitCode !== 0) return { kind: "report", exitCode };
+  const unreachable = report.environments.find((entry) => entry.state === "unreachable");
+  if (unreachable === undefined) return { kind: "report", exitCode };
+  if (unreachable.cause instanceof PithyError) return { kind: "fault", error: unreachable.cause };
+  return {
+    kind: "fault",
+    error: new UpstreamError(
+      {
+        message: `The ${unreachable.env} secrets manager could not be reached.`,
+        action: "Run it again in a moment. Nothing was changed.",
+        detail: `verify in ${unreachable.env}: ${String(unreachable.cause)}`,
+      },
+      { cause: unreachable.cause },
+    ),
+  };
 }
 
 /** One environment's lines. Counts and versions; never a name, a value, or a failure's own text. */

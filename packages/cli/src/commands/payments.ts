@@ -3,13 +3,19 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { fromZodError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  fromZodError,
+  InternalError,
+  PreconditionFailedError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
+import { capabilityNotComposed } from "../capabilities/notComposed";
 import {
   CloudflarePaymentsProvisioner,
   loadPayments,
@@ -31,6 +37,7 @@ import {
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import { secretsDatabaseMissing } from "../provision/missingDatabase";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -70,12 +77,17 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
  */
 async function loadProjectPaymentsConfig(projectDir: string) {
   const { isPaymentsCapability } = await loadPayments(projectDir);
-  const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isPaymentsCapability);
+  const workers = await resolveWorkers({ projectDir });
+  const capability = projectCapabilities(workers).find(isPaymentsCapability);
   if (!capability) {
-    throw new ValidationError({
-      message: "The payments capability is not configured.",
-      action: "Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments`).",
-    });
+    throw await capabilityNotComposed(
+      "payments",
+      {
+        message: "The payments capability is not configured.",
+        action: "Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments`).",
+      },
+      { projectDir, workerDirs: workers.map((worker) => worker.dir) },
+    );
   }
   return capability.paymentsConfig;
 }
@@ -108,13 +120,13 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "The CF Secrets Store id is missing.",
       action:
         "Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).",
@@ -167,10 +179,11 @@ function buildResolveEnv(
       find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
     });
     if (!secretsDb) {
-      throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
-        action: "Run `pithy secrets provision` first — the reconcile worker reads the rails' credentials from it.",
-      });
+      throw secretsDatabaseMissing(
+        env,
+        managerWorkerName(project, env),
+        "the reconcile worker reads the rails' credentials from it.",
+      );
     }
     return { appDatabaseId, secretsDatabaseId: secretsDb.uuid };
   };
@@ -228,6 +241,7 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
           workerDir: appWorker.dir,
           label: `${appWorker.name}'s wrangler.jsonc`,
           environments,
+          productionEnvironments: config.seed?.productionEnvironments,
         }),
       };
     })();

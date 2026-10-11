@@ -1005,527 +1005,1067 @@
   "errorCodes": [
     {
       "code": "audit/invalid_event",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "audit/write_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "auth/forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "auth/invalid_token",
-      "status": 401
+      "status": 401,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "auth/provider_unavailable",
-      "status": 503
+      "status": 503,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "auth/session_not_fresh",
-      "status": 403
+      "status": 403,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
     },
     {
       "code": "cloudflare/invalid_response",
-      "status": 502
+      "status": 502,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "cloudflare/not_configured",
-      "status": 500
+      "status": 500,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "cloudflare/request_failed",
-      "status": 502
+      "status": 502,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "controlplane/insufficient_scope",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "controlplane/invalid_credential",
-      "status": 401
+      "status": 401,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "controlplane/key_conflict",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "controlplane/key_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "controlplane/not_connected",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "core/conflict",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "core/internal",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "core/invalid_workflow_params",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "core/missing_workflow_binding",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "core/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "core/person_required",
+      "status": 403,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
+    },
+    {
+      "code": "core/precondition_failed",
+      "status": 412,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "core/unknown_workflow",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "core/upstream_failed",
-      "status": 502
+      "status": 502,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "core/upstream_timeout",
-      "status": 504
+      "status": 504,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "core/webhook_unverified",
-      "status": 401
+      "status": 401,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "core/workflow_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "email/invalid_payload",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "email/invalid_token",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "email/rate_limited",
-      "status": 429
+      "status": 429,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "email/send_failed",
-      "status": 502
+      "status": 502,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "email/suppressed",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "email/template_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "input/required",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "leaderboard/board_immutable",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "leaderboard/board_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "leaderboard/entry_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "leaderboard/invalid_schedule",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "leaderboard/score_rejected",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "leaderboard/submit_forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/account_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/currency_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/hold_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/hold_not_open",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/insufficient_funds",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "ledger/invalid_amount",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "matchmaking/already_friends",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/friend_request_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/invalid_code",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "matchmaking/invite_forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/invite_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/not_queued",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/room_full",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/room_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "matchmaking/user_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "media/enrichment_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "media/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "media/storage_failed",
-      "status": 502
+      "status": 502,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "media/unsupported",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "multiplayer/game_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "multiplayer/invalid_move",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "multiplayer/invalid_transition",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "multiplayer/not_a_member",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "multiplayer/session_full",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "multiplayer/session_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "organization/forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "organization/invalid_role_catalog",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "organization/invitation_invalid",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "organization/last_administrator",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "organization/nomination_invalid",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "organization/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "organization/slug_taken",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/clawback_failed",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/discount_invalid",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "payments/entitlement_not_in_catalog",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "payments/entitlement_required",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/environment_mismatch",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "payments/invalid_receipt",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "payments/product_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/provider_unavailable",
-      "status": 503
+      "status": 503,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "payments/rail_not_configured",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/receipt_already_owned",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/reconcile_not_provisioned",
-      "status": 501
+      "status": 501,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/subject_unresolved",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/subscription_change_refused",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "payments/verification_failed",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "payments/webhook_unverified",
-      "status": 401
+      "status": 401,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "rate_limit/exceeded",
-      "status": 429
+      "status": 429,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "rating/game_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "rating/invalid_params",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "rating/pool_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "rating/record_forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "rating/unknown_algorithm",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "rating/unsupported_player_count",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "secrets/already_exists",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "secrets/crypto_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "secrets/invalid_value",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "secrets/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "secrets/rotation_unrecorded",
-      "status": 500
+      "status": 500,
+      "exitClass": "person",
+      "exit": 5,
+      "retryable": false,
+      "remedy": "Stop and ask"
     },
     {
       "code": "secrets/rotation_unsupported",
-      "status": 409
+      "status": 409,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "storage/forbidden",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "storage/multipart_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "storage/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "storage/quota_exceeded",
-      "status": 413
+      "status": 413,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "storage/share_expired",
-      "status": 410
+      "status": 410,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "storage/share_revoked",
-      "status": 410
+      "status": 410,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "storage/upload_incomplete",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "support/classification_failed",
-      "status": 500
+      "status": 500,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "support/invalid_category",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "support/not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "support/rejected",
-      "status": 429
+      "status": 429,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "support/reply_failed",
-      "status": 502
+      "status": 502,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "support/unparseable_message",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "testers/already_on_roster",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/cohort_closed",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/cohort_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/copy_not_allowed",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/invalid_token",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "testers/member_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/not_configured",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "testers/nudge_cooldown",
-      "status": 429
+      "status": 429,
+      "exitClass": "upstream",
+      "exit": 4,
+      "retryable": true,
+      "remedy": "Retry with backoff"
     },
     {
       "code": "testers/roster_full",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "testers/withdrawn",
-      "status": 409
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "turnstile/config",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "turnstile/failed",
-      "status": 403
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "turnstile/missing_token",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "validation/invalid_input",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "vector/dimension_mismatch",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "vector/filter_too_large",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "vector/index_not_found",
-      "status": 404
+      "status": 404,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
     },
     {
       "code": "vector/metadata_index_drift",
-      "status": 500
+      "status": 500,
+      "exitClass": "failed",
+      "exit": 1,
+      "retryable": false,
+      "remedy": "Read the error"
     },
     {
       "code": "vector/metadata_too_large",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "vector/topk_exceeded",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     },
     {
       "code": "vector/unfilterable_field",
-      "status": 400
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
     }
   ]
 }

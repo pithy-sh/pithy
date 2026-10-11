@@ -657,6 +657,8 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy payments command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/secrets.ts#default":
     "Returns the pithy secrets command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/secrets.ts#mergedProjectSecrets":
+    "Returns the merged secret registry, its branch declarations and whether every Worker contributed, which are per project with one value per name; no composition leaves it.",
   "commands/storage.ts#default":
     "Returns the pithy storage command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/support.ts#default":
@@ -699,7 +701,9 @@ const CARRYING: Readonly<Record<string, string>> = {
   "commands/email.ts#loadEmailCapability":
     "Returns the email capability instance for pithy email's provisioning, which spans every declared environment; only commands/email.ts calls it.",
   "commands/turnstile.ts#resolveTurnstileTarget":
-    "Returns the resolved Worker and its turnstile config for pithy turnstile provision and deprovision, which write every environment's sitekeys at once; only commands/turnstile.ts calls it.",
+    "Returns the resolved Worker and its turnstile config for pithy turnstile provision, which writes every environment's sitekeys at once; only commands/turnstile.ts calls it.",
+  "commands/turnstile.ts#resolveTurnstileDeprovisionTarget":
+    "Returns the resolved Worker and its turnstile config, or none, for pithy turnstile deprovision, which tears down every environment's widgets at once; only commands/turnstile.ts calls it.",
   "project/capabilityWorker.ts#resolveCapabilityWorker":
     "Returns the resolved Worker and its capability instance for a capability's provisioning, which spans every declared environment; commands/media.ts, payments.ts, storage.ts, support.ts, turnstile.ts and vector.ts call it, each named in RAW_COMPOSERS.",
 };

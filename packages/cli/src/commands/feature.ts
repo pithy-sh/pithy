@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { canonicalIssue } from "@pithy-sh/core/src/naming/feature";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
@@ -394,7 +394,7 @@ const destroy = defineCommand({
       // branch the names are derived from — so a later attempt can no longer work out what to delete. A CI
       // job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
       if (!teardown && !args["local-only"]) {
-        throw new ValidationError({
+        throw new PreconditionFailedError({
           message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
           action:
             "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, " +
@@ -429,7 +429,7 @@ const destroy = defineCommand({
       } catch (error) {
         // A teardown that failed on the fourth delete has already destroyed three, and until #380 the
         // record of them died with the throw. What went is written to stdout here, then the same error
-        // is rethrown for `withErrorReporting` to render on stderr and exit 1 on — both streams and the
+        // is rethrown for `withErrorReporting` to render on stderr and exit by its kind — both streams and the
         // exit code agreeing that it failed and naming what it destroyed on the way.
         const partial = destroyedBeforeFailure(error);
         if (partial) {

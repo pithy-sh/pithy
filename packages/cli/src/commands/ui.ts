@@ -5,6 +5,7 @@ import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { workerIdentity } from "../project/workerIdentity";
+import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -34,10 +35,7 @@ async function promptScreens(request: { screens: UiScreenSet; suggestion: boolea
     message: SCREEN_QUESTIONS[request.screens],
     initialValue: request.suggestion,
   });
-  if (isCancel(answer)) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
   return answer;
 }
 
@@ -167,12 +165,12 @@ const sync = defineCommand({
       });
 
       // A shadowed route is a 200 with the wrong body, so the gate is the exit code, not the wording.
-      if (report.uncovered.length > 0) process.exitCode = 1;
+      if (report.uncovered.length > 0) process.exitCode = EXIT.failed;
       // **And so is a screen with no rules (#401).** Same failure shape — a 200, the wrong output, no
       // error — and it fails only under `--check`, because that is the flag that means "report, write
       // nothing, and tell CI". A plain `pithy ui sync` is somebody fixing their allowlist; exiting 1 on
       // it would break every script that runs the fix.
-      if (args.check && report.unstyled.length > 0) process.exitCode = 1;
+      if (args.check && report.unstyled.length > 0) process.exitCode = EXIT.failed;
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report, ...workerIdentity(target) })}\n`);

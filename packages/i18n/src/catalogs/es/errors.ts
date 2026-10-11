@@ -42,6 +42,8 @@ export const esErrors: MessageCatalog = {
   // Core: the codes every capability throws, and the ones a caller meets most.
   "validation/invalid_input": "Los datos enviados no son válidos.",
   "input/required": "Falta una respuesta obligatoria y no se puede preguntar por ella.",
+  "core/precondition_failed": "Falta algo que esto necesita. Prepáralo primero.",
+  "core/person_required": "Solo una persona puede dar este paso.",
   "auth/invalid_token": "Tu sesión no es válida o ha caducado. Vuelve a iniciar sesión.",
   "auth/forbidden": "No tienes permiso para hacer esto.",
   "auth/provider_unavailable": "Este método de acceso no está disponible ahora. Prueba con otro.",

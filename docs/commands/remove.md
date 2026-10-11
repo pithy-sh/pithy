@@ -54,7 +54,7 @@ A mismatch, or a cancel, aborts with zero changes. The confirmation gates the fi
 
 ## `--json`
 
-**Rejected.** `pithy remove` is the deliberate exception to the CLI's agent-drivable convention. It is destructive, so it is human-only, and `--json` fast-fails before anything is read or changed.
+**Rejected.** `pithy remove` is the deliberate exception to the CLI's agent-drivable convention. It is destructive, so it is human-only, and `--json` fast-fails before anything is read or changed. So do `--no-input` and `PITHY_NONINTERACTIVE=1` (see Errors).
 
 ```
 $ pithy remove auth --json
@@ -62,13 +62,13 @@ pithy remove is a manual command. --json is not supported.
 Run pithy remove <capability> at a terminal.
 ```
 
-Exit 1. There is no `--json` payload to specify, and there are no keys — errors from this command always render as the terminal problem/action lines, never as `{"error":{…}}`, because it has no machine-readable surface at all.
+Exit 5, `core/person_required`: no call an agent could make instead is the right one. There is no `--json` payload to specify, and there are no keys — errors from this command always render as the terminal problem/action lines, never as `{"error":{…}}`, because it has no machine-readable surface at all.
 
 Automated teardown of an ephemeral environment is a different command. Use the `feature` lifecycle — `pithy feature destroy` — not `remove`.
 
 ## Errors
 
-Each one is a `PithyError`: the problem, then the action, on stderr, exit 1.
+Each one is a `PithyError`: the problem, then the action, on stderr, and the process exits by its kind (`docs/CLI.md` §3.8).
 
 **`--json`.** As above. Raised first, before the environment is validated or the Worker resolved.
 
@@ -80,15 +80,23 @@ $ pithy remove auth --drop --env production
 Use `prod`.
 ```
 
-**`--drop` where nobody may be asked.** No terminal, `--no-input`, or `PITHY_NONINTERACTIVE=1`. There is no flag that answers a drop for you, so the run stops before anything is read. Exit 1.
+**`--no-input` or `PITHY_NONINTERACTIVE=1`.** The switch says nobody is at the keyboard, and `remove` belongs to a person, so it is refused the way `--json` is: before anything is read or changed, exit 5, `core/person_required`. Raised right after `--json`. A run that only lacks a terminal is not the switch, and still unwires.
 
 ```
-$ pithy remove auth --drop --no-input
+$ pithy remove auth --no-input
+pithy remove is a manual command, and this run forbids prompts.
+Run pithy remove auth at a terminal, without --no-input or PITHY_NONINTERACTIVE.
+```
+
+**`--drop` with no terminal.** There is no flag that answers a drop for you, so the run stops before anything is read. Exit 5, `core/person_required`: only a person can confirm a drop.
+
+```
+$ pithy remove auth --drop < /dev/null
 Dropping auth's tables needs a person to confirm it.
 Run pithy remove auth --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.
 ```
 
-**Several Workers, none named.** With a TTY the command prompts; without one, or under `--no-input` or `PITHY_NONINTERACTIVE=1`, it raises the same `input/required` refusal `pithy add` does.
+**Several Workers, none named.** With a TTY the command prompts; without one, it raises the same `input/required` refusal `pithy add` does.
 
 ```
 This project has several workers, so which one to wire is ambiguous.

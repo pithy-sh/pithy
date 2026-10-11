@@ -118,7 +118,7 @@ The three numeric flags must each be a whole number above zero, and `--platform`
 
 Each environment's deploy resolves two ids first: the app `DB` id from that environment's stanza in the app worker's `wrangler.jsonc`, and this project's shared email-suppression database, looked up by name — the daily pass reads it to reconcile bounced addresses, so `pithy email provision` has to have run.
 
-An environment is **ready** when its stanza carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up. `--env` and readiness are two different narrowings and both are reported: the flag says which environments you meant, readiness says which of those can be acted on. If every environment in the selection is skipped the run exits 1 rather than reporting a success for a run that did nothing. The suppression database stays a refusal — it is project-global, and its absence means `pithy email provision` has not run at all, which no per-environment skip could express.
+An environment is **ready** when its stanza carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up. `--env` and readiness are two different narrowings and both are reported: the flag says which environments you meant, readiness says which of those can be acted on. If every environment in the selection is skipped the run exits 3 (`core/precondition_failed`, with a `fix`) rather than reporting a success for a run that did nothing. The suppression database stays a refusal — it is project-global, and its absence means `pithy email provision` has not run at all, which no per-environment skip could express.
 
 The sending identity is read off the composed `email` capability rather than asked for. When no email capability is composed, the host is still deployed and the pass records the day but sends nothing — said at provision time rather than discovered on the first silent morning. The pass runs daily at 05:00 UTC.
 
@@ -154,7 +154,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `sends` | boolean | Whether an email capability is composed. `false` means the pass will record the day and send nothing |
 
-When **every** selected environment was skipped the line is still written to stdout — the per-environment structure is the answer — and an `{"error":…}` line follows on stderr with exit 1.
+When **every** selected environment was skipped the line is still written to stdout — the per-environment structure is the answer — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
 
 ### `pithy testers deprovision`
 
@@ -435,13 +435,13 @@ Each entry of `cohort.trend.series` is one day of the cohort's position as it wa
 | `cohort.members[].nudgeCooldownUntil` | ISO-8601 string \| null | When they may be nudged again, or `null` if they may be now |
 | `cohort.members[].unreachable` | boolean | Whether their address bounced or is suppressed. We cannot nudge them at all |
 
-A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the same public payload the HTTP surface encodes, with `detail` stripped.
+A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (`docs/CLI.md` §3.8) — the same public payload the HTTP surface encodes, with `detail` stripped, plus `exit`, `retryable` and, where the cause is known, `fix`.
 
 ## Errors
 
 Each is a `PithyError`: the problem, then the action.
 
-**The capability is not configured.**
+**The capability is not configured.** No Worker's `pithy.config.ts` composes `testers`. It is `core/precondition_failed`, exit 3. With one Worker its `fix` is `pithy add testers --with-prerequisites` — testers declares `email` — and with several there is no `fix`, because nothing says which Worker should compose it (`docs/CLI.md` §3.8).
 
 ```
 The testers capability is not configured.

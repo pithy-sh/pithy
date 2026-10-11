@@ -20,7 +20,12 @@ import {
   unresolvedKind,
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
-import { fromZodError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  fromZodError,
+  InternalError,
+  NotFoundError,
+  PreconditionFailedError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
@@ -1029,7 +1034,7 @@ export async function resolveProjectName(config: ProjectConfig, projectDir: stri
  * never guesses: it requires an explicit `pithy.config.ts` `name`, because any fallback that can differ
  * between machines or checkouts (an alphabetically-first worker, a worktree's directory basename) would
  * make teardown recompute names that match nothing, delete nothing, and exit 0 — a silent resource leak.
- * Throws an actionable `ValidationError` when `name` is absent.
+ * Throws an actionable `PreconditionFailedError`, exit 3, when `name` is absent.
  *
  * It also holds the name to `assertValidProjectName`, and that is the *second* half of the same guard.
  * `scaffoldProject` keeps a bad name from being created; this keeps an already-created one from getting
@@ -1041,7 +1046,8 @@ export async function resolveProjectName(config: ProjectConfig, projectDir: stri
  */
 export function requireProjectName(config: ProjectConfig): string {
   if (!config.name) {
-    throw new ValidationError({
+    // The call is right and the project is missing its name: a precondition, exit 3 (#697). An edit fixes it.
+    throw new PreconditionFailedError({
       message: "pithy.config.ts has no `name`.",
       action:
         "Set `name` in pithy.config.ts. Every feature resource name — and pithy feature destroy's ability to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.",

@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import { flagsOf, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags, undeclaredFlags } from "./declaredFlags";
 import { ownNamesOnly } from "./dispatch";
 import { main } from "./main";
+import { EXIT } from "./terminal/exitClass";
 
 const run = promisify(execFile);
 const bin = join(import.meta.dirname, "bin.ts");
@@ -374,9 +375,9 @@ async function pithy(...args: string[]): Promise<{ code: number; stdout: string;
 }
 
 describe("the real bin", () => {
-  test("`pithy doctor --bogus-flag yes` exits 1 naming the flag and doctor's real flags", async () => {
+  test("`pithy doctor --bogus-flag yes` exits 2 naming the flag and doctor's real flags", async () => {
     const { code, stdout, stderr } = await pithy("doctor", "--bogus-flag", "yes");
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     expect(stderr).toContain("Unknown flag: --bogus-flag.");
     expect(stderr).toContain("`pithy doctor` takes --worker,");
@@ -385,7 +386,7 @@ describe("the real bin", () => {
 
   test("`--json` reports the refusal as one machine-readable line", async () => {
     const { code, stdout, stderr } = await pithy("doctor", "--json", "--bogus-flag", "yes");
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     const lines = stderr.trim().split("\n");
     expect(lines).toHaveLength(1);
@@ -396,14 +397,14 @@ describe("the real bin", () => {
 
   test("a typo after a positional is refused before the command runs", async () => {
     const { code, stdout, stderr } = await pithy("token", "rotate", "ci-system", "--env", "prod", "--keep-previos");
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     expect(stderr).toContain("Unknown flag: --keep-previos.");
   }, 120_000);
 
   test("a group given a flag is refused rather than answered with its usage", async () => {
     const { code, stderr } = await pithy("token", "--bogus-flag");
-    expect(code).toBe(1);
+    expect(code).toBe(EXIT.usage);
     expect(stderr).toContain("Unknown flag: --bogus-flag.");
   }, 120_000);
 
@@ -415,7 +416,7 @@ describe("the real bin", () => {
   test("a flag answered before any command runs does not hide an undeclared one", async () => {
     for (const early of ["--version", "--pithiest"]) {
       const { code, stdout, stderr } = await pithy("doctor", "--bogus-flag", early);
-      expect(`${early}: exit ${code}`).toBe(`${early}: exit 1`);
+      expect(`${early}: exit ${code}`).toBe(`${early}: exit ${EXIT.usage}`);
       expect(stdout).toBe("");
       expect(stderr).toContain("--bogus-flag");
     }

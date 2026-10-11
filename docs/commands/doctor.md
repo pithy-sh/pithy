@@ -766,10 +766,12 @@ Three rules hold across the payload. **Paths are absolute here, never tilde-abbr
 
 Nothing here refuses except a flag doctor does not take and a contradiction between two flags: `pithy doctor` is a report, and what it finds is carried in the exit code rather than in a throw. A diagnostic has to work in the environment it diagnoses, so every read failure it meets is discarded into a line — including the write to its own notifier cache.
 
+So doctor exits one of three ways (`docs/CLI.md` §3.8): 0 when every gating check passes, 1 when one fails — the report is the answer, and `failures` names each one with its `fix` — and 2 for a call it refuses. It never exits 3, 4 or 5: a missing precondition or an unreachable account is a finding on its line, not a refusal.
+
 | Condition | Effect |
 |---|---|
-| A flag doctor does not declare — `--env`, `--bogus-flag` | Refused before anything is read, exit 1: *Unknown flag: --bogus-flag.* then the flags doctor takes. Under `--json`, the one `{ "error": … }` line, `validation/invalid_input` (docs/CLI.md §1.2) |
-| `--disable-notifier` and `--enable-notifier` together | Refused before anything is read: *Pass either --disable-notifier or --enable-notifier, not both.* |
+| A flag doctor does not declare — `--env`, `--bogus-flag` | Refused before anything is read, exit 2: *Unknown flag: --bogus-flag.* then the flags doctor takes. Under `--json`, the one `{ "error": … }` line, `validation/invalid_input` (docs/CLI.md §1.2) |
+| `--disable-notifier` and `--enable-notifier` together | Refused before anything is read, exit 2: *Pass either --disable-notifier or --enable-notifier, not both.* |
 | A `pithy.config.ts` that will not load | Exit 1. |
 | A Worker failing a config, binding, `dev` migration, or entitlement check, or a manifest nothing can read | Exit 1. |
 | A deployed environment's migrations pending, undeclared, unprovisioned, skipped, or not composed | Exit 0. Reported on the Worker's `migrations` line, never gating (#586). |

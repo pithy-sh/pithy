@@ -31,8 +31,11 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *
  * - **required** — no default exists, so the run cannot finish without an answer. It fails
  *   `input/required`, naming the flag that answers it (or `null` when no flag can) and, when the set is
- *   known, the choices. Each is driven below with input forbidden and a terminal attached on both
- *   streams, so the latch is the only thing that could have stopped the prompt.
+ *   known, the choices — **unless the answer is a person's to give**: a typed confirmation phrase, or
+ *   `remove --drop`. Those fail `core/person_required` (exit 5) instead, so an agent stops and asks rather
+ *   than trying variations, and their action line names the flag for the person. Each is driven below
+ *   with input forbidden and a terminal attached on both streams, so the latch is the only thing that
+ *   could have stopped the prompt.
  * - **optional** — a default exists and a run that asks nobody takes it, as it always has. `pithy init`
  *   with no flags still scaffolds; it simply asks nothing.
  *
@@ -163,6 +166,8 @@ const REQUIRED: readonly {
   prompt: string;
   flag: string | null;
   choices?: readonly string[];
+  /** The answer is a person's to give: the refusal is `core/person_required`, and its action names `flag`. */
+  person?: true;
   /** The prompt factory the command hands its gate under `interactive ?`, checked against the source. */
   handedOff?: string;
   run: (interactive: boolean) => unknown;
@@ -197,6 +202,7 @@ const REQUIRED: readonly {
     site: "commands/migrate.ts",
     prompt: "promptRollback",
     flag: "--confirm-rollback",
+    person: true,
     run: async () =>
       assertRollbackConfirmed("staging", await rollbackPhrase({ env: "staging", json: false, rollback: true })),
   },
@@ -204,6 +210,7 @@ const REQUIRED: readonly {
     site: "commands/provision.ts",
     prompt: "confirmPrompt",
     flag: "--confirm",
+    person: true,
     handedOff: "confirmPrompt",
     run: (interactive) =>
       assertProvisionConfirmed({
@@ -217,6 +224,7 @@ const REQUIRED: readonly {
     site: "commands/seed.ts",
     prompt: "resetPrompt",
     flag: "--confirm-reset",
+    person: true,
     handedOff: "resetPrompt",
     run: (interactive) =>
       assertResetConfirmed({ env: "staging", json: false, ...(interactive ? { prompt: async () => "" } : {}) }),
@@ -225,6 +233,7 @@ const REQUIRED: readonly {
     site: "commands/seed.ts",
     prompt: "productionPrompt",
     flag: "--confirm-production",
+    person: true,
     handedOff: "productionPrompt",
     run: (interactive) =>
       assertSeedConfirmed({
@@ -238,6 +247,7 @@ const REQUIRED: readonly {
     site: "commands/vector.ts",
     prompt: "resetPrompt",
     flag: "--confirm-reset",
+    person: true,
     handedOff: "resetPrompt",
     run: (interactive) =>
       assertResetConfirmed({ env: "prod", json: false, ...(interactive ? { prompt: async () => "" } : {}) }),
@@ -246,6 +256,7 @@ const REQUIRED: readonly {
     site: "commands/remove.ts",
     prompt: "dropConfirm",
     flag: null,
+    person: true,
     run: (interactive) => requireDropConfirmable("auth", { drop: true, interactive }),
   },
   {
@@ -379,16 +390,26 @@ describe("a required prompt, with input forbidden", () => {
   });
 
   test.each(REQUIRED.map((row) => [`${row.site} ${row.prompt}`, row] as const))(
-    "%s fails input/required, naming its flag",
+    "%s fails input/required naming its flag, or core/person_required where only a person may answer",
     async (_name, row) => {
       const interactive = mayPrompt(false, TERMINAL);
       expect(interactive).toBe(false);
       const payload = await refusalOf(() => row.run(interactive));
+      if (row.person) {
+        expect(payload.code).toBe("core/person_required");
+        if (row.flag !== null) expect(payload.action).toContain(row.flag);
+        return;
+      }
       expect(payload.code).toBe("input/required");
       expect(payload.flag).toBe(row.flag);
       if (row.choices !== undefined) expect(payload.choices).toEqual(row.choices);
     },
   );
+
+  test("anti-vacuous: both kinds of refusal are exercised", () => {
+    expect(REQUIRED.filter((row) => row.person).length).toBeGreaterThanOrEqual(4);
+    expect(REQUIRED.filter((row) => !row.person).length).toBeGreaterThanOrEqual(8);
+  });
 });
 
 /** What precedes a prompt factory's call when it is handed over only to a run that may ask. */

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { relative } from "node:path";
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
@@ -11,6 +11,7 @@ import type { StatePathOptions } from "../notifier/state";
 import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import { dashboardListUrl, dashboardUrl } from "./dashboard";
 import { resolveWorkerAddress } from "./workerAddress";
+import { workerDirName } from "./workerIdentity";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -318,9 +319,10 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
       ? targets
       : targets.filter((target) => target.name === options.worker || target.dir.endsWith(`/${options.worker}`));
   if (selected.length === 0) {
-    throw new NotFoundError({
+    // The call's mistake (exit 2): nothing to run first, only a different `--worker` to pass.
+    throw new ValidationError({
       message: `No worker named "${options.worker}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${targets.map((t) => t.name).join(", ")}.`,
+      action: `Run pithy worker list to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
     });
   }
 

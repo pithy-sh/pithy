@@ -70,7 +70,7 @@ export async function loadVector(projectDir: string): Promise<VectorModule> {
     ]);
     return { ...provision, ...resolve, ...capability, ...drift, ...provisioned, ...specs };
   } catch (error) {
-    throw capabilityLoadError("vector", "@pithy-sh/vector", error, projectDir);
+    throw await capabilityLoadError("vector", "@pithy-sh/vector", error, projectDir);
   }
 }
 
@@ -79,7 +79,7 @@ async function vectorWorkerDir(projectDir: string): Promise<string> {
   try {
     return dirname(kitSource(projectDir, "@pithy-sh/vector/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error, projectDir);
+    throw await capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error, projectDir);
   }
 }
 

@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type CliAuditEmit, type CliAuditEvent, createCliAudit } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { SeedDriver } from "../seed/drivers";
+import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
 import { connectionRegistry, openConnectionRegistry } from "./registry";
 
@@ -690,4 +691,27 @@ describe("openConnectionRegistry", () => {
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).payload.action).toBeTruthy();
   });
+});
+
+/**
+ * **No Worker answering for the app database is the project's state, not the call's (#697).** The call named an
+ * environment and was right to; what it depends on — a `DB` binding some Worker resolves — is missing. So it
+ * exits 3, the class that says "set something up first", never 2.
+ */
+test("no Worker resolving DB is a precondition, exit 3", async () => {
+  const empty = await mkdtemp(join(tmpdir(), "pithy-dashboard-empty-"));
+  try {
+    const failure = await openConnectionRegistry({ projectDir: empty, env: "dev", account: null }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(PithyError);
+    const { payload } = failure as PithyError;
+    expect(payload).toMatchObject({
+      code: "core/precondition_failed",
+      message: "No worker resolves the DB binding for this environment.",
+    });
+    expect(exitCodeOf(payload)).toBe(EXIT.precondition);
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+  }
 });

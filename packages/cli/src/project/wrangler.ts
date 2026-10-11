@@ -4,7 +4,12 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  ConflictError,
+  InternalError,
+  NotFoundError,
+  PreconditionFailedError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
 import type { CloudflareAccountSelection, CloudflareCredentials } from "../cloudflare/config";
@@ -187,6 +192,41 @@ export function wranglerErrorBlock(output: string): string[] {
   return block;
 }
 
+/**
+ * **What wrangler says when Cloudflare will not take the credentials (#697).** Read off wrangler 4.125.0's own
+ * classification rather than guessed: `AUTHENTICATION_ERROR_CODES` is `[9106, 10000]`, printed as `[code: N]`
+ * under the failed request, and with no token and no way to log in it refuses before any request with the
+ * `non-interactive environment` sentence. Anything else wrangler prints is not this, whatever code it carries.
+ */
+const CREDENTIAL_REFUSAL = /\[code: (?:9106|10000)\]|In a non-interactive environment, it's necessary to set a /;
+
+/**
+ * A wrangler run Cloudflare refused for its credentials: `core/precondition_failed`, exit 3. The call was
+ * right and what it depends on is not, so retrying it unchanged fails the same way and so does any other
+ * call. No `fix`: a token is minted in the dashboard and an account id is an edit, which is what `pithy doctor`
+ * says about both. A class of its own so a batch can tell it from a per-Worker failure and stop on it.
+ */
+export class WranglerCredentialsError extends PreconditionFailedError {}
+
+/**
+ * wrangler could not be started at all: the program the project runs it with is not installed. A
+ * precondition, exit 3, like the credentials — and, like them, the same for every Worker a batch would spawn.
+ */
+export class WranglerNotRunnableError extends PreconditionFailedError {}
+
+/**
+ * Whether `error` refuses the whole run rather than one Worker: credentials Cloudflare will not take, or a
+ * wrangler that cannot start. A batch that recorded either as a row per Worker would report one missing
+ * precondition as that many failures.
+ */
+export function refusesTheRun(error: unknown): error is WranglerCredentialsError | WranglerNotRunnableError {
+  return error instanceof WranglerCredentialsError || error instanceof WranglerNotRunnableError;
+}
+
+/** The action line of {@link WranglerCredentialsError}. */
+const CREDENTIAL_ACTION =
+  "Cloudflare refused the credentials. Run pithy doctor to see whether the token or the account is wrong.";
+
 /** The child's environment, from whichever of the two things the caller holds. See {@link WranglerAccount}. */
 function wranglerChildEnv(account: WranglerAccount): Record<string, string> {
   if (account !== null && "apiToken" in account) return credentialedChildEnv(account);
@@ -247,7 +287,7 @@ export async function runWrangler(
       // installed perfectly well. It said "Is wrangler installed and on PATH?" while `bun` was what was
       // absent (#474), which sends an adopter to reinstall the one thing they already had.
       reject(
-        new InternalError({
+        new WranglerNotRunnableError({
           message: `Could not run ${label}.`,
           action:
             command === label
@@ -270,12 +310,15 @@ export async function runWrangler(
       // naming the import it could not resolve was only in wrangler's log file.
       const block = options.passthrough ? [] : wranglerErrorBlock(`${stderr}\n${stdout}`);
       const failed = `${label} ${args[0] ?? ""} failed.`;
+      const message =
+        block.length > 0 ? [failed, ...block.map((line) => (line === "" ? "" : `  ${line}`))].join("\n") : failed;
+      const detail = `exit ${code}${captured}`;
+      // Classified only off what was captured: in passthrough the output went to the terminal, unread.
+      const refused = !options.passthrough && CREDENTIAL_REFUSAL.test(stripVTControlCharacters(`${stderr}\n${stdout}`));
       reject(
-        new InternalError({
-          message:
-            block.length > 0 ? [failed, ...block.map((line) => (line === "" ? "" : `  ${line}`))].join("\n") : failed,
-          detail: `exit ${code}${captured}`,
-        }),
+        refused
+          ? new WranglerCredentialsError({ message, action: CREDENTIAL_ACTION, detail })
+          : new InternalError({ message, detail }),
       );
     });
   });

@@ -187,7 +187,7 @@ And `printed`:
 
 ## Errors
 
-**Both `--client` and `--all`.** Exit 1.
+**Both `--client` and `--all`.** Exit 2.
 
 ```
 $ pithy docs connect --client cursor --all
@@ -195,7 +195,7 @@ Pass either --client or --all, not both.
 Choose one.
 ```
 
-**A client the table does not know.** Exit 1. The action lists every id.
+**A client the table does not know.** Exit 2. The action lists every id.
 
 ```
 $ pithy docs connect --client emacs --scope user
@@ -204,17 +204,17 @@ Pass one of: claude-code, cursor, vscode, gemini, claude-desktop, cline, zed, co
 ```
 
 ```
-{"error":{"code":"core/not_found","status":404,"message":"No client called emacs.","action":"Pass one of: claude-code, cursor, vscode, gemini, claude-desktop, cline, zed, codex, goose, continue."}}
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"No client called emacs.","action":"Pass one of: claude-code, cursor, vscode, gemini, claude-desktop, cline, zed, codex, goose, continue.","exit":2,"retryable":false}}
 ```
 
-**No scope, and nothing that can be asked.** Exit 1. The refusal is the point: a default here would decide on your behalf whether your team gets this too.
+**No scope, and nothing that can be asked.** Exit 2. The refusal is the point: a default here would decide on your behalf whether your team gets this too.
 
 ```
 $ pithy docs connect --all --json
-{"error":{"code":"input/required","status":400,"flag":"--scope","choices":["project","user"],"message":"--scope is required when nothing can be asked.","action":"Pass --scope project to commit it for the team, or --scope user for yourself."}}
+{"error":{"code":"input/required","status":400,"flag":"--scope","choices":["project","user"],"message":"--scope is required when nothing can be asked.","action":"Pass --scope project to commit it for the team, or --scope user for yourself.","exit":2,"retryable":false}}
 ```
 
-**A scope that is not one of the two.** Exit 1.
+**A scope that is not one of the two.** Exit 2.
 
 ```
 $ pithy docs connect --all --scope global
@@ -222,11 +222,11 @@ $ pithy docs connect --all --scope global
 Pass --scope project to commit it for the team, or --scope user for yourself.
 ```
 
-**No target, unattended.** A bare `pithy docs connect` at a terminal acts on every detected client. Without one there is nothing to prompt with, so it names the flags instead. Exit 1.
+**No target, unattended.** A bare `pithy docs connect` at a terminal acts on every detected client. Without one there is nothing to prompt with, so it names the flags instead. Exit 2.
 
 ```
 $ pithy docs connect --json
-{"error":{"code":"input/required","status":400,"flag":"--client","choices":["claude-code","cursor","vscode","gemini","claude-desktop","cline","zed","codex","goose","continue"],"message":"Name what to connect.","action":"Pass --client <id> for one, or --all for every client detected here."}}
+{"error":{"code":"input/required","status":400,"flag":"--client","choices":["claude-code","cursor","vscode","gemini","claude-desktop","cline","zed","codex","goose","continue"],"message":"Name what to connect.","action":"Pass --client <id> for one, or --all for every client detected here.","exit":2,"retryable":false}}
 ```
 
 **A file that will not parse** is not one of these. It is a `refused` row, per client, and the run carries on to the rest. Exit 1 only if every client asked for refused.

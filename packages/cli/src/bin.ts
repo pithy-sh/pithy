@@ -25,15 +25,24 @@ import { readFileSync } from "node:fs";
 import type { ArgsDef, CommandDef } from "citty";
 import { unsupportedNodeMessage } from "./nodeFloor";
 import { wantsNoInput, wantsPretty, wantsVersion } from "./rootFlags";
+import { exitQuietlyOnBrokenPipe } from "./terminal/brokenPipe";
 import { colorEnabled, colorForced } from "./terminal/style";
 
 // Before anything is imported or read, so the refusal costs nothing and cannot itself fail on an old
 // runtime. The rule lives in `nodeFloor.ts` because this file cannot be tested — see `rootFlags.ts`.
+//
+// Exit 3, a precondition (`terminal/exitClass.ts`): the call is fine and the runtime is not. A literal
+// rather than `EXIT.precondition`, because importing that table is exactly what this line runs ahead of.
 const unsupported = unsupportedNodeMessage(process.versions.node);
 if (unsupported !== null) {
   process.stderr.write(unsupported);
-  process.exit(1);
+  process.exit(3);
 }
+
+// A reader that closes the pipe early — `pithy schema --json | head` — ends the run quietly, exit 141, rather
+// than with an unhandled EPIPE stack trace (#697). Both streams: `2>&1 | head` closes stderr's pipe too.
+exitQuietlyOnBrokenPipe(process.stdout);
+exitQuietlyOnBrokenPipe(process.stderr);
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;
@@ -68,7 +77,7 @@ const argv = process.argv.slice(2);
 if (!colorEnabled()) process.env.NO_COLOR = "1";
 
 const { main } = await import("./main");
-const { ownNamesOnly, usageTarget } = await import("./dispatch");
+const { ownNamesOnly, runTree, usageTarget } = await import("./dispatch");
 const { asksForJson, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags } = await import("./declaredFlags");
 const { JSON_MODE_ENV, jsonStreams } = await import("./terminal/jsonMode");
 const { latchInputMode, NONINTERACTIVE_ENV, resolveInputForbidden } = await import("./terminal/inputMode");
@@ -155,11 +164,11 @@ if (wantsVersion(argv)) {
   /**
    * Ours at the root, citty's everywhere below it — and handed to *both* places a root screen comes from.
    *
-   * `usageTarget` is one of them. The other is citty itself: `runMain` catches every `CLIError` into
-   * `showUsage(...await resolveSubCommand(cmd, rawArgs))`, and `resolveSubCommand` answers `[root,
-   * undefined]` for a name it cannot resolve — so `pithy nonsense` prints the *root* screen. Wire only
-   * the first and the CLI ships two root screens that drift, one of them reachable only by making a
-   * mistake. `parent === undefined` is exactly the root at both call sites (`dispatch.ts`).
+   * `usageTarget` is one of them. The other is a refusal: `runTree` answers a citty `CLIError` with the
+   * usage of the deepest command the tokens name (`commandAt`), which is the root for a name it cannot
+   * resolve — so `pithy nonsense` prints the *root* screen. `--help` goes through citty's `runMain`, which
+   * resolves the same way. Wire only one and the CLI ships two root screens that drift, one of them
+   * reachable only by making a mistake. `parent === undefined` is exactly the root at every call site.
    */
   const usageFor = async <T extends ArgsDef = ArgsDef>(cmd: CommandDef<T>, parent?: CommandDef<T>): Promise<void> =>
     parent === undefined ? showRootUsage(cmd) : showUsage(cmd, parent);
@@ -176,7 +185,10 @@ if (wantsVersion(argv)) {
    */
   const usage = await usageTarget(root, argv);
   if (usage) await usageFor(usage.cmd, usage.parent);
-  else await runMain(root, { showUsage: usageFor });
+  // `--help` is citty's builtin below the root, answered by `runMain` and exiting 0. Every other call runs
+  // through `runTree`, which is `runMain`'s catch with the classified code: a call citty refuses exits 2.
+  else if (argv.some((token) => token === "--help" || token === "-h")) await runMain(root, { showUsage: usageFor });
+  else await runTree(root, argv, { json: asksForJson(argv), showUsage: usageFor });
 }
 
 /**

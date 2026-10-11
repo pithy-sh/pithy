@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { fixOf } from "../terminal/exitClass";
 import {
   environmentOutcomes,
   environmentReadiness,
@@ -39,10 +40,16 @@ async function project(stanzas: Record<string, string | null>): Promise<string> 
 
 /** The operator payload a `PithyError` carries, or a failure naming what was thrown instead. */
 async function refusal(work: () => unknown) {
+  const error = await thrown(work);
+  return error.payload;
+}
+
+/** The `PithyError` a thunk raised, for a test that reads what rides beside the payload too. */
+async function thrown(work: () => unknown): Promise<PithyError> {
   try {
     await work();
   } catch (error) {
-    if (error instanceof PithyError) return error.payload;
+    if (error instanceof PithyError) return error;
     throw error;
   }
   throw new Error("expected a refusal");
@@ -168,12 +175,35 @@ describe("requireReadyEnvironments", () => {
       environments: ["staging", "prod"],
     });
 
-    const payload = await refusal(() => requireReadyEnvironments(readiness, "pithy email provision"));
+    const error = await thrown(() => requireReadyEnvironments(readiness, "pithy email provision"));
+    const payload = error.payload;
 
     expect(payload.message).toBe("No environment is ready — staging and prod have no DB database_id.");
     expect(payload.action).toBe(
       "Run pithy provision --env staging to create its app database, then run pithy email provision again.",
     );
+    // The call was right and the account is not ready: exit 3, and the command that readies the first (#697).
+    expect(payload.code).toBe("core/precondition_failed");
+    expect(fixOf(error)).toBe("pithy provision --env staging --yes");
+  });
+
+  // Provisioning production needs the `--confirm` phrase too, a person's to give, so `--yes` alone would
+  // end exit 5. A `fix` is runnable as written; production gets none (#697).
+  test.each([
+    ["prod", undefined],
+    ["live", ["live"]],
+  ])("a first skipped environment that is production, %s, carries no fix", async (env, productionEnvironments) => {
+    const dir = await project({ [env]: null });
+    const readiness = await environmentReadiness({
+      workerDir: dir,
+      label: "wrangler.jsonc",
+      environments: [env],
+      ...(productionEnvironments ? { productionEnvironments } : {}),
+    });
+
+    const error = await thrown(() => requireReadyEnvironments(readiness, "pithy email provision"));
+    expect(error.payload.code).toBe("core/precondition_failed");
+    expect(fixOf(error)).toBeUndefined();
   });
 
   test("one environment provisioned is a success, whatever else was skipped", async () => {

@@ -67,6 +67,16 @@ async function readInstalledManifest(path: string): Promise<ManifestRead> {
 }
 
 /**
+ * A capability's installed manifest, or `undefined` when there is none to read — absent, unreadable or
+ * malformed alike. For a caller deciding what it may *say* (`notComposed.ts`'s `fix`), where any of the
+ * three means the same thing: nothing to read the answer from.
+ */
+export async function installedManifest(projectDir: string, name: string): Promise<CapabilityManifest | undefined> {
+  const read = await readInstalledManifest(manifestPath(projectDir, name));
+  return read.state === "manifest" ? read.manifest : undefined;
+}
+
+/**
  * Resolve a capability's manifest by reading `pithy.manifest.json` from the installed
  * `@pithy-sh/<name>` package. Every failure is a `PithyError` naming the capability.
  *

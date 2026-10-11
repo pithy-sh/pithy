@@ -6,6 +6,7 @@ import type { CommandDef } from "citty";
 import { CATALOG } from "../capabilities/catalog";
 import { flagsOf, GLOBAL_FLAGS } from "../declaredFlags";
 import { main } from "../main";
+import { EXIT_CLASSES, type ExitClass, exitClassOf } from "../terminal/exitClass";
 
 /**
  * What the kit contains, as one file another repository can read.
@@ -57,12 +58,25 @@ export interface CatalogCommand {
   flags: string[];
 }
 
-/** One error code the kit defines, and the HTTP status its member pins. */
+/**
+ * One error code the kit defines, the HTTP status its member pins, and what a CLI caller should do about it.
+ *
+ * The last four come from `terminal/exitClass.ts` (#697) and sit beside `code` and `status` rather than
+ * replacing either: another repository's checker reads those two by name.
+ */
 export interface CatalogErrorCode {
   /** `domain/reason`, namespaced per capability. */
   code: string;
   /** The status the kit pins to this code. Every kit member pins exactly one. */
   status: number;
+  /** The kind of failure it is to a script: `usage`, `precondition`, `upstream`, `person` or `failed`. */
+  exitClass: ExitClass;
+  /** The exit code a `pithy` run that fails with it ends with. */
+  exit: number;
+  /** Whether running the same command again, unchanged, can succeed. */
+  retryable: boolean;
+  /** What that class asks of the caller, as `docs/CLI.md` §3.8 states it. */
+  remedy: string;
 }
 
 /**
@@ -153,7 +167,12 @@ export async function buildDocsCatalog(): Promise<DocsCatalog> {
     commands: await walkCommands(main),
     globalFlags: [...GLOBAL_FLAGS].sort(),
     errorCodes: KitErrorPayload.options
-      .map((member) => ({ code: member.shape.code.value, status: member.shape.status.value }))
+      .map((member) => {
+        const code = member.shape.code.value;
+        const exitClass = exitClassOf({ code });
+        const { exit, retryable, agentShould } = EXIT_CLASSES[exitClass];
+        return { code, status: member.shape.status.value, exitClass, exit, retryable, remedy: agentShould };
+      })
       .sort((left, right) => left.code.localeCompare(right.code)),
   };
   for (const [section, entries] of Object.entries(catalog)) {

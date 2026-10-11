@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import {
   clientById,
@@ -24,6 +24,7 @@ import {
   status,
   targetFor,
 } from "../mcp/connect";
+import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -89,7 +90,8 @@ function emit(line: string): void {
 function requireClient(id: string): McpClient {
   const client = clientById(id);
   if (client === undefined) {
-    throw new NotFoundError({
+    // A `--client` value that names nothing is the call's mistake: exit 2, not "not found" (exit 3).
+    throw new ValidationError({
       message: `No client called ${id}.`,
       action: `Pass one of: ${MCP_CLIENTS.map((entry) => entry.id).join(", ")}.`,
     });
@@ -154,10 +156,7 @@ async function askScope(): Promise<Scope | null> {
 /** Ask, and end the run if the operator declines to answer. What the two subcommands do with a cancel. */
 async function askScopeOrExit(): Promise<Scope> {
   const answer = await askScope();
-  if (answer === null) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (answer === null) canceled();
   return answer;
 }
 
@@ -240,7 +239,7 @@ function printRefusals(results: readonly ConnectResult[]): void {
 /** Exit 1 only when every client asked for failed — a partial run is a run that did something. */
 function exitFor(results: readonly { state: string }[]): number {
   if (results.length === 0) return 0;
-  return results.every((result) => result.state === "refused") ? 1 : 0;
+  return results.every((result) => result.state === "refused") ? EXIT.failed : EXIT.ok;
 }
 
 /**

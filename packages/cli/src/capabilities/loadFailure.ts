@@ -10,8 +10,9 @@ import {
   safeReason,
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { packageInstalledFrom } from "../project/kitResolve";
+import { capabilityNotComposed } from "./notComposed";
 
 /**
  * Why an optional capability would not load — and therefore what may be said about it (#217).
@@ -248,17 +249,44 @@ export function classifyCapabilityLoadFailure(
 /**
  * The refusal a capability loader throws — {@link classifyCapabilityLoadFailure} with the error around it.
  *
- * `ValidationError` is kept from the fourteen sites this replaces: the code an adopter's tooling matches
- * on does not change because the sentence got honest.
+ * `ValidationError` is kept from the fourteen sites this replaces for every kind but one: the code an
+ * adopter's tooling matches on does not change because the sentence got honest. **`not-installed` is the
+ * exception (#697).** A capability the project never installed is a capability it does not compose, and
+ * that is a precondition with `pithy add` as the step — exit 3 and the same `fix` as every other refusal of
+ * its kind (`notComposed.ts`), never exit 2, which tells a script a different spelling would have worked.
  *
- * @param projectDir the root the loader resolved from — see {@link classifyCapabilityLoadFailure}.
+ * @param projectDir the root the loader resolved from — see {@link classifyCapabilityLoadFailure}. Without
+ *   it no `fix` is named, because nothing says which Worker `pithy add` would wire.
  */
-export function capabilityLoadError(
+export async function capabilityLoadError(
   capability: string,
   target: string,
   cause: unknown,
   projectDir?: string,
-): ValidationError {
-  const { message, action, detail } = classifyCapabilityLoadFailure(capability, target, cause, projectDir);
+): Promise<PithyError> {
+  const failure = classifyCapabilityLoadFailure(capability, target, cause, projectDir);
+  if (failure.kind !== "not-installed" || projectDir === undefined) return refusalFor(failure, cause);
+  const { message, action, detail } = failure;
+  return capabilityNotComposed(capability, { message, action, detail }, { projectDir }, cause);
+}
+
+/**
+ * {@link capabilityLoadError} for a caller that cannot wait: a synchronous resolution, such as a generated
+ * host entry. The same classes; a `not-installed` refusal names no `fix`, because naming one reads the
+ * project's Workers and manifest, and its `action` already says `pithy add`.
+ */
+export function capabilityLoadErrorNow(
+  capability: string,
+  target: string,
+  cause: unknown,
+  projectDir?: string,
+): PithyError {
+  return refusalFor(classifyCapabilityLoadFailure(capability, target, cause, projectDir), cause);
+}
+
+/** The error around a classified failure: exit 3 for a capability that is not there, exit 2 otherwise. */
+function refusalFor(failure: CapabilityLoadFailure, cause: unknown): PithyError {
+  const { message, action, detail } = failure;
+  if (failure.kind === "not-installed") return new PreconditionFailedError({ message, action, detail }, { cause });
   return new ValidationError({ message, action, detail }, { cause });
 }

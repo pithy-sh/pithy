@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
+import { EXIT } from "../terminal/exitClass";
 import { removeTempDir } from "../test-utils/tempRepo";
 
 const run = promisify(execFile);
@@ -328,7 +329,7 @@ describe("pithy feature destroy --branch, from a detached HEAD — #660", () => 
       env: ciEnv(dir, account),
     });
 
-    expect(failed.code).toBe(1);
+    expect(failed.code).toBe(EXIT.usage);
     expect(JSON.parse(failed.stderr.trim())).toMatchObject({
       error: { code: "validation/invalid_input", message: "Not a feature branch (not-a-feature)." },
     });
@@ -351,7 +352,7 @@ describe("pithy feature destroy --branch, from a detached HEAD — #660", () => 
     });
 
     // Byte for byte the refusal this command has always given a checkout it cannot infer a feature from.
-    expect(failed.code).toBe(1);
+    expect(failed.code).toBe(EXIT.usage);
     expect(JSON.parse(failed.stderr.trim())).toMatchObject({
       error: {
         code: "validation/invalid_input",
@@ -582,7 +583,7 @@ describe("a named feature's own record — #660", () => {
       env: ciEnv(root, account),
     });
 
-    expect(failed.code).toBe(1);
+    expect(failed.code).toBe(EXIT.usage);
     const { error } = JSON.parse(failed.stderr.trim()) as { error: { message: string; action: string } };
     expect(error.message).toContain("replay-f99-y");
     expect(error.action).not.toMatch(/delete/i);
@@ -634,7 +635,7 @@ describe("a named feature's own record — #660", () => {
       env: ciEnv(root, account),
     });
 
-    expect(failed.code).toBe(1);
+    expect(failed.code).toBe(EXIT.upstream);
     expect(failed.stdout).not.toContain("The rest is still in the account");
   });
 });

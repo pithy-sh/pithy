@@ -89,14 +89,16 @@ $ pithy turnstile deprovision --json
 
 ## Errors
 
-Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
+Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
 **The Worker does not compose turnstile.** The target — `--worker`, or the project's only Worker — has no `turnstile(...)` registration. The modes are never read from a sibling.
 
 ```
 <worker> does not compose the turnstile capability.
-Add `turnstile({ ... })` to <worker>'s pithy.config.ts (run `pithy add turnstile`), or name the Worker that composes it with --worker.
+Add `turnstile({ ... })` to <worker>'s pithy.config.ts (run `pithy add turnstile --worker <worker>`), or name the Worker that composes it with --worker.
 ```
+
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with `pithy add turnstile --worker <worker> --with-prerequisites` as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because turnstile declares prerequisites in its manifest; a `fix` runs with nobody to ask.
 
 **No widgets are declared.** The capability is composed, but its `widgets` block is empty, so there is nothing to provision.
 
@@ -148,7 +150,7 @@ Declare it in the Worker's pithy.config.ts — `domains: { prod: { pattern: "app
 
 **Several Workers, no `--worker`.** The same resolution error `pithy add` raises, naming the Workers it found.
 
-**The project has no name.** It scopes both the widget names and the dispatcher's target, and it is never guessed: a wrong one reuses another project's widget on provision and deletes a neighbor's on teardown.
+**The project has no name.** It scopes both the widget names and the dispatcher's target, and it is never guessed: a wrong one reuses another project's widget on provision and deletes a neighbor's on teardown. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
 ## Examples
 

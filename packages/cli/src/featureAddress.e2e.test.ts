@@ -12,6 +12,7 @@ import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { devSecretsFile } from "./devSecrets/location";
 import { featureConfigPath } from "./provision/featureConfig";
+import { EXIT } from "./terminal/exitClass";
 import { GIT_NO_MAINTENANCE, removeTempDir } from "./test-utils/tempRepo";
 
 const run = promisify(execFile);
@@ -251,7 +252,7 @@ describe("a feature deployment's address, with the real binary", () => {
 
   test("a host that is not one is refused before anything is written", async () => {
     const result = await cli(["seed", "--env", "feature", "--yes", "--host", "https://preview.example.com/x"]);
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(EXIT.usage);
     expect(result.stderr + result.stdout).toContain(
       '--host takes a host, like preview.example.com, not "https://preview.example.com/x".',
     );

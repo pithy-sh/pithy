@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
@@ -82,7 +82,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
@@ -188,6 +188,7 @@ const provision = defineCommand({
         workerDir: appWorker.dir,
         label: `${appWorker.name}'s wrangler.jsonc`,
         environments,
+        productionEnvironments: config.seed?.productionEnvironments,
       });
       const provisioner = new CloudflareSupportProvisioner({
         cf: await cloudflareClients({ accountId, apiToken }),

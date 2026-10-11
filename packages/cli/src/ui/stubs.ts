@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { PackageManager } from "../project/packageManager";
 import { reactStub } from "./react";
 
@@ -136,7 +136,7 @@ export const UI_STUBS: Record<string, UiStub> = {
 export function resolveStub(id: string): UiStub {
   const stub = UI_STUBS[id];
   if (!stub) {
-    throw new NotFoundError({
+    throw new ValidationError({
       message: `No UI stub named "${id}".`,
       action: `Run pithy ui list to see the frameworks you can add. Known: ${Object.keys(UI_STUBS).join(", ")}.`,
     });

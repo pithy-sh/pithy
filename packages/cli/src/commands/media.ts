@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -30,6 +30,7 @@ import {
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
+import { secretsDatabaseMissing } from "../provision/missingDatabase";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -80,13 +81,13 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
   if (!storeId) {
-    throw new ValidationError({
+    throw new PreconditionFailedError({
       message: "The CF Secrets Store id is missing.",
       action: "Run pithy add secrets to record SECRETS_STORE_ID (the media worker decrypts its credentials from it).",
     });
@@ -138,10 +139,11 @@ function buildResolveEnv(
       find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
     });
     if (!secretsDb) {
-      throw new ValidationError({
-        message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
-        action: "Run `pithy secrets provision` first — the media worker reads its credentials from it.",
-      });
+      throw secretsDatabaseMissing(
+        env,
+        managerWorkerName(project, env),
+        "the media worker reads its credentials from it.",
+      );
     }
     return { appDatabaseId, secretsDatabaseId: secretsDb.uuid };
   };
@@ -213,6 +215,7 @@ const provision = defineCommand({
         workerDir: appWorker.dir,
         label: `${appWorker.name}'s wrangler.jsonc`,
         environments,
+        productionEnvironments: config.seed?.productionEnvironments,
       });
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareMediaProvisioner({

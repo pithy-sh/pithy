@@ -4,7 +4,7 @@
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
@@ -534,10 +534,10 @@ describe("removeWorker", () => {
     await expect(stat(apiDir)).rejects.toThrow();
   });
 
-  test("throws NotFoundError when the worker does not exist", async () => {
+  test("a name that matches no worker is the call's mistake (exit 2)", async () => {
     await expect(
       removeWorker({ projectDir: dir, name: "ghost", mainRoot: dir, discoverWorkers: discover(dir, ["app"]) }),
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(ValidationError);
   });
 });
 
@@ -884,7 +884,7 @@ describe("renameWorker", () => {
     expect(pkg.name).toBe("acme-api");
   });
 
-  test("throws NotFoundError when the worker does not exist", async () => {
+  test("a name that matches no worker is the call's mistake (exit 2)", async () => {
     await expect(
       renameWorker({
         projectDir: dir,
@@ -894,7 +894,7 @@ describe("renameWorker", () => {
         discoverWorkers: discover(dir, []),
         probeDeployed: account(),
       }),
-    ).rejects.toThrow(NotFoundError);
+    ).rejects.toThrow(ValidationError);
   });
 
   test("leaves a script name the adopter chose alone, and says so", async () => {

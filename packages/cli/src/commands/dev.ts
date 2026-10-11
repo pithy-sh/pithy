@@ -12,6 +12,7 @@ import { dispatchedSubCommand } from "../dispatch";
 import { describeStaleAutostartRoots, portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { openUrl } from "../platform/browser";
+import { EXIT } from "../terminal/exitClass";
 import { formatJsonLine, formatJsonStreamLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 
@@ -225,7 +226,7 @@ async function mountTui(keys: boolean, live: () => DevHandle | undefined) {
     // Hand the terminal back first — unmounting is what does that — then go, bounded in case the
     // unmount is the thing that is stuck.
     void Promise.race([tui?.stop() ?? Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 2000))]).finally(
-      () => process.exit(130),
+      () => process.exit(EXIT.interrupted),
     );
   };
 

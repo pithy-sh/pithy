@@ -27,6 +27,7 @@ import type { DatabaseRun } from "../migrations/run";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import type { ResolvedWorker, ResolveOptions } from "../project/workerScope";
+import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
@@ -91,10 +92,7 @@ export async function promptWorker(choices: ResolvedWorker[]): Promise<string> {
     message: "Which worker?",
     options: choices.map((choice) => ({ value: choice.name, label: choice.name })),
   });
-  if (isCancel(answer)) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
   return answer as string;
 }
 
@@ -251,10 +249,7 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
             ? {}
             : { defaultValue: String(option.default), placeholder: String(option.default) }),
         });
-    if (isCancel(answer)) {
-      process.stderr.write("Canceled.\n");
-      process.exit(1);
-    }
+    if (isCancel(answer)) canceled();
     // An unanswered required option is refused rather than written. `text` returns "" for a bare enter and
     // `select` returns the sentinel, and both mean the same thing: nobody chose. Writing either would put
     // an empty key into the adopter's config for them to find later — which is worse than the question.
@@ -279,10 +274,7 @@ const promptPrerequisites: PrerequisitePrompt = async ({ capability, missing }) 
   const answer = await confirm({
     message: `${capability} requires ${missing.join(", ")}. Compose ${one ? "it" : "them"} too?`,
   });
-  if (isCancel(answer)) {
-    process.stderr.write("Canceled.\n");
-    process.exit(1);
-  }
+  if (isCancel(answer)) canceled();
   return answer === true;
 };
 
