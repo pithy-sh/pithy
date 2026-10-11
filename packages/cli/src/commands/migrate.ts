@@ -4,9 +4,12 @@
 import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
+import { z } from "zod";
+import { withContract } from "../contract/commandContract";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained, rollbackConfirmPhrase } from "../migrations/confirm";
 import { requireMigrationGroup } from "../migrations/groups";
 import {
+  DatabaseRun,
   type MigrationProgress,
   migratedBeforeFailure,
   migrateProject,
@@ -178,91 +181,146 @@ export async function rollbackPhrase(options: RollbackPhraseOptions): Promise<st
   return promptRollback(options.env, options.json, options.group);
 }
 
-export default defineCommand({
-  meta: { name: "migrate", description: "Run migrations for an environment" },
-  args: {
-    env: ENV_ARG,
-    worker: { type: "string", description: "Migrate one worker instead of every worker in apps/" },
-    binding: { type: "string", description: "Migrate only the database behind this D1 binding" },
-    group: {
-      type: "string",
-      description:
-        "Name the group this run applies under, instead of the timestamp it would generate. Required by --rollback, which reverses the named group",
+const Target = z
+  .object({
+    binding: z.string().describe("The D1 binding, as `wrangler.jsonc` declares it."),
+    database: z.string().describe("The database name: a capability's `databases` key."),
+  })
+  .describe("One database in scope.");
+
+/** `pithy migrate --json`: the run, grouped per Worker — and, on a run that died partway, how far it got. */
+const MigratePayload = z
+  .object({
+    command: z.literal("migrate").describe('`"migrate"`.'),
+    project: z.string().describe("The project every migrated database is stamped with."),
+    env: z.string().describe("The environment migrated."),
+    rollback: z.boolean().describe("Whether this run reversed a group."),
+    group: z
+      .string()
+      .optional()
+      .describe("The run's group: the `--group` named, or the timestamp it generated. Absent from a refused rollback."),
+    workers: z
+      .array(
+        z
+          .object({
+            worker: z.string().describe("The Worker's name."),
+            databases: z.array(DatabaseRun).describe("Its databases, in registry order."),
+          })
+          .describe("One Worker's slice of the run."),
+      )
+      .describe("Every Worker, in fan-out order. On an interrupted run, only what completed."),
+    failed: Target.optional().describe("The database the run died on. Present only when `interrupted`."),
+    unreached: z
+      .array(Target)
+      .optional()
+      .describe("Every database the run never opened. Present only when `interrupted`."),
+    interrupted: z.literal(true).optional().describe("Present only on a run that failed partway."),
+  })
+  .describe("What `pithy migrate` applied or reversed.");
+
+export default withContract(
+  defineCommand({
+    meta: { name: "migrate", description: "Run migrations for an environment" },
+    args: {
+      env: ENV_ARG,
+      worker: { type: "string", description: "Migrate one worker instead of every worker in apps/" },
+      binding: { type: "string", description: "Migrate only the database behind this D1 binding" },
+      group: {
+        type: "string",
+        description:
+          "Name the group this run applies under, instead of the timestamp it would generate. Required by --rollback, which reverses the named group",
+      },
+      rollback: {
+        type: "boolean",
+        default: false,
+        description:
+          "Reverse the --group named, in every database in scope (narrow with --worker and --binding). Refuses without a group, and refuses to drop rows in retained tables",
+      },
+      "confirm-rollback": {
+        type: "string",
+        description: 'Unlock a non-dev rollback non-interactively: "yes, i really want to roll back <env>"',
+      },
+      "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
-    rollback: {
-      type: "boolean",
-      default: false,
-      description:
-        "Reverse the --group named, in every database in scope (narrow with --worker and --binding). Refuses without a group, and refuses to drop rows in retained tables",
-    },
-    "confirm-rollback": {
-      type: "string",
-      description: 'Unlock a non-dev rollback non-interactively: "yes, i really want to roll back <env>"',
-    },
-    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const projectDir = process.cwd();
-      // The non-guessing name: it is stamped into every database this run touches, and a later run
-      // checks against it, so a fallback that differs between checkouts would lock a project out of
-      // its own database. `requireProjectName` refuses to guess (docs/CLI.md §3.3).
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // And the account this project belongs to, before anything resolves a credential. `migrateProject`
-      // states the hazard in its own words: a remote migration alters a real schema, so the wrong
-      // account's credentials would run it against another company's database (#206). This command is
-      // the one that has to supply the answer, and for a long while it did not.
-      const account = await projectCloudflareAccount(projectDir);
-      // One group for the whole run. A forward run that names none is stamped with the moment it ran —
-      // resolved here, so the line this command prints and the value the run records are the same one. A
-      // rollback is handed exactly what the operator passed: none is the refusal, not a new group (#694).
-      const named = requireMigrationGroup(args.group);
-      const group = args.rollback ? named : (named ?? generatedMigrationGroup());
-      const render = {
-        project,
-        env,
-        rollback: args.rollback,
-        json: args.json,
-        ...(group !== undefined ? { group } : {}),
-      };
-      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
-      // A rollback outside dev is asked for in words (#588). The flag wins wherever it is present; a
-      // terminal without it is asked; a script without it is refused by `migrateProject`, which checks.
-      const confirmRollback = await rollbackPhrase({
-        env,
-        json: args.json,
-        rollback: args.rollback,
-        ...(args["confirm-rollback"] === undefined ? {} : { flagged: args["confirm-rollback"] }),
-        ...(group === undefined ? {} : { group }),
-      });
-      let workers: WorkerMigrationRun[];
-      try {
-        workers = await migrateProject({
-          projectDir,
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const projectDir = process.cwd();
+        // The non-guessing name: it is stamped into every database this run touches, and a later run
+        // checks against it, so a fallback that differs between checkouts would lock a project out of
+        // its own database. `requireProjectName` refuses to guess (docs/CLI.md §3.3).
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // And the account this project belongs to, before anything resolves a credential. `migrateProject`
+        // states the hazard in its own words: a remote migration alters a real schema, so the wrong
+        // account's credentials would run it against another company's database (#206). This command is
+        // the one that has to supply the answer, and for a long while it did not.
+        const account = await projectCloudflareAccount(projectDir);
+        // One group for the whole run. A forward run that names none is stamped with the moment it ran —
+        // resolved here, so the line this command prints and the value the run records are the same one. A
+        // rollback is handed exactly what the operator passed: none is the refusal, not a new group (#694).
+        const named = requireMigrationGroup(args.group);
+        const group = args.rollback ? named : (named ?? generatedMigrationGroup());
+        const render = {
           project,
-          account,
           env,
-          ...(args.worker !== undefined ? { worker: args.worker } : {}),
-          ...(args.binding !== undefined ? { binding: args.binding } : {}),
-          ...(group !== undefined ? { group } : {}),
           rollback: args.rollback,
-          ...(confirmRollback !== undefined ? { confirmRollback } : {}),
-          ...(destroyRetained !== undefined ? { destroyRetained } : {}),
-          ...(config.seed?.productionEnvironments
-            ? { productionEnvironments: config.seed.productionEnvironments }
-            : {}),
+          json: args.json,
+          ...(group !== undefined ? { group } : {}),
+        };
+        const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+        // A rollback outside dev is asked for in words (#588). The flag wins wherever it is present; a
+        // terminal without it is asked; a script without it is refused by `migrateProject`, which checks.
+        const confirmRollback = await rollbackPhrase({
+          env,
+          json: args.json,
+          rollback: args.rollback,
+          ...(args["confirm-rollback"] === undefined ? {} : { flagged: args["confirm-rollback"] }),
+          ...(group === undefined ? {} : { group }),
         });
-      } catch (error) {
-        // A run that failed on the third database has already moved the first two, and until #380 the
-        // report of it died with the throw. What ran is printed here, then the same error is rethrown
-        // unchanged for `withErrorReporting` to render and exit by its kind.
-        const progress = migratedBeforeFailure(error);
-        if (progress) process.stdout.write(formatMigrateProgress(progress, render));
-        throw error;
-      }
-      process.stdout.write(formatMigrateReport(workers, render));
-    }),
-});
+        let workers: WorkerMigrationRun[];
+        try {
+          workers = await migrateProject({
+            projectDir,
+            project,
+            account,
+            env,
+            ...(args.worker !== undefined ? { worker: args.worker } : {}),
+            ...(args.binding !== undefined ? { binding: args.binding } : {}),
+            ...(group !== undefined ? { group } : {}),
+            rollback: args.rollback,
+            ...(confirmRollback !== undefined ? { confirmRollback } : {}),
+            ...(destroyRetained !== undefined ? { destroyRetained } : {}),
+            ...(config.seed?.productionEnvironments
+              ? { productionEnvironments: config.seed.productionEnvironments }
+              : {}),
+          });
+        } catch (error) {
+          // A run that failed on the third database has already moved the first two, and until #380 the
+          // report of it died with the throw. What ran is printed here, then the same error is rethrown
+          // unchanged for `withErrorReporting` to render and exit by its kind.
+          const progress = migratedBeforeFailure(error);
+          if (progress) process.stdout.write(formatMigrateProgress(progress, render));
+          throw error;
+        }
+        process.stdout.write(formatMigrateReport(workers, render));
+      }),
+  }),
+  {
+    output: "document",
+    payload: MigratePayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+    flagGroups: [
+      {
+        kind: "requires",
+        flag: "--rollback",
+        needs: ["--group"],
+        any: false,
+        rule: "--rollback reverses a named group, so it needs --group.",
+      },
+    ],
+  },
+);

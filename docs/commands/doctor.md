@@ -17,7 +17,7 @@ pithy doctor [--worker <name>] [--offline] [--enable-notifier | --disable-notifi
 | `--worker <name>` | Check only this Worker. Default: every Worker under `apps/`. |
 | `--offline` | Use no ambient credentials and make no network call. `PITHY_OFFLINE=1` says the same thing to every command. Carries no default, so the variable can answer. |
 | `--disable-notifier` | Turn off the update notifier, persisted in the state file. Default `false`. |
-| `--enable-notifier` | Turn the update notifier back on. Default `false`. |
+| `--enable-notifier` | Turn the update notifier back on, persisted in the state file. Default `false`. |
 | `--json` | Machine-readable output — one line, one object, the same exit code. Default `false`. |
 
 ## What it does

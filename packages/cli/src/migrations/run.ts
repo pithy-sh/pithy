@@ -190,31 +190,48 @@ export interface MigrateProjectOptions extends MigrationFanOutOptions {
 /** A reset never rolls back — it rolls *everything* back, then reapplies everything. */
 export type ResetProjectOptions = Omit<MigrateProjectOptions, "rollback" | "confirmRollback">;
 
-/** One database's migration run: which database, its binding, and what Kysely did. */
-export interface DatabaseRun {
-  /** The database name (a capability's `databases` key). */
-  database: string;
-  /** The D1 binding it resolves to in this Worker's `wrangler.jsonc`. */
-  binding: string;
-  /**
-   * The migrations this Worker's capabilities contributed, and how each fared. A shared database always
-   * migrates as a whole — a run narrowed to one Worker still applies what the Workers it shares with
-   * contributed — but every result is credited to the Worker that declared it, so a row never claims a
-   * migration its own capabilities do not own.
-   */
-  results: MigrationResult[];
-  /**
-   * The other Workers bound to this same physical D1. Present only when a database is shared: the
-   * merged registry ran once for all of them, and each Worker is credited with its own migrations.
-   */
-  sharedWith?: string[];
-  /**
-   * The other environments whose stanzas bind this same database. Present only when a rollback or a reset
-   * left it untouched for that reason: an environment-scoped command does not reverse a database another
-   * environment reads — `EMAIL_SUPPRESSIONS` is production's suppression list too (#588).
-   */
-  boundBy?: string[];
-}
+/** One migration Kysely ran, or did not, as a `--json` payload states it. Kysely's own `MigrationResult`. */
+export const MigrationResultJson = z
+  .object({
+    migrationName: z.string().describe("The migration's namespaced name, e.g. `0300_auth_0001_init`."),
+    direction: z.enum(["Up", "Down"]).describe("The direction it was executed in."),
+    status: z
+      .enum(["Success", "Error", "NotExecuted"])
+      .describe("How it fared. `NotExecuted` means an earlier migration failed."),
+  })
+  .describe("One migration and how it fared.");
+
+/**
+ * One database's migration run: which database, its binding, and what Kysely did.
+ *
+ * `results` holds the migrations this Worker's capabilities contributed. A shared database always
+ * migrates as a whole — a run narrowed to one Worker still applies what the Workers it shares with
+ * contributed — but every result is credited to the Worker that declared it, so a row never claims a
+ * migration its own capabilities do not own.
+ *
+ * `sharedWith` is present only when a database is shared: the merged registry ran once for all of them.
+ * `boundBy` is present only when a rollback or a reset left it untouched because another environment's
+ * stanza binds it: an environment-scoped command does not reverse a database another environment reads —
+ * `EMAIL_SUPPRESSIONS` is production's suppression list too (#588).
+ */
+export const DatabaseRun = z
+  .object({
+    database: z.string().describe("The database name — a capability's `databases` key."),
+    binding: z.string().describe("The D1 binding it resolves to in this Worker's `wrangler.jsonc`."),
+    results: z
+      .array(MigrationResultJson)
+      .describe("The migrations this Worker's capabilities contributed, and how each fared."),
+    sharedWith: z
+      .array(z.string().describe("Another Worker's name."))
+      .optional()
+      .describe("The other Workers bound to this same physical D1. Present only when it is shared."),
+    boundBy: z
+      .array(z.string().describe("Another environment's name."))
+      .optional()
+      .describe("The other environments binding this database. Present only when that left it untouched."),
+  })
+  .describe("One database's migration run: which database, its binding, and what Kysely did.");
+export type DatabaseRun = Omit<z.infer<typeof DatabaseRun>, "results"> & { results: MigrationResult[] };
 
 /** One Worker's slice of a fan-out run: the Worker, and each database its registry touched. */
 export interface WorkerMigrationRun {

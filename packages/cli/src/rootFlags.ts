@@ -37,6 +37,28 @@ const NO_INPUT = "--no-input";
  */
 export const ROOT_FLAGS: readonly string[] = [...HELP_FLAGS, ...VERSION_FLAGS, PRETTY, NO_PRETTY, NO_INPUT];
 
+/** One flag answered before citty, as `pithy schema` publishes it: its spellings, and what it does. */
+export interface RootFlag {
+  /** The canonical spelling. */
+  readonly name: string;
+  /** Every other spelling of it. */
+  readonly aliases: readonly string[];
+  /** What it does, in a line. */
+  readonly description: string;
+}
+
+/**
+ * {@link ROOT_FLAGS}, described. Each spelling there is a name or an alias here, exactly once, and
+ * `rootFlags.test.ts` holds the two to each other: the list decides, this one explains.
+ */
+export const ROOT_FLAG_DESCRIPTIONS: readonly RootFlag[] = [
+  { name: "--help", aliases: ["-h"], description: "Show help for any command" },
+  { name: "--version", aliases: ["-v"], description: "Print the installed version" },
+  { name: PRETTY, aliases: [], description: "Indent the --json line, whatever the terminal. Needs --json" },
+  { name: NO_PRETTY, aliases: [], description: "Write the --json line compact, whatever the terminal. Needs --json" },
+  { name: NO_INPUT, aliases: [], description: "Forbid every prompt for this call" },
+];
+
 /**
  * Whether this invocation is asking for the version, on any command.
  *

@@ -4,6 +4,9 @@
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { stdinTakesInput } from "../../terminal/inputMode";
 
+/** Any non-blank value keeps `pithy dev` to the plain stream: the standing preference behind `--no-tui`. */
+export const NO_TUI_ENV = "PITHY_NO_TUI";
+
 /**
  * The facts the renderer choice turns on, passed in rather than read here.
  *
@@ -88,7 +91,7 @@ export function rendererInputsFromProcess(json: boolean, tui = true, tuiExplicit
     tuiExplicit,
     ci: isContinuousIntegration(),
     term: process.env.TERM,
-    noTui: process.env.PITHY_NO_TUI,
+    noTui: process.env[NO_TUI_ENV],
   };
 }
 

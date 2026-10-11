@@ -158,11 +158,13 @@ if (wantsVersion(argv)) {
     process.exit(0);
   }
 
-  const { runMain, showUsage } = await import("citty");
+  const { runMain } = await import("citty");
   const { showRootUsage } = await import("./help/rootUsage");
+  const { showCommandUsage } = await import("./help/commandUsage");
 
   /**
    * Ours at the root, citty's everywhere below it — and handed to *both* places a root screen comes from.
+   * Below the root it is citty's layout with a variadic positional marked `[NAME…]` (`help/commandUsage.ts`).
    *
    * `usageTarget` is one of them. The other is a refusal: `runTree` answers a citty `CLIError` with the
    * usage of the deepest command the tokens name (`commandAt`), which is the root for a name it cannot
@@ -171,7 +173,7 @@ if (wantsVersion(argv)) {
    * reachable only by making a mistake. `parent === undefined` is exactly the root at every call site.
    */
   const usageFor = async <T extends ArgsDef = ArgsDef>(cmd: CommandDef<T>, parent?: CommandDef<T>): Promise<void> =>
-    parent === undefined ? showRootUsage(cmd) : showUsage(cmd, parent);
+    parent === undefined ? showRootUsage(cmd) : showCommandUsage(cmd as CommandDef, parent as CommandDef);
 
   /**
    * A command that names no action is asking what it can do, so it is answered and the run succeeds.

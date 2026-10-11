@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, test } from "vitest";
 import { EXIT } from "../terminal/exitClass";
+import { expectConforms } from "../test-utils/payloadContract";
 import { removeTempDir } from "../test-utils/tempRepo";
 
 const run = promisify(execFile);
@@ -246,6 +247,8 @@ describe("pithy feature destroy --branch, from a detached HEAD — #660", () => 
       env: ciEnv(dir, account),
     });
     expect(code).toBe(0);
+    // Held to the schema `pithy schema feature destroy` publishes (#697), from the real binary.
+    await expectConforms("feature destroy", stdout);
     const report = JSON.parse(stdout.trim()) as Record<string, unknown>;
 
     // **The remote half ran, against the names this feature composes.** The Worker script and the D1

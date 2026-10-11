@@ -40,10 +40,13 @@ function withStdoutClosed(args: string[]): Promise<{ code: number | null; signal
 }
 
 describe("stdout closed by its reader", () => {
-  test.each([[["--help"]], [["doctor", "--json"]]])("pithy %j exits 141 with nothing on stderr", async (args) => {
-    const { code, signal, stderr } = await withStdoutClosed(args);
-    expect(stderr).toBe("");
-    expect(signal).toBeNull();
-    expect(code).toBe(EXIT.brokenPipe);
-  });
+  test.each([[["--help"]], [["doctor", "--json"]], [["schema", "worker", "rename", "--json"]]])(
+    "pithy %j exits 141 with nothing on stderr",
+    async (args) => {
+      const { code, signal, stderr } = await withStdoutClosed(args);
+      expect(stderr).toBe("");
+      expect(signal).toBeNull();
+      expect(code).toBe(EXIT.brokenPipe);
+    },
+  );
 });

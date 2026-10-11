@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import { aliasStatus, handleHiddenFlags, installAlias, removeAlias } from "./alias";
 
 const OPEN = "# >>> pithy alias >>>";
@@ -261,5 +262,23 @@ describe("the alias --json payloads", () => {
       alias: ZSH_ALIAS,
     });
     expect(emitted.manualRemove).toMatchObject({ action: "remove", manual: true });
+  });
+});
+
+/** Every path, run through the real command and held to the schema `pithy schema alias` publishes (#697). */
+describe("pithy alias --json conforms to its published payload", () => {
+  test.each([
+    ["install", ["--json"]],
+    ["install again", ["--json"]],
+    ["status", ["--status", "--json"]],
+    ["remove", ["--remove", "--json"]],
+  ])("%s", async (_, rawArgs) => {
+    if (_ === "install again") await installAlias();
+    await expectConforms("alias", await runCaptured("alias", rawArgs));
+  });
+
+  test.each([["--json"], ["--remove", "--json"], ["--status", "--json"]])("unknown shell: %s", async (...rawArgs) => {
+    process.env.SHELL = "/usr/bin/xonsh";
+    await expectConforms("alias", await runCaptured("alias", rawArgs));
   });
 });

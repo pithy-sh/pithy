@@ -9,6 +9,7 @@ import { DeclaredEnvironments, FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/na
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { requireManagedEnvironment } from "../project/environment";
 import type { ProvisionedDeclines, ProvisionedResource, ProvisionReport } from "../provision/environment";
+import { expectConforms } from "../test-utils/payloadContract";
 import { provisionProgress, runProvision, writeReport } from "./provision";
 
 /**
@@ -327,6 +328,38 @@ describe("pithy provision narrates the run it is doing", () => {
     // And the flag that moves the human lines moves nothing here — there is one line either way.
     expect(captured(() => writeReport(full, { json: true, seeded: false, pending, registry }))).toBe(JSON_LINE);
     expect(streamed.trimEnd().split("\n")).toHaveLength(1);
+  });
+
+  /** Held to the schema `pithy schema provision` publishes (#697): a declared run, and a feature's extras. */
+  test("--json conforms to its published payload", async () => {
+    const pending = { names: ["link-key"], remedy: "pithy secrets provision" };
+    await expectConforms(
+      "provision",
+      captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {} })),
+    );
+    const feature: ProvisionReport = {
+      ...full,
+      env: "feature",
+      committed: false,
+      declined: [
+        {
+          state: "read",
+          worker: "board",
+          declines: [{ state: "unrecognized", name: "CACHE", reason: "No cache here." }],
+        },
+        { state: "invalid", worker: "web", problem: "declinedBindings.CACHE is not a string." },
+      ],
+      featureSecrets: [{ name: "link-key", environments: ["feature"], created: ["feature"] }],
+      hosts: [{ capability: "email", worker: "acme-f1-x-email", outcome: "deployed", reason: "Deployed." }],
+      routesDropped: [{ worker: "board", routes: ["api.example.com/*"] }],
+      bindingsDropped: [{ worker: "board", bindings: ["STRANGER"] }],
+    };
+    await expectConforms(
+      "provision",
+      captured(() =>
+        writeReport(feature, { json: true, seeded: true, pending: { names: [], remedy: null }, registry: {} }),
+      ),
+    );
   });
 
   /**

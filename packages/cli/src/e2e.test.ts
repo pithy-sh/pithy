@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { expectConforms } from "./test-utils/payloadContract";
 
 const run = promisify(execFile);
 const bin = join(import.meta.dirname, "bin.ts");
@@ -167,6 +168,8 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const added = await cli(["add", "auth", "--worker", "board", "--with-prerequisites", "--json"], target);
   // The refusal's own line rides on the assertion, so a non-zero exit names its cause rather than a bare `1`.
   expect(added.code, added.stderr).toBe(0);
+  // Held to the schema `pithy schema add` publishes (#697), from the real binary on a real project.
+  await expectConforms("add", added.stdout);
   const result = JSON.parse(added.stdout.trim()) as {
     capability: string;
     prerequisites: string[];
@@ -239,6 +242,16 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
     ],
   });
   expect(checked.code, checked.stderr).toBe(0);
+  await expectConforms("doctor", checked.stdout);
+
+  // And the two lifecycle commands that read this registry next, from the same binary on the same project,
+  // held to the schemas `pithy schema` publishes for them (#697).
+  const migrated = await cli(["migrate", "--env", "dev", "--json"], target);
+  expect(migrated.code, migrated.stderr).toBe(0);
+  await expectConforms("migrate", migrated.stdout);
+  const planned = await cli(["seed", "--env", "dev", "--dry-run", "--json"], target);
+  expect(planned.code, planned.stderr).toBe(0);
+  await expectConforms("seed", planned.stdout);
 }, 300_000);
 
 test("pithy doctor reports a composed capability whose prerequisite is absent, and fails the exit", async () => {

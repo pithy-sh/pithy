@@ -276,6 +276,7 @@ $ pithy provision --feature --json
 | `featureSecrets[].created` | `string[]` | `["feature"]` when this run created it; empty when it was already there |
 | `hosts` | `object[]` | `--feature` only: every kit Worker the feature stood up for itself, one row each, as `pithy deploy --json` reports `kit` |
 | `routesDropped` | `object[]` | `--feature` only, and only when there were any: each Worker's route patterns the feature stanza gave up, as `{ worker, routes }` |
+| `bindingsDropped` | `object[]` | `--feature` only, and only when there were any: each Worker's `durable_objects` or `services` entries naming a script this project does not own, which the feature stanza gave up, as `{ worker, bindings }` |
 | `pendingSecretsRemedy` | `string \| null` | The command that does create them. `"pithy secrets provision"` for `--env`; `"pithy provision --feature with SECRETS_STORE_ID set"` for `--feature`, whose own run creates them once it has a Secrets Store. A pipeline branches on this rather than on the mode |
 
 ## Exit codes

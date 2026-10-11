@@ -3,6 +3,7 @@
 
 import type { CommandDef } from "citty";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { expectConforms } from "../test-utils/payloadContract";
 
 /**
  * **A teardown's limits hold whatever orchestrator runs it (#591).**
@@ -169,6 +170,9 @@ const RECKLESS: Record<string, Orchestrator> = {
   },
 };
 
+/** What the last run wrote to stdout — its `--json` line, when it got that far. */
+const printed = { out: "" };
+
 /** Run `pithy <name> deprovision` to its end, returning the `--json` error it reported, if any. */
 async function deprovision(name: string, args: Record<string, unknown>): Promise<{ message: string } | undefined> {
   const command = (await import(`./${name}.ts`)).default as CommandDef;
@@ -178,7 +182,11 @@ async function deprovision(name: string, args: Record<string, unknown>): Promise
     errors.push(String(chunk));
     return true;
   });
-  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  printed.out = "";
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+    printed.out += String(chunk);
+    return true;
+  });
   const exit = vi.spyOn(process, "exit").mockImplementation((() => {
     throw new Error("exited");
   }) as never);
@@ -356,6 +364,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     state.orchestrator = deprovisionSupport as Orchestrator;
     expect(await deprovision("support", { env: "prod", "routing-zone": "zone", storage: true, ...R2 })).toBeUndefined();
     expect(state.calls).toEqual(["removeRoutingRule", "deleteWorker:prod", "deleteBucket"]);
+    await expectConforms("support deprovision", printed.out);
   });
 
   test("email, last environment, the list with it", async () => {
@@ -365,6 +374,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     state.orchestrator = deprovisionEmail as Orchestrator;
     expect(await deprovision("email", { env: "prod", suppression: true, "destroy-retained": "0" })).toBeUndefined();
     expect(state.calls).toEqual(["deleteWorker:prod", "deleteSuppressionDatabase"]);
+    await expectConforms("email deprovision", printed.out);
   });
 
   test("storage and media, with their storage", async () => {
@@ -374,6 +384,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     state.orchestrator = deprovisionStorage as Orchestrator;
     expect(await deprovision("storage", { env: "staging", storage: true, ...R2 })).toBeUndefined();
     expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
+    await expectConforms("storage deprovision", printed.out);
 
     state.calls.length = 0;
     const { deprovisionMedia } = await vi.importActual<typeof import("@pithy-sh/media/src/provision/provisionMedia")>(
@@ -382,6 +393,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     state.orchestrator = deprovisionMedia as Orchestrator;
     expect(await deprovision("media", { env: "staging", storage: true, ...R2 })).toBeUndefined();
     expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging", "deleteKvNamespace:staging"]);
+    await expectConforms("media deprovision", printed.out);
   });
 
   test("secrets, last environment, keys and token", async () => {
@@ -396,5 +408,6 @@ describe("the current orchestrators run unchanged through the confinement", () =
       "deleteDatabase:prod",
       "deleteManagerToken",
     ]);
+    await expectConforms("secrets deprovision", printed.out);
   });
 });

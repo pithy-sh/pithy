@@ -8,6 +8,8 @@ import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { EXIT, EXIT_CLASSES, exitClassOf, exitCodeOf } from "../terminal/exitClass";
+import { formatJsonLine } from "../terminal/output";
+import { expectConforms } from "../test-utils/payloadContract";
 import { EXIT_ROLLED_NOT_RECORDED } from "./rotateSecrets";
 import { storeEntryCensus } from "./storeEntryCensus";
 import {
@@ -428,6 +430,19 @@ describe("--json", () => {
     // A run that asserted nothing about the store must not read like one that found nothing.
     expect(withheld).toMatchObject({ verdict: "withheld", verified: false, exitCode: 0 });
     expect(failed).toMatchObject({ verdict: "failed", verified: false, exitCode: EXIT_STORE_UNVERIFIED });
+  });
+
+  /** Every shape, held to the schema `pithy schema secrets verify` publishes (#697). */
+  test("every shape conforms to its published payload", async () => {
+    const shapes: VerificationReport[] = [
+      report({ sweep: sweepStoreEntries([], census()) }),
+      report({ notSwept: "no store" }),
+      report({ environments: [verified("prod", { ...CLEAN, missingVersions: [1] })] }),
+      report({
+        environments: [verified("prod", { keySet: "unreadable", rows: 1, keyVersions: [], rotationInProgress: false })],
+      }),
+    ];
+    for (const shape of shapes) await expectConforms("secrets verify", formatJsonLine(verificationJson(shape)));
   });
 
   test("`verified` agrees with the verdict on every shape", () => {

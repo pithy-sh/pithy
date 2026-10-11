@@ -6,7 +6,8 @@ import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError } from "@pithy-sh/core/src/error/terminal";
 import { defineCommand } from "citty";
-import { availableManifests, type ManifestFault } from "../capabilities/manifests";
+import { z } from "zod";
+import { availableManifests, ManifestFault } from "../capabilities/manifests";
 import {
   applyReconcilePlan,
   buildReconcilePlan,
@@ -17,6 +18,7 @@ import {
   type RunMigrate,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
 import type { RegistryFetch } from "../kitPackages/registry";
 import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
@@ -684,56 +686,101 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): 
   });
 }
 
-export default defineCommand({
-  meta: {
-    name: "upgrade",
-    description: "Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc",
-  },
-  args: {
-    env: envArg("Target environment (drives the pending-migration count)"),
-    worker: { type: "string", description: "Upgrade only this worker (default: every worker under apps/)" },
-    "dry-run": { type: "boolean", default: false, description: "Show the plan without writing anything" },
-    migrate: { type: "boolean", default: false, description: "Run pending migrations after reconciling" },
-    packages: {
-      type: "boolean",
-      default: false,
-      description: "Move each @pithy-sh/* dependency to the newest version its range admits, and reinstall",
+/** `pithy upgrade --json`. `docs/commands/upgrade.md`. */
+const UpgradePayload = z
+  .object({
+    command: z.literal("upgrade").describe('`"upgrade"`.'),
+    env: z.string().describe("The environment the pending-migration count was taken against."),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was written when it is `true`."),
+    workers: z
+      .array(
+        z
+          .looseObject({
+            state: z
+              .enum(["reconciled", "unplanned", "unapplied", "refused"])
+              .describe(
+                "`reconciled` — planned, and applied unless a dry run. `unplanned` — the plan could not be built. `unapplied` — built and not applied. `refused` — applying it was refused, with the error's fields beside it.",
+              ),
+            worker: z.string().describe("The Worker's name."),
+          })
+          .describe("One Worker's reconcile: its plan or what it applied, and a refusal's error fields when refused."),
+      )
+      .describe("One entry per Worker, in fan-out order."),
+    manifestFaults: z.array(ManifestFault).describe("Installed packages whose manifest is present and unusable."),
+    packages: z
+      .looseObject({})
+      .optional()
+      .describe("What `--packages` moved and reinstalled. Present only when `--packages` was passed."),
+  })
+  .describe("What `pithy upgrade` reconciled.");
+
+export default withContract(
+  defineCommand({
+    meta: {
+      name: "upgrade",
+      description: "Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc",
     },
-    latest: { type: "boolean", default: false, description: "With --packages: move held packages to latest" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+    args: {
+      env: envArg("Target environment (drives the pending-migration count)"),
+      worker: { type: "string", description: "Upgrade only this worker (default: every worker under apps/)" },
+      "dry-run": { type: "boolean", default: false, description: "Show the plan without writing anything" },
+      migrate: { type: "boolean", default: false, description: "Run pending migrations after reconciling" },
+      packages: {
+        type: "boolean",
+        default: false,
+        description: "Move each @pithy-sh/* dependency to the newest version its range admits, and reinstall",
+      },
+      latest: { type: "boolean", default: false, description: "With --packages: move held packages to latest" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        validateUpgradeFlags({
+          packages: args.packages,
+          latest: args.latest,
+          ...(args.worker ? { worker: args.worker } : {}),
+        });
+        const dryRun = args["dry-run"];
+        const projectDir = process.cwd();
+        const run = await runUpgrade({
+          projectDir,
+          env,
+          account: await projectCloudflareAccount(projectDir),
+          ...(args.worker ? { worker: args.worker } : {}),
+          dryRun,
+          migrate: args.migrate,
+          ...(args.packages ? { packages: { latest: args.latest } } : {}),
+        });
+
+        // A Worker that could not be read establishes nothing, so the run does not exit 0 around it. Set
+        // before either renderer, so the two paths cannot disagree about whether the run succeeded.
+        if (upgradeFailed(run)) process.exitCode = EXIT.failed;
+
+        if (args.json) {
+          process.stdout.write(`${upgradeJsonLine(run, env, dryRun)}\n`);
+          return;
+        }
+
+        for (const line of upgradeText(run, dryRun)) process.stdout.write(`${line}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: UpgradePayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+    flagGroups: [
+      { kind: "requires", flag: "--latest", needs: ["--packages"], any: false, rule: "--latest needs --packages." },
+      {
+        kind: "atMostOne",
+        flags: ["--packages", "--worker"],
+        rule: "--packages moves the whole project, so it takes no --worker.",
+      },
+    ],
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      validateUpgradeFlags({
-        packages: args.packages,
-        latest: args.latest,
-        ...(args.worker ? { worker: args.worker } : {}),
-      });
-      const dryRun = args["dry-run"];
-      const projectDir = process.cwd();
-      const run = await runUpgrade({
-        projectDir,
-        env,
-        account: await projectCloudflareAccount(projectDir),
-        ...(args.worker ? { worker: args.worker } : {}),
-        dryRun,
-        migrate: args.migrate,
-        ...(args.packages ? { packages: { latest: args.latest } } : {}),
-      });
-
-      // A Worker that could not be read establishes nothing, so the run does not exit 0 around it. Set
-      // before either renderer, so the two paths cannot disagree about whether the run succeeded.
-      if (upgradeFailed(run)) process.exitCode = EXIT.failed;
-
-      if (args.json) {
-        process.stdout.write(`${upgradeJsonLine(run, env, dryRun)}\n`);
-        return;
-      }
-
-      for (const line of upgradeText(run, dryRun)) process.stdout.write(`${line}\n`);
-    }),
-});
+);
 
 // Exposed for the command test to exercise the render helpers directly (run() stays thin and untested).
 export const __test = { planLines, appliedLines, renderUpgrade, workerLines, parts, count };

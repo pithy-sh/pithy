@@ -3,6 +3,8 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { z } from "zod";
+import { withContract } from "../contract/commandContract";
 import { appendToRcFile, readRcFile, removeFromRcFile } from "../platform/rc";
 import { detectShell } from "../platform/shell";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -166,6 +168,12 @@ const PITHIEST = "--pithiest";
 const PITHIER = "--pithier";
 export const HIDDEN_ROOT_FLAGS: readonly string[] = [PITHIEST, PITHIER];
 
+/** {@link HIDDEN_ROOT_FLAGS}, described, for `pithy schema`. Hidden from `--help`, not from a caller who asks. */
+export const HIDDEN_ROOT_FLAG_DESCRIPTIONS: readonly { name: string; description: string }[] = [
+  { name: PITHIEST, description: "Print Pithy enough. and change nothing" },
+  { name: PITHIER, description: "Install the p. shortcut, as pithy alias does" },
+];
+
 /**
  * Handle the hidden root flags. `--pithier` is a synonym for `pithy alias` (install). `--pithiest` is the
  * anti-feature: it prints `Pithy enough.` and writes nothing. Returns whether a flag was handled, so the
@@ -183,23 +191,83 @@ export async function handleHiddenFlags(argv: string[]): Promise<boolean> {
   return false;
 }
 
-export default defineCommand({
-  meta: { name: "alias", description: "Install the `p.` shortcut for `pithy`" },
-  args: {
-    remove: { type: "boolean", default: false, description: "Uninstall the alias" },
-    status: { type: "boolean", default: false, description: "Report whether the alias is installed" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+const Command = z.literal("alias").describe('`"alias"`.');
+const Shell = z.enum(["bash", "zsh", "fish", "powershell", "nushell"]).describe("The detected shell family.");
+const RcPath = z.string().describe("Absolute path to the rc file the alias line belongs in.");
+const AliasLine = z.string().describe("The alias line itself, in the detected shell's syntax.");
+
+/** `pithy alias --json`: one object per path taken, `action` naming which. `docs/commands/alias.md`. */
+const AliasPayload = z
+  .union([
+    z
+      .object({
+        command: Command,
+        action: z.literal("install").describe("An install ran."),
+        installed: z.literal(true).describe("The alias is in place, whether this run put it there or found it."),
+        alreadyInstalled: z.boolean().describe("`true` when it was already there and nothing was written."),
+        shell: Shell,
+        rcPath: RcPath,
+        alias: AliasLine,
+      })
+      .describe("Install, in a detected shell."),
+    z
+      .object({
+        command: Command,
+        action: z.literal("remove").describe("A removal ran."),
+        removed: z.boolean().describe("`false` when there was no block to remove. Not an error."),
+        rcPath: RcPath,
+      })
+      .describe("Remove, in a detected shell."),
+    z
+      .object({
+        command: Command,
+        action: z.literal("status").describe("A status check ran."),
+        installed: z.boolean().describe("Whether the marker block is in the rc file."),
+        shell: Shell.nullable().describe("The detected shell family, or `null` when detection failed."),
+        rcPath: RcPath.nullable().describe("The rc file, or `null` when detection failed."),
+      })
+      .describe("Status."),
+    z
+      .object({
+        command: Command,
+        action: z.enum(["install", "remove"]).describe("Which of the two was asked for."),
+        shell: z.null().describe("`null`: the shell was not detected."),
+        manual: z.literal(true).describe("Nothing was written; add `alias` by hand."),
+        alias: z.string().describe("The plain POSIX alias line, to add by hand."),
+      })
+      .describe("Install or remove, in a shell nobody detected."),
+  ])
+  .describe("What `pithy alias --json` writes: which path ran, and what it found or changed.");
+
+export default withContract(
+  defineCommand({
+    meta: { name: "alias", description: "Install the `p.` shortcut for `pithy`" },
+    args: {
+      remove: { type: "boolean", default: false, description: "Uninstall the alias" },
+      status: { type: "boolean", default: false, description: "Report whether the alias is installed" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        if (args.remove && args.status) {
+          throw new ValidationError({
+            message: "Pass either --remove or --status, not both.",
+            action: "Choose one.",
+          });
+        }
+        if (args.remove) return removeAlias({ json: args.json });
+        if (args.status) return aliasStatus({ json: args.json });
+        return installAlias({ json: args.json });
+      }),
+  }),
+  {
+    output: "document",
+    payload: AliasPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+    flagGroups: [
+      { kind: "atMostOne", flags: ["--remove", "--status"], rule: "Pass either --remove or --status, not both." },
+    ],
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      if (args.remove && args.status) {
-        throw new ValidationError({
-          message: "Pass either --remove or --status, not both.",
-          action: "Choose one.",
-        });
-      }
-      if (args.remove) return removeAlias({ json: args.json });
-      if (args.status) return aliasStatus({ json: args.json });
-      return installAlias({ json: args.json });
-    }),
-});
+);

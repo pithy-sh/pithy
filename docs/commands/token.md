@@ -60,6 +60,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | `tokenId` | string | Cloudflare's id for the token. An identifier, not a credential. |
 | `store` | string | Where the value went: `"secrets-store"`, `"dev-vars"`, or `"ephemeral"`. |
 | `location` | string | A human location for that store: the `tokens.json` path for `dev-vars`, `"CF Secrets Store"`, or `"(ephemeral — not written)"`. |
+| `status` | string | The token's lifecycle status: `"active"`, `"disabled"`, or `"expired"`. Absent when Cloudflare returned none. A mint over a dead token says so here. |
 
 The token's value and its composed Cloudflare name are both on the internal result and both deliberately absent here.
 
@@ -75,6 +76,7 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | `tokens[].name` | string | The composed Cloudflare token name, `<project>-<env>-<profile>`. |
 | `tokens[].tokenId` | string | Cloudflare's id for the token. |
 | `tokens[].status` | string, optional | The token's lifecycle status as Cloudflare reports it: `"active"`, `"disabled"`, or `"expired"`. Absent when the account API returned none. |
+| `tokens[].routeScope` | string | Whether the token can attach the routes this environment's declared domains need: `"not-required"`, `"scoped"`, `"stale"`, `"overridden"`, `"inactive"`, or `"unknown"`. |
 
 ### `token revoke`
 

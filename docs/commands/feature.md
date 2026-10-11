@@ -115,6 +115,7 @@ $ pithy feature create media-cli --issue 69 --json
 | `branch` | `string` | The feature branch created or attached |
 | `worktree` | `string` | The absolute worktree path |
 | `worktreeCreated` | `boolean` | Whether a new worktree was created. False on an idempotent re-run over an existing one |
+| `base` | `string \| null` | The ref the branch was cut from — the trunk's name, or `"HEAD"`. `null` when nothing was cut: an already-registered worktree, or a branch that already existed and was attached to |
 | `behindRemote` | `number \| null` | How many commits local `main` is behind `origin/main`, or null when it is level, has no remote, or the repository has no local `main`. The branch is cut from **local** `main` either way — this reports it rather than refusing |
 | `dev` | `object` | The feature's dev config — the document written to the worktree's `.dev.config.json` |
 | `dev.version` | `1` | Dev-config schema version |

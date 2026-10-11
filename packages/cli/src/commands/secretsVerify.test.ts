@@ -63,7 +63,7 @@ describe("pithy secrets verify", () => {
     // Read from the source because the gate is about what the command *can* do, not about what one run
     // did. `canPrompt` and a stdin read are the two ways a question reaches an operator in this file.
     const source = readFileSync(join(import.meta.dirname, "secrets.ts"), "utf8");
-    const body = source.slice(source.indexOf("const verify = defineCommand("), source.indexOf("const provision ="));
+    const body = source.slice(source.indexOf("const verify = withContract("), source.indexOf("const provision ="));
 
     expect(body).not.toContain("canPrompt");
     expect(body).not.toContain("readSecretValue");

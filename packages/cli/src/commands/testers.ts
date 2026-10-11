@@ -11,6 +11,7 @@ import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provision
 import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
@@ -21,6 +22,7 @@ import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabi
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
@@ -32,6 +34,7 @@ import {
   narrowReadiness,
   readyStanza,
   requireReadyEnvironments,
+  SkippedEnvironment,
 } from "../project/environmentReadiness";
 import { kitImport } from "../project/kitResolve";
 import {
@@ -525,353 +528,617 @@ function buildResolveEnv(
   };
 }
 
-const provision = defineCommand({
-  meta: { name: "provision", description: "Deploy the daily-pass Workflow worker and write its binding" },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-    env: {
-      type: "string",
-      description: `Provision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
+const Iso = (what: string) => z.string().describe(`${what}, ISO-8601.`);
+const IsoOrNull = (what: string) => z.string().nullable().describe(`${what}, ISO-8601, or \`null\`.`);
+const Int = (what: string) => z.number().int().describe(what);
+const Platform = z.enum(["android", "ios"]).describe("Which store's program the cohort serves.");
+const ResetPolicy = z
+  .enum(["reset", "pause"])
+  .describe("Pithy's assumption about what a dip below target does to the streak.");
+
+/** A cohort row, as `create` and `close` write it. */
+const CohortRow = z
+  .object({
+    id: z.string().describe("The cohort's UUID."),
+    name: z.string().describe("The human label."),
+    targetPlatform: Platform,
+    targetSize: Int("Testers who must be opted in simultaneously. Frozen on the row."),
+    windowDays: Int("Continuous days the target must hold. Frozen on the row."),
+    maxRosterSize: Int("The most members the roster may hold."),
+    storeOptInUrl: z.string().nullable().describe("The store's own opt-in page, or `null` until set."),
+    resetPolicy: ResetPolicy,
+    closedAt: IsoOrNull("When the cohort was closed"),
+    createdAt: Iso("When the cohort was created"),
+    updatedAt: Iso("When the row was last written"),
+  })
+  .describe("One cohort row.");
+
+/**
+ * One cohort view, as `roster` and `status` write it — the shape the control plane serves a dashboard, owned
+ * by `@pithy-sh/testers` (`CohortView`). The CLI cannot import that schema at run time, because the package
+ * is the project's rather than the CLI's, so the blocks a script reads are typed here and the rest are open.
+ * `testersJson.test.ts` holds a view the package's own schema accepts to this one.
+ */
+const CohortViewJson = z
+  .looseObject({
+    id: z.string().describe("The cohort id."),
+    name: z.string().describe("The cohort's human label."),
+    targetPlatform: Platform,
+    targetSize: Int("Testers required simultaneously."),
+    windowDays: Int("Continuous days required."),
+    maxRosterSize: Int("The roster cap."),
+    resetPolicy: ResetPolicy,
+    createdAt: Iso("When the cohort was created"),
+    closedAt: IsoOrNull("When it was closed"),
+    roster: z
+      .object({
+        size: Int("Members on the roster, in every state."),
+        headroomToMax: Int("How many more may be added before the cap."),
+        invited: Int("Invited, and have not yet answered."),
+        accepted: Int("Agreed to test, waiting for the store link."),
+        optedIn: Int("Pithy's estimate of currently opted-in testers."),
+        lapsed: Int("Opted out or removed."),
+        unreachable: Int("Bounced or suppressed."),
+        neverLinked: Int("Confirmed but never signed in."),
+      })
+      .describe("Current roster composition."),
+    estimatedClock: z
+      .object({
+        source: z.literal("pithy_estimate").describe("This block is replayed from Pithy's own invite records."),
+        meetsTarget: z.boolean().describe("Whether the estimated opted-in count is at or above target now."),
+        headroom: Int("Estimated count minus target. It can go negative."),
+        estimatedHeldDays: Int("The estimated unbroken at-target run ending today."),
+        estimatedDaysRemaining: Int("Days still to hold, on Pithy's estimate."),
+        estimatedWindowStartOn: z.string().nullable().describe("The UTC day the current run began, or `null`."),
+        resetCount: Int("How many times the run has broken."),
+        dayBoundary: z.literal("UTC").describe("Pithy counts days in UTC."),
+      })
+      .describe("Pithy's estimated clock."),
+    activity: z
+      .object({
+        source: z.literal("observed").describe("This block is fact from the auth tables."),
+        active: Int("Authenticated inside the active window."),
+        darkThreeToSeven: Int("Quiet 3–7 days."),
+        darkEightToThirteen: Int("Quiet 8–13 days."),
+        darkFourteenPlus: Int("Quiet 14 days or more."),
+        neverLinked: Int("No activity data at all."),
+        observedCoverage: z.number().describe("Share of opted-in testers with any activity signal."),
+      })
+      .describe("The observed half."),
+    projection: z.looseObject({}).describe("Pithy's forecast. Its fields are on `docs/commands/testers.md`."),
+    trend: z.looseObject({}).describe("Direction of travel, and the series behind it."),
+    reconciliation: z.looseObject({}).describe("Store reconciliation status. Honestly empty rather than absent."),
+    disclaimer: z.looseObject({}).describe("Required beside any opt-in figure."),
+    members: z
+      .array(z.looseObject({}).describe("One tester, with activity and health."))
+      .optional()
+      .describe("The full roster. Present under `roster` only."),
+  })
+  .describe("One cohort view.");
+
+const Results = z
+  .array(
+    z
+      .object({
+        env: z.string().describe("The environment."),
+        worker: z.string().describe("The daily-pass Worker's deployed name."),
+      })
+      .describe("One environment."),
+  )
+  .describe("One entry per environment.");
+
+const TestersProvisionPayload = z
+  .object({
+    command: z.literal("testers provision").describe('`"testers provision"`.'),
+    results: Results.describe("One entry per environment provisioned."),
+    skippedEnvironments: z
+      .array(SkippedEnvironment)
+      .describe("One entry per declared environment nothing was provisioned for."),
+    sends: z.boolean().describe("Whether an email capability is composed. `false` records the day and sends nothing."),
+  })
+  .describe("What `pithy testers provision` provisioned.");
+
+const TestersDeprovisionPayload = z
+  .object({
+    command: z.literal("testers deprovision").describe('`"testers deprovision"`.'),
+    results: Results.describe("One entry per environment torn down."),
+  })
+  .describe("What `pithy testers deprovision` removed.");
+
+const TestersCreatePayload = z
+  .object({ command: z.literal("testers create").describe('`"testers create"`.'), cohort: CohortRow })
+  .describe("The cohort `pithy testers create` made.");
+
+const TestersClosePayload = z
+  .object({ command: z.literal("testers close").describe('`"testers close"`.'), cohort: CohortRow })
+  .describe("The cohort as `pithy testers close` left it.");
+
+const TestersListPayload = z
+  .object({
+    command: z.literal("testers list").describe('`"testers list"`.'),
+    cohorts: z
+      .array(
+        z
+          .object({
+            id: z.string().describe("The cohort id."),
+            name: z.string().describe("The cohort's human label."),
+            estimatedOptedIn: Int("Pithy's estimate of the currently opted-in count."),
+            targetSize: Int("The target in force."),
+            estimatedHeldDays: Int("The estimated unbroken at-target run ending today."),
+            windowDays: Int("Continuous days the program requires."),
+            closed: z.boolean().describe("Whether the cohort has been closed."),
+          })
+          .describe("One cohort."),
+      )
+      .describe("Every cohort, newest first."),
+  })
+  .describe("What `pithy testers list` found.");
+
+const TestersInvitePayload = z
+  .object({
+    command: z.literal("testers invite").describe('`"testers invite"`.'),
+    cohort: z.string().describe("The resolved cohort id."),
+    invited: z
+      .array(
+        z
+          .object({
+            id: z.string().describe("The member id."),
+            email: z.string().describe("The invited address, normalized."),
+            created: z.boolean().describe("`false` when the row already existed and was revived."),
+          })
+          .describe("One invited address."),
+      )
+      .describe("One entry per `--email`, in the order given."),
+  })
+  .describe("Who `pithy testers invite` added.");
+
+const TestersPendingPayload = z
+  .object({
+    command: z.literal("testers pending").describe('`"testers pending"`.'),
+    cohort: z.string().describe("The resolved cohort id."),
+    emails: z
+      .array(z.string().describe("An address."))
+      .describe("Every tester who has agreed to test and waits to be added to the store's list."),
+  })
+  .describe("Who is waiting on the store's tester list.");
+
+const TestersRosterPayload = z
+  .object({ command: z.literal("testers roster").describe('`"testers roster"`.'), cohort: CohortViewJson })
+  .describe("The cohort view, with its members.");
+
+const TestersStatusPayload = z
+  .object({ command: z.literal("testers status").describe('`"testers status"`.'), cohort: CohortViewJson })
+  .describe("The cohort view, with its trend.");
+
+const TestersRemovePayload = z
+  .object({
+    command: z.literal("testers remove").describe('`"testers remove"`.'),
+    member: z
+      .object({ id: z.string().describe("Their member id."), email: z.string().describe("Their address.") })
+      .describe("The removed tester."),
+  })
+  .describe("Who `pithy testers remove` took off the roster.");
+
+const TestersRunPayload = z
+  .object({
+    command: z.literal("testers run").describe('`"testers run"`.'),
+    results: z
+      .array(
+        z
+          .object({
+            cohortId: z.string().describe("The cohort this entry describes."),
+            snapshotOn: z.string().describe("The UTC day the pass recorded, `YYYY-MM-DD`."),
+            nudged: z
+              .record(z.string().describe("A nudge kind."), z.number().int().describe("How many were enqueued."))
+              .describe("Nudges enqueued by kind: `confirm`, `store`, `inactive`, `closing`."),
+            estimatedOptedInCount: Int("Pithy's estimate of the opted-in count after the pass."),
+            estimatedHeldDays: Int("The estimated unbroken at-target run ending on this day."),
+            trendDirection: z.string().describe("`improving`, `steady`, `declining` or `unknown`."),
+            pruned: Int("Snapshots pruned by the retention policy."),
+            nudgesSkipped: z
+              .literal("no_base_url")
+              .optional()
+              .describe("Why nothing was sent, when sending was on and no link could be built. Absent otherwise."),
+          })
+          .describe("One cohort's pass."),
+      )
+      .describe("One entry per cohort the pass ran for."),
+  })
+  .describe("What `pithy testers run` did.");
+
+/** The roster commands read and write the project's D1, through Cloudflare outside `dev`. */
+const ROSTER = { output: "document", needsNetwork: true } as const;
+
+const provision = withContract(
+  defineCommand({
+    meta: { name: "provision", description: "Deploy the daily-pass Workflow worker and write its binding" },
+    args: {
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+      env: {
+        type: "string",
+        description: `Provision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
+      },
+      worker: {
+        type: "string",
+        description:
+          "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the TESTERS_DAILY binding (default: the project's only worker)",
+      },
     },
-    worker: {
-      type: "string",
-      description:
-        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the TESTERS_DAILY binding (default: the project's only worker)",
-    },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const {
-        provisioner,
-        project,
-        email,
-        environments: declared,
-        appReadiness,
-      } = await buildProvisioner(projectDir, args.worker);
-      const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } =
-        await loadTestersProvisioning(projectDir);
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const {
+          provisioner,
+          project,
+          email,
+          environments: declared,
+          appReadiness,
+        } = await buildProvisioner(projectDir, args.worker);
+        const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } =
+          await loadTestersProvisioning(projectDir);
 
-      // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
-      // one-line answer into a raw Cloudflare error from a worker that was never deployed.
-      const selected: ManagedEnvironment[] = args.env
-        ? [requireManagedEnvironment(args.env, declared)]
-        : managedEnvironments(declared);
-      // Two narrowings, and they answer different questions. `--env` is which environments the operator
-      // meant; readiness is which of those have an app database yet. Skip-and-report layers onto the flag
-      // rather than replacing it (#512).
-      const { appWorker, readiness: declaredReadiness } = await appReadiness();
-      const readiness = narrowReadiness(declaredReadiness, selected);
+        // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
+        // one-line answer into a raw Cloudflare error from a worker that was never deployed.
+        const selected: ManagedEnvironment[] = args.env
+          ? [requireManagedEnvironment(args.env, declared)]
+          : managedEnvironments(declared);
+        // Two narrowings, and they answer different questions. `--env` is which environments the operator
+        // meant; readiness is which of those have an app database yet. Skip-and-report layers onto the flag
+        // rather than replacing it (#512).
+        const { appWorker, readiness: declaredReadiness } = await appReadiness();
+        const readiness = narrowReadiness(declaredReadiness, selected);
 
-      const results = await provisionTesters(provisioner, project, readiness.ready);
+        const results = await provisionTesters(provisioner, project, readiness.ready);
 
-      for (const { env } of results) {
-        // Only now can the Workflow binding be written. `pithy add testers` cannot: wrangler requires a
-        // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
-        // (`<project>-<env>-testers-daily`). An entry short of either field fails the whole config, so `add`
-        // emits none and this completes it — see capabilities/add.ts.
-        // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
-        // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
-        await applyAppBindings(appWorker.dir, env, {
-          workflows: appWorkflowBindings(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }),
-        });
-      }
-
-      const deployed = new Map(results.map((entry) => [entry.env, entry.worker]));
-
-      if (args.json) {
-        // Written before the refusal below, so a run in which everything skipped still carries the
-        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-        process.stdout.write(
-          `${formatJsonLine({ command: "testers provision", results, skippedEnvironments: readiness.skipped, sends: email !== undefined })}\n`,
-        );
-        requireReadyEnvironments(readiness, "pithy testers provision");
-        return;
-      }
-      process.stdout.write(
-        formatEnvironmentOutcomes(
-          environmentOutcomes(readiness, (env) => `${deployed.get(env)} deployed, TESTERS_DAILY bound`),
-        ),
-      );
-      requireReadyEnvironments(readiness, "pithy testers provision");
-      process.stdout.write(dim("The pass runs daily at 05:00 UTC. `pithy testers run` runs one now.\n"));
-      if (!email) {
-        // Said here rather than discovered on the first silent morning.
-        process.stdout.write(
-          dim("No email capability is composed, so the pass will record the day but send nothing.\n"),
-        );
-      }
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Delete the daily-pass worker. The roster and its history stay." },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-    env: {
-      type: "string",
-      description: `Deprovision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
-    },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
-      const { deprovisionTesters } = await loadTestersProvisioning(projectDir);
-
-      const environments: ManagedEnvironment[] = args.env
-        ? [requireManagedEnvironment(args.env, declared)]
-        : managedEnvironments(declared);
-      const results = await deprovisionTesters(provisioner, project, environments);
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "testers deprovision", results })}\n`);
-        return;
-      }
-      for (const { env, worker } of results) process.stdout.write(`${env}: ${worker} deleted.\n`);
-      // Deliberately non-destructive to data. The cohorts, the roster, and the whole snapshot series are
-      // rows in the adopter's own D1 and are not this command's to remove.
-      process.stdout.write(dim("Your cohorts, roster, and trend history are untouched.\n"));
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const create = defineCommand({
-  meta: { name: "create", description: "Create a testing cohort" },
-  args: {
-    name: { type: "positional", description: "A label for the cohort, e.g. closed-test" },
-    env: ENV_ARG,
-    "target-size": { type: "string", description: "Testers required simultaneously (default: 12, Play's floor)" },
-    "window-days": { type: "string", description: "Continuous days required (default: 14, Play's window)" },
-    "max-roster": { type: "string", description: "Roster cap (default: 100)" },
-    platform: { type: "string", description: "android or ios (default: android)" },
-    "store-url": {
-      type: "string",
-      description: "The store's own opt-in link, e.g. https://play.google.com/apps/testing/<package>",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, config, driver, modules } = await openTesters(args.env);
-      try {
-        const defaults = config.cohortDefaults;
-        const cohort = await modules.createCohort(
-          { db, now: new Date(), newId: () => crypto.randomUUID() },
-          {
-            name: boundedName(
-              required(args.name, "a cohort name", "pithy testers create closed-test"),
-              config.maxNameLength,
-              "cohort name",
-            ),
-            targetSize: wholeNumber(args["target-size"], "--target-size", defaults.targetSize),
-            windowDays: wholeNumber(args["window-days"], "--window-days", defaults.windowDays),
-            maxRosterSize: wholeNumber(args["max-roster"], "--max-roster", defaults.maxRosterSize),
-            targetPlatform: oneOf(args.platform, ["android", "ios"] as const, "--platform", defaults.targetPlatform),
-            storeOptInUrl: args["store-url"] ?? defaults.storeOptInUrl,
-            resetPolicy: defaults.resetPolicy,
-          },
-        );
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers create", cohort })}\n`);
-          return;
-        }
-        process.stdout.write(`${cohort.name}: ${cohort.targetSize} testers for ${cohort.windowDays} days.\n`);
-        // The number that actually matters, and the one nobody works out for themselves.
-        process.stdout.write(
-          dim(`Carry more than ${cohort.targetSize} — that is the number that must still be standing at the end.\n`),
-        );
-        // Said now rather than discovered later: without it the second email never goes out, and a
-        // tester who agreed to help waits forever for a link nobody sent.
-        if (!cohort.storeOptInUrl) {
-          process.stdout.write(
-            dim("No store link yet. Set one with --store-url before anyone can actually join the test.\n"),
-          );
-        }
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const list = defineCommand({
-  meta: { name: "list", description: "List cohorts and where each one stands" },
-  args: {
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
-      try {
-        const now = new Date();
-        const cohorts = await modules.listCohorts(db);
-        const rows = [];
-        for (const cohort of cohorts) {
-          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
-          rows.push({
-            id: cohort.id,
-            name: cohort.name,
-            estimatedOptedIn: reading.clock.estimatedOptedInCount,
-            targetSize: cohort.targetSize,
-            estimatedHeldDays: reading.clock.estimatedHeldDays,
-            windowDays: cohort.windowDays,
-            closed: cohort.closedAt !== null,
+        for (const { env } of results) {
+          // Only now can the Workflow binding be written. `pithy add testers` cannot: wrangler requires a
+          // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
+          // (`<project>-<env>-testers-daily`). An entry short of either field fails the whole config, so `add`
+          // emits none and this completes it — see capabilities/add.ts.
+          // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
+          // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
+          await applyAppBindings(appWorker.dir, env, {
+            workflows: appWorkflowBindings(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }),
           });
         }
+
+        const deployed = new Map(results.map((entry) => [entry.env, entry.worker]));
+
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers list", cohorts: rows })}\n`);
-          return;
-        }
-        if (rows.length === 0) {
-          process.stdout.write("Nothing here yet.\n");
+          // Written before the refusal below, so a run in which everything skipped still carries the
+          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+          process.stdout.write(
+            `${formatJsonLine({ command: "testers provision", results, skippedEnvironments: readiness.skipped, sends: email !== undefined })}\n`,
+          );
+          requireReadyEnvironments(readiness, "pithy testers provision");
           return;
         }
         process.stdout.write(
-          `${formatList(
-            rows.map((row) => ({
-              name: row.name,
-              description: `${row.estimatedOptedIn} of ${row.targetSize} opted in. Day ${row.estimatedHeldDays} of ${row.windowDays}.`,
-            })),
-          )}\n`,
+          formatEnvironmentOutcomes(
+            environmentOutcomes(readiness, (env) => `${deployed.get(env)} deployed, TESTERS_DAILY bound`),
+          ),
         );
-        process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
+        requireReadyEnvironments(readiness, "pithy testers provision");
+        process.stdout.write(dim("The pass runs daily at 05:00 UTC. `pithy testers run` runs one now.\n"));
+        if (!email) {
+          // Said here rather than discovered on the first silent morning.
+          process.stdout.write(
+            dim("No email capability is composed, so the pass will record the day but send nothing.\n"),
+          );
+        }
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { ...ROSTER, payload: TestersProvisionPayload, mutates: true, idempotent: true },
+);
 
-const invite = defineCommand({
-  meta: { name: "invite", description: "Add one or more addresses to a cohort's roster" },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    email: { type: "string", description: "Address to invite. Repeat the flag for several.", required: true },
-    name: { type: "string", description: "A display name for the roster" },
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, config, driver, modules } = await openTesters(args.env);
-      try {
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers status closed-test"),
-        );
-        const emails = (Array.isArray(args.email) ? args.email : [args.email]).map(String);
-        const invited = [];
-        for (const email of emails) {
-          const result = await modules.inviteMember(
+const deprovision = withContract(
+  defineCommand({
+    meta: { name: "deprovision", description: "Delete the daily-pass worker. The roster and its history stay." },
+    args: {
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+      env: {
+        type: "string",
+        description: `Deprovision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
+      },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
+        const { deprovisionTesters } = await loadTestersProvisioning(projectDir);
+
+        const environments: ManagedEnvironment[] = args.env
+          ? [requireManagedEnvironment(args.env, declared)]
+          : managedEnvironments(declared);
+        const results = await deprovisionTesters(provisioner, project, environments);
+
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "testers deprovision", results })}\n`);
+          return;
+        }
+        for (const { env, worker } of results) process.stdout.write(`${env}: ${worker} deleted.\n`);
+        // Deliberately non-destructive to data. The cohorts, the roster, and the whole snapshot series are
+        // rows in the adopter's own D1 and are not this command's to remove.
+        process.stdout.write(dim("Your cohorts, roster, and trend history are untouched.\n"));
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { ...ROSTER, payload: TestersDeprovisionPayload, mutates: true, idempotent: true },
+);
+
+/**
+ * The platforms `--platform` takes: one list, parsed against and published. The testers package's own enum
+ * cannot be imported from a shipped module, so `testersJson.test.ts` holds this to it.
+ */
+const TARGET_PLATFORMS = ["android", "ios"] as const;
+
+const create = withContract(
+  defineCommand({
+    meta: { name: "create", description: "Create a testing cohort" },
+    args: {
+      name: { type: "positional", description: "A label for the cohort, e.g. closed-test" },
+      env: ENV_ARG,
+      "target-size": { type: "string", description: "Testers required simultaneously (default: 12, Play's floor)" },
+      "window-days": { type: "string", description: "Continuous days required (default: 14, Play's window)" },
+      "max-roster": { type: "string", description: "Roster cap (default: 100)" },
+      platform: { type: "string", description: "android or ios (default: android)" },
+      "store-url": {
+        type: "string",
+        description: "The store's own opt-in link, e.g. https://play.google.com/apps/testing/<package>",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, config, driver, modules } = await openTesters(args.env);
+        try {
+          const defaults = config.cohortDefaults;
+          const cohort = await modules.createCohort(
             { db, now: new Date(), newId: () => crypto.randomUUID() },
             {
-              cohortId: cohort.id,
-              email,
-              name: args.name ? boundedName(args.name, config.maxNameLength, "tester name") : null,
-              maxRosterSize: cohort.maxRosterSize,
+              name: boundedName(
+                required(args.name, "a cohort name", "pithy testers create closed-test"),
+                config.maxNameLength,
+                "cohort name",
+              ),
+              targetSize: wholeNumber(args["target-size"], "--target-size", defaults.targetSize),
+              windowDays: wholeNumber(args["window-days"], "--window-days", defaults.windowDays),
+              maxRosterSize: wholeNumber(args["max-roster"], "--max-roster", defaults.maxRosterSize),
+              targetPlatform: oneOf(args.platform, TARGET_PLATFORMS, "--platform", defaults.targetPlatform),
+              storeOptInUrl: args["store-url"] ?? defaults.storeOptInUrl,
+              resetPolicy: defaults.resetPolicy,
             },
           );
-          invited.push({ id: result.member.id, email: result.member.email, created: result.created });
-        }
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers invite", cohort: cohort.id, invited })}\n`);
-          return;
-        }
-        process.stdout.write(`${invited.length} added to ${cohort.name}.\n`);
-        process.stdout.write(dim("Run `pithy testers run` to ask them whether they will test.\n"));
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const pending = defineCommand({
-  meta: {
-    name: "pending",
-    description: "Who has agreed to test and is waiting to be added to the store's tester list",
-  },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, driver, modules } = await openTesters(args.env);
-      try {
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers pending closed-test"),
-        );
-        // The one step Pithy cannot do for you: the Play Developer API has no way to add an address to
-        // an email list, so this prints the addresses and you paste them into the console. Until that is
-        // done the store link answers `App not available`, which is why the second email waits.
-        const waiting = (await modules.listMembers(db, cohort.id)).filter((member) => member.state === "accepted");
-        if (args.json) {
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers create", cohort })}\n`);
+            return;
+          }
+          process.stdout.write(`${cohort.name}: ${cohort.targetSize} testers for ${cohort.windowDays} days.\n`);
+          // The number that actually matters, and the one nobody works out for themselves.
           process.stdout.write(
-            `${formatJsonLine({ command: "testers pending", cohort: cohort.id, emails: waiting.map((m) => m.email) })}\n`,
+            dim(`Carry more than ${cohort.targetSize} — that is the number that must still be standing at the end.\n`),
           );
-          return;
+          // Said now rather than discovered later: without it the second email never goes out, and a
+          // tester who agreed to help waits forever for a link nobody sent.
+          if (!cohort.storeOptInUrl) {
+            process.stdout.write(
+              dim("No store link yet. Set one with --store-url before anyone can actually join the test.\n"),
+            );
+          }
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
         }
-        if (waiting.length === 0) {
-          process.stdout.write("Nobody waiting.\n");
-          return;
-        }
-        for (const member of waiting) process.stdout.write(`${member.email}\n`);
-        process.stdout.write(
-          dim(`\nAdd these to the tester list in the console, then run \`pithy testers run\` to send them the link.\n`),
-        );
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const roster = defineCommand({
-  meta: { name: "roster", description: "The full roster, with per-tester activity and health" },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+      }),
+  }),
+  {
+    ...ROSTER,
+    payload: TestersCreatePayload,
+    mutates: true,
+    idempotent: false,
+    flags: { platform: { enum: TARGET_PLATFORMS } },
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
-      try {
-        const now = new Date();
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers status closed-test"),
-        );
-        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
-        const view = modules.toCohortView(
-          reading,
-          config,
-          { includeMembers: true, snapshots: [], latest: undefined },
-          now,
-        );
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers roster", cohort: view })}\n`);
-          return;
+);
+
+const list = withContract(
+  defineCommand({
+    meta: { name: "list", description: "List cohorts and where each one stands" },
+    args: {
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
+        try {
+          const now = new Date();
+          const cohorts = await modules.listCohorts(db);
+          const rows = [];
+          for (const cohort of cohorts) {
+            const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
+            rows.push({
+              id: cohort.id,
+              name: cohort.name,
+              estimatedOptedIn: reading.clock.estimatedOptedInCount,
+              targetSize: cohort.targetSize,
+              estimatedHeldDays: reading.clock.estimatedHeldDays,
+              windowDays: cohort.windowDays,
+              closed: cohort.closedAt !== null,
+            });
+          }
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers list", cohorts: rows })}\n`);
+            return;
+          }
+          if (rows.length === 0) {
+            process.stdout.write("Nothing here yet.\n");
+            return;
+          }
+          process.stdout.write(
+            `${formatList(
+              rows.map((row) => ({
+                name: row.name,
+                description: `${row.estimatedOptedIn} of ${row.targetSize} opted in. Day ${row.estimatedHeldDays} of ${row.windowDays}.`,
+              })),
+            )}\n`,
+          );
+          process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
+        } finally {
+          await driver.dispose();
         }
-        process.stdout.write(
-          `${formatList(
-            (view.members ?? []).map((member) => ({
-              name: member.email,
-              description: describeMember(member),
-            })),
-          )}\n`,
-        );
-        process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
+      }),
+  }),
+  { ...ROSTER, payload: TestersListPayload, mutates: false, idempotent: true },
+);
+
+const invite = withContract(
+  defineCommand({
+    meta: { name: "invite", description: "Add one or more addresses to a cohort's roster" },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      email: { type: "string", description: "Address to invite. Repeat the flag for several.", required: true },
+      name: { type: "string", description: "A display name for the roster" },
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, config, driver, modules } = await openTesters(args.env);
+        try {
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers status closed-test"),
+          );
+          const emails = (Array.isArray(args.email) ? args.email : [args.email]).map(String);
+          const invited = [];
+          for (const email of emails) {
+            const result = await modules.inviteMember(
+              { db, now: new Date(), newId: () => crypto.randomUUID() },
+              {
+                cohortId: cohort.id,
+                email,
+                name: args.name ? boundedName(args.name, config.maxNameLength, "tester name") : null,
+                maxRosterSize: cohort.maxRosterSize,
+              },
+            );
+            invited.push({ id: result.member.id, email: result.member.email, created: result.created });
+          }
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers invite", cohort: cohort.id, invited })}\n`);
+            return;
+          }
+          process.stdout.write(`${invited.length} added to ${cohort.name}.\n`);
+          process.stdout.write(dim("Run `pithy testers run` to ask them whether they will test.\n"));
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  {
+    ...ROSTER,
+    payload: TestersInvitePayload,
+    mutates: true,
+    // An address already live on the roster is refused (`testers/already_on_roster`), so a second identical
+    // invite exits 3. Reviving a removed member is a first run, not a re-run.
+    idempotent: false,
+    flags: { email: { repeatable: true } },
+  },
+);
+
+const pending = withContract(
+  defineCommand({
+    meta: {
+      name: "pending",
+      description: "Who has agreed to test and is waiting to be added to the store's tester list",
+    },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, driver, modules } = await openTesters(args.env);
+        try {
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers pending closed-test"),
+          );
+          // The one step Pithy cannot do for you: the Play Developer API has no way to add an address to
+          // an email list, so this prints the addresses and you paste them into the console. Until that is
+          // done the store link answers `App not available`, which is why the second email waits.
+          const waiting = (await modules.listMembers(db, cohort.id)).filter((member) => member.state === "accepted");
+          if (args.json) {
+            process.stdout.write(
+              `${formatJsonLine({ command: "testers pending", cohort: cohort.id, emails: waiting.map((m) => m.email) })}\n`,
+            );
+            return;
+          }
+          if (waiting.length === 0) {
+            process.stdout.write("Nobody waiting.\n");
+            return;
+          }
+          for (const member of waiting) process.stdout.write(`${member.email}\n`);
+          process.stdout.write(
+            dim(
+              `\nAdd these to the tester list in the console, then run \`pithy testers run\` to send them the link.\n`,
+            ),
+          );
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  { ...ROSTER, payload: TestersPendingPayload, mutates: false, idempotent: true },
+);
+
+const roster = withContract(
+  defineCommand({
+    meta: { name: "roster", description: "The full roster, with per-tester activity and health" },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
+        try {
+          const now = new Date();
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers status closed-test"),
+          );
+          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
+          const view = modules.toCohortView(
+            reading,
+            config,
+            { includeMembers: true, snapshots: [], latest: undefined },
+            now,
+          );
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers roster", cohort: view })}\n`);
+            return;
+          }
+          process.stdout.write(
+            `${formatList(
+              (view.members ?? []).map((member) => ({
+                name: member.email,
+                description: describeMember(member),
+              })),
+            )}\n`,
+          );
+          process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  { ...ROSTER, payload: TestersRosterPayload, mutates: false, idempotent: true },
+);
 
 /** One roster line: the estimate, then the fact, kept visibly apart. */
 function describeMember(member: {
@@ -887,232 +1154,253 @@ function describeMember(member: {
   return `${estimated} · ${observed} · health ${member.health ?? "—"}`;
 }
 
-const status = defineCommand({
-  meta: { name: "status", description: "Where a cohort stands: the clock, activity, the forecast, the trend" },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    env: ENV_ARG,
-    "trend-days": { type: "string", description: "How many daily snapshots to include (default: 30)" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
-      try {
-        const now = new Date();
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers status closed-test"),
-        );
-        const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
-        const days = wholeNumber(args["trend-days"], "--trend-days", 30);
-        const snapshots = await modules.listSnapshots(db, cohort.id, days);
-        const view = modules.toCohortView(
-          reading,
-          config,
-          { includeMembers: false, snapshots, latest: snapshots[snapshots.length - 1] },
-          now,
-        );
-
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers status", cohort: view })}\n`);
-          return;
-        }
-
-        const clock = view.estimatedClock;
-        const activity = view.activity;
-        const projection = view.projection;
-        const percent = (value: number | null) => (value === null ? "—" : `${Math.round(value * 100)}%`);
-
-        process.stdout.write(`Cohort:    ${view.name}\n`);
-        process.stdout.write(
-          `Estimated: ${view.roster.optedIn} of ${view.targetSize} opted in. Day ${clock.estimatedHeldDays} of ${view.windowDays}.\n`,
-        );
-        process.stdout.write(
-          `Observed:  ${activity.active} active. ${activity.darkEightToThirteen + activity.darkFourteenPlus} quiet 8+ days. ${activity.neverLinked} never signed in.\n`,
-        );
-        const range = projection.successProbabilityRange;
-        process.stdout.write(
-          `Forecast:  ${percent(projection.successProbability)}${
-            range ? ` (${percent(range.low)}–${percent(range.high)})` : ""
-          }. ${projection.confidence ?? "no"} confidence.\n`,
-        );
-        process.stdout.write(`Trend:     ${capitalize(view.trend.direction)}. ${view.trend.reason}\n`);
-        if (projection.invitesNeeded > 0) {
-          process.stdout.write(`\nInvite ${projection.invitesNeeded} more.\n`);
-        }
-        if (view.trend.fragile) {
-          process.stdout.write(`\n${saffron("One lapse from a reset.")}\n`);
-        }
-        // Printed on every invocation, not behind a flag. A developer reading "day 13 of 14" is about
-        // to make a decision on it.
-        process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const remove = defineCommand({
-  meta: { name: "remove", description: "Take a tester off a cohort's roster" },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    email: { type: "string", description: "The tester's address", required: true },
-    reason: { type: "string", description: "A short note recorded on the event" },
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, driver, modules } = await openTesters(args.env);
-      try {
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers status closed-test"),
-        );
-        const member = await modules.findMemberByEmail(db, cohort.id, String(args.email));
-        if (!member) {
-          throw new ValidationError({
-            message: "That address is not on this cohort.",
-            action: `Run \`pithy testers roster ${cohort.name}\` to see who is.`,
-          });
-        }
-        const removed = await modules.removeMember(
-          { db, now: new Date(), newId: () => crypto.randomUUID() },
-          member.id,
-          args.reason,
-        );
-        if (args.json) {
-          process.stdout.write(
-            `${formatJsonLine({ command: "testers remove", member: { id: removed.id, email: removed.email } })}\n`,
-          );
-          return;
-        }
-        process.stdout.write(`${removed.email} removed from ${cohort.name}.\n`);
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const close = defineCommand({
-  meta: { name: "close", description: "Close a cohort: keep its history, stop accruing snapshots and nudges" },
-  args: {
-    cohort: { type: "positional", description: "The cohort name or id" },
-    env: ENV_ARG,
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, driver, modules } = await openTesters(args.env);
-      try {
-        const cohort = await modules.resolveCohortRef(
-          db,
-          required(args.cohort, "a cohort", "pithy testers close closed-test"),
-        );
-        const closed = await modules.closeCohort({ db, now: new Date(), newId: () => crypto.randomUUID() }, cohort.id);
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers close", cohort: closed })}\n`);
-          return;
-        }
-        process.stdout.write(`${closed.name} closed.\n`);
-        // The history stays queryable — a finished cohort is evidence, and the trend chart is the thing
-        // a developer shows when the store asks what testing they did.
-        process.stdout.write(dim("Its roster and trend stay readable. Nothing further is sent.\n"));
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
-
-const run = defineCommand({
-  meta: { name: "run", description: "Run the daily pass now: advance state, chase, and record the day" },
-  args: {
-    cohort: { type: "string", description: "Run one cohort only. Omit for every open cohort." },
-    env: ENV_ARG,
-    "skip-nudges": {
-      type: "boolean",
-      default: false,
-      description: "Advance state and record the day, but send nothing",
+const status = withContract(
+  defineCommand({
+    meta: { name: "status", description: "Where a cohort stands: the clock, activity, the forecast, the trend" },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      env: ENV_ARG,
+      "trend-days": { type: "string", description: "How many daily snapshots to include (default: 30)" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { db, d1, config, driver, modules, enqueue, auth } = await openTesters(args.env);
-      try {
-        // Real sends. The CLI needs no sending domain of its own: `enqueueEmail` writes a row into
-        // `pithy_email_jobs`, and the email worker that already exists for any project using auth
-        // delivers it. And nothing has to be minted, because the confirmation token lives on the member
-        // row — which is the whole reason it stopped being a signature.
-        const deps = {
-          db,
-          d1,
-          config,
-          now: new Date(),
-          newId: () => crypto.randomUUID(),
-          // The pass reports what it could not do — an unreadable suppression list, a roster it cannot
-          // see activity for. Same logger the read commands use, for the same reason.
-          log: readerLog(args.json),
-          enqueue: args["skip-nudges"] ? undefined : enqueue,
-          // The CLI resolves one database, the app `DB`. Without the suppression binding the pass leaves
-          // deliverability flags alone rather than inferring a bounce from a table it cannot read.
-          suppressionD1: undefined,
-          optOutLinkFor: (member: { optInToken: string }) => modules.optOutUrl(config, member.optInToken),
-          // The snapshot this pass writes counts who was observed, so it is built on the project's auth or it
-          // is a day of nobody observed. Required by the pass for that reason (#645 review).
-          auth,
-          linkFor: args["skip-nudges"]
-            ? undefined
-            : (kind: "confirm" | "store" | "inactive" | "closing", member: { optInToken: string }) =>
-                kind === "confirm"
-                  ? modules.confirmUrl(config, member.optInToken)
-                  : kind === "store"
-                    ? modules.optInUrl(config, member.optInToken)
-                    : undefined,
-        };
-        // Resolved rather than passed through raw: every sibling command takes a name or an id, and a
-        // name reaching `runCohortPass` as an id would 404 on a cohort the developer can see listed.
-        const results = args.cohort
-          ? [await modules.runCohortPass(deps, (await modules.resolveCohortRef(db, args.cohort)).id)]
-          : await modules.runDailyPass(deps);
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
+        try {
+          const now = new Date();
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers status closed-test"),
+          );
+          const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
+          const days = wholeNumber(args["trend-days"], "--trend-days", 30);
+          const snapshots = await modules.listSnapshots(db, cohort.id, days);
+          const view = modules.toCohortView(
+            reading,
+            config,
+            { includeMembers: false, snapshots, latest: snapshots[snapshots.length - 1] },
+            now,
+          );
 
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "testers run", results })}\n`);
-          return;
-        }
-        for (const result of results) {
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers status", cohort: view })}\n`);
+            return;
+          }
+
+          const clock = view.estimatedClock;
+          const activity = view.activity;
+          const projection = view.projection;
+          const percent = (value: number | null) => (value === null ? "—" : `${Math.round(value * 100)}%`);
+
+          process.stdout.write(`Cohort:    ${view.name}\n`);
           process.stdout.write(
-            `${result.cohortId}: ${result.estimatedOptedInCount} opted in, day ${result.estimatedHeldDays}. ${capitalize(result.trendDirection)}.\n`,
+            `Estimated: ${view.roster.optedIn} of ${view.targetSize} opted in. Day ${clock.estimatedHeldDays} of ${view.windowDays}.\n`,
           );
-        }
-        // The truth, not a stale note. This line claimed nothing was sent long after the pass began
-        // sending for real — the kind of copy that teaches a developer to stop reading the output.
-        const queued = results.reduce(
-          (total, result) => total + Object.values(result.nudged).reduce((sum, count) => sum + count, 0),
-          0,
-        );
-        if (args["skip-nudges"] || !enqueue) {
           process.stdout.write(
-            dim(
-              enqueue
-                ? "Nothing was sent.\n"
-                : "Nothing was sent — no email capability is configured in this project.\n",
-            ),
+            `Observed:  ${activity.active} active. ${activity.darkEightToThirteen + activity.darkFourteenPlus} quiet 8+ days. ${activity.neverLinked} never signed in.\n`,
           );
-        } else {
+          const range = projection.successProbabilityRange;
           process.stdout.write(
-            dim(`${queued} email${queued === 1 ? "" : "s"} queued. Delivery is the email worker's job.\n`),
+            `Forecast:  ${percent(projection.successProbability)}${
+              range ? ` (${percent(range.low)}–${percent(range.high)})` : ""
+            }. ${projection.confidence ?? "no"} confidence.\n`,
           );
+          process.stdout.write(`Trend:     ${capitalize(view.trend.direction)}. ${view.trend.reason}\n`);
+          if (projection.invitesNeeded > 0) {
+            process.stdout.write(`\nInvite ${projection.invitesNeeded} more.\n`);
+          }
+          if (view.trend.fragile) {
+            process.stdout.write(`\n${saffron("One lapse from a reset.")}\n`);
+          }
+          // Printed on every invocation, not behind a flag. A developer reading "day 13 of 14" is about
+          // to make a decision on it.
+          process.stdout.write(`\n${dim(ESTIMATE_NOTE)}\n`);
+        } finally {
+          await driver.dispose();
         }
-        process.stdout.write(`${formatDone()}\n`);
-      } finally {
-        await driver.dispose();
-      }
-    }),
-});
+      }),
+  }),
+  { ...ROSTER, payload: TestersStatusPayload, mutates: false, idempotent: true },
+);
+
+const remove = withContract(
+  defineCommand({
+    meta: { name: "remove", description: "Take a tester off a cohort's roster" },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      email: { type: "string", description: "The tester's address", required: true },
+      reason: { type: "string", description: "A short note recorded on the event" },
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, driver, modules } = await openTesters(args.env);
+        try {
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers status closed-test"),
+          );
+          const member = await modules.findMemberByEmail(db, cohort.id, String(args.email));
+          if (!member) {
+            throw new ValidationError({
+              message: "That address is not on this cohort.",
+              action: `Run \`pithy testers roster ${cohort.name}\` to see who is.`,
+            });
+          }
+          const removed = await modules.removeMember(
+            { db, now: new Date(), newId: () => crypto.randomUUID() },
+            member.id,
+            args.reason,
+          );
+          if (args.json) {
+            process.stdout.write(
+              `${formatJsonLine({ command: "testers remove", member: { id: removed.id, email: removed.email } })}\n`,
+            );
+            return;
+          }
+          process.stdout.write(`${removed.email} removed from ${cohort.name}.\n`);
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  { ...ROSTER, payload: TestersRemovePayload, mutates: true, idempotent: false },
+);
+
+const close = withContract(
+  defineCommand({
+    meta: { name: "close", description: "Close a cohort: keep its history, stop accruing snapshots and nudges" },
+    args: {
+      cohort: { type: "positional", description: "The cohort name or id" },
+      env: ENV_ARG,
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, driver, modules } = await openTesters(args.env);
+        try {
+          const cohort = await modules.resolveCohortRef(
+            db,
+            required(args.cohort, "a cohort", "pithy testers close closed-test"),
+          );
+          const closed = await modules.closeCohort(
+            { db, now: new Date(), newId: () => crypto.randomUUID() },
+            cohort.id,
+          );
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers close", cohort: closed })}\n`);
+            return;
+          }
+          process.stdout.write(`${closed.name} closed.\n`);
+          // The history stays queryable — a finished cohort is evidence, and the trend chart is the thing
+          // a developer shows when the store asks what testing they did.
+          process.stdout.write(dim("Its roster and trend stay readable. Nothing further is sent.\n"));
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  { ...ROSTER, payload: TestersClosePayload, mutates: true, idempotent: false },
+);
+
+const run = withContract(
+  defineCommand({
+    meta: { name: "run", description: "Run the daily pass now: advance state, chase, and record the day" },
+    args: {
+      cohort: { type: "string", description: "Run one cohort only. Omit for every open cohort." },
+      env: ENV_ARG,
+      "skip-nudges": {
+        type: "boolean",
+        default: false,
+        description: "Advance state and record the day, but send nothing",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { db, d1, config, driver, modules, enqueue, auth } = await openTesters(args.env);
+        try {
+          // Real sends. The CLI needs no sending domain of its own: `enqueueEmail` writes a row into
+          // `pithy_email_jobs`, and the email worker that already exists for any project using auth
+          // delivers it. And nothing has to be minted, because the confirmation token lives on the member
+          // row — which is the whole reason it stopped being a signature.
+          const deps = {
+            db,
+            d1,
+            config,
+            now: new Date(),
+            newId: () => crypto.randomUUID(),
+            // The pass reports what it could not do — an unreadable suppression list, a roster it cannot
+            // see activity for. Same logger the read commands use, for the same reason.
+            log: readerLog(args.json),
+            enqueue: args["skip-nudges"] ? undefined : enqueue,
+            // The CLI resolves one database, the app `DB`. Without the suppression binding the pass leaves
+            // deliverability flags alone rather than inferring a bounce from a table it cannot read.
+            suppressionD1: undefined,
+            optOutLinkFor: (member: { optInToken: string }) => modules.optOutUrl(config, member.optInToken),
+            // The snapshot this pass writes counts who was observed, so it is built on the project's auth or it
+            // is a day of nobody observed. Required by the pass for that reason (#645 review).
+            auth,
+            linkFor: args["skip-nudges"]
+              ? undefined
+              : (kind: "confirm" | "store" | "inactive" | "closing", member: { optInToken: string }) =>
+                  kind === "confirm"
+                    ? modules.confirmUrl(config, member.optInToken)
+                    : kind === "store"
+                      ? modules.optInUrl(config, member.optInToken)
+                      : undefined,
+          };
+          // Resolved rather than passed through raw: every sibling command takes a name or an id, and a
+          // name reaching `runCohortPass` as an id would 404 on a cohort the developer can see listed.
+          const results = args.cohort
+            ? [await modules.runCohortPass(deps, (await modules.resolveCohortRef(db, args.cohort)).id)]
+            : await modules.runDailyPass(deps);
+
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "testers run", results })}\n`);
+            return;
+          }
+          for (const result of results) {
+            process.stdout.write(
+              `${result.cohortId}: ${result.estimatedOptedInCount} opted in, day ${result.estimatedHeldDays}. ${capitalize(result.trendDirection)}.\n`,
+            );
+          }
+          // The truth, not a stale note. This line claimed nothing was sent long after the pass began
+          // sending for real — the kind of copy that teaches a developer to stop reading the output.
+          const queued = results.reduce(
+            (total, result) => total + Object.values(result.nudged).reduce((sum, count) => sum + count, 0),
+            0,
+          );
+          if (args["skip-nudges"] || !enqueue) {
+            process.stdout.write(
+              dim(
+                enqueue
+                  ? "Nothing was sent.\n"
+                  : "Nothing was sent — no email capability is configured in this project.\n",
+              ),
+            );
+          } else {
+            process.stdout.write(
+              dim(`${queued} email${queued === 1 ? "" : "s"} queued. Delivery is the email worker's job.\n`),
+            );
+          }
+          process.stdout.write(`${formatDone()}\n`);
+        } finally {
+          await driver.dispose();
+        }
+      }),
+  }),
+  {
+    ...ROSTER,
+    payload: TestersRunPayload,
+    // Advances state and records the day; a second run the same day re-records it and nudges nobody new.
+    mutates: true,
+    idempotent: false,
+  },
+);
 
 /** Sentence case for an enum value. */
 function capitalize(value: string): string {

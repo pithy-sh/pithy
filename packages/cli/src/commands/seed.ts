@@ -3,9 +3,11 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
@@ -143,111 +145,183 @@ export function productionPrompt(): () => Promise<string> {
   };
 }
 
-export default defineCommand({
-  meta: { name: "seed", description: "Seed an environment from your Zod-typed fixtures" },
-  args: {
-    env: ENV_ARG,
-    worker: { type: "string", description: "Seed one worker instead of every worker in apps/" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-    "dry-run": { type: "boolean", default: false, description: "Print the write plan; change nothing" },
-    redo: {
-      type: "boolean",
-      default: false,
-      description:
-        "DESTRUCTIVE: drop every table and recreate the schema before seeding. All data is lost. Refuses while retained tables hold rows",
-    },
-    "confirm-reset": {
-      type: "string",
-      description: 'Unlock a non-dev reset non-interactively: "yes, i really want to reset <env>"',
-    },
-    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
-    yes: { type: "boolean", default: false, description: "Confirm a non-dev environment" },
-    "confirm-production": {
-      type: "string",
-      description: `Unlock production non-interactively: "${PRODUCTION_CONFIRM_PHRASE}"`,
-    },
-    host: {
-      type: "string",
-      description:
-        "The host a prepared set's origin is built from, e.g. preview.example.com. Defaults to the Worker's own address",
-    },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const projectDir = process.cwd();
-      const config = await loadProject(projectDir);
-      // The account this project belongs to, resolved from the config just loaded. Used by the seed run
-      // itself and by the audit emitter — one answer, so the two can never disagree about whose D1 was
-      // written and whose trail records it (#234).
-      const account = loadProjectCloudflare(config) ?? null;
-      const dryRun = args["dry-run"];
-      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
-      const interactive = mayPrompt(args.json);
+const Writes = (store: string) =>
+  z.array(z.looseObject({}).describe(`One ${store} write.`)).describe(`The set's ${store} writes.`);
 
-      // Resolved once: the fan-out seeds these workers, and the audit emitter needs their capabilities
-      // to know whether the project composes `audit` at all.
-      const workers = await resolveWorkerScopes({
-        projectDir,
-        env,
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-      });
+/** `pithy seed --json`. `docs/commands/seed.md`. */
+const SeedPayload = z
+  .object({
+    command: z.literal("seed").describe('`"seed"`.'),
+    env: z.string().describe("The environment seeded."),
+    dryRun: z.boolean().describe("Whether the plan was computed and nothing written."),
+    workers: z
+      .array(
+        z
+          .object({
+            worker: z.string().describe("The Worker's name."),
+            sets: z
+              .array(
+                z
+                  .object({
+                    name: z.string().describe("The set's composed key."),
+                    d1: Writes("d1"),
+                    kv: Writes("kv"),
+                    r2: Writes("r2"),
+                    media: Writes("media"),
+                  })
+                  .describe("One seed set's outcome."),
+              )
+              .describe("The per-set outcome, in run order."),
+            skippedByEnv: z
+              .array(z.string().describe("A set."))
+              .describe("The sets this environment disallows — surfaced, never silently dropped."),
+            shared: z
+              .array(z.string().describe("A set."))
+              .describe("The sets an earlier Worker already wrote to the same store."),
+          })
+          .describe("One Worker's outcome."),
+      )
+      .describe("The per-Worker outcome, in fan-out order."),
+    reset: z
+      .array(
+        z
+          .object({
+            database: z.string().describe("The database name."),
+            binding: z.string().describe("Its D1 binding."),
+            migrations: z.number().int().describe("How many migrations the reset reverses and reapplies."),
+            retained: z.array(z.string().describe("A table.")).describe("The retained tables it carries."),
+            boundBy: z
+              .array(z.string().describe("An environment."))
+              .optional()
+              .describe("The other environments binding it. Present only when the reset keeps it."),
+          })
+          .describe("One database the reset reached."),
+      )
+      .optional()
+      .describe("Present only with `--redo`: one entry per database whose schema was, or would be, reset."),
+    devSecrets: z
+      .looseObject({})
+      .nullable()
+      .describe("What the dev-secrets pass wrote and refused. `null` on a dry run and outside `dev`."),
+  })
+  .describe("What `pithy seed` loaded, or would.");
 
-      // Dev secrets first, and only for `dev`. The dev secrets file is machine-local — there is no staging
-      // copy of it, and a deployed environment's secrets come from `pithy secrets create` through the
-      // manager Workflow. Before the fixtures, because a fixture that signs a token or a link needs the
-      // key that signs it to already be in the store.
-      //
-      // Never fatal to a `--dry-run`, and never run by one: a dry run writes nothing, and seeding a
-      // secret is a write.
-      const devSecrets =
-        env === "dev" && !dryRun ? await seedProjectDevSecrets({ projectDir }) : (null as DevSecretsSeedReport | null);
-      if (devSecrets && !args.json) {
-        for (const line of renderDevSecretsNotes(devSecrets)) process.stdout.write(`${line}\n`);
-      }
-      // A `.dev.vars` pithy did not generate is never overwritten and never merged (#154) — so a Worker
-      // that was supposed to get one has not got one, and that is a failed run. The lines above already
-      // name the file and point at `.dev.vars.local`; this is what makes a script notice. Not a throw:
-      // the fixtures below are the rest of the run and they are worth doing.
-      if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = EXIT.failed;
+export default withContract(
+  defineCommand({
+    meta: { name: "seed", description: "Seed an environment from your Zod-typed fixtures" },
+    args: {
+      env: ENV_ARG,
+      worker: { type: "string", description: "Seed one worker instead of every worker in apps/" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+      "dry-run": { type: "boolean", default: false, description: "Print the write plan; change nothing" },
+      redo: {
+        type: "boolean",
+        default: false,
+        description:
+          "DESTRUCTIVE: drop every table and recreate the schema before seeding. All data is lost. Refuses while retained tables hold rows",
+      },
+      "confirm-reset": {
+        type: "string",
+        description: 'Unlock a non-dev reset non-interactively: "yes, i really want to reset <env>"',
+      },
+      "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
+      yes: { type: "boolean", default: false, description: "Confirm a non-dev environment" },
+      "confirm-production": {
+        type: "string",
+        description: `Unlock production non-interactively: "${PRODUCTION_CONFIRM_PHRASE}"`,
+      },
+      host: {
+        type: "string",
+        description:
+          "The host a prepared set's origin is built from, e.g. preview.example.com. Defaults to the Worker's own address",
+      },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const projectDir = process.cwd();
+        const config = await loadProject(projectDir);
+        // The account this project belongs to, resolved from the config just loaded. Used by the seed run
+        // itself and by the audit emitter — one answer, so the two can never disagree about whose D1 was
+        // written and whose trail records it (#234).
+        const account = loadProjectCloudflare(config) ?? null;
+        const dryRun = args["dry-run"];
+        const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+        const interactive = mayPrompt(args.json);
 
-      const report = await seedProject({
-        projectDir,
-        // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
-        // this name is the owner stamped into their metadata — the only handle a later sweep has on them.
-        project: requireProjectName(config),
-        // The account this project names, or `null` when it names none. Not the default credentials file:
-        // a non-`dev` seed writes rows into a real D1 and objects into a real R2 (#234).
-        account,
-        workers,
-        env,
-        includeExamples: config.seed?.includeExamples ?? false,
-        dryRun,
-        redo: args.redo,
-        yes: args.yes,
-        json: args.json,
-        confirmProduction: args["confirm-production"],
-        confirmReset: args["confirm-reset"],
-        ...(destroyRetained !== undefined ? { destroyRetained } : {}),
-        productionEnvironments: config.seed?.productionEnvironments,
-        // The origin a prepared set is handed. Absent, each Worker's own address: its pinned port in `dev`, its
-        // declared domain in a declared environment, its `workers.dev` origin on a feature (#643).
-        ...(args.host !== undefined ? { host: args.host } : {}),
-        prompt: interactive ? productionPrompt() : undefined,
-        promptReset: interactive ? resetPrompt(env) : undefined,
-        audit: await buildSeedAudit(
+        // Resolved once: the fan-out seeds these workers, and the audit emitter needs their capabilities
+        // to know whether the project composes `audit` at all.
+        const workers = await resolveWorkerScopes({
           projectDir,
           env,
-          workers.flatMap((worker) => worker.capabilities),
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+        });
+
+        // Dev secrets first, and only for `dev`. The dev secrets file is machine-local — there is no staging
+        // copy of it, and a deployed environment's secrets come from `pithy secrets create` through the
+        // manager Workflow. Before the fixtures, because a fixture that signs a token or a link needs the
+        // key that signs it to already be in the store.
+        //
+        // Never fatal to a `--dry-run`, and never run by one: a dry run writes nothing, and seeding a
+        // secret is a write.
+        const devSecrets =
+          env === "dev" && !dryRun
+            ? await seedProjectDevSecrets({ projectDir })
+            : (null as DevSecretsSeedReport | null);
+        if (devSecrets && !args.json) {
+          for (const line of renderDevSecretsNotes(devSecrets)) process.stdout.write(`${line}\n`);
+        }
+        // A `.dev.vars` pithy did not generate is never overwritten and never merged (#154) — so a Worker
+        // that was supposed to get one has not got one, and that is a failed run. The lines above already
+        // name the file and point at `.dev.vars.local`; this is what makes a script notice. Not a throw:
+        // the fixtures below are the rest of the run and they are worth doing.
+        if (devSecrets && (devSecrets.devVarsRefused ?? []).length > 0) process.exitCode = EXIT.failed;
+
+        const report = await seedProject({
+          projectDir,
+          // `requireProjectName`, never `resolveProjectName`: a fixture can mint Images/Stream assets, and
+          // this name is the owner stamped into their metadata — the only handle a later sweep has on them.
+          project: requireProjectName(config),
+          // The account this project names, or `null` when it names none. Not the default credentials file:
+          // a non-`dev` seed writes rows into a real D1 and objects into a real R2 (#234).
           account,
-        ),
-      });
+          workers,
+          env,
+          includeExamples: config.seed?.includeExamples ?? false,
+          dryRun,
+          redo: args.redo,
+          yes: args.yes,
+          json: args.json,
+          confirmProduction: args["confirm-production"],
+          confirmReset: args["confirm-reset"],
+          ...(destroyRetained !== undefined ? { destroyRetained } : {}),
+          productionEnvironments: config.seed?.productionEnvironments,
+          // The origin a prepared set is handed. Absent, each Worker's own address: its pinned port in `dev`, its
+          // declared domain in a declared environment, its `workers.dev` origin on a feature (#643).
+          ...(args.host !== undefined ? { host: args.host } : {}),
+          prompt: interactive ? productionPrompt() : undefined,
+          promptReset: interactive ? resetPrompt(env) : undefined,
+          audit: await buildSeedAudit(
+            projectDir,
+            env,
+            workers.flatMap((worker) => worker.capabilities),
+            account,
+          ),
+        });
 
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report, devSecrets })}\n`);
-        return;
-      }
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ ...report, devSecrets })}\n`);
+          return;
+        }
 
-      process.stdout.write(`${renderSeedText(report)}\n`);
-    }),
-});
+        process.stdout.write(`${renderSeedText(report)}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: SeedPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
+);

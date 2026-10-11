@@ -211,7 +211,9 @@ describe("capability provisioning skips an environment rather than failing the r
 
     const unanswerable: string[] = [];
     for (const command of resolving) {
-      if (!/\n\s{4}worker: \{/.test(await source(command))) unanswerable.push(command);
+      // Four spaces in a bare `defineCommand({ args: … })`, six inside the `withContract(…)` that carries
+      // the command's published contract (#697) — either way, a declared arg rather than a mention.
+      if (!/\n\s{4,6}worker: \{/.test(await source(command))) unanswerable.push(command);
     }
 
     expect(unanswerable).toEqual([]);

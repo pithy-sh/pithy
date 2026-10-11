@@ -4,7 +4,8 @@
 import type { CommandDef } from "citty";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { main } from "../main";
-import type { UiSyncReport } from "../ui/flow";
+import { expectConforms, runCaptured } from "../test-utils/payloadContract";
+import type { UiAddReport, UiSyncReport } from "../ui/flow";
 import ui from "./ui";
 
 /** What the stubbed `runUiSync` answers. Rewritten per test; the command is the subject, not the flow. */
@@ -18,11 +19,27 @@ const stub = vi.hoisted(() => ({
     unstyled: [],
     notFoundHandling: "single-page-application",
   } as UiSyncReport,
+  add: {
+    worker: "board",
+    framework: "react",
+    auth: true,
+    payments: false,
+    organization: false,
+    created: ["src/main.tsx"],
+    skipped: ["src/styles.css"],
+    unstyled: [],
+    runWorkerFirst: ["/auth/*"],
+    packageManager: "bun",
+    dependencies: ["react"],
+    devDependencies: ["vite"],
+    scripts: ["dev"],
+  } as UiAddReport,
 }));
 
 vi.mock("../ui/flow", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/flow")>()),
   runUiSync: async () => stub.report,
+  runUiAdd: async () => stub.add,
 }));
 
 vi.mock("./add", async (importOriginal) => ({
@@ -148,5 +165,18 @@ describe("ui sync --check turns a finding into an exit code", () => {
     const { exit, output } = await runSync(false);
     expect(exit).toBeUndefined();
     expect(output).toContain("divider");
+  });
+});
+
+/** All three, through the real commands, held to the schema `pithy schema ui` publishes (#697). */
+describe("pithy ui --json conforms to its published payloads", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("add, sync and list", async () => {
+    await expectConforms("ui add", await runCaptured("ui add", ["react", "--json"]));
+    await expectConforms("ui sync", await runCaptured("ui sync", ["--json"]));
+    await expectConforms("ui list", await runCaptured("ui list", ["--json"]));
   });
 });

@@ -14,6 +14,7 @@ import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig, writeDevC
 import { BASE_PORT, BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
 import { pruneFeatureBlocks } from "../feature/prune";
 import type { WorkerTarget } from "../project/workers";
+import { expectConforms } from "../test-utils/payloadContract";
 import { parseDevLogFileName } from "./devLogPath";
 import type { DevLogRecord } from "./devLogRecord";
 import type { DevEvent } from "./events";
@@ -1211,6 +1212,8 @@ describe("startDev — ready deadline", () => {
 
     const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
     expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["web"] }]);
+    // Held to the schema `pithy schema dev` publishes (#697).
+    await expectConforms("dev", h.stdoutLines.filter((line) => line.startsWith("{")).join("\n"));
     // And no prose report on stdout to confuse a reader parsing line by line.
     expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
     expect(h.stderrLines).toContain("Still waiting on: web.");
@@ -4019,6 +4022,8 @@ describe("startDev — autostart answers under a checkout that is gone", () => {
     expect(h.stdoutLines).toContain(
       '{"command":"dev","event":"autostart-stale","roots":[{"root":"/gone/app","branches":[{"branch":"main","workers":["web"]}]}]}',
     );
+    // Held to the schema `pithy schema dev` publishes (#697).
+    await expectConforms("dev", h.stdoutLines.join("\n"));
   });
 
   // Acceptance criterion 5, at the session level: a registry whose every root is on disk adds no line

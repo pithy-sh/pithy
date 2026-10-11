@@ -502,6 +502,13 @@
       ]
     },
     {
+      "path": "schema",
+      "flags": [
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "secrets",
       "flags": []
     },

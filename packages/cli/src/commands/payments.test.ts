@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { payments as paymentsCapability } from "@pithy-sh/payments/src/capability";
+import { PaymentsRail } from "@pithy-sh/payments/src/data/rail";
 import type { CommandDef } from "citty";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ResolvedWorker } from "../project/workerScope";
+import { contractAt, expectConforms } from "../test-utils/payloadContract";
 import payments from "./payments";
 
 /**
@@ -199,6 +201,15 @@ describe("pithy payments reconcile --rail", () => {
     vi.unstubAllEnvs();
   });
 
+  /**
+   * `pithy schema` publishes the rails `--rail` takes, but the command parses against the project's own
+   * `@pithy-sh/payments` at run time, which a shipped module cannot import. So the published list is held
+   * to the package's enum here: the day a rail is added there, this goes red until the schema says so too.
+   */
+  test("publishes exactly the rails the payments package accepts", async () => {
+    expect((await contractAt("payments reconcile")).flags?.rail?.enum).toEqual(PaymentsRail.options);
+  });
+
   test("lemonSqueezy reaches the deployed Workflow, like every rail before it", async () => {
     const line = await succeed("reconcile", {
       json: true,
@@ -214,6 +225,8 @@ describe("pithy payments reconcile --rail", () => {
       env: "staging",
       report: { scanned: 4, drifted: 0, unchanged: 4, skipped: 0, failed: 0 },
     });
+    // Held to the schema `pithy schema payments reconcile` publishes (#697).
+    await expectConforms("payments reconcile", JSON.stringify(line));
   });
 
   test("a dry run narrowed to one holder and lemonSqueezy carries both, and writes nothing", async () => {

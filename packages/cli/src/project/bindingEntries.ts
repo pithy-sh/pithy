@@ -6,6 +6,7 @@ import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/envi
 import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
+import { z } from "zod";
 
 /**
  * One writer for the `wrangler.jsonc` entry a capability's binding needs, and one reader for whether a
@@ -104,17 +105,16 @@ export type BindingWrite =
   | { outcome: "skipped"; reason: string };
 
 /** A name proposed for a resource the adopter creates themselves, composed by the one naming rule. */
-export interface ProposedName {
-  /** The Worker env binding the name is proposed for (e.g. `SESSIONS`). */
-  binding: string;
-  /** The environment whose stanza declares it — `dev` for the top-level one. */
-  env: string;
-  /**
-   * The proposed resource name: `<project>-<env>-<thing>`, or `<project>-global-<thing>` where the
-   * binding declares its resource the project's rather than the environment's (#513).
-   */
-  name: string;
-}
+export const ProposedName = z
+  .object({
+    binding: z.string().describe("The Worker env binding the name is proposed for, e.g. `SESSIONS`."),
+    env: z.string().describe("The environment whose stanza declares it — `dev` for the top-level one."),
+    // `<project>-global-<thing>` where the binding declares its resource the project's rather than the
+    // environment's (#513).
+    name: z.string().describe("The proposed resource name, `<project>-<env>-<thing>`."),
+  })
+  .describe("A name proposed for a resource the adopter creates themselves, composed by the one naming rule.");
+export type ProposedName = z.infer<typeof ProposedName>;
 
 /** Which capability, project, and environment a stanza's entries are composed for. */
 export interface BindingScope {

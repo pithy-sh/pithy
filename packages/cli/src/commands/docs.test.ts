@@ -12,6 +12,7 @@ import { FIXTURES } from "../mcp/fixtures";
 import type { HomeOptions, PathBase } from "../mcp/home";
 import { EXIT } from "../terminal/exitClass";
 import { latchInputMode } from "../terminal/inputMode";
+import { expectConforms } from "../test-utils/payloadContract";
 import docs, { offerDocs, requireScopeAnswerable } from "./docs";
 
 /**
@@ -297,6 +298,8 @@ describe("pithy docs connect --print", () => {
     expect(payload.printed.path).toBe(pathOf("cursor", "user"));
     expect(String(payload.printed.snippet)).toContain(DOCS_MCP_URL);
     expect(readdirSync(home)).toEqual([]);
+    await expectConforms("docs connect", out);
+    await expectConforms("docs connect", (await run("connect", { print: true, json: true })).out);
   });
 });
 
@@ -425,6 +428,7 @@ describe("pithy docs connect", () => {
       { client: "cursor", scope: "user", path: pathOf("cursor", "user"), state: "added", reason: null, snippet: null },
       { client: "codex", scope: "user", path: pathOf("codex", "user"), state: "added", reason: null, snippet: null },
     ]);
+    await expectConforms("docs connect", out);
   });
 });
 
@@ -454,6 +458,7 @@ describe("pithy docs disconnect", () => {
     const { out, err, exitCode } = await run("disconnect", { client: "cursor", scope: "user", json: true });
     expect(err).toBe("");
     expect(exitCode).toBe(0);
+    await expectConforms("docs disconnect", out);
     expect(JSON.parse(oneLine(out))).toEqual({
       command: "docs disconnect",
       disconnected: [
@@ -536,6 +541,7 @@ describe("pithy docs status", () => {
     const { out, err, exitCode } = await run("status", { json: true });
     expect(err).toBe("");
     expect(exitCode).toBeUndefined();
+    await expectConforms("docs status", out);
 
     const payload = JSON.parse(oneLine(out)) as {
       command: string;

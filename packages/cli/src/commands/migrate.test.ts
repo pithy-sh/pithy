@@ -4,7 +4,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { type MigrateProjectOptions, migrateProject, type WorkerMigrationRun } from "../migrations/run";
 import { latchInputMode } from "../terminal/inputMode";
-import migrate, { formatMigrateReport, rollbackPhrase } from "./migrate";
+import { expectConforms } from "../test-utils/payloadContract";
+import migrate, { formatMigrateProgress, formatMigrateReport, rollbackPhrase } from "./migrate";
 
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
 const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
@@ -229,6 +230,29 @@ describe("migrate command", () => {
         json: false,
       });
       expect(plain(report)).toBe("Nothing to migrate.\nDone.\n");
+    });
+
+    /** Both lines the command writes, held to the schema `pithy schema migrate` publishes (#697). */
+    test("--json conforms to its published payload: a run, a rollback, and one that died partway", async () => {
+      const render = { project: "acme", env: "staging", rollback: false, json: true, group: "2026-10-11T00:00:00Z" };
+      const shared = run("api", "app", "DB", ["0100_auth_0001"]);
+      await expectConforms("migrate", formatMigrateReport([shared, { worker: "web", databases: [] }], render));
+      const kept: WorkerMigrationRun = {
+        worker: "api",
+        databases: [{ database: "app", binding: "DB", results: [], boundBy: ["prod"], sharedWith: ["web"] }],
+      };
+      await expectConforms("migrate", formatMigrateReport([kept], { ...render, rollback: true }));
+      await expectConforms(
+        "migrate",
+        formatMigrateProgress(
+          {
+            migrated: [shared],
+            failed: { binding: "EMAIL_DB", database: "email" },
+            unreached: [{ binding: "SUPPORT_DB", database: "support" }],
+          },
+          render,
+        ),
+      );
     });
 
     test("--json groups per worker, in a stable shape", () => {

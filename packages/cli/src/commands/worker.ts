@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
-import { describeStaleAutostartRoots } from "../feature/ports";
+import { z } from "zod";
+import { withContract } from "../contract/commandContract";
+import { describeStaleAutostartRoots, StaleAutostartRoot } from "../feature/ports";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
@@ -14,126 +16,255 @@ import { renderDomainsBlock } from "../project/domainPrompt";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { addWorker, listWorkers, removeWorker, renameWorker } from "../project/workerCommand";
-import { workerIdentity } from "../project/workerIdentity";
+import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { targetWorker } from "./add";
 
 /** `pithy worker add <name>` — scaffold a new worker under apps/ and wire it in. */
-const add = defineCommand({
-  meta: { name: "add", description: "Scaffold a new worker under apps/<name> and wire it into the dev set" },
-  args: {
-    name: { type: "positional", required: true, description: "Worker name, kebab-case, e.g. web or admin-api" },
-    "skip-install": { type: "boolean", default: false, description: "Skip the workspace install after scaffolding" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const report = await addWorker({ projectDir, name: args.name, skipInstall: args["skip-install"] });
+const Dir = z.string().describe("The Worker's directory.");
+const Reconciled = z
+  .boolean()
+  .describe("Whether the feature's `.dev.config.json` was reconciled. Only inside a worktree.");
 
-      // Every Worker serves its own hostname, so a new one is asked about too — the same question
-      // `pithy init` asks, against the same account zones, and equally skippable.
-      const asked = await askDomains({
-        projectDir,
-        account: await projectCloudflareAccount(projectDir),
-        workerName: report.worker,
-        interactive: mayPrompt(args.json),
-      });
-      // A declaration the writer could not place must not vanish. `writeDomains` still generates the
-      // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
-      // source of truth, and an adopter who answered the prompt needs to know it did not land.
-      const wrote = asked.domains ? await writeDomains(report.dir, asked.domains) : null;
+/** `pithy worker add --json`. `docs/commands/worker.md`. */
+const WorkerAddPayload = z
+  .object({
+    command: z.literal("worker.add").describe('`"worker.add"`.'),
+    ...WorkerIdentity.shape,
+    dir: Dir,
+    port: z.number().int().nullable().describe("The port pinned for it inside a feature worktree, else `null`."),
+    reconciled: Reconciled,
+    devVarsRefused: z
+      .array(z.string().describe("One sentence."))
+      .describe("One sentence per Worker whose `.dev.vars` this run did not generate."),
+    domains: WorkerDomains.nullable().describe("The domains it was given, or `null` when none were."),
+  })
+  .describe("What `pithy worker add` scaffolded.");
 
-      if (args.json) {
-        process.stdout.write(
-          `${formatJsonLine({ command: "worker.add", ...report, domains: asked.domains ?? null })}\n`,
-        );
-        return;
-      }
-      process.stdout.write(`Worker ${report.worker} scaffolded at ${report.dir}.\n`);
-      if (wrote && !wrote.declared && asked.domains) {
-        process.stdout.write(
-          `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
-        );
-      }
-      // Three states, not two. A reconciled run that pinned nothing used to print the sentence below it —
-      // "run pithy feature sync to assign a port" — immediately after a sync had assigned one, because the
-      // port lookup could not find it (#229). The lookup is fixed; the branch stays three-way so the
-      // sentence about assigning a port is only ever printed where none has been.
-      if (report.port !== null) {
-        process.stdout.write(`Pinned to port ${report.port}.\n`);
-      } else if (report.reconciled) {
-        process.stdout.write("Reconciled the feature's ports. This worker took none.\n");
-      } else {
-        process.stdout.write("Ports are assigned when you run pithy feature create or sync.\n");
-      }
-      // The worker's `src/index.ts` imports `@pithy-sh/core` and, while the scope is unpublished, its
-      // `package.json` declares no range for it — so this said "Done." over a worker that cannot resolve
-      // its own entrypoint. `pithy init` printed a notice for the identical gap; this is that notice,
-      // from the one function that decides the wording for all three commands.
-      for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+/** `pithy worker list --json`. */
+const WorkerListPayload = z
+  .object({
+    command: z.literal("worker.list").describe('`"worker.list"`.'),
+    workers: z
+      .array(
+        z
+          .object({
+            ...WorkerIdentity.shape,
+            dir: Dir,
+            autostart: z.boolean().describe("Whether a plain `pithy dev` starts it on this branch."),
+            autostartLocal: z
+              .boolean()
+              .nullable()
+              .describe("Whether `autostart` is this branch's own answer, or `null` with no registry entry."),
+            hasWrangler: z.boolean().describe("Whether it carries a `wrangler.jsonc`."),
+            port: z.number().int().nullable().describe("Its pinned port, or `null` when none is pinned."),
+          })
+          .describe("One Worker."),
+      )
+      .describe("Every Worker under `apps/`."),
+    staleAutostart: z
+      .array(StaleAutostartRoot)
+      .describe("Checkout roots that are gone and still hold autostart answers."),
+  })
+  .describe("The project's Workers.");
+
+/** `pithy worker remove --json`. */
+const WorkerRemovePayload = z
+  .object({
+    command: z.literal("worker.remove").describe('`"worker.remove"`.'),
+    ...WorkerIdentity.shape,
+    dir: Dir,
+    reconciled: Reconciled,
+  })
+  .describe("What `pithy worker remove` deleted.");
+
+/** `pithy worker rename --json`. */
+const WorkerRenamePayload = z
+  .object({
+    command: z.literal("worker.rename").describe('`"worker.rename"`.'),
+    ...WorkerIdentity.shape,
+    from: z.string().describe("The old name."),
+    to: z.string().describe("The new name."),
+    dir: Dir,
+    script: z
+      .object({
+        from: z.string().describe("The old deployed script name."),
+        to: z.string().describe("The new one."),
+      })
+      .nullable()
+      .describe("The deployed script name it moved between, or `null` when it did not change."),
+    orphaned: z.array(z.string().describe("A script name.")).describe("Scripts still deployed under the old name."),
+    accountChecked: z.boolean().describe("Whether the account was reached to look for a live script."),
+    reconciled: Reconciled,
+  })
+  .describe("What `pithy worker rename` moved.");
+
+/** `pithy worker sync --json`. */
+const WorkerSyncPayload = z
+  .object({
+    command: z.literal("worker.sync").describe('`"worker.sync"`.'),
+    ...WorkerIdentity.shape,
+    routes: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment written."),
+            pattern: z.string().describe("The hostname the route now points at."),
+            baseUrl: z.string().describe("The base URL written to `vars.BASE_URL`."),
+            changed: z.boolean().describe("Whether this environment's stanza changed."),
+          })
+          .describe("One environment's route."),
+      )
+      .describe("What the `domains` declaration wrote, per environment."),
+    runs: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment reconciled — `dev` for the top-level stanza."),
+            workflows: z
+              .array(
+                z
+                  .object({
+                    binding: z.string().describe("The binding the Worker env exposes."),
+                    name: z.string().describe("The deployed Workflow name."),
+                    class_name: z.string().describe("The exported `WorkflowEntrypoint` subclass."),
+                  })
+                  .describe("One app Workflow entry."),
+              )
+              .describe("The app's entries in its `workflows` table."),
+            crons: z.array(z.string().describe("A cron schedule.")).describe("The schedules its `triggers` carries."),
+            changed: z.boolean().describe("Whether anything moved."),
+          })
+          .describe("One environment's Workflows and crons."),
+      )
+      .describe("What the `app` declaration wrote, per environment."),
+  })
+  .describe("What `pithy worker sync` wrote.");
+
+const add = withContract(
+  defineCommand({
+    meta: { name: "add", description: "Scaffold a new worker under apps/<name> and wire it into the dev set" },
+    args: {
+      name: { type: "positional", required: true, description: "Worker name, kebab-case, e.g. web or admin-api" },
+      "skip-install": { type: "boolean", default: false, description: "Skip the workspace install after scaffolding" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const report = await addWorker({ projectDir, name: args.name, skipInstall: args["skip-install"] });
+
+        // Every Worker serves its own hostname, so a new one is asked about too — the same question
+        // `pithy init` asks, against the same account zones, and equally skippable.
+        const asked = await askDomains({
+          projectDir,
+          account: await projectCloudflareAccount(projectDir),
+          workerName: report.worker,
+          interactive: mayPrompt(args.json),
+        });
+        // A declaration the writer could not place must not vanish. `writeDomains` still generates the
+        // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
+        // source of truth, and an adopter who answered the prompt needs to know it did not land.
+        const wrote = asked.domains ? await writeDomains(report.dir, asked.domains) : null;
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "worker.add", ...report, domains: asked.domains ?? null })}\n`,
+          );
+          return;
+        }
+        process.stdout.write(`Worker ${report.worker} scaffolded at ${report.dir}.\n`);
+        if (wrote && !wrote.declared && asked.domains) {
+          process.stdout.write(
+            `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+          );
+        }
+        // Three states, not two. A reconciled run that pinned nothing used to print the sentence below it —
+        // "run pithy feature sync to assign a port" — immediately after a sync had assigned one, because the
+        // port lookup could not find it (#229). The lookup is fixed; the branch stays three-way so the
+        // sentence about assigning a port is only ever printed where none has been.
+        if (report.port !== null) {
+          process.stdout.write(`Pinned to port ${report.port}.\n`);
+        } else if (report.reconciled) {
+          process.stdout.write("Reconciled the feature's ports. This worker took none.\n");
+        } else {
+          process.stdout.write("Ports are assigned when you run pithy feature create or sync.\n");
+        }
+        // The worker's `src/index.ts` imports `@pithy-sh/core` and, while the scope is unpublished, its
+        // `package.json` declares no range for it — so this said "Done." over a worker that cannot resolve
+        // its own entrypoint. `pithy init` printed a notice for the identical gap; this is that notice,
+        // from the one function that decides the wording for all three commands.
+        for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: WorkerAddPayload, mutates: true, idempotent: false, needsNetwork: true },
+);
 
 /** `pithy worker list` — the discovered workers with autostart state and pinned port. */
-const list = defineCommand({
-  meta: { name: "list", description: "List the project's workers with their autostart state and pinned port" },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const { workers, staleAutostart } = await listWorkers({ projectDir: process.cwd() });
-      // Stderr in both modes, on the rule a dev session already states: stdout is the machine's, one
-      // object per line, and this is prose for whoever is reading. It is said before the rows because it
-      // is the answer to the question the rows provoke — *why is the worker I parked starting again*.
-      for (const line of describeStaleAutostartRoots(staleAutostart)) process.stderr.write(`${line}\n`);
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.list", workers, staleAutostart })}\n`);
-        return;
-      }
-      if (workers.length === 0) {
-        process.stdout.write("No workers. Run pithy worker add <name>, or pithy init.\n");
-        return;
-      }
-      const rows = workers.map((worker) => {
-        const port = worker.port === null ? "—" : String(worker.port);
-        // `off here` rather than `manual`, and the distinction is the point (#548): a worker that does
-        // not start is never a property of the project any more, so the word has to say whose decision
-        // it was. `manual` read like a setting somebody would find in a committed file, and there is no
-        // longer any such file to find.
-        const auto = worker.autostart ? "autostart" : "off here";
-        // The deployed name leads the row, because it is the string the Cloudflare dashboard shows and
-        // the one `--worker`, `remove` and `rename` all also accept. The directory is what the adopter
-        // acts on, so it is named too rather than left to be inferred from the deployed one — the two
-        // are free to be unrelated, which is the whole reason they are separate fields (#144).
-        return { name: worker.deployedAs, description: dim(`${worker.worker}  ${auto}  port ${port}`) };
-      });
-      process.stdout.write(`${formatList(rows)}\n`);
-    }),
-});
+const list = withContract(
+  defineCommand({
+    meta: { name: "list", description: "List the project's workers with their autostart state and pinned port" },
+    args: {
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const { workers, staleAutostart } = await listWorkers({ projectDir: process.cwd() });
+        // Stderr in both modes, on the rule a dev session already states: stdout is the machine's, one
+        // object per line, and this is prose for whoever is reading. It is said before the rows because it
+        // is the answer to the question the rows provoke — *why is the worker I parked starting again*.
+        for (const line of describeStaleAutostartRoots(staleAutostart)) process.stderr.write(`${line}\n`);
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "worker.list", workers, staleAutostart })}\n`);
+          return;
+        }
+        if (workers.length === 0) {
+          process.stdout.write("No workers. Run pithy worker add <name>, or pithy init.\n");
+          return;
+        }
+        const rows = workers.map((worker) => {
+          const port = worker.port === null ? "—" : String(worker.port);
+          // `off here` rather than `manual`, and the distinction is the point (#548): a worker that does
+          // not start is never a property of the project any more, so the word has to say whose decision
+          // it was. `manual` read like a setting somebody would find in a committed file, and there is no
+          // longer any such file to find.
+          const auto = worker.autostart ? "autostart" : "off here";
+          // The deployed name leads the row, because it is the string the Cloudflare dashboard shows and
+          // the one `--worker`, `remove` and `rename` all also accept. The directory is what the adopter
+          // acts on, so it is named too rather than left to be inferred from the deployed one — the two
+          // are free to be unrelated, which is the whole reason they are separate fields (#144).
+          return { name: worker.deployedAs, description: dim(`${worker.worker}  ${auto}  port ${port}`) };
+        });
+        process.stdout.write(`${formatList(rows)}\n`);
+      }),
+  }),
+  { output: "document", payload: WorkerListPayload, mutates: false, idempotent: true, needsNetwork: false },
+);
 
 /** `pithy worker remove <name>` — delete apps/<name> and release its port. */
-const remove = defineCommand({
-  meta: { name: "remove", description: "Delete a worker under apps/<name> and release its port" },
-  args: {
-    name: { type: "positional", required: true, description: "Worker name to remove (an apps/<name> directory)" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const report = await removeWorker({ projectDir: process.cwd(), name: args.name });
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.remove", ...report })}\n`);
-        return;
-      }
-      process.stdout.write(`Removed ${report.worker}.\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+const remove = withContract(
+  defineCommand({
+    meta: { name: "remove", description: "Delete a worker under apps/<name> and release its port" },
+    args: {
+      name: { type: "positional", required: true, description: "Worker name to remove (an apps/<name> directory)" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const report = await removeWorker({ projectDir: process.cwd(), name: args.name });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "worker.remove", ...report })}\n`);
+          return;
+        }
+        process.stdout.write(`Removed ${report.worker}.\n`);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: WorkerRemovePayload, mutates: true, idempotent: false, needsNetwork: false },
+);
 
 /**
  * `pithy worker rename <old> <new>` — move `apps/<old>` and reconcile the names that must move with it.
@@ -142,41 +273,49 @@ const remove = defineCommand({
  * name, and `vars.WORKER`. This is the command that moves all three at once; `pithy doctor` is what
  * catches a rename done by hand.
  */
-const rename = defineCommand({
-  meta: { name: "rename", description: "Rename a worker: move apps/<old> and reconcile its name everywhere" },
-  args: {
-    from: { type: "positional", required: true, description: "The worker to rename (an apps/<name> directory)" },
-    to: { type: "positional", required: true, description: "The new name, kebab-case, e.g. web or admin-api" },
-    force: {
-      type: "boolean",
-      default: false,
-      description: "Rename even though a script is deployed under the old name (it stays live)",
+const rename = withContract(
+  defineCommand({
+    meta: { name: "rename", description: "Rename a worker: move apps/<old> and reconcile its name everywhere" },
+    args: {
+      from: { type: "positional", required: true, description: "The worker to rename (an apps/<name> directory)" },
+      to: { type: "positional", required: true, description: "The new name, kebab-case, e.g. web or admin-api" },
+      force: {
+        type: "boolean",
+        default: false,
+        description: "Rename even though a script is deployed under the old name (it stays live)",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const report = await renameWorker({ projectDir: process.cwd(), from: args.from, to: args.to, force: args.force });
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "worker.rename", ...report })}\n`);
-        return;
-      }
-      process.stdout.write(`Renamed ${report.from} to ${report.to}.\n`);
-      if (report.script) {
-        process.stdout.write(`Deploys as ${report.script.to}, not ${report.script.from}.\n`);
-      }
-      if (report.orphaned.length > 0) {
-        // Under --force only: the old script is still live, still serving, and still billing.
-        process.stdout.write(`Still deployed under the old name: ${report.orphaned.join(", ")}. Delete or keep.\n`);
-      }
-      if (!report.accountChecked) {
-        // Never "nothing is deployed" — the account was not reached, and saying so is the whole difference.
-        process.stdout.write(dim("The account could not be reached, so nothing was checked for a live script.\n"));
-      }
-      process.stdout.write(dim("Check anything outside the worker that names it: tsconfig, CI, imports.\n"));
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const report = await renameWorker({
+          projectDir: process.cwd(),
+          from: args.from,
+          to: args.to,
+          force: args.force,
+        });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "worker.rename", ...report })}\n`);
+          return;
+        }
+        process.stdout.write(`Renamed ${report.from} to ${report.to}.\n`);
+        if (report.script) {
+          process.stdout.write(`Deploys as ${report.script.to}, not ${report.script.from}.\n`);
+        }
+        if (report.orphaned.length > 0) {
+          // Under --force only: the old script is still live, still serving, and still billing.
+          process.stdout.write(`Still deployed under the old name: ${report.orphaned.join(", ")}. Delete or keep.\n`);
+        }
+        if (!report.accountChecked) {
+          // Never "nothing is deployed" — the account was not reached, and saying so is the whole difference.
+          process.stdout.write(dim("The account could not be reached, so nothing was checked for a live script.\n"));
+        }
+        process.stdout.write(dim("Check anything outside the worker that names it: tsconfig, CI, imports.\n"));
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: WorkerRenamePayload, mutates: true, idempotent: false, needsNetwork: true },
+);
 
 /**
  * The declaration narrowed to what `--env` asked for.
@@ -211,97 +350,102 @@ function scopeDomains(domains: WorkerDomains, env: string | undefined): WorkerDo
  * It writes config and nothing else — no Cloudflare call, no deploy — so it is safe to run on any branch,
  * at any time, as often as you like. A second run reports "already in sync" and touches no file.
  */
-const sync = defineCommand({
-  meta: {
-    name: "sync",
-    description: "Write what pithy.config.ts declares — domains routes, Workflows, cron — into wrangler.jsonc",
-  },
-  args: {
-    worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
-    env: optionalEnvArg("Reconcile just this environment (omit for every one the worker declares)"),
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      // First, before any config is loaded: an illegal environment must cost nothing.
-      const env = args.env === undefined ? undefined : requireEnvironment(args.env);
-      const projectDir = process.cwd();
-      const interactive = mayPrompt(args.json);
-      // Composed for `--env` when one is named. Without it every environment is reconciled from the
-      // composition for dev: a `domains` or `app` declaration that differs by environment is written from
-      // dev's value into every stanza. That is this command's limit, not a composition for none.
-      const target = await targetWorker(env ?? LOCAL_ENVIRONMENT, {
-        projectDir,
-        interactive,
-        ...(args.worker === undefined ? {} : { worker: args.worker }),
-      });
-
-      // The address first, and separately from the app capability: `domains` says where this Worker
-      // answers, and a Worker with no `app` block still answers somewhere. Validated on the way through —
-      // a malformed declaration must name the field here, not produce a route Cloudflare rejects at deploy.
-      const domains = loadWorkerDomains(target.config);
-      const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
-
-      const app = target.config.app;
-      if (!app && domains === undefined) {
-        throw new NotFoundError({
-          message: `${target.name} declares neither domains nor an app capability.`,
-          action:
-            "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
+const sync = withContract(
+  defineCommand({
+    meta: {
+      name: "sync",
+      description: "Write what pithy.config.ts declares — domains routes, Workflows, cron — into wrangler.jsonc",
+    },
+    args: {
+      worker: { type: "string", description: "Which worker to reconcile (apps/<name>)" },
+      env: optionalEnvArg("Reconcile just this environment (omit for every one the worker declares)"),
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        // First, before any config is loaded: an illegal environment must cost nothing.
+        const env = args.env === undefined ? undefined : requireEnvironment(args.env);
+        const projectDir = process.cwd();
+        const interactive = mayPrompt(args.json);
+        // Composed for `--env` when one is named. Without it every environment is reconciled from the
+        // composition for dev: a `domains` or `app` declaration that differs by environment is written from
+        // dev's value into every stanza. That is this command's limit, not a composition for none.
+        const target = await targetWorker(env ?? LOCAL_ENVIRONMENT, {
+          projectDir,
+          interactive,
+          ...(args.worker === undefined ? {} : { worker: args.worker }),
         });
-      }
 
-      const runs = app
-        ? await reconcileAppWorkflows({
-            workerDir: target.dir,
-            // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and
-            // stable forever once deployed, so a guessed project would name a Workflow another owns.
-            project: await loadProject(projectDir).then(requireProjectName),
-            app,
-            ...(env === undefined ? {} : { env }),
-          })
-        : [];
+        // The address first, and separately from the app capability: `domains` says where this Worker
+        // answers, and a Worker with no `app` block still answers somewhere. Validated on the way through —
+        // a malformed declaration must name the field here, not produce a route Cloudflare rejects at deploy.
+        const domains = loadWorkerDomains(target.config);
+        const routes = domains ? await applyDomains(target.dir, scopeDomains(domains, env)) : [];
 
-      if (args.json) {
-        process.stdout.write(
-          `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs })}\n`,
-        );
-        return;
-      }
-      // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
-      // command is run on a hunch, often, and it has to be obvious when it did nothing.
-      if (routes.every((route) => !route.changed) && runs.every((run) => !run.changed)) {
-        // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
-        // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
-        // job's binding out — so a run per environment saying nothing is exactly the empty case.
-        const nothing =
-          routes.length === 0 && runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
-        process.stdout.write(
-          nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
-        );
+        const app = target.config.app;
+        if (!app && domains === undefined) {
+          throw new NotFoundError({
+            message: `${target.name} declares neither domains nor an app capability.`,
+            action:
+              "Declare `domains` or `app` in the worker's pithy.config.ts. This writes what they imply into wrangler.jsonc — the route and BASE_URL, the Workflow bindings and cron.",
+          });
+        }
+
+        const runs = app
+          ? await reconcileAppWorkflows({
+              workerDir: target.dir,
+              // `requireProjectName`, never `resolveProjectName`: a Workflow name is account-scoped and
+              // stable forever once deployed, so a guessed project would name a Workflow another owns.
+              project: await loadProject(projectDir).then(requireProjectName),
+              app,
+              ...(env === undefined ? {} : { env }),
+            })
+          : [];
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "worker.sync", ...workerIdentity(target), routes, runs })}\n`,
+          );
+          return;
+        }
+        // One sentence for a run that changed nothing, whichever half had nothing to do. A reconcile
+        // command is run on a hunch, often, and it has to be obvious when it did nothing.
+        if (routes.every((route) => !route.changed) && runs.every((run) => !run.changed)) {
+          // "Nothing to sync" is about what was *declared*, not about how many environments were walked.
+          // An app capability declaring no Workflows is still reconciled — that is what takes a dropped
+          // job's binding out — so a run per environment saying nothing is exactly the empty case.
+          const nothing =
+            routes.length === 0 && runs.every((run) => run.workflows.length === 0 && run.crons.length === 0);
+          process.stdout.write(
+            nothing ? `${target.name} declares nothing to sync.\n` : `${target.name} is already in sync.\n`,
+          );
+          process.stdout.write(`${formatDone()}\n`);
+          return;
+        }
+        for (const route of routes) {
+          if (!route.changed) continue;
+          process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
+        }
+        for (const run of runs) {
+          if (!run.changed) continue;
+          const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
+          // `nothing` rather than an empty gap: a run that moved to an empty table took a job's binding
+          // out, and a line reading ": . no cron." says that as badly as it can be said.
+          const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
+          process.stdout.write(`${run.env}: ${bound} bound. ${crons}.\n`);
+        }
+        // Cloudflare resolves class_name in the script the binding names, and that script is this one.
+        const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
+        if (classes.length > 0) {
+          process.stdout.write(
+            dim(`Export a WorkflowEntrypoint subclass from main for each: ${classes.join(", ")}.\n`),
+          );
+        }
         process.stdout.write(`${formatDone()}\n`);
-        return;
-      }
-      for (const route of routes) {
-        if (!route.changed) continue;
-        process.stdout.write(`${route.env}: routed to ${route.pattern}. BASE_URL ${route.baseUrl}.\n`);
-      }
-      for (const run of runs) {
-        if (!run.changed) continue;
-        const crons = run.crons.length === 0 ? "no cron" : run.crons.join(", ");
-        // `nothing` rather than an empty gap: a run that moved to an empty table took a job's binding
-        // out, and a line reading ": . no cron." says that as badly as it can be said.
-        const bound = run.workflows.length === 0 ? "nothing" : run.workflows.map((entry) => entry.binding).join(", ");
-        process.stdout.write(`${run.env}: ${bound} bound. ${crons}.\n`);
-      }
-      // Cloudflare resolves class_name in the script the binding names, and that script is this one.
-      const classes = [...new Set(runs.flatMap((run) => run.workflows.map((entry) => entry.class_name)))];
-      if (classes.length > 0) {
-        process.stdout.write(dim(`Export a WorkflowEntrypoint subclass from main for each: ${classes.join(", ")}.\n`));
-      }
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+      }),
+  }),
+  { output: "document", payload: WorkerSyncPayload, mutates: true, idempotent: true, needsNetwork: false },
+);
 
 export default defineCommand({
   meta: { name: "worker", description: "Manage the project's Workers under apps/ (the dev/deploy registry)" },

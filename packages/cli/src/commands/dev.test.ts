@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stripAnsi } from "../dev/logging";
-import dev, { autostartIntent, collectAppFlags } from "./dev";
+import { expectConforms } from "../test-utils/payloadContract";
+import dev, { autostartIntent, collectAppFlags, formatSessionLine } from "./dev";
 
 /** The args are a static object literal on this command — resolve their type for the assertions. */
 type ArgSpec = { type: string; default?: unknown; description?: string };
@@ -204,6 +205,31 @@ describe("pithy dev --list", () => {
       else process.env.PITHY_CONFIG_DIR = previous;
       await rm(configDir, { recursive: true, force: true });
     }
+  });
+
+  /** Every line `pithy dev --json` writes itself, held to the schema `pithy schema dev` publishes (#697). */
+  test("--json conforms to its published payload: the list, both autostart writes, and the session line", async () => {
+    await project();
+    await expectConforms("dev", await run(true));
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-dev-cfg-"));
+    const previous = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+    try {
+      const rawArgs = ["--app", "acme-api", "--json"];
+      await expectConforms("dev", await invoke({ "disable-autostart": true, json: true }, rawArgs));
+      await expectConforms("dev", await invoke({ "enable-autostart": true, json: true }, rawArgs));
+    } finally {
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    }
+    await expectConforms(
+      "dev",
+      formatSessionLine({
+        workers: [{ name: "acme-api", port: 8787, origin: "http://localhost:8787" }],
+        identities: [{ userId: "example-ada", email: "ada@example.com", expiresAt: "2027-07-27T00:00:00.000Z" }],
+      }),
+    );
   });
 
   test("--json writes one object naming every member, its kind, and its pinned port", async () => {

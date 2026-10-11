@@ -3,10 +3,12 @@
 
 import { basename, join, resolve } from "node:path";
 import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
+import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import {
   CloudflareAccountName,
   type CloudflareConfigOptions,
@@ -15,6 +17,7 @@ import {
   resolveCloudflare,
   writeCloudflareConfig,
 } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { stateDir } from "../notifier/state";
 import { askDomains, writeDomains } from "../project/askDomains";
 import { writeFileAtomic } from "../project/atomic";
@@ -431,116 +434,141 @@ export async function writeCloudflareBlock(projectDir: string, block: Cloudflare
   return { declared: true };
 }
 
-export default defineCommand({
-  meta: { name: "init", description: "Scaffold a new project" },
-  args: {
-    name: { type: "string", description: "Application name. Defaults to the directory name." },
-    worker: {
-      type: "string",
-      description: `Name of the first worker, created at apps/<name>. Defaults to "${DEFAULT_WORKER}".`,
+/** `pithy init --json`. `docs/commands/init.md`. */
+const InitPayload = z
+  .object({
+    command: z.literal("init").describe('`"init"`.'),
+    targetDir: z.string().describe("The absolute directory the project was scaffolded into."),
+    appName: z.string().describe("The project name written into the root `pithy.config.ts`."),
+    worker: z.string().describe("The first Worker's `apps/` directory."),
+    environments: z
+      .array(z.string().describe("An environment."))
+      .describe("Every environment the project deploys to, in declaration order."),
+    domains: WorkerDomains.nullable().describe("Where the first Worker answers, or `null` when none was declared."),
+  })
+  .describe("What `pithy init` scaffolded.");
+
+export default withContract(
+  defineCommand({
+    meta: { name: "init", description: "Scaffold a new project" },
+    args: {
+      name: { type: "string", description: "Application name. Defaults to the directory name." },
+      worker: {
+        type: "string",
+        description: `Name of the first worker, created at apps/<name>. Defaults to "${DEFAULT_WORKER}".`,
+      },
+      dir: {
+        type: "string",
+        default: ".",
+        description: "Target directory. Created if missing; must not already hold the files init writes.",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
-    dir: {
-      type: "string",
-      default: ".",
-      description: "Target directory. Created if missing; must not already hold the files init writes.",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const targetDir = resolve(process.cwd(), args.dir);
+        // Gate on the target before prompting — a doomed run fails fast, not after
+        // the user answers (scaffoldProject re-checks, so the guard still holds).
+        // `--worker` is passed when given: it decides which `apps/<name>` the scaffold lands at, and so
+        // what counts as a collision. A prompted worker name is only known later, and the re-check covers
+        // it. `ensureScaffoldable` validates the name before it builds a path out of it.
+        await ensureScaffoldable(targetDir, args.worker);
+
+        // Said before the question, not after it. The name leads every Cloudflare resource this project
+        // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
+        // scope decision behind it — one project or two — cannot be undone by editing a string later.
+        if (!args.name && mayPrompt(args.json)) {
+          process.stdout.write(
+            `${dim("One project per set of apps that share users or data. Another app? Add a worker, not a project.")}\n${dim("The name leads every Cloudflare resource this project provisions. Changing it later orphans them.")}\n\n`,
+          );
+        }
+        const name = args.name
+          ? { value: args.name, prompted: false }
+          : await ask("Project name:", basename(targetDir), args.json);
+        // Every worker lives in apps/<name>, so the first one is named too. `api` is the default because
+        // this scaffold is a backend — a project that wants `web`, `edge`, or `admin` says so here.
+        const worker = args.worker
+          ? { value: args.worker, prompted: false }
+          : await ask("First worker (apps/<name>):", DEFAULT_WORKER, args.json);
+
+        // Asked with the two names, before anything is written, because it is the same kind of answer:
+        // the environment is the second segment of every Cloudflare name this project will compose, and
+        // renaming one after provisioning orphans what was created under the old one. The scaffold writes
+        // each Worker's `env.<name>` stanzas from it.
+        const environments = await askEnvironments({ interactive: mayPrompt(args.json) });
+
+        const appName = name.value;
+        await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
+
+        // Asked before the zones are, because listing them needs the token — and the same token answers
+        // which account this project is for, so the two questions collapse into one.
+        const account = await askCloudflareAccount({ interactive: mayPrompt(args.json) });
+        const credentials = [...account.notes];
+        // The block goes into the config the scaffold just wrote, so `loadProject` reads it on the very
+        // next command. A config it could not be placed in is printed rather than dropped.
+        const declared = account.block ? await writeCloudflareBlock(targetDir, account.block) : null;
+
+        // Where the Worker answers, asked against the account's real zones. Skippable — a project without
+        // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
+        // scaffold exists, because the answer is written into files this just created.
+        const asked = await askDomains({
+          projectDir: targetDir,
+          // The account this run just recorded — the zones offered below belong to it, not to whatever
+          // `cloudflare.json` happens to hold on this machine.
+          account: account.block,
+          workerName: worker.value,
+          interactive: mayPrompt(args.json),
+        });
+        // A declaration the writer could not place must not vanish. `writeDomains` still generates the
+        // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
+        // source of truth, and an adopter who answered the prompt needs to know it did not land.
+        const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
+        const prompted =
+          name.prompted || worker.prompted || environments.prompted || asked.prompted || account.prompted;
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null })}\n`,
+          );
+          return;
+        }
+        for (const note of credentials) process.stdout.write(`${note}\n`);
+        if (declared && !declared.declared && account.block) {
+          process.stdout.write(
+            `Could not write the cloudflare block into pithy.config.ts. Add it by hand:\n${renderCloudflareBlock(account.block)}`,
+          );
+        }
+        if (wrote && !wrote.declared && asked.domains) {
+          process.stdout.write(
+            `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
+          );
+        }
+        // The scaffolded worker declares no kit dependency while nothing under `@pithy-sh/*` is published
+        // ({@link kitRange}), so say where the kit comes from instead. Unsaid, the adopter meets the gap as
+        // an unresolved import at the first typecheck — which is a worse introduction than a sentence here,
+        // and the only alternative is the range that 404s their first install.
+        if (kitRange(PACKAGE_VERSION) === null) {
+          process.stdout.write(
+            `${dim("@pithy-sh/* isn't published yet, so this worker declares no kit dependency.")}\n${dim("Link the kit from a checkout, then install.")}\n`,
+          );
+        }
+        // Set Done. off from the prompt's gutter; a flagged run has nothing above it.
+        process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);
+
+        // Offer the shortcut only to a human at a terminal — never in a --json, piped or --no-input run.
+        if (mayPrompt(args.json)) {
+          await offerAlias();
+          // And the docs server, which says nothing when this machine runs no AI client (#652).
+          await offerDocs();
+        }
+      }),
+  }),
+  {
+    output: "document",
+    payload: InitPayload,
+    mutates: true,
+    // A second run into the same directory is refused: the files it writes are already there.
+    idempotent: false,
+    needsNetwork: true,
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const targetDir = resolve(process.cwd(), args.dir);
-      // Gate on the target before prompting — a doomed run fails fast, not after
-      // the user answers (scaffoldProject re-checks, so the guard still holds).
-      // `--worker` is passed when given: it decides which `apps/<name>` the scaffold lands at, and so
-      // what counts as a collision. A prompted worker name is only known later, and the re-check covers
-      // it. `ensureScaffoldable` validates the name before it builds a path out of it.
-      await ensureScaffoldable(targetDir, args.worker);
-
-      // Said before the question, not after it. The name leads every Cloudflare resource this project
-      // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
-      // scope decision behind it — one project or two — cannot be undone by editing a string later.
-      if (!args.name && mayPrompt(args.json)) {
-        process.stdout.write(
-          `${dim("One project per set of apps that share users or data. Another app? Add a worker, not a project.")}\n${dim("The name leads every Cloudflare resource this project provisions. Changing it later orphans them.")}\n\n`,
-        );
-      }
-      const name = args.name
-        ? { value: args.name, prompted: false }
-        : await ask("Project name:", basename(targetDir), args.json);
-      // Every worker lives in apps/<name>, so the first one is named too. `api` is the default because
-      // this scaffold is a backend — a project that wants `web`, `edge`, or `admin` says so here.
-      const worker = args.worker
-        ? { value: args.worker, prompted: false }
-        : await ask("First worker (apps/<name>):", DEFAULT_WORKER, args.json);
-
-      // Asked with the two names, before anything is written, because it is the same kind of answer:
-      // the environment is the second segment of every Cloudflare name this project will compose, and
-      // renaming one after provisioning orphans what was created under the old one. The scaffold writes
-      // each Worker's `env.<name>` stanzas from it.
-      const environments = await askEnvironments({ interactive: mayPrompt(args.json) });
-
-      const appName = name.value;
-      await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
-
-      // Asked before the zones are, because listing them needs the token — and the same token answers
-      // which account this project is for, so the two questions collapse into one.
-      const account = await askCloudflareAccount({ interactive: mayPrompt(args.json) });
-      const credentials = [...account.notes];
-      // The block goes into the config the scaffold just wrote, so `loadProject` reads it on the very
-      // next command. A config it could not be placed in is printed rather than dropped.
-      const declared = account.block ? await writeCloudflareBlock(targetDir, account.block) : null;
-
-      // Where the Worker answers, asked against the account's real zones. Skippable — a project without
-      // a domain yet is legitimate, and adding one later is a config edit plus a deploy. Asked after the
-      // scaffold exists, because the answer is written into files this just created.
-      const asked = await askDomains({
-        projectDir: targetDir,
-        // The account this run just recorded — the zones offered below belong to it, not to whatever
-        // `cloudflare.json` happens to hold on this machine.
-        account: account.block,
-        workerName: worker.value,
-        interactive: mayPrompt(args.json),
-      });
-      // A declaration the writer could not place must not vanish. `writeDomains` still generates the
-      // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
-      // source of truth, and an adopter who answered the prompt needs to know it did not land.
-      const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
-      const prompted = name.prompted || worker.prompted || environments.prompted || asked.prompted || account.prompted;
-
-      if (args.json) {
-        process.stdout.write(
-          `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null })}\n`,
-        );
-        return;
-      }
-      for (const note of credentials) process.stdout.write(`${note}\n`);
-      if (declared && !declared.declared && account.block) {
-        process.stdout.write(
-          `Could not write the cloudflare block into pithy.config.ts. Add it by hand:\n${renderCloudflareBlock(account.block)}`,
-        );
-      }
-      if (wrote && !wrote.declared && asked.domains) {
-        process.stdout.write(
-          `Could not write the domains block into pithy.config.ts. Add it by hand:\n${renderDomainsBlock(asked.domains)}\n`,
-        );
-      }
-      // The scaffolded worker declares no kit dependency while nothing under `@pithy-sh/*` is published
-      // ({@link kitRange}), so say where the kit comes from instead. Unsaid, the adopter meets the gap as
-      // an unresolved import at the first typecheck — which is a worse introduction than a sentence here,
-      // and the only alternative is the range that 404s their first install.
-      if (kitRange(PACKAGE_VERSION) === null) {
-        process.stdout.write(
-          `${dim("@pithy-sh/* isn't published yet, so this worker declares no kit dependency.")}\n${dim("Link the kit from a checkout, then install.")}\n`,
-        );
-      }
-      // Set Done. off from the prompt's gutter; a flagged run has nothing above it.
-      process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);
-
-      // Offer the shortcut only to a human at a terminal — never in a --json, piped or --no-input run.
-      if (mayPrompt(args.json)) {
-        await offerAlias();
-        // And the docs server, which says nothing when this machine runs no AI client (#652).
-        await offerDocs();
-      }
-    }),
-});
+);

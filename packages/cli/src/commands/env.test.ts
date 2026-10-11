@@ -10,7 +10,7 @@ import type { EnvInventory, EnvInventoryOptions, WorkerEnvironments } from "../p
  * because `loadEnv` calls `vi.resetModules()`, which re-runs the factory and would hand each test a
  * fresh spy the assertions could not see.
  */
-const built = vi.hoisted(() => ({ calls: [] as unknown[] }));
+const built = vi.hoisted(() => ({ calls: [] as unknown[], inventory: undefined as unknown }));
 
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
 const ACCOUNT: CloudflareAccountSelection = { accountName: "leed", accountId: "acct-leed" };
@@ -19,7 +19,7 @@ vi.mock("../project/envInventory", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/envInventory")>()),
   buildEnvInventory: async (options: unknown) => {
     built.calls.push(options);
-    return { accountId: "acct-leed", workers: [] } satisfies EnvInventory;
+    return (built.inventory ?? { accountId: "acct-leed", workers: [] }) as EnvInventory;
   },
 }));
 
@@ -119,6 +119,27 @@ describe("env command", () => {
     expect(built.calls).toHaveLength(1);
     expect((built.calls[0] as EnvInventoryOptions).account).toEqual(ACCOUNT);
   });
+});
+
+/** Held to the schema `pithy schema env` publishes (#697), through the real command. */
+test("pithy env --json conforms to its published payload", async () => {
+  const { expectConforms } = await import("../test-utils/payloadContract");
+  for (const fixture of [inventory(), inventory({ accountId: null, workers: [] })]) {
+    built.inventory = fixture;
+    const { default: env } = await loadEnv({ NO_COLOR: "1" });
+    const written: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      await env.run?.({ args: { json: true }, rawArgs: [] } as never);
+    } finally {
+      stdout.mockRestore();
+      built.inventory = undefined;
+    }
+    await expectConforms("env", written);
+  }
 });
 
 describe("renderEnvInventory", () => {

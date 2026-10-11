@@ -13,6 +13,7 @@ import { z } from "zod";
 import { createCliAudit } from "../audit/cliAudit";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, resolveCloudflare } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { httpDashboardClient } from "../dashboard/api";
 import {
   authorizeDashboard,
@@ -581,205 +582,373 @@ export async function confirmDisconnect(env: string): Promise<void> {
   if (answer !== true) declined();
 }
 
+const Environment = z.string().describe("The environment the connection is bound to.");
+const ConnectionId = z.string().describe("The connection's id — the token `aud`, and the row's primary key.");
+const Detail = z.string().optional().describe("Operator-facing context, when the status is not the good one.");
+const Scopes = z
+  .array(z.string().describe("One granted operation, e.g. `manifest:read`."))
+  .describe("The operations granted.");
+const Iso = (what: string) => z.string().describe(`${what}, ISO-8601.`);
+const IsoOrNull = (what: string) => z.string().nullable().describe(`${what}, ISO-8601, or \`null\`.`);
+
+/** A connection row as `--json` writes it: the stored shape, dates as ISO-8601 strings. */
+const ConnectionJson = z
+  .object({
+    id: z.string().describe("The connection id."),
+    environment: Environment,
+    issuer: z.string().describe("The exact `iss` this connection accepts."),
+    workerUrl: z.string().describe("The Worker URL the management client calls."),
+    basePath: z.string().describe("Where the Worker mounts the control-plane seam."),
+    managementOrigin: z
+      .string()
+      .nullable()
+      .describe("Where the management client answers, or `null` for an older row."),
+    scopes: Scopes,
+    keys: z
+      .array(
+        z
+          .object({
+            keyId: z.string().describe("The key's id, as a token's `kid` names it."),
+            publicKey: Ed25519PublicJwk,
+            validFrom: Iso("When the key became valid"),
+            validUntil: IsoOrNull("When the key stops being accepted"),
+            revokedAt: IsoOrNull("When the key was revoked"),
+          })
+          .describe("One registered key and its validity window."),
+      )
+      .describe("Every key the connection may sign with, current and superseded."),
+    createdAt: Iso("When the connection was registered"),
+    updatedAt: Iso("When the row last changed"),
+  })
+  .describe("One management-client connection, as stored.");
+
+/** `pithy dashboard connect --json`. */
+const DashboardConnectPayload = z
+  .object({
+    command: z.literal("dashboard.connect").describe('`"dashboard.connect"`.'),
+    environment: Environment,
+    connectionId: ConnectionId,
+    issuer: z.string().describe("The management-client origin every token from this connection must carry."),
+    workerUrl: z.string().describe("The Worker URL the management client will call."),
+    scopes: Scopes,
+    keyId: z.string().nullable().describe("The key registered by this run, or `null` when `--update` only re-pointed."),
+    status: z
+      .enum(["connected", "needs_reconnect", "unreachable", "registered"])
+      .describe("`connected` is proven by a signed ping; `registered` is the offline path, written and not proven."),
+    detail: Detail,
+    updated: z.boolean().describe("Whether an existing connection was re-pointed rather than a new one created."),
+  })
+  .describe("What `pithy dashboard connect` did.");
+
+/** `pithy dashboard rotate --json`. */
+const DashboardRotatePayload = z
+  .object({
+    command: z.literal("dashboard.rotate").describe('`"dashboard.rotate"`.'),
+    environment: Environment,
+    connectionId: ConnectionId,
+    keyId: z.string().describe("The newly registered key."),
+    previousKeyIds: z
+      .array(z.string().describe("A key id."))
+      .describe("The keys that were already live, and that stay live."),
+    status: z.enum(["connected", "needs_reconnect"]).describe("Whether a signed ping proved the new key."),
+    detail: Detail,
+  })
+  .describe("What `pithy dashboard rotate` did.");
+
+/** `pithy dashboard disconnect --json`. */
+const DashboardDisconnectPayload = z
+  .object({
+    command: z.literal("dashboard.disconnect").describe('`"dashboard.disconnect"`.'),
+    environment: Environment,
+    connectionId: ConnectionId.nullable().describe("The connection removed, or `null` when nothing was registered."),
+    removed: z.boolean().describe("Whether a row was deleted. `false` on a re-run, which is not an error."),
+    dashboardNotified: z.boolean().describe("Whether the management client was told. Never gates the revocation."),
+    detail: Detail,
+  })
+  .describe("What `pithy dashboard disconnect` did.");
+
+/** `pithy dashboard revoke-key --json`. */
+const DashboardRevokeKeyPayload = z
+  .object({
+    command: z.literal("dashboard.revoke-key").describe('`"dashboard.revoke-key"`.'),
+    environment: Environment,
+    keyId: z.string().describe("The key asked for."),
+    revoked: z.boolean().describe("`false` when no key answered to that id. Re-running is not an error."),
+    connection: ConnectionJson.nullable().describe("The connection after the write, or `null` when nothing matched."),
+  })
+  .describe("What `pithy dashboard revoke-key` did.");
+
+/** `pithy dashboard status --json`. */
+const DashboardStatusPayload = z
+  .object({
+    command: z.literal("dashboard.status").describe('`"dashboard.status"`.'),
+    environment: Environment,
+    connected: z.boolean().describe("Whether anything is registered. `false` is the shipped, denying state."),
+    connectionId: ConnectionId.nullable().describe("The connection's id, or `null` when nothing is registered."),
+    issuer: z.string().nullable().describe("The management-client origin this connection trusts."),
+    workerUrl: z.string().nullable().describe("The Worker URL the management client calls."),
+    scopes: Scopes,
+    keys: z
+      .array(
+        z
+          .object({
+            keyId: z.string().describe("The key's id, as a token's `kid` names it."),
+            live: z.boolean().describe("Whether this key may verify a call right now."),
+            ageDays: z.number().int().describe("Whole days since the key became valid."),
+            validFrom: Iso("When the key became valid"),
+            validUntil: IsoOrNull("When the key stops being accepted"),
+            revokedAt: IsoOrNull("When the key was revoked"),
+          })
+          .describe("One registered key."),
+      )
+      .describe("Every registered key, live and superseded."),
+    status: z
+      .enum(["connected", "needs_reconnect", "unreachable", "unverified"])
+      .describe("`unverified` unless `--verify` asked for a probe; `unreachable` when nothing answered it."),
+    detail: Detail,
+  })
+  .describe("What `pithy dashboard status` found.");
+
+/** What every subcommand promises beyond its payload. Every one reaches the project's D1 and the client. */
+const DASHBOARD = { output: "document", mutates: true, needsNetwork: true } as const;
+
 /** `pithy dashboard connect` — register a management client, or re-point the one already registered. */
-const connect = defineCommand({
-  meta: { name: "connect", description: "Connect a management client to an environment, and prove it with a ping" },
-  args: {
-    ...commonArgs,
-    worker: {
-      type: "string",
-      description: "Which worker composes the admin surface (apps/<name>). Required when the project has several",
+const connect = withContract(
+  defineCommand({
+    meta: { name: "connect", description: "Connect a management client to an environment, and prove it with a ping" },
+    args: {
+      ...commonArgs,
+      worker: {
+        type: "string",
+        description: "Which worker composes the admin surface (apps/<name>). Required when the project has several",
+      },
+      "worker-url": { type: "string", description: "Override the resolved worker URL for this environment" },
+      scope: {
+        type: "string",
+        description: "Grant one scope: --scope manifest:read (repeatable). --scope all grants every composed scope",
+      },
+      update: { type: "boolean", default: false, description: "Re-point an existing connection's URL and scopes" },
+      "public-key": { type: "string", description: "Register a JWK you generated yourself — no dashboard involved" },
+      issuer: { type: "string", description: "With --public-key: the iss your own management client presents" },
+      "key-id": { type: "string", description: "With --public-key: the key id, if the JWK carries no kid" },
+      project: { type: "string", description: "Override the project name sent to the management client" },
     },
-    "worker-url": { type: "string", description: "Override the resolved worker URL for this environment" },
-    scope: {
-      type: "string",
-      description: "Grant one scope: --scope manifest:read (repeatable). --scope all grants every composed scope",
-    },
-    update: { type: "boolean", default: false, description: "Re-point an existing connection's URL and scopes" },
-    "public-key": { type: "string", description: "Register a JWK you generated yourself — no dashboard involved" },
-    issuer: { type: "string", description: "With --public-key: the iss your own management client presents" },
-    "key-id": { type: "string", description: "With --public-key: the key id, if the JWK carries no kid" },
-    project: { type: "string", description: "Override the project name sent to the management client" },
-  },
-  // `rawArgs` because a repeated `--scope` only survives there.
-  run: ({ args, rawArgs }) =>
-    withErrorReporting(args.json, async () => {
-      // `all` is told from a named grant here, before a project is read: refusing `--scope all --scope
-      // manifest:read` is an argument rule, and an argument rule that waited on a Worker would report a
-      // broken project instead of the contradiction the operator typed.
-      const scopeRequest = readScopeRequest(collectScopeFlags(rawArgs));
-      const narrowed = isNarrowed(scopeRequest);
-      const offlinePath = args["public-key"] !== undefined;
+    // `rawArgs` because a repeated `--scope` only survives there.
+    run: ({ args, rawArgs }) =>
+      withErrorReporting(args.json, async () => {
+        // `all` is told from a named grant here, before a project is read: refusing `--scope all --scope
+        // manifest:read` is an argument rule, and an argument rule that waited on a Worker would report a
+        // broken project instead of the contradiction the operator typed.
+        const scopeRequest = readScopeRequest(collectScopeFlags(rawArgs));
+        const narrowed = isNarrowed(scopeRequest);
+        const offlinePath = args["public-key"] !== undefined;
 
-      // Cross-arg rules, checked here rather than by a helper: docs/STACK.md proposes
-      // requireWhen/exactlyOne, but they do not exist yet, and inventing them for one command would be
-      // a worse trade than four explicit throws.
-      if (offlinePath && args.issuer === undefined) {
-        throw new ValidationError({
-          message: "--public-key needs --issuer.",
-          action: "Pass --issuer https://<your-client> — it is the iss every one of your tokens must carry.",
-        });
-      }
-      if (!offlinePath && args.issuer !== undefined) {
-        throw new ValidationError({
-          message: "--issuer only applies with --public-key.",
-          action: "Drop --issuer. The dashboard returns the issuer a connection is registered against.",
-        });
-      }
-      if (!offlinePath && args["key-id"] !== undefined) {
-        throw new ValidationError({
-          message: "--key-id only applies with --public-key.",
-          action: "Drop --key-id. The dashboard mints the keypair and names the key.",
-        });
-      }
-      if (args.update && args["worker-url"] === undefined && !narrowed && !offlinePath) {
-        throw new ValidationError({
-          message: "Nothing to update.",
-          action: "Pass --worker-url, --scope, or both.",
-        });
-      }
-
-      let publicKey: OfflinePublicKey | undefined;
-      if (offlinePath) {
-        const raw = await readFile(args["public-key"] as string, "utf8");
-        const key = parsePublicKey(raw, args["key-id"]);
-        publicKey = { ...key, issuer: args.issuer as string };
-      }
-
-      const interactive = isInteractive(args.json);
-      const projectDir = process.cwd();
-
-      // Which Worker, at what address, with the seam mounted where — resolved from the project rather
-      // than demanded. `--worker-url` still overrides (a proxy in front of the Worker has an address no
-      // config knows), and an update that is only re-pointing scopes needs no address at all.
-      //
-      // This replaces a `--worker-url` that had no fallback whatsoever: the interactive path prompted for
-      // it free-text, and the non-interactive path — the agent and CI path — simply threw.
-      //
-      // Resolve only when an address is actually needed: on any create, and on an update that is
-      // re-pointing. A **key-only update** — `--update` with no `--worker-url`, including the offline
-      // `--public-key` rotation — needs no address at all, and resolving one would demand a Worker that
-      // resolves *and* composes the seam. That regressed offline rotation for a proxy-fronted project,
-      // whose address no config knows and whose whole point is not needing us.
-      const needsAddress = !args.update || args["worker-url"] !== undefined;
-      const target = !needsAddress
-        ? null
-        : await resolveConnectTarget({
-            projectDir,
-            environment: args.env,
-            ...(args.worker === undefined ? {} : { worker: args.worker }),
-            ...(args["worker-url"] === undefined ? {} : { workerUrl: args["worker-url"] }),
+        // Cross-arg rules, checked here rather than by a helper: docs/STACK.md proposes
+        // requireWhen/exactlyOne, but they do not exist yet, and inventing them for one command would be
+        // a worse trade than four explicit throws.
+        if (offlinePath && args.issuer === undefined) {
+          throw new ValidationError({
+            message: "--public-key needs --issuer.",
+            action: "Pass --issuer https://<your-client> — it is the iss every one of your tokens must carry.",
           });
-      if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
-      const workerUrl = target?.workerUrl ?? args["worker-url"];
-      // What this Worker composes, which is what the grant is derived from.
-      //
-      // `--scope all` reads that composed surface, and composing needs no address — so a scope-only
-      // update resolves the Worker without resolving, or re-pointing, its address. Without this, `all`
-      // was refused on the one path it exists for: widening an existing grant after composing a new
-      // capability, where the alternative is the hand-typed list `all` replaces.
-      //
-      // Empty on a key-only update, where no address was resolved and no grant is being decided.
-      const composed = await composedForGrant({
-        target,
-        all: scopeRequest.all,
-        projectDir,
-        environment: args.env,
-        ...(args.worker === undefined ? {} : { worker: args.worker }),
-      });
+        }
+        if (!offlinePath && args.issuer !== undefined) {
+          throw new ValidationError({
+            message: "--issuer only applies with --public-key.",
+            action: "Drop --issuer. The dashboard returns the issuer a connection is registered against.",
+          });
+        }
+        if (!offlinePath && args["key-id"] !== undefined) {
+          throw new ValidationError({
+            message: "--key-id only applies with --public-key.",
+            action: "Drop --key-id. The dashboard mints the keypair and names the key.",
+          });
+        }
+        if (args.update && args["worker-url"] === undefined && !narrowed && !offlinePath) {
+          throw new ValidationError({
+            message: "Nothing to update.",
+            action: "Pass --worker-url, --scope, or both.",
+          });
+        }
 
-      // The whole decision, in one place that a test can execute — what is stored, what is asked, and
-      // what the prompt is preselected with. `connect` derives no part of it.
-      const granted = await decideGrant({
-        request: scopeRequest,
-        composed,
-        interactive,
-        update: args.update,
-        prompt: promptScopes,
-      });
+        let publicKey: OfflinePublicKey | undefined;
+        if (offlinePath) {
+          const raw = await readFile(args["public-key"] as string, "utf8");
+          const key = parsePublicKey(raw, args["key-id"]);
+          publicKey = { ...key, issuer: args.issuer as string };
+        }
 
-      // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
-      // environment holds live data is the project's policy either way, and it is exactly the list that
-      // gates a destructive seed. Resolved here because this is where the CLI knows it — a management
-      // client guessing from the name gives an adopter who calls production `live` the safe-looking
-      // treatment on their real users.
-      const config = await loadProject(projectDir);
-      const project = args.project ?? requireProjectName(config);
-      const isProduction = isProductionEnv(args.env, config.seed?.productionEnvironments);
+        const interactive = isInteractive(args.json);
+        const projectDir = process.cwd();
 
-      const report = await withRegistry(args, async (registry) => {
-        // Resolved once: the same answer decides which client is called and what the row records, so
-        // the two cannot disagree about which dashboard this connection belongs to (#614).
-        const { client, resolved } = await clientFor(registry, args);
-        return connectDashboard({
-          registry,
-          project,
+        // Which Worker, at what address, with the seam mounted where — resolved from the project rather
+        // than demanded. `--worker-url` still overrides (a proxy in front of the Worker has an address no
+        // config knows), and an update that is only re-pointing scopes needs no address at all.
+        //
+        // This replaces a `--worker-url` that had no fallback whatsoever: the interactive path prompted for
+        // it free-text, and the non-interactive path — the agent and CI path — simply threw.
+        //
+        // Resolve only when an address is actually needed: on any create, and on an update that is
+        // re-pointing. A **key-only update** — `--update` with no `--worker-url`, including the offline
+        // `--public-key` rotation — needs no address at all, and resolving one would demand a Worker that
+        // resolves *and* composes the seam. That regressed offline rotation for a proxy-fronted project,
+        // whose address no config knows and whose whole point is not needing us.
+        const needsAddress = !args.update || args["worker-url"] !== undefined;
+        const target = !needsAddress
+          ? null
+          : await resolveConnectTarget({
+              projectDir,
+              environment: args.env,
+              ...(args.worker === undefined ? {} : { worker: args.worker }),
+              ...(args["worker-url"] === undefined ? {} : { workerUrl: args["worker-url"] }),
+            });
+        if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
+        const workerUrl = target?.workerUrl ?? args["worker-url"];
+        // What this Worker composes, which is what the grant is derived from.
+        //
+        // `--scope all` reads that composed surface, and composing needs no address — so a scope-only
+        // update resolves the Worker without resolving, or re-pointing, its address. Without this, `all`
+        // was refused on the one path it exists for: widening an existing grant after composing a new
+        // capability, where the alternative is the hand-typed list `all` replaces.
+        //
+        // Empty on a key-only update, where no address was resolved and no grant is being decided.
+        const composed = await composedForGrant({
+          target,
+          all: scopeRequest.all,
+          projectDir,
           environment: args.env,
-          isProduction,
-          ...(workerUrl === undefined ? {} : { workerUrl }),
-          ...(target === null ? {} : { basePath: target.basePath }),
-          ...(granted === undefined ? {} : { scopes: granted }),
-          // The default grant is derived from these when no `--scope` narrowed it (#248). Sent even
-          // when `granted` is set, so nothing depends on which branch above ran.
-          capabilities: composed,
-          update: args.update,
-          ...(publicKey === undefined ? { client, authorize: authorizeFor(args) } : { publicKey }),
-          // The offline path called nothing, so it records only an origin the operator named — which is
-          // what `resolved.source === "flag"` means there.
-          ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
+          ...(args.worker === undefined ? {} : { worker: args.worker }),
         });
-      });
-      process.stdout.write(formatConnectReport(report, { json: args.json }));
-    }),
-});
+
+        // The whole decision, in one place that a test can execute — what is stored, what is asked, and
+        // what the prompt is preselected with. `connect` derives no part of it.
+        const granted = await decideGrant({
+          request: scopeRequest,
+          composed,
+          interactive,
+          update: args.update,
+          prompt: promptScopes,
+        });
+
+        // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
+        // environment holds live data is the project's policy either way, and it is exactly the list that
+        // gates a destructive seed. Resolved here because this is where the CLI knows it — a management
+        // client guessing from the name gives an adopter who calls production `live` the safe-looking
+        // treatment on their real users.
+        const config = await loadProject(projectDir);
+        const project = args.project ?? requireProjectName(config);
+        const isProduction = isProductionEnv(args.env, config.seed?.productionEnvironments);
+
+        const report = await withRegistry(args, async (registry) => {
+          // Resolved once: the same answer decides which client is called and what the row records, so
+          // the two cannot disagree about which dashboard this connection belongs to (#614).
+          const { client, resolved } = await clientFor(registry, args);
+          return connectDashboard({
+            registry,
+            project,
+            environment: args.env,
+            isProduction,
+            ...(workerUrl === undefined ? {} : { workerUrl }),
+            ...(target === null ? {} : { basePath: target.basePath }),
+            ...(granted === undefined ? {} : { scopes: granted }),
+            // The default grant is derived from these when no `--scope` narrowed it (#248). Sent even
+            // when `granted` is set, so nothing depends on which branch above ran.
+            capabilities: composed,
+            update: args.update,
+            ...(publicKey === undefined ? { client, authorize: authorizeFor(args) } : { publicKey }),
+            // The offline path called nothing, so it records only an origin the operator named — which is
+            // what `resolved.source === "flag"` means there.
+            ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
+          });
+        });
+        process.stdout.write(formatConnectReport(report, { json: args.json }));
+      }),
+  }),
+  {
+    ...DASHBOARD,
+    payload: DashboardConnectPayload,
+    idempotent: false,
+    flags: { scope: { repeatable: true } },
+    flagGroups: [
+      { kind: "requires", flag: "--public-key", needs: ["--issuer"], any: false, rule: "--public-key needs --issuer." },
+      {
+        kind: "requires",
+        flag: "--issuer",
+        needs: ["--public-key"],
+        any: false,
+        rule: "--issuer only applies with --public-key.",
+      },
+      {
+        kind: "requires",
+        flag: "--key-id",
+        needs: ["--public-key"],
+        any: false,
+        rule: "--key-id only applies with --public-key.",
+      },
+      {
+        kind: "requires",
+        flag: "--update",
+        needs: ["--worker-url", "--scope", "--public-key"],
+        any: true,
+        rule: "--update needs something to update: --worker-url, --scope or --public-key.",
+      },
+    ],
+  },
+);
 
 /** `pithy dashboard rotate` — append a successor key and prove it. Never expires the old one. */
-const rotate = defineCommand({
-  meta: { name: "rotate", description: "Register a successor key and prove it with a ping (the old key stays live)" },
-  args: commonArgs,
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const report = await withRegistry(args, async (registry) =>
-        rotateDashboardKey({
-          registry,
-          client: (await clientFor(registry, args)).client,
-          environment: args.env,
-          authorize: authorizeFor(args),
-        }),
-      );
-      process.stdout.write(formatRotateReport(report, { json: args.json }));
-    }),
-});
+const rotate = withContract(
+  defineCommand({
+    meta: { name: "rotate", description: "Register a successor key and prove it with a ping (the old key stays live)" },
+    args: commonArgs,
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const report = await withRegistry(args, async (registry) =>
+          rotateDashboardKey({
+            registry,
+            client: (await clientFor(registry, args)).client,
+            environment: args.env,
+            authorize: authorizeFor(args),
+          }),
+        );
+        process.stdout.write(formatRotateReport(report, { json: args.json }));
+      }),
+  }),
+  { ...DASHBOARD, payload: DashboardRotatePayload, idempotent: false },
+);
 
 /** `pithy dashboard disconnect` — delete the registration. Local, immediate, and unilateral. */
-const disconnect = defineCommand({
-  meta: { name: "disconnect", description: "Revoke this environment's management-client connection" },
-  args: {
-    ...commonArgs,
-    yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
-    local: { type: "boolean", default: false, description: "Delete the row without telling the management client" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      await confirmOrRefuse({
-        ...disconnectQuestion(args.env),
-        json: args.json,
-        yes: args.yes,
-        ask: () => confirmDisconnect(args.env),
-      });
+const disconnect = withContract(
+  defineCommand({
+    meta: { name: "disconnect", description: "Revoke this environment's management-client connection" },
+    args: {
+      ...commonArgs,
+      yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
+      local: { type: "boolean", default: false, description: "Delete the row without telling the management client" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        await confirmOrRefuse({
+          ...disconnectQuestion(args.env),
+          json: args.json,
+          yes: args.yes,
+          ask: () => confirmDisconnect(args.env),
+        });
 
-      const report = await withRegistry(args, async (registry) =>
-        disconnectDashboard({
-          registry,
-          environment: args.env,
-          // `--local` skips the courtesy call entirely. The revocation is identical either way; this
-          // only avoids a browser sign-in when the dashboard is unreachable or no longer wanted.
-          ...(args.local ? {} : { client: (await clientFor(registry, args)).client, authorize: authorizeFor(args) }),
-        }),
-      );
-      process.stdout.write(formatDisconnectReport(report, { json: args.json }));
-    }),
-});
+        const report = await withRegistry(args, async (registry) =>
+          disconnectDashboard({
+            registry,
+            environment: args.env,
+            // `--local` skips the courtesy call entirely. The revocation is identical either way; this
+            // only avoids a browser sign-in when the dashboard is unreachable or no longer wanted.
+            ...(args.local ? {} : { client: (await clientFor(registry, args)).client, authorize: authorizeFor(args) }),
+          }),
+        );
+        process.stdout.write(formatDisconnectReport(report, { json: args.json }));
+      }),
+  }),
+  { ...DASHBOARD, payload: DashboardDisconnectPayload, idempotent: true },
+);
 
 /**
  * `pithy dashboard revoke-key` — pull one key without tearing down the connection.
@@ -791,63 +960,70 @@ const disconnect = defineCommand({
  * Purely local: it writes `revokedAt` into their own D1 and tells nobody. That is the point — revocation
  * that needed the other side's cooperation would not be revocation.
  */
-const revokeKey = defineCommand({
-  meta: { name: "revoke-key", description: "Revoke one registered key immediately, leaving the connection in place" },
-  args: {
-    ...commonArgs,
-    "key-id": { type: "string", required: true, description: "The key to revoke, as reported by `status`" },
-    yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      await confirmOrRefuse({
-        ...revokeKeyQuestion(args["key-id"], args.env),
-        json: args.json,
-        yes: args.yes,
-        ask: () => confirmRevokeKey(args["key-id"], args.env),
-      });
+const revokeKey = withContract(
+  defineCommand({
+    meta: { name: "revoke-key", description: "Revoke one registered key immediately, leaving the connection in place" },
+    args: {
+      ...commonArgs,
+      "key-id": { type: "string", required: true, description: "The key to revoke, as reported by `status`" },
+      yes: { type: "boolean", default: false, description: "Skip the confirmation (how CI runs it)" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        await confirmOrRefuse({
+          ...revokeKeyQuestion(args["key-id"], args.env),
+          json: args.json,
+          yes: args.yes,
+          ask: () => confirmRevokeKey(args["key-id"], args.env),
+        });
 
-      const report = await withRegistry(args, async (registry) => {
-        const updated = await registry.revokeKey(args["key-id"], new Date());
-        return { environment: args.env, keyId: args["key-id"], revoked: updated !== null, connection: updated };
-      });
-      process.stdout.write(formatRevokeKeyReport(report, { json: args.json }));
-    }),
-});
+        const report = await withRegistry(args, async (registry) => {
+          const updated = await registry.revokeKey(args["key-id"], new Date());
+          return { environment: args.env, keyId: args["key-id"], revoked: updated !== null, connection: updated };
+        });
+        process.stdout.write(formatRevokeKeyReport(report, { json: args.json }));
+      }),
+  }),
+  { ...DASHBOARD, payload: DashboardRevokeKeyPayload, idempotent: true },
+);
 
 /** `pithy dashboard status` — what is registered, and (with `--verify`) whether it still answers. */
-const status = defineCommand({
-  meta: { name: "status", description: "Report this environment's connection, its keys, and their ages" },
-  args: {
-    ...commonArgs,
-    verify: { type: "boolean", default: false, description: "Prove the connection with a signed ping" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const authorize = authorizeFor(args);
+const status = withContract(
+  defineCommand({
+    meta: { name: "status", description: "Report this environment's connection, its keys, and their ages" },
+    args: {
+      ...commonArgs,
+      verify: { type: "boolean", default: false, description: "Prove the connection with a signed ping" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const authorize = authorizeFor(args);
 
-      const report = await withRegistry(args, async (registry) => {
-        // Built inside the registry, because which dashboard to ask is a fact of the connection this
-        // registry holds — not of a flag with a default (#614).
-        const client = args.verify ? (await clientFor(registry, args)).client : undefined;
-        return dashboardStatus({
-          registry,
-          environment: args.env,
-          // Looking is free; proving costs a browser sign-in. So the probe is opt-in, and its absence
-          // is reported as `unverified` rather than guessed at.
-          ...(client === undefined
-            ? {}
-            : {
-                verify: async (connection) => {
-                  const token = await authorize(client);
-                  return client.verifyConnection(token, connection.id, connection.workerUrl);
-                },
-              }),
+        const report = await withRegistry(args, async (registry) => {
+          // Built inside the registry, because which dashboard to ask is a fact of the connection this
+          // registry holds — not of a flag with a default (#614).
+          const client = args.verify ? (await clientFor(registry, args)).client : undefined;
+          return dashboardStatus({
+            registry,
+            environment: args.env,
+            // Looking is free; proving costs a browser sign-in. So the probe is opt-in, and its absence
+            // is reported as `unverified` rather than guessed at.
+            ...(client === undefined
+              ? {}
+              : {
+                  verify: async (connection) => {
+                    const token = await authorize(client);
+                    return client.verifyConnection(token, connection.id, connection.workerUrl);
+                  },
+                }),
+          });
         });
-      });
-      process.stdout.write(formatStatusReport(report, { json: args.json }));
-    }),
-});
+        process.stdout.write(formatStatusReport(report, { json: args.json }));
+      }),
+  }),
+  // Reads. `--verify --origin <other>` re-points the row's management origin, which is the one write.
+  { ...DASHBOARD, payload: DashboardStatusPayload, mutates: false, idempotent: true },
+);
 
 export default defineCommand({
   meta: {

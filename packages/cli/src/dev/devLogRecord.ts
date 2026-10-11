@@ -36,32 +36,45 @@ import { z } from "zod";
 const Timestamp = z.string().min(1).describe("ISO-8601 instant the record was written.");
 
 /** A line one of the worker's streams produced, ANSI stripped, newline-normalized, one line per record. */
-export const DevLogOutput = z.object({
-  ts: Timestamp,
-  stream: z.enum(["stdout", "stderr"]).describe("Which descriptor the child wrote it on."),
-  text: z.string().describe("The line itself — ANSI stripped, with no `[name]` prefix: the file is the name."),
-});
+export const DevLogOutput = z
+  .object({
+    ts: Timestamp,
+    stream: z.enum(["stdout", "stderr"]).describe("Which descriptor the child wrote it on."),
+    text: z.string().describe("The line itself — ANSI stripped, with no `[name]` prefix: the file is the name."),
+  })
+  .describe("A line the worker's child wrote.");
 export type DevLogOutput = z.output<typeof DevLogOutput>;
 
 /** That worker's child was spawned on its pinned port. A second one for the same file is a restart. */
-export const DevLogSpawned = z.object({
-  ts: Timestamp,
-  event: z.literal("spawned"),
-  port: z.number().int().describe("The port it was pinned to in `.dev.config.json`, verified free before it started."),
-});
+export const DevLogSpawned = z
+  .object({
+    ts: Timestamp,
+    event: z.literal("spawned").describe("The child was spawned. A second one in a file is a restart."),
+    port: z
+      .number()
+      .int()
+      .describe("The port it was pinned to in `.dev.config.json`, verified free before it started."),
+  })
+  .describe("The worker's child was spawned.");
 
 /** That worker matched its `dev.readySignal`. */
-export const DevLogReady = z.object({ ts: Timestamp, event: z.literal("ready") });
+export const DevLogReady = z
+  .object({ ts: Timestamp, event: z.literal("ready").describe("The worker matched its `dev.readySignal`.") })
+  .describe("The worker became ready.");
 
 /** That worker's child exited. `null` is the code a signaled child — and a failed spawn — reports. */
-export const DevLogExited = z.object({
-  ts: Timestamp,
-  event: z.literal("exited"),
-  code: z.number().int().nullable().describe("The exit status, or null for a signaled child or a spawn that failed."),
-});
+export const DevLogExited = z
+  .object({
+    ts: Timestamp,
+    event: z.literal("exited").describe("The worker's child exited."),
+    code: z.number().int().nullable().describe("The exit status, or null for a signaled child or a spawn that failed."),
+  })
+  .describe("The worker's child exited.");
 
 /** One record of one worker's session log. */
-export const DevLogRecord = z.union([DevLogOutput, DevLogSpawned, DevLogReady, DevLogExited]);
+export const DevLogRecord = z
+  .union([DevLogOutput, DevLogSpawned, DevLogReady, DevLogExited])
+  .describe("One record of one worker's session log.");
 export type DevLogRecord = z.output<typeof DevLogRecord>;
 
 /** Whether this record is a line the child wrote, rather than one of its lifecycle events. */

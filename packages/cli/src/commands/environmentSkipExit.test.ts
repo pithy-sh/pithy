@@ -19,6 +19,7 @@ import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
+import { expectConforms } from "../test-utils/payloadContract";
 
 /**
  * **Requirement 4 of pithy-sh/pithy#512, driven rather than grepped: a run in which every environment was
@@ -530,6 +531,16 @@ describe("a run in which every environment was skipped", () => {
    * Requirement 3, at the command level rather than at the orchestrator's: the project-global resource is
    * created on the first run however many environments skip. It must not wait for prod.
    */
+  /** The line is still the published shape when it carries nothing but skips (#697). */
+  test("every all-skipped provision --json line conforms to its published payload", async () => {
+    await expectConforms("email provision", (await runProvision("email", true)).stdout);
+    await expectConforms("media provision", (await runProvision("media", true)).stdout);
+    await expectConforms("payments provision", (await runProvision("payments", true)).stdout);
+    await expectConforms("storage provision", (await runProvision("storage", true)).stdout);
+    await expectConforms("support provision", (await runProvision("support", true)).stdout);
+    await expectConforms("testers provision", (await runProvision("testers", true)).stdout);
+  });
+
   test("email provision still creates the suppression database, and makes no routing rule", async () => {
     await runProvision("email", false);
 
@@ -596,6 +607,16 @@ describe("a run in which one environment was ready", () => {
     expect(report.command).toBe(`${command} provision`);
     expect(report.skippedEnvironments.map((entry) => entry.env)).toEqual(["prod"]);
     expect(run.stderr).toBe("");
+  });
+
+  /** Each one held to the schema `pithy schema` publishes for it (#697), from this real run. */
+  test("every provision --json line conforms to its published payload", async () => {
+    await expectConforms("email provision", (await runProvision("email", true)).stdout);
+    await expectConforms("media provision", (await runProvision("media", true)).stdout);
+    await expectConforms("payments provision", (await runProvision("payments", true)).stdout);
+    await expectConforms("storage provision", (await runProvision("storage", true)).stdout);
+    await expectConforms("support provision", (await runProvision("support", true)).stdout);
+    await expectConforms("testers provision", (await runProvision("testers", true)).stdout);
   });
 
   test("support provision deploys staging and makes the routing rule", async () => {

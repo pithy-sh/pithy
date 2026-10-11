@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { InternalError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { z } from "zod";
 import { withProvisionFix } from "../provision/provisionFix";
 import { formatList } from "../terminal/output";
 import type { AddressStanza } from "./workerAddress";
@@ -69,14 +70,14 @@ export interface ReadyStanza {
 }
 
 /** One environment that was skipped, with the two sentences an operator needs. */
-export interface SkippedEnvironment {
-  /** The environment nothing was provisioned for. */
-  env: ManagedEnvironment;
-  /** Why it was skipped, as a sentence. */
-  reason: string;
-  /** The command that resolves it, as a sentence. */
-  action: string;
-}
+export const SkippedEnvironment = z
+  .object({
+    env: z.string().describe("The environment nothing was provisioned for."),
+    reason: z.string().describe("Why it was skipped, as a sentence: `env.<name> has no DB database_id.`"),
+    action: z.string().describe("The command that resolves it, as a sentence."),
+  })
+  .describe("One environment a provisioning run created nothing for, and why.");
+export type SkippedEnvironment = Omit<z.infer<typeof SkippedEnvironment>, "env"> & { env: ManagedEnvironment };
 
 /** The partition of a project's declared environments into what can be provisioned and what cannot. */
 export interface EnvironmentReadiness {

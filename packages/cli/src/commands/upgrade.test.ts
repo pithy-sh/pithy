@@ -13,6 +13,7 @@ import type { RegistryFetch } from "../kitPackages/registry";
 import { scaffoldProject } from "../project/scaffold";
 import { doctorHarness } from "../test-utils/doctorHarness";
 import { fakeInstall, fakePackument, fakeRegistry } from "../test-utils/fakeInstall";
+import { expectConforms } from "../test-utils/payloadContract";
 import { templateTarball } from "../test-utils/templateTarball";
 import { readManifestDocument, writeManifestDocument } from "../ui/workerUi";
 import { buildDoctorReport, installedCapabilityVersions, renderDoctorText } from "./doctor";
@@ -910,6 +911,7 @@ describe("runUpgrade --packages", () => {
     expect(upgradeText(run, false)).toEqual([...__test.renderUpgrade(run), "Done."]);
     const json = JSON.parse(upgradeJsonLine(run, "dev", false)) as Record<string, unknown>;
     expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults"]);
+    await expectConforms("upgrade", upgradeJsonLine(run, "dev", false));
     expect(await readFile(join(dir, "package.json"), "utf8")).toContain('"@pithy-sh/auth": "^0.2.0"');
   });
 
@@ -1068,6 +1070,7 @@ describe("runUpgrade --packages", () => {
     expect(text.at(-1)).toBe("Dry run. Nothing written.");
     const json = JSON.parse(upgradeJsonLine(dry, "dev", true)) as Record<string, unknown>;
     expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "packages"]);
+    await expectConforms("upgrade", upgradeJsonLine(dry, "dev", true));
   });
 
   test("a registry that does not answer: nothing written, the reconcile still runs, and the run fails", async () => {

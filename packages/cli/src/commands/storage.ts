@@ -6,6 +6,7 @@ import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
@@ -18,6 +19,7 @@ import {
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -29,6 +31,7 @@ import {
   formatEnvironmentOutcomes,
   readyStanza,
   requireReadyEnvironments,
+  SkippedEnvironment,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
 import { secretsDatabaseMissing } from "../provision/missingDatabase";
@@ -145,209 +148,252 @@ function buildResolveEnv(
   };
 }
 
-const provision = defineCommand({
-  meta: {
-    name: "provision",
-    description: "Create the storage buckets, write the R2 credentials, and deploy the sweep workers",
-  },
-  args: {
-    worker: {
-      type: "string",
-      description:
-        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the sweep Workflow binding (default: the project's only worker)",
-    },
-    "api-token": {
-      type: "string",
-      description:
-        "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
-    },
-    "r2-access-key-id": {
-      type: "string",
-      description:
-        "R2 S3 access key id the Worker presigns uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    "r2-secret-access-key": {
-      type: "string",
-      description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // The leading segment of every name this run creates — the bucket, the sweep worker, the
-      // Workflow. `requireProjectName` refuses to guess, because `deprovision` recomputes these same
-      // names to find what to delete (docs/NAMING.md).
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
-      const { provisionStorage } = await loadStorage(projectDir);
-      const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
-        await projectCloudflareAccount(projectDir),
-      );
-      const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
-      // One resolution for the config and every write: the bucket and sweep are provisioned for the Worker
-      // whose stanza gets the binding, never from a sibling that composes storage (#590 review).
-      const { isStorageCapability } = await loadStorage(projectDir);
-      const { worker: appWorker, capability } = await resolveCapabilityWorker({
-        projectDir,
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-        name: "storage",
-        is: isStorageCapability,
-      });
-      const storageConfig = capability.storageConfig;
-      // Which environments this run can act on, decided once and before a single bucket exists. An
-      // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
-      // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
-      const readiness = await environmentReadiness({
-        workerDir: appWorker.dir,
-        label: `${appWorker.name}'s wrangler.jsonc`,
-        environments,
-        productionEnvironments: config.seed?.productionEnvironments,
-      });
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const provisioner = new CloudflareStorageProvisioner({
-        cf,
-        projectDir,
-        project,
-        environments,
-        account,
-        apiToken,
-        storeId,
-        storageApiToken: args["api-token"] ?? apiToken,
-        r2Credentials,
-        storageConfig,
-        dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
-        resolveEnv: buildResolveEnv(readiness, cf, project, account),
-        audit: await buildAudit(projectDir, accountId, apiToken),
-      });
+const Skipped = z
+  .array(SkippedEnvironment)
+  .describe("One entry per declared environment nothing was provisioned for. Empty when none was skipped.");
 
-      // The ready list, not the declaration — every skipped environment is left with nothing created for
-      // it at all, which is the point: a staging-only bring-up must not make a production bucket. The
-      // `environments` the provisioner carries stays the declaration, because that is what a `global`
-      // secret write fans out across and narrowing it moves which manager writes one (#512).
-      const result = await provisionStorage(provisioner, readiness.ready);
-      const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
+/** `pithy storage provision --json`. `docs/commands/storage.md`. */
+const StorageProvisionPayload = z
+  .object({
+    command: z.literal("storage provision").describe('`"storage provision"`.'),
+    environments: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment."),
+            bucketName: z.string().describe("The R2 bucket objects live in."),
+          })
+          .describe("One environment provisioned."),
+      )
+      .describe("Every environment provisioned, in declaration order."),
+    skippedEnvironments: Skipped,
+  })
+  .describe("What `pithy storage provision` provisioned.");
 
-      // Only now can the sweep's Workflow binding be written. `pithy add storage` cannot: wrangler
-      // requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name
-      // is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole
-      // config, so `add` emits none and this completes it — see capabilities/add.ts.
-      const { storageWorkflowRegistry, STORAGE_CAPABILITY } = await loadStorage(projectDir);
-      for (const entry of result.environments) {
-        // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
-        // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
-        await applyAppBindings(appWorker.dir, entry.env, {
-          workflows: appWorkflowBindings(storageWorkflowRegistry, {
-            project,
-            capability: STORAGE_CAPABILITY,
-            env: entry.env,
-          }),
+/** `pithy storage deprovision --json`. */
+const StorageDeprovisionPayload = z
+  .object({
+    command: z.literal("storage deprovision").describe('`"storage deprovision"`.'),
+    env: z.string().describe("The environment torn down."),
+    storageDeleted: z.boolean().describe("Whether its bucket was deleted with it."),
+  })
+  .describe("What `pithy storage deprovision` removed.");
+
+const provision = withContract(
+  defineCommand({
+    meta: {
+      name: "provision",
+      description: "Create the storage buckets, write the R2 credentials, and deploy the sweep workers",
+    },
+    args: {
+      worker: {
+        type: "string",
+        description:
+          "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the sweep Workflow binding (default: the project's only worker)",
+      },
+      "api-token": {
+        type: "string",
+        description:
+          "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
+      },
+      "r2-access-key-id": {
+        type: "string",
+        description:
+          "R2 S3 access key id the Worker presigns uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      "r2-secret-access-key": {
+        type: "string",
+        description:
+          "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // The leading segment of every name this run creates — the bucket, the sweep worker, the
+        // Workflow. `requireProjectName` refuses to guess, because `deprovision` recomputes these same
+        // names to find what to delete (docs/NAMING.md).
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // The project's own environment set (#241): what this command fans out across, rather than a
+        // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+        const environments = loadProjectEnvironments(config);
+        const { provisionStorage } = await loadStorage(projectDir);
+        const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
+          await projectCloudflareAccount(projectDir),
+        );
+        const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
+        // One resolution for the config and every write: the bucket and sweep are provisioned for the Worker
+        // whose stanza gets the binding, never from a sibling that composes storage (#590 review).
+        const { isStorageCapability } = await loadStorage(projectDir);
+        const { worker: appWorker, capability } = await resolveCapabilityWorker({
+          projectDir,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          name: "storage",
+          is: isStorageCapability,
         });
-      }
+        const storageConfig = capability.storageConfig;
+        // Which environments this run can act on, decided once and before a single bucket exists. An
+        // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
+        // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
+        const readiness = await environmentReadiness({
+          workerDir: appWorker.dir,
+          label: `${appWorker.name}'s wrangler.jsonc`,
+          environments,
+          productionEnvironments: config.seed?.productionEnvironments,
+        });
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const provisioner = new CloudflareStorageProvisioner({
+          cf,
+          projectDir,
+          project,
+          environments,
+          account,
+          apiToken,
+          storeId,
+          storageApiToken: args["api-token"] ?? apiToken,
+          r2Credentials,
+          storageConfig,
+          dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
+          resolveEnv: buildResolveEnv(readiness, cf, project, account),
+          audit: await buildAudit(projectDir, accountId, apiToken),
+        });
 
-      if (args.json) {
-        // Written before the refusal below, so a run in which everything skipped still carries the
-        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        // The ready list, not the declaration — every skipped environment is left with nothing created for
+        // it at all, which is the point: a staging-only bring-up must not make a production bucket. The
+        // `environments` the provisioner carries stays the declaration, because that is what a `global`
+        // secret write fans out across and narrowing it moves which manager writes one (#512).
+        const result = await provisionStorage(provisioner, readiness.ready);
+        const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
+
+        // Only now can the sweep's Workflow binding be written. `pithy add storage` cannot: wrangler
+        // requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name
+        // is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole
+        // config, so `add` emits none and this completes it — see capabilities/add.ts.
+        const { storageWorkflowRegistry, STORAGE_CAPABILITY } = await loadStorage(projectDir);
+        for (const entry of result.environments) {
+          // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
+          // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
+          await applyAppBindings(appWorker.dir, entry.env, {
+            workflows: appWorkflowBindings(storageWorkflowRegistry, {
+              project,
+              capability: STORAGE_CAPABILITY,
+              env: entry.env,
+            }),
+          });
+        }
+
+        if (args.json) {
+          // Written before the refusal below, so a run in which everything skipped still carries the
+          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+          process.stdout.write(
+            `${formatJsonLine({ command: "storage provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          );
+          requireReadyEnvironments(readiness, "pithy storage provision");
+          return;
+        }
         process.stdout.write(
-          `${formatJsonLine({ command: "storage provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          formatEnvironmentOutcomes(
+            environmentOutcomes(
+              readiness,
+              (env) => `bucket ${provisioned.get(env)?.bucketName} ready, sweep worker deployed`,
+            ),
+          ),
         );
         requireReadyEnvironments(readiness, "pithy storage provision");
-        return;
-      }
-      process.stdout.write(
-        formatEnvironmentOutcomes(
-          environmentOutcomes(
-            readiness,
-            (env) => `bucket ${provisioned.get(env)?.bucketName} ready, sweep worker deployed`,
-          ),
-        ),
-      );
-      requireReadyEnvironments(readiness, "pithy storage provision");
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove one environment's sweep worker (and optionally its bucket)" },
-  args: {
-    // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
-    // included.
-    env: TEARDOWN_ENV_ARG,
-    storage: {
-      type: "boolean",
-      default: false,
-      description: "Also delete the environment's R2 bucket and every file in it (irreversible)",
-    },
-    "r2-access-key-id": {
-      type: "string",
-      description:
-        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    "r2-secret-access-key": {
-      type: "string",
-      description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: StorageProvisionPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // Teardown finds resources by recomputing their names, so this must be the same name
-      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // One named environment, settled before any credential is read (#591): naming nothing, or something
-      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
-      // is the one that deletes.
-      const declared = loadProjectEnvironments(config);
-      const env = requireTeardownEnvironment(args.env, declared);
-      const target = { environment: env, declared };
-      const { deprovisionStorage } = await loadStorage(projectDir);
-      const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
-      // without it, so discovering it is missing at the bucket step would leave the sweep workers gone
-      // and the buckets standing — a half-torn-down environment for a mistake we can catch here.
-      const r2Credentials = args.storage
-        ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
-        : undefined;
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const deprovisioner = new CloudflareStorageDeprovisioner({
-        account,
-        cf,
-        projectDir,
-        project,
-        r2Credentials,
-        audit: await buildAudit(projectDir, accountId, apiToken),
-      });
+);
 
-      // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
-      // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
-      const confined = await confineTeardown({
-        kit: "@pithy-sh/storage",
-        target: env,
-        declared,
-        deprovisioner,
-        rules: { deleteWorker: "environment", deleteBucket: args.storage ? "environment" : "refused" },
-      });
-      await deprovisionStorage(confined, target, { deleteStorage: args.storage });
+const deprovision = withContract(
+  defineCommand({
+    meta: { name: "deprovision", description: "Remove one environment's sweep worker (and optionally its bucket)" },
+    args: {
+      // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
+      // included.
+      env: TEARDOWN_ENV_ARG,
+      storage: {
+        type: "boolean",
+        default: false,
+        description: "Also delete the environment's R2 bucket and every file in it (irreversible)",
+      },
+      "r2-access-key-id": {
+        type: "string",
+        description:
+          "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      "r2-secret-access-key": {
+        type: "string",
+        description:
+          "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // Teardown finds resources by recomputing their names, so this must be the same name
+        // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+        // is the one that deletes.
+        const declared = loadProjectEnvironments(config);
+        const env = requireTeardownEnvironment(args.env, declared);
+        const target = { environment: env, declared };
+        const { deprovisionStorage } = await loadStorage(projectDir);
+        const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
+        // without it, so discovering it is missing at the bucket step would leave the sweep workers gone
+        // and the buckets standing — a half-torn-down environment for a mistake we can catch here.
+        const r2Credentials = args.storage
+          ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
+          : undefined;
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const deprovisioner = new CloudflareStorageDeprovisioner({
+          account,
+          cf,
+          projectDir,
+          project,
+          r2Credentials,
+          audit: await buildAudit(projectDir, accountId, apiToken),
+        });
 
-      if (args.json) {
+        // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
+        // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
+        const confined = await confineTeardown({
+          kit: "@pithy-sh/storage",
+          target: env,
+          declared,
+          deprovisioner,
+          rules: { deleteWorker: "environment", deleteBucket: args.storage ? "environment" : "refused" },
+        });
+        await deprovisionStorage(confined, target, { deleteStorage: args.storage });
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "storage deprovision", env, storageDeleted: args.storage })}\n`,
+          );
+          return;
+        }
         process.stdout.write(
-          `${formatJsonLine({ command: "storage deprovision", env, storageDeleted: args.storage })}\n`,
+          `${env}: sweep worker removed${args.storage ? ", with its bucket and every file in it" : ""}.\n`,
         );
-        return;
-      }
-      process.stdout.write(
-        `${env}: sweep worker removed${args.storage ? ", with its bucket and every file in it" : ""}.\n`,
-      );
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: StorageDeprovisionPayload, mutates: true, idempotent: true, needsNetwork: true },
+);
 
 export default defineCommand({
   meta: { name: "storage", description: "Provision and manage the storage infrastructure" },

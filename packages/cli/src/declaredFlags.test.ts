@@ -232,12 +232,18 @@ describe("refuseUndeclaredFlags", () => {
     ]);
   });
 
-  test("names every undeclared flag, and says so when a command takes none", async () => {
+  // `--help`, `--version`, `--pretty` and `--no-input` work on every command, a group's and the root included, so
+  // "takes no flags" sent a caller away from flags that would have worked (#697).
+  test("names every undeclared flag, and points a command with none of its own at the global ones", async () => {
     const error = (await refuseUndeclaredFlags(tree, ["token", "mint", "--a", "--b"]).catch((e: unknown) => e)) as
       | ValidationError
       | undefined;
     expect(error?.payload.message).toBe("Unknown flags: --a, --b.");
-    expect(error?.payload.action).toBe("`pithy token mint` takes no flags.");
+    expect(error?.payload.action).toBe(
+      "`pithy token mint` takes only the global flags, which `pithy schema --json` lists.",
+    );
+    const group = (await refuseUndeclaredFlags(tree, ["token", "--a"]).catch((e: unknown) => e)) as ValidationError;
+    expect(group.payload.action).toBe("`pithy token` takes only the global flags, which `pithy schema --json` lists.");
   });
 
   test("an invocation whose flags are all declared passes", async () => {

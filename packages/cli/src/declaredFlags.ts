@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { HIDDEN_ROOT_FLAGS } from "./commands/alias";
+import { aliasNames, camelSpelling, flagAliases, isPositional } from "./contract/args";
 import { findSubCommand, type SubCommand } from "./dispatch";
 import { malformedNoInputFlag, malformedPrettyFlag, ROOT_FLAGS, wantsPretty } from "./rootFlags";
 
@@ -51,57 +52,20 @@ import { malformedNoInputFlag, malformedPrettyFlag, ROOT_FLAGS, wantsPretty } fr
  */
 export const GLOBAL_FLAGS: readonly string[] = [...ROOT_FLAGS, ...HIDDEN_ROOT_FLAGS];
 
-/** One arg's declared aliases, in the spelling a caller types: a single letter takes one dash, a word takes two. */
-function aliasFlags(alias: unknown): string[] {
-  return aliasNames(alias).map((name) => (name.length === 1 ? `-${name}` : `--${name}`));
-}
-
-/** One arg's declared aliases, bare. citty accepts a string or an array. */
-function aliasNames(alias: unknown): string[] {
-  const names = typeof alias === "string" ? [alias] : Array.isArray(alias) ? alias : [];
-  return names.filter((name): name is string => typeof name === "string");
-}
-
-/**
- * The camelCase spelling of a kebab-case arg name, or the name unchanged when it has no dash.
- *
- * citty registers `camelCase(name)` and `kebabCase(name)` as aliases of **every** arg it parses, so
- * `--withPrerequisites` reaches the same value as `--with-prerequisites`. This transform is narrow on
- * purpose — it handles lowercase kebab and nothing else — and `docs/catalog.test.ts` holds every arg name
- * in the CLI to that shape, so the narrow version is complete rather than merely convenient. The kebab
- * direction is a no-op over that domain, which is why only this one exists.
- */
-function camelSpelling(name: string): string {
-  return name.replace(/-([a-z0-9])/g, (_, char: string) => char.toUpperCase());
-}
-
 /**
  * Every flag one command's parser answers to — what the docs catalog publishes, and what this check accepts.
  *
- * Three spellings beyond the declared name, each of them citty's rather than ours:
- *
- * - **Declared aliases**, long and short.
- * - **The camelCase form.** citty aliases every arg to its camel and kebab spellings, so
- *   `--withPrerequisites` works.
- * - **`--no-<name>` on a boolean.** citty strips a `--no-` prefix from any argument before parsing, and
- *   this CLI documents the result: `ui.ts`'s own description offers `--no-auth for the bare SPA`, and
- *   `docs/commands/ui.md` puts `[--auth | --no-auth]` in its synopsis. Booleans only: citty would also
- *   answer `--no-env`, but that is a quirk of its parser, not a flag anybody declared, so it is refused.
+ * The declared name, then every other spelling citty answers, in the one order `contract/args.ts` gives
+ * them: the camelCase form (`--withPrerequisites`), declared aliases (long and short), and `--no-<name>` on
+ * a boolean. `pithy schema` publishes the same spellings grouped under their names, from the same function,
+ * so the three lists cannot disagree.
  *
  * A **positional** is not a flag and is left out: it carries no `--`.
  */
 export function flagsOf(args: ArgsDef | undefined): string[] {
-  const flags: string[] = [];
-  for (const [name, def] of Object.entries(args ?? {})) {
-    const arg = def as { type?: string; alias?: unknown };
-    if (arg.type === "positional") continue;
-    flags.push(`--${name}`);
-    const camel = camelSpelling(name);
-    if (camel !== name) flags.push(`--${camel}`);
-    flags.push(...aliasFlags(arg.alias));
-    if (arg.type === "boolean") flags.push(`--no-${name}`);
-  }
-  return flags;
+  return Object.entries(args ?? {})
+    .filter(([, def]) => !isPositional(def))
+    .flatMap(([name, def]) => [`--${name}`, ...flagAliases(name, def).map((alias) => alias.flag)]);
 }
 
 /** What {@link undeclaredFlags} found: the command, what it was given that it does not take, and what it does. */
@@ -249,8 +213,11 @@ export async function refuseUndeclaredFlags(root: CommandDef, argv: readonly str
   const plural = found.undeclared.length > 1;
   throw new ValidationError({
     message: `Unknown flag${plural ? "s" : ""}: ${found.undeclared.join(", ")}.`,
+    // A command with none of its own still takes the global ones, so "no flags" would be wrong (#697).
     action:
-      found.declared.length === 0 ? `${command} takes no flags.` : `${command} takes ${found.declared.join(", ")}.`,
+      found.declared.length === 0
+        ? `${command} takes only the global flags, which \`pithy schema --json\` lists.`
+        : `${command} takes ${found.declared.join(", ")}.`,
     issues: found.undeclared.map((flag) => ({
       path: [flag],
       code: "unrecognized_keys",

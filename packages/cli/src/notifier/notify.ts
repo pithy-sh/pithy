@@ -14,6 +14,9 @@ import { type Bump, classifyBump, parseVersion } from "./version";
  * notice prints to stderr only when every suppression rule holds.
  */
 
+/** Any non-blank value suppresses the end-of-command update notice. */
+export const NO_UPDATE_NOTIFIER_ENV = "PITHY_NO_UPDATE_NOTIFIER";
+
 /** The inputs the four suppression rules read. All must hold for the notice to print. */
 export interface SuppressionInput {
   /** `process.stderr.isTTY` — piped/CI output suppresses the whole notice. */
@@ -36,7 +39,7 @@ export interface SuppressionInput {
  */
 export function shouldNotify(input: SuppressionInput): boolean {
   if (!input.isTTY) return false;
-  if (input.env.PITHY_NO_UPDATE_NOTIFIER) return false;
+  if (input.env[NO_UPDATE_NOTIFIER_ENV]) return false;
   if (!input.notifierEnabled) return false;
   if (input.bump === "minor" || input.bump === "major") return true;
   if (input.bump === "patch" && input.securityFlagged) return true;

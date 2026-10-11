@@ -7,6 +7,8 @@ import { join } from "node:path";
 import type { CommandDef } from "citty";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { originDrift } from "../project/domains";
+import { scaffoldProject } from "../project/scaffold";
+import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import worker from "./worker";
 
 /**
@@ -125,6 +127,7 @@ describe("worker sync", () => {
     await project('{ prod: { pattern: "app.example.com", zone: "example.com" } }');
 
     const output = await run({ json: true });
+    await expectConforms("worker sync", output);
 
     expect(JSON.parse(output)).toMatchObject({
       command: "worker.sync",
@@ -236,6 +239,7 @@ describe("worker list", () => {
     await registryWithStaleRoot();
 
     const { out } = await runList(true);
+    await expectConforms("worker list", out);
     const parsed = JSON.parse(out.trim()) as { command: string; staleAutostart: { root: string }[] };
 
     expect(parsed.command).toBe("worker.list");
@@ -255,5 +259,29 @@ describe("worker list", () => {
 
     const parsed = JSON.parse((await runList(true)).out.trim()) as { staleAutostart: unknown[] };
     expect(parsed.staleAutostart).toEqual([]);
+  });
+});
+
+/**
+ * The three that change `apps/`, through the real commands in a project the real scaffolder built, each
+ * line held to the schema `pithy schema worker` publishes (#697). No account is configured, so rename
+ * reports that it could not look for a live script rather than reaching one.
+ */
+describe("pithy worker add, rename and remove --json conform to their published payloads", () => {
+  test("add, then rename, then remove", async () => {
+    await scaffoldProject({ targetDir: dir, appName: "replay", worker: "board" });
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-worker-json-cfg-"));
+    const previous = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+    try {
+      await expectConforms("worker add", await runCaptured("worker add", ["web", "--skip-install", "--json"]));
+      await expectConforms("worker rename", await runCaptured("worker rename", ["web", "site", "--json"]));
+      await expectConforms("worker remove", await runCaptured("worker remove", ["site", "--json"]));
+    } finally {
+      vi.restoreAllMocks();
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
-import type { CommandDef } from "citty";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { CATALOG } from "../capabilities/catalog";
-import { flagsOf, GLOBAL_FLAGS } from "../declaredFlags";
+import type { CommandDescription } from "../contract/cliSchema";
+import { describeCli } from "../contract/describe";
 import { main } from "../main";
-import { EXIT_CLASSES, type ExitClass, exitClassOf } from "../terminal/exitClass";
+import type { ExitClass } from "../terminal/exitClass";
 
 /**
  * What the kit contains, as one file another repository can read.
@@ -106,52 +106,21 @@ export interface DocsCatalog {
   errorCodes: CatalogErrorCode[];
 }
 
-/**
- * citty's `Resolvable<T>`: a value, a promise of one, or a thunk returning either.
- *
- * Both `subCommands` and `args` are declared this way, so one resolver covers both. Reading either
- * unawaited is silent rather than loud — `Object.entries` of a promise or a function is `[]`, so the
- * command reads as taking no flags and the group as having no children.
- */
-type Resolvable<T> = T | Promise<T> | (() => T | Promise<T>);
+/** One command's flags as the catalog lists them: each canonical name, then every other spelling of it. */
+function catalogFlags(command: CommandDescription): string[] {
+  return command.flags.flatMap((flag) => [flag.name, ...flag.aliases.map((alias) => alias.flag)]);
+}
 
-/** One `Resolvable`, resolved. */
-async function resolve<T>(value: Resolvable<T>): Promise<T> {
-  return typeof value === "function" ? await (value as () => T | Promise<T>)() : await value;
+/** `pithy schema`'s commands, projected to the catalog's `{ path, flags }`. */
+function catalogCommands(commands: readonly CommandDescription[]): CatalogCommand[] {
+  return commands.map((command) => ({ path: command.path, flags: catalogFlags(command) }));
 }
 
 /**
- * Every command under `root`, sorted by the path a caller types.
- *
- * Groups are walked **and listed**. `pithy token` takes no flags of its own, but a page that spells one
- * is still citing a command, and a list that skipped it would have nothing to say about that page.
- *
- * All three of citty's subcommand spellings are resolved. This CLI writes thunks so the tree stays lazy;
- * reading only the literal form would have found the root's twenty-six names and none of their flags.
- */
-export async function walkCommands(root: CommandDef, prefix: string[] = []): Promise<CatalogCommand[]> {
-  const found: CatalogCommand[] = [];
-  // The container is a `Resolvable` as much as anything inside it, and this repository already builds the
-  // lazy form: `dispatch.ts`'s `ownNamesOnly` returns `subCommands: async () => …`, and `bin.ts` wraps the
-  // tree in it before dispatching. Reading it unawaited takes `Object.entries` of a function — no names,
-  // no children, and a whole subtree missing from the export with nothing to say so, because the
-  // non-empty guard is still satisfied by the commands that did resolve.
-  const declared = root.subCommands === undefined ? {} : await resolve(root.subCommands);
-  const subCommands = declared as Record<string, Resolvable<CommandDef>>;
-  for (const [name, value] of Object.entries(subCommands)) {
-    const child = await resolve(value);
-    const path = [...prefix, name];
-    found.push({
-      path: path.join(" "),
-      flags: flagsOf(child.args === undefined ? undefined : await resolve(child.args)),
-    });
-    found.push(...(await walkCommands(child, path)));
-  }
-  return found.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-/**
- * The catalog, built from the values the kit runs on.
+ * The catalog, projected from what `pithy schema` publishes (#697): the same walk of the same tree, so
+ * the committed file and the installed binary cannot disagree about a command, a flag or an error code.
+ * The catalog keeps its own shapes — `commands[].flags` a flat list of spellings, `globalFlags` a flat
+ * sorted list — because another repository reads them by name; `pithy schema` carries the structure.
  *
  * Every section is asserted non-empty. Not a floor — a floor is a number somebody has to raise by hand,
  * and it is wrong the moment they do not — but the one state that can only mean the reader broke: a kit
@@ -159,25 +128,19 @@ export async function walkCommands(root: CommandDef, prefix: string[] = []): Pro
  * empty section reports `ok` on every page, and that is the result worth refusing to write.
  */
 export async function buildDocsCatalog(): Promise<DocsCatalog> {
+  const cli = await describeCli(main);
   const catalog: DocsCatalog = {
     $generated: GENERATED_NOTE,
     capabilities: CATALOG.map((entry) => ({ name: entry.name, package: entry.package })).sort((left, right) =>
       left.name.localeCompare(right.name),
     ),
-    commands: await walkCommands(main),
-    globalFlags: [...GLOBAL_FLAGS].sort(),
-    errorCodes: KitErrorPayload.options
-      .map((member) => {
-        const code = member.shape.code.value;
-        const exitClass = exitClassOf({ code });
-        const { exit, retryable, agentShould } = EXIT_CLASSES[exitClass];
-        return { code, status: member.shape.status.value, exitClass, exit, retryable, remedy: agentShould };
-      })
-      .sort((left, right) => left.code.localeCompare(right.code)),
+    commands: catalogCommands(cli.commands),
+    globalFlags: cli.globalFlags.flatMap((flag) => [flag.name, ...flag.aliases]).sort(),
+    errorCodes: cli.errorCodes,
   };
   for (const [section, entries] of Object.entries(catalog)) {
     if (Array.isArray(entries) && entries.length === 0) {
-      throw new Error(`The docs catalog read no ${section}. Fix the reader before trusting it.`);
+      throw new InternalError({ message: `The docs catalog read no ${section}. Fix the reader before trusting it.` });
     }
   }
   return catalog;

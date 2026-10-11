@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { EXIT } from "./terminal/exitClass";
+import { expectConforms } from "./test-utils/payloadContract";
 
 const run = promisify(execFile);
 const bin = join(import.meta.dirname, "bin.ts");
@@ -218,6 +219,34 @@ async function cli(
 }
 
 /** Every line the rotator has issued so far. Empty when it has never been called. */
+/** The same run as {@link cli}, with `input` piped to stdin — how a value reaches `create` and `update` unprompted. */
+function cliWithInput(
+  args: string[],
+  input: string,
+  options: { baseUrl: string },
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = {
+    ...process.env,
+    PITHY_CONFIG_DIR: config,
+    CLOUDFLARE_ACCOUNT_ID: "acct-replay",
+    CLOUDFLARE_API_TOKEN: "cfat-fake",
+    CLOUDFLARE_BASE_URL: options.baseUrl,
+  };
+  return new Promise((done) => {
+    const child = spawn("bun", [bin, ...args], { cwd: app, env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    child.stdin.end(input);
+  });
+}
+
 async function issued(): Promise<string[]> {
   return readFile(join(dir, ISSUED_LOG), "utf8")
     .then((text) => text.split("\n").filter(Boolean))
@@ -393,6 +422,8 @@ describe("pithy secrets rotate, with the real binary", () => {
       "secrets/rotation_unrecorded",
     );
     expect(result.code).toBe(EXIT.person);
+    // Held to the schema `pithy schema secrets rotate` publishes (#697) — the failure's line as much as a success's.
+    await expectConforms("secrets rotate", result.stdout);
   }, 120_000);
 
   test("a local secret whose store refuses is an ordinary failure — exit 1, previous value still live", async () => {
@@ -441,4 +472,40 @@ describe("pithy secrets rotate, with the real binary", () => {
       ).resolves.toBe("absent");
     }
   }, 180_000);
+});
+
+/**
+ * **Every `pithy secrets` write and the listing, from the real binary, held to the schemas `pithy schema
+ * secrets` publishes (#697).** The same fake Workflows API answers each write; nothing reaches an account.
+ */
+describe("pithy secrets --json conforms to its published payloads, with the real binary", () => {
+  test("ls, create, update, rotate and rm", async () => {
+    const listed = await cli(["secrets", "ls", "--json"]);
+    expect(listed.code).toBe(0);
+    await expectConforms("secrets ls", listed.stdout);
+
+    const created = await cliWithInput(
+      ["secrets", "create", "REPLAY_OAUTH_SECRET", "--env", "staging", "--json"],
+      "gho_replay_value\n",
+      staging,
+    );
+    expect(created.stderr).toBe("");
+    await expectConforms("secrets create", created.stdout);
+
+    const updated = await cliWithInput(
+      ["secrets", "update", "REPLAY_OAUTH_SECRET", "--env", "staging", "--json"],
+      "gho_replay_value_two\n",
+      staging,
+    );
+    expect(updated.stderr).toBe("");
+    await expectConforms("secrets update", updated.stdout);
+
+    const rotated = await cli(["secrets", "rotate", "REPLAY_SESSION_KEY", "--env", "staging", "--json"], staging);
+    expect(rotated.code).toBe(0);
+    await expectConforms("secrets rotate", rotated.stdout);
+
+    const removed = await cli(["secrets", "rm", "REPLAY_OAUTH_SECRET", "--env", "staging", "--json"], staging);
+    expect(removed.code).toBe(0);
+    await expectConforms("secrets rm", removed.stdout);
+  }, 240_000);
 });

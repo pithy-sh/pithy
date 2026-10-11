@@ -70,7 +70,7 @@ export interface StatePathOptions {
  * variable moves the whole tree, which is also what makes per-worktree isolation a later configuration
  * change rather than a redesign.
  */
-const CONFIG_DIR_ENV = "PITHY_CONFIG_DIR";
+export const CONFIG_DIR_ENV = "PITHY_CONFIG_DIR";
 
 /**
  * The one way a test may resolve the operator's real config directory: say so, in the environment, and

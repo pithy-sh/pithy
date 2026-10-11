@@ -8,6 +8,7 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
+import { z } from "zod";
 import {
   deployHostWorker,
   kitPackageVersion,
@@ -74,20 +75,19 @@ import { readOptionalWranglerConfig } from "./wrangler";
  */
 
 /** What one kit Worker's deploy did. The `--json` row and the terminal line both read from this. */
-export interface KitWorkerDeploy {
-  /** The capability that owns the Worker — the row's label, and the key into the registry. */
-  capability: string;
-  /** The deployed script name, or `null` when this run never got far enough to derive one. */
-  worker: string | null;
-  /**
-   * `deployed` — wrangler ran. `unchanged` — the stamp matched, so it did not.
-   * `skipped` — this project cannot deploy it yet, and the reason names what to run.
-   * `failed` — it was attempted and did not work.
-   */
-  outcome: "deployed" | "unchanged" | "skipped" | "failed";
-  /** One sentence. Never empty: an outcome nobody can explain is the failure this issue is about. */
-  reason: string;
-}
+export const KitWorkerDeploy = z
+  .object({
+    capability: z.string().describe("The capability that owns the Worker — the row's label."),
+    worker: z.string().nullable().describe("The deployed script name, or `null` when none was derived."),
+    outcome: z
+      .enum(["deployed", "unchanged", "skipped", "failed"])
+      .describe(
+        "`deployed` — wrangler ran. `unchanged` — the stamp matched, so it did not. `skipped` — this project cannot deploy it yet, and the reason names what to run. `failed` — it was attempted and did not work.",
+      ),
+    reason: z.string().describe("One sentence. Never empty: an outcome nobody can explain is a failure."),
+  })
+  .describe("What one kit Worker's deploy did.");
+export type KitWorkerDeploy = z.infer<typeof KitWorkerDeploy>;
 
 /**
  * What the kit half of one deploy did: a row per capability, and anything that stopped it saying more.

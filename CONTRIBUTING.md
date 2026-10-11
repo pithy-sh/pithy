@@ -149,14 +149,14 @@ Two exceptions, and both are the same exception. A document a **test reads off d
 
 ### The docs catalog
 
-The site's own check asks whether every `pithy add <name>` on a page names a real capability, every CLI flag it cites exists in that command's parser, and every error code it quotes exists in the kit. It reads `docs/catalog.generated.json`, which this repository writes from the values themselves — the capability catalog, the composed citty tree, `KitErrorPayload`.
+The site's own check asks whether every `pithy add <name>` on a page names a real capability, every CLI flag it cites exists in that command's parser, and every error code it quotes exists in the kit. It reads `docs/catalog.generated.json`, which this repository writes from the values themselves — the capability catalog, the composed citty tree, `KitErrorPayload`. Its commands, flags and error codes are a projection of what `pithy schema --json` publishes from the installed binary (`packages/cli/src/contract/describe.ts`), so the two cannot disagree; the catalog keeps its flat shapes because the site reads them by name, and `pithy schema` carries the structure.
 
 ```bash
 bun run docs-catalog           # rewrite it
 bun packages/cli/src/docs/writeCatalog.ts --check   # what CI runs
 ```
 
-**`commands` answers whether a flag exists, not whether a page may name it**, and a flag check that ignores the difference reports correct pages as wrong. A command page cites other commands' flags (`deploy.md` writes `pithy provision --env <name> --yes` while explaining what deploy refuses), quotes flags belonging to no Pithy command at all (`git rev-parse --git-common-dir`), and — most often — documents flags that deliberately **do not exist**: `secrets.md` argues at length that there is no `--all`, `vector.md` that `reset` takes no `--yes`, `turnstile.md` that there is no `--mode`. So match `<command> --flag` as a pair, and expect the absences to be the loudest thing on the page. `globalFlags` covers the six the walk cannot see, hidden pair included.
+**`commands` answers whether a flag exists, not whether a page may name it**, and a flag check that ignores the difference reports correct pages as wrong. A command page cites other commands' flags (`deploy.md` writes `pithy provision --env <name> --yes` while explaining what deploy refuses), quotes flags belonging to no Pithy command at all (`git rev-parse --git-common-dir`), and — most often — documents flags that deliberately **do not exist**: `secrets.md` argues at length that there is no `--all`, `vector.md` that `reset` takes no `--yes`, `turnstile.md` that there is no `--mode`. So match `<command> --flag` as a pair, and expect the absences to be the loudest thing on the page. `globalFlags` covers the flags the walk cannot see, hidden pair included.
 
 It is committed, so a consumer that neither is this repository nor installs it can read it with no build step — and committed means it can go stale, which is what the `--check` in CI's verify job is for. A stale export does not fail the site's check; it makes every page pass against a kit that has moved.
 

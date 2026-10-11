@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { expectConforms } from "../test-utils/payloadContract";
 import type { DevLogRecord } from "./devLogRecord";
 import { formatDevLogRecord } from "./devLogRecord";
 import { stripAnsi } from "./logging";
@@ -130,6 +131,22 @@ describe("runDevLogs", () => {
       expect(parsed.logs).toHaveLength(1);
       expect(parsed.logs[0]).toMatchObject({ branch: "main", worker: "api", lines: 1 });
     });
+  });
+
+  /** Both shapes the reader writes, held to the schema `pithy schema dev logs` publishes (#697). */
+  test("--json conforms to its published payload, listing and records alike", async () => {
+    const spawned: DevLogRecord = { ts: at(0), event: "spawned", port: 8787 };
+    const ready: DevLogRecord = { ts: at(2), event: "ready" };
+    const exited: DevLogRecord = { ts: at(3), event: "exited", code: null };
+    await write("dev.main.api.jsonl", [line(spawned), line(out(1, "Ready")), line(ready), line(exited)].join(""));
+
+    await run({ json: true });
+    await expectConforms("dev logs", stdout);
+
+    stdout = [];
+    await run({ apps: ["api"], json: true });
+    expect(stdout).toHaveLength(4);
+    await expectConforms("dev logs", stdout);
   });
 
   describe("reading a worker back", () => {

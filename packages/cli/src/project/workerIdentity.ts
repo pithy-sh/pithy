@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
+import { z } from "zod";
 import type { WorkerTarget } from "./workers";
 
 /**
@@ -37,12 +38,15 @@ import type { WorkerTarget } from "./workers";
  * unrelated, and a prefix strip turns `board`/`board-worker` into nonsense. The directory is a fact on
  * disk; the deployed name is a string in a config file.
  */
-export interface WorkerIdentity {
-  /** The `apps/` directory. What `--worker` names, and what sibling paths are relative to. */
-  worker: string;
-  /** The deployed script name, from `wrangler.jsonc`. What Cloudflare shows. */
-  deployedAs: string;
-}
+export const WorkerIdentity = z
+  .object({
+    worker: z
+      .string()
+      .describe("The Worker's `apps/` directory. What `--worker` names, and what sibling paths are relative to."),
+    deployedAs: z.string().describe("The Worker's deployed script name, from `wrangler.jsonc`. What Cloudflare shows."),
+  })
+  .describe("Both names of one Worker: its directory and its deployed script.");
+export type WorkerIdentity = z.infer<typeof WorkerIdentity>;
 
 /** Both names for `target`, for a `--json` payload. */
 export function workerIdentity(target: Pick<WorkerTarget, "name" | "dir">): WorkerIdentity {

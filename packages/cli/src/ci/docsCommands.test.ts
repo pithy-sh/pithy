@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
-import { walkCommands } from "../docs/catalog";
+import { describeCli } from "../contract/describe";
 import { main } from "../main";
 
 /**
@@ -59,7 +59,7 @@ function docFiles(dir: string): [string, string][] {
 
 describe("commands named in docs", () => {
   test("every `pithy <command> <subcommand>` in a doc names a real subcommand", async () => {
-    const commands = await walkCommands(main);
+    const { commands } = await describeCli(main);
     const paths = new Set(commands.map((command) => command.path));
     // Only a command that *has* subcommands can be followed by a wrong one. `pithy add payments` is a
     // command and its argument, not a path, and asking `add` for a subcommand named `payments` would fail
@@ -88,7 +88,7 @@ describe("commands named in docs", () => {
   // result this test must never produce quietly. `secrets create` is asserted by name because it is the
   // spelling #503 was wrong about, so a walk that silently stopped returning subcommands fails here.
   test("the walk and the docs are both non-empty", async () => {
-    const commands = await walkCommands(main);
+    const { commands } = await describeCli(main);
     expect(commands.map((command) => command.path)).toContain("secrets create");
     expect(docFiles(join(REPO_ROOT, "docs")).length).toBeGreaterThan(10);
   });

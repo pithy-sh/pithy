@@ -549,12 +549,24 @@ export async function readWorkerAutostart(options: Omit<AutostartOptions, "lock"
 }
 
 /** One checkout root that is gone from disk while the registry still holds its autostart answers. */
-export interface StaleAutostartRoot {
-  /** The absolute checkout root, exactly as the registry keys it — a path no longer on disk. */
-  root: string;
-  /** Every branch under it that said something, each with the workers it named, both sorted. */
-  branches: { branch: string; workers: string[] }[];
-}
+export const StaleAutostartRoot = z
+  .object({
+    root: z.string().describe("The absolute checkout root the answers are filed under — a path no longer on disk."),
+    branches: z
+      .array(
+        z
+          .object({
+            branch: z.string().describe("The branch key, possibly `local:<path>`."),
+            workers: z
+              .array(z.string().describe("A worker's name."))
+              .describe("The workers that branch named, sorted."),
+          })
+          .describe("One branch that said something."),
+      )
+      .describe("Every branch under it that said something, sorted."),
+  })
+  .describe("One checkout root that is gone and still holds autostart answers.");
+export type StaleAutostartRoot = z.infer<typeof StaleAutostartRoot>;
 
 /**
  * Autostart answers filed under a checkout that is gone — the loss {@link readWorkerAutostart} cannot report.

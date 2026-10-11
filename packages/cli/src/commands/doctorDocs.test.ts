@@ -9,6 +9,7 @@ import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import type { ResolvedWorker } from "../project/workerScope";
+import { formatJsonLine } from "../terminal/output";
 import {
   cleanPlanFor,
   doctorHarness,
@@ -19,6 +20,7 @@ import {
   workerSet,
   zsh,
 } from "../test-utils/doctorHarness";
+import { expectConforms } from "../test-utils/payloadContract";
 import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDoctorText } from "./doctor";
 
 /**
@@ -1196,6 +1198,7 @@ const SPREAD_BUILT = [
   "media",
   "migrate",
   "provision",
+  "schema",
   "seed",
   "storage",
   "support",
@@ -1235,6 +1238,25 @@ describe("the docs say what the code emits", () => {
     if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     const sample: unknown = JSON.parse(block.split("\n").slice(1).join("\n"));
     expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(Object.keys(renderDoctorJson(report)).sort());
+  });
+
+  /**
+   * The payload, held to the schema `pithy schema doctor` publishes (#697): a real report from the harness,
+   * one from outside any project, and the sample this page pastes — so the published schema, the code and
+   * the documented example are one shape.
+   */
+  test("the --json line, inside a project and out of one, and the page's sample, conform to the published payload", async () => {
+    await expectConforms(
+      "doctor",
+      formatJsonLine(renderDoctorJson(await buildDoctorReport(docOptions(harness.healthyOptions())))),
+    );
+    await expectConforms(
+      "doctor",
+      formatJsonLine(renderDoctorJson(await buildDoctorReport(docOptions(harness.baseOptions())))),
+    );
+    const block = JSON_SAMPLES[0];
+    if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
+    await expectConforms("doctor", JSON.stringify(JSON.parse(block.split("\n").slice(1).join("\n"))));
   });
 
   /**
@@ -1327,7 +1349,8 @@ describe("the docs say what the code emits", () => {
     // one report each are now the one spread `pithy provision` builds for both.
     // 32 since #380: `pithy feature destroy` builds a second spread for the teardown that failed
     // partway, which reports what it destroyed before the failure rather than nothing at all.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(32);
+    // 33 since #697: `pithy schema` spreads the document it describes the CLI with behind its `command`.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(33);
   });
 
   /**
@@ -1551,6 +1574,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "migrate",
     "payments",
     "provision",
+    "schema",
     "secrets",
     "seed",
     "storage",
@@ -1591,6 +1615,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   manifestFaults: ["add", "provision", "upgrade"],
   name: ["secrets", "token"],
   packageManager: ["add", "ui"],
+  // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
+  // string, and both where the answer is: the file to open, the command the document describes.
+  path: ["schema", "secrets"],
   project: ["doctor", "migrate"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
@@ -1608,6 +1635,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // shared name carrying two types is the defect #235 is about.
   skippedEnvironments: ["email", "media", "payments", "storage", "support", "testers"],
   staleAutostart: ["dev", "worker"],
+  // A credential's or a connection's state, one word each: `dashboard`'s connection (`connected`, …) and the
+  // minted token's lifecycle as Cloudflare reports it (`active`, …), published since #697.
+  status: ["dashboard", "token"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
@@ -1648,6 +1678,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   manifestFaults: "unknown[]",
   name: "string",
   packageManager: "string",
+  path: "string",
   port: "number",
   removed: "boolean",
   routing: "object",
@@ -1655,6 +1686,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   shell: "string",
   skippedEnvironments: "object[]",
   staleAutostart: "object[]",
+  status: "string",
   storageDeleted: "boolean",
   to: "string",
   worker: "string",

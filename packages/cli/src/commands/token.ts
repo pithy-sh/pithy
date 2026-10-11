@@ -13,10 +13,12 @@ import {
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
@@ -351,109 +353,206 @@ const overrideArgs = {
   },
 } as const;
 
-const mint = defineCommand({
-  meta: {
-    name: "mint",
-    description: "Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)",
-  },
-  args: { ...profileArg, ...envArgs, ...overrideArgs, ...jsonArg },
-  run: ({ args, rawArgs }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const engine = await buildEngine(process.cwd(), env);
-      const result = await mintProfileToken(engine, args.profile, env, {
-        store: parseStore(args.store),
-        permissions: parsePermissions(collectPermissionFlags(rawArgs)),
-      });
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "token mint", ...publicToken(result) })}\n`);
-        return;
-      }
-      process.stdout.write(`${result.profile}: minted → ${result.sink.location}.\n`);
-      const dead = deadTokenNotice(result);
-      if (dead) process.stdout.write(dead);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+const Profile = z.string().describe("The token profile.");
+const Env = z.string().describe("The environment.");
+const TokenId = z.string().describe("Cloudflare's id for the token. An identifier, not a credential.");
+const Status = z
+  .enum(["active", "disabled", "expired"])
+  .describe("The token's lifecycle status, as Cloudflare reports it.");
 
-const list = defineCommand({
-  meta: { name: "list", description: "List minted tokens for an environment (ids and profiles, never values)" },
-  args: { ...envArgs, ...jsonArg },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const engine = await buildEngine(process.cwd(), env);
-      const tokens = await listProfileTokens(engine, env);
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "token list", env, tokens })}\n`);
-        return;
-      }
-      if (tokens.length === 0) {
-        process.stdout.write(`No minted tokens for ${env}.\n`);
-        return;
-      }
-      process.stdout.write(
-        `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
-      );
-      const notice = routeScopeNotice(tokens, env);
-      if (notice) process.stdout.write(notice);
-    }),
-});
+/** What `mint` and `rotate` write: everything about the token but its value. */
+const MintedToken = {
+  profile: Profile,
+  env: Env,
+  tokenId: TokenId,
+  store: z.enum(TOKEN_STORES).describe("Where the value went."),
+  location: z
+    .string()
+    .describe("A human location for that store: the `tokens.json` path, the Secrets Store, or nowhere."),
+  status: Status.optional().describe("The token's status, when Cloudflare returned one."),
+};
 
-const rotate = defineCommand({
-  meta: {
-    name: "rotate",
-    description: "Replace a profile's token with the profile's current scope (create new, delete old)",
-  },
-  args: {
-    ...profileArg,
-    ...envArgs,
-    ...overrideArgs,
-    "keep-previous": { type: "boolean", default: false, description: "Keep the old token as a grace window" },
-    ...jsonArg,
-  },
-  run: ({ args, rawArgs }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const engine = await buildEngine(process.cwd(), env);
-      const result = await rotateProfileToken(engine, args.profile, env, {
-        store: parseStore(args.store),
-        permissions: parsePermissions(collectPermissionFlags(rawArgs)),
-        keepPrevious: args["keep-previous"],
-      });
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "token rotate", ...publicToken(result) })}\n`);
-        return;
-      }
-      process.stdout.write(`${result.profile}: rotated → ${result.sink.location}.\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+/** `pithy token mint --json`. `docs/commands/token.md`. */
+const TokenMintPayload = z
+  .object({ command: z.literal("token mint").describe('`"token mint"`.'), ...MintedToken })
+  .describe("The token `pithy token mint` minted. Never its value.");
 
-const revoke = defineCommand({
-  meta: { name: "revoke", description: "Revoke a profile's token for an environment" },
-  args: { ...profileArg, ...envArgs, ...jsonArg },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const env = requireEnvironment(args.env);
-      const engine = await buildEngine(process.cwd(), env);
-      const result = await revokeProfileToken(engine, args.profile, env);
-      if (args.json) {
-        // **A count is published as `revokedCount` (#235).** `pithy dashboard revoke-key` emits
-        // `revoked` as a `boolean` — did that key come out — and this one is "how many tokens of that
-        // name were deleted", where `0` is an ordinary answer. So `revoked` was a yes/no in one command
-        // and a number in another, and the number's falsy value is the one that means "nothing was
-        // revoked" in both readings while `revoked: 0` and `revoked: false` are not the same claim. The
-        // count is the outlier — every other `<verb>ed` key in this CLI is a boolean — so it takes the
-        // suffix. `RevokeResult` keeps `revoked`: the published name is decided here.
-        const { revoked: revokedCount, ...rest } = result;
-        process.stdout.write(`${formatJsonLine({ command: "token revoke", ...rest, revokedCount })}\n`);
-        return;
-      }
-      process.stdout.write(`${result.profile}: revoked ${result.revoked} token${result.revoked === 1 ? "" : "s"}.\n`);
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+/** `pithy token rotate --json`. */
+const TokenRotatePayload = z
+  .object({ command: z.literal("token rotate").describe('`"token rotate"`.'), ...MintedToken })
+  .describe("The token `pithy token rotate` replaced it with. Never its value.");
+
+/** `pithy token list --json`. */
+const TokenListPayload = z
+  .object({
+    command: z.literal("token list").describe('`"token list"`.'),
+    env: Env,
+    tokens: z
+      .array(
+        z
+          .object({
+            profile: Profile,
+            env: Env,
+            name: z.string().describe("The composed Cloudflare token name, `<project>-<env>-<profile>`."),
+            tokenId: TokenId,
+            status: z.string().optional().describe("The token's status, when Cloudflare returned one."),
+            routeScope: z
+              .enum(["not-required", "scoped", "stale", "overridden", "inactive", "unknown"])
+              .describe("Whether the token can attach the routes this environment's declared domains need."),
+          })
+          .describe("One minted token."),
+      )
+      .describe("This project's tokens for that environment."),
+  })
+  .describe("This project's tokens, never their values.");
+
+/** `pithy token revoke --json`. */
+const TokenRevokePayload = z
+  .object({
+    command: z.literal("token revoke").describe('`"token revoke"`.'),
+    profile: Profile,
+    env: Env,
+    name: z.string().describe("The composed Cloudflare token name the sweep matched."),
+    revokedCount: z.number().int().describe("How many account tokens of that name were deleted. `0` is ordinary."),
+  })
+  .describe("What `pithy token revoke` deleted.");
+
+/** The facts `mint` and `rotate` share: where a value may go, and the repeatable permission override. */
+const OVERRIDE_FACTS = {
+  store: { enum: TOKEN_STORES },
+  permission: { enum: Object.keys(PERMISSION_GROUPS), repeatable: true },
+} as const;
+
+const mint = withContract(
+  defineCommand({
+    meta: {
+      name: "mint",
+      description: "Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)",
+    },
+    args: { ...profileArg, ...envArgs, ...overrideArgs, ...jsonArg },
+    run: ({ args, rawArgs }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const engine = await buildEngine(process.cwd(), env);
+        const result = await mintProfileToken(engine, args.profile, env, {
+          store: parseStore(args.store),
+          permissions: parsePermissions(collectPermissionFlags(rawArgs)),
+        });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "token mint", ...publicToken(result) })}\n`);
+          return;
+        }
+        process.stdout.write(`${result.profile}: minted → ${result.sink.location}.\n`);
+        const dead = deadTokenNotice(result);
+        if (dead) process.stdout.write(dead);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: TokenMintPayload,
+    mutates: true,
+    // Rolls the value every time.
+    idempotent: false,
+    needsNetwork: true,
+    flags: OVERRIDE_FACTS,
+  },
+);
+
+const list = withContract(
+  defineCommand({
+    meta: { name: "list", description: "List minted tokens for an environment (ids and profiles, never values)" },
+    args: { ...envArgs, ...jsonArg },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const engine = await buildEngine(process.cwd(), env);
+        const tokens = await listProfileTokens(engine, env);
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "token list", env, tokens })}\n`);
+          return;
+        }
+        if (tokens.length === 0) {
+          process.stdout.write(`No minted tokens for ${env}.\n`);
+          return;
+        }
+        process.stdout.write(
+          `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
+        );
+        const notice = routeScopeNotice(tokens, env);
+        if (notice) process.stdout.write(notice);
+      }),
+  }),
+  { output: "document", payload: TokenListPayload, mutates: false, idempotent: true, needsNetwork: true },
+);
+
+const rotate = withContract(
+  defineCommand({
+    meta: {
+      name: "rotate",
+      description: "Replace a profile's token with the profile's current scope (create new, delete old)",
+    },
+    args: {
+      ...profileArg,
+      ...envArgs,
+      ...overrideArgs,
+      "keep-previous": { type: "boolean", default: false, description: "Keep the old token as a grace window" },
+      ...jsonArg,
+    },
+    run: ({ args, rawArgs }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const engine = await buildEngine(process.cwd(), env);
+        const result = await rotateProfileToken(engine, args.profile, env, {
+          store: parseStore(args.store),
+          permissions: parsePermissions(collectPermissionFlags(rawArgs)),
+          keepPrevious: args["keep-previous"],
+        });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "token rotate", ...publicToken(result) })}\n`);
+          return;
+        }
+        process.stdout.write(`${result.profile}: rotated → ${result.sink.location}.\n`);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: TokenRotatePayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: true,
+    flags: OVERRIDE_FACTS,
+  },
+);
+
+const revoke = withContract(
+  defineCommand({
+    meta: { name: "revoke", description: "Revoke a profile's token for an environment" },
+    args: { ...profileArg, ...envArgs, ...jsonArg },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const engine = await buildEngine(process.cwd(), env);
+        const result = await revokeProfileToken(engine, args.profile, env);
+        if (args.json) {
+          // **A count is published as `revokedCount` (#235).** `pithy dashboard revoke-key` emits
+          // `revoked` as a `boolean` — did that key come out — and this one is "how many tokens of that
+          // name were deleted", where `0` is an ordinary answer. So `revoked` was a yes/no in one command
+          // and a number in another, and the number's falsy value is the one that means "nothing was
+          // revoked" in both readings while `revoked: 0` and `revoked: false` are not the same claim. The
+          // count is the outlier — every other `<verb>ed` key in this CLI is a boolean — so it takes the
+          // suffix. `RevokeResult` keeps `revoked`: the published name is decided here.
+          const { revoked: revokedCount, ...rest } = result;
+          process.stdout.write(`${formatJsonLine({ command: "token revoke", ...rest, revokedCount })}\n`);
+          return;
+        }
+        process.stdout.write(`${result.profile}: revoked ${result.revoked} token${result.revoked === 1 ? "" : "s"}.\n`);
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: TokenRevokePayload, mutates: true, idempotent: true, needsNetwork: true },
+);
 
 export default defineCommand({
   meta: { name: "token", description: "Mint and manage scoped Cloudflare API tokens" },

@@ -28,6 +28,9 @@ import { type KeyReader, readKeys as readKeysDefault } from "../terminal/keys";
  * bare `z.url()`. Handing one of those to the platform opener hands an untrusted string to the desktop.
  */
 
+/** Any non-blank value suppresses every offer to open a link, as `PITHY_NO_UPDATE_NOTIFIER` suppresses the notice. */
+export const NO_OPEN_ENV = "PITHY_NO_OPEN";
+
 /** The spawn seam — narrow to what this module drives, so a test asserts the argv rather than a browser. */
 export type OpenSpawn = (command: string, args: string[], options: { detached: boolean; stdio: "ignore" }) => OpenChild;
 
@@ -177,7 +180,7 @@ export function openingIsOffered(input: OpeningIsOfferedInput): boolean {
   if (input.json) return false;
   if (!input.isTTY) return false;
   if (input.noOpen) return false;
-  if (input.env.PITHY_NO_OPEN) return false;
+  if (input.env[NO_OPEN_ENV]) return false;
   return true;
 }
 

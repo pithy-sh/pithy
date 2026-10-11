@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   malformedNoInputFlag,
   malformedPrettyFlag,
+  ROOT_FLAG_DESCRIPTIONS,
   ROOT_FLAGS,
   wantsNoInput,
   wantsPretty,
@@ -195,5 +196,14 @@ describe("malformedNoInputFlag", () => {
   test("well-formed spellings and payload after -- are not malformed", () => {
     expect(malformedNoInputFlag(["init", "--no-input", "--no-input=false"])).toBeUndefined();
     expect(malformedNoInputFlag(["dev", "--", "--no-input=x"])).toBeUndefined();
+  });
+});
+
+/** What `pithy schema` publishes for the root flags is the list `bin.ts` answers, described (#697). */
+describe("ROOT_FLAG_DESCRIPTIONS", () => {
+  test("names every spelling ROOT_FLAGS holds, exactly once, each with what it does", () => {
+    const spellings = ROOT_FLAG_DESCRIPTIONS.flatMap((flag) => [flag.name, ...flag.aliases]);
+    expect(spellings.sort()).toEqual([...ROOT_FLAGS].sort());
+    for (const flag of ROOT_FLAG_DESCRIPTIONS) expect(flag.description).not.toBe("");
   });
 });

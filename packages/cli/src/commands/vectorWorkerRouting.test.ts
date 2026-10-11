@@ -13,6 +13,7 @@ import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
 import { linkKitPackages } from "../test-utils/linkKit";
+import { expectConforms } from "../test-utils/payloadContract";
 import vector from "./vector";
 
 /**
@@ -103,6 +104,10 @@ vi.mock("../capabilities/vectorProvisioner", async (importOriginal) => ({
       await this.#resolveEnv(env);
       recorded.envs.push(env);
     }
+    async deleteIndex() {}
+    async reprocess(_env: string, index: string) {
+      return { indexName: `acme-staging-vector-${index}`, pages: 1, scanned: 2, reembedded: 2, skipped: 0 };
+    }
   },
 }));
 
@@ -176,8 +181,13 @@ interface Run {
 
 /** Drive `pithy vector provision`'s real `run` to completion, from inside the fixture project. */
 async function runProvision(args: Record<string, unknown>): Promise<Run> {
-  const entry = (vector.subCommands as Record<string, CommandDef>).provision;
-  if (!entry) throw new Error("expected a provision subcommand on pithy vector");
+  return runSubcommand("provision", args);
+}
+
+/** Drive one of `pithy vector`'s real subcommands to completion, from inside the fixture project. */
+async function runSubcommand(name: string, args: Record<string, unknown>): Promise<Run> {
+  const entry = (vector.subCommands as Record<string, CommandDef>)[name];
+  if (!entry) throw new Error(`expected a ${name} subcommand on pithy vector`);
 
   const out: string[] = [];
   const err: string[] = [];
@@ -237,6 +247,21 @@ describe("pithy vector provision reads and writes the app worker's wrangler.json
   test("the fixture is a project pithy init produces: no root wrangler.jsonc, one under apps/", () => {
     expect(existsSync(join(fixture.dir, "wrangler.jsonc"))).toBe(false);
     expect(existsSync(join(fixture.dir, "apps", WORKER, "wrangler.jsonc"))).toBe(true);
+  });
+
+  /** All three, through their real commands, held to the schemas `pithy schema vector` publishes (#697). */
+  test("provision, reset and reprocess --json conform to their published payloads", async () => {
+    await expectConforms("vector provision", (await runSubcommand("provision", { env: "staging", json: true })).stdout);
+    const reset = await runSubcommand("reset", {
+      env: "staging",
+      "confirm-reset": "yes, i really want to reset staging",
+      json: true,
+    });
+    await expectConforms("vector reset", reset.stdout);
+    await expectConforms(
+      "vector reprocess",
+      (await runSubcommand("reprocess", { env: "staging", all: false, json: true })).stdout,
+    );
   });
 
   test("a run provisions the environment and writes nothing to the project root", async () => {

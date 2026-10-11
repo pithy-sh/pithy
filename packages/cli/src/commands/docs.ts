@@ -3,6 +3,8 @@
 
 import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { z } from "zod";
+import { type FlagGroup, withContract } from "../contract/commandContract";
 import {
   clientById,
   DOCS_MCP_NAME,
@@ -275,109 +277,242 @@ export async function offerDocs(): Promise<void> {
   printRefusals(written);
 }
 
-const connectCommand = defineCommand({
-  meta: { name: "connect", description: "Write the Pithy docs MCP server into your AI clients" },
-  args: {
-    ...targetArgs,
-    print: { type: "boolean", default: false, description: "Print the snippet; write nothing" },
-    ...jsonArg,
+const ClientId = z.string().describe("The client's registry id, as `--client` takes it.");
+const ScopeName = z.enum(["project", "user"]).describe("Which configuration: `project` (committed) or `user` (yours).");
+const ConfigPath = z.string().describe("The configuration file, absolute.");
+const Reason = z.string().nullable().describe("Why it was refused, or `null` when it was not. One line.");
+
+/** `pithy docs connect --json`: what `--print` printed, or what was written. `docs/commands/docs.md`. */
+const DocsConnectPayload = z
+  .union([
+    z
+      .object({
+        command: z.literal("docs connect").describe('`"docs connect"`.'),
+        printed: z
+          .object({
+            client: ClientId.nullable().describe("The client the snippet is for, or `null` for the generic shape."),
+            path: ConfigPath.nullable().describe("Where it belongs, or `null` for the generic shape."),
+            snippet: z.string().describe("The configuration to add by hand."),
+          })
+          .describe("What `--print` printed. Nothing was written."),
+      })
+      .describe("`pithy docs connect --print --json`."),
+    z
+      .object({
+        command: z.literal("docs connect").describe('`"docs connect"`.'),
+        written: z
+          .array(
+            z
+              .object({
+                client: ClientId,
+                scope: ScopeName,
+                path: ConfigPath,
+                state: z
+                  .enum(["added", "updated", "unchanged", "refused"])
+                  .describe("What happened to the entry. `refused` wrote nothing."),
+                reason: Reason,
+                snippet: z.string().nullable().describe("The snippet to add by hand. Present only on a refusal."),
+              })
+              .describe("One client's configuration."),
+          )
+          .describe("One entry per client written. Empty when none was detected."),
+      })
+      .describe("`pithy docs connect --json`."),
+  ])
+  .describe("What `pithy docs connect --json` writes.");
+
+/** `pithy docs disconnect --json`. */
+const DocsDisconnectPayload = z
+  .object({
+    command: z.literal("docs disconnect").describe('`"docs disconnect"`.'),
+    disconnected: z
+      .array(
+        z
+          .object({
+            client: ClientId,
+            scope: ScopeName,
+            path: ConfigPath,
+            state: z
+              .enum(["removed", "absent", "refused"])
+              .describe("What happened to the entry. `absent` is not an error; `refused` wrote nothing."),
+            reason: Reason,
+          })
+          .describe("One client's configuration."),
+      )
+      .describe("One entry per client read."),
+  })
+  .describe("What `pithy docs disconnect --json` writes.");
+
+/** `pithy docs status --json`. */
+const DocsStatusPayload = z
+  .object({
+    command: z.literal("docs status").describe('`"docs status"`.'),
+    clients: z
+      .array(
+        z
+          .object({
+            client: ClientId,
+            label: z.string().describe("The tool's own name."),
+            detected: z.boolean().describe("Whether the tool looks installed for this operator."),
+            scopes: z
+              .array(
+                z
+                  .object({
+                    scope: ScopeName,
+                    path: ConfigPath,
+                    connected: z.boolean().describe("Whether a `pithy` entry is in it."),
+                    url: z.string().nullable().describe("The address that entry names, or `null`."),
+                    current: z.boolean().describe("Whether the entry is what this version of Pithy would write."),
+                  })
+                  .describe("One configuration."),
+              )
+              .describe("One entry per scope the client declares."),
+          })
+          .describe("One client."),
+      )
+      .describe("Every client the table knows."),
+  })
+  .describe("What `pithy docs status --json` writes.");
+
+/** The flag facts `connect` and `disconnect` share: the values `--client` and `--scope` take. */
+const TARGET_FACTS = {
+  client: { enum: MCP_CLIENTS.map((client) => client.id) },
+  scope: { enum: SCOPES },
+} as const;
+
+/** `--client` and `--all` both say which clients, so naming both is refused. */
+const CLIENT_OR_ALL: FlagGroup = {
+  kind: "atMostOne",
+  flags: ["--client", "--all"],
+  rule: "Pass either --client or --all, not both.",
+};
+
+const connectCommand = withContract(
+  defineCommand({
+    meta: { name: "connect", description: "Write the Pithy docs MCP server into your AI clients" },
+    args: {
+      ...targetArgs,
+      print: { type: "boolean", default: false, description: "Print the snippet; write nothing" },
+      ...jsonArg,
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const options = optionsOf();
+
+        // `--print` is the escape hatch, so it answers for a tool the table has never heard of rather than
+        // refusing — but it says which of the two happened, because otherwise a typo'd `--client` and the
+        // eleventh tool produce the same output and only one of them is what the operator meant.
+        if (args.print) {
+          const client = args.client === undefined ? undefined : clientById(args.client);
+          const scope = args.scope === undefined ? undefined : requireScope(args.scope);
+          const printed =
+            client === undefined
+              ? { client: null, path: null, snippet: GENERIC_SNIPPET }
+              : {
+                  client: client.id,
+                  path: targetFor(client, scopeFor(client, scope ?? scopesOf(client)[0]), options).path,
+                  snippet: snippetFor(client),
+                };
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "docs connect", printed })}\n`);
+            return;
+          }
+          if (printed.client !== null) emit(`${printed.path}:`);
+          else if (args.client !== undefined)
+            emit(dim(`No client called ${args.client}. This is the shape most take.`));
+          else emit(dim("No client named, so this is the shape most of them take."));
+          process.stdout.write(printed.snippet);
+          return;
+        }
+
+        const chosen = await resolveClients(args, args.json, options);
+        // The scope is settled before the empty set is, so an unattended run refuses the same way on a
+        // machine with no clients as on one with ten. A CI step that passes only because nothing happened
+        // to be installed is a CI step that will fail on somebody's laptop.
+        const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
+        requireScopeAnswerable(flagged, args.json);
+
+        if (chosen.length === 0) {
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "docs connect", written: [] })}\n`);
+            return;
+          }
+          emit("No AI clients detected here.");
+          emit("Run `pithy docs connect --print` for the snippet to add by hand.");
+          return;
+        }
+
+        const asked = flagged ?? (await askScopeOrExit());
+        const written: ConnectResult[] = [];
+        for (const client of chosen) {
+          written.push(await connect(targetFor(client, scopeFor(client, asked), options)));
+        }
+
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "docs connect", written })}\n`);
+          process.exit(exitFor(written));
+        }
+        emit(reportRows(written));
+        printRefusals(written);
+        const code = exitFor(written);
+        // `Done.` is a claim that something was done. A run where every client refused did nothing, so it
+        // ends on the refusals and the exit code rather than on the brand's full stop.
+        if (code === 0) emit(formatDone());
+        else process.exit(code);
+      }),
+  }),
+  {
+    output: "document",
+    payload: DocsConnectPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+    flags: TARGET_FACTS,
+    flagGroups: [CLIENT_OR_ALL],
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const options = optionsOf();
+);
 
-      // `--print` is the escape hatch, so it answers for a tool the table has never heard of rather than
-      // refusing — but it says which of the two happened, because otherwise a typo'd `--client` and the
-      // eleventh tool produce the same output and only one of them is what the operator meant.
-      if (args.print) {
-        const client = args.client === undefined ? undefined : clientById(args.client);
-        const scope = args.scope === undefined ? undefined : requireScope(args.scope);
-        const printed =
-          client === undefined
-            ? { client: null, path: null, snippet: GENERIC_SNIPPET }
-            : {
-                client: client.id,
-                path: targetFor(client, scopeFor(client, scope ?? scopesOf(client)[0]), options).path,
-                snippet: snippetFor(client),
-              };
+const disconnectCommand = withContract(
+  defineCommand({
+    meta: { name: "disconnect", description: "Remove the Pithy docs entry, leaving every other server alone" },
+    args: { ...targetArgs, ...jsonArg },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const options = optionsOf();
+        const chosen = await resolveClients(args, args.json, options);
+        const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
+        requireScopeAnswerable(flagged, args.json);
+        const asked = chosen.length === 0 ? "user" : (flagged ?? (await askScopeOrExit()));
+
+        const disconnected: DisconnectResult[] = [];
+        for (const client of chosen) {
+          disconnected.push(await disconnect(targetFor(client, scopeFor(client, asked), options)));
+        }
+
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "docs connect", printed })}\n`);
+          process.stdout.write(`${formatJsonLine({ command: "docs disconnect", disconnected })}\n`);
+          process.exit(exitFor(disconnected));
+        }
+        if (disconnected.length === 0) {
+          emit("No AI clients detected here.");
           return;
         }
-        if (printed.client !== null) emit(`${printed.path}:`);
-        else if (args.client !== undefined) emit(dim(`No client called ${args.client}. This is the shape most take.`));
-        else emit(dim("No client named, so this is the shape most of them take."));
-        process.stdout.write(printed.snippet);
-        return;
-      }
-
-      const chosen = await resolveClients(args, args.json, options);
-      // The scope is settled before the empty set is, so an unattended run refuses the same way on a
-      // machine with no clients as on one with ten. A CI step that passes only because nothing happened
-      // to be installed is a CI step that will fail on somebody's laptop.
-      const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
-      requireScopeAnswerable(flagged, args.json);
-
-      if (chosen.length === 0) {
-        if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "docs connect", written: [] })}\n`);
-          return;
-        }
-        emit("No AI clients detected here.");
-        emit("Run `pithy docs connect --print` for the snippet to add by hand.");
-        return;
-      }
-
-      const asked = flagged ?? (await askScopeOrExit());
-      const written: ConnectResult[] = [];
-      for (const client of chosen) {
-        written.push(await connect(targetFor(client, scopeFor(client, asked), options)));
-      }
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "docs connect", written })}\n`);
-        process.exit(exitFor(written));
-      }
-      emit(reportRows(written));
-      printRefusals(written);
-      const code = exitFor(written);
-      // `Done.` is a claim that something was done. A run where every client refused did nothing, so it
-      // ends on the refusals and the exit code rather than on the brand's full stop.
-      if (code === 0) emit(formatDone());
-      else process.exit(code);
-    }),
-});
-
-const disconnectCommand = defineCommand({
-  meta: { name: "disconnect", description: "Remove the Pithy docs entry, leaving every other server alone" },
-  args: { ...targetArgs, ...jsonArg },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const options = optionsOf();
-      const chosen = await resolveClients(args, args.json, options);
-      const flagged = args.scope === undefined ? undefined : requireScope(args.scope);
-      requireScopeAnswerable(flagged, args.json);
-      const asked = chosen.length === 0 ? "user" : (flagged ?? (await askScopeOrExit()));
-
-      const disconnected: DisconnectResult[] = [];
-      for (const client of chosen) {
-        disconnected.push(await disconnect(targetFor(client, scopeFor(client, asked), options)));
-      }
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "docs disconnect", disconnected })}\n`);
-        process.exit(exitFor(disconnected));
-      }
-      if (disconnected.length === 0) {
-        emit("No AI clients detected here.");
-        return;
-      }
-      emit(reportRows(disconnected));
-      const code = exitFor(disconnected);
-      if (code === 0) emit(formatDone());
-      else process.exit(code);
-    }),
-});
+        emit(reportRows(disconnected));
+        const code = exitFor(disconnected);
+        if (code === 0) emit(formatDone());
+        else process.exit(code);
+      }),
+  }),
+  {
+    output: "document",
+    payload: DocsDisconnectPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+    flags: TARGET_FACTS,
+    flagGroups: [CLIENT_OR_ALL],
+  },
+);
 
 /** One line per client: whether it is here, and what each of its configurations says. */
 function statusRows(clients: readonly ClientStatus[]): string {
@@ -391,19 +526,22 @@ function statusRows(clients: readonly ClientStatus[]): string {
   );
 }
 
-const statusCommand = defineCommand({
-  meta: { name: "status", description: "Report which AI clients are wired to the docs server, and where" },
-  args: { ...jsonArg },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const clients = await status(optionsOf());
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "docs status", clients })}\n`);
-        return;
-      }
-      emit(statusRows(clients));
-    }),
-});
+const statusCommand = withContract(
+  defineCommand({
+    meta: { name: "status", description: "Report which AI clients are wired to the docs server, and where" },
+    args: { ...jsonArg },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const clients = await status(optionsOf());
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "docs status", clients })}\n`);
+          return;
+        }
+        emit(statusRows(clients));
+      }),
+  }),
+  { output: "document", payload: DocsStatusPayload, mutates: false, idempotent: true, needsNetwork: false },
+);
 
 export default defineCommand({
   meta: { name: "docs", description: "Connect the Pithy documentation server to your AI coding agent" },

@@ -16,12 +16,14 @@ import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
 import { latchInputMode } from "../terminal/inputMode";
 import type { KeyStream } from "../terminal/keys";
 import { readKeys } from "../terminal/keys";
+import { expectConforms } from "../test-utils/payloadContract";
 import dashboard, {
   announceFor,
   collectScopeFlags,
   confirmOrRefuse,
   formatConnectReport,
   formatDisconnectReport,
+  formatRevokeKeyReport,
   formatRotateReport,
   formatStatusReport,
   offerIsAnswerable,
@@ -684,5 +686,137 @@ describe("the --yes confirmations", () => {
     ).rejects.toThrow(/^exit /);
     const line = JSON.parse(written.join("").trim()) as { error: Record<string, unknown> };
     expect(line.error).toMatchObject({ code: "input/required", flag: "--yes", message });
+  });
+});
+
+/**
+ * Every subcommand's `--json` line, written by the function each one writes it with, held to the schema
+ * `pithy schema dashboard` publishes (#697). The device flow and the D1 registry are the other half of
+ * these commands and have their own suites; what is asserted here is the line an agent parses.
+ */
+describe("pithy dashboard --json conforms to its published payloads", () => {
+  const id = "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31";
+
+  test("connect, proven and not", async () => {
+    const report = {
+      environment: "prod",
+      connectionId: id,
+      issuer: "https://app.pithy.sh",
+      workerUrl: "https://api.example.com",
+      scopes: ["manifest:read"],
+      keyId: "key_1",
+      status: "connected" as const,
+      updated: false,
+    };
+    await expectConforms("dashboard connect", formatConnectReport(report, { json: true }));
+    await expectConforms(
+      "dashboard connect",
+      formatConnectReport(
+        { ...report, status: "unreachable", detail: "Nothing answered.", keyId: null, updated: true },
+        { json: true },
+      ),
+    );
+  });
+
+  test("rotate", async () => {
+    const report = { environment: "prod", connectionId: id, keyId: "key_2", previousKeyIds: ["key_1"] };
+    await expectConforms("dashboard rotate", formatRotateReport({ ...report, status: "connected" }, { json: true }));
+    await expectConforms(
+      "dashboard rotate",
+      formatRotateReport({ ...report, status: "needs_reconnect", detail: "No answer." }, { json: true }),
+    );
+  });
+
+  test("disconnect", async () => {
+    await expectConforms(
+      "dashboard disconnect",
+      formatDisconnectReport(
+        { environment: "prod", connectionId: null, removed: false, dashboardNotified: false },
+        { json: true },
+      ),
+    );
+    await expectConforms(
+      "dashboard disconnect",
+      formatDisconnectReport(
+        { environment: "prod", connectionId: id, removed: true, dashboardNotified: false, detail: "Offline." },
+        { json: true },
+      ),
+    );
+  });
+
+  test("revoke-key, with the connection it left and with none", async () => {
+    const connection = {
+      id,
+      environment: "prod",
+      issuer: "https://app.pithy.sh",
+      workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
+      managementOrigin: null,
+      scopes: ["manifest:read"],
+      keys: [
+        {
+          keyId: "key_1",
+          publicKey: JWK,
+          validFrom: new Date("2026-01-01T00:00:00Z"),
+          validUntil: null,
+          revokedAt: new Date("2026-02-01T00:00:00Z"),
+        },
+      ],
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    };
+    await expectConforms(
+      "dashboard revoke-key",
+      formatRevokeKeyReport({ environment: "prod", keyId: "key_1", revoked: true, connection }, { json: true }),
+    );
+    await expectConforms(
+      "dashboard revoke-key",
+      formatRevokeKeyReport({ environment: "prod", keyId: "nope", revoked: false, connection: null }, { json: true }),
+    );
+  });
+
+  test("status, connected and not", async () => {
+    await expectConforms(
+      "dashboard status",
+      formatStatusReport(
+        {
+          environment: "prod",
+          connected: true,
+          connectionId: id,
+          issuer: "https://app.pithy.sh",
+          workerUrl: "https://api.example.com",
+          scopes: ["manifest:read"],
+          keys: [
+            {
+              keyId: "key_1",
+              live: true,
+              ageDays: 3,
+              validFrom: "2026-01-01T00:00:00.000Z",
+              validUntil: null,
+              revokedAt: null,
+            },
+          ],
+          status: "unverified",
+        },
+        { json: true },
+      ),
+    );
+    await expectConforms(
+      "dashboard status",
+      formatStatusReport(
+        {
+          environment: "dev",
+          connected: false,
+          connectionId: null,
+          issuer: null,
+          workerUrl: null,
+          scopes: [],
+          keys: [],
+          status: "unreachable",
+          detail: "Nothing answered.",
+        },
+        { json: true },
+      ),
+    );
   });
 });

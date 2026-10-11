@@ -9,9 +9,12 @@ import type { CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
 import { HIDDEN_ROOT_FLAGS } from "../commands/alias";
+import { describeCli, walkTree } from "../contract/describe";
+import { flagsOf } from "../declaredFlags";
+import { main } from "../main";
 import { ROOT_FLAGS } from "../rootFlags";
 import { EXIT_CLASSES, exitClassOf } from "../terminal/exitClass";
-import { buildDocsCatalog, CATALOG_PATH, renderDocsCatalog, walkCommands } from "./catalog";
+import { buildDocsCatalog, CATALOG_PATH, renderDocsCatalog } from "./catalog";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -34,7 +37,18 @@ describe("the arg names flagsOf reads", () => {
   });
 });
 
-describe("walkCommands", () => {
+/**
+ * Every command under `root`, each with every spelling of its flags: `pithy schema`'s walk, which
+ * `buildDocsCatalog` projects to `{ path, flags }`.
+ */
+async function walkCommands(root: CommandDef): Promise<{ path: string; flags: string[] }[]> {
+  return (await describeCli(root)).commands.map((command) => ({
+    path: command.path,
+    flags: command.flags.flatMap((flag) => [flag.name, ...flag.aliases.map((alias) => alias.flag)]),
+  }));
+}
+
+describe("the catalog's walk of a command tree", () => {
   /** citty accepts a definition, a promise of one, or a thunk. A walk that reads only the first is blind. */
   const tree: CommandDef = {
     meta: { name: "pithy" },
@@ -197,7 +211,11 @@ describe("buildDocsCatalog", () => {
     }
     // Anti-vacuous: a regex that stopped matching would make the assertion below pass over nothing.
     expect(found.size).toBeGreaterThan(3);
-    expect([...found].filter((flag) => !global.has(flag)).sort()).toEqual([]);
+    // `alias.ts` is also `pithy alias`, and its contract names that command's own declared flags (#697).
+    // Those are citty's, in `alias`'s `args`, and the catalog lists them under `alias` rather than here.
+    const aliasArgs = (await import("../commands/alias")).default.args;
+    const declared = new Set(flagsOf(typeof aliasArgs === "function" ? await aliasArgs() : await aliasArgs));
+    expect([...found].filter((flag) => !global.has(flag) && !declared.has(flag)).sort()).toEqual([]);
   });
 
   /**
@@ -208,6 +226,37 @@ describe("buildDocsCatalog", () => {
     const built = await buildDocsCatalog();
     expect(Object.keys(built)[0]).toBe("$generated");
     expect(built.$generated).toContain("bun run docs-catalog");
+  });
+});
+
+/**
+ * **The catalog and `pithy schema` are one answer (#697).** The catalog is the committed copy another
+ * repository reads; `pithy schema` is the installed binary's own account. Both come from `describeCli`,
+ * and these hold the projection to it — and to the parser, which is the third party to the agreement:
+ * a flag the catalog lists and `bin.ts` refuses would send the site's checker and an agent different ways.
+ */
+describe("the catalog is a projection of pithy schema", () => {
+  test("every command, every spelling of every flag, every global flag and every error code", async () => {
+    const [catalog, cli] = await Promise.all([buildDocsCatalog(), describeCli(main)]);
+    expect(catalog.commands).toEqual(
+      cli.commands.map((command) => ({
+        path: command.path,
+        flags: command.flags.flatMap((flag) => [flag.name, ...flag.aliases.map((alias) => alias.flag)]),
+      })),
+    );
+    expect(catalog.globalFlags).toEqual(cli.globalFlags.flatMap((flag) => [flag.name, ...flag.aliases]).sort());
+    expect(catalog.errorCodes).toEqual(cli.errorCodes);
+  });
+
+  test("lists exactly the spellings the parser accepts, command by command", async () => {
+    const catalog = await buildDocsCatalog();
+    const nodes = await walkTree(main);
+    expect(nodes.length).toBeGreaterThan(80);
+    for (const node of nodes) {
+      const args = typeof node.cmd.args === "function" ? await node.cmd.args() : await node.cmd.args;
+      const listed = catalog.commands.find((command) => command.path === node.path.join(" "))?.flags;
+      expect({ path: node.path.join(" "), flags: listed }).toEqual({ path: node.path.join(" "), flags: flagsOf(args) });
+    }
   });
 });
 

@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import type { MigrationFanOutOptions } from "../migrations/run";
+import type { WorkerDeploy } from "../project/deploy";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
+import { expectConforms } from "../test-utils/payloadContract";
 import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } from "./deploy";
 
 /**
@@ -26,6 +28,9 @@ const counted = vi.hoisted(() => ({ calls: [] as unknown[] }));
 
 /** What each half of the deploy was asked to do this run — the two named steps, observed. */
 const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[] }));
+
+/** What the stubbed app half reports. Empty unless a case says otherwise. */
+const shipped = vi.hoisted(() => ({ rows: [] as unknown[] }));
 
 /**
  * Whether the stubbed app half narrates the way the real one does (#578).
@@ -67,7 +72,7 @@ vi.mock("../project/deploy", async (importOriginal) => ({
       startStep("acme-api");
       settleStep("acme-api: deployed. https://api.acme.example v1");
     }
-    return [];
+    return shipped.rows;
   },
 }));
 
@@ -478,6 +483,22 @@ describe("the two halves", () => {
     expect(JSON.parse(await invoke({ env: "staging" })).kitProblems).toEqual([]);
     expect(JSON.parse(await invoke({ env: "staging", apps: true })).kitProblems).toBeNull();
     expect(JSON.parse(await invoke({ env: "dev" })).kitProblems).toBeNull();
+  });
+
+  /** Held to the schema `pithy schema deploy` publishes (#697): both halves, each half alone, and none. */
+  test("the --json line conforms to its published payload", async () => {
+    shipped.rows = [
+      { name: "acme-api", ok: true, versionId: "v1", url: "https://api.acme.example", verification: "verified" },
+      { name: "acme-web", ok: false, built: false, error: "The UI build failed." },
+    ] satisfies WorkerDeploy[];
+    try {
+      await expectConforms("deploy", await invoke({ env: "staging" }));
+      await expectConforms("deploy", await invoke({ env: "staging", apps: true }));
+      await expectConforms("deploy", await invoke({ env: "staging", kit: true }));
+      await expectConforms("deploy", await invoke({}));
+    } finally {
+      shipped.rows = [];
+    }
   });
 
   test("a bare deploy ships apps/ and says out loud why the kit half did not run", async () => {

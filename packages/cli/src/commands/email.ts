@@ -11,6 +11,7 @@ import { samplePayloads } from "@pithy-sh/email/src/templates/samples";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflareEmailDeprovisioner,
@@ -21,6 +22,7 @@ import { capabilityNotComposed } from "../capabilities/notComposed";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import {
   loadProject,
@@ -39,6 +41,7 @@ import {
   formatEnvironmentOutcomes,
   readyStanza,
   requireReadyEnvironments,
+  SkippedEnvironment,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
 import { resolveWorkerAddress } from "../project/workerAddress";
@@ -252,232 +255,305 @@ export function resolveRouting(
   });
 }
 
-const provision = defineCommand({
-  meta: { name: "provision", description: "Provision the shared suppression DB and per-environment email workers" },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-    worker: {
-      type: "string",
-      description:
-        "The app worker whose wrangler.jsonc carries the per-environment DB binding and BASE_URL (default: the project's only worker)",
-    },
-    "routing-zone": {
-      type: "string",
-      description:
-        "Cloudflare Zone ID of the (sub)domain receiving the mail — Email Routing must already be enabled on it (its MX points to Cloudflare). Use a subdomain zone (e.g. bounce.example.com), never your apex, so your primary MX is untouched. Find it on the zone's Overview page.",
-    },
-    "inbound-address": {
-      type: "string",
-      description:
-        "The exact recipient address the rule matches (e.g. bounce@bounce.example.com); mail sent to it is delivered to the app worker's email() handler.",
-    },
-    "app-worker": {
-      type: "string",
-      description:
-        "Deployed name of your production app worker — the one running createEntrypoint with the email() bounce handler (e.g. pithy-app-prod).",
-    },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // First, before the project name, the credentials, and every Cloudflare call: a mistyped or
-      // half-remembered flag set must cost nothing and must not provision anything.
-      const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
-      // The leading segment of the suppression database, the email workers, and the bounce rule. The
-      // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
-      // adopts another project's opt-out list (docs/NAMING.md).
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
-      const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const emailCapability = await loadEmailCapability(projectDir);
-      const appWorker = await resolveSingleWorker({
-        projectDir,
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-      });
-      // Which environments this run can act on, decided once and before anything is created. An
-      // environment whose app database does not exist yet is skipped and reported, never fatal: standing
-      // staging up and proving it before production exists is the ordinary bring-up (#512).
-      const readiness = await environmentReadiness({
-        workerDir: appWorker.dir,
-        label: `${appWorker.name}'s wrangler.jsonc`,
-        environments,
-        productionEnvironments: config.seed?.productionEnvironments,
-      });
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const provisioner = new CloudflareEmailProvisioner({
-        cf,
-        projectDir,
-        project,
-        account,
-        apiToken,
-        storeId,
-        theme: emailCapability.emailConfig.theme,
-        // Read now, after `loadEmailCapability` ran every capability's `compose` hook — the adopter's
-        // overrides and the kit's translations, flattened for the standalone host. Read before that,
-        // this is `{}` and the host is deployed English-only.
-        messages: emailCapability.hostCatalogs(),
-        resolveEnv: buildResolveEnv(appWorker, readiness, cf, project, account),
-        routing,
-        audit: await buildAudit(projectDir, accountId, apiToken),
-      });
+/** The environments a run provisioned, in declaration order. */
+const Environments = z.array(z.string().describe("An environment.")).describe("The environments provisioned.");
+const Skipped = z
+  .array(SkippedEnvironment)
+  .describe("One entry per declared environment nothing was provisioned for. Empty when none was skipped.");
 
-      // The ready list, not the declaration. The suppression database is project-global and is created
-      // whatever else skips — it must not wait for prod — and every skipped environment simply never
-      // reaches `deployWorker`, so the orchestrator needs no notion of a skip.
-      const result = await provisionEmail(provisioner, readiness.ready);
+/** `pithy email provision --json`. `docs/commands/email.md`. */
+const EmailProvisionPayload = z
+  .object({
+    command: z.literal("email provision").describe('`"email provision"`.'),
+    suppressionDatabaseId: z.string().describe("The project's shared suppression database id."),
+    environments: Environments,
+    routing: z
+      .object({
+        created: z.boolean().describe("Whether this run created the inbound routing rule."),
+        skipped: z.boolean().describe("Whether routing was not configured, so nothing was asked of it."),
+      })
+      .describe("The inbound routing rule."),
+    skippedEnvironments: Skipped,
+  })
+  .describe("What `pithy email provision` provisioned.");
 
-      if (args.json) {
-        // Written before the refusal below, so a run in which everything skipped still carries the
-        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-        process.stdout.write(
-          `${formatJsonLine({ command: "email provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+/** `pithy email deprovision --json`. */
+const EmailDeprovisionPayload = z
+  .object({
+    command: z.literal("email deprovision").describe('`"email deprovision"`.'),
+    env: z.string().describe("The environment torn down."),
+    suppressionDeleted: z.boolean().describe("Whether the shared suppression database was deleted with it."),
+  })
+  .describe("What `pithy email deprovision` removed.");
+
+/** `pithy email test --json`. */
+const EmailTestPayload = z
+  .object({
+    command: z.literal("email test").describe('`"email test"`.'),
+    template: z.string().describe("The template rendered."),
+    to: z.string().describe("The recipient."),
+    from: z.string().describe("The address it was sent from."),
+    messageId: z.string().optional().describe("The provider's message id, when it returned one."),
+  })
+  .describe("What `pithy email test` sent.");
+
+/** Every subcommand reaches Cloudflare and none of them reads only. */
+const EMAIL = { output: "document", mutates: true, needsNetwork: true } as const;
+
+const provision = withContract(
+  defineCommand({
+    meta: { name: "provision", description: "Provision the shared suppression DB and per-environment email workers" },
+    args: {
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+      worker: {
+        type: "string",
+        description:
+          "The app worker whose wrangler.jsonc carries the per-environment DB binding and BASE_URL (default: the project's only worker)",
+      },
+      "routing-zone": {
+        type: "string",
+        description:
+          "Cloudflare Zone ID of the (sub)domain receiving the mail — Email Routing must already be enabled on it (its MX points to Cloudflare). Use a subdomain zone (e.g. bounce.example.com), never your apex, so your primary MX is untouched. Find it on the zone's Overview page.",
+      },
+      "inbound-address": {
+        type: "string",
+        description:
+          "The exact recipient address the rule matches (e.g. bounce@bounce.example.com); mail sent to it is delivered to the app worker's email() handler.",
+      },
+      "app-worker": {
+        type: "string",
+        description:
+          "Deployed name of your production app worker — the one running createEntrypoint with the email() bounce handler (e.g. pithy-app-prod).",
+      },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // First, before the project name, the credentials, and every Cloudflare call: a mistyped or
+        // half-remembered flag set must cost nothing and must not provision anything.
+        const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
+        // The leading segment of the suppression database, the email workers, and the bounce rule. The
+        // database is found by name and reused, so `requireProjectName` refuses to guess — a guessed name
+        // adopts another project's opt-out list (docs/NAMING.md).
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // The project's own environment set (#241): what this command fans out across, rather than a
+        // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+        const environments = loadProjectEnvironments(config);
+        const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+          await projectCloudflareAccount(projectDir),
         );
-        requireReadyEnvironments(readiness, "pithy email provision");
-        return;
-      }
-      process.stdout.write("Suppression database ready.\n");
-      process.stdout.write(formatEnvironmentOutcomes(environmentOutcomes(readiness, () => "email worker deployed")));
-      requireReadyEnvironments(readiness, "pithy email provision");
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const deprovision = defineCommand({
-  meta: {
-    name: "deprovision",
-    description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
-  },
-  args: {
-    // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
-    // included.
-    env: TEARDOWN_ENV_ARG,
-    suppression: {
-      type: "boolean",
-      default: false,
-      description:
-        "Also delete this project's suppression DB (irreversible). Every environment shares it, so only the last environment's teardown may",
-    },
-    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
-      // Teardown finds resources by recomputing their names, so this must be the same name
-      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // One named environment, settled before any credential is read (#591): naming nothing, or something
-      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
-      // is the one that deletes.
-      const declared = loadProjectEnvironments(config);
-      const env = requireTeardownEnvironment(args.env, declared);
-      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const deprovisioner = new CloudflareEmailDeprovisioner({
-        account,
-        cf,
-        project,
-        audit: await buildAudit(projectDir, accountId, apiToken),
-        // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
-        budget: new RetainedBudget(destroyRetained),
-      });
-
-      // Held here as well as in `deprovisionEmail`, whichever copy of it runs: the list is refused before it is called
-      // while another environment runs, and it may delete only what was typed, for `env` alone (#591).
-      const confined = await confineTeardown({
-        kit: "@pithy-sh/email",
-        target: env,
-        declared,
-        runs: (other) => deprovisioner.hasWorker(other),
-        deprovisioner,
-        rules: {
-          countSuppressionRetained: "read",
-          hasWorker: "read",
-          deleteWorker: "environment",
-          deleteSuppressionDatabase: args.suppression
-            ? { what: "the suppression list", flag: "--suppression" }
-            : "refused",
-        },
-      });
-      await deprovisionEmail(
-        confined,
-        { environment: env, declared },
-        { deleteSuppression: args.suppression, destroyRetained },
-      );
-
-      if (args.json) {
-        process.stdout.write(
-          `${formatJsonLine({ command: "email deprovision", env, suppressionDeleted: args.suppression })}\n`,
-        );
-        return;
-      }
-      process.stdout.write(
-        `${env}: email worker removed${args.suppression ? ", with the suppression database" : ""}.\n`,
-      );
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const test = defineCommand({
-  meta: { name: "test", description: "Render one template through your config and send it to an address" },
-  args: {
-    to: { type: "string", description: "Recipient address", required: true },
-    template: { type: "string", default: "welcome", description: "Template id (e.g. magicLink, newsletter)" },
-    from: { type: "string", description: "Override the configured from address" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const { fromAddress, fromName, baseUrl, theme } = (await loadEmailCapability(projectDir)).emailConfig;
-      const payload = samplePayloads[args.template];
-      if (!payload) {
-        throw new ValidationError({
-          message: `No sample payload for template "${args.template}".`,
-          action: `Known templates: ${Object.keys(samplePayloads).join(", ")}.`,
+        const emailCapability = await loadEmailCapability(projectDir);
+        const appWorker = await resolveSingleWorker({
+          projectDir,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
         });
-      }
+        // Which environments this run can act on, decided once and before anything is created. An
+        // environment whose app database does not exist yet is skipped and reported, never fatal: standing
+        // staging up and proving it before production exists is the ordinary bring-up (#512).
+        const readiness = await environmentReadiness({
+          workerDir: appWorker.dir,
+          label: `${appWorker.name}'s wrangler.jsonc`,
+          environments,
+          productionEnvironments: config.seed?.productionEnvironments,
+        });
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const provisioner = new CloudflareEmailProvisioner({
+          cf,
+          projectDir,
+          project,
+          account,
+          apiToken,
+          storeId,
+          theme: emailCapability.emailConfig.theme,
+          // Read now, after `loadEmailCapability` ran every capability's `compose` hook — the adopter's
+          // overrides and the kit's translations, flattened for the standalone host. Read before that,
+          // this is `{}` and the host is deployed English-only.
+          messages: emailCapability.hostCatalogs(),
+          resolveEnv: buildResolveEnv(appWorker, readiness, cf, project, account),
+          routing,
+          audit: await buildAudit(projectDir, accountId, apiToken),
+        });
 
-      // A throwaway tracking context so any template (incl. marketing, which forces an unsubscribe link)
-      // renders. Links are not actually tracked — this is a visual/delivery check of the config.
-      const tracking: RenderTracking = {
-        baseUrl,
-        jobId: "test",
-        recipient: args.to,
-        key: "email-test-preview-key",
-        kid: "test",
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        openTracking: false,
-        clickTracking: false,
-      };
-      const rendered = await renderEmail(args.template, payload, theme, tracking);
-      const from = args.from ?? fromAddress;
-      const result = await (await cloudflareClients({ accountId, apiToken })).email().send({
-        to: args.to,
-        from: { email: from, name: fromName },
-        subject: rendered.subject,
-        html: rendered.html,
-        text: rendered.text,
-      });
+        // The ready list, not the declaration. The suppression database is project-global and is created
+        // whatever else skips — it must not wait for prod — and every skipped environment simply never
+        // reaches `deployWorker`, so the orchestrator needs no notion of a skip.
+        const result = await provisionEmail(provisioner, readiness.ready);
 
-      if (args.json) {
-        process.stdout.write(
-          `${formatJsonLine({ command: "email test", template: args.template, to: args.to, from, messageId: result.messageId })}\n`,
+        if (args.json) {
+          // Written before the refusal below, so a run in which everything skipped still carries the
+          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+          process.stdout.write(
+            `${formatJsonLine({ command: "email provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          );
+          requireReadyEnvironments(readiness, "pithy email provision");
+          return;
+        }
+        process.stdout.write("Suppression database ready.\n");
+        process.stdout.write(formatEnvironmentOutcomes(environmentOutcomes(readiness, () => "email worker deployed")));
+        requireReadyEnvironments(readiness, "pithy email provision");
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    ...EMAIL,
+    payload: EmailProvisionPayload,
+    idempotent: true,
+    flagGroups: [
+      {
+        kind: "allOrNone",
+        flags: [...ROUTING_FLAGS],
+        rule: "Inbound mail is routed only when --routing-zone, --inbound-address and --app-worker are given together.",
+      },
+    ],
+  },
+);
+
+const deprovision = withContract(
+  defineCommand({
+    meta: {
+      name: "deprovision",
+      description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
+    },
+    args: {
+      // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
+      // included.
+      env: TEARDOWN_ENV_ARG,
+      suppression: {
+        type: "boolean",
+        default: false,
+        description:
+          "Also delete this project's suppression DB (irreversible). Every environment shares it, so only the last environment's teardown may",
+      },
+      "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+        // Teardown finds resources by recomputing their names, so this must be the same name
+        // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+        // is the one that deletes.
+        const declared = loadProjectEnvironments(config);
+        const env = requireTeardownEnvironment(args.env, declared);
+        const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const deprovisioner = new CloudflareEmailDeprovisioner({
+          account,
+          cf,
+          project,
+          audit: await buildAudit(projectDir, accountId, apiToken),
+          // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
+          budget: new RetainedBudget(destroyRetained),
+        });
+
+        // Held here as well as in `deprovisionEmail`, whichever copy of it runs: the list is refused before it is called
+        // while another environment runs, and it may delete only what was typed, for `env` alone (#591).
+        const confined = await confineTeardown({
+          kit: "@pithy-sh/email",
+          target: env,
+          declared,
+          runs: (other) => deprovisioner.hasWorker(other),
+          deprovisioner,
+          rules: {
+            countSuppressionRetained: "read",
+            hasWorker: "read",
+            deleteWorker: "environment",
+            deleteSuppressionDatabase: args.suppression
+              ? { what: "the suppression list", flag: "--suppression" }
+              : "refused",
+          },
+        });
+        await deprovisionEmail(
+          confined,
+          { environment: env, declared },
+          { deleteSuppression: args.suppression, destroyRetained },
         );
-        return;
-      }
-      process.stdout.write(
-        `Sent "${args.template}" from ${from} to ${args.to}${result.messageId ? ` (${result.messageId})` : ""}.\n`,
-      );
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "email deprovision", env, suppressionDeleted: args.suppression })}\n`,
+          );
+          return;
+        }
+        process.stdout.write(
+          `${env}: email worker removed${args.suppression ? ", with the suppression database" : ""}.\n`,
+        );
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { ...EMAIL, payload: EmailDeprovisionPayload, idempotent: true },
+);
+
+const test = withContract(
+  defineCommand({
+    meta: { name: "test", description: "Render one template through your config and send it to an address" },
+    args: {
+      to: { type: "string", description: "Recipient address", required: true },
+      template: { type: "string", default: "welcome", description: "Template id (e.g. magicLink, newsletter)" },
+      from: { type: "string", description: "Override the configured from address" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { fromAddress, fromName, baseUrl, theme } = (await loadEmailCapability(projectDir)).emailConfig;
+        const payload = samplePayloads[args.template];
+        if (!payload) {
+          throw new ValidationError({
+            message: `No sample payload for template "${args.template}".`,
+            action: `Known templates: ${Object.keys(samplePayloads).join(", ")}.`,
+          });
+        }
+
+        // A throwaway tracking context so any template (incl. marketing, which forces an unsubscribe link)
+        // renders. Links are not actually tracked — this is a visual/delivery check of the config.
+        const tracking: RenderTracking = {
+          baseUrl,
+          jobId: "test",
+          recipient: args.to,
+          key: "email-test-preview-key",
+          kid: "test",
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          openTracking: false,
+          clickTracking: false,
+        };
+        const rendered = await renderEmail(args.template, payload, theme, tracking);
+        const from = args.from ?? fromAddress;
+        const result = await (await cloudflareClients({ accountId, apiToken })).email().send({
+          to: args.to,
+          from: { email: from, name: fromName },
+          subject: rendered.subject,
+          html: rendered.html,
+          text: rendered.text,
+        });
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "email test", template: args.template, to: args.to, from, messageId: result.messageId })}\n`,
+          );
+          return;
+        }
+        process.stdout.write(
+          `Sent "${args.template}" from ${from} to ${args.to}${result.messageId ? ` (${result.messageId})` : ""}.\n`,
+        );
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    ...EMAIL,
+    payload: EmailTestPayload,
+    // Sends a real message every time.
+    idempotent: false,
+    flags: { template: { enum: Object.keys(samplePayloads) } },
+  },
+);
 
 export default defineCommand({
   meta: { name: "email", description: "Provision and manage the email infrastructure" },

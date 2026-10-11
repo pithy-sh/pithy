@@ -3,13 +3,21 @@
 
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { z } from "zod";
+import { withContract } from "../contract/commandContract";
 import { devCloudflareAccount } from "../dev/delivery";
 import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
 import { type DevHandle, resolveAutostart, startDev } from "../dev/orchestrator";
 import { chooseRenderer, interruptAction, rendererInputsFromProcess } from "../dev/tui/choose";
 import { dispatchedSubCommand } from "../dispatch";
-import { describeStaleAutostartRoots, portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
+import {
+  describeStaleAutostartRoots,
+  portsRegistryPath,
+  registryRootFor,
+  StaleAutostartRoot,
+  setWorkerAutostart,
+} from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { openUrl } from "../platform/browser";
 import { EXIT } from "../terminal/exitClass";
@@ -285,18 +293,24 @@ async function mountTui(keys: boolean, live: () => DevHandle | undefined) {
   return tui;
 }
 
+/**
+ * The session line: where every started worker is, and who this session can sign in as.
+ *
+ * `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
+ * credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is where
+ * that omission is stated and asserted.
+ *
+ * The session line opens a stream that runs until the session ends, so it is framed as one: compact,
+ * one object per line, whatever this terminal would otherwise be given (#666).
+ */
+export function formatSessionLine(handle: Pick<DevHandle, "workers" | "identities">): string {
+  const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));
+  return `${formatJsonStreamLine({ command: "dev", workers, identities: handle.identities })}\n`;
+}
+
 /** Report the session, wire the signals, and wait for it to end. */
 async function runSession(handle: DevHandle, json: boolean): Promise<void> {
-  if (json) {
-    const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));
-    // `identities` names who this session can sign in as and **never how** — `#667`. The claim is a
-    // credential, and a machine-readable line is as public as a printed one; `devLoginIdentities` is
-    // where that omission is stated and asserted.
-    //
-    // The session line opens a stream that runs until the session ends, so it is framed as one:
-    // compact, one object per line, whatever this terminal would otherwise be given (#666).
-    process.stdout.write(`${formatJsonStreamLine({ command: "dev", workers, identities: handle.identities })}\n`);
-  }
+  if (json) process.stdout.write(formatSessionLine(handle));
 
   process.once("SIGINT", () => void handle.shutdown("interrupted"));
   process.once("SIGTERM", () => void handle.shutdown("terminated"));
@@ -350,112 +364,246 @@ const DEV_SUBCOMMANDS = {
   logs: () => import("../dev/logsCommand").then((m) => m.default),
 };
 
-export default defineCommand({
-  meta: { name: "dev", description: "Run every worker locally under one supervisor" },
-  args: DEV_ARGS,
-  subCommands: DEV_SUBCOMMANDS,
-  run: ({ args, rawArgs }) =>
-    withErrorReporting(args.json, async () => {
-      /**
-       * **Dispatched already — stand down.** (#671)
-       *
-       * citty runs a parent's `run` after handing the invocation to a subcommand, so `pithy dev logs`
-       * reaches here having already printed its table. Proceeding would spawn every worker, bind every
-       * pinned port and truncate every file the reader had just read.
-       *
-       * **Above `collectAppFlags`**, because that refuses a `--app` with no value — so a `pithy dev logs
-       * --app` typo would otherwise be refused by the session rather than by the reader, with the
-       * session's remedy attached.
-       */
-      if (dispatchedSubCommand(rawArgs, DEV_ARGS, Object.keys(DEV_SUBCOMMANDS)) !== undefined) return;
+const DevCommand = z.literal("dev").describe('`"dev"`.');
+const WorkerNames = z.array(z.string().describe("A worker's name.")).describe("Worker names.");
 
-      const projectDir = process.cwd();
-      const apps = collectAppFlags(rawArgs);
+/** Checkout roots that are gone and still hold autostart answers. */
+const StaleAutostart = z
+  .array(StaleAutostartRoot)
+  .describe("Every checkout root that is gone and still holds autostart answers, sorted by path.");
 
-      // Before every other branch: these two write the registry and start nothing. `--app` names what
-      // they act on, which is the same resolution a run uses, so a name that would not start is a name
-      // that cannot be turned off either.
-      if (args["disable-autostart"] || args["enable-autostart"]) {
-        const { enabled } = autostartIntent({
-          disable: args["disable-autostart"],
-          enable: args["enable-autostart"],
-          apps,
-        });
-        await setDevAutostart({ projectDir, apps, enabled, json: args.json });
-        return;
-      }
+/**
+ * `pithy dev --json`: every line on stdout is one of these objects. A session writes the session line and,
+ * while it runs, the still-waiting and autostart-stale lines; `--list` and the two autostart flags each
+ * write one line and exit. `docs/commands/dev.md`.
+ */
+const DevPayload = z
+  .union([
+    z
+      .object({
+        command: DevCommand,
+        workers: z
+          .record(
+            z.string().describe("The worker's name."),
+            z
+              .object({
+                port: z.number().int().describe("The port it was assigned in `.dev.config.json`."),
+                origin: z.string().describe("The localhost address its siblings were told to call it on."),
+              })
+              .describe("Where one started worker is."),
+          )
+          .describe("One entry per started worker, keyed by its name."),
+        identities: z
+          .array(
+            z
+              .object({
+                userId: z.string().describe("The seeded user's id."),
+                email: z.string().describe("The seeded user's address."),
+                expiresAt: z.string().describe("When that identity's claim stops being accepted, ISO-8601."),
+              })
+              .describe("One seeded user this session can sign in as. Who, never how."),
+          )
+          .describe("Every seeded user this session can sign in as."),
+      })
+      .describe("The session line, written once every worker is started."),
+    z
+      .object({
+        command: DevCommand,
+        event: z.literal("still-waiting").describe('`"still-waiting"`.'),
+        waiting: WorkerNames.describe("The workers started and not yet ready, in start order."),
+      })
+      .describe("Written while a started worker has not become ready."),
+    z
+      .object({
+        command: DevCommand,
+        event: z.literal("autostart-stale").describe('`"autostart-stale"`.'),
+        roots: StaleAutostart,
+      })
+      .describe("Written once at the top of a session when the registry holds answers under a vanished root."),
+    z
+      .object({
+        command: DevCommand,
+        event: z.literal("list").describe('`"list"`: written by `--list`, which starts nothing.'),
+        members: z
+          .array(
+            z
+              .object({
+                name: z.string().describe("The member's name — what `--app` accepts."),
+                kind: z
+                  .enum(["app", "host"])
+                  .describe("`app` for a Worker in `apps/`, `host` for a capability's host."),
+                autostart: z.boolean().describe("Whether a plain `pithy dev` starts it."),
+                autostartLocal: z
+                  .boolean()
+                  .describe("Whether `autostart` came from this branch's answer rather than the default."),
+                starts: z.boolean().describe("Whether this invocation would start it."),
+                port: z
+                  .number()
+                  .int()
+                  .nullable()
+                  .describe("The port it would be pinned to, or `null` with none pinned."),
+                origin: z.string().nullable().describe("The address its siblings would reach it at, or `null`."),
+              })
+              .describe("One member of the dev set."),
+          )
+          .describe("Every member of the dev set, `apps/` Workers first, then the capability hosts."),
+        staleAutostart: StaleAutostart,
+      })
+      .describe("What a run would start."),
+    z
+      .object({
+        command: DevCommand,
+        event: z
+          .literal("autostart")
+          .describe('`"autostart"`: written by `--disable-autostart` and `--enable-autostart`.'),
+        branch: z.string().describe("The branch the answer was written under."),
+        apps: WorkerNames.describe("The workers it was written for, as `--app` resolved them."),
+        enabled: z.boolean().describe("`false` for `--disable-autostart`, `true` for `--enable-autostart`."),
+        autostart: z
+          .record(z.string().describe("A worker's name."), z.boolean().describe("Whether it starts."))
+          .describe("This branch's whole answer after the write."),
+      })
+      .describe("What an autostart flag wrote."),
+  ])
+  .describe("One line of `pithy dev --json`.");
 
-      // Before `startDev`, before the signal wiring, and above all before the `process.exit(0)` below:
-      // `--list` answers a question and hands the process back.
-      if (args.list) {
-        await printDevSet(projectDir, apps, args.json);
-        return;
-      }
+export default withContract(
+  defineCommand({
+    meta: { name: "dev", description: "Run every worker locally under one supervisor" },
+    args: DEV_ARGS,
+    subCommands: DEV_SUBCOMMANDS,
+    run: ({ args, rawArgs }) =>
+      withErrorReporting(args.json, async () => {
+        /**
+         * **Dispatched already — stand down.** (#671)
+         *
+         * citty runs a parent's `run` after handing the invocation to a subcommand, so `pithy dev logs`
+         * reaches here having already printed its table. Proceeding would spawn every worker, bind every
+         * pinned port and truncate every file the reader had just read.
+         *
+         * **Above `collectAppFlags`**, because that refuses a `--app` with no value — so a `pithy dev logs
+         * --app` typo would otherwise be refused by the session rather than by the reader, with the
+         * session's remedy attached.
+         */
+        if (dispatchedSubCommand(rawArgs, DEV_ARGS, Object.keys(DEV_SUBCOMMANDS)) !== undefined) return;
 
-      // The account is resolved here, where the project is loaded, and handed down — never reached for
-      // inside the orchestrator. It is what every worker this session spawns authenticates as (#555).
-      const account = await devCloudflareAccount(projectDir);
+        const projectDir = process.cwd();
+        const apps = collectAppFlags(rawArgs);
 
-      /**
-       * **Which renderer this run gets — the one place that knows both exist (#670).**
-       *
-       * A person at a terminal gets the live roster; `--json`, a pipe and CI get the plain stream, which
-       * is the contract anything automated reads. Every term of that decision, and the reads behind it,
-       * live together in `dev/tui/choose.ts` where the clauses are tested one by one.
-       */
-      // `--tui` is read from the raw argv as well as from citty, because only the typed form beats a
-      // `PITHY_NO_TUI` in somebody's profile — and citty cannot tell its default from an explicit true.
-      // Both spellings count: citty accepts `--tui=true`, and matching only the bare flag meant that
-      // form was treated as the default and lost to the variable it was typed to override.
-      const tuiExplicit = rawArgs.some((arg) => arg === "--tui" || arg.startsWith("--tui="));
-      const renderer = chooseRenderer(rendererInputsFromProcess(args.json, args.tui, tuiExplicit));
+        // Before every other branch: these two write the registry and start nothing. `--app` names what
+        // they act on, which is the same resolution a run uses, so a name that would not start is a name
+        // that cannot be turned off either.
+        if (args["disable-autostart"] || args["enable-autostart"]) {
+          const { enabled } = autostartIntent({
+            disable: args["disable-autostart"],
+            enable: args["enable-autostart"],
+            apps,
+          });
+          await setDevAutostart({ projectDir, apps, enabled, json: args.json });
+          return;
+        }
 
-      /**
-       * The live session, once there is one.
-       *
-       * Late-bound because the footer is mounted *before* `startDev` runs — so that the first thing it
-       * says lands in the roster's stream rather than above it — and its keys act on a handle that does
-       * not exist yet. Every handler is inert until it does, which is the correct behavior anyway: there
-       * is nothing to restart before anything has started.
-       */
-      let live: DevHandle | undefined;
-      const tui = renderer.tui ? await mountTui(renderer.keys, () => live) : undefined;
+        // Before `startDev`, before the signal wiring, and above all before the `process.exit(0)` below:
+        // `--list` answers a question and hands the process back.
+        if (args.list) {
+          await printDevSet(projectDir, apps, args.json);
+          return;
+        }
 
-      try {
-        const handle = await startDev({
-          projectDir,
-          account,
-          json: args.json,
-          apps,
-          // Ink owns the cursor, so a line written behind its back corrupts the frame: under the footer
-          // the supervisor's output is committed through the store instead. The session logs are written
-          // by the orchestrator either way and are not affected.
-          ...(tui
-            ? {
-                stdout: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
-                stderr: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
-                events: tui.store.event,
-                // The roster carries every worker's state, port and address, so the banner leaves its
-                // own list of them out. Each worker's `spawned` record carries its port either way.
-                roster: true,
-                // `terminal/keys.ts` and Ink's `useInput` both claim raw mode, and only one may. The
-                // reader is stubbed out with `active` reporting whether there is in fact a keyboard, so
-                // the banner still offers `l` rather than printing a URL nobody needs.
-                readKeys: () => ({ active: renderer.keys, stop: () => {} }),
-              }
-            : {}),
-        });
-        live = handle;
-        await runSession(handle, args.json);
-      } finally {
-        // Whatever happened, give the terminal back. A session that died with raw mode on leaves a shell
-        // that echoes nothing. Unmounting here is also what leaves the footer's last frame printed as
-        // ordinary output — the roster as it stood, with exit codes.
-        await tui?.stop();
-      }
+        // The account is resolved here, where the project is loaded, and handed down — never reached for
+        // inside the orchestrator. It is what every worker this session spawns authenticates as (#555).
+        const account = await devCloudflareAccount(projectDir);
 
-      // After the footer is down, never before: the exit is explicit because a supervisor that has
-      // reaped its children can still be holding a stdin listener or a stream that would keep Node alive.
-      process.exit(0);
-    }),
-});
+        /**
+         * **Which renderer this run gets — the one place that knows both exist (#670).**
+         *
+         * A person at a terminal gets the live roster; `--json`, a pipe and CI get the plain stream, which
+         * is the contract anything automated reads. Every term of that decision, and the reads behind it,
+         * live together in `dev/tui/choose.ts` where the clauses are tested one by one.
+         */
+        // `--tui` is read from the raw argv as well as from citty, because only the typed form beats a
+        // `PITHY_NO_TUI` in somebody's profile — and citty cannot tell its default from an explicit true.
+        // Both spellings count: citty accepts `--tui=true`, and matching only the bare flag meant that
+        // form was treated as the default and lost to the variable it was typed to override.
+        const tuiExplicit = rawArgs.some((arg) => arg === "--tui" || arg.startsWith("--tui="));
+        const renderer = chooseRenderer(rendererInputsFromProcess(args.json, args.tui, tuiExplicit));
+
+        /**
+         * The live session, once there is one.
+         *
+         * Late-bound because the footer is mounted *before* `startDev` runs — so that the first thing it
+         * says lands in the roster's stream rather than above it — and its keys act on a handle that does
+         * not exist yet. Every handler is inert until it does, which is the correct behavior anyway: there
+         * is nothing to restart before anything has started.
+         */
+        let live: DevHandle | undefined;
+        const tui = renderer.tui ? await mountTui(renderer.keys, () => live) : undefined;
+
+        try {
+          const handle = await startDev({
+            projectDir,
+            account,
+            json: args.json,
+            apps,
+            // Ink owns the cursor, so a line written behind its back corrupts the frame: under the footer
+            // the supervisor's output is committed through the store instead. The session logs are written
+            // by the orchestrator either way and are not affected.
+            ...(tui
+              ? {
+                  stdout: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
+                  stderr: (text: string, origin?: string) => tui.store.line(text.replace(/\n$/, ""), origin),
+                  events: tui.store.event,
+                  // The roster carries every worker's state, port and address, so the banner leaves its
+                  // own list of them out. Each worker's `spawned` record carries its port either way.
+                  roster: true,
+                  // `terminal/keys.ts` and Ink's `useInput` both claim raw mode, and only one may. The
+                  // reader is stubbed out with `active` reporting whether there is in fact a keyboard, so
+                  // the banner still offers `l` rather than printing a URL nobody needs.
+                  readKeys: () => ({ active: renderer.keys, stop: () => {} }),
+                }
+              : {}),
+          });
+          live = handle;
+          await runSession(handle, args.json);
+        } finally {
+          // Whatever happened, give the terminal back. A session that died with raw mode on leaves a shell
+          // that echoes nothing. Unmounting here is also what leaves the footer's last frame printed as
+          // ordinary output — the roster as it stood, with exit codes.
+          await tui?.stop();
+        }
+
+        // After the footer is down, never before: the exit is explicit because a supervisor that has
+        // reaped its children can still be holding a stdin listener or a stream that would keep Node alive.
+        process.exit(0);
+      }),
+  }),
+  {
+    output: "stream",
+    payload: DevPayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: true,
+    flags: { app: { repeatable: true } },
+    flagGroups: [
+      {
+        kind: "atMostOne",
+        flags: ["--disable-autostart", "--enable-autostart"],
+        rule: "--disable-autostart and --enable-autostart cannot both be given.",
+      },
+      {
+        kind: "requires",
+        flag: "--disable-autostart",
+        needs: ["--app"],
+        any: false,
+        rule: "Name the workers to disable.",
+      },
+      {
+        kind: "requires",
+        flag: "--enable-autostart",
+        needs: ["--app"],
+        any: false,
+        rule: "Name the workers to enable.",
+      },
+    ],
+  },
+);

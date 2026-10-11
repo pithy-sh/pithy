@@ -6,6 +6,7 @@ import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflareMediaDeprovisioner,
@@ -18,6 +19,7 @@ import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
@@ -28,6 +30,7 @@ import {
   formatEnvironmentOutcomes,
   readyStanza,
   requireReadyEnvironments,
+  SkippedEnvironment,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
 import { secretsDatabaseMissing } from "../provision/missingDatabase";
@@ -149,208 +152,255 @@ function buildResolveEnv(
   };
 }
 
-const provision = defineCommand({
-  meta: {
-    name: "provision",
-    description: "Create the media bucket and namespace, write the credentials, and deploy the enrichment workers",
-  },
-  args: {
-    worker: {
-      type: "string",
-      description:
-        "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
-    },
-    "api-token": {
-      type: "string",
-      description:
-        "Cloudflare API token the media Worker mints Images and Stream direct-upload URLs with. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply a scoped Images + Stream token for production.",
-    },
-    "r2-access-key-id": {
-      type: "string",
-      description:
-        "R2 S3 access key id the Worker presigns R2 uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    "r2-secret-access-key": {
-      type: "string",
-      description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    "r2-api-token": {
-      type: "string",
-      description:
-        "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // The leading segment of every name this run creates — the bucket, the KV namespace, the worker.
-      // `requireProjectName` refuses to guess, because `deprovision` recomputes these same names to
-      // find what to delete (docs/NAMING.md).
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
-      const { provisionMedia } = await loadMedia(projectDir);
-      const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
-        await projectCloudflareAccount(projectDir),
-      );
-      const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
-      // One resolution for the config and the app database the media host is deployed against: that
-      // Worker's own media capability, never a sibling's (#590 review).
-      const { isMediaCapability } = await loadMedia(projectDir);
-      const { worker: appWorker, capability } = await resolveCapabilityWorker({
-        projectDir,
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-        name: "media",
-        is: isMediaCapability,
-      });
-      const mediaConfig = capability.mediaConfig;
-      // Which environments this run can act on, decided once and before a single bucket exists. An
-      // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
-      // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
-      const readiness = await environmentReadiness({
-        workerDir: appWorker.dir,
-        label: `${appWorker.name}'s wrangler.jsonc`,
-        environments,
-        productionEnvironments: config.seed?.productionEnvironments,
-      });
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const provisioner = new CloudflareMediaProvisioner({
-        cf,
-        projectDir,
-        project,
-        // The **declaration**, not the ready set. This is what a `global` secret write fans out across and
-        // what `canonicalGlobalEnvironment` picks from — narrowing it would move which manager a global
-        // credential is canonically written through, which is a way to misplace one quietly (#512).
-        environments,
-        account,
-        apiToken,
-        storeId,
-        mediaApiToken: args["api-token"] ?? apiToken,
-        r2Credentials,
-        r2ApiToken: args["r2-api-token"] ?? apiToken,
-        mediaConfig,
-        dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
-        resolveEnv: buildResolveEnv(readiness, cf, project, account),
-        audit: await buildAudit(projectDir, accountId, apiToken),
-      });
+const Skipped = z
+  .array(SkippedEnvironment)
+  .describe("One entry per declared environment nothing was provisioned for. Empty when none was skipped.");
 
-      // The ready list, not the declaration — every skipped environment is left with nothing created for
-      // it at all, which is the point: a staging-only bring-up must not make a production bucket.
-      const result = await provisionMedia(provisioner, readiness.ready);
-      const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
+/** `pithy media provision --json`. `docs/commands/media.md`. */
+const MediaProvisionPayload = z
+  .object({
+    command: z.literal("media provision").describe('`"media provision"`.'),
+    environments: z
+      .array(
+        z
+          .object({
+            env: z.string().describe("The environment."),
+            bucketName: z.string().describe("The R2 bucket media objects live in."),
+            kvNamespaceId: z
+              .string()
+              .nullable()
+              .describe("The `MEDIA` KV namespace id, or `null` when records live in D1."),
+          })
+          .describe("One environment provisioned."),
+      )
+      .describe("Every environment provisioned, in declaration order."),
+    skippedEnvironments: Skipped,
+  })
+  .describe("What `pithy media provision` provisioned.");
 
-      if (args.json) {
-        // Written before the refusal below, so a run in which everything skipped still carries the
-        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+/** `pithy media deprovision --json`. */
+const MediaDeprovisionPayload = z
+  .object({
+    command: z.literal("media deprovision").describe('`"media deprovision"`.'),
+    env: z.string().describe("The environment torn down."),
+    storageDeleted: z.boolean().describe("Whether its bucket and namespace were deleted with it."),
+  })
+  .describe("What `pithy media deprovision` removed.");
+
+const provision = withContract(
+  defineCommand({
+    meta: {
+      name: "provision",
+      description: "Create the media bucket and namespace, write the credentials, and deploy the enrichment workers",
+    },
+    args: {
+      worker: {
+        type: "string",
+        description:
+          "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
+      },
+      "api-token": {
+        type: "string",
+        description:
+          "Cloudflare API token the media Worker mints Images and Stream direct-upload URLs with. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply a scoped Images + Stream token for production.",
+      },
+      "r2-access-key-id": {
+        type: "string",
+        description:
+          "R2 S3 access key id the Worker presigns R2 uploads and downloads with. Create the pair under R2 → Manage API tokens. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      "r2-secret-access-key": {
+        type: "string",
+        description:
+          "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      "r2-api-token": {
+        type: "string",
+        description:
+          "Cloudflare API token carried alongside the R2 key pair, so the object store can prove bucket access. Defaults to CLOUDFLARE_API_TOKEN from .dev.vars — a broad token; supply an R2-scoped one for production.",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // The leading segment of every name this run creates — the bucket, the KV namespace, the worker.
+        // `requireProjectName` refuses to guess, because `deprovision` recomputes these same names to
+        // find what to delete (docs/NAMING.md).
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // The project's own environment set (#241): what this command fans out across, rather than a
+        // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
+        const environments = loadProjectEnvironments(config);
+        const { provisionMedia } = await loadMedia(projectDir);
+        const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
+          await projectCloudflareAccount(projectDir),
+        );
+        const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
+        // One resolution for the config and the app database the media host is deployed against: that
+        // Worker's own media capability, never a sibling's (#590 review).
+        const { isMediaCapability } = await loadMedia(projectDir);
+        const { worker: appWorker, capability } = await resolveCapabilityWorker({
+          projectDir,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          name: "media",
+          is: isMediaCapability,
+        });
+        const mediaConfig = capability.mediaConfig;
+        // Which environments this run can act on, decided once and before a single bucket exists. An
+        // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
+        // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
+        const readiness = await environmentReadiness({
+          workerDir: appWorker.dir,
+          label: `${appWorker.name}'s wrangler.jsonc`,
+          environments,
+          productionEnvironments: config.seed?.productionEnvironments,
+        });
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const provisioner = new CloudflareMediaProvisioner({
+          cf,
+          projectDir,
+          project,
+          // The **declaration**, not the ready set. This is what a `global` secret write fans out across and
+          // what `canonicalGlobalEnvironment` picks from — narrowing it would move which manager a global
+          // credential is canonically written through, which is a way to misplace one quietly (#512).
+          environments,
+          account,
+          apiToken,
+          storeId,
+          mediaApiToken: args["api-token"] ?? apiToken,
+          r2Credentials,
+          r2ApiToken: args["r2-api-token"] ?? apiToken,
+          mediaConfig,
+          dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
+          resolveEnv: buildResolveEnv(readiness, cf, project, account),
+          audit: await buildAudit(projectDir, accountId, apiToken),
+        });
+
+        // The ready list, not the declaration — every skipped environment is left with nothing created for
+        // it at all, which is the point: a staging-only bring-up must not make a production bucket.
+        const result = await provisionMedia(provisioner, readiness.ready);
+        const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
+
+        if (args.json) {
+          // Written before the refusal below, so a run in which everything skipped still carries the
+          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+          process.stdout.write(
+            `${formatJsonLine({ command: "media provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          );
+          requireReadyEnvironments(readiness, "pithy media provision");
+          return;
+        }
         process.stdout.write(
-          `${formatJsonLine({ command: "media provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          formatEnvironmentOutcomes(
+            environmentOutcomes(readiness, (env) => {
+              const entry = provisioned.get(env);
+              const namespace = entry?.kvNamespaceId ? " and its MEDIA namespace" : "";
+              return `bucket ${entry?.bucketName}${namespace} ready, worker deployed`;
+            }),
+          ),
         );
         requireReadyEnvironments(readiness, "pithy media provision");
-        return;
-      }
-      process.stdout.write(
-        formatEnvironmentOutcomes(
-          environmentOutcomes(readiness, (env) => {
-            const entry = provisioned.get(env);
-            const namespace = entry?.kvNamespaceId ? " and its MEDIA namespace" : "";
-            return `bucket ${entry?.bucketName}${namespace} ready, worker deployed`;
-          }),
-        ),
-      );
-      requireReadyEnvironments(readiness, "pithy media provision");
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const deprovision = defineCommand({
-  meta: {
-    name: "deprovision",
-    description: "Remove one environment's media worker (and optionally its bucket and namespace)",
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: MediaProvisionPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
   },
-  args: {
-    // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
-    // included.
-    env: TEARDOWN_ENV_ARG,
-    storage: {
-      type: "boolean",
-      default: false,
-      description:
-        "Also delete the environment's R2 bucket with every object in it, and its MEDIA KV namespace (irreversible)",
-    },
-    "r2-access-key-id": {
-      type: "string",
-      description:
-        "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    "r2-secret-access-key": {
-      type: "string",
-      description:
-        "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
-    },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // Teardown finds resources by recomputing their names, so this must be the same name
-      // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
-      const config = await loadProject(projectDir);
-      const project = requireProjectName(config);
-      // One named environment, settled before any credential is read (#591): naming nothing, or something
-      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
-      // is the one that deletes.
-      const declared = loadProjectEnvironments(config);
-      const env = requireTeardownEnvironment(args.env, declared);
-      const target = { environment: env, declared };
-      const { deprovisionMedia } = await loadMedia(projectDir);
-      const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
-      // without it, so discovering it is missing at the bucket step would leave the media workers gone
-      // and the bucket standing — a half-torn-down environment for a mistake we can catch here.
-      const r2Credentials = args.storage
-        ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
-        : undefined;
-      const cf = await cloudflareClients({ accountId, apiToken });
-      const deprovisioner = new CloudflareMediaDeprovisioner({
-        account,
-        cf,
-        projectDir,
-        project,
-        r2Credentials,
-        audit: await buildAudit(projectDir, accountId, apiToken),
-      });
+);
 
-      // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
-      // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
-      const confined = await confineTeardown({
-        kit: "@pithy-sh/media",
-        target: env,
-        declared,
-        deprovisioner,
-        rules: {
-          deleteWorker: "environment",
-          deleteBucket: args.storage ? "environment" : "refused",
-          deleteKvNamespace: args.storage ? "environment" : "refused",
-        },
-      });
-      await deprovisionMedia(confined, target, { deleteStorage: args.storage });
+const deprovision = withContract(
+  defineCommand({
+    meta: {
+      name: "deprovision",
+      description: "Remove one environment's media worker (and optionally its bucket and namespace)",
+    },
+    args: {
+      // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
+      // included.
+      env: TEARDOWN_ENV_ARG,
+      storage: {
+        type: "boolean",
+        default: false,
+        description:
+          "Also delete the environment's R2 bucket with every object in it, and its MEDIA KV namespace (irreversible)",
+      },
+      "r2-access-key-id": {
+        type: "string",
+        description:
+          "R2 S3 access key id, required with --storage: a bucket must be emptied over the S3 protocol before R2 will delete it. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      "r2-secret-access-key": {
+        type: "string",
+        description:
+          "R2 S3 secret access key, paired with --r2-access-key-id. Falls back to R2_CREDENTIALS in the account config.",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // Teardown finds resources by recomputing their names, so this must be the same name
+        // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
+        // One named environment, settled before any credential is read (#591): naming nothing, or something
+        // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+        // is the one that deletes.
+        const declared = loadProjectEnvironments(config);
+        const env = requireTeardownEnvironment(args.env, declared);
+        const target = { environment: env, declared };
+        const { deprovisionMedia } = await loadMedia(projectDir);
+        const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
+        // without it, so discovering it is missing at the bucket step would leave the media workers gone
+        // and the bucket standing — a half-torn-down environment for a mistake we can catch here.
+        const r2Credentials = args.storage
+          ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
+          : undefined;
+        const cf = await cloudflareClients({ accountId, apiToken });
+        const deprovisioner = new CloudflareMediaDeprovisioner({
+          account,
+          cf,
+          projectDir,
+          project,
+          r2Credentials,
+          audit: await buildAudit(projectDir, accountId, apiToken),
+        });
 
-      if (args.json) {
+        // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
+        // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
+        const confined = await confineTeardown({
+          kit: "@pithy-sh/media",
+          target: env,
+          declared,
+          deprovisioner,
+          rules: {
+            deleteWorker: "environment",
+            deleteBucket: args.storage ? "environment" : "refused",
+            deleteKvNamespace: args.storage ? "environment" : "refused",
+          },
+        });
+        await deprovisionMedia(confined, target, { deleteStorage: args.storage });
+
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({ command: "media deprovision", env, storageDeleted: args.storage })}\n`,
+          );
+          return;
+        }
         process.stdout.write(
-          `${formatJsonLine({ command: "media deprovision", env, storageDeleted: args.storage })}\n`,
+          `${env}: media worker removed${args.storage ? ", with its bucket, its objects, and its namespace" : ""}.\n`,
         );
-        return;
-      }
-      process.stdout.write(
-        `${env}: media worker removed${args.storage ? ", with its bucket, its objects, and its namespace" : ""}.\n`,
-      );
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  { output: "document", payload: MediaDeprovisionPayload, mutates: true, idempotent: true, needsNetwork: true },
+);
 
 export default defineCommand({
   meta: { name: "media", description: "Provision and manage the media infrastructure" },

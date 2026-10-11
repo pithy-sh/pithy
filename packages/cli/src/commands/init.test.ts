@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type CloudflareConfigOptions, cloudflareEnv } from "../cloudflare/config";
+import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import {
   askCloudflareAccount,
   askEnvironments,
@@ -459,4 +460,15 @@ describe("a listing that could not be made is not an empty listing", () => {
     expect(said).toContain("verified by nothing");
     expect(said).not.toContain("This token sees no Cloudflare account");
   });
+});
+
+/** A real scaffold, through the real command, held to the schema `pithy schema init` publishes (#697). */
+test("pithy init --json conforms to its published payload", async () => {
+  const target = await mkdtemp(join(tmpdir(), "pithy-init-json-"));
+  try {
+    await expectConforms("init", await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]));
+  } finally {
+    vi.restoreAllMocks();
+    await rm(target, { recursive: true, force: true });
+  }
 });

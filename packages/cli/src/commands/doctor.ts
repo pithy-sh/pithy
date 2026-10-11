@@ -8,6 +8,7 @@ import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:pa
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import {
   type BindingDeclines,
   type BuildReconcilePlanOptions,
@@ -18,6 +19,7 @@ import {
 } from "../capabilities/reconcile";
 import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { pithyOffline } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
@@ -3437,42 +3439,248 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
   };
 }
 
-export default defineCommand({
-  meta: { name: "doctor", description: "Check the toolchain, project, and for a new CLI version" },
-  args: {
-    worker: { type: "string", description: "Check only this worker (default: every worker under apps/)" },
-    "disable-notifier": { type: "boolean", default: false, description: "Turn off the update notifier (persisted)" },
-    "enable-notifier": { type: "boolean", default: false, description: "Turn the update notifier back on" },
-    // No `default: false`. An unpassed flag has to stay absent so `PITHY_OFFLINE` can answer, and citty's
-    // default would make every run an explicit "not offline" that overrode the variable.
-    offline: { type: "boolean", description: "Use no ambient credentials and make no network call" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      if (args["disable-notifier"] && args["enable-notifier"]) {
-        throw new ValidationError({
-          message: "Pass either --disable-notifier or --enable-notifier, not both.",
-          action: "Choose one.",
-        });
-      }
-      const file = stateFilePath();
-      if (args["disable-notifier"]) await setNotifierFlag(file, false);
-      if (args["enable-notifier"]) await setNotifierFlag(file, true);
+/**
+ * One check's block in the payload: the keys `docs/commands/doctor.md` names for it, typed, and open beyond
+ * them. Its findings are open objects, each carrying its own `detail` sentence beside the fields the
+ * check found — the per-finding shapes are the check modules' own, and the page is where they are read.
+ */
+const Findings = (what: string) =>
+  z
+    .array(z.looseObject({}).describe(`One ${what}, with its fields and its own \`detail\`.`))
+    .describe(`Every ${what}.`);
+const Lines = z.array(z.string().describe("One line of the report.")).describe("The report's lines for this check.");
+const State = (states: string) => z.string().describe(`The verdict — ${states}.`);
+const Check = (description: string, shape: z.ZodRawShape) => z.looseObject(shape).nullable().describe(description);
 
-      const report = await buildDoctorReport({
-        projectDir: process.cwd(),
-        stateFile: file,
-        ...(args.worker ? { worker: args.worker } : {}),
-        ...(args.offline === undefined ? {} : { offline: args.offline }),
-      });
-      const output = args.json ? formatJsonLine(renderDoctorJson(report)) : renderDoctorText(report);
-      process.stdout.write(`${output}\n`);
-
-      const code = doctorExitCode(report);
-      if (code !== 0) process.exit(code);
+/** `pithy doctor --json`: every block of the report, as one object. `docs/commands/doctor.md`. */
+const DoctorPayload = z
+  .object({
+    cli: z
+      .object({
+        installed: z.string().describe("The installed CLI version."),
+        latest: z.string().nullable().describe("The latest known version, or `null` when none could be read."),
+        installer: z.string().describe("How the CLI was installed — `brew`, `npm`, `bun`, …"),
+        state: z.string().describe("Where the installed version stands against the latest."),
+        upgradeCommand: z.string().describe("The command that upgrades it, for that installer."),
+      })
+      .describe("The CLI itself."),
+    shell: z.string().nullable().describe("The detected shell, `null` when none was."),
+    alias: z
+      .object({
+        state: z.enum(["installed", "not-installed", "unknown"]).describe("Whether the `p.` alias is installed."),
+        rcPath: z.string().nullable().describe("The rc file, absolute, or `null` when no shell was detected."),
+        reason: z.string().nullable().describe("The refusal's own sentence on `unknown`, else `null`."),
+      })
+      .describe("The `p.` shortcut."),
+    configDir: z.string().describe("The config directory."),
+    stateFile: z.string().describe("The notifier state file."),
+    notifier: z.enum(["enabled", "disabled"]).describe("Whether the update notifier is on."),
+    offline: z.boolean().describe("Whether this run refused ambient credentials and the network."),
+    project: z
+      .looseObject({
+        present: z.literal(true).describe("A project is here."),
+        loadError: z.string().optional().describe("Why its config would not load. Instead of the two below."),
+        capabilities: z
+          .array(z.looseObject({}).describe("One installed capability — its versions, state and upgrade command."))
+          .optional()
+          .describe("Every installed capability."),
+        health: z.looseObject({}).optional().describe("Each Worker's config, binding and migration health."),
+      })
+      .nullable()
+      .describe("The project, or `null` outside one."),
+    cloudflare: z
+      .object({
+        state: z.string().describe("Whether Cloudflare access works, or why not."),
+        missing: z.array(z.string().describe("A missing credential.")).describe("Credentials not found."),
+        tokenStatus: z.string().nullable().describe("The token's status, as Cloudflare reported it."),
+        credentialSplit: z.looseObject({}).nullable().describe("Where each credential came from, when split."),
+        configPath: z.string().nullable().describe("The credentials file this run resolved, absolute."),
+        accountName: z.string().nullable().describe("The account nickname the project names."),
+        accountMismatch: z.looseObject({}).nullable().describe("A pin the credentials contradict, or `null`."),
+        credentialSource: z
+          .string()
+          .nullable()
+          .describe("Whether the credentials came from the file or the environment."),
+        detail: z.string().describe("The sentence."),
+      })
+      .describe("Cloudflare access."),
+    projectName: Check("The project name checked against every resource name, or `null` outside a project.", {
+      state: State("`ok`, `misnamed`, `could-not-check`"),
+      project: z.string().nullable().describe("The project name."),
+      misnamed: Findings("misnamed resource"),
+      detail: z.string().describe("The sentence."),
     }),
-});
+    workerNames: Check("Each Worker's stamped names, or `null` outside a project.", {
+      state: State("`ok`, `drifted`, `could-not-check`"),
+      mismatches: Findings("stamp that disagrees with its directory"),
+      reserved: Findings("stanza naming a capability's own host Worker"),
+      convention: Findings("Worker still on wrangler's environment suffix"),
+    }),
+    featureRatelimitIds: Check("Rate-limit ids in the feature range, or `null` outside a project.", {
+      state: State("`ok`, `reserved`, `could-not-check`"),
+      findings: z.array(z.string().describe("One finding.")).describe("One sentence per id in the feature range."),
+    }),
+    docsMcp: Check("AI clients the docs server is not connected to, or `null` outside a project.", {
+      state: State("`ok`, `unconnected`, `could-not-check`"),
+      findings: z.array(z.string().describe("One finding.")).describe("One line per unconnected client."),
+      detail: z.string().describe("The sentence."),
+    }),
+    selfBinding: Check("The `SELF` binding `administersItself` needs, or `null` outside a project.", {
+      state: State("`ok`, `unbound`, `could-not-check`"),
+      declared: z.boolean().describe("Whether the root config says `administersItself` at all."),
+      missing: Findings("stanza binding no `SELF`"),
+    }),
+    environments: Check("The declared environments against each Worker's stanzas, or `null` outside a project.", {
+      state: State("`ok`, `drifted`, `could-not-check`"),
+      declared: z.array(z.string().describe("An environment.")).describe("The environments the root config names."),
+      drift: Findings("Worker-and-environment that disagrees"),
+    }),
+    turnstileSitekeys: Check("Turnstile sitekeys nothing renders or nothing reads, or `null`.", {
+      state: State("`ok`, `findings`, `could-not-check`"),
+      unrendered: Findings("build rendering no widget"),
+      stranded: Findings("sitekey var nothing reads"),
+      detail: Lines,
+    }),
+    supportSearchTriggers: Check("Support search triggers per environment, or `null`.", {
+      state: State("`ok`, `not-applicable`, `findings`, `could-not-check`"),
+      environments: Findings("deployed environment"),
+      detail: Lines,
+    }),
+    environmentInheritance: Check("Non-inherited keys a stanza does not repeat, or `null`.", {
+      state: State("`ok`, `unrepeated`, `could-not-check`"),
+      unrepeated: Findings("key a stanza does not repeat"),
+    }),
+    environmentConfigs: Check("Declared environments whose config throws when composed, or `null`.", {
+      unresolved: Findings("environment whose config throws"),
+      detail: Lines,
+    }),
+    origins: Check("Named against served origins, or `null` outside a project.", {
+      state: State("`ok`, `drifted`, `could-not-check`"),
+      drift: Findings("Worker-and-environment whose origins disagree"),
+    }),
+    workflows: Check("Declared Workflows and crons against each stanza, or `null` outside a project.", {
+      state: State("`ok`, `drifted`, `could-not-check`"),
+      drift: Findings("Worker-and-environment whose table disagrees"),
+    }),
+    extensions: Check("The capability extensions each Worker composes, or `null`.", {
+      extensions: Findings("extension"),
+    }),
+    devPreferences: Check("The `dev.json` this project resolves, or `null` outside a project.", {
+      state: State("`present`, `absent`, `could-not-check`"),
+      path: z.string().optional().describe("The file, absolute."),
+      detail: z.string().describe("The sentence."),
+    }),
+    portsRegistry: Check("The machine's dev port registry.", {
+      path: z.string().describe("The registry file, absolute."),
+      present: z.boolean().describe("Whether it exists."),
+      detail: z.string().nullable().describe("The sentence, or `null` when there is nothing to say."),
+    }),
+    devSecretsFile: Check("The dev secrets file, or `null` outside a project.", {
+      path: z.string().optional().describe("The file, absolute."),
+      present: z.boolean().optional().describe("Whether it exists."),
+    }),
+    devSecrets: Check("The dev-secrets findings, or `null` when nothing composes secrets.", {
+      healthy: z.boolean().optional().describe("The one field to gate on — every fault in this block."),
+    }),
+    secretBindings: Check("Registry secrets a declared environment does not bind, or `null`.", {
+      state: State("`ok`, `unbound`, `could-not-check`"),
+      missing: Findings("unbound secret"),
+      detail: Lines,
+    }),
+    settings: Check("Settings each composed capability checks, or `null` when none declares a check.", {
+      state: State("`ok`, `faults`, `could-not-check`"),
+      account: z.looseObject({}).describe("Whether the account tier ran, and why not."),
+      checked: Findings("worker-and-capability pair checked"),
+      findings: Findings("setting that does not work"),
+      unchecked: Findings("worker-and-capability-and-tier nobody could answer for"),
+      detail: z.string().describe("The sentence for the account tier."),
+    }),
+    sharedRuntimes: Check("Duplicated copies of zod, kysely and hono, or `null`.", {
+      duplicated: z.array(z.string().describe("A package name.")).describe("Each one resolved more than once."),
+      copies: z
+        .record(z.string().describe("A package name."), z.array(z.string().describe("A directory.")).describe("Where."))
+        .describe("Every directory each one resolved from."),
+      detail: z.string().describe("The sentence."),
+    }),
+    localDelivery: Check("Whether mail sent from this machine leaves it, or `null`.", {
+      live: z.boolean().describe("Whether a message sent from here leaves it."),
+      capability: z.string().describe("The capability that answers for delivery."),
+      detail: z.string().describe("The sentence."),
+    }),
+    devVarsLocal: Check("Every `.dev.vars.local` key, classified, or `null`.", {}),
+    devVars: Check("The root `.dev.vars` classification, names only, or `null`.", {}),
+    os: z.string().describe("The operating system and its version."),
+    runtime: z
+      .object({
+        name: z.string().describe("`Bun` or `Node`."),
+        version: z.string().describe("Its version."),
+        nodeCompat: z.string().nullable().describe("The Node version it emulates, or `null` on Node."),
+      })
+      .describe("The interpreter that ran."),
+    node: z.string().describe("The Node version it emulates."),
+  })
+  .describe("What `pithy doctor --json` writes — every block of the report.");
+
+export default withContract(
+  defineCommand({
+    meta: { name: "doctor", description: "Check the toolchain, project, and for a new CLI version" },
+    args: {
+      worker: { type: "string", description: "Check only this worker (default: every worker under apps/)" },
+      "disable-notifier": { type: "boolean", default: false, description: "Turn off the update notifier (persisted)" },
+      "enable-notifier": {
+        type: "boolean",
+        default: false,
+        description: "Turn the update notifier back on (persisted)",
+      },
+      // No `default: false`. An unpassed flag has to stay absent so `PITHY_OFFLINE` can answer, and citty's
+      // default would make every run an explicit "not offline" that overrode the variable.
+      offline: { type: "boolean", description: "Use no ambient credentials and make no network call" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        if (args["disable-notifier"] && args["enable-notifier"]) {
+          throw new ValidationError({
+            message: "Pass either --disable-notifier or --enable-notifier, not both.",
+            action: "Choose one.",
+          });
+        }
+        const file = stateFilePath();
+        if (args["disable-notifier"]) await setNotifierFlag(file, false);
+        if (args["enable-notifier"]) await setNotifierFlag(file, true);
+
+        const report = await buildDoctorReport({
+          projectDir: process.cwd(),
+          stateFile: file,
+          ...(args.worker ? { worker: args.worker } : {}),
+          ...(args.offline === undefined ? {} : { offline: args.offline }),
+        });
+        const output = args.json ? formatJsonLine(renderDoctorJson(report)) : renderDoctorText(report);
+        process.stdout.write(`${output}\n`);
+
+        const code = doctorExitCode(report);
+        if (code !== 0) process.exit(code);
+      }),
+  }),
+  {
+    output: "document",
+    payload: DoctorPayload,
+    // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
+    // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own
+    // bookkeeping, which any command may write. `--disable-notifier` and `--enable-notifier` persist a
+    // preference in that same file, and each says so in its description.
+    mutates: false,
+    idempotent: true,
+    needsNetwork: true,
+    flagGroups: [
+      {
+        kind: "atMostOne",
+        flags: ["--disable-notifier", "--enable-notifier"],
+        rule: "Pass either --disable-notifier or --enable-notifier, not both.",
+      },
+    ],
+  },
+);
 
 // Re-export the shared plan-builder reference so a test can assert the engine is shared with upgrade.
 export { buildReconcilePlan };

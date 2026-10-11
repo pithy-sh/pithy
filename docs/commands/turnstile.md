@@ -53,6 +53,8 @@ Idempotent: a re-run reuses an existing production widget rather than creating a
 
 `deprovision` deletes the production widget for each declared mode, deletes the managed secret and the dev secret, blanks each mode's `prod` sitekey in `pithy.config.ts`, and removes any stranded sitekey var. The test sitekeys stay: they are Cloudflare's published constants. It is the inverse of `provision` and the first half of the repair for a lost production secret.
 
+**A Worker that composes no turnstile has nothing to deprovision**, and `deprovision` says so and exits 0: `api does not compose turnstile. Nothing to deprovision.`, or `"modes": []` under `--json`. The modes it deletes are that Worker's own declaration, never a sibling's, so there is no widget it could name — `pithy remove`'s answer to a capability that is not there. Only `provision` refuses a Worker without the capability.
+
 ## `--json`
 
 One line, one object, one shape per subcommand. The `command` field carries the space-separated form (`turnstile provision`), not the dotted one.
@@ -85,13 +87,13 @@ $ pithy turnstile deprovision --json
 | key | type | meaning |
 |---|---|---|
 | `command` | `"turnstile deprovision"` | The subcommand that produced the line |
-| `modes` | `("visible" \| "invisible")[]` | The widget modes torn down |
+| `modes` | `("visible" \| "invisible")[]` | The widget modes torn down. Empty when the Worker composes no turnstile, and nothing was |
 
 ## Errors
 
 Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, with `exit`, `retryable` and, where the cause is known, `fix`, and the process exits by its kind — 2 for a call to fix, 3 for something to set up first, 4 to retry, 5 for a person (`docs/CLI.md` §3.8).
 
-**The Worker does not compose turnstile.** The target — `--worker`, or the project's only Worker — has no `turnstile(...)` registration. The modes are never read from a sibling.
+**The Worker does not compose turnstile.** `provision` only. The target — `--worker`, or the project's only Worker — has no `turnstile(...)` registration. The modes are never read from a sibling.
 
 ```
 <worker> does not compose the turnstile capability.

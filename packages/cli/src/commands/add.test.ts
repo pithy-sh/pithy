@@ -7,10 +7,24 @@ import { join } from "node:path";
 import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CreateCliAuditOptions } from "../audit/cliAudit";
+import type { AddResult } from "../capabilities/flow";
 import type { WorkerConfig } from "../project/config";
+import { scaffoldProject } from "../project/scaffold";
 import type { WorkerTarget } from "../project/workers";
 import { latchInputMode, mayPrompt } from "../terminal/inputMode";
+import { linkKitPackages } from "../test-utils/linkKit";
+import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import add, { addPrompts, buildAudit, targetWorker } from "./add";
+
+/**
+ * The add flow itself — install, wire, migrate — is `capabilities/flow.test.ts`'s. Here it is replaced
+ * with what it returned, so the command's own body runs: the Worker it resolves, the payload it writes.
+ */
+const flow = vi.hoisted(() => ({ result: undefined as unknown }));
+vi.mock("../capabilities/flow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../capabilities/flow")>()),
+  runAdd: async () => flow.result,
+}));
 
 /** Discovery seam: the `apps/*` set, without a filesystem. */
 function discovery(...names: string[]) {
@@ -209,5 +223,50 @@ describe("addPrompts", () => {
   test("the switch reaches it through the seam, terminal or not", () => {
     latchInputMode(true);
     expect(addPrompts(mayPrompt(false, { stdin: { isTTY: true }, stdout: { isTTY: true } }))).toEqual({});
+  });
+});
+
+/** Held to the schema `pithy schema add` publishes, from a real run in a scaffolded project (#697). */
+describe("pithy add --json conforms to its published payload", () => {
+  let dir: string;
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function project(): Promise<void> {
+    dir = await mkdtemp(join(tmpdir(), "pithy-add-json-"));
+    await scaffoldProject({ targetDir: dir, appName: "acme", worker: "api" });
+    await linkKitPackages(dir, ["core"]);
+    vi.spyOn(process, "cwd").mockReturnValue(dir);
+  }
+
+  test("--list", async () => {
+    await project();
+    await expectConforms("add", await runCaptured("add", ["--list", "--json"]));
+  });
+
+  test("an add, ejected, with a shared database and a proposed KV title", async () => {
+    await project();
+    flow.result = {
+      capability: "auth",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      databases: [
+        {
+          database: "app",
+          binding: "DB",
+          results: [{ migrationName: "0300_auth_0001_init", direction: "Up", status: "Success" }],
+          sharedWith: ["web"],
+        },
+      ],
+      kvNamespaces: [{ binding: "SESSIONS", env: "dev", name: "acme-dev-sessions" }],
+      notes: ["Run pithy provision --env staging."],
+      prerequisites: ["secrets"],
+      eject: { capability: "auth", path: "capabilities/auth", promotedDependencies: ["hono@4.0.0"], forced: false },
+    } satisfies AddResult;
+    await expectConforms("add", await runCaptured("add", ["auth", "--json"]));
   });
 });

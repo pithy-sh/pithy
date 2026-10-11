@@ -12,6 +12,7 @@ import {
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostWorkerFor } from "../capabilities/hostRegistry";
@@ -24,6 +25,7 @@ import {
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -35,6 +37,7 @@ import {
   formatEnvironmentOutcomes,
   readyStanza,
   requireReadyEnvironments,
+  SkippedEnvironment,
 } from "../project/environmentReadiness";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { secretsDatabaseMissing } from "../provision/missingDatabase";
@@ -274,158 +277,217 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
   };
 }
 
-const provision = defineCommand({
-  meta: { name: "provision", description: "Deploy the reconciliation Workflow worker and write its bindings" },
-  args: {
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-    worker: {
-      type: "string",
-      description:
-        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the PAYMENTS_RECONCILE binding (default: the project's only worker)",
+const Skipped = z
+  .array(SkippedEnvironment)
+  .describe("One entry per declared environment nothing was provisioned for. Empty when none was skipped.");
+
+/** `pithy payments provision --json`. `docs/commands/payments.md`. */
+const PaymentsProvisionPayload = z
+  .object({
+    command: z.literal("payments provision").describe('`"payments provision"`.'),
+    environments: z
+      .array(z.string().describe("An environment."))
+      .describe("The environments whose reconcile Worker was deployed."),
+    skippedEnvironments: Skipped,
+  })
+  .describe("What `pithy payments provision` provisioned.");
+
+const Count = (what: string) => z.number().int().optional().describe(what);
+
+/** `pithy payments reconcile --json`. */
+const PaymentsReconcilePayload = z
+  .object({
+    command: z.literal("payments reconcile").describe('`"payments reconcile"`.'),
+    env: z.string().describe("The environment reconciled."),
+    report: z
+      .looseObject({
+        scanned: Count("Entitlements read."),
+        drifted: Count("Entitlements whose state disagreed with the rail. Repaired unless `--dry-run`."),
+        unchanged: Count("Entitlements that agreed."),
+        skipped: Count("Entitlements not checked."),
+        failed: Count("Entitlements the rail could not answer for."),
+      })
+      .nullable()
+      .describe("The pass's own report, or `null` when the Workflow returned none."),
+  })
+  .describe("What `pithy payments reconcile` found.");
+
+const provision = withContract(
+  defineCommand({
+    meta: { name: "provision", description: "Deploy the reconciliation Workflow worker and write its bindings" },
+    args: {
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+      worker: {
+        type: "string",
+        description:
+          "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the PAYMENTS_RECONCILE binding (default: the project's only worker)",
+      },
     },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, {
-        kind: "worker",
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-      });
-      const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments(projectDir);
-
-      // The account check first, before a single deploy. Failing here means failing before one environment is
-      // half provisioned rather than part way through the fan-out.
-      await provisioner.preflight();
-
-      const { appWorker, readiness } = await appReadiness();
-      // The ready list, not the declaration: a staging-only bring-up deploys staging's reconcile worker and
-      // leaves production with nothing, rather than failing after staging's is already up.
-      const environments: ManagedEnvironment[] = readiness.ready;
-      for (const env of environments) {
-        await provisioner.deployWorker(env);
-        // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
-        // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
-        // (`<project>-<env>-payments-reconcile`). An entry short of either field fails the whole config, so `add`
-        // emits none and this completes it — see capabilities/add.ts.
-        // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
-        // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
-        await applyAppBindings(appWorker.dir, env, {
-          workflows: appWorkflowBindings(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env }),
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, {
+          kind: "worker",
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
         });
-      }
+        const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments(projectDir);
 
-      if (args.json) {
-        // Written before the refusal below, so a run in which everything skipped still carries the
-        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        // The account check first, before a single deploy. Failing here means failing before one environment is
+        // half provisioned rather than part way through the fan-out.
+        await provisioner.preflight();
+
+        const { appWorker, readiness } = await appReadiness();
+        // The ready list, not the declaration: a staging-only bring-up deploys staging's reconcile worker and
+        // leaves production with nothing, rather than failing after staging's is already up.
+        const environments: ManagedEnvironment[] = readiness.ready;
+        for (const env of environments) {
+          await provisioner.deployWorker(env);
+          // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
+          // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
+          // (`<project>-<env>-payments-reconcile`). An entry short of either field fails the whole config, so `add`
+          // emits none and this completes it — see capabilities/add.ts.
+          // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
+          // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
+          await applyAppBindings(appWorker.dir, env, {
+            workflows: appWorkflowBindings(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env }),
+          });
+        }
+
+        if (args.json) {
+          // Written before the refusal below, so a run in which everything skipped still carries the
+          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+          process.stdout.write(
+            `${formatJsonLine({ command: "payments provision", environments, skippedEnvironments: readiness.skipped })}\n`,
+          );
+          requireReadyEnvironments(readiness, "pithy payments provision");
+          return;
+        }
         process.stdout.write(
-          `${formatJsonLine({ command: "payments provision", environments, skippedEnvironments: readiness.skipped })}\n`,
+          formatEnvironmentOutcomes(
+            environmentOutcomes(readiness, () => "reconcile worker deployed, PAYMENTS_RECONCILE bound"),
+          ),
         );
         requireReadyEnvironments(readiness, "pithy payments provision");
-        return;
-      }
-      process.stdout.write(
-        formatEnvironmentOutcomes(
-          environmentOutcomes(readiness, () => "reconcile worker deployed, PAYMENTS_RECONCILE bound"),
-        ),
-      );
-      requireReadyEnvironments(readiness, "pithy payments provision");
-      process.stdout.write(
-        "Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.\n",
-      );
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
-
-const reconcile = defineCommand({
-  meta: { name: "reconcile", description: "Run a reconciliation pass now and report the drift it found" },
-  args: {
-    env: { ...envArg("Target environment"), default: "staging" },
-    // One flag, not a `--subject-type`/`--subject-id` pair. A holder is `(kind, id)` and half of one names
-    // nobody, so two flags would need a cross-arg rule to say what a single flag says by existing. The
-    // spelling is `encodeSubjectReference`'s — the same string the rails stamp into a store — so an operator
-    // reading a provider dashboard can paste what they see.
-    subject: {
-      type: "string",
-      description: "Reconcile one holder only, as `user:<id>` or `organization:<id>` — the support path",
-    },
-    // Every rail is named, in the spelling the parse accepts — `lemonSqueezy`, camelCase, the same
-    // identifier the config and the credential bundle key on. A help line that lists three of four rails
-    // is why somebody types the fourth as a guess.
-    rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, lemonSqueezy, or paddle" },
-    "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+        process.stdout.write(
+          "Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.\n",
+        );
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: PaymentsProvisionPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      // Checked, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
-      // one-line answer into a lookup for `<project>-dev-payments-reconcile` and a raw Cloudflare request
-      // error from a worker that was never deployed. Still checked first, before any Cloudflare client is
-      // built: the declaration it is checked against is a config read, so the refusal costs nothing.
-      const projectDir = process.cwd();
-      const config = await loadProject(projectDir);
-      // The name before the flag, because both payments names lead with it and a guessed one dispatches
-      // to a script that does not exist — the refusal that helps most goes first. Both are reads of this
-      // project's own config, so the whole check still happens before any Cloudflare client is built.
-      requireProjectName(config);
-      const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
-      const { provisioner } = await buildProvisioner(projectDir, { kind: "project" });
-      const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments(projectDir);
+);
 
-      // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape
-      // somebody types from memory, and a lenient read of it would narrow the pass to whichever user *or*
-      // organization carries that id — a support tool answering about the wrong holder, silently. The
-      // refusal names the format instead.
-      const subject = args.subject === undefined ? undefined : decodeSubjectReference(args.subject);
-      if (args.subject !== undefined && subject === undefined) {
-        throw new ValidationError({
-          message: `"${args.subject}" does not name a holder.`,
-          action: "Pass --subject user:<id> or --subject organization:<id>.",
+const reconcile = withContract(
+  defineCommand({
+    meta: { name: "reconcile", description: "Run a reconciliation pass now and report the drift it found" },
+    args: {
+      env: { ...envArg("Target environment"), default: "staging" },
+      // One flag, not a `--subject-type`/`--subject-id` pair. A holder is `(kind, id)` and half of one names
+      // nobody, so two flags would need a cross-arg rule to say what a single flag says by existing. The
+      // spelling is `encodeSubjectReference`'s — the same string the rails stamp into a store — so an operator
+      // reading a provider dashboard can paste what they see.
+      subject: {
+        type: "string",
+        description: "Reconcile one holder only, as `user:<id>` or `organization:<id>` — the support path",
+      },
+      // Every rail is named, in the spelling the parse accepts — `lemonSqueezy`, camelCase, the same
+      // identifier the config and the credential bundle key on. A help line that lists three of four rails
+      // is why somebody types the fourth as a guess.
+      rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, lemonSqueezy, or paddle" },
+      "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        // Checked, not cast. `--env dev` is a real thing to type and dev is local-only, so the cast turned a
+        // one-line answer into a lookup for `<project>-dev-payments-reconcile` and a raw Cloudflare request
+        // error from a worker that was never deployed. Still checked first, before any Cloudflare client is
+        // built: the declaration it is checked against is a config read, so the refusal costs nothing.
+        const projectDir = process.cwd();
+        const config = await loadProject(projectDir);
+        // The name before the flag, because both payments names lead with it and a guessed one dispatches
+        // to a script that does not exist — the refusal that helps most goes first. Both are reads of this
+        // project's own config, so the whole check still happens before any Cloudflare client is built.
+        requireProjectName(config);
+        const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
+        const { provisioner } = await buildProvisioner(projectDir, { kind: "project" });
+        const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments(projectDir);
+
+        // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape
+        // somebody types from memory, and a lenient read of it would narrow the pass to whichever user *or*
+        // organization carries that id — a support tool answering about the wrong holder, silently. The
+        // refusal names the format instead.
+        const subject = args.subject === undefined ? undefined : decodeSubjectReference(args.subject);
+        if (args.subject !== undefined && subject === undefined) {
+          throw new ValidationError({
+            message: `"${args.subject}" does not name a holder.`,
+            action: "Pass --subject user:<id> or --subject organization:<id>.",
+          });
+        }
+
+        // Parsed here rather than sent raw: a mistyped rail is a message in this terminal instead of a Workflow
+        // instance that starts, fails a step, and burns its retry budget where nobody is watching.
+        //
+        // **Mapped, not thrown raw.** "A message in this terminal" means the house two-line refusal, and a
+        // bare `ZodError` is a stack trace — `--rail lemon-squeezy` is exactly the typo that used to earn
+        // one. The rails are not listed again here: Zod's own message names the accepted set, so the list
+        // stays in one place and gains the next rail on the day the schema does.
+        const parsed = PaymentsReconcileParams.safeParse({
+          ...(subject ?? {}),
+          ...(args.rail === undefined ? {} : { rail: args.rail }),
+          ...(args["dry-run"] ? { dryRun: true } : {}),
         });
-      }
+        if (!parsed.success) {
+          throw fromZodError(parsed.error, {
+            message: parsed.error.issues.map((issue) => issue.message).join(" "),
+            action: "Spell --rail the way pithy.config.ts spells it, or drop it to reconcile every rail.",
+          });
+        }
+        const params = parsed.data;
 
-      // Parsed here rather than sent raw: a mistyped rail is a message in this terminal instead of a Workflow
-      // instance that starts, fails a step, and burns its retry budget where nobody is watching.
-      //
-      // **Mapped, not thrown raw.** "A message in this terminal" means the house two-line refusal, and a
-      // bare `ZodError` is a stack trace — `--rail lemon-squeezy` is exactly the typo that used to earn
-      // one. The rails are not listed again here: Zod's own message names the accepted set, so the list
-      // stays in one place and gains the next rail on the day the schema does.
-      const parsed = PaymentsReconcileParams.safeParse({
-        ...(subject ?? {}),
-        ...(args.rail === undefined ? {} : { rail: args.rail }),
-        ...(args["dry-run"] ? { dryRun: true } : {}),
-      });
-      if (!parsed.success) {
-        throw fromZodError(parsed.error, {
-          message: parsed.error.issues.map((issue) => issue.message).join(" "),
-          action: "Spell --rail the way pithy.config.ts spells it, or drop it to reconcile every rail.",
-        });
-      }
-      const params = parsed.data;
+        const report = (await provisioner.reconcile(env, params)) as {
+          scanned?: number;
+          drifted?: number;
+          unchanged?: number;
+          skipped?: number;
+          failed?: number;
+        } | null;
 
-      const report = (await provisioner.reconcile(env, params)) as {
-        scanned?: number;
-        drifted?: number;
-        unchanged?: number;
-        skipped?: number;
-        failed?: number;
-      } | null;
-
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "payments reconcile", env, report })}\n`);
-        return;
-      }
-      process.stdout.write(
-        `${report?.scanned ?? 0} scanned, ${report?.drifted ?? 0} drifted, ${report?.skipped ?? 0} skipped, ${report?.failed ?? 0} failed.\n`,
-      );
-      // A rising drift count is the signal the webhook path is broken, so it is worth one plain sentence here
-      // rather than only a number.
-      if ((report?.drifted ?? 0) > 0 && !args["dry-run"]) {
-        process.stdout.write("Drift was repaired. Repeated drift means webhooks are not arriving — check the rail.\n");
-      }
-      process.stdout.write(`${formatDone()}\n`);
-    }),
-});
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "payments reconcile", env, report })}\n`);
+          return;
+        }
+        process.stdout.write(
+          `${report?.scanned ?? 0} scanned, ${report?.drifted ?? 0} drifted, ${report?.skipped ?? 0} skipped, ${report?.failed ?? 0} failed.\n`,
+        );
+        // A rising drift count is the signal the webhook path is broken, so it is worth one plain sentence here
+        // rather than only a number.
+        if ((report?.drifted ?? 0) > 0 && !args["dry-run"]) {
+          process.stdout.write(
+            "Drift was repaired. Repeated drift means webhooks are not arriving — check the rail.\n",
+          );
+        }
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    payload: PaymentsReconcilePayload,
+    // Repairs drift, unless `--dry-run`.
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+    // The project's own `@pithy-sh/payments` parses `--rail` at run time and cannot be imported here, so this
+    // list is a copy — held to `PaymentsRail.options` by `payments.test.ts`, which goes red the day they part.
+    flags: { rail: { enum: ["apple", "google", "stripe", "lemonSqueezy", "paddle"] } },
+  },
+);
 
 export default defineCommand({
   meta: { name: "payments", description: "Provision the reconciliation Workflow, and run a pass on demand" },

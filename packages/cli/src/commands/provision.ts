@@ -8,16 +8,20 @@ import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provis
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { isProvisionableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
+import { z } from "zod";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { mintReportLines, storeSecretMinter } from "../capabilities/mintSecrets";
+import { ManifestFault } from "../capabilities/manifests";
+import { MintedSecret, mintReportLines, storeSecretMinter } from "../capabilities/mintSecrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareSecretsProvisioner } from "../capabilities/secretsProvisioner";
 import { cloudflareFeatureIndexes } from "../capabilities/vectorProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
+import { withContract } from "../contract/commandContract";
 import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
+import { FeatureResource } from "../feature/manifest";
 import { provisionFeature } from "../feature/provision";
 import { resolveWorkersFor } from "../project/composeFor";
 import {
@@ -28,7 +32,7 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
-import { deployKitWorkers, summarizeKitDeploy } from "../project/deployKit";
+import { deployKitWorkers, KitWorkerDeploy, summarizeKitDeploy } from "../project/deployKit";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
@@ -732,31 +736,174 @@ export async function runProvision(options: ProvisionRunOptions): Promise<void> 
   return provisionDeclared(projectDir, mode, options);
 }
 
-export default defineCommand({
-  meta: {
-    name: "provision",
-    description: "Create an environment's own Cloudflare resources, wire them into each Worker, then migrate",
-  },
-  args: {
-    env: { type: "string", description: "The declared environment to provision" },
-    feature: { type: "boolean", default: false, description: "Provision this branch's own environment instead" },
-    yes: { type: "boolean", default: false, description: "Confirm that this creates real Cloudflare resources" },
-    confirm: {
-      type: "string",
-      description: 'Unlock a production environment non-interactively: "yes, i really want to provision <env>"',
+const Worker = z.string().describe("The Worker's own deploy name — its `wrangler.jsonc` `name`.");
+
+/** `pithy provision --json`, for both modes. `docs/commands/provision.md`. */
+const ProvisionPayload = z
+  .object({
+    command: z.literal("provision").describe('`"provision"`. The same for both modes.'),
+    env: z.string().describe("The environment provisioned — a declared name, or `feature`."),
+    resources: z
+      .array(
+        FeatureResource.extend({
+          created: z.boolean().describe("Whether this run created it; `false` when an existing one was adopted."),
+        }).describe("One resource."),
+      )
+      .describe("Every resource, in provision order."),
+    workers: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            name: z.string().describe("The scoped script name written into the environment's stanza."),
+          })
+          .describe("One Worker."),
+      )
+      .describe("Each Worker and the script name it deploys under in this environment."),
+    services: z
+      .array(
+        z
+          .object({
+            binding: z.string().describe("The binding name."),
+            service: z.string().describe("The script the binding was retargeted at."),
+          })
+          .describe("One service binding."),
+      )
+      .describe("Each `service` binding and the Worker it now targets."),
+    secretBindings: z
+      .array(
+        z
+          .object({
+            secret: z.string().describe("The secret's registry key."),
+            binding: z.string().describe("The Worker binding it is read through."),
+            entry: z.string().describe("The Secrets Store entry it resolves to in this environment."),
+            bound: z.boolean().describe("Whether the entry exists and the binding was written."),
+            minted: z.boolean().describe("Whether this run created the value."),
+          })
+          .describe("One `cf-secrets-store` secret."),
+      )
+      .describe("Every `cf-secrets-store` secret this environment declares."),
+    declined: z
+      .array(
+        z
+          .looseObject({
+            state: z.enum(["read", "invalid"]).describe("Whether that Worker's declaration parsed."),
+            worker: Worker,
+            problem: z.string().optional().describe("`invalid` only: what is wrong with the declaration."),
+            declines: z
+              .array(
+                z
+                  .looseObject({
+                    state: z
+                      .enum(["honored", "required", "undeclinable", "unrecognized"])
+                      .describe("Only `honored` left something out."),
+                    name: z.string().describe("The binding name, as written."),
+                    reason: z.string().describe("The adopter's own reason, verbatim."),
+                  })
+                  .describe("One declaration entry, resolved."),
+              )
+              .optional()
+              .describe("`read` only: every entry in that Worker's declaration."),
+          })
+          .describe("One Worker's `declinedBindings`."),
+      )
+      .describe("One entry per Worker whose `declinedBindings` has something to say."),
+    manifestFaults: z.array(ManifestFault).describe("Installed packages whose manifest is present and unusable."),
+    configs: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            path: z.string().describe("The file written, relative to the project root."),
+            ids: z.number().int().describe("How many binding ids landed in it."),
+          })
+          .describe("One file the ids were written into."),
+      )
+      .describe("Where the ids were written, one entry per Worker."),
+    committed: z.boolean().describe("Whether those files are committed: `true` for `--env`, `false` for `--feature`."),
+    featureSecrets: z
+      .array(MintedSecret)
+      .optional()
+      .describe("`--feature` with a Secrets Store only: each `d1` secret the feature's own manager accounted for."),
+    hosts: z
+      .array(KitWorkerDeploy)
+      .optional()
+      .describe("`--feature` only: every kit Worker the feature stood up for itself."),
+    routesDropped: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            routes: z.array(z.string().describe("A route pattern.")).describe("The patterns given up."),
+          })
+          .describe("One Worker's dropped routes."),
+      )
+      .optional()
+      .describe("`--feature` only, and only when there were any: route patterns the feature stanza gave up."),
+    bindingsDropped: z
+      .array(
+        z
+          .object({
+            worker: Worker,
+            bindings: z.array(z.string().describe("A binding.")).describe("The bindings given up."),
+          })
+          .describe("One Worker's dropped bindings."),
+      )
+      .optional()
+      .describe("`--feature` only, and only when there were any: bindings naming a script this project does not own."),
+    pendingSecrets: z
+      .array(z.string().describe("A secret's name."))
+      .describe("The `d1` secrets this run declares and did not create."),
+    pendingSecretsRemedy: z.string().nullable().describe("The command that does create them."),
+  })
+  .describe("What `pithy provision` created, adopted and wrote.");
+
+export default withContract(
+  defineCommand({
+    meta: {
+      name: "provision",
+      description: "Create an environment's own Cloudflare resources, wire them into each Worker, then migrate",
     },
-    seed: { type: "boolean", default: false, description: "With --env: also load seed fixtures once the schema is up" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
+    args: {
+      env: { type: "string", description: "The declared environment to provision" },
+      feature: { type: "boolean", default: false, description: "Provision this branch's own environment instead" },
+      yes: { type: "boolean", default: false, description: "Confirm that this creates real Cloudflare resources" },
+      confirm: {
+        type: "string",
+        description: 'Unlock a production environment non-interactively: "yes, i really want to provision <env>"',
+      },
+      seed: {
+        type: "boolean",
+        default: false,
+        description: "With --env: also load seed fixtures once the schema is up",
+      },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, () =>
+        runProvision({
+          env: args.env,
+          feature: args.feature,
+          yes: args.yes,
+          confirm: args.confirm,
+          seed: args.seed,
+          json: args.json,
+        }),
+      ),
+  }),
+  {
+    output: "document",
+    payload: ProvisionPayload,
+    mutates: true,
+    // Adopting: a resource of the right name is taken up rather than duplicated.
+    idempotent: true,
+    needsNetwork: true,
+    flagGroups: [
+      {
+        kind: "exactlyOne",
+        flags: ["--env", "--feature"],
+        rule: "Pass either --env or --feature: exactly one says which environment to provision.",
+      },
+    ],
   },
-  run: ({ args }) =>
-    withErrorReporting(args.json, () =>
-      runProvision({
-        env: args.env,
-        feature: args.feature,
-        yes: args.yes,
-        confirm: args.confirm,
-        seed: args.seed,
-        json: args.json,
-      }),
-    ),
-});
+);

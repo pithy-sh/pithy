@@ -4,6 +4,7 @@
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { z } from "zod";
 import { promoteDependencies } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
@@ -124,15 +125,17 @@ export interface EjectCapabilityOptions {
 }
 
 /** What eject did: where the source landed and which deps it promoted. */
-export interface EjectResult {
-  capability: string;
-  /** The Worker-relative directory the source was copied into (`capabilities/<cap>`). */
-  path: string;
-  /** The `name@version` deps promoted into the project (workspace-internal ones excluded). */
-  promotedDependencies: string[];
-  /** Whether an existing local copy was overwritten (`--force`). */
-  forced: boolean;
-}
+export const EjectResult = z
+  .object({
+    capability: z.string().describe("The capability that was forked."),
+    path: z.string().describe("The Worker-relative directory the source was copied into, `capabilities/<cap>`."),
+    promotedDependencies: z
+      .array(z.string().describe("One dependency, `name@version`."))
+      .describe("The dependencies promoted into the project. Workspace-internal ones are excluded."),
+    forced: z.boolean().describe("Whether an existing local copy was overwritten (`--force`)."),
+  })
+  .describe("What `--eject` did: where the source landed and which dependencies it promoted.");
+export type EjectResult = z.infer<typeof EjectResult>;
 
 /**
  * The package's promotable runtime dependencies as `name@version`, read from the installed manifest.

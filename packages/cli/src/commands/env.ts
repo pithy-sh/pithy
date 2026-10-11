@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
+import { z } from "zod";
+import { withContract } from "../contract/commandContract";
 import { projectCloudflareAccount } from "../project/config";
-import { buildEnvInventory, type EnvInventory, type EnvResource } from "../project/envInventory";
+import { buildEnvInventory, EnvInventory, type EnvResource } from "../project/envInventory";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim, link, supportsHyperlinks } from "../terminal/style";
 
@@ -126,31 +128,39 @@ export function renderLines(inventory: EnvInventory, filter?: string): string[] 
   return lines;
 }
 
-export default defineCommand({
-  meta: {
-    name: "env",
-    description: "Inventory every worker's environments: bindings, ids, provisioned state, dashboard links",
-  },
-  args: {
-    name: { type: "positional", required: false, description: "Show only this environment (e.g. staging)" },
-    worker: { type: "string", description: "Show only this worker (default: every worker under apps/)" },
-    json: { type: "boolean", default: false, description: "Machine-readable output" },
-  },
-  run: ({ args }) =>
-    withErrorReporting(args.json, async () => {
-      const projectDir = process.cwd();
-      // The account first, from the project's own config: the inventory *prints* an account id and
-      // builds every dashboard link out of it, so resolving one this project did not claim labels its
-      // bindings with another company's account and links there (#206).
-      const inventory = await buildEnvInventory({
-        projectDir,
-        account: await projectCloudflareAccount(projectDir),
-        ...(args.worker ? { worker: args.worker } : {}),
-      });
-      if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "env", ...inventory })}\n`);
-        return;
-      }
-      process.stdout.write(renderEnvInventory(inventory, args.name));
-    }),
-});
+/** `pithy env --json`: the inventory, every Worker and every environment it declares. `docs/commands/env.md`. */
+const EnvPayload = EnvInventory.extend({ command: z.literal("env").describe('`"env"`.') }).describe(
+  "What `pithy env --json` writes: every selected Worker's environments, bindings and links.",
+);
+
+export default withContract(
+  defineCommand({
+    meta: {
+      name: "env",
+      description: "Inventory every worker's environments: bindings, ids, provisioned state, dashboard links",
+    },
+    args: {
+      name: { type: "positional", required: false, description: "Show only this environment (e.g. staging)" },
+      worker: { type: "string", description: "Show only this worker (default: every worker under apps/)" },
+      json: { type: "boolean", default: false, description: "Machine-readable output" },
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const projectDir = process.cwd();
+        // The account first, from the project's own config: the inventory *prints* an account id and
+        // builds every dashboard link out of it, so resolving one this project did not claim labels its
+        // bindings with another company's account and links there (#206).
+        const inventory = await buildEnvInventory({
+          projectDir,
+          account: await projectCloudflareAccount(projectDir),
+          ...(args.worker ? { worker: args.worker } : {}),
+        });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "env", ...inventory })}\n`);
+          return;
+        }
+        process.stdout.write(renderEnvInventory(inventory, args.name));
+      }),
+  }),
+  { output: "document", payload: EnvPayload, mutates: false, idempotent: true, needsNetwork: false },
+);
