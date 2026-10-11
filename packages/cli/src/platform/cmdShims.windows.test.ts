@@ -45,8 +45,18 @@ afterAll(async () => {
 });
 
 describe("a .cmd spawned from Node", () => {
-  test("is refused without a shell, with EINVAL", async () => {
-    await expect(run(shim, ["install"])).rejects.toMatchObject({ code: "EINVAL" });
+  test("is refused without a shell, with EINVAL, thrown before any promise exists", () => {
+    // Synchronous, and that matters to every caller: `spawn` throws this from the call itself, where a
+    // missing binary's `ENOENT` arrives later as an `error` event. Code that only listens for the event —
+    // `pithy dev`'s orchestrator does — does not catch it. Measured here on the first Windows run (#702).
+    let thrown: unknown;
+    try {
+      // Should it ever settle as a promise instead, the rejection is caught here and the assertion fails.
+      run(shim, ["install"]).catch(() => undefined);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "EINVAL", syscall: "spawn" });
   });
 
   test("runs through cmd.exe with runEditor's quoting, and a path with a space arrives whole", async () => {
