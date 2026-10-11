@@ -48,7 +48,7 @@ What that costs is bounded on purpose. An untouched draft is byte-identical to t
 
 ### Windows runs the editor through a shell
 
-`runEditor` in the same module spawns with `shell: true` on Windows. Every GUI editor there is a `.cmd` shim, and Node refuses to spawn one directly. The whole command line then becomes one string `cmd.exe /d /s /c` re-splits, so anything carrying a space is quoted here — a `"` cannot appear in a Windows path, so there is nothing left to escape. What reaches that shell unquoted is the adopter's own `$EDITOR`, which is what `$EDITOR` means on every other tool too. Not verified on a Windows host: the branch is covered by an injected spawn, which is what a POSIX CI can prove.
+`runEditor` in the same module spawns with `shell: true` on Windows. Every GUI editor there is a `.cmd` shim, and Node refuses to spawn one directly. The whole command line then becomes one string `cmd.exe /d /s /c` re-splits, so anything carrying a space is quoted here — a `"` cannot appear in a Windows path, so there is nothing left to escape. What reaches that shell unquoted is the adopter's own `$EDITOR`, which is what `$EDITOR` means on every other tool too. On a Windows host since #702: `platform/cmdShims.windows.test.ts` runs a `.cmd` from a directory with a space in its name through `runEditor`, on the Windows CI job, and checks the file path arrives whole.
 
 ### The tripwires read source text
 

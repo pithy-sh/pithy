@@ -25,7 +25,15 @@ export default defineConfig({
     // the only package that had it and the mistake it prevents is not this package's alone.
     setupFiles: [CONFIG_DIR_SETUP],
     // `*.integration.test.ts` need a LIVE Cloudflare environment; run via `bun run test:integration`.
-    exclude: ["src/**/*.integration.test.ts", "src/**/*.integration.test.tsx", "node_modules/**"],
+    // `*.windows.test.ts` assert what a Windows host does, so they run only there: `vitest.windows.config.ts`,
+    // through `ci.yml`'s `windows` job (#702).
+    exclude: [
+      "src/**/*.integration.test.ts",
+      "src/**/*.integration.test.tsx",
+      "src/**/*.windows.test.ts",
+      "src/**/*.windows.test.tsx",
+      "node_modules/**",
+    ],
     // Color off, always. `terminal/style.ts` latches `enabled` at import from NO_COLOR/FORCE_COLOR/isTTY,
     // so every test asserting exact output — `formatDone()` is `"Done."`, a deploy failure line, the real
     // bin spawned through `execFile` — passes or fails on the *developer's shell*, not on the code. A

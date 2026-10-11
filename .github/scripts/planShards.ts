@@ -80,13 +80,14 @@ const NONEXISTENT = "<NONEXISTENT>";
  * the `plan` job died with it. Every test job in the matrix is gated on that job's outputs, so one entry
  * disappearing under the walk skipped the entire suite, and a workflow that plans nothing is green.
  *
- * The one narrowing this needs on top of the shared predicate is `*.integration.test.ts`: those need a live
- * Cloudflare environment, are excluded from every package's vitest config, and never run in this matrix, so
- * counting them would weight a shard with work no runner does.
+ * The narrowing this needs on top of the shared predicate is the two sets no shard runs:
+ * `*.integration.test.ts`, which need a live Cloudflare environment, and `*.windows.test.ts`, which run only
+ * on the Windows job (#702). Both are excluded from the default vitest config, so counting them would weight
+ * a shard with work no runner in this matrix does.
  */
 export function testFileCount(packageDir: string): number {
   return sourcePaths(join(packageDir, "src"), {
-    keep: (name) => isTestFile(name) && !name.endsWith(".integration.test.ts"),
+    keep: (name) => isTestFile(name) && !name.endsWith(".integration.test.ts") && !/\.windows\.test\.tsx?$/.test(name),
   }).length;
 }
 

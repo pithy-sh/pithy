@@ -73,6 +73,7 @@ jobs:
       count: ${{ steps.plan.outputs.count }}
       shards: ${{ steps.plan.outputs.shards }}
       dirs: ${{ steps.plan.outputs.dirs }}
+      windows: ${{ steps.plan.outputs.windows }}
       nodeVersions: ${{ steps.node.outputs.versions }}
     steps:
       - name: Checkout
@@ -187,10 +188,21 @@ jobs:
           plan="$(bunx "turbo@${turbo_version}" run test:node test:workers "${scope[@]}" --dry=json | bun .github/scripts/planShards.ts)"
           echo "$plan" | jq
 
+          # The Windows job's gate (#702): is the CLI in the affected set? `--affected` carries a package's
+          # dependents, so a change to `core` or `cloudflare` puts the CLI here too. Assigned here, never
+          # computed inside the `echo` below: a failing substitution there writes `windows=`, the job skips,
+          # and `CI` reads the skip as a pass.
+          windows="$(jq -r '(.packages | split(" ") | index("@pithy-sh/cli")) != null' <<< "$plan")"
+          case "$windows" in
+            true | false) ;;
+            *) echo "::error::plan could not tell whether the CLI is affected: '${windows}'"; exit 1 ;;
+          esac
+
           {
             echo "any=$(jq -r '.any' <<< "$plan")"
             echo "count=$(jq -r '.count' <<< "$plan")"
             echo "dirs=$(jq -r '.dirs' <<< "$plan")"
+            echo "windows=${windows}"
             echo "shards=$(jq -c '.shards' <<< "$plan")"
           } >> "$GITHUB_OUTPUT"
 
@@ -516,6 +528,61 @@ jobs:
       - name: The same, at every declared floor
         run: bun run clean-room -- --floors
 
+  # The CLI's Windows set (#702): `*.windows.test.ts` in `packages/cli`, and nothing else. CI ran on Linux
+  # alone, so #698 shipped with every `pithy add` dying on `ENOENT` on Windows and every check green. The
+  # whole suite is not run here — the Workers suites, the clean room and the Node matrix test nothing that
+  # varies by operating system, and would double the wall time of every pull request for it. What runs is
+  # what only a Windows host can prove: a real `.cmd`, a real `%APPDATA%`, a filename Windows refuses.
+  #
+  # Only when `plan` says the CLI could have changed — itself, or anything it depends on. A skip reads as a
+  # pass to `CI`, exactly as a skipped test shard does. At the Node floor exactly, because a Windows fact about
+  # spawning is a fact about Node: `.cmd` handling changed in a Node security release (CVE-2024-27980).
+  #
+  # Build first, and only what the CLI needs: every workspace package's `exports` resolves to `dist`.
+  windows:
+    name: Windows
+    needs: plan
+    if: needs.plan.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # The floor exactly, as `packages/cli`'s `engines.node` states it — not the newest 22.x.
+      - name: Setup Node at the floor
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.18.0"
+
+      # Restored from `main` like every other job's, so a pull request rebuilds only what it changed.
+      - name: Turbo cache
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-windows-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            turbo-windows-${{ github.ref_name }}-
+            turbo-windows-main-
+
+      - name: Install
+        run: bun install
+
+      - name: Build what the CLI depends on
+        run: bunx turbo run build --filter="@pithy-sh/cli^..."
+
+      - name: Windows tests at the Node floor
+        working-directory: packages/cli
+        run: node --run test:windows
+
   # The one check the `main` ruleset requires, and the only one whose name is stable.
   #
   # Every other job here is named from the shard it drew — `Tests (payments, email, …)`,
@@ -534,7 +601,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room]
+    needs: [plan, verify, test, test-node, clean-room, windows]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

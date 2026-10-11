@@ -159,9 +159,13 @@ const WORKERD_ENV_EVIDENCE = "packages/core/src/worker/envIsolation.workers.test
 /** The prose that cites it. A move has to move these too, or the reader is sent nowhere. */
 const EVIDENCE_CITATIONS = ["CONTRIBUTING.md"];
 
-/** The configs vitest is actually invoked with. A `vitest.workers.config.ts` is reached as a project. */
+/**
+ * The configs vitest is actually invoked with. A `vitest.workers.config.ts` is reached as a project.
+ * `vitest.windows.config.ts` is the CLI's Windows set (#702): invoked by its own script, on its own runner,
+ * and held to the same isolation as the default config it was split from.
+ */
 function isEntryConfig(name: string): boolean {
-  return name === "vitest.config.ts" || name === "vitest.integration.config.ts";
+  return name === "vitest.config.ts" || name === "vitest.integration.config.ts" || name === "vitest.windows.config.ts";
 }
 
 /** Only what a vitest config states that this file has an opinion about. */

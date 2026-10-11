@@ -47,8 +47,8 @@ describe("devLogSegment", () => {
   });
 
   /**
-   * **Windows is unverified in this project**, so the rule is kept by construction rather than by a test
-   * on one platform: every character `CreateFile` rejects is replaced, whether or not this machine cares.
+   * The rule is kept by construction on every platform: every character `CreateFile` rejects is replaced,
+   * whether or not this machine cares. `devLogPath.windows.test.ts` proves it on Windows itself (#702).
    */
   test("every character illegal in a Windows filename becomes a hyphen", () => {
     expect(devLogSegment('a<b>c:d"e|f?g*h')).toBe("a-b-c-d-e-f-g-h");

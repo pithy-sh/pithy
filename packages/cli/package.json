@@ -37,6 +37,7 @@
     "test": "vitest run",
     "test:node": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:windows": "vitest run --config vitest.windows.config.ts",
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },

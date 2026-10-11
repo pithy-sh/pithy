@@ -36,7 +36,9 @@ Welcome. A pull request merges into `main` when three things hold, and GitHub en
 
 **A change under `.github/` is read line by line.** A pull request's CI runs the workflows on its own branch, so a green `CI` proves only what those workflows checked. The review is what makes it mean the rest.
 
-Link the issue your change closes (`Closes #N`), add a test that fails without the change, and add a changeset when it ships in a package (§Releases). A fix for a platform CI does not run — CI runs on Linux — needs the command, the shell and the output before and after, because your machine is the only one that has proved it.
+Link the issue your change closes (`Closes #N`), add a test that fails without the change, and add a changeset when it ships in a package (§Releases). A fix for a platform CI does not fully cover — macOS, or Windows beyond the small set below — needs the command, the shell and the output before and after, because your machine is the only one that has proved it.
+
+**Windows has a small test set of its own.** CI runs the suite on Linux, and `packages/cli`'s `*.windows.test.ts` on a Windows runner instead, never on Linux, whenever the CLI or anything it depends on changes. A test belongs in that set when it has to touch the real platform to prove anything: a real `.cmd`, a real `%APPDATA%`, a filename Windows refuses. A test that passes `"win32"` into a function runs everywhere already, and stays where it is. Each file in the set calls `requireWindows()` from `src/test-utils/windows.ts`, so it fails rather than passes anywhere else. Run it with `node --run test:windows` from `packages/cli`, on Windows.
 
 The rule is a repository ruleset, committed at `.github/rulesets/main.json` and applied from it. `packages/cli/src/ci/mainRuleset.test.ts` holds that file, and the `CI` job it requires, to the rule. It does not read GitHub, so the live ruleset can drift from the file; `/vet` compares the two before every merge it performs.
 

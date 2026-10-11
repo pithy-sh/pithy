@@ -41,8 +41,8 @@ export const DEV_LOG_SUFFIX = ".jsonl";
  * `< > : " / \ | ? *` and the C0 control range are what `CreateFile` rejects outright, and `/` and `\`
  * are what would turn one segment into two on any platform. A branch name reaches this unfiltered — git
  * allows `/`, and `pithy dev` runs on whatever branch is checked out — so the replacement is by
- * construction rather than by a test on one platform: **Windows is unverified in this project**, and a
- * path that is merely untested on it must still be a path it could hold.
+ * construction, and since #702 by a test on Windows too: `devLogPath.windows.test.ts` writes a log for
+ * `feature/1-a<b>|c` on the Windows CI job, after proving Windows refuses the raw name.
  *
  * Not covered, because they cannot arise: a trailing dot or space (git refuses both in a ref name, and
  * the suffix is `.jsonl` regardless), and a reserved device name — `CON`, `NUL`, `COM1` — which Windows
