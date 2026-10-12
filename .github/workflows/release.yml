@@ -223,6 +223,9 @@ jobs:
     permissions:
       contents: write # push the version commit and the tags
       id-token: write # npm trusted publishing (OIDC) and provenance
+    outputs:
+      # The version commit this release pushed. Empty on a dry run, which pushes nothing.
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -359,11 +362,13 @@ jobs:
       # what exists, and a commit pushed before a failed publish would claim a release that never
       # happened.
       - name: Commit and push
+        id: push
         if: ${{ !inputs.dry_run }}
         run: |
           git add -A
           git commit -m "chore(release): version packages" || echo "Nothing to commit."
           git push --follow-tags origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Step 7. Tell the dashboard what shipped — staging and production, each on its own.
       #
@@ -396,3 +401,64 @@ jobs:
           else
             bun scripts/releaseRecords.ts post
           fi
+
+  # Schedule the docs pages this release carries, once the release is finished.
+  #
+  # **After, and its own job.** The packages are on npm and the version commit is on `main` before this
+  # starts, so a page cannot go live describing a version nobody can install. It holds `id-token: write`
+  # for one audience and nothing else, and a failure here is a red job beside a release that stands.
+  #
+  # **The range is the release.** Every page `/update-docs` edits carries the merged commit it was edited
+  # for as its `sourceId`, and Leed schedules the pages whose current `sourceId` falls in the range: from
+  # the previous `chore(release): version packages` commit, exclusive, to the one this release pushed.
+  # Passed as `since` and `until` because a `workflow_dispatch` run has no previous ref value, and a
+  # squash merge leaves no merge commit for the action to fall back on.
+  #
+  # **The trust pins three claims**: this repository's numeric id, `refs/heads/main`, and the
+  # `leed-release` environment. That environment carries no protection rules, so the job never waits on
+  # an approval. A dry run previews the same range against the dispatched commit and schedules nothing.
+  docs:
+    name: Schedule the docs
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: leed-release
+    permissions:
+      contents: read
+      id-token: write # the Leed CI trust, and nothing else
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # The action refuses a shallow clone: `git log` over a range it cannot see is empty, and an empty
+          # release would schedule nothing and pass.
+          ref: ${{ needs.release.outputs.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find the release range
+        id: range
+        env:
+          UNTIL: ${{ needs.release.outputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          since="$(git log --format=%H -n 1 --grep='^chore(release): version packages$' "${UNTIL}^")"
+          if [ -z "$since" ]; then
+            echo "No previous release commit before ${UNTIL}. Nothing to start the range from." >&2
+            exit 1
+          fi
+          {
+            echo "since=$since"
+            echo "until=$UNTIL"
+            echo "publish_at=$(date -u -d '+5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+          echo "### Docs for $(git rev-list --count "${since}..${UNTIL}") commit(s), ${since:0:7}..${UNTIL:0:7}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Schedule
+        uses: Leed-AI/schedule-release@v1
+        with:
+          audience: leed-cms:ecb612e5-2137-423e-bc75-66dde4fe24f8
+          since: ${{ steps.range.outputs.since }}
+          until: ${{ steps.range.outputs.until }}
+          publish-at: ${{ steps.range.outputs.publish_at }}
+          dry-run: ${{ inputs.dry_run && 'true' || 'false' }}
