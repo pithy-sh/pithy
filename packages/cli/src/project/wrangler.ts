@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
   ConflictError,
@@ -256,9 +256,16 @@ export async function runWrangler(
   options: WranglerOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   assertCreatesNoResources(args);
+  // **wrangler's own `--cwd`, ahead of the command (#709).** The spawn's `cwd` is where the runner starts, not
+  // where wrangler does: `npx` runs a binary from the nearest package root, so in an npm workspace, or a
+  // Worker directory with no lockfile under a package that has one, wrangler started in the package, found no
+  // `wrangler.jsonc`, and tried to autoconfigure it as a static site. `--cwd` is a global wrangler flag that
+  // `chdir`s before anything is read, so the Worker directory is wrangler's whatever the runner did. A `bin`
+  // stand-in is spawned directly, with no runner between, and is not wrangler, so it gets the argv as given.
+  const directory = resolve(options.cwd ?? process.cwd());
   const runner = options.bin
     ? { command: options.bin, args }
-    : execArgs(await detectPackageManager(options.cwd ?? process.cwd()), "wrangler", args);
+    : execArgs(await detectPackageManager(directory), "wrangler", ["--cwd", directory, ...args]);
   const command = runner.command;
   const commandArgs = runner.args;
   const label = options.bin ?? "wrangler";

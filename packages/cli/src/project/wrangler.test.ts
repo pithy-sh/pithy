@@ -330,19 +330,75 @@ describe("runWrangler", () => {
     }
 
     test("a bun project gets `bun x wrangler`", async () => {
-      expect(await calledWith("bun.lock", "bun")).toEqual(["x", "wrangler", "deploy", NO_PROVISION_ARG]);
+      expect(await calledWith("bun.lock", "bun")).toEqual([
+        "x",
+        "wrangler",
+        "--cwd",
+        project,
+        "deploy",
+        NO_PROVISION_ARG,
+      ]);
     });
 
     test("a pnpm project gets `pnpm exec wrangler`", async () => {
-      expect(await calledWith("pnpm-lock.yaml", "pnpm")).toEqual(["exec", "wrangler", "deploy", NO_PROVISION_ARG]);
+      expect(await calledWith("pnpm-lock.yaml", "pnpm")).toEqual([
+        "exec",
+        "wrangler",
+        "--cwd",
+        project,
+        "deploy",
+        NO_PROVISION_ARG,
+      ]);
     });
 
     test("a yarn project gets `yarn wrangler`", async () => {
-      expect(await calledWith("yarn.lock", "yarn")).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
+      expect(await calledWith("yarn.lock", "yarn")).toEqual(["wrangler", "--cwd", project, "deploy", NO_PROVISION_ARG]);
     });
 
     test("an npm project gets `npx wrangler`", async () => {
-      expect(await calledWith("package-lock.json", "npx")).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
+      expect(await calledWith("package-lock.json", "npx")).toEqual([
+        "wrangler",
+        "--cwd",
+        project,
+        "deploy",
+        NO_PROVISION_ARG,
+      ]);
+    });
+
+    /**
+     * **wrangler is told where the Worker is, not left to infer it from where it was started (#709).** `npx`
+     * runs a binary from the nearest package root, not from the spawn's `cwd`: in an npm workspace, or a
+     * Worker directory with no lockfile under a package that has one, wrangler started in the package and
+     * found no `wrangler.jsonc`. It then tried to autoconfigure the directory as a static site and failed
+     * `Could not detect a directory containing static files` on a Worker that deploys fine. wrangler's own
+     * global `--cwd` makes it `chdir` before it reads anything, whatever the runner did.
+     */
+    test("every runner hands wrangler the Worker directory as its own --cwd", async () => {
+      for (const [lockfile, runner] of [
+        ["bun.lock", "bun"],
+        ["pnpm-lock.yaml", "pnpm"],
+        ["yarn.lock", "yarn"],
+        ["package-lock.json", "npx"],
+      ] as const) {
+        await rm(join(project, "bun.lock"), { force: true });
+        await rm(join(project, "pnpm-lock.yaml"), { force: true });
+        await rm(join(project, "yarn.lock"), { force: true });
+        await rm(join(project, "package-lock.json"), { force: true });
+        const argv = await calledWith(lockfile, runner);
+        const at = argv.indexOf("--cwd");
+        expect(at, `${runner} passed no --cwd`).toBeGreaterThan(-1);
+        expect(argv[at + 1]).toBe(project);
+        // Before the command, where yargs reads a global flag whatever the command's own options are.
+        expect(at).toBeLessThan(argv.indexOf("deploy"));
+      }
+    });
+
+    test("with no cwd given, wrangler is pointed at the process's own directory", async () => {
+      await plant("npx");
+      await plant("bun");
+      const { stdout } = await runWrangler(["whoami", NO_PROVISION_ARG], { account: null, env: { PATH: fakeBin } });
+      const argv = stdout.split("\n").filter(Boolean);
+      expect(argv[argv.indexOf("--cwd") + 1]).toBe(process.cwd());
     });
 
     // No lockfile is npm, which is the fallback `detectPackageManager` documents: npm is present on
@@ -354,7 +410,7 @@ describe("runWrangler", () => {
         cwd: project,
         env: { PATH: fakeBin },
       });
-      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "deploy", NO_PROVISION_ARG]);
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "--cwd", project, "deploy", NO_PROVISION_ARG]);
     });
 
     // Detection reads the lockfile beside `cwd`, not beside the CLI. This repository is a bun
@@ -369,7 +425,7 @@ describe("runWrangler", () => {
         env: { PATH: fakeBin },
       });
       expect(stdout).not.toContain("x\n");
-      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "whoami", NO_PROVISION_ARG]);
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "--cwd", project, "whoami", NO_PROVISION_ARG]);
     });
   });
 
