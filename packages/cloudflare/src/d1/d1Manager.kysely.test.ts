@@ -44,11 +44,15 @@ describe("CloudflareD1Manager as a Kysely D1Dialect database", () => {
     const rows = await db.selectFrom("users").selectAll().where("id", "=", 1).execute();
 
     expect(rows).toEqual([{ id: 1, name: "Alice" }]);
-    expect(mockQuery).toHaveBeenCalledWith("db-1", {
-      account_id: "acct-1",
-      sql: 'select * from "users" where "id" = ?',
-      params: ["1"],
-    });
+    expect(mockQuery).toHaveBeenCalledWith(
+      "db-1",
+      {
+        account_id: "acct-1",
+        sql: 'select * from "users" where "id" = ?',
+        params: ["1"],
+      },
+      { maxRetries: 0 },
+    );
   });
 
   it("surfaces insertId and affected rows from D1 meta on a write", async () => {
@@ -60,10 +64,14 @@ describe("CloudflareD1Manager as a Kysely D1Dialect database", () => {
 
     expect(result?.insertId).toBe(42n);
     expect(result?.numInsertedOrUpdatedRows).toBe(1n);
-    expect(mockQuery).toHaveBeenCalledWith("db-1", {
-      account_id: "acct-1",
-      sql: 'insert into "users" ("id", "name") values (?, ?)',
-      params: ["42", "Bob"],
-    });
+    expect(mockQuery).toHaveBeenCalledWith(
+      "db-1",
+      {
+        account_id: "acct-1",
+        sql: 'insert into "users" ("id", "name") values (?, ?)',
+        params: ["42", "Bob"],
+      },
+      { maxRetries: 0 },
+    );
   });
 });

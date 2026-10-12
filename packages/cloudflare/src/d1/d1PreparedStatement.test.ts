@@ -64,31 +64,43 @@ describe("D1PreparedStatementREST", () => {
     it("passes bound params to the REST API", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([]));
       await manager.prepare("SELECT * FROM users WHERE id = ?").bind("user-1").run();
-      expect(mockQuery).toHaveBeenCalledWith("test-db-id", {
-        account_id: "test-account-id",
-        sql: "SELECT * FROM users WHERE id = ?",
-        params: ["user-1"],
-      });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "test-db-id",
+        {
+          account_id: "test-account-id",
+          sql: "SELECT * FROM users WHERE id = ?",
+          params: ["user-1"],
+        },
+        { maxRetries: 0 },
+      );
     });
 
     it("coerces non-string params to strings", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([]));
       await manager.prepare("SELECT ?").bind(42, true, null).run();
-      expect(mockQuery).toHaveBeenCalledWith("test-db-id", {
-        account_id: "test-account-id",
-        sql: "SELECT ?",
-        params: ["42", "true", ""],
-      });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "test-db-id",
+        {
+          account_id: "test-account-id",
+          sql: "SELECT ?",
+          params: ["42", "true", ""],
+        },
+        { maxRetries: 0 },
+      );
     });
 
     it("sends no params when bind is not called", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([]));
       await manager.prepare("SELECT 1").run();
-      expect(mockQuery).toHaveBeenCalledWith("test-db-id", {
-        account_id: "test-account-id",
-        sql: "SELECT 1",
-        params: undefined,
-      });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "test-db-id",
+        {
+          account_id: "test-account-id",
+          sql: "SELECT 1",
+          params: undefined,
+        },
+        { maxRetries: 0 },
+      );
     });
   });
 
@@ -169,5 +181,18 @@ describe("D1PreparedStatementREST", () => {
   it("only ever throws PithyError from execution", async () => {
     mockQuery.mockRejectedValue("a bare string");
     await expect(manager.prepare("SELECT 1").run()).rejects.toBeInstanceOf(PithyError);
+  });
+
+  // The other half of the no-retry rule in `d1Manager.test.ts`: `raw()` is a query request too.
+  describe("raw requests are never retried", () => {
+    it("passes maxRetries: 0", async () => {
+      mockRaw.mockResolvedValue(mockRawResponse(["id"], [[1]]));
+      await manager.prepare("SELECT id FROM t").raw();
+      expect(mockRaw).toHaveBeenCalledWith(
+        "test-db-id",
+        { account_id: "test-account-id", sql: "SELECT id FROM t", params: undefined },
+        { maxRetries: 0 },
+      );
+    });
   });
 });

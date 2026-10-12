@@ -31,6 +31,17 @@ function mapMeta(restMeta?: QueryResult.Meta): D1Meta & Record<string, unknown> 
   };
 }
 
+/**
+ * The request options every D1 query is sent with: **no retries** (#709).
+ *
+ * The SDK retries a request twice by default, on a connection timeout, a 408, a 409, a 429 or a 5xx. That is
+ * safe for a read of a resource and wrong for a query, which is not idempotent: D1 can apply a statement and
+ * answer slowly, and the resent copy then runs against the changed database. A migration's `CREATE TABLE` did
+ * exactly that and failed `table already exists`, on a step that had succeeded. Sent once, a slow answer
+ * surfaces as the timeout it was, and `cloudflareRequest` already tells the operator to check before retrying.
+ */
+export const D1_QUERY_REQUEST = { maxRetries: 0 } as const;
+
 /** The REST `params` array is strings; coerce each bound value the way the D1 REST API expects. */
 function toStringParams(params: unknown[]): string[] {
   return params.map((value) => {
@@ -88,7 +99,11 @@ export class D1PreparedStatementREST<T = Record<string, unknown>> implements D1P
   async raw<U = unknown[]>(options?: { columnNames?: boolean }): Promise<U[] | [string[], ...U[]]> {
     const params = this.boundParams.length > 0 ? toStringParams(this.boundParams) : undefined;
     const response = await cloudflareRequest("D1 raw query", () =>
-      this.client.d1.database.raw(this.databaseId, { account_id: this.accountId, sql: this.sql, params }),
+      this.client.d1.database.raw(
+        this.databaseId,
+        { account_id: this.accountId, sql: this.sql, params },
+        D1_QUERY_REQUEST,
+      ),
     );
     const rawResult = response.result[0];
     const rows = (rawResult?.results?.rows ?? []) as U[];
@@ -102,7 +117,11 @@ export class D1PreparedStatementREST<T = Record<string, unknown>> implements D1P
   private async executeQuery<U>(): Promise<D1Result<U>> {
     const params = this.boundParams.length > 0 ? toStringParams(this.boundParams) : undefined;
     const response = await cloudflareRequest("D1 query", () =>
-      this.client.d1.database.query(this.databaseId, { account_id: this.accountId, sql: this.sql, params }),
+      this.client.d1.database.query(
+        this.databaseId,
+        { account_id: this.accountId, sql: this.sql, params },
+        D1_QUERY_REQUEST,
+      ),
     );
     const queryResult = response.result[0];
     return {

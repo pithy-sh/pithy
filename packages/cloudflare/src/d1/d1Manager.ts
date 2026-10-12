@@ -7,7 +7,7 @@ import type { D1 } from "cloudflare/resources/d1/d1";
 import type { QueryResult } from "cloudflare/resources/d1/database";
 import { CloudflareNotConfiguredError, cloudflareRequest, reasonOf } from "../client/errors";
 import { CloudflareManager, type CloudflareManagerConfig } from "../client/manager";
-import { D1PreparedStatementREST } from "./d1PreparedStatement";
+import { D1_QUERY_REQUEST, D1PreparedStatementREST } from "./d1PreparedStatement";
 
 /** Config for the D1 manager: the shared client config plus the database it targets. */
 export interface D1ManagerConfig extends CloudflareManagerConfig {
@@ -68,7 +68,7 @@ export class CloudflareD1Manager extends CloudflareManager implements D1Database
 
   async exec(query: string): Promise<D1ExecResult> {
     const response = await cloudflareRequest("D1 exec", () =>
-      this.getClient().d1.database.query(this.databaseId, { account_id: this.accountId, sql: query }),
+      this.getClient().d1.database.query(this.databaseId, { account_id: this.accountId, sql: query }, D1_QUERY_REQUEST),
     );
     const result = response.result[0];
     return { count: result?.results?.length ?? 0, duration: result?.meta?.duration ?? 0 };
@@ -89,7 +89,11 @@ export class CloudflareD1Manager extends CloudflareManager implements D1Database
   /** Run one SQL statement and return its raw REST result sets. */
   async executeQuery(sql: string, params?: string[]): Promise<QueryResult[]> {
     const response = await cloudflareRequest("D1 query", () =>
-      this.getClient().d1.database.query(this.databaseId, { account_id: this.accountId, sql, params }),
+      this.getClient().d1.database.query(
+        this.databaseId,
+        { account_id: this.accountId, sql, params },
+        D1_QUERY_REQUEST,
+      ),
     );
     return response.result;
   }

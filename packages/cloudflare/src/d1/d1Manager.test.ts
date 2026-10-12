@@ -46,7 +46,11 @@ describe("CloudflareD1Manager", () => {
     it("returns count and duration from the REST result", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([{ a: 1 }, { a: 2 }], { duration: 7 }));
       expect(await manager.exec("DELETE FROM users")).toEqual({ count: 2, duration: 7 });
-      expect(mockQuery).toHaveBeenCalledWith("db-1", { account_id: "acct-1", sql: "DELETE FROM users" });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "db-1",
+        { account_id: "acct-1", sql: "DELETE FROM users" },
+        { maxRetries: 0 },
+      );
     });
 
     it("wraps an SDK failure as a PithyError", async () => {
@@ -76,10 +80,14 @@ describe("CloudflareD1Manager", () => {
     it("reads column info for a valid identifier", async () => {
       mockQuery.mockResolvedValue(mockQueryResponse([{ name: "id", type: "INTEGER" }]));
       expect(await manager.getTableSchema("pithy_auth_users")).toEqual([{ name: "id", type: "INTEGER" }]);
-      expect(mockQuery).toHaveBeenCalledWith("db-1", {
-        account_id: "acct-1",
-        sql: "PRAGMA table_info(pithy_auth_users)",
-      });
+      expect(mockQuery).toHaveBeenCalledWith(
+        "db-1",
+        {
+          account_id: "acct-1",
+          sql: "PRAGMA table_info(pithy_auth_users)",
+        },
+        { maxRetries: 0 },
+      );
     });
 
     it("rejects a non-identifier table name before issuing any query (no SQL injection)", async () => {
@@ -109,6 +117,32 @@ describe("CloudflareD1Manager", () => {
     it("returns false when the database is not reachable", async () => {
       mockGet.mockRejectedValue(new Error("not found"));
       expect(await manager.validateServiceAccess()).toBe(false);
+    });
+  });
+
+  /**
+   * **A D1 query is sent once (#709).** The SDK retries a request twice by default, on a timeout, a 408, a 409, a
+   * 429 or a 5xx. A query is not idempotent: a `CREATE TABLE` that D1 applied and answered slowly was resent, and
+   * the second copy failed `table already exists` on a migration that had in fact succeeded. So every query
+   * request passes `maxRetries: 0`, and a slow answer surfaces as the timeout it was.
+   */
+  describe("query requests are never retried", () => {
+    it("exec passes maxRetries: 0", async () => {
+      mockQuery.mockResolvedValue(mockQueryResponse([]));
+      await manager.exec("CREATE TABLE t (id INTEGER)");
+      expect(mockQuery.mock.calls[0]?.[2]).toEqual({ maxRetries: 0 });
+    });
+
+    it("executeQuery passes maxRetries: 0", async () => {
+      mockQuery.mockResolvedValue(mockQueryResponse([]));
+      await manager.executeQuery("INSERT INTO t VALUES (?)", ["1"]);
+      expect(mockQuery.mock.calls[0]?.[2]).toEqual({ maxRetries: 0 });
+    });
+
+    it("a prepared statement passes maxRetries: 0", async () => {
+      mockQuery.mockResolvedValue(mockQueryResponse([]));
+      await manager.prepare("CREATE TABLE t (id INTEGER)").run();
+      expect(mockQuery.mock.calls[0]?.[2]).toEqual({ maxRetries: 0 });
     });
   });
 });
