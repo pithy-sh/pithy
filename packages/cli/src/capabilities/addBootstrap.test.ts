@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
-import { bootstrapAdd } from "./addBootstrap";
+import { bootstrapAdd, planBootstrapAdd } from "./addBootstrap";
 
 /**
  * The capability's **shipped** manifest, read from the package the same file `pithy add` installs.
@@ -456,5 +456,71 @@ describe("bootstrapAdd", () => {
     } finally {
       await chmod(join(dir, "apps", "board"), 0o700);
     }
+  });
+});
+
+/**
+ * **What `bootstrapAdd` would do, read without doing any of it (#697).** `pithy add --dry-run` plans the
+ * secrets an add mints, so these hold the plan to the run: what it says it would mint is what the run
+ * mints, and planning writes nothing.
+ */
+describe("planBootstrapAdd", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await project();
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("plans the dev master key, and writes no secrets file to do it", async () => {
+    const plan = await planBootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    expect(plan.secrets).toEqual([
+      { name: MASTER_KEY_BINDING, env: "dev", action: "mint", where: await secretsPath(dir) },
+    ]);
+    expect(await devMasterKey(dir)).toBeUndefined();
+    expect(plan.steps.join(" ")).toMatch(/Secrets Store id/);
+  });
+
+  test("a key the project already has is not planned again", async () => {
+    const manifest = await shippedManifest("secrets");
+    await bootstrapAdd({ account: null, projectDir: dir, manifest, seed: emptySeed, ensureStoreId: async () => [] });
+    expect((await planBootstrapAdd({ projectDir: dir, manifest })).secrets).toEqual([]);
+  });
+
+  test("a key stranded in .dev.vars is planned as carried over, not minted", async () => {
+    const existing = {
+      currentVersion: "1",
+      versions: { "1": "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGtleQ==" },
+      lastRotatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await writeFile(join(dir, ".dev.vars"), `SECRETS_ENCRYPTION_KEYS=${JSON.stringify(existing)}\n`);
+    const plan = await planBootstrapAdd({ projectDir: dir, manifest: await shippedManifest("secrets") });
+    expect(plan.secrets).toEqual([
+      { name: MASTER_KEY_BINDING, env: "dev", action: "write", where: await secretsPath(dir) },
+    ]);
+  });
+
+  test("plans what the run mints, and nothing once the run has minted it", async () => {
+    const manifest = await shippedManifest("auth");
+    const plan = await planBootstrapAdd({ projectDir: dir, manifest });
+    expect(plan.secrets.map((secret) => secret.name)).toEqual(["auth-session-secret"]);
+    await bootstrapAdd({ account: null, projectDir: dir, manifest, seed: emptySeed });
+    expect(await devSecret(dir, "auth-session-secret")).toBeDefined();
+    expect((await planBootstrapAdd({ projectDir: dir, manifest })).secrets).toEqual([]);
+  });
+
+  test("the provisioning a binding needs is the same sentence the run says", async () => {
+    const manifest = await shippedManifest("email");
+    const plan = await planBootstrapAdd({ projectDir: dir, manifest });
+    const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest, seed: emptySeed });
+    expect(plan.notes.length).toBeGreaterThan(0);
+    for (const note of plan.notes) expect(notes).toContain(note);
+  });
+
+  test("the seeding pass that closes every add is said, because it writes", async () => {
+    const plan = await planBootstrapAdd({ projectDir: dir, manifest: await shippedManifest("audit") });
+    expect(plan.secrets).toEqual([]);
+    expect(plan.steps.join(" ")).toMatch(/\.dev\.vars/);
   });
 });

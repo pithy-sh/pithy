@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -18,7 +18,10 @@ import {
 } from "../feature/ports";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
+import { unifiedDiff } from "../plan/lineDiff";
+import { emptyPlan, type Plan, type PlanFile } from "../plan/plan";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
+import { formatJsonc } from "./jsonc";
 import { detectPackageManager, runPackageManager } from "./packageManager";
 import { assertWorkerName, ensureScaffoldPath, pathExists, removeScaffoldPath } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
@@ -527,6 +530,8 @@ export interface RenameWorkerReport extends WorkerIdentity {
   accountChecked: boolean;
   /** Whether the feature's `.dev.config.json` was reconciled (only inside a worktree). */
   reconciled: boolean;
+  /** What a dry run would write. Only under `dryRun`, where nothing was moved and `reconciled` is `false`. */
+  plan?: Plan;
 }
 
 /** Options for {@link renameWorker}. */
@@ -538,6 +543,8 @@ export interface RenameWorkerOptions extends WorkerContext {
   /** Rename even though a script is live under the old name. It stays deployed, and the report says so. */
   force?: boolean;
   probeDeployed?: DeployedScriptProbe;
+  /** Decide everything the rename decides, refusals included, and plan the writes instead of making them. */
+  dryRun?: boolean;
 }
 
 /**
@@ -637,30 +644,17 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
     });
   }
 
+  const from = basename(target.dir);
+  // Read before the config is renamed in memory: a dry run diffs against these bytes.
+  const wranglerBefore = options.dryRun ? await readFile(join(target.dir, "wrangler.jsonc"), "utf8") : "";
+  const script = renameConfig(config, from, options.to);
+
+  if (options.dryRun)
+    return planRename(options, { target: target.dir, to, from, config, script, wranglerBefore, deployed });
+
   // A plain filesystem move, not `git mv`: a project need not be a git repo at all (`pithy worker add`
   // scaffolds into one that is not), and git reads a rename off the content anyway on the next `git add`.
   await rename(target.dir, to);
-
-  const from = basename(target.dir);
-  const declared = config.name;
-  const renamed = declared === undefined ? null : renamedScript(declared, from, options.to);
-  const script = declared !== undefined && renamed !== null ? { from: declared, to: renamed } : null;
-  if (script) config.name = script.to;
-  for (const stanza of [config, ...Object.values(config.env ?? {})]) {
-    if (!stanza) continue;
-    if (stanza !== config && stanza.name !== undefined) {
-      // A stanza that names its own script gets the same treatment; one that does not inherits
-      // wrangler's `<name>-<env>` default and so moved with the top-level name already.
-      stanza.name = renamedScript(stanza.name, from, options.to) ?? stanza.name;
-    }
-    // Set, never added: a stanza that declares no `WORKER` declares nothing this rename can invalidate,
-    // and inventing the var would put a binding-shaped opinion into a config that never asked for one.
-    if (stanza.vars?.WORKER !== undefined) stanza.vars.WORKER = options.to;
-    // The self binding follows the script it names, by the same rule and through the same helper — a
-    // target that does not carry the worker segment is one this rename has no claim on.
-    const self = stanza.services?.find((entry) => entry.binding === SELF_BINDING);
-    if (self?.service !== undefined) self.service = renamedScript(self.service, from, options.to) ?? self.service;
-  }
   await writeWranglerConfig(to, config);
   await renamePackage(to, from, options.to);
 
@@ -691,15 +685,109 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
  */
 async function renamePackage(dir: string, from: string, to: string): Promise<void> {
   const path = join(dir, "package.json");
+  const renamed = await renamedPackage(path, from, to);
+  if (renamed !== null) await writeFile(path, renamed.after);
+}
+
+/** The worker's `package.json` before and after its name moves, or `null` when nothing would change. */
+async function renamedPackage(
+  path: string,
+  from: string,
+  to: string,
+): Promise<{ before: string; after: string } | null> {
+  let before: string;
   let pkg: Record<string, unknown>;
   try {
-    pkg = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    before = await readFile(path, "utf8");
+    pkg = JSON.parse(before) as Record<string, unknown>;
   } catch {
-    return;
+    return null;
   }
   const name = pkg.name;
-  if (typeof name !== "string") return;
+  if (typeof name !== "string") return null;
   const renamed = renamedScript(name, from, to);
-  if (renamed === null) return;
-  await writeFile(path, `${JSON.stringify({ ...pkg, name: renamed }, null, 2)}\n`);
+  if (renamed === null) return null;
+  return { before, after: `${JSON.stringify({ ...pkg, name: renamed }, null, 2)}\n` };
+}
+
+/**
+ * Rename every name in a worker's `wrangler.jsonc` that carries the worker segment, in memory, and return
+ * the script move — `null` when the script's name was the adopter's own and stays. Shared by the run and
+ * its dry run, so the plan is the edit the run makes.
+ */
+function renameConfig(config: RenamableWrangler, from: string, to: string): { from: string; to: string } | null {
+  const declared = config.name;
+  const renamed = declared === undefined ? null : renamedScript(declared, from, to);
+  const script = declared !== undefined && renamed !== null ? { from: declared, to: renamed } : null;
+  if (script) config.name = script.to;
+  for (const stanza of [config, ...Object.values(config.env ?? {})]) {
+    if (!stanza) continue;
+    if (stanza !== config && stanza.name !== undefined) {
+      // A stanza that names its own script gets the same treatment; one that does not inherits
+      // wrangler's `<name>-<env>` default and so moved with the top-level name already.
+      stanza.name = renamedScript(stanza.name, from, to) ?? stanza.name;
+    }
+    // Set, never added: a stanza that declares no `WORKER` declares nothing this rename can invalidate,
+    // and inventing the var would put a binding-shaped opinion into a config that never asked for one.
+    if (stanza.vars?.WORKER !== undefined) stanza.vars.WORKER = to;
+    // The self binding follows the script it names, by the same rule and through the same helper — a
+    // target that does not carry the worker segment is one this rename has no claim on.
+    const self = stanza.services?.find((entry) => entry.binding === SELF_BINDING);
+    if (self?.service !== undefined) self.service = renamedScript(self.service, from, to) ?? self.service;
+  }
+  return script;
+}
+
+/** What {@link planRename} needs from the run it stands in for: everything decided before the first write. */
+interface RenameDecided {
+  target: string;
+  to: string;
+  from: string;
+  config: RenamableWrangler;
+  script: { from: string; to: string } | null;
+  wranglerBefore: string;
+  deployed: { live: string[]; checked: boolean };
+}
+
+/**
+ * **`pithy worker rename --dry-run` (#697)**: the report the run would give, and the plan of what it would
+ * write — the move, the two edits as diffs, and the feature's dev config inside a worktree. Every refusal
+ * the run makes has already been made by the time this is called, the live-script check included.
+ */
+async function planRename(options: RenameWorkerOptions, decided: RenameDecided): Promise<RenameWorkerReport> {
+  const { projectDir } = options;
+  const rel = (path: string) => relative(projectDir, path).split(sep).join("/");
+  const files: PlanFile[] = [{ path: rel(decided.to), action: "move", from: rel(decided.target), changes: [] }];
+  const wrangler = unifiedDiff(decided.wranglerBefore, formatJsonc(decided.config, decided.wranglerBefore));
+  if (wrangler !== "") {
+    files.push({ path: rel(join(decided.to, "wrangler.jsonc")), action: "edit", changes: [], diff: wrangler });
+  }
+  const pkg = await renamedPackage(join(decided.target, "package.json"), decided.from, options.to);
+  if (pkg !== null) {
+    files.push({
+      path: rel(join(decided.to, "package.json")),
+      action: "edit",
+      changes: [],
+      diff: unifiedDiff(pkg.before, pkg.after),
+    });
+  }
+  const { inWorktree } = await resolveRoots(options);
+  if (inWorktree) {
+    files.push({
+      path: rel(devConfigPath(projectDir)),
+      action: "edit",
+      changes: [`Reconciled with the workers this feature has, ${options.to} in place of ${decided.from}.`],
+    });
+  }
+  return {
+    ...workerIdentity({ name: decided.config.name ?? options.to, dir: decided.to }),
+    from: decided.from,
+    to: options.to,
+    dir: decided.to,
+    script: decided.script,
+    orphaned: decided.deployed.live,
+    accountChecked: decided.deployed.checked,
+    reconciled: false,
+    plan: { ...emptyPlan(), files },
+  };
 }

@@ -655,6 +655,8 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy media command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/payments.ts#default":
     "Returns the pithy payments command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
+  "commands/payments.ts#reconcilePlan":
+    "Returns a dry run's plan, built from three strings and a count the deployed Workflow reported; it composes nothing and reads nothing.",
   "commands/secrets.ts#default":
     "Returns the pithy secrets command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "commands/secrets.ts#mergedProjectSecrets":

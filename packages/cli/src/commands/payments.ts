@@ -26,6 +26,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
+import { DRY_RUN_ARG, emptyPlan, type Plan, PlanKey } from "../plan/plan";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -299,6 +300,7 @@ const PaymentsReconcilePayload = z
   .object({
     command: z.literal("payments reconcile").describe('`"payments reconcile"`.'),
     env: z.string().describe("The environment reconciled."),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. No drift was repaired when it is `true`."),
     report: z
       .looseObject({
         scanned: Count("Entitlements read."),
@@ -309,8 +311,28 @@ const PaymentsReconcilePayload = z
       })
       .nullable()
       .describe("The pass's own report, or `null` when the Workflow returned none."),
+    plan: PlanKey,
   })
   .describe("What `pithy payments reconcile` found.");
+
+/**
+ * **`pithy payments reconcile --dry-run`, as the one plan every dry run shares (#697).** The pass runs in
+ * the deployed Workflow and reports the drift it would repair; that count is the plan's one `repair`. The
+ * run itself is a Workflow instance started on Cloudflare, which a dry run starts too — the one dry run
+ * that calls Cloudflare to plan — so the plan says so rather than leaving it to be discovered.
+ */
+export function reconcilePlan(env: string, rail: string | undefined, drifted: number | undefined): Plan {
+  return {
+    ...emptyPlan(),
+    data:
+      drifted !== undefined && drifted > 0
+        ? [{ store: "payments", target: rail ?? "every rail", count: drifted, action: "repair" }]
+        : [],
+    notes: [
+      `The pass ran in ${env}'s reconcile Workflow, which a dry run starts too. It read the entitlements in scope and repaired none.`,
+    ],
+  };
+}
 
 const provision = withContract(
   defineCommand({
@@ -400,7 +422,7 @@ const reconcile = withContract(
       // identifier the config and the credential bundle key on. A help line that lists three of four rails
       // is why somebody types the fourth as a guess.
       rail: { type: "string", description: "Reconcile one rail only: apple, google, stripe, lemonSqueezy, or paddle" },
-      "dry-run": { type: "boolean", default: false, description: "Report the drift and write nothing" },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -459,8 +481,10 @@ const reconcile = withContract(
           failed?: number;
         } | null;
 
+        const dryRun = args["dry-run"];
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "payments reconcile", env, report })}\n`);
+          const plan = dryRun ? reconcilePlan(env, args.rail, report?.drifted) : undefined;
+          process.stdout.write(`${formatJsonLine({ command: "payments reconcile", env, dryRun, report, plan })}\n`);
           return;
         }
         process.stdout.write(
@@ -468,12 +492,12 @@ const reconcile = withContract(
         );
         // A rising drift count is the signal the webhook path is broken, so it is worth one plain sentence here
         // rather than only a number.
-        if ((report?.drifted ?? 0) > 0 && !args["dry-run"]) {
+        if ((report?.drifted ?? 0) > 0 && !dryRun) {
           process.stdout.write(
             "Drift was repaired. Repeated drift means webhooks are not arriving — check the rail.\n",
           );
         }
-        process.stdout.write(`${formatDone()}\n`);
+        process.stdout.write(dryRun ? "Dry run. Nothing repaired.\n" : `${formatDone()}\n`);
       }),
   }),
   {

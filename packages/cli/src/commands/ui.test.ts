@@ -66,8 +66,16 @@ describe("ui command", () => {
     expect(Object.keys(ui.subCommands ?? {})).toEqual(["add", "sync", "list"]);
   });
 
-  test("add takes a framework positional, --worker, one flag per screen set, and --json", () => {
-    expect(Object.keys(args("add"))).toEqual(["framework", "worker", "auth", "payments", "organization", "json"]);
+  test("add takes a framework positional, --worker, one flag per screen set, --dry-run and --json", () => {
+    expect(Object.keys(args("add"))).toEqual([
+      "framework",
+      "worker",
+      "auth",
+      "payments",
+      "organization",
+      "dry-run",
+      "json",
+    ]);
     expect(args("add").framework).toMatchObject({ type: "positional", required: true });
     expect(args("add").worker).toMatchObject({ type: "string" });
     expect(args("add").json).toMatchObject({ type: "boolean", default: false });

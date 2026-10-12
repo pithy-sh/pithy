@@ -7,6 +7,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
@@ -24,6 +25,7 @@ import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import type { StatePathOptions } from "../notifier/state";
+import type { PlanSecret } from "../plan/plan";
 
 export interface AddBootstrapOptions {
   /**
@@ -116,6 +118,61 @@ export async function bootstrapAdd({
   // be able to speak (a project that has not composed `secrets` has no targets, so only the first one
   // does), and printing one sentence twice reads as two problems. An adopter counts lines.
   return [...new Set(notes)];
+}
+
+/** What {@link bootstrapAdd} would do for one capability, read without doing any of it. */
+export interface BootstrapPlan {
+  /** Each dev secret it would mint or carry over. Never a value. */
+  secrets: PlanSecret[];
+  /** The provisioning each binding needs, in the run's own words — facts about the capability, not writes. */
+  notes: string[];
+  /** The writes it makes that a secret entry cannot say: the store id it records, the seeding pass. */
+  steps: string[];
+}
+
+/**
+ * **`bootstrapAdd`, planned (#697).** The same decisions in the same order, each answered by reading:
+ * which bindings need provisioning, whether the master key is there or would be minted or carried over
+ * from an older home, and which declared dev secrets the file lacks. Nothing is minted, nothing is
+ * written, and Cloudflare is not asked for the store id.
+ */
+export async function planBootstrapAdd({
+  projectDir,
+  manifest,
+}: Pick<AddBootstrapOptions, "projectDir" | "manifest">): Promise<BootstrapPlan> {
+  const plan: BootstrapPlan = { secrets: [], notes: [], steps: [] };
+  if (manifest.name === SECRETS_CAPABILITY) {
+    plan.steps.push(
+      "Looks up this account's Secrets Store id and records it in the Pithy config directory, when credentials are set.",
+    );
+  }
+  const path = await resolveDevSecretsFile(projectDir);
+  const stated = await readDevSecrets(path);
+  for (const binding of manifest.requiredBindings) {
+    if (binding.optional || !isProvisionedBinding(binding.type)) continue;
+    if (!isMasterKey(manifest, binding)) {
+      plan.notes.push(provisionNote(manifest.name, binding));
+      continue;
+    }
+    if (stated[MASTER_KEY_BINDING]) continue;
+    const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
+    const stranded = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
+    const adopted = firstValue(recorded, stranded);
+    // An older key that is not a valid one is reported by the run and adopted by nothing, so nothing is planned.
+    if (adopted !== undefined && parseConfig(adopted) === null) continue;
+    plan.secrets.push({
+      name: MASTER_KEY_BINDING,
+      env: LOCAL_ENVIRONMENT,
+      action: adopted === undefined ? "mint" : "write",
+      where: path,
+    });
+  }
+  for (const secret of manifest.devSecrets) {
+    if (!stated[secret.name])
+      plan.secrets.push({ name: secret.name, env: LOCAL_ENVIRONMENT, action: "mint", where: path });
+  }
+  plan.steps.push("Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store.");
+  return plan;
 }
 
 /** The secrets capability's master-key binding — the one provisioned binding with an honest dev value. */

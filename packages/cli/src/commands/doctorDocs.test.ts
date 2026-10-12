@@ -1350,7 +1350,10 @@ describe("the docs say what the code emits", () => {
     // 32 since #380: `pithy feature destroy` builds a second spread for the teardown that failed
     // partway, which reports what it destroyed before the failure rather than nothing at all.
     // 33 since #697: `pithy schema` spreads the document it describes the CLI with behind its `command`.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(33);
+    // 34 since #697's `--dry-run`: `pithy add` spreads its planned result beside `dryRun: true`, a second
+    // spread next to the add's own, because the plan is the add's result plus the plan rather than a third
+    // payload shape.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(34);
   });
 
   /**
@@ -1592,8 +1595,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   deployedAs: ["add", "ui", "upgrade", "worker"],
   devSecrets: ["doctor", "seed"],
   domains: ["init", "worker"],
-  // The same question on three commands: was anything written. `feature prune` joined in #637.
-  dryRun: ["feature", "seed", "upgrade"],
+  // The same question on every command that takes `--dry-run`: was anything written. `feature prune` joined in
+  // #637, and #697 put it on every one of them, beside the plan.
+  dryRun: ["add", "feature", "payments", "secrets", "seed", "ui", "upgrade", "worker"],
   env: [
     "deploy",
     "email",
@@ -1620,6 +1624,8 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
   // string, and both where the answer is: the file to open, the command the document describes.
   path: ["schema", "secrets"],
+  // What `--dry-run` would change, in the one shape every planning command shares (#697, `plan/plan.ts`).
+  plan: ["add", "feature", "payments", "secrets", "seed", "ui", "upgrade", "worker"],
   project: ["doctor", "migrate"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
@@ -1682,6 +1688,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   name: "string",
   packageManager: "string",
   path: "string",
+  plan: "object",
   port: "number",
   removed: "boolean",
   routing: "object",

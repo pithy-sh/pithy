@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { declineRefusal, type ReconcileApplied, type ReconcilePlan } from "../capabilities/reconcile";
 import { declaredSpecs } from "../kitPackages/ranges";
 import type { RegistryFetch } from "../kitPackages/registry";
+import { Plan } from "../plan/plan";
 import { AGENTS_FILE, BLOCK_CLOSE, BLOCK_OPEN, renderAgentsBlock, syncAgentsBlock } from "../project/agentInstructions";
 import { scaffoldProject } from "../project/scaffold";
 import { doctorHarness } from "../test-utils/doctorHarness";
@@ -20,7 +21,9 @@ import { readManifestDocument, writeManifestDocument } from "../ui/workerUi";
 import { buildDoctorReport, installedCapabilityVersions, renderDoctorText } from "./doctor";
 import upgrade, {
   __test,
+  planUpgrade,
   runUpgrade,
+  type UpgradeRun,
   type UpgradeWorker,
   type UpgradeWorkerResult,
   upgradeFailed,
@@ -318,6 +321,52 @@ describe("runUpgrade — fan-out over apps/", () => {
       expect(applied).toBeNull(); // dry run writes nothing
       expect(plan.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
     }
+  });
+
+  /**
+   * **The dry run's plan is the one shape every `--dry-run` shares (#697)**, read off the reconcile plans:
+   * one `wrangler.jsonc` edit per Worker naming each binding it adds, none for a run that writes.
+   */
+  test("a dry run carries the shared plan: each worker's wrangler.jsonc, one change per binding", async () => {
+    const run = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
+    const plan = Plan.parse(run.plan);
+    const wrangler = plan.files.filter((file) => file.path.endsWith("/wrangler.jsonc"));
+    expect(wrangler.map((file) => file.path)).toEqual(["apps/api/wrangler.jsonc", "apps/collab/wrangler.jsonc"]);
+    for (const file of wrangler) {
+      expect(file.action).toBe("edit");
+      expect(file.changes.filter((change) => change.startsWith("Adds DB (d1)"))).toHaveLength(3);
+    }
+    expect(JSON.parse(upgradeJsonLine(run, "dev", true)).plan).toEqual(run.plan);
+
+    const real = await runUpgrade({ account: null, ...base, dryRun: false, projectDir: dir, resolveWorkers: resolve });
+    expect(real.plan).toBeUndefined();
+    expect(JSON.parse(upgradeJsonLine(real, "dev", false)).plan).toBeUndefined();
+  });
+
+  test("a required option with no default is a note that the upgrade refuses, never a planned edit", async () => {
+    const run = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
+    const reconciledRun = {
+      ...run,
+      workers: run.workers.map((result) =>
+        result.state === "reconciled"
+          ? {
+              ...result,
+              plan: {
+                ...result.plan,
+                perCapability: result.plan.perCapability.map((cap) => ({
+                  ...cap,
+                  missingConfigKeys: [{ key: "billingSubject", describe: "Who holds a subscription." }],
+                })),
+              },
+            }
+          : result,
+      ),
+    } as typeof run;
+    const plan = await planUpgrade(dir, reconciledRun, false);
+    expect(plan.files.some((file) => file.path.endsWith("pithy.config.ts"))).toBe(false);
+    expect(plan.notes).toContain(
+      "auth: billingSubject has no default. The upgrade refuses until apps/api/pithy.config.ts sets it.",
+    );
   });
 
   test("--worker narrows the fan-out to one worker", async () => {
@@ -1073,7 +1122,17 @@ describe("runUpgrade --packages", () => {
     expect(text).toContain("  Reconciled against the current install. The moves above are not installed.");
     expect(text.at(-1)).toBe("Dry run. Nothing written.");
     const json = JSON.parse(upgradeJsonLine(dry, "dev", true)) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "packages", "agents"]);
+    expect(Object.keys(json)).toEqual([
+      "command",
+      "env",
+      "dryRun",
+      "workers",
+      "manifestFaults",
+      "packages",
+      "agents",
+      "plan",
+    ]);
+    expect(Plan.parse(json.plan).files.map((file) => file.path)).toContain("package.json");
     await expectConforms("upgrade", upgradeJsonLine(dry, "dev", true));
   });
 
@@ -1394,5 +1453,193 @@ describe("doctor's advice clears its own line", () => {
     expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "outdated", installed: "0.2.3" });
     await upgradeWith(fetch, true);
     expect(authRow(await doctorWith(fetch))).toMatchObject({ state: "current", installed: "0.3.1" });
+  });
+});
+
+/**
+ * **`planUpgrade`, branch by branch (#697).** Each case hands it a run built by hand, the way the dry run
+ * hands it the one it just read, so what is under test is the restatement alone: which file each finding
+ * lands in, and the sentence an agent reads for it. The project directory is real only where the plan
+ * reads the disk — whether `AGENTS.md` exists, and where `main` points.
+ */
+describe("planUpgrade", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "pithy-plan-upgrade-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** A run of one reconciled Worker, with `plan`'s drift replaced by what each case sets. */
+  function runOf(overrides: Partial<ReconcilePlan>, rest: Partial<UpgradeRun> = {}): UpgradeRun {
+    const quiet = { name: "auth", missingBindings: [], missingConfigKeys: [], missingEntryExports: [] };
+    const built: ReconcilePlan = {
+      ...plan,
+      worker: "board",
+      perCapability: [quiet],
+      ledger: { state: "read", pending: 0, undeclared: [] },
+      ...overrides,
+    };
+    return { workers: [entry(built)], manifestFaults: [], ...rest };
+  }
+
+  test("a clean run plans nothing", async () => {
+    const planned = await planUpgrade(root, runOf({}), false);
+    expect(Plan.parse(planned)).toEqual({ files: [], resources: [], migrations: [], secrets: [], data: [], notes: [] });
+  });
+
+  test("a missing binding names its stanza: the top-level one for dev, env.<name> for the rest", async () => {
+    const planned = await planUpgrade(
+      root,
+      runOf({
+        perCapability: [
+          {
+            name: "auth",
+            missingBindings: [
+              { env: "dev", name: "DB", type: "d1" },
+              { env: "staging", name: "DB", type: "d1" },
+            ],
+            missingConfigKeys: [],
+            missingEntryExports: [],
+          },
+        ],
+      }),
+      false,
+    );
+    expect(planned.files).toEqual([
+      {
+        path: "apps/board/wrangler.jsonc",
+        action: "edit",
+        changes: ["Adds DB (d1) to the top-level stanza, for auth.", "Adds DB (d1) to env.staging, for auth."],
+      },
+    ]);
+  });
+
+  test("a missing export lands in the entry `main` names, once however many capabilities need it", async () => {
+    await mkdir(join(root, "apps", "board"), { recursive: true });
+    await writeFile(join(root, "apps", "board", "wrangler.jsonc"), '{ "main": "src/index.ts" }\n');
+    const planned = await planUpgrade(
+      root,
+      runOf({
+        perCapability: [
+          { name: "collab", missingBindings: [], missingConfigKeys: [], missingEntryExports: ["Room", "Lobby"] },
+          { name: "presence", missingBindings: [], missingConfigKeys: [], missingEntryExports: ["Room"] },
+        ],
+      }),
+      false,
+    );
+    expect(planned.files).toEqual([
+      { path: "apps/board/src/index.ts", action: "edit", changes: ["Exports Room, Lobby from the Worker's entry."] },
+    ]);
+  });
+
+  test("with no entry to name, the export is planned against wrangler.jsonc, which says where it is", async () => {
+    const exportsRoom = {
+      perCapability: [{ name: "collab", missingBindings: [], missingConfigKeys: [], missingEntryExports: ["Room"] }],
+    };
+    // No `wrangler.jsonc` at all: the read throws, and the plan still names a file rather than failing.
+    const unread = await planUpgrade(root, runOf(exportsRoom), false);
+    expect(unread.files.map((file) => file.path)).toEqual(["apps/board/wrangler.jsonc"]);
+
+    // A `wrangler.jsonc` with no `main`.
+    await mkdir(join(root, "apps", "board"), { recursive: true });
+    await writeFile(join(root, "apps", "board", "wrangler.jsonc"), '{ "name": "board" }\n');
+    const unnamed = await planUpgrade(root, runOf(exportsRoom), false);
+    expect(unnamed.files).toEqual([
+      { path: "apps/board/wrangler.jsonc", action: "edit", changes: ["Exports Room from the Worker's entry."] },
+    ]);
+  });
+
+  test("a missing version_metadata binding is one edit to wrangler.jsonc", async () => {
+    const planned = await planUpgrade(root, runOf({ missingVersionMetadata: true }), false);
+    expect(planned.files).toEqual([
+      {
+        path: "apps/board/wrangler.jsonc",
+        action: "edit",
+        changes: ["Adds the CF_VERSION_METADATA version_metadata binding."],
+      },
+    ]);
+  });
+
+  test("pending migrations are a note, worded for whether --migrate was passed", async () => {
+    const pending = runOf({ ledger: { state: "read", pending: 1, undeclared: [] } });
+    // The sentence `docs/commands/upgrade.md` shows, word for word.
+    expect((await planUpgrade(root, pending, false)).notes).toEqual([
+      "board: 1 migration pending on dev. pithy upgrade --migrate applies them.",
+    ]);
+    expect((await planUpgrade(root, pending, true)).notes).toEqual(["board: then applies 1 migration pending on dev."]);
+  });
+
+  test("a partial ledger reports the count it could read", async () => {
+    const partial = runOf({
+      env: "staging",
+      ledger: {
+        state: "partial",
+        counted: { pending: 2, undeclared: [] },
+        unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+      },
+    });
+    expect((await planUpgrade(root, partial, false)).notes).toEqual([
+      "board: 2 migrations pending on staging. pithy upgrade --migrate applies them.",
+    ]);
+  });
+
+  test("the Pithy block is a create where AGENTS.md is missing and an edit where it is stale", async () => {
+    const added = await planUpgrade(
+      root,
+      runOf({}, { agents: { path: AGENTS_FILE, state: "added", reason: null } }),
+      false,
+    );
+    expect(added.files).toEqual([{ path: AGENTS_FILE, action: "create", changes: ["Adds the Pithy block."] }]);
+
+    await writeFile(join(root, AGENTS_FILE), "# Agents\n");
+    const updated = await planUpgrade(
+      root,
+      runOf({}, { agents: { path: AGENTS_FILE, state: "updated", reason: null } }),
+      false,
+    );
+    expect(updated.files).toEqual([
+      { path: AGENTS_FILE, action: "edit", changes: ["Refreshes the Pithy block. Nothing outside it changes."] },
+    ]);
+
+    // Current already: nothing to write, so nothing planned.
+    const unchanged = await planUpgrade(
+      root,
+      runOf({}, { agents: { path: AGENTS_FILE, state: "unchanged", reason: null } }),
+      false,
+    );
+    expect(unchanged.files).toEqual([]);
+  });
+
+  test("a package move edits its manifest, and the install it needs is the package manager's own", async () => {
+    const packages: UpgradeRun["packages"] = {
+      state: "read",
+      packageManager: "bun",
+      installed: false,
+      reconciled: false,
+      moves: [
+        {
+          name: "@pithy-sh/auth",
+          manifest: "apps/board/package.json",
+          field: "dependencies",
+          from: "^0.8.0",
+          to: "^0.9.0",
+          target: "0.9.0",
+        },
+      ],
+      held: [],
+      leftAlone: [],
+      mismatches: [],
+      templates: [],
+    };
+    const planned = await planUpgrade(root, runOf({}, { packages }), false);
+    expect(planned.files).toEqual([
+      { path: "apps/board/package.json", action: "edit", changes: ["Moves @pithy-sh/auth from ^0.8.0 to ^0.9.0."] },
+    ]);
+    // The command the real run spawns: `bun install`, never `bun x bun install`.
+    expect(planned.notes).toEqual(["Then runs bun install at the project root."]);
   });
 });

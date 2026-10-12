@@ -9,7 +9,9 @@ import type {
 import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { Plan } from "../plan/plan";
 import {
+  planSecretRotation,
   rotationReportLines,
   runSecretRotation,
   type SecretRotationDispatcher,
@@ -505,5 +507,37 @@ describe("a store-backed rotation", () => {
     });
     expect(outcome).toMatchObject({ status: "rotated", recorded: ["prod"] });
     expect(sent.sent[0]).toMatchObject({ backend: "d1", bootstrap: false });
+  });
+});
+
+/**
+ * **A rotation's dry run, as the one plan shape (#697)**: the environments it would store into, by the
+ * rule the run uses, and nothing at all for a secret a person rotates.
+ */
+describe("planSecretRotation", () => {
+  const registry: SecretRegistry = { "session-key": local, "gh-client": manual, "cf-token": provider };
+
+  test("one rotate per environment the run would store into", () => {
+    const plan = planSecretRotation(registry, { name: "session-key", env: "staging", environments: DECLARED }, "local");
+    expect(Plan.parse(plan)).toEqual(plan);
+    expect(plan.secrets).toEqual([{ name: "session-key", env: "staging", action: "rotate", where: "d1" }]);
+    expect(plan.notes).toEqual(["Records the rotation in each environment's rotation ledger."]);
+  });
+
+  test("a provider rotation says it rolls at the issuer first", () => {
+    const plan = planSecretRotation(registry, { name: "cf-token", env: "prod", environments: DECLARED }, "provider");
+    expect(plan.notes[0]).toBe("Rolls the credential at its issuer first, then stores the new value.");
+  });
+
+  test("a manual secret plans no rotation, and says whose job it is", () => {
+    const plan = planSecretRotation(registry, { name: "gh-client", env: "prod", environments: DECLARED }, "manual");
+    expect(plan.secrets).toEqual([]);
+    expect(plan.notes).toEqual(["gh-client is replaced by a person at its issuer. A run calls nothing."]);
+  });
+
+  test("the run's refusals hold: an environment-scoped secret with no environment", () => {
+    expect(() =>
+      planSecretRotation(registry, { name: "session-key", env: undefined, environments: DECLARED }, "local"),
+    ).toThrow(/choose an environment/);
   });
 });

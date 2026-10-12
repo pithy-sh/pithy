@@ -37,6 +37,7 @@ import {
 import { withAddFix } from "../capabilities/notComposed";
 import {
   EXIT_ROLLED_NOT_RECORDED,
+  planSecretRotation,
   rotationReportLines,
   runSecretRotation,
   type SecretRotationDispatcher,
@@ -80,6 +81,7 @@ import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
+import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import { confineTeardown } from "../project/teardown";
@@ -186,8 +188,8 @@ async function buildAudit(projectDir: string, env: string) {
 /**
  * The dispatcher a `--dry-run` gets: every seam present, none of them reachable, and none of them called.
  *
- * A dry run answers what *would* happen and must reach no account at all — which is what makes it usable
- * before the credentials exist. `rotateSecretValue` returns `unchanged` before it opens a rotation row, so
+ * A dry run answers what *would* happen and must reach no account at all. It still refuses where the run
+ * would before reaching one — missing credentials are read off this machine (`requireRotationPreconditions`). `rotateSecretValue` returns `unchanged` before it opens a rotation row, so
  * `openRotation` here is unreachable rather than merely unused; it throws instead of returning a plausible
  * id, because a dry run that quietly recorded a rotation would be the one thing it promises never to do.
  */
@@ -275,6 +277,21 @@ async function buildRotationDispatcher(projectDir: string): Promise<SecretRotati
     openRotation: (request) => manager.openRotation(request),
     closeRotation: (request) => manager.closeRotation(request),
   };
+}
+
+/**
+ * **What a rotation refuses on before it reaches anything, asked of this machine alone** — for `--dry-run`,
+ * which reaches no account (#697). The same reads {@link buildRotationDispatcher} makes on the way to its
+ * clients, in the same order and with the same words: the credentials, the project's name, and — for a
+ * secret the Secrets Store holds — the store's id, which the run's pre-flight demands before the issuer is
+ * called. The pre-flight's own question, whether the store would take the value, needs the account and is
+ * left to the run.
+ */
+async function requireRotationPreconditions(projectDir: string, backend: SecretBackend | undefined): Promise<void> {
+  const account = await projectCloudflareAccount(projectDir);
+  loadCloudflareCreds(account);
+  requireProjectName(await loadProject(projectDir));
+  if (backend === "cf-secrets-store") loadCloudflareCreds(account, { requireStore: true });
 }
 
 /** The per-backend writers, over one project resolution — the routing table both dispatchers share. */
@@ -560,6 +577,7 @@ const SecretsRotatePayload = z
   .object({
     command: z.literal("secrets rotate").describe('`"secrets rotate"`.'),
     name: SecretName,
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was rolled or written when it is `true`."),
     rotations: z
       .array(
         z
@@ -584,8 +602,9 @@ const SecretsRotatePayload = z
           .describe("One secret's rotation."),
       )
       .describe("One record per secret. Always one today."),
+    plan: PlanKey,
   })
-  .describe("What `pithy secrets rotate` did.");
+  .describe("What `pithy secrets rotate` did, or under `--dry-run` would.");
 
 /** `pithy secrets ls --json`. */
 const SecretsLsPayload = z
@@ -782,7 +801,7 @@ const rotate = withContract(
     args: {
       ...nameArg,
       ...sharedArgs,
-      "dry-run": { type: "boolean", default: false, description: "Say what would happen; call nothing" },
+      "dry-run": DRY_RUN_ARG,
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
@@ -796,11 +815,14 @@ const rotate = withContract(
         // **The dispatcher is built before anything is rolled**, and the ordering is load-bearing rather
         // than tidy. Missing credentials raise here, with the previous value untouched; built after the
         // roll, the same missing credentials would strand a live one behind a message about `pithy init`.
-        // A dry run reaches no account at all, which is what makes it usable before the credentials exist.
+        // A dry run reaches no account at all — but it makes the refusals the run makes here, which are read
+        // off this machine, because a plan for a run that would be refused is a promise nobody can keep
+        // (`docs/CLI.md` §1.2, #697).
         //
         // **Routed by backend, like every other write** (#517). It was the manager's alone, which reaches
         // one environment's D1 — so rotating a `cf-secrets-store` secret ended in a 500 raised at the
         // store write, after a `provider` rotator had already rolled the credential at its issuer.
+        if (dryRun) await requireRotationPreconditions(projectDir, entry?.backend);
         const dispatcher = dryRun ? DRY_RUN_DISPATCHER : await buildRotationDispatcher(projectDir);
         const audit = dryRun ? async () => {} : await buildAudit(projectDir, auditOrigin(env, environments));
 
@@ -827,7 +849,12 @@ const rotate = withContract(
               ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
             },
           ];
-          process.stdout.write(`${formatJsonLine({ command: "secrets rotate", name: args.name, rotations })}\n`);
+          const plan = dryRun
+            ? planSecretRotation(registry, { name: args.name, env, environments }, outcome.kind)
+            : undefined;
+          process.stdout.write(
+            `${formatJsonLine({ command: "secrets rotate", name: args.name, dryRun, rotations, plan })}\n`,
+          );
         } else {
           for (const line of rotationReportLines(entry, outcome, env)) process.stdout.write(`${line}\n`);
         }

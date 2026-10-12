@@ -8,6 +8,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
 import { describeStaleAutostartRoots, StaleAutostartRoot } from "../feature/ports";
+import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { applyDomains } from "../project/applyDomains";
 import { reconcileAppWorkflows } from "../project/appWorkflows";
 import { askDomains, writeDomains } from "../project/askDomains";
@@ -84,6 +85,7 @@ const WorkerRemovePayload = z
 const WorkerRenamePayload = z
   .object({
     command: z.literal("worker.rename").describe('`"worker.rename"`.'),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was moved or written when it is `true`."),
     ...WorkerIdentity.shape,
     from: z.string().describe("The old name."),
     to: z.string().describe("The new name."),
@@ -98,8 +100,9 @@ const WorkerRenamePayload = z
     orphaned: z.array(z.string().describe("A script name.")).describe("Scripts still deployed under the old name."),
     accountChecked: z.boolean().describe("Whether the account was reached to look for a live script."),
     reconciled: Reconciled,
+    plan: PlanKey,
   })
-  .describe("What `pithy worker rename` moved.");
+  .describe("What `pithy worker rename` moved, or under `--dry-run` would.");
 
 /** `pithy worker sync --json`. */
 const WorkerSyncPayload = z
@@ -284,18 +287,30 @@ const rename = withContract(
         default: false,
         description: "Rename even though a script is deployed under the old name (it stays live)",
       },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
+        const dryRun = args["dry-run"];
         const report = await renameWorker({
           projectDir: process.cwd(),
           from: args.from,
           to: args.to,
           force: args.force,
+          dryRun,
         });
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "worker.rename", ...report })}\n`);
+          process.stdout.write(`${formatJsonLine({ command: "worker.rename", dryRun, ...report })}\n`);
+          return;
+        }
+        if (report.plan) {
+          for (const line of planText(report.plan)) process.stdout.write(`${line}\n`);
+          if (report.script) process.stdout.write(`Would deploy as ${report.script.to}, not ${report.script.from}.\n`);
+          if (report.orphaned.length > 0) {
+            process.stdout.write(`Would leave ${report.orphaned.join(", ")} deployed under the old name.\n`);
+          }
+          process.stdout.write("Dry run. Nothing written.\n");
           return;
         }
         process.stdout.write(`Renamed ${report.from} to ${report.to}.\n`);

@@ -15,7 +15,7 @@ import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
-import { bootstrapAdd } from "./addBootstrap";
+import { type AddBootstrapOptions, bootstrapAdd } from "./addBootstrap";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { availableManifests, loadManifest } from "./manifests";
@@ -210,6 +210,9 @@ export type MigrateStep = (target: MigrateTarget) => Promise<DatabaseRun[]>;
 /** Eject a capability's source into the repo. Injectable for tests. */
 export type EjectStep = (options: EjectCapabilityOptions) => Promise<EjectResult>;
 
+/** Finish the add for the values it cannot write: dev secrets, the store id. Returns the notes to print. */
+export type BootstrapStep = (options: AddBootstrapOptions) => Promise<string[]>;
+
 const defaultInstall: InstallStep = (input) => installPackage(input);
 
 const defaultDeclare: DeclareStep = ({ projectDir, workerDir, pkg }) => declareOnWorker(projectDir, workerDir, pkg);
@@ -283,6 +286,11 @@ export interface RunAddOptions {
   force?: boolean;
   /** Override the eject step (tests inject a stub). */
   ejectStep?: EjectStep;
+  /**
+   * Override the closing bootstrap (default: {@link bootstrapAdd}). `pithy add --dry-run` plans it here
+   * instead of minting, which is why a prerequisite's nested add is handed the same one.
+   */
+  bootstrap?: BootstrapStep;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
@@ -425,6 +433,7 @@ async function composePrerequisites(
       ...(options.install === undefined ? {} : { install: options.install }),
       ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
       ...(options.audit === undefined ? {} : { audit: options.audit }),
+      ...(options.bootstrap === undefined ? {} : { bootstrap: options.bootstrap }),
     });
     composed.names.push(...result.prerequisites, result.capability);
     composed.notes.push(...result.notes);
@@ -546,7 +555,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     // Last, after every step that can fail: a dev key is minted only into a project the add finished
     // on. It is absent-only anyway, so an earlier failure costs a re-run rather than a stranded value.
-    const bootstrapped = await bootstrapAdd({ projectDir, manifest, account: options.account });
+    const bootstrapped = await (options.bootstrap ?? bootstrapAdd)({ projectDir, manifest, account: options.account });
 
     await audit({
       action: "capability/added",

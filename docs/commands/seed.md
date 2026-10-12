@@ -19,7 +19,7 @@ pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
 | `--worker <name>` | every Worker | Seed one Worker instead of every Worker under `apps/` |
 | `--env <name>` | `dev` | The environment to seed. `dev` runs locally against Miniflare; anything else runs against the live D1/KV/R2/Images/Stream for that env |
 | `--json` | `false` | Machine-readable output — the full write plan or run report as one JSON line. Implies non-interactive: `pithy seed` never prompts when `--json` is set |
-| `--dry-run` | `false` | Compute and print the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
+| `--dry-run` | `false` | Show the plan and write nothing. Computes the write plan without touching any backend. Reads media sidecars to report `upload`/`skip`/`reupload` accurately; mints nothing |
 | `--redo` | `false` | **DESTRUCTIVE.** Drop every table and recreate the schema before seeding — all data is lost. See Resetting data, below |
 | `--confirm-reset` | — | Unlock a non-`dev` `--redo`: the exact phrase `yes, i really want to reset <env>` |
 | `--destroy-retained` | — | **DESTRUCTIVE.** Let `--redo` drop rows in retained tables. Must equal the row count the refusal printed |
@@ -120,7 +120,6 @@ $ pithy seed --env staging --redo --dry-run
 Would reset app (DB): 1 migration.
 api  0200_leaderboard_demo_board: 12 rows.
 Dry run. Nothing written.
-Done.
 ```
 
 **`--redo` carries its own, stricter gate — it is not the seed gate.** `--yes` means "yes, this is not dev"; it was designed to authorize *writing* seed rows, which is additive and harmless. A reset drops every table first. Letting one flag authorize both would mean a script — or a hand — that knew only to pass `--yes` could destroy an environment's entire dataset. So:
@@ -141,7 +140,6 @@ Would reset secrets (SECRETS): 1 migration. Retained: pithy_secrets_rotations, p
 Kept emailSuppressions (EMAIL_SUPPRESSIONS): prod binds it too.
 Nothing to seed for staging.
 Dry run. Nothing written.
-Done.
 ```
 
 A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `critical` severity naming the environment and the databases involved. The outcome is always truthful: recorded as `success` once the reset actually completes, or as `failure` — and the command still fails — if it dies partway. A `dev` reset records nothing — auditing covers actions that reach a **remote** system (from a developer's machine, from CI, or in production); a `dev` run only touches the local Miniflare store and changes nothing shared. Auditing is also a no-op when the project does not compose `@pithy-sh/audit`.
@@ -152,7 +150,7 @@ A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `cr
 
 ```
 $ pithy seed --env dev --dry-run --json
-{"command":"seed","env":"dev","dryRun":true,"workers":[{"worker":"api","sets":[{"name":"0200_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[],"shared":[]}],"devSecrets":null}
+{"command":"seed","env":"dev","dryRun":true,"workers":[{"worker":"api","sets":[{"name":"0200_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[],"shared":[]}],"devSecrets":null,"plan":{"files":[],"resources":[],"migrations":[],"secrets":[],"data":[{"worker":"api","store":"d1","target":"app.boardEntries","count":12,"action":"write"}],"notes":["A real run also seeds the project's dev secrets into each Worker's .dev.vars and the local SECRETS store."]}}
 ```
 
 | key | type | meaning |
@@ -168,6 +166,7 @@ $ pithy seed --env dev --dry-run --json
 | `reset` | object[] | Present only with `--redo`: one entry per physical database whose schema was, or would be, reset. |
 | `reset[].retained` | string[] | The retained tables that database carries. A reset refuses while one holds rows. Empty when there are none. |
 | `reset[].boundBy` | string[], optional | The other environments binding that database. Present only when the reset keeps it. |
+| `plan` | object | Present only under `--dry-run`: the same writes in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). Each table, store, object and asset is one `data` entry — `write`, or a media set's `upload`, `skip` or `reupload` — each database a `--redo` would reset is a `reset`, and one another environment binds is a note, since nothing is written to it. In `dev`, a note says the dev secrets a real run would also seed. |
 | `devSecrets` | object \| null | What the dev-secrets pass wrote and which Workers' `.dev.vars` it refused. `null` on a dry run and outside `dev`, where nothing is written. |
 
 ## Errors
@@ -217,5 +216,4 @@ Done.
 $ pithy seed --env staging --dry-run
 api  0200_leaderboard_demo_board: 12 rows.
 Dry run. Nothing written.
-Done.
 ```

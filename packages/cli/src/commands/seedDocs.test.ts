@@ -9,6 +9,7 @@ import { d1SeedGroup, defineSeed, kvSeedGroup } from "@pithy-sh/core/src/seed/se
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { ResetPreviewEntry } from "../migrations/run";
+import { seedDryRunPlan } from "../seed/dryRunPlan";
 import { buildDryRunPlan } from "../seed/plan";
 import { buildSeedPlan } from "../seed/registry";
 import type { SeedRunReport } from "../seed/run";
@@ -260,10 +261,9 @@ describe("docs/commands/seed.md — `--json`", () => {
    * every dry run and outside `dev`: nothing is written, so there is nothing to report.
    */
   test("the json line is what the command writes for a dry run", async () => {
-    const rendered = formatJsonLine({
-      ...report({ env: "dev", capabilities: [leaderboard()], dryRun: true }),
-      devSecrets: null,
-    });
+    const planned = report({ env: "dev", capabilities: [leaderboard()], dryRun: true });
+    // The command's own line: the report, the dev secrets it did not seed, and the one plan shape (#697).
+    const rendered = formatJsonLine({ ...planned, devSecrets: null, plan: seedDryRunPlan(planned) });
     expect(transcript(JSON_BLOCKS, "`--json`", 0, "$ pithy seed --env dev --dry-run --json")).toBe(rendered);
     // And the line is the shape `pithy schema seed` publishes (#697), sets and writes included.
     await expectConforms("seed", rendered);

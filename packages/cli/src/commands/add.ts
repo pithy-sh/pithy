@@ -22,11 +22,13 @@ import {
   runAdd,
 } from "../capabilities/flow";
 import { availableManifests, ManifestFault } from "../capabilities/manifests";
+import { type AddPlan, planAdd } from "../capabilities/planAdd";
 import { requiredOptionRefusal } from "../capabilities/requiredOptions";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
 import { DatabaseRun } from "../migrations/run";
+import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { ProposedName } from "../project/bindingEntries";
 import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -293,6 +295,20 @@ export function addPrompts(interactive: boolean): Pick<RunAddOptions, "prompt" |
   return interactive ? { prompt: promptConfigValues, askPrerequisites: promptPrerequisites } : {};
 }
 
+/**
+ * `pithy add --dry-run`, for a person: the prerequisites it would compose, the plan, and what the
+ * capability needs that only provisioning supplies — the same notes the real add prints.
+ */
+export function addPlanText(planned: AddPlan): string[] {
+  const lines: string[] = [];
+  if (planned.prerequisites.length > 0) {
+    lines.push(`Would compose ${planned.prerequisites.join(", ")} into ${planned.worker} first.`);
+  }
+  lines.push(`Would wire ${planned.capability} into ${planned.worker}.`);
+  lines.push(...planText(planned.plan), ...planned.notes, "Dry run. Nothing written.");
+  return lines;
+}
+
 const AddCommand = z.literal("add").describe('`"add"`.');
 
 /** `pithy add --json`: the catalog under `--list`, or what one add wired. `docs/commands/add.md`. */
@@ -321,11 +337,14 @@ const AddPayload = z
     z
       .object({
         command: AddCommand,
+        dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was written when it is `true`."),
         ...WorkerIdentity.shape,
         capability: z.string().describe("The capability's name, from its manifest."),
         package: z.string().describe("The npm package the capability ships in."),
         packageManager: z.string().describe("The project's package manager: `npm`, `pnpm`, `yarn` or `bun`."),
-        databases: z.array(DatabaseRun).describe("The dev migration run, one entry per database touched."),
+        databases: z
+          .array(DatabaseRun)
+          .describe("The dev migration run, one entry per database touched. Empty under `--dry-run`, which runs none."),
         kvNamespaces: z
           .array(ProposedName)
           .describe("KV namespace titles to create, one per environment that gained the binding."),
@@ -335,7 +354,8 @@ const AddPayload = z
         prerequisites: z
           .array(z.string().describe("A capability name."))
           .describe("The capabilities composed on the way to this one, deepest first."),
-        eject: EjectResult.optional().describe("Present only when `--eject` ran."),
+        eject: EjectResult.optional().describe("Present only when `--eject` ran, or under `--dry-run` would."),
+        plan: PlanKey,
       })
       .describe("`pithy add <capability> --json`."),
   ])
@@ -365,6 +385,7 @@ export default withContract(
         default: false,
         description: "Compose the capabilities this one requires, if they aren't composed yet",
       },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     // `ctx` over `{ args }`: repeated `--set` only survives in rawArgs (citty keeps
@@ -398,7 +419,7 @@ export default withContract(
         // rather than to whichever `cloudflare.json` the machine happens to hold (#234).
         const account = await projectCloudflareAccount(projectDir);
 
-        const result = await runAdd({
+        const options: RunAddOptions = {
           projectDir,
           workerDir: target.dir,
           worker: target.name,
@@ -410,6 +431,20 @@ export default withContract(
           withPrerequisites: args["with-prerequisites"],
           eject: args.eject,
           force: args.force,
+        };
+
+        if (args["dry-run"]) {
+          const planned = await planAdd(options);
+          if (args.json) {
+            process.stdout.write(`${formatJsonLine({ command: "add", dryRun: true, ...planned })}\n`);
+            return;
+          }
+          for (const line of addPlanText(planned)) process.stdout.write(`${line}\n`);
+          return;
+        }
+
+        const result = await runAdd({
+          ...options,
           audit: await buildAudit({
             projectDir,
             account,
@@ -420,7 +455,7 @@ export default withContract(
         });
 
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "add", ...result })}\n`);
+          process.stdout.write(`${formatJsonLine({ command: "add", dryRun: false, ...result })}\n`);
           return;
         }
         // Said first, because it happened first, and because a capability composed on the adopter's behalf

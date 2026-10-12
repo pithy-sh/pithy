@@ -7,7 +7,7 @@ Install a capability, wire it into one Worker's config and bindings, and run tha
 ## Synopsis
 
 ```
-pithy add <capability> [--worker <name>] [--with-prerequisites] [--set key=value]… [--eject [--force]] [--json]
+pithy add <capability> [--worker <name>] [--with-prerequisites] [--set key=value]… [--eject [--force]] [--dry-run] [--json]
 pithy add --list [--json]
 ```
 
@@ -22,6 +22,7 @@ pithy add --list [--json]
 | `--eject` | boolean | `false` | Copy the capability's source into your repo and repoint the wiring at it |
 | `--force` | boolean | `false` | With `--eject`, overwrite an existing local copy. Discards your edits |
 | `--with-prerequisites` | boolean | `false` | Compose the capabilities this one requires, if this Worker does not compose them yet |
+| `--dry-run` | boolean | `false` | Show the plan and write nothing. Installs nothing, migrates nothing, mints nothing |
 | `--json` | boolean | `false` | Machine-readable output |
 
 ## What it does
@@ -79,11 +80,15 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Which Worker.** `--worker` names it. A single-Worker project needs no ceremony. A project with several never guesses: it prompts a human, and fails `input/required` for anyone else, naming `--worker` and every Worker in `choices` — an agent driving `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` is told what to pass rather than hanging on a question it cannot answer.
 
+**`--dry-run` is the add, made in a copy.** The whole flow above runs — the same prerequisite refusal, the same required options, the same config, binding, entry, seam and manifest writes — against a private copy of the project under the system temporary directory, and the plan is what changed there: each file with its diff, so the bytes a person reviews are the bytes the add writes. The copy is gone before the command exits. Four steps are not made, and the plan says what each would do instead: the install names the command it would run, and declares the package in the copy's root `package.json` at `^<installed>` so the Worker's own declaration is the real one; the dev migrations are a note, because which are pending is known only once the wiring is on disk; the dev secrets the add would mint are listed under `secrets`, without a value; and an `--eject` copy is one directory created rather than a diff of every file in the package. No account is reached and nothing is audited.
+
+The manifest has to be installed, because it is what says what a capability wires and installing it is the one step a plan cannot make in a copy. A capability that is not installed is refused, exit 3, naming the install command.
+
 Idempotent. A second `pithy add auth` changes nothing. Adding the same capability to a second Worker reuses the installed package and writes only that Worker's config and bindings.
 
 ## `--json`
 
-One line, one object. Two shapes: one for `--list`, one for a real add.
+One line, one object. Two shapes: one for `--list`, one for an add — real, or under `--dry-run` planned.
 
 ### `pithy add --list --json`
 
@@ -116,12 +121,13 @@ $ pithy add secrets --json
 | key | type | meaning |
 |---|---|---|
 | `command` | `"add"` | The command that produced the line |
+| `dryRun` | boolean | Whether this was `--dry-run`. Nothing was written when it is `true`, and every other key is what the add would report |
 | `capability` | string | The capability's name, taken from the manifest rather than from the argument |
 | `worker` | string | The `apps/` directory that was wired. What `--worker` accepts, and what every path in this payload is relative to |
 | `deployedAs` | string | The same Worker's deployed script name, from `wrangler.jsonc`. What the Cloudflare dashboard shows |
 | `package` | string | The npm package the capability ships in |
 | `packageManager` | `"npm" \| "pnpm" \| "yarn" \| "bun"` | The project's package manager, detected from its lockfile. Reported whether or not an install ran — it is a fact about the project, not a record of a spawn |
-| `databases` | array | The dev migration run, one entry per database this Worker's registry touched |
+| `databases` | array | The dev migration run, one entry per database this Worker's registry touched. Empty under `--dry-run`, which runs none |
 | `databases[].database` | string | The database name — a capability's `databases` key |
 | `databases[].binding` | string | The D1 binding it resolves to in this Worker's `wrangler.jsonc` |
 | `databases[].results` | array | The migrations this Worker's capabilities contributed, and how each fared |
@@ -140,8 +146,16 @@ $ pithy add secrets --json
 | `eject.path` | string | The Worker-relative directory the source was copied into, `capabilities/<cap>` |
 | `eject.promotedDependencies` | string[] | The `name@version` dependencies promoted into your project. Workspace-internal ones are excluded |
 | `eject.forced` | boolean | Whether an existing local copy was overwritten (`--force`) |
+| `plan` | object | Present only under `--dry-run`: what the add would write, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). `files` carries each file's diff; `secrets` the dev secrets it would mint; `notes` the migrate it would run |
 
 `kvNamespaces` is empty when the capability needs no KV, when no project name was resolved, and on a re-run — a binding already present is left alone.
+
+### `pithy add <capability> --dry-run --json`
+
+```
+$ pithy add audit --dry-run --json
+{"command":"add","dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":[],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -1,3 +1,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"},{"path":"package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
+```
 
 ## Errors
 
@@ -234,6 +248,14 @@ $ pithy add auth --json
 {"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
 ```
 
+**A dry run of a capability that is not installed.** Exit 3: the plan is read from the manifest, and installing it is the one step a dry run cannot make in a copy.
+
+```
+$ pithy add auth --dry-run
+@pithy-sh/auth is not installed, so there is no manifest to plan auth from.
+Install it with bun add @pithy-sh/auth, then run pithy add auth --dry-run again.
+```
+
 **A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with `Run pithy add <name> to install it.`
 
 **A malformed manifest on the direct path.** The `--list` scan reports a fault and carries on; asking for that capability by name refuses, naming the package and the schema's own reason.
@@ -271,6 +293,21 @@ Minted a dev email-link-signing-key into ~/.config/pithy/replay/secrets.jsonc. L
 Minted a dev auth-session-secret into ~/.config/pithy/replay/secrets.jsonc. Local only.
 Deployed environments need pithy secrets create auth-session-secret.
 Done.
+```
+
+See what an add would change before it changes anything.
+
+```
+$ pithy add audit --dry-run
+Would wire audit into board.
+Would edit apps/board/package.json.
+Would edit apps/board/pithy.config.ts.
+Would edit apps/board/wrangler.jsonc.
+Would edit package.json.
+  Runs bun add @pithy-sh/audit here, which also writes the lockfile.
+Then applies board's pending dev migrations to the local database.
+Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store.
+Dry run. Nothing written.
 ```
 
 Name the Worker in a project with several.

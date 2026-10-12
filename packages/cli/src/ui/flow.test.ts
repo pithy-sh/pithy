@@ -10,8 +10,10 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { Plan } from "../plan/plan";
 import type { WorkerConfig } from "../project/config";
 import { fixOf } from "../terminal/exitClass";
+import { snapshotTree } from "../test-utils/treeSnapshot";
 import { listStubs, runUiAdd, runUiSync } from "./flow";
 
 /** A capability mounting one route under `base` — enough to appear in the composed route table. */
@@ -452,5 +454,63 @@ describe("pithy ui", () => {
       expect(error).toBeInstanceOf(PithyError);
       expect((error as PithyError).payload.action).toContain("pithy ui add react");
     }
+  });
+});
+
+/**
+ * **`pithy ui add --dry-run`: the same write, made in a copy (#697).** The report is the prediction and the
+ * plan is the difference, so the two are held to the real run: the files it plans are the files it would
+ * create, and the project is byte-identical afterwards.
+ */
+describe("pithy ui add --dry-run", () => {
+  let projectDir: string;
+  let workerDir: string;
+
+  beforeEach(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), "pithy-ui-dry-"));
+    workerDir = join(projectDir, "apps", WORKER);
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "${DEPLOYED}"\n}\n`);
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), '{\n  "dev": {}\n}\n');
+    await writeFile(join(workerDir, "package.json"), `${JSON.stringify({ name: DEPLOYED }, null, 2)}\n`);
+    await writeFile(join(projectDir, "tsconfig.json"), `${JSON.stringify({ files: [], references: [] }, null, 2)}\n`);
+    await writeFile(
+      join(projectDir, "pithy.config.ts"),
+      'export default { name: "replay", environments: ["staging"] };\n',
+    );
+  });
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true });
+  });
+
+  const options = { framework: "react", packageManager: "bun" as const, auth: false };
+
+  test("writes nothing, and plans every file the real run creates and every one it edits", async () => {
+    const before = await snapshotTree(projectDir);
+    const dry = await runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options, dryRun: true });
+    expect(await snapshotTree(projectDir)).toEqual(before);
+    expect(Plan.parse(dry.plan)).toEqual(dry.plan);
+
+    const real = await runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options });
+    expect(real.plan).toBeUndefined();
+    const { plan, ...predicted } = dry;
+    expect(predicted).toEqual(real);
+
+    const created = (plan?.files ?? []).filter((file) => file.action === "create").map((file) => file.path);
+    expect(created).toEqual(real.created.map((path) => `apps/${WORKER}/${path}`).sort());
+    const edited = (plan?.files ?? []).filter((file) => file.action === "edit").map((file) => file.path);
+    expect(edited).toEqual([
+      `apps/${WORKER}/package.json`,
+      `apps/${WORKER}/pithy.worker.jsonc`,
+      `apps/${WORKER}/wrangler.jsonc`,
+      "tsconfig.json",
+    ]);
+  });
+
+  test("the same refusals as the real run: a second front end is refused before anything is planned", async () => {
+    await runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options });
+    await expect(runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options, dryRun: true })).rejects.toThrow(
+      /already has a react front end/,
+    );
   });
 });

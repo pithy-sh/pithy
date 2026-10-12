@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { Plan } from "./plan/plan";
 import { EXIT } from "./terminal/exitClass";
 import { expectConforms } from "./test-utils/payloadContract";
 
@@ -197,14 +198,15 @@ let refusing: Awaited<ReturnType<typeof fakeCloudflare>>;
 /** Run the real CLI in the scaffolded project, and give back both streams and the exit code. */
 async function cli(
   args: string[],
-  options: { baseUrl: string } = { baseUrl: "" },
+  options: { baseUrl: string; credentials?: boolean } = { baseUrl: "" },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  const credentials = options.credentials ?? true;
   const env = {
     ...process.env,
     // Never the operator's own. This directory holds live Cloudflare credentials on a real machine.
     PITHY_CONFIG_DIR: config,
-    CLOUDFLARE_ACCOUNT_ID: "acct-replay",
-    CLOUDFLARE_API_TOKEN: "cfat-fake",
+    CLOUDFLARE_ACCOUNT_ID: credentials ? "acct-replay" : "",
+    CLOUDFLARE_API_TOKEN: credentials ? "cfat-fake" : "",
     CLOUDFLARE_BASE_URL: options.baseUrl,
     REPLAY_ROLL_LOG: join(dir, ROLL_LOG),
     REPLAY_ISSUED_LOG: join(dir, ISSUED_LOG),
@@ -367,6 +369,44 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(refusing.dispatched.length).toBe(dispatches);
   }, 60_000);
 
+  test("a dry run under --json carries the shared plan, and still reaches nothing (#697)", async () => {
+    const before = await rolls();
+    const dispatches = refusing.dispatched.length;
+    const result = await cli(
+      ["secrets", "rotate", "REPLAY_PROVIDER_TOKEN", "--env", "prod", "--dry-run", "--json"],
+      refusing,
+    );
+    expect(result.code).toBe(0);
+    await expectConforms("secrets rotate", result.stdout);
+    const payload = JSON.parse(result.stdout.trim()) as { dryRun: boolean; plan: Plan };
+    expect(payload.dryRun).toBe(true);
+    expect(Plan.parse(payload.plan).secrets).toEqual([
+      { name: "REPLAY_PROVIDER_TOKEN", env: "prod", action: "rotate", where: expect.any(String) },
+    ]);
+    expect(payload.plan.notes[0]).toBe("Rolls the credential at its issuer first, then stores the new value.");
+    expect(await rolls()).toBe(before);
+    expect(refusing.dispatched.length).toBe(dispatches);
+  }, 60_000);
+
+  /**
+   * **A dry run makes the refusals the run makes before it rolls (`docs/CLI.md` §1.2).** It reaches no account,
+   * so it cannot ask a store whether it would take the value — but missing credentials are read off this
+   * machine, the run refuses on them before the issuer is called, and a plan for a run that would be refused
+   * is a promise nobody can keep.
+   */
+  test("a dry run with no credentials is refused as the run is, and reaches nothing", async () => {
+    const before = await rolls();
+    const args = ["secrets", "rotate", "REPLAY_PROVIDER_TOKEN", "--env", "prod", "--json"];
+    const planned = await cli([...args, "--dry-run"], { baseUrl: refusing.baseUrl, credentials: false });
+    const real = await cli(args, { baseUrl: refusing.baseUrl, credentials: false });
+    expect(planned.stdout).toBe("");
+    expect(planned.code).toBe(EXIT.precondition);
+    const error = (JSON.parse(planned.stderr.trim()) as { error: { code: string; message: string } }).error;
+    expect(error).toMatchObject({ code: "core/precondition_failed", message: "Cloudflare credentials are missing." });
+    expect(error).toEqual((JSON.parse(real.stderr.trim()) as { error: unknown }).error);
+    expect(await rolls()).toBe(before);
+  }, 60_000);
+
   /**
    * **The reason this file exists.**
    *
@@ -407,6 +447,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(JSON.parse(result.stdout.trim())).toEqual({
       command: "secrets rotate",
       name: "REPLAY_PROVIDER_TOKEN",
+      dryRun: false,
       rotations: [
         {
           name: "REPLAY_PROVIDER_TOKEN",

@@ -5,6 +5,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { emptyPlan, type Plan } from "../plan/plan";
 import { devConfigPath, readDevConfig } from "./devConfig";
 import {
   freePortBlocks,
@@ -335,4 +336,17 @@ export async function pruneFeatureBlocks(options: {
     .map(({ branch, block, base, size }) => ({ branch, block, base, size }))
     .sort((a, b) => a.base - b.base || a.branch.localeCompare(b.branch));
   return { root, dryRun: false, freedBlocks };
+}
+
+/**
+ * **`pithy feature prune --dry-run`, as the one plan every dry run shares (#697).** The only file prune
+ * writes is the machine's port registry, outside every project, so its path is absolute; each block it
+ * would free is one change. Nothing to free is an empty plan.
+ */
+export function prunePlan(report: PruneReport, registryPath: string): Plan {
+  if (report.freedBlocks.length === 0) return emptyPlan();
+  const changes = report.freedBlocks.map(
+    (entry) => `Frees ${entry.base}–${entry.base + entry.size - 1}, ${entry.branch}.`,
+  );
+  return { ...emptyPlan(), files: [{ path: registryPath, action: "edit", changes }] };
 }

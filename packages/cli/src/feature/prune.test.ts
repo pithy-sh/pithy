@@ -8,9 +8,10 @@ import { join } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkPortsRegistry } from "../doctor/portsRegistry";
+import { emptyPlan, Plan } from "../plan/plan";
 import { buildDevConfig, devConfigPath, writeDevConfig } from "./devConfig";
 import { BASE_PORT, BLOCK_SIZE, type PortsRegistry, type RepoPortBlocks } from "./ports";
-import { pruneFeatureBlocks } from "./prune";
+import { pruneFeatureBlocks, prunePlan } from "./prune";
 
 /**
  * Every test here runs against a real repository with real worktrees (#637). The predicate's whole input
@@ -440,5 +441,29 @@ describe("pruneFeatureBlocks", () => {
       // And the answer is not vacuous: the gone worktree is always among them.
       expect(flagged).toContain("feature/2-gone");
     }
+  });
+});
+
+/** **Prune's dry run, as the one plan shape (#697)**: the registry, one change per block it would free. */
+describe("prunePlan", () => {
+  const block = (branch: string, base: number) => ({ branch, block: base / 20, base, size: 20 });
+
+  it("one edit of the registry, a change per freed block", () => {
+    const plan = prunePlan(
+      { root: "/repo", dryRun: true, freedBlocks: [block("feature/1-a", 8800), block("feature/2-b", 8820)] },
+      "/home/u/.config/pithy/dev-ports.json",
+    );
+    expect(Plan.parse(plan)).toEqual(plan);
+    expect(plan.files).toEqual([
+      {
+        path: "/home/u/.config/pithy/dev-ports.json",
+        action: "edit",
+        changes: ["Frees 8800–8819, feature/1-a.", "Frees 8820–8839, feature/2-b."],
+      },
+    ]);
+  });
+
+  it("nothing to free is an empty plan, not an edit that changes nothing", () => {
+    expect(prunePlan({ root: "/repo", dryRun: true, freedBlocks: [] }, "/x/dev-ports.json")).toEqual(emptyPlan());
   });
 });

@@ -5,6 +5,7 @@ import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
+import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { unpublishedKitNotice } from "../project/scaffold";
 import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { canceled, EXIT } from "../terminal/exitClass";
@@ -48,6 +49,7 @@ const Names = (what: string) => z.array(z.string().describe("One name.")).descri
 const UiAddPayload = z
   .object({
     command: z.literal("ui.add").describe('`"ui.add"`.'),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was written when it is `true`."),
     ...WorkerIdentity.shape,
     framework: z.string().describe("The stub that wrote it."),
     auth: z.boolean().describe("Whether the sign-in screens were included."),
@@ -61,8 +63,9 @@ const UiAddPayload = z
     dependencies: Names("Dependency names added to the Worker's `package.json`."),
     devDependencies: Names("Dev-dependency names added to the Worker's `package.json`."),
     scripts: Names("Script names added or superseded."),
+    plan: PlanKey,
   })
-  .describe("What `pithy ui add` scaffolded.");
+  .describe("What `pithy ui add` scaffolded, or under `--dry-run` would.");
 
 /** `pithy ui sync --json`. */
 const UiSyncPayload = z
@@ -119,12 +122,14 @@ const add = withContract(
         type: "boolean",
         description: "Include the account chooser (--no-organization to skip)",
       },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
         const interactive = mayPrompt(args.json);
+        const dryRun = args["dry-run"];
         // Composed for dev: which screens a Worker composes is read off the Worker `pithy dev` serves them
         // from. Each environment's route allowlist is composed for that environment by the flow itself.
         const target = await targetWorker(LOCAL_ENVIRONMENT, {
@@ -142,10 +147,19 @@ const add = withContract(
           ...(args.payments === undefined ? {} : { payments: args.payments }),
           ...(args.organization === undefined ? {} : { organization: args.organization }),
           ...(interactive ? { prompt: promptScreens } : {}),
+          dryRun,
         });
 
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report, ...workerIdentity(target) })}\n`);
+          process.stdout.write(
+            `${formatJsonLine({ command: "ui.add", dryRun, ...report, ...workerIdentity(target) })}\n`,
+          );
+          return;
+        }
+        if (report.plan) {
+          process.stdout.write(`Would scaffold a ${report.framework} front end into ${report.worker}.\n`);
+          for (const line of planText(report.plan)) process.stdout.write(`${line}\n`);
+          process.stdout.write("Dry run. Nothing written.\n");
           return;
         }
         const screens = [

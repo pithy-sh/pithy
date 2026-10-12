@@ -1278,6 +1278,8 @@ describe("the gate on the gate", () => {
       "Removes the worktree directory that `teardownWorktree` has just had git forget, at `<root>/.worktrees/<issue>-<slug>` composed by `featureNames` from the main checkout root — never a path an adopter named. It cannot go through `removeScaffoldPath`: that primitive is for a path inside a project being scaffolded, and this is the project directory itself, already unregistered and guarded on `hasLiveDevSession` so a running `pithy dev` keeps its files.",
     "cli/src/capabilities/eject.ts":
       "Discards the fork it is about to re-copy under `--force`, on the exact path `ensureScaffoldPath(projectDir, dest)` cleared on the line above and `pathExists` then confirmed with an `lstat`. The gate is there; only the `rm` is local.",
+    "cli/src/plan/shadow.ts":
+      "Removes the private copy a dry run made its writes in, on the path `mkdtemp` under `os.tmpdir()` handed back and `realpath` resolved — never a path an adopter named and never one inside a project. `removeScaffoldPath` guards a path inside a project being scaffolded, and this is the opposite: a directory this module created, owns outright, and must leave nothing of.",
   };
 
   test("no module runs its own recursive delete on a path it composed", async () => {

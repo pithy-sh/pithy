@@ -16,7 +16,7 @@ pithy upgrade [--env <env>] [--worker <name>] [--dry-run] [--migrate] [--package
 |---|---|---|---|
 | `--env <env>` | string | `dev` | Target environment — drives the pending-migration count, and any `--migrate` run. `dev`, `staging`, `prod`, or a custom name |
 | `--worker <name>` | string | — | Upgrade only this Worker. Default: every Worker under `apps/` |
-| `--dry-run` | boolean | `false` | Show the plan without writing anything |
+| `--dry-run` | boolean | `false` | Show the plan and write nothing |
 | `--migrate` | boolean | `false` | Run pending migrations after reconciling |
 | `--packages` | boolean | `false` | Move each `@pithy-sh/*` dependency to the newest version its range admits, and reinstall, before reconciling. Project-wide: refused beside `--worker` |
 | `--latest` | boolean | `false` | With `--packages`: move held packages across a breaking boundary to `latest`. Refused without `--packages` |
@@ -131,7 +131,7 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null}}
+{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null},"plan":{"files":[{"path":"AGENTS.md","action":"edit","changes":["Refreshes the Pithy block. Nothing outside it changes."]}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["board: 1 migration pending on dev. pithy upgrade --migrate applies them."]}}
 ```
 
 ```
@@ -156,6 +156,16 @@ $ pithy upgrade --json
 | `agents.path` | string | `"AGENTS.md"`, relative to the project root |
 | `agents.state` | `"added"` \| `"updated"` \| `"unchanged"` \| `"refused"` | `added` — there was no block, and now there is. `updated` — the block was stale and was rewritten in place. `unchanged` — already current, and the file was not written. `refused` — not written, and `reason` says why; the exit is unchanged by it. On a dry run, what a write would do |
 | `agents.reason` | string or `null` | Why it was refused, in one line that never quotes the file. `null` otherwise |
+| `plan` | object | Present only under `--dry-run`: the same run, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) — below |
+
+### `plan`
+
+`workers` is the reconcile's own report and keeps its shape; `plan` says the same run the way every other dry run says it, so an agent reading `pithy add --dry-run` reads this with the same parser. It is built from what the run already read, and adds no second reading of the project.
+
+- **`files`** — one `edit` per file the apply would write, each with a sentence per change: every binding a Worker's `wrangler.jsonc` gains, by name, type and stanza; every key its `pithy.config.ts` gains; the Durable Object exports its entry gains; `version_metadata`; each `--packages` move in its manifest; and `AGENTS.md`, `create` when the file is not there yet. No diffs: the reconcile plan names the binding and the key, and the bytes are written by the apply a dry run does not reach.
+- **`notes`** — what the run would do that a file entry cannot say, and what it would refuse: the reinstall after a package move, each Worker's pending migrations by count (`--migrate` applies them; without it they are named, not run), and a required option with no default, which stops the apply.
+
+A Worker that could not be planned, or was refused, contributes nothing to `plan`; its entry in `workers` says why.
 
 ### `packages`
 

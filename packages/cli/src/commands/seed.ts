@@ -12,8 +12,10 @@ import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { type ResetPreviewEntry, resolveWorkerScopes } from "../migrations/run";
+import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { seedDryRunPlan } from "../seed/dryRunPlan";
 import { type SeedRunReport, type SeedWorkerReport, seedProject } from "../seed/run";
 import { PRODUCTION_CONFIRM_PHRASE, resetConfirmPhrase } from "../seed/safety";
 import { canceled, EXIT } from "../terminal/exitClass";
@@ -73,8 +75,8 @@ function describeWorker(worker: SeedWorkerReport, env: string, width: number): s
  * Assembling them across inline `process.stdout.write` calls made that impossible, and the blocks
  * rotted. The command writes what this returns, plus the trailing newline.
  *
- * The order is the run's own: what the reset destroyed, then what each Worker wrote, then the dry-run
- * reminder, then `Done.` The `DESTRUCTIVE.` banner leads a real reset only — a preview dropped nothing.
+ * The order is the run's own: what the reset destroyed, then what each Worker wrote, then `Done.` — or,
+ * on a dry run, `Dry run. Nothing written.` in its place, as every dry run ends (`docs/CLI.md` §1.2). The `DESTRUCTIVE.` banner leads a real reset only — a preview dropped nothing.
  */
 export function renderSeedText(report: SeedRunReport): string {
   const reset = report.reset ?? [];
@@ -92,8 +94,7 @@ export function renderSeedText(report: SeedRunReport): string {
   const width = Math.max(0, ...report.workers.map((worker) => worker.worker.length));
   for (const worker of report.workers) lines.push(...describeWorker(worker, report.env, width));
 
-  if (report.dryRun) lines.push("Dry run. Nothing written.");
-  lines.push(formatDone());
+  lines.push(report.dryRun ? "Dry run. Nothing written." : formatDone());
   return lines.join("\n");
 }
 
@@ -203,6 +204,7 @@ const SeedPayload = z
       .looseObject({})
       .nullable()
       .describe("What the dev-secrets pass wrote and refused. `null` on a dry run and outside `dev`."),
+    plan: PlanKey,
   })
   .describe("What `pithy seed` loaded, or would.");
 
@@ -213,7 +215,7 @@ export default withContract(
       env: ENV_ARG,
       worker: { type: "string", description: "Seed one worker instead of every worker in apps/" },
       json: { type: "boolean", default: false, description: "Machine-readable output" },
-      "dry-run": { type: "boolean", default: false, description: "Print the write plan; change nothing" },
+      "dry-run": DRY_RUN_ARG,
       redo: {
         type: "boolean",
         default: false,
@@ -310,7 +312,8 @@ export default withContract(
         });
 
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ ...report, devSecrets })}\n`);
+          const plan = report.dryRun ? seedDryRunPlan(report) : undefined;
+          process.stdout.write(`${formatJsonLine({ ...report, devSecrets, plan })}\n`);
           return;
         }
 

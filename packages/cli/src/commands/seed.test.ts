@@ -55,6 +55,16 @@ describe("a --redo that meets retained tables and shared databases (#588)", () =
     ]);
   });
 
+  // `Dry run. Nothing written.` stands in place of `Done.`, as on every other dry run (#697): a run that wrote
+  // nothing has not finished anything, and a transcript that ends `Done.` says it did.
+  test("a dry run ends with the dry-run line, never Done., and a real run ends with Done.", () => {
+    const planned = renderSeedText({ command: "seed", env: "staging", dryRun: true, workers: [], reset: [] });
+    expect(planned.split("\n").at(-1)).toBe("Dry run. Nothing written.");
+    expect(planned).not.toContain("Done");
+    const written = renderSeedText({ command: "seed", env: "staging", dryRun: false, workers: [], reset: [] });
+    expect(written.split("\n").at(-1)).toBe("Done.");
+  });
+
   test("the destroy-retained flag is a count the operator types", () => {
     expect(args["destroy-retained"]).toMatchObject({ type: "string" });
   });

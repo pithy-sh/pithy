@@ -8,6 +8,9 @@ import { promisify } from "node:util";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { Plan } from "./plan/plan";
+import { seedDryRunPlan } from "./seed/dryRunPlan";
+import type { SeedRunReport } from "./seed/run";
 import { expectConforms } from "./test-utils/payloadContract";
 
 const run = promisify(execFile);
@@ -252,6 +255,17 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const planned = await cli(["seed", "--env", "dev", "--dry-run", "--json"], target);
   expect(planned.code, planned.stderr).toBe(0);
   await expectConforms("seed", planned.stdout);
+  // `plan` is optional in the published schema, so conforming alone would pass a dry run that dropped it.
+  // The plan the binary wrote is the one its own report restates, and a `dev` plan says what it skipped.
+  const payload = JSON.parse(planned.stdout.trim()) as SeedRunReport & { plan?: unknown };
+  expect(payload.dryRun).toBe(true);
+  const plan = Plan.parse(payload.plan);
+  expect(plan).toEqual(seedDryRunPlan(payload));
+  // A fresh project composes no seed sets, so there is nothing to write and nothing to reset.
+  expect(plan.data).toEqual([]);
+  expect(plan.notes).toContain(
+    "A real run also seeds the project's dev secrets into each Worker's .dev.vars and the local SECRETS store.",
+  );
 }, 300_000);
 
 test("pithy doctor reports a composed capability whose prerequisite is absent, and fails the exit", async () => {

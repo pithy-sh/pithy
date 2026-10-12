@@ -8,13 +8,15 @@ import { InputRequiredError, NotFoundError, ValidationError } from "@pithy-sh/co
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CreateCliAuditOptions } from "../audit/cliAudit";
 import type { AddResult } from "../capabilities/flow";
+import type { AddPlan } from "../capabilities/planAdd";
+import { emptyPlan } from "../plan/plan";
 import type { WorkerConfig } from "../project/config";
 import { scaffoldProject } from "../project/scaffold";
 import type { WorkerTarget } from "../project/workers";
 import { latchInputMode, mayPrompt } from "../terminal/inputMode";
 import { linkKitPackages } from "../test-utils/linkKit";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
-import add, { addPrompts, buildAudit, targetWorker } from "./add";
+import add, { addPlanText, addPrompts, buildAudit, targetWorker } from "./add";
 
 /**
  * The add flow itself — install, wire, migrate — is `capabilities/flow.test.ts`'s. Here it is replaced
@@ -46,6 +48,7 @@ describe("add command", () => {
       "eject",
       "force",
       "with-prerequisites",
+      "dry-run",
       "json",
     ]);
     expect(args.capability).toMatchObject({ type: "positional", required: false });
@@ -268,5 +271,44 @@ describe("pithy add --json conforms to its published payload", () => {
       eject: { capability: "auth", path: "capabilities/auth", promotedDependencies: ["hono@4.0.0"], forced: false },
     } satisfies AddResult;
     await expectConforms("add", await runCaptured("add", ["auth", "--json"]));
+  });
+});
+
+/**
+ * `pithy add --dry-run` in text: what it would compose first, what it would wire, the plan, the notes the
+ * real add prints, and the closing line — in that order, because that is the order the real run does them.
+ */
+describe("addPlanText", () => {
+  /** A planned add of `auth` into `api`, with the prerequisites and notes each case sets. */
+  function planned(prerequisites: string[]): AddPlan {
+    const plan = emptyPlan();
+    plan.files.push({ path: "apps/api/pithy.config.ts", action: "edit", changes: ["Composes auth()."] });
+    plan.notes.push("Plan note.");
+    return {
+      capability: "auth",
+      worker: "api",
+      prerequisites,
+      notes: ["Run pithy provision --env staging for the Workflow."],
+      plan,
+    } as unknown as AddPlan;
+  }
+
+  test("prerequisites are named first, before the capability they make room for", () => {
+    expect(addPlanText(planned(["secrets", "email"]))).toEqual([
+      "Would compose secrets, email into api first.",
+      "Would wire auth into api.",
+      "Would edit apps/api/pithy.config.ts.",
+      "  Composes auth().",
+      "Plan note.",
+      "Run pithy provision --env staging for the Workflow.",
+      "Dry run. Nothing written.",
+    ]);
+  });
+
+  test("with no prerequisites there is no compose line, and the wire line leads", () => {
+    const lines = addPlanText(planned([]));
+    expect(lines.some((line) => line.startsWith("Would compose"))).toBe(false);
+    expect(lines[0]).toBe("Would wire auth into api.");
+    expect(lines.at(-1)).toBe("Dry run. Nothing written.");
   });
 });

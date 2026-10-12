@@ -5,6 +5,8 @@ import { readdir } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { capabilityNotComposed } from "../capabilities/notComposed";
+import { emptyPlan, type Plan } from "../plan/plan";
+import { inShadow } from "../plan/shadow";
 import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
@@ -99,6 +101,8 @@ export interface UiAddOptions {
   prompt?: UiScreenPrompt;
   /** Package-manager override. Tests set it; otherwise it is detected from the project's lockfile. */
   packageManager?: PackageManager;
+  /** Make every write in a copy of the project and report the difference as `plan`, writing nothing here. */
+  dryRun?: boolean;
 }
 
 /** What `pithy ui add` did. */
@@ -141,6 +145,8 @@ export interface UiAddReport {
   devDependencies: string[];
   /** Script names added (or superseded, for a `dev` that still held `wrangler dev`). */
   scripts: string[];
+  /** What a `--dry-run` would write. Only under `dryRun`, where every other field is the prediction. */
+  plan?: Plan;
 }
 
 /**
@@ -318,20 +324,39 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   // reads nothing this run is about to write — which is what makes moving it ahead of the write legal.
   const patterns = deriveWorkerFirst(options.config, await projectEnvironments(options.projectDir));
 
-  const scope = { root: options.projectDir, paths: touchedPaths(options, plan.files) };
-  const result = await withRollback(scope, async () => {
-    const written = await scaffoldFiles({ workerDir: options.workerDir, files: plan.files, strict: plan.strict });
-    const assets = await wireAssets(options.workerDir, patterns);
-    await wireManifest(options.workerDir, stub, packageManager);
-    const pkg = await wirePackage(options.projectDir, options.workerDir, stub);
+  // One write, run against the project or, under `--dry-run`, against a copy of it — so the plan is this
+  // write's own output and cannot describe a different one (`plan/shadow.ts`).
+  const write = async (projectDir: string, workerDir: string) => {
+    const written = await scaffoldFiles({ workerDir, files: plan.files, strict: plan.strict });
+    const assets = await wireAssets(workerDir, patterns);
+    await wireManifest(workerDir, stub, packageManager);
+    const pkg = await wirePackage(projectDir, workerDir, stub);
     // Last, and project-wide rather than per-worker: the client's programs join the root solution file so
     // `bun run typecheck` builds them. Two tsconfigs nothing references are two tsconfigs nothing checks.
-    await wireSolution(options.projectDir, workerName(options.workerDir));
+    await wireSolution(projectDir, workerName(options.workerDir));
     // Read inside the scope, because it reads the files this block just wrote — outside, a rollback
     // would already have taken them away.
-    const unstyled = await unstyledOnDisk(options.workerDir);
+    const unstyled = await unstyledOnDisk(workerDir);
     return { written, assets, pkg, unstyled };
-  });
+  };
+
+  let result: Awaited<ReturnType<typeof write>>;
+  let planned: Plan | undefined;
+  if (options.dryRun) {
+    // Under the same rollback as the real run, in the copy: its first act is to read every file it may restore,
+    // and a file the run cannot read is refused there — so the dry run is refused there too, with that sentence.
+    const run = await inShadow(options.projectDir, (shadow) => {
+      const projectDir = shadow.root;
+      const workerDir = shadow.at(options.workerDir);
+      const scope = { root: projectDir, paths: touchedPaths({ ...options, projectDir, workerDir }, plan.files) };
+      return withRollback(scope, () => write(projectDir, workerDir));
+    });
+    result = run.result;
+    planned = { ...emptyPlan(), files: run.files };
+  } else {
+    const scope = { root: options.projectDir, paths: touchedPaths(options, plan.files) };
+    result = await withRollback(scope, () => write(options.projectDir, options.workerDir));
+  }
 
   return {
     worker: workerName(options.workerDir),
@@ -347,6 +372,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     dependencies: result.pkg.dependencies,
     devDependencies: result.pkg.devDependencies,
     scripts: result.pkg.scripts,
+    ...(planned === undefined ? {} : { plan: planned }),
   };
 }
 

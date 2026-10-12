@@ -23,7 +23,7 @@ pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rai
 | `--subject <holder>` | `reconcile` | every holder | Reconcile one holder's purchases, as `user:<id>` or `organization:<id>`. The support path: the same steps the cron runs, narrowed. An id on its own is refused — it names whichever user *or* organization carries it |
 | `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, `lemonSqueezy`, or `paddle`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
 | `--worker <name>` | `provision` | the project's only Worker | The app Worker whose `payments(...)` catalog is deployed, and whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `PAYMENTS_RECONCILE` binding. Required when a project has several |
-| `--dry-run` | `reconcile` | `false` | Report the drift and write nothing |
+| `--dry-run` | `reconcile` | `false` | Show the plan and write nothing. Reports the drift and repairs none |
 | `--json` | both | `false` | One line of machine-readable output |
 
 `provision` takes no `--env`. It spans every managed environment in one run, and **skips the ones whose app database does not exist yet** rather than refusing: the answer to "which environments did you mean" is always *the ones that are ready*, so there is nothing to state on the command line.
@@ -76,14 +76,16 @@ When **every** environment was skipped the line above is still written to stdout
 
 ```
 $ pithy payments reconcile --env staging --json
-{"command":"payments reconcile","env":"staging","report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
+{"command":"payments reconcile","env":"staging","dryRun":false,"report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"payments reconcile"` | The subcommand that produced the line |
 | `env` | `string` | The environment the pass ran in |
+| `dryRun` | `boolean` | Whether this was `--dry-run`. No drift was repaired when it is `true` |
 | `report` | `object` | The Workflow's own return value, passed through verbatim |
+| `plan` | `object` | Present only under `--dry-run`, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2): the drift the pass found as one `repair` under `data`, and a note saying the pass ran in the deployed reconcile Workflow — the one dry run that starts something on Cloudflare to plan, because the pass lives there |
 
 **`report` is the deployed Workflow's output, not the CLI's.** It crosses no schema on the way out — the Workflows client types it `unknown` and this command passes it straight through. It is absent from the line entirely when a completed Workflow returned nothing. What `@pithy-sh/payments` returns today is:
 
@@ -172,6 +174,8 @@ See what a pass would repair, without repairing it.
 
 ```
 $ pithy payments reconcile --env staging --dry-run
+214 scanned, 4 drifted, 1 skipped, 0 failed.
+Dry run. Nothing repaired.
 ```
 
 Run one rail after that store's webhooks were interrupted, rather than paying for the other two.

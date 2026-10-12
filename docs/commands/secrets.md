@@ -27,7 +27,7 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 | `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
 | `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
 | `rm` | `--backend <d1\|cf-secrets-store>` | Remove the value from this store instead of the one the registry names — for a value a secret left behind when its declaration moved. Needs `--env`. See [Moving a secret off D1](#moving-a-secret-off-d1). |
-| `rotate` | `--dry-run` | Resolve the declaration and say what would happen. Calls no issuer, writes nothing, needs no credentials. Default `false`. |
+| `rotate` | `--dry-run` | Show the plan and write nothing. Resolves the declaration and says what would happen; calls no issuer, needs no credentials. Default `false`. |
 | `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
 | `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | `deprovision` | `--destroy-retained <n>` | **Destructive.** Delete a vault that still holds rows. `<n>` must equal the count the refusal printed. |
@@ -184,7 +184,7 @@ A registry entry says how its secret is replaced, and until #367 nothing acted o
   A rotation writes wherever the registry says the secret is held — the same routing `create` and `update` use — and **everything refusable is refused before the issuer is called**. That includes the destination's own refusals, on either backend: a store that cannot be reached — an account with no Secrets Store, a manager Workflow that was never deployed — and an `update` of a secret that is not there. Both are knowable in advance, and discovering one at the write is a credential rolled at the issuer whose successor is then lost.
 - **`manual`** — a human, in somebody else's console. It prints the console, the page, and the `pithy secrets update` that records the result, and calls nothing. It exits `0`, and it never prints `Done.`: nothing was done.
 
-**`--dry-run` resolves the declaration and stops.** It reaches no account, needs no credentials, and rolls nothing — which is what makes it the thing to type first at 2am, when the question is *is this one rolled at somebody else's API, or minted here?*
+**`--dry-run` resolves the declaration and stops.** It reaches no account and rolls nothing — which is what makes it the thing to type first at 2am, when the question is *is this one rolled at somebody else's API, or minted here?* It makes the refusals the run makes before it rolls, as every dry run does (`docs/CLI.md` §1.2): missing credentials, a project with no name, a Secrets Store secret with no `SECRETS_STORE_ID`, and an undeclared secret are each refused exactly as the run refuses them, because each is read off this machine. The one it cannot make is the store's own pre-flight, which asks the account whether it would take the value.
 
 **There is no `--all`, and that is a decision.** The case that wants one is real — somebody has left, and every credential they could have seen needs rolling today. Two things argue against a flag. The blast radius is the obvious one: the failure below does not average out over ten secrets, it is ten chances to strand a live credential in one invocation, reported into one scrollback, at the hour an operator is least able to read carefully. The second is decisive. The precedent for a fleet-wide rotation is *more than one confirmation, plus an audit entry naming the operator* — and the CLI cannot honor the second half. A CLI audit resolves its actor from the Cloudflare API token and records `system, actorResolutionFailed` when there is none, so the one act most certain to be reviewed afterwards would be recorded as *somebody with the token*. What the case gets instead is `pithy secrets ls` and a shell loop, which is a worse ergonomic and forces the operator to see the list before they roll it.
 
@@ -337,6 +337,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 |---|---|---|
 | `command` | string | `"secrets rotate"`. |
 | `name` | string | The secret name given on the command line. |
+| `dryRun` | boolean | Whether this was `--dry-run`. Nothing was rolled or written when it is `true`. |
 | `rotations` | object[] | One record per secret. Always one today, because there is no `--all` — the shape is per secret so that no aggregate field can ever be added beside it and disagree. |
 | `rotations[].name` | string | The secret's registry name. Never its value; this payload has no field that could carry one. |
 | `rotations[].status` | string | `"rotated"`, `"unchanged"`, `"unrecorded"`, or `"failed"`. `unrecorded` is the issuer-rolled-and-not-stored state, and it is the only one that exits `5`. |
@@ -346,6 +347,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | `rotations[].recorded` | string[] | The environments that took the new value, in the order they took it. |
 | `rotations[].stranded` | string[] | The environments the new value never reached. Empty on a run that finished. On an `unrecorded` run these are the environments now holding a credential the issuer has retired. |
 | `rotations[].reason` | string | `"manual"` or `"dry-run"`. Present only when `status` is `unchanged` — why nothing was called. |
+| `plan` | object | Present only under `--dry-run`: the rotation in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). One `rotate` under `secrets` for each environment the value would be stored into, through the same targets the run resolves, with `where` naming the backend. Notes say that a `provider` secret is rolled at its issuer first, and that each environment's rotation ledger records it. A `manual` secret plans no rotation and says whose job it is. |
 
 An `unrecorded` run also writes one `{ "error": … }` line to stderr with code `secrets/rotation_unrecorded`, and exits `5`. A `failed` run writes the store's own failure and exits by its kind (`docs/CLI.md` §3.8). Nothing on either stream carries a value.
 

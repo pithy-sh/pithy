@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CreateReport } from "../feature/create";
+import { portsRegistryPath } from "../feature/ports";
 import type { PruneReport } from "../feature/prune";
 import type { SyncReport } from "../feature/sync";
+import { Plan } from "../plan/plan";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 
 /**
@@ -93,5 +95,22 @@ describe("pithy feature --json conforms to its published payloads", () => {
   test("prune, for real and as a dry run", async () => {
     await expectConforms("feature prune", await runCaptured("feature prune", ["--json"]));
     await expectConforms("feature prune", await runCaptured("feature prune", ["--dry-run", "--json"]));
+  });
+
+  test("prune --dry-run carries the one plan every dry run shares, and a real run carries none", async () => {
+    // The plan key is optional in the published schema, so conforming alone would pass a dry run that lost
+    // it. The block the stub frees is the one edit to the machine's port registry.
+    const planned = JSON.parse((await runCaptured("feature prune", ["--dry-run", "--json"])).join("")) as {
+      dryRun: boolean;
+      plan?: unknown;
+    };
+    expect(planned.dryRun).toBe(true);
+    expect(Plan.parse(planned.plan).files).toEqual([
+      { path: portsRegistryPath(), action: "edit", changes: ["Frees 8827–8846, feature/9-gone."] },
+    ]);
+
+    const real = JSON.parse((await runCaptured("feature prune", ["--json"])).join("")) as Record<string, unknown>;
+    expect(real.dryRun).toBe(false);
+    expect("plan" in real).toBe(false);
   });
 });

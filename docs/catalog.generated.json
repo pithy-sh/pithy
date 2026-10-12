@@ -93,6 +93,9 @@
         "--with-prerequisites",
         "--withPrerequisites",
         "--no-with-prerequisites",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]
@@ -875,6 +878,9 @@
         "--no-payments",
         "--organization",
         "--no-organization",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]
@@ -984,6 +990,9 @@
       "flags": [
         "--force",
         "--no-force",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]

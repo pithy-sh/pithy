@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { join, relative, sep } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -22,11 +23,14 @@ import { withContract } from "../contract/commandContract";
 import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
 import type { RegistryFetch } from "../kitPackages/registry";
 import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
+import { DRY_RUN_ARG, emptyPlan, type Plan, type PlanFile, PlanKey } from "../plan/plan";
 import { agentsLine, InstructionsFile, syncAgentsBlock } from "../project/agentInstructions";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { execArgs, type InstallRunner } from "../project/packageManager";
+import { pathExists } from "../project/scaffold";
+import { workerEntryPath } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -183,6 +187,8 @@ export interface UpgradeRun {
    * reconcile was left to the new one — which writes its own block, not this binary's.
    */
   agents?: InstructionsFile;
+  /** What a `--dry-run` would write, in the one plan shape every dry run shares (#697). Only under `dryRun`. */
+  plan?: Plan;
 }
 
 /**
@@ -248,7 +254,95 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
   // narrowed by `--worker`: the file is the project's, one merge is idempotent, and a refusal is reported
   // rather than failing the run — a hand-broken marker is the project's to fix, not a reconcile that failed.
   const agents = await (options.refreshAgents ?? syncAgentsBlock)(options.projectDir, { dryRun: options.dryRun });
-  return { ...reconciled, ...(packages ? { packages } : {}), agents };
+  const run: UpgradeRun = { ...reconciled, ...(packages ? { packages } : {}), agents };
+  return options.dryRun ? { ...run, plan: await planUpgrade(options.projectDir, run, options.migrate) } : run;
+}
+
+/** `"the top-level stanza"` for `dev`, `env.<name>` for the rest — where a missing binding is written. */
+function stanzaName(env: string): string {
+  return env === "dev" ? "the top-level stanza" : `env.${env}`;
+}
+
+/**
+ * **A dry run's report, as the one plan every `--dry-run` shares (#697).** Read off what the run already
+ * built — the package moves, the Pithy block, each reconciled Worker's plan — so it adds no second reading
+ * of the project, only a second spelling of the first.
+ *
+ * Its edits are sentences, not diffs: the reconcile plan says which binding and which key, and the bytes
+ * are written by the apply this dry run does not reach. What the run would refuse, and the migrations it
+ * can count but not name, are notes. A Worker that could not be planned, or was refused, plans nothing.
+ */
+export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: boolean): Promise<Plan> {
+  const plan = emptyPlan();
+  const edits = new Map<string, PlanFile>();
+  const edit = (path: string, change: string, action: PlanFile["action"] = "edit") => {
+    const file = edits.get(path) ?? { path, action, changes: [] };
+    file.changes.push(change);
+    edits.set(path, file);
+  };
+
+  for (const move of run.packages?.moves ?? [])
+    edit(move.manifest, `Moves ${move.name} from ${move.from} to ${move.to}.`);
+  if (run.packages && run.packages.moves.length > 0) {
+    // The package manager itself, as `runPackageStep` spawns it — not `execArgs`, which runs a package's bin.
+    plan.notes.push(`Then runs ${run.packages.packageManager} install at the project root.`);
+  }
+  if (run.agents && (run.agents.state === "added" || run.agents.state === "updated")) {
+    const exists = await pathExists(join(projectDir, run.agents.path));
+    edit(
+      run.agents.path,
+      run.agents.state === "added" ? "Adds the Pithy block." : "Refreshes the Pithy block. Nothing outside it changes.",
+      exists ? "edit" : "create",
+    );
+  }
+
+  for (const result of run.workers) {
+    if (result.state !== "reconciled") continue;
+    const worker = result.plan;
+    const dir = `apps/${worker.worker}`;
+    for (const cap of worker.perCapability) {
+      for (const binding of cap.missingBindings) {
+        edit(
+          `${dir}/wrangler.jsonc`,
+          `Adds ${binding.name} (${binding.type}) to ${stanzaName(binding.env)}, for ${cap.name}.`,
+        );
+      }
+      for (const key of cap.missingConfigKeys) {
+        if (key.default === undefined && key.constant === undefined) {
+          plan.notes.push(
+            `${cap.name}: ${key.key} has no default. The upgrade refuses until ${dir}/pithy.config.ts sets it.`,
+          );
+        } else {
+          edit(`${dir}/pithy.config.ts`, `Adds ${key.key} to ${cap.name}'s registration.`);
+        }
+      }
+    }
+    const exports = [...new Set(worker.perCapability.flatMap((cap) => cap.missingEntryExports))];
+    if (exports.length > 0) {
+      const entry = await workerEntryPath(join(projectDir, dir)).catch(() => null);
+      const path = entry === null ? `${dir}/wrangler.jsonc` : relative(projectDir, entry).split(sep).join("/");
+      edit(path, `Exports ${exports.join(", ")} from the Worker's entry.`);
+    }
+    if (worker.missingVersionMetadata) {
+      edit(`${dir}/wrangler.jsonc`, "Adds the CF_VERSION_METADATA version_metadata binding.");
+    }
+    const pending =
+      worker.ledger.state === "read"
+        ? worker.ledger.pending
+        : worker.ledger.state === "partial"
+          ? worker.ledger.counted.pending
+          : 0;
+    const migrations = count(pending, "migration");
+    if (migrations !== null) {
+      plan.notes.push(
+        migrate
+          ? `${worker.worker}: then applies ${migrations} pending on ${worker.env}.`
+          : `${worker.worker}: ${migrations} pending on ${worker.env}. pithy upgrade --migrate applies them.`,
+      );
+    }
+  }
+  plan.files = [...edits.values()];
+  return plan;
 }
 
 /** The reconcile, every Worker in scope — the whole of `pithy upgrade` before #634. */
@@ -701,6 +795,7 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): 
     manifestFaults: run.manifestFaults,
     packages: run.packages,
     agents: run.agents,
+    plan: run.plan,
   });
 }
 
@@ -732,6 +827,7 @@ const UpgradePayload = z
     agents: InstructionsFile.optional().describe(
       "`AGENTS.md`, and what happened to the Pithy block in it. Absent only when `--packages` moved `@pithy-sh/cli` and the reconcile was left to the new one.",
     ),
+    plan: PlanKey,
   })
   .describe("What `pithy upgrade` reconciled.");
 
@@ -744,7 +840,7 @@ export default withContract(
     args: {
       env: envArg("Target environment (drives the pending-migration count)"),
       worker: { type: "string", description: "Upgrade only this worker (default: every worker under apps/)" },
-      "dry-run": { type: "boolean", default: false, description: "Show the plan without writing anything" },
+      "dry-run": DRY_RUN_ARG,
       migrate: { type: "boolean", default: false, description: "Run pending migrations after reconciling" },
       packages: {
         type: "boolean",

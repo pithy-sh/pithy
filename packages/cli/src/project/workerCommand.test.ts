@@ -9,6 +9,8 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
 import { setWorkerAutostart } from "../feature/ports";
+import { Plan } from "../plan/plan";
+import { snapshotTree } from "../test-utils/treeSnapshot";
 import { addWorker, type DeployedScriptProbe, listWorkers, removeWorker, renameWorker } from "./workerCommand";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { discoverWorkers, type WorkerTarget } from "./workers";
@@ -600,6 +602,78 @@ describe("renameWorker", () => {
       env?: Record<string, { vars?: Record<string, string> }>;
     };
   }
+
+  /**
+   * **`--dry-run` decides everything the rename decides and writes nothing (#697).** The plan names the
+   * move and diffs the two edits, and those diffs are the bytes the real rename then writes.
+   */
+  describe("dry run", () => {
+    test("writes nothing, and plans the move and both edits the rename makes", async () => {
+      await scaffold("api");
+      const before = await snapshotTree(dir);
+      const options = {
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: dir,
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account(),
+      };
+
+      const planned = await renameWorker({ ...options, dryRun: true });
+
+      expect(await snapshotTree(dir)).toEqual(before);
+      const { plan, ...report } = planned;
+      expect(Plan.parse(plan)).toEqual(plan);
+      expect(plan?.files.map(({ path, action, from }) => ({ path, action, from }))).toEqual([
+        { path: "apps/board", action: "move", from: "apps/api" },
+        { path: "apps/board/wrangler.jsonc", action: "edit", from: undefined },
+        { path: "apps/board/package.json", action: "edit", from: undefined },
+      ]);
+      const wrangler = plan?.files[1]?.diff ?? "";
+      expect(wrangler).toContain('-  "name": "acme-api",');
+      expect(wrangler).toContain('+  "name": "acme-board",');
+
+      const real = await renameWorker(options);
+      expect(report).toEqual(real);
+      const written = await readFile(join(dir, "apps", "board", "wrangler.jsonc"), "utf8");
+      for (const line of wrangler.split("\n").filter((row) => row.startsWith("+"))) {
+        expect(written.split("\n")).toContain(line.slice(1));
+      }
+    });
+
+    test("refuses where the rename refuses: a script live under the old name, without --force", async () => {
+      await scaffold("api");
+      const before = await snapshotTree(dir);
+      await expect(
+        renameWorker({
+          projectDir: dir,
+          from: "api",
+          to: "board",
+          mainRoot: dir,
+          discoverWorkers: discover(dir, ["api"]),
+          probeDeployed: account("acme-api"),
+          dryRun: true,
+        }),
+      ).rejects.toThrow(/deployed as acme-api/);
+      expect(await snapshotTree(dir)).toEqual(before);
+    });
+
+    test("inside a worktree, the feature's dev config is planned too", async () => {
+      await scaffold("api");
+      const planned = await renameWorker({
+        projectDir: dir,
+        from: "api",
+        to: "board",
+        mainRoot: join(dir, "elsewhere"),
+        discoverWorkers: discover(dir, ["api"]),
+        probeDeployed: account(),
+        dryRun: true,
+      });
+      expect(planned.plan?.files.at(-1)).toMatchObject({ path: ".dev.config.json", action: "edit" });
+      expect(planned.reconciled).toBe(false);
+    });
+  });
 
   test("moves the directory and reconciles all three stamps", async () => {
     await scaffold("api");

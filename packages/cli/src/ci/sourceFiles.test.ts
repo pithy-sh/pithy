@@ -356,6 +356,14 @@ describe("no module writes its own walk over a directory tree", () => {
       walk: "templateSources",
       why: "The third in this package and the same wall as the two above, not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits their argument whole — nothing scaffolds into or deletes from it mid-run. Arrived with #441, which needed to assert that no seeded screen writes a sentence a translator cannot reach.",
     },
+    "packages/cli/src/plan/shadow.ts": {
+      walk: "walk",
+      why: "It walks an adopter's project, not this repository's source, and needs the opposite of two rules the primitive exists to keep. A dry run's copy must take dotted files — `.github/`, `.gitignore`, a `.vscode/` an add may edit — and `dotted: true` still refuses `node_modules`, which the copy has to link rather than skip, and drops a symlink, which the copy has to reproduce or refuse by where it points. Neither is an edit nobody made: a source walk that copied links and entered `node_modules` would be wrong for every one of its callers.",
+    },
+    "packages/cli/src/test-utils/treeSnapshot.ts": {
+      walk: "walk",
+      why: "The before-and-after a dry run is held to (#697), so it has to see every write a command could make: a dotted file, a symlink by where it points, an empty directory, anything under `node_modules` or `dist`. The primitive skips every one of those by design, which is right for a source gate and is exactly the blindness this assertion cannot have.",
+    },
     "tooling/build/src/stampDeclarations.ts": {
       walk: "declarations",
       why: "`tooling/build` cannot import `@pithy-sh/cli`: every published package's `tsdown.config.ts` imports this package, and `@pithy-sh/cli` depends on those packages — so the edge is a cycle in the workspace graph, the same wall `@pithy-sh/ui-react` hits above. It walks one `dist` directory that the `tsc` two commands earlier has just written and nothing else touches, so the race the primitive was hardened against cannot reach it, and it reads only to prepend a header to files it already knows the extension of.",

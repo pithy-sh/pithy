@@ -30,7 +30,7 @@ pithy feature prune [--dry-run] [--json]
 | `--branch <name>` | `destroy` | the checkout's own branch | The feature to tear down, named rather than inferred — `feature/<issue>-<slug>`. Only the issue and the slug come from it: the project is this checkout's, so it names a feature of this project and reaches no other's. The issue is canonical, so `feature/012-x` and `feature/12-x` are the same feature; a feature created under a padded issue is still found, because the local half tries the canonical spelling first and the one it was given second. Anything else is refused before anything is deleted |
 | `--env <environment>` | `destroy` | `feature` | The environment whose teardown is recorded on the audit trail. It never changes what is deleted: teardown deletes by recorded and recomputed feature name regardless |
 | `--local-only` | `destroy` | `false` | Tear down only the worktree and its ports, leaving the Cloudflare resources in place |
-| `--dry-run` | `prune` | `false` | List the blocks it would free, and write nothing |
+| `--dry-run` | `prune` | `false` | Show the plan and write nothing. Lists the blocks it would free |
 | `--json` | all four | `false` | One line of machine-readable output |
 
 ## What it does
@@ -186,6 +186,7 @@ $ pithy feature prune --json
 | `freedBlocks[].block` | `number` | The block index, 0-based |
 | `freedBlocks[].base` | `number` | The first port in the block |
 | `freedBlocks[].size` | `number` | How many ports the block spans |
+| `plan` | `object` | Present only under `--dry-run`, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2): one `edit` of the machine's port registry — its absolute path, since it lives outside every project — with a change per block it would free. Empty when every block is held |
 
 A teardown deletes real infrastructure one resource at a time, with no transaction across them. So a failure on the fourth delete still fails the command, and stdout still names the three that went: an operator finishing the teardown by hand needs the record more on that run than on the one that worked.
 

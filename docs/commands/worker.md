@@ -10,7 +10,7 @@ Manage the project's Workers under `apps/` — the registry every other command 
 pithy worker add <name> [--skip-install] [--json]
 pithy worker list [--json]
 pithy worker remove <name> [--json]
-pithy worker rename <from> <to> [--force] [--json]
+pithy worker rename <from> <to> [--force] [--dry-run] [--json]
 pithy worker sync [--worker <name>] [--env <environment>] [--json]
 ```
 
@@ -26,6 +26,7 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 | `<from> <to>` | `rename` | required | The Worker to rename, and its new kebab-case name |
 | `--skip-install` | `add` | `false` | Skip the workspace install after scaffolding |
 | `--force` | `rename` | `false` | Rename even though a script is deployed under the old name. It stays live, and the report names it |
+| `--dry-run` | `rename` | `false` | Show the plan and write nothing. Every refusal still applies, the live-script check included |
 | `--worker <name>` | `sync` | resolved | Which Worker to reconcile (`apps/<name>`). A single-Worker project needs no flag; several prompt at a terminal and fail `input/required`, naming `--worker`, under `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1` |
 | `--env <environment>` | `sync` | every declared one | Reconcile just this environment — its route, its Workflow bindings, its cron. Omit for the top-level stanza plus every `env.<name>` the Worker already declares |
 | `--json` | all five | `false` | One line of machine-readable output |
@@ -55,6 +56,8 @@ The second half writes the app capability's declared Workflows and cron triggers
 Two things it deliberately leaves alone: the app capability's `name` in `pithy.config.ts`, which is a migration namespace stamped into every applied row, and a script name the adopter chose — only a name carrying the Worker segment is recomputed, so a Worker migrated in as `my-service` keeps its name and the command says so.
 
 **A rename after a deploy is not a rename.** Resource names are computed rather than stored, so `<project>-<env>-<binding>` survives untouched — but the Worker script is named for the Worker, so a renamed Worker deploys as a *new* script and leaves the old one live, serving, and billing. So the account is asked first, and a live script under the old name is refused by name. `--force` is how you say that is understood; the report then names exactly what was left behind. Where the account cannot be reached — no credentials, an offline laptop, a token that will not list — the rename proceeds and says it did not check. **It never reports an unchecked account as a clear one**, which is what `accountChecked` exists for.
+
+**`--dry-run` decides everything the rename decides and moves nothing.** The name is checked, the destination is checked, and the account is asked about a live script exactly as the real run asks it — a refusal there is the refusal the rename would give. Then, instead of moving anything, it plans: the directory move, the `wrangler.jsonc` and `package.json` edits as diffs of the bytes the rename writes, and, inside a feature worktree, the `.dev.config.json` it would reconcile. The plan shape is the one every `--dry-run` shares (`docs/CLI.md` §1.2). Asking the account is a read; nothing is written there or anywhere else.
 
 What `rename` does not touch is everything outside the Worker's own directory: the root `tsconfig.json` references, a vitest config, a CI workflow. Those are yours, they are grep-able, and the command's last line says to look. `pithy doctor` checks the three stamps agree on every run, so a hand-rename that misses one fails CI instead of a deploy.
 
@@ -123,7 +126,7 @@ The name argument is matched against either identity, so both `pithy worker remo
 
 ```
 $ pithy worker rename api board --json
-{"command":"worker.rename","worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
+{"command":"worker.rename","dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
 ```
 
 `worker` and `deployedAs` describe the Worker **after** the move, so a caller reading the identity keys gets the same two facts here it gets from the other four subcommands. `from`, `to` and `script` are what a rename adds on top: the transition. `deployedAs` is therefore always the script name the Worker deploys under now — including when `script` is `null` because a name the adopter chose was left alone.
@@ -131,6 +134,7 @@ $ pithy worker rename api board --json
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.rename"` | The subcommand that produced the line |
+| `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was moved or written when it is `true`, and every other key is what the rename would report |
 | `worker` | `string` | The Worker's `apps/` directory after the move. The same string as `to` |
 | `deployedAs` | `string` | The script name it deploys under after the move. The same string as `script.to`, and the unchanged declared name when `script` is `null` |
 | `from` | `string` | The `apps/` directory basename before the move |
@@ -141,7 +145,8 @@ $ pithy worker rename api board --json
 | `script.to` | `string` | The script name it deploys under now |
 | `orphaned` | `string[]` | Script names left live on the account under the old name. Non-empty only under `--force`. Read it with `accountChecked` — it is empty both when the account said nothing is there and when it said nothing at all |
 | `accountChecked` | `boolean` | Whether the account answered. `false` means unchecked, not clear, and `orphaned` then establishes nothing |
-| `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten. Only ever true inside a feature worktree |
+| `reconciled` | `boolean` | Whether the feature's `.dev.config.json` was rewritten. Only ever true inside a feature worktree, and never under `--dry-run` |
+| `plan` | `object` | Present only under `--dry-run`: the move, the two edits with their diffs, and the dev config inside a worktree, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) |
 
 ```
 $ pithy worker sync --worker api --json
@@ -269,6 +274,17 @@ Renamed api to board.
 Deploys as acme-board, not acme-api.
 Check anything outside the worker that names it: tsconfig, CI, imports.
 Done.
+```
+
+See the rename before it happens.
+
+```
+$ pithy worker rename api board --dry-run
+Would move apps/api to apps/board.
+Would edit apps/board/wrangler.jsonc.
+Would edit apps/board/package.json.
+Would deploy as acme-board, not acme-api.
+Dry run. Nothing written.
 ```
 
 Rename anyway, knowing what is orphaned.

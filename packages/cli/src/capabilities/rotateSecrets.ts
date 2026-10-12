@@ -19,6 +19,7 @@ import {
 } from "@pithy-sh/secrets/src/rotation/rotateValue";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { emptyPlan, type Plan } from "../plan/plan";
 import { EXIT } from "../terminal/exitClass";
 
 /**
@@ -330,4 +331,39 @@ export function unrecordedFailure(
 function describeCause(cause: unknown): string {
   if (cause instanceof Error) return cause.message;
   return cause === undefined ? "no cause recorded" : String(cause);
+}
+
+/**
+ * **`pithy secrets rotate --dry-run`, as the one plan every dry run shares (#697).** One `rotate` per
+ * environment the rotation would store into — the same targets the run resolves, through the same rule —
+ * and a note for what a secret entry cannot say: a `provider` rolls the credential at its issuer first, and
+ * a `manual` secret is a person's job, so its plan rotates nothing.
+ */
+export function planSecretRotation(
+  registry: SecretRegistry,
+  command: Pick<SecretRotateCommand, "name" | "env" | "environments">,
+  kind: SecretRotationOutcome["kind"],
+): Plan {
+  const entry = requireEntry(registry, command.name);
+  if (kind === "manual") {
+    return { ...emptyPlan(), notes: [`${command.name} is replaced by a person at its issuer. A run calls nothing.`] };
+  }
+  const targets = entry.keyed
+    ? []
+    : secretWriteTargets({
+        name: command.name,
+        backend: entry.backend,
+        scope: entry.scope,
+        mode: "update",
+        requested: command.env,
+        declared: command.environments,
+      });
+  return {
+    ...emptyPlan(),
+    secrets: targets.map((env) => ({ name: command.name, env, action: "rotate", where: entry.backend })),
+    notes: [
+      ...(kind === "provider" ? ["Rolls the credential at its issuer first, then stores the new value."] : []),
+      "Records the rotation in each environment's rotation ledger.",
+    ],
+  };
 }

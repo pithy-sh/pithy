@@ -17,11 +17,12 @@ import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type Remote
 import { DevConfig } from "../feature/devConfig";
 import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { PortBlock, portsRegistryPath } from "../feature/ports";
-import { OrphanedBlock, pruneFeatureBlocks } from "../feature/prune";
+import { OrphanedBlock, pruneFeatureBlocks, prunePlan } from "../feature/prune";
 import { assertFeatureSlugFitsProject } from "../feature/slugBudget";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, featureWorktree, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
+import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
@@ -200,8 +201,9 @@ const FeaturePrunePayload = z
     freedBlocks: z
       .array(OrphanedBlock)
       .describe("The blocks freed, or under `--dry-run` that would be, in port order."),
+    plan: PlanKey,
   })
-  .describe("What `pithy feature prune` freed.");
+  .describe("What `pithy feature prune` freed, or under `--dry-run` would.");
 
 const create = withContract(
   defineCommand({
@@ -604,20 +606,18 @@ const prune = withContract(
       description: "Free the port blocks of features whose worktree and branch are both gone",
     },
     args: {
-      "dry-run": { type: "boolean", default: false, description: "List what would be freed, and write nothing" },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
-        const report = await pruneFeatureBlocks({
-          cwd: process.cwd(),
-          registryPath: portsRegistryPath(),
-          dryRun: args["dry-run"],
-        });
+        const registryPath = portsRegistryPath();
+        const report = await pruneFeatureBlocks({ cwd: process.cwd(), registryPath, dryRun: args["dry-run"] });
 
         if (args.json) {
+          const plan = report.dryRun ? prunePlan(report, registryPath) : undefined;
           process.stdout.write(
-            `${formatJsonLine({ command: "feature.prune", root: report.root, dryRun: report.dryRun, freedBlocks: report.freedBlocks })}\n`,
+            `${formatJsonLine({ command: "feature.prune", root: report.root, dryRun: report.dryRun, freedBlocks: report.freedBlocks, plan })}\n`,
           );
           return;
         }

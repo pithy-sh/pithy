@@ -98,6 +98,21 @@ Every command is agent-drivable and supports `--json`, with **one deliberate exc
 
 The flag that answers each one is named on the command's page. `docs/commands/*.md` calls them out where a prompt is described; `packages/cli/src/ci/promptSites.test.ts` enumerates every prompt in the CLI and holds each to one kind or the other.
 
+**`--dry-run` plans, and every command that takes it plans in one shape.** It is on `add`, `ui add`, `worker rename`, `upgrade`, `seed`, `secrets rotate`, `feature prune` and `payments reconcile`, declared once with one description — *Show the plan and write nothing* — so `pithy schema` publishes the same flag for each. A dry run makes every refusal the real run makes, before it plans anything: a plan for a run that would be refused is a promise nobody can keep. It skips the confirmations, because nothing it does needs one. Its text output ends with a line that opens `Dry run.` in place of `Done.`, and that line is `Dry run. Nothing written.` on six of them. The other two say what else a real run would have done: `secrets rotate` ends `Dry run. Nothing rolled, nothing written.` and `payments reconcile` ends `Dry run. Nothing repaired.`
+
+Under `--json` each of them carries `dryRun`, and under `--dry-run` a `plan` beside the keys it always wrote. The plan's schema is one Zod value, shared by every one of them, and `packages/cli/src/plan/dryRun.test.ts` fails on a command whose payload carries a copy instead. Every list is always present, empty when there is nothing of its kind, so an agent reads `plan.files.length` without asking whether the key was there:
+
+| key | type | meaning |
+|---|---|---|
+| `files` | object[] | Files and directories it would write: `path` relative to the project root (absolute only outside it, like the port registry), `action` (`create`, `edit`, `delete`, `move`), `from` on a `move`, `changes` as one sentence each, and `diff` — the change as a unified diff of the text — wherever the command knows the bytes |
+| `resources` | object[] | Cloudflare resources it would `create`, `adopt` or `upload`: `kind`, `name`, `binding`, `env`, and `id` on an adopt |
+| `migrations` | object[] | Migrations it would apply (`up`) or roll back (`down`): `env`, `worker`, `database`, `binding`, `name` |
+| `secrets` | object[] | Secrets it would `mint`, `write`, `rotate` or `bind`: `name`, `env`, and `where` the value lands. Never the value |
+| `data` | object[] | Rows, entries and objects it would write into existing stores: `store`, `target`, `count`, `action` |
+| `notes` | string[] | What the plan cannot settle without making the change, one sentence each |
+
+**A dry run writes nothing, and calls nothing that writes.** `add` and `ui add` make their real writes in a private copy of the project under the system temporary directory and plan the difference, so the diff a person reviews is the bytes the run writes; the copy is gone before the command exits. They read Cloudflare at most — `worker rename` asks whether the old script is live, as the real rename does — and each command's suite asserts that no write call was made. `payments reconcile` is the one exception, and it says so in its plan: the pass runs in the deployed reconcile Workflow, so a dry run starts that Workflow, which reads the entitlements in scope and repairs none.
+
 **`--json` formats for whoever is reading it.** A script, a CI job or an agent gets exactly the compact line it has always parsed; a person at a terminal gets that same document indented two spaces, with restrained syntax color. Nothing about the payload changes, so both round-trip through `JSON.parse` to the same value.
 
 **This applies to a command that writes one document.** A document can be reshaped for its reader because nothing parses it incrementally: the trailing newline is a terminator rather than a separator, so indenting cannot break a framing that is not there. **`pithy dev` is the exception, and it is not reshaped — and nor is `pithy dev logs`, which reads its records back.** A session never ends, so its `--json` stdout is a *stream* — one object per line, which is the only rule a consumer reading it line by line can apply (`docs/commands/dev.md` §`--json`). Indenting those records would hand that consumer `{` as its first line, so a session's records stay compact and uncolored at a terminal exactly as they are in a pipe. The reader inherits the exception for a sharper reason: `pithy dev logs --follow` is a stream and `pithy dev logs -n 50` is not, and a consumer's parse must not change with a flag it did not pass — so both are compact and uncolored. `pithy dev --list --json` writes one document and exits, and is formatted like any other.
@@ -863,7 +878,7 @@ Use pithy <command> --help for more information about a command.
 
 ### 4.2 Subcommand help
 
-Same renderer, one command deep. `pithy add` is the representative case — a positional argument and seven flags. Help never enumerates the capability catalog: `pithy add --list` is the command for that (§3.5), and it reads the installed set, which no static block can.
+Same renderer, one command deep. `pithy add` is the representative case — a positional argument and eight flags. Help never enumerates the capability catalog: `pithy add --list` is the command for that (§3.5), and it reads the installed set, which no static block can.
 
 ```
 $ pithy add --help
@@ -883,6 +898,7 @@ OPTIONS
                --eject    Copy the capability's source into your repo and own it (no upgrades) (Default: false)
                --force    With --eject, overwrite an existing local copy (discards edits) (Default: false)
   --with-prerequisites    Compose the capabilities this one requires, if they aren't composed yet (Default: false)
+             --dry-run    Show the plan and write nothing (Default: false)
                 --json    Machine-readable output (Default: false)
 ```
 
@@ -1130,7 +1146,7 @@ That line is the difference between `upgrade` and `doctor` agreeing and not. Rep
 
 **`--packages` is what moves a version; `pithy upgrade` alone never did.** It moves every `@pithy-sh/*` dependency to the newest version its range admits and reinstalls, then reconciles. A version beyond a breaking boundary — a new major, or a new minor under `0.x` — is held and named, and `--latest` is the explicit opt-in that crosses it. Doctor names whichever of the two clears its line, and names none when no `pithy` command would.
 
-`pithy upgrade --json` carries six fields, and a seventh, `packages`, only when `--packages` was passed. `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`. `agents` says what happened to the Pithy block in `AGENTS.md` — `added`, `updated`, `unchanged` or `refused` — and is absent only when `--packages` moved `@pithy-sh/cli` and left the reconcile to the new one (§1.5).
+`pithy upgrade --json` carries six fields, a seventh, `packages`, only when `--packages` was passed, and an eighth, `plan`, only under `--dry-run` (§1.2). `command` is the command's name, `env` the environment the pending-migration count was computed for, and `dryRun` whether anything was written. `workers` is one entry per Worker in discovery order, each holding the `plan` built for it and the `applied` result of writing it — `null` on a dry run. Each applied capability carries `addedBindings` (what landed) and `skippedBindings` (what did not, each with its `reason`). `manifestFaults` is the project-wide list, one entry per unusable manifest, each naming its `package` and the `reason`. `agents` says what happened to the Pithy block in `AGENTS.md` — `added`, `updated`, `unchanged` or `refused` — and is absent only when `--packages` moved `@pithy-sh/cli` and left the reconcile to the new one (§1.5).
 
 `pithy add --list --json` carries three. `command`, then `capabilities` — the catalog, each entry naming the capability, its package, when to enable it, and whether this project has it installed — and the same `manifestFaults` list, for the same reason and in the same shape.
 
@@ -1188,7 +1204,7 @@ Idempotent, comment-preserving, and all-or-nothing: a run with nothing to change
 ### 6.6 Renaming a worker (`pithy worker rename`)
 
 ```
-pithy worker rename <old> <new> [--force] [--json]
+pithy worker rename <old> <new> [--force] [--dry-run] [--json]
 ```
 
 **A worker's name is not one string. It is three, and they have to agree.**
