@@ -3,17 +3,25 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudflareAIManager, ImageToText, TextGeneration, VectorEmbeddings } from "./aiManager";
+import { aiRunPath, CloudflareAIManager, ImageToText, TextGeneration, VectorEmbeddings } from "./aiManager";
 
+/** The SDK's raw `post`, which `runModel` calls with the path it built. Answers the REST envelope. */
+const mockPost = vi.fn();
+/** What the model answers, by model name and body — the envelope's `result`, for the typed helpers' tests. */
 const mockAiRun = vi.fn();
 const mockModelsList = vi.fn();
+/** The SDK's own `ai.run`, which percent-encodes the model's `/`. Asserted never to be called. */
+const mockSdkRun = vi.fn();
+
+const RUN_PREFIX = "/accounts/acct-1/ai/run/";
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
     ai = {
-      run: mockAiRun,
+      run: mockSdkRun,
       models: { list: mockModelsList },
     };
+    post = mockPost;
   },
 }));
 
@@ -23,6 +31,10 @@ describe("CloudflareAIManager", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPost.mockImplementation(async (path: string, options: { body: Record<string, unknown> }) => ({
+      success: true,
+      result: await mockAiRun(path.slice(RUN_PREFIX.length), options.body),
+    }));
     manager = new CloudflareAIManager(config);
   });
 
@@ -38,17 +50,78 @@ describe("CloudflareAIManager", () => {
     });
   });
 
+  describe("aiRunPath", () => {
+    // The SDK's `ai.run` builds this path with its `path` tag, which percent-encodes every `/` in the
+    // model name: `/ai/run/@cf%2Fbaai%2Fbge-m3`. Cloudflare routes on the literal slashes and answers
+    // 7000 "No route for that URI" to the encoded one, for every model (#709).
+    it("keeps the model name's slashes literal", () => {
+      expect(aiRunPath("acct-1", "@cf/baai/bge-m3")).toBe("/accounts/acct-1/ai/run/@cf/baai/bge-m3");
+      expect(aiRunPath("acct-1", "@cf/llava-hf/llava-1.5-7b-hf")).toBe(
+        "/accounts/acct-1/ai/run/@cf/llava-hf/llava-1.5-7b-hf",
+      );
+      expect(aiRunPath("acct-1", "@hf/thebloke/deepseek-coder-6.7b-instruct-awq")).toBe(
+        "/accounts/acct-1/ai/run/@hf/thebloke/deepseek-coder-6.7b-instruct-awq",
+      );
+    });
+
+    it("accepts every default model this manager runs", () => {
+      for (const model of [
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "@cf/meta/llama-3.1-8b-instruct",
+        "@cf/baai/bge-small-en-v1.5",
+      ]) {
+        expect(aiRunPath("acct-1", model)).toBe(`${RUN_PREFIX}${model}`);
+      }
+    });
+
+    // The name goes into the path unencoded, so the pattern is the whole of the defense: nothing that
+    // could walk the path, end it, or add a query reaches a request.
+    it.each([
+      ["an empty name", ""],
+      ["no @ prefix", "cf/meta/llama"],
+      ["no namespace segment", "@cf"],
+      ["a parent segment", "@cf/../../tokens"],
+      ["a dot segment", "@cf/./x"],
+      ["a segment that starts with a dot", "@cf/meta/.hidden"],
+      ["an empty segment", "@cf//x"],
+      ["a trailing slash", "@cf/meta/"],
+      ["a query", "@cf/meta/llama?x=1"],
+      ["a fragment", "@cf/meta/llama#x"],
+      ["a percent escape", "@cf/meta%2Fllama"],
+      ["a space", "@cf/meta/lla ma"],
+      ["a backslash", "@cf/meta\\llama"],
+      ["a newline", "@cf/meta/llama\n"],
+      ["an absolute URL", "https://example.com/x"],
+    ])("refuses %s before building a path", (_label, model) => {
+      expect(() => aiRunPath("acct-1", model)).toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      );
+    });
+
+    it("encodes the account id", () => {
+      expect(aiRunPath("a/b", "@cf/x/y")).toBe("/accounts/a%2Fb/ai/run/@cf/x/y");
+    });
+  });
+
   describe("runModel", () => {
-    it("injects account_id and spreads the input, returning the raw response", async () => {
-      mockAiRun.mockResolvedValue({ response: "ok" });
+    it("posts the input to the literal model path and returns the envelope's result", async () => {
+      mockPost.mockResolvedValue({ success: true, result: { response: "ok" } });
       const result = await manager.runModel("@cf/some/model", { text: "hi" });
-      expect(mockAiRun).toHaveBeenCalledWith("@cf/some/model", { account_id: "acct-1", text: "hi" });
+      expect(mockPost).toHaveBeenCalledWith("/accounts/acct-1/ai/run/@cf/some/model", { body: { text: "hi" } });
+      expect(mockSdkRun).not.toHaveBeenCalled();
       expect(result).toEqual({ response: "ok" });
+    });
+
+    it("refuses a malformed model name without sending anything", async () => {
+      await expect(manager.runModel("@cf/../x", { text: "hi" })).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      );
+      expect(mockPost).not.toHaveBeenCalled();
     });
 
     it("wraps an SDK failure as cloudflare/request_failed with the cause kept in detail", async () => {
       mockAiRun.mockRejectedValue(new Error("model offline"));
-      await expect(manager.runModel("m", {})).rejects.toThrowError(
+      await expect(manager.runModel("@cf/x/m", {})).rejects.toThrowError(
         expect.objectContaining({
           payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "model offline" }),
         }),
@@ -61,18 +134,15 @@ describe("CloudflareAIManager", () => {
       mockAiRun.mockResolvedValue({ response: "Generated text" });
       const messages = [{ role: "user" as const, content: "Hello" }];
       const result = await manager.generateText(messages);
-      expect(mockAiRun).toHaveBeenCalledWith(
-        expect.stringContaining("llama"),
-        expect.objectContaining({ account_id: "acct-1", messages }),
-      );
+      expect(mockAiRun).toHaveBeenCalledWith(expect.stringContaining("llama"), expect.objectContaining({ messages }));
       expect(result.response).toBe("Generated text");
     });
 
     it("passes max_tokens and an overridden model when provided", async () => {
       mockAiRun.mockResolvedValue({ response: "short" });
       const messages = [{ role: "user" as const, content: "test" }];
-      await manager.generateText(messages, { model: "@cf/custom", maxTokens: 100 });
-      expect(mockAiRun).toHaveBeenCalledWith("@cf/custom", expect.objectContaining({ max_tokens: 100, messages }));
+      await manager.generateText(messages, { model: "@cf/custom/text", maxTokens: 100 });
+      expect(mockAiRun).toHaveBeenCalledWith("@cf/custom/text", expect.objectContaining({ max_tokens: 100, messages }));
     });
 
     it("throws cloudflare/invalid_response when the payload has no response field", async () => {
@@ -97,7 +167,7 @@ describe("CloudflareAIManager", () => {
       const result = await manager.generateEmbeddings("some content");
       expect(mockAiRun).toHaveBeenCalledWith(
         expect.stringContaining("bge-m3"),
-        expect.objectContaining({ account_id: "acct-1", text: "some content" }),
+        expect.objectContaining({ text: "some content" }),
       );
       expect(result).toEqual(embeddings);
     });
@@ -132,7 +202,6 @@ describe("CloudflareAIManager", () => {
       expect(mockAiRun).toHaveBeenCalledWith(
         expect.stringContaining("llava"),
         expect.objectContaining({
-          account_id: "acct-1",
           image: expect.any(String),
           prompt: expect.stringContaining("alt text"),
         }),
@@ -143,12 +212,12 @@ describe("CloudflareAIManager", () => {
     it("passes a custom prompt, model, and max_tokens", async () => {
       mockAiRun.mockResolvedValue({ description: "caption" });
       await manager.analyzeImage(new Uint8Array([1]), {
-        model: "@cf/vision",
+        model: "@cf/vision/caption",
         prompt: "Caption this",
         maxTokens: 512,
       });
       expect(mockAiRun).toHaveBeenCalledWith(
-        "@cf/vision",
+        "@cf/vision/caption",
         expect.objectContaining({ prompt: "Caption this", max_tokens: 512 }),
       );
     });

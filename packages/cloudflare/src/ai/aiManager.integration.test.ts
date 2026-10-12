@@ -49,8 +49,18 @@ describe.skipIf(!creds.hasCreds)("CloudflareAIManager — LIVE", () => {
   });
 
   test("surfaces an unknown model as a wrapped request failure", async () => {
-    await expect(ai.runModel("@cf/does-not/exist", { text: "x" })).rejects.toThrowError(
+    const error = await ai.runModel("@cf/does-not/exist", { text: "x" }).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toEqual(
       expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
     );
+    // Workers AI's own refusal, not the router's. 7000 "No route for that URI" is what every model got while
+    // the path carried `@cf%2Fdoes-not%2Fexist` (#709): the request never reached Workers AI, so a test that
+    // accepted any failure passed on a manager that could run no model at all.
+    const apiCode = (error as { payload?: { params?: { apiCode?: unknown } } }).payload?.params?.apiCode;
+    expect(apiCode, "Cloudflare answered with no error code").toEqual(expect.any(Number));
+    expect(apiCode, "7000 is Cloudflare's router: the run path is malformed").not.toBe(7000);
   });
 });

@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { AIRunParams, AIRunResponse } from "cloudflare/resources/ai/ai";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { AIRunResponse } from "cloudflare/resources/ai/ai";
 import type { ModelListResponse } from "cloudflare/resources/ai/models/models";
 import { fromUint8Array } from "js-base64";
 import { z } from "zod";
@@ -129,6 +130,39 @@ export interface AnalyzeImageOptions {
 const DEFAULT_IMAGE_PROMPT = "Describe this image in a concise sentence suitable for alt text.";
 
 /**
+ * What a Workers AI model name may look like: `@<namespace>/` and then one to three segments, each made of
+ * letters, digits, `.`, `_` and `-` and starting with a letter or digit — `@cf/baai/bge-m3`,
+ * `@cf/llava-hf/llava-1.5-7b-hf`, `@hf/thebloke/deepseek-coder-6.7b-instruct-awq`.
+ *
+ * **The name goes into the request path unencoded, so this pattern is the whole of the defense.** A segment
+ * cannot be `.` or `..` (it must start with a letter or digit), and nothing that ends a path, opens a query
+ * or a fragment, or escapes a character (`?`, `#`, `%`, `\`, whitespace) is in the alphabet. A name outside
+ * it is refused before a request exists.
+ */
+const AI_MODEL_NAME = /^@[a-z0-9][a-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*){1,3}$/;
+
+/**
+ * The REST path that runs `model`: `/accounts/<id>/ai/run/@cf/baai/bge-m3`, the model's slashes literal.
+ *
+ * **Not the SDK's `ai.run` (#709).** cloudflare 7.0.0 builds that path with its `path` tag, which
+ * percent-encodes every path parameter, the `/`s inside a model name included. Cloudflare routes on the
+ * literal slashes, so `/ai/run/@cf%2Fbaai%2Fbge-m3` answers 7000 "No route for that URI" for every model.
+ * The path is built here instead, and a name that could change its shape is refused by {@link AI_MODEL_NAME}.
+ *
+ * @throws ValidationError (`validation/invalid_input`) when `model` is not a Workers AI model name.
+ */
+export function aiRunPath(accountId: string, model: string): string {
+  if (!AI_MODEL_NAME.test(model)) {
+    throw new ValidationError({
+      message: `"${model.slice(0, 120)}" is not a Workers AI model name.`,
+      action: "Pass a model name such as @cf/baai/bge-m3. The Workers AI model catalog lists them.",
+      detail: `model name ${JSON.stringify(model)} does not match ${AI_MODEL_NAME}`,
+    });
+  }
+  return `/accounts/${encodeURIComponent(accountId)}/ai/run/${model}`;
+}
+
+/**
  * Out-of-Worker Workers AI access over the REST API: run any model, generate text, generate
  * embeddings, analyze an image, and list models from a CLI/CI/provisioning context. Inside a
  * Worker you use the `Ai` binding directly — this manager is the REST counterpart, addressed by
@@ -138,12 +172,17 @@ const DEFAULT_IMAGE_PROMPT = "Describe this image in a concise sentence suitable
 export class CloudflareAIManager extends CloudflareManager {
   /**
    * Run a Cloudflare AI model by name with an arbitrary JSON input. The single seam every typed
-   * helper builds on. The account id is injected for you; the rest of `input` is the model's body.
+   * helper builds on. The account is addressed for you; `input` is the model's body.
+   *
+   * Through the SDK's raw `post` to {@link aiRunPath}, not `ai.run`, whose path encoding Cloudflare cannot
+   * route. A malformed model name throws `validation/invalid_input` before any request is sent.
    */
   async runModel(model: string, input: Record<string, unknown>): Promise<AIRunResponse> {
-    return cloudflareRequest(`AI run model '${model}'`, () =>
-      this.getClient().ai.run(model, { account_id: this.accountId, ...input } as AIRunParams),
-    );
+    const path = aiRunPath(this.accountId, model);
+    return cloudflareRequest(`AI run model '${model}'`, async () => {
+      const envelope = await this.getClient().post<{ result: AIRunResponse }>(path, { body: input });
+      return envelope.result;
+    });
   }
 
   /**
