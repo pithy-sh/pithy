@@ -94,12 +94,13 @@ One line, one object. Two shapes: one for `--list`, one for an add — real, or 
 
 ```
 $ pithy add --list --json
-{"command":"add","capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":false}, …],"manifestFaults":[]}
+{"command":"add","schemaVersion":1,"capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":false}, …],"manifestFaults":[]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"add"` | The command that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `capabilities` | array | The built-in catalog, in catalog order, each entry tagged with whether this project has it installed |
 | `capabilities[].name` | string | The capability name — the `pithy add <name>` argument |
 | `capabilities[].package` | string | The npm package it ships in. `@pithy-sh/<name>` for all but `controlplane`, which ships inside `@pithy-sh/core` |
@@ -115,12 +116,13 @@ A faulted package is reported rather than refused: one broken manifest must not 
 
 ```
 $ pithy add secrets --json
-{"command":"add","capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run pithy init, then pithy add secrets again.", …]}
+{"command":"add","schemaVersion":1,"capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run pithy init, then pithy add secrets again.", …]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"add"` | The command that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `dryRun` | boolean | Whether this was `--dry-run`. Nothing was written when it is `true`, and every other key is what the add would report |
 | `capability` | string | The capability's name, taken from the manifest rather than from the argument |
 | `worker` | string | The `apps/` directory that was wired. What `--worker` accepts, and what every path in this payload is relative to |
@@ -157,7 +159,7 @@ $ pithy add secrets --json
 
 ```
 $ pithy add audit --dry-run --json
-{"command":"add","dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":[],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -1,3 +1,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"},{"path":"package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
+{"command":"add","schemaVersion":1,"dryRun":true,"capability":"audit","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/audit","packageManager":"bun","databases":[],"kvNamespaces":[],"notes":[],"prerequisites":[],"plan":{"files":[{"path":"apps/board/package.json","action":"edit","changes":[],"diff":"@@ -6,6 +6,7 @@\n …"},{"path":"apps/board/pithy.config.ts","action":"edit","changes":[],"diff":"@@ -1,3 +1,4 @@\n+import { audit } from \"@pithy-sh/audit/src/index\";\n …"},{"path":"apps/board/wrangler.jsonc","action":"edit","changes":[],"diff":"…"},{"path":"package.json","action":"edit","changes":["Runs bun add @pithy-sh/audit here, which also writes the lockfile."],"diff":"…"}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["Then applies board's pending dev migrations to the local database.","Delivers the project's dev secrets to each Worker's .dev.vars and to the local SECRETS store."]}}
 ```
 
 ## Errors

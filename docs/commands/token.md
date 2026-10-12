@@ -55,6 +55,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"token mint"` or `"token rotate"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `profile` | string | The profile that was minted. |
 | `env` | string | The environment it was minted for. |
 | `tokenId` | string | Cloudflare's id for the token. An identifier, not a credential. |
@@ -69,6 +70,7 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"token list"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The environment listed. |
 | `tokens` | object[] | This project's tokens for that environment. Empty when there are none. |
 | `tokens[].profile` | string | The profile, recovered by exact-name lookup. |
@@ -83,6 +85,7 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"token revoke"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `profile` | string | The profile that was revoked. |
 | `env` | string | The environment it was revoked for. |
 | `name` | string | The composed Cloudflare token name the sweep matched. |
@@ -120,10 +123,10 @@ pithy token revoke ci-system --env staging --json
 ```
 
 ```json
-{"command":"token mint","profile":"ci-system","env":"prod","tokenId":"<token-id>","store":"dev-vars","location":"/home/you/.config/pithy/acme/tokens.json"}
-{"command":"token list","env":"prod","tokens":[{"profile":"ci-system","env":"prod","name":"acme-prod-ci-system","tokenId":"<token-id>","status":"active"}]}
-{"command":"token rotate","profile":"secrets","env":"prod","tokenId":"<token-id>","store":"secrets-store","location":"CF Secrets Store"}
-{"command":"token revoke","profile":"ci-system","env":"staging","name":"acme-staging-ci-system","revoked":1}
+{"command":"token mint","schemaVersion":1,"profile":"ci-system","env":"prod","tokenId":"<token-id>","store":"dev-vars","location":"/home/you/.config/pithy/acme/tokens.json"}
+{"command":"token list","schemaVersion":1,"env":"prod","tokens":[{"profile":"ci-system","env":"prod","name":"acme-prod-ci-system","tokenId":"<token-id>","status":"active"}]}
+{"command":"token rotate","schemaVersion":1,"profile":"secrets","env":"prod","tokenId":"<token-id>","store":"secrets-store","location":"CF Secrets Store"}
+{"command":"token revoke","schemaVersion":1,"profile":"ci-system","env":"staging","name":"acme-staging-ci-system","revoked":1}
 ```
 
 Every value above that looks like an identifier is a placeholder. No payload on this page can carry a token value, whatever is substituted in.

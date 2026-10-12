@@ -70,6 +70,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | key | type | meaning |
 |---|---|---|
 | `command` | `"media provision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environments` | array | One entry per environment provisioned, in managed-environment order |
 | `environments[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `environments[].bucketName` | string | The R2 bucket media objects live in for this environment |
@@ -86,6 +87,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"media deprovision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The one environment torn down — the value of `--env` |
 | `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether that environment's bucket, its objects, and its namespace were deleted |
 
@@ -174,7 +176,7 @@ The same run, machine-readable, in D1 record mode:
 
 ```
 $ pithy media provision --json
-{"command":"media provision","environments":[{"env":"staging","bucketName":"acme-staging-media","kvNamespaceId":null}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
+{"command":"media provision","schemaVersion":1,"environments":[{"env":"staging","bucketName":"acme-staging-media","kvNamespaceId":null}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
 Take staging's worker down and leave the objects alone:
@@ -189,5 +191,5 @@ Take all of staging down, including the bytes. Production is untouched:
 
 ```
 $ pithy media deprovision --env staging --storage --json
-{"command":"media deprovision","env":"staging","storageDeleted":true}
+{"command":"media deprovision","schemaVersion":1,"env":"staging","storageDeleted":true}
 ```

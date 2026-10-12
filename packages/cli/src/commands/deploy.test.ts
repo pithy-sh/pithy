@@ -9,7 +9,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { MigrationFanOutOptions } from "../migrations/run";
 import type { WorkerDeploy } from "../project/deploy";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
-import { expectConforms } from "../test-utils/payloadContract";
+import { expectConforms, expectEventsConform } from "../test-utils/payloadContract";
 import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } from "./deploy";
 
 /**
@@ -70,7 +70,10 @@ vi.mock("../project/deploy", async (importOriginal) => ({
     if (narrating.on) {
       const { settleStep, startStep } = await import("../terminal/progress");
       startStep("acme-api");
-      settleStep("acme-api: deployed. https://api.acme.example v1");
+      // With the row behind the line, as `project/deploy.ts` settles it (#697).
+      settleStep("acme-api: deployed. https://api.acme.example v1", {
+        worker: { name: "acme-api", ok: true, url: "https://api.acme.example", versionId: "v1" },
+      });
     }
     return shipped.rows;
   },
@@ -526,6 +529,33 @@ describe("the two halves", () => {
   });
 
   /**
+   * **A refusal recorded as a row exits by its class, and the rows before it stay in the report (#697 review).** An
+   * earlier Worker's build failure and a later Worker's refused credentials are both on the line; the run exits 3,
+   * because the credentials are the caller's next step, and an ordinary failure alone still exits 1.
+   */
+  test("--json carries every failed row, and a refused Worker's row sets the exit", async () => {
+    shipped.rows = [
+      { name: "acme-api", ok: false, built: false, error: "vite build failed." },
+      { name: "acme-web", ok: false, error: "wrangler deploy failed.", exit: EXIT.precondition },
+    ] satisfies WorkerDeploy[];
+    try {
+      const refused = await invokeRun({ env: "staging", apps: true });
+      expect(JSON.parse(refused.out).workers.map((row: WorkerDeploy) => [row.name, row.ok, row.exit])).toEqual([
+        ["acme-api", false, undefined],
+        ["acme-web", false, EXIT.precondition],
+      ]);
+      await expectConforms("deploy", refused.out);
+      expect(refused.exitCode).toBe(EXIT.precondition);
+
+      shipped.rows = [{ name: "acme-api", ok: false, built: false, error: "vite build failed." }];
+      expect((await invokeRun({ env: "staging", apps: true })).exitCode).toBe(EXIT.failed);
+      expect((await invokeRun({ env: "staging", apps: true, json: false })).exitCode).toBe(EXIT.failed);
+    } finally {
+      shipped.rows = [];
+    }
+  });
+
+  /**
    * wrangler colors its `✘ [ERROR]`, and the captured stderr is the reason a row carries (#697). The color is
    * taken out where wrangler's output is captured (`project/deploy.test.ts` drives the real `runWrangler`), and
    * the `--json` encoder writes the row's text as it is — so what the row holds is what a reader gets.
@@ -629,6 +659,31 @@ describe("what the command says while it works", () => {
     expect(out.trimEnd().split("\n")).toHaveLength(1);
     expect(JSON.parse(out).command).toBe("deploy");
     expect(out).not.toContain("▸");
+  });
+
+  /**
+   * **`--json --events` is the one exception to one line (#697)**: a record per step as the run reaches it,
+   * then the document `--json` alone would have written, as the last line. Every line parses on its own, and
+   * none of them is prose.
+   */
+  test("--json --events streams a record per step, closed by the document --json writes", async () => {
+    const document = await narratedRun({ env: "staging", json: true });
+    const out = await narratedRun({ env: "staging", json: true, events: true });
+
+    const records = await expectEventsConform("deploy", out);
+    expect(records.slice(0, -1)).toEqual([
+      { command: "deploy", schemaVersion: 1, event: "start", what: "acme-api" },
+      {
+        command: "deploy",
+        schemaVersion: 1,
+        event: "settled",
+        line: "acme-api: deployed. https://api.acme.example v1",
+        worker: { name: "acme-api", ok: true, url: "https://api.acme.example", versionId: "v1" },
+      },
+    ]);
+    expect(out.trimEnd().split("\n").at(-1)).toBe(document.trimEnd());
+    expect(out).not.toContain("▸");
+    expect(out).not.toContain("\u001b");
   });
 });
 

@@ -50,6 +50,16 @@ export const CommandDescription = z
     payload: JsonSchemaDocument.nullable().describe(
       "The JSON Schema of its `--json` output: the one document, or any one record of a stream. `null` when `output` is `none`.",
     ),
+    schemaVersion: z
+      .number()
+      .int()
+      .nullable()
+      .describe(
+        "The version every `--json` line it writes carries as `schemaVersion`. Bumped only when a key is removed or retyped. `null` when `output` is `none`.",
+      ),
+    events: JsonSchemaDocument.nullable().describe(
+      "The JSON Schema of one `--events` progress record, which every line but the last of a `--json --events` run is. `null` when it takes no `--events`.",
+    ),
     errorLine: z
       .object({ $ref: z.literal(ERROR_LINE_REF).describe("A pointer to the document's `errorLine`.") })
       .describe("The JSON Schema of its error line on stderr — the same for every command, so it is published once."),

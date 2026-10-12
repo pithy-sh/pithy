@@ -19,6 +19,7 @@ import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { accountWorkersSubdomain } from "../cloudflare/workersSubdomain";
 import { withContract } from "../contract/commandContract";
+import { EVENTS_ARG, EVENTS_NEED_JSON, eventsOption, eventsRecord } from "../contract/events";
 import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { FeatureResource } from "../feature/manifest";
@@ -63,7 +64,7 @@ import { provisionNextEntry } from "../provision/undeployed";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { NextKey, type NextStep } from "../terminal/nextSteps";
-import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+import { eventsProgress, formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { commandProgress } from "../terminal/progress";
 
 /**
@@ -258,6 +259,8 @@ export interface ProvisionRunOptions {
   seed: boolean;
   /** `--json`. */
   json: boolean;
+  /** `--events`: with `--json`, a progress record per step before the report (#697). */
+  events?: boolean;
   /** `--dry-run`: plan the run, and create, write and migrate nothing. */
   dryRun?: boolean;
 }
@@ -302,16 +305,19 @@ function resourceLine(resource: ProvisionedResource): string {
  * was here was the whole vocabulary, named and filed under provisioning — which is exactly why `pithy
  * deploy` never inherited it and printed nothing for minutes. What is left here is the only part that is
  * genuinely about provisioning: a resource has a name, and it was created or it already existed.
+ *
+ * **Under `--json --events` it is a record per resource instead (#697)**: the start carries the binding and
+ * kind, the settle the row `resources` will list, beside the line a person would have read.
  */
-export function provisionProgress(options: { json: boolean }): ProvisionProgress | undefined {
-  const progress = commandProgress(options);
+export function provisionProgress(options: { json: boolean; events?: boolean }): ProvisionProgress | undefined {
+  const progress = options.json && options.events ? eventsProgress("provision") : commandProgress(options);
   if (!progress) return undefined;
   return (event) =>
     // `▸ <name>...` before the find, then the settled line the summary used to hold until the end.
     progress(
       event.phase === "start"
-        ? { phase: "start", what: event.name }
-        : { phase: "settled", line: resourceLine(event.resource) },
+        ? { phase: "start", what: event.name, data: { binding: event.binding, kind: event.kind } }
+        : { phase: "settled", line: resourceLine(event.resource), data: { resource: event.resource } },
     );
 }
 
@@ -661,9 +667,9 @@ async function provisionDeclared(
     env: environment,
     yes: options.yes,
     json: options.json,
-    // The plan, before anyone agrees to it and before the first Cloudflare call (#515). Under `--json`
-    // there is no sink, so nothing is resolved for it and nothing is printed.
-    ...(progress
+    // The plan, before anyone agrees to it and before the first Cloudflare call (#515). It is prose, so under
+    // `--json` nothing is resolved for it and nothing is printed — `--events` included, whose stdout is records.
+    ...(!options.json
       ? {
           announce: async () => {
             const plan = await provisionPlan({
@@ -727,7 +733,7 @@ async function provisionDeclared(
     seeded: options.seed,
     pending: deferredSecrets(capabilities, mode),
     registry: workerSecretRegistry(capabilities) ?? {},
-    streamed: progress !== undefined,
+    streamed: progress !== undefined && !options.json,
     ...(await provisionNextEntry(report, { json: options.json, account })),
   });
 }
@@ -794,8 +800,9 @@ async function provisionBranch(
   }
   const progress = provisionProgress(options);
   // No confirmation gate here — a feature environment is created per pull request, so there is no prompt
-  // to hang the plan off. It goes where the confirmation's would: before the first Cloudflare call.
-  if (progress) {
+  // to hang the plan off. It goes where the confirmation's would: before the first Cloudflare call. Prose,
+  // so never under `--json`, `--events` included.
+  if (!options.json) {
     const plan = await provisionPlan({
       projectDir,
       project: identity.project,
@@ -846,7 +853,7 @@ async function provisionBranch(
     seeded: true,
     pending: featurePendingSecrets(deferredSecrets(capabilities, mode), report),
     registry: workerSecretRegistry(capabilities) ?? {},
-    streamed: progress !== undefined,
+    streamed: progress !== undefined && !options.json,
     ...(await provisionNextEntry(report, { json: options.json, account })),
   });
 }
@@ -868,18 +875,33 @@ export async function runProvision(options: ProvisionRunOptions): Promise<void> 
 
 const Worker = z.string().describe("The Worker's own deploy name — its `wrangler.jsonc` `name`.");
 
+/** One resource, as `resources` lists it and as an `--events` record settles it. */
+const ProvisionedResourceRow = FeatureResource.extend({
+  created: z.boolean().describe("Whether this run created it; `false` when an existing one was adopted."),
+}).describe("One resource.");
+
+/**
+ * `pithy provision --json --events`: one record per step, before the report closes the stream (#697). A
+ * resource starts with its `binding` and `kind` and settles with its row as `resource`; a feature's kit
+ * Worker settles with its row as `kit`; a migration or a seed set starts with only `what`.
+ */
+const ProvisionEvents = eventsRecord("provision", {
+  start: {
+    binding: z.string().describe("The binding the resource backs."),
+    kind: FeatureResource.shape.kind,
+  },
+  settled: {
+    resource: ProvisionedResourceRow.describe("The resource that settled, as `resources` lists it."),
+    kit: KitWorkerDeploy.describe("`--feature`: the kit Worker that settled, as `hosts` lists it."),
+  },
+});
+
 /** `pithy provision --json`, for both modes. `docs/commands/provision.md`. */
 const ProvisionPayload = z
   .object({
     command: z.literal("provision").describe('`"provision"`. The same for both modes.'),
     env: z.string().describe("The environment provisioned — a declared name, or `feature`."),
-    resources: z
-      .array(
-        FeatureResource.extend({
-          created: z.boolean().describe("Whether this run created it; `false` when an existing one was adopted."),
-        }).describe("One resource."),
-      )
-      .describe("Every resource, in provision order."),
+    resources: z.array(ProvisionedResourceRow).describe("Every resource, in provision order."),
     workers: z
       .array(
         z
@@ -1016,23 +1038,30 @@ export default withContract(
       },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
+      events: EVENTS_ARG,
     },
     run: ({ args }) =>
-      withErrorReporting(args.json, () =>
-        runProvision({
-          env: args.env,
-          feature: args.feature,
-          yes: args.yes,
-          confirm: args.confirm,
-          seed: args.seed,
-          json: args.json,
-          dryRun: args["dry-run"],
-        }),
+      withErrorReporting(
+        args.json,
+        () =>
+          runProvision({
+            env: args.env,
+            feature: args.feature,
+            yes: args.yes,
+            confirm: args.confirm,
+            seed: args.seed,
+            json: args.json,
+            events: args.json && args.events,
+            dryRun: args["dry-run"],
+          }),
+        eventsOption("provision", args),
       ),
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: ProvisionPayload,
+    events: ProvisionEvents,
     mutates: true,
     // Adopting: a resource of the right name is taken up rather than duplicated.
     idempotent: true,
@@ -1043,6 +1072,7 @@ export default withContract(
         flags: ["--env", "--feature"],
         rule: "Pass either --env or --feature: exactly one says which environment to provision.",
       },
+      EVENTS_NEED_JSON,
     ],
   },
 );

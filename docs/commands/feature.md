@@ -106,12 +106,13 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy feature create media-cli --issue 69 --json
-{"command":"feature.create","branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","worktreeCreated":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8807,"size":20},"workers":{"api":{"port":8807,"origin":"http://localhost:8807"}}}}
+{"command":"feature.create","schemaVersion":1,"branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","worktreeCreated":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8807,"size":20},"workers":{"api":{"port":8807,"origin":"http://localhost:8807"}}}}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.create"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `branch` | `string` | The feature branch created or attached |
 | `worktree` | `string` | The absolute worktree path |
 | `worktreeCreated` | `boolean` | Whether a new worktree was created. False on an idempotent re-run over an existing one |
@@ -130,12 +131,13 @@ $ pithy feature create media-cli --issue 69 --json
 
 ```
 $ pithy feature sync --json
-{"command":"feature.sync","branch":"feature/69-media-cli","block":{"block":1,"base":8807,"size":20},"dev":{…},"addedWorkers":["web"],"removedWorkers":[],"data":true}
+{"command":"feature.sync","schemaVersion":1,"branch":"feature/69-media-cli","block":{"block":1,"base":8807,"size":20},"dev":{…},"addedWorkers":["web"],"removedWorkers":[],"data":true}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.sync"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `branch` | `string` | The feature branch |
 | `block` | `object` | The feature's reserved port block, as the central registry holds it |
 | `block.block` | `number` | The block index, 0-based |
@@ -152,12 +154,13 @@ The payload for a feature's Cloudflare environment is [`provision.md`](provision
 
 ```
 $ pithy feature destroy --json
-{"command":"feature.destroy","deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestRead":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
+{"command":"feature.destroy","schemaVersion":1,"deletedResources":[{"kind":"worker","name":"acme-f69-media-cli--api","id":"acme-f69-media-cli--api"},{"kind":"d1","name":"acme-f69-media-cli--db-d1","id":"…"}],"remote":true,"portsFreed":true,"branch":"feature/69-media-cli","worktreePruned":true,"branchDeleted":false,"manifestRead":true,"manifestPath":"/repo/.worktrees/69-media-cli/.pithy-feature.json"}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.destroy"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `deletedResources` | `object[]` | Every Worker script and Cloudflare resource deleted, from the manifest and from the name reconcile, scripts first. Empty when nothing remained, or when the remote half was skipped |
 | `deletedResources[].kind` | `"worker" \| "d1" \| "kv" \| "r2"` | The resource kind. `worker` is a Worker script |
 | `deletedResources[].name` | `string` | The resource name |
@@ -173,12 +176,13 @@ $ pithy feature destroy --json
 
 ```
 $ pithy feature prune --json
-{"command":"feature.prune","root":"/repo","dryRun":false,"freedBlocks":[{"branch":"feature/70-old-idea","block":2,"base":8827,"size":20}]}
+{"command":"feature.prune","schemaVersion":1,"root":"/repo","dryRun":false,"freedBlocks":[{"branch":"feature/70-old-idea","block":2,"base":8827,"size":20}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"feature.prune"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `root` | `string` | The main checkout root whose blocks were judged — the registry key they are filed under |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was written when it is `true` |
 | `freedBlocks` | `object[]` | The blocks freed, in port order — or under `--dry-run`, the blocks that would be. Empty when every block is held |

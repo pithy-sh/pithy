@@ -348,7 +348,9 @@ describe("pithy provision narrates the run it is doing", () => {
         '"dryRun":false,"next":[{"command":"pithy deploy --env staging","why":"board-staging is not deployed in staging."}]}',
       ),
     );
-    await expectConforms("provision", line);
+    await expectConforms("provision", () =>
+      captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {}, next })),
+    );
     const none = provisionNext({ env: "staging", undeployed: [] });
     expect(captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {}, next: none }))).toBe(
       JSON_LINE,
@@ -358,8 +360,7 @@ describe("pithy provision narrates the run it is doing", () => {
   /** Held to the schema `pithy schema provision` publishes (#697): a declared run, and a feature's extras. */
   test("--json conforms to its published payload", async () => {
     const pending = { names: ["link-key"], remedy: "pithy secrets provision" };
-    await expectConforms(
-      "provision",
+    await expectConforms("provision", () =>
       captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {} })),
     );
     const feature: ProvisionReport = {
@@ -379,8 +380,7 @@ describe("pithy provision narrates the run it is doing", () => {
       routesDropped: [{ worker: "board", routes: ["api.example.com/*"] }],
       bindingsDropped: [{ worker: "board", bindings: ["STRANGER"] }],
     };
-    await expectConforms(
-      "provision",
+    await expectConforms("provision", () =>
       captured(() =>
         writeReport(feature, { json: true, seeded: true, pending: { names: [], remedy: null }, registry: {} }),
       ),
@@ -451,6 +451,16 @@ describe("pithy provision narrates the run it is doing", () => {
     // The gate is `--json` and only `--json`. There is no sink, so `provisionEnvironment` narrates into
     // nothing and no step line can reach the one line a pipeline is parsing.
     expect(provisionProgress({ json: true })).toBeUndefined();
+  });
+
+  test("--events without --json in the parse is a person's run, so the lines stay prose", () => {
+    // `--json --no-json --events` parses to json false: no record may reach the lines a person reads.
+    const progress = provisionProgress({ json: false, events: true });
+    const written = captured(() =>
+      progress?.({ phase: "start", name: "replay-staging-db", binding: "DB", kind: "d1" }),
+    );
+
+    expect(written).toBe("▸ replay-staging-db...\n");
   });
 
   /**

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { expectConforms } from "../test-utils/payloadContract";
+import { asCommand, expectConforms } from "../test-utils/payloadContract";
 import type { DevLogRecord } from "./devLogRecord";
 import { formatDevLogRecord } from "./devLogRecord";
 import { stripAnsi } from "./logging";
@@ -140,11 +140,12 @@ describe("runDevLogs", () => {
     const exited: DevLogRecord = { ts: at(3), event: "exited", code: null };
     await write("dev.main.api.jsonl", [line(spawned), line(out(1, "Ready")), line(ready), line(exited)].join(""));
 
-    await run({ json: true });
+    // As `pithy dev logs` runs it, so every line carries the command's version.
+    await asCommand("dev logs", () => run({ json: true }));
     await expectConforms("dev logs", stdout);
 
     stdout = [];
-    await run({ apps: ["api"], json: true });
+    await asCommand("dev logs", () => run({ apps: ["api"], json: true }));
     expect(stdout).toHaveLength(4);
     await expectConforms("dev logs", stdout);
   });

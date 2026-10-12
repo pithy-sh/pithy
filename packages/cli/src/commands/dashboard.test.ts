@@ -708,9 +708,8 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       status: "connected" as const,
       updated: false,
     };
-    await expectConforms("dashboard connect", formatConnectReport(report, { json: true }));
-    await expectConforms(
-      "dashboard connect",
+    await expectConforms("dashboard connect", () => formatConnectReport(report, { json: true }));
+    await expectConforms("dashboard connect", () =>
       formatConnectReport(
         { ...report, status: "unreachable", detail: "Nothing answered.", keyId: null, updated: true },
         { json: true },
@@ -720,23 +719,22 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
 
   test("rotate", async () => {
     const report = { environment: "prod", connectionId: id, keyId: "key_2", previousKeyIds: ["key_1"] };
-    await expectConforms("dashboard rotate", formatRotateReport({ ...report, status: "connected" }, { json: true }));
-    await expectConforms(
-      "dashboard rotate",
+    await expectConforms("dashboard rotate", () =>
+      formatRotateReport({ ...report, status: "connected" }, { json: true }),
+    );
+    await expectConforms("dashboard rotate", () =>
       formatRotateReport({ ...report, status: "needs_reconnect", detail: "No answer." }, { json: true }),
     );
   });
 
   test("disconnect", async () => {
-    await expectConforms(
-      "dashboard disconnect",
+    await expectConforms("dashboard disconnect", () =>
       formatDisconnectReport(
         { environment: "prod", connectionId: null, removed: false, dashboardNotified: false },
         { json: true },
       ),
     );
-    await expectConforms(
-      "dashboard disconnect",
+    await expectConforms("dashboard disconnect", () =>
       formatDisconnectReport(
         { environment: "prod", connectionId: id, removed: true, dashboardNotified: false, detail: "Offline." },
         { json: true },
@@ -765,19 +763,16 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       createdAt: new Date("2026-01-01T00:00:00Z"),
       updatedAt: new Date("2026-02-01T00:00:00Z"),
     };
-    await expectConforms(
-      "dashboard revoke-key",
+    await expectConforms("dashboard revoke-key", () =>
       formatRevokeKeyReport({ environment: "prod", keyId: "key_1", revoked: true, connection }, { json: true }),
     );
-    await expectConforms(
-      "dashboard revoke-key",
+    await expectConforms("dashboard revoke-key", () =>
       formatRevokeKeyReport({ environment: "prod", keyId: "nope", revoked: false, connection: null }, { json: true }),
     );
   });
 
   test("status, connected and not", async () => {
-    await expectConforms(
-      "dashboard status",
+    await expectConforms("dashboard status", () =>
       formatStatusReport(
         {
           environment: "prod",
@@ -801,8 +796,7 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
         { json: true },
       ),
     );
-    await expectConforms(
-      "dashboard status",
+    await expectConforms("dashboard status", () =>
       formatStatusReport(
         {
           environment: "dev",

@@ -131,12 +131,12 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null},"plan":{"files":[{"path":"AGENTS.md","action":"edit","changes":["Refreshes the Pithy block. Nothing outside it changes."]}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["board: 1 migration pending on dev. pithy upgrade --migrate applies them."]}}
+{"command":"upgrade","schemaVersion":1,"env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"updated","reason":null},"plan":{"files":[{"path":"AGENTS.md","action":"edit","changes":["Refreshes the Pithy block. Nothing outside it changes."]}],"resources":[],"migrations":[],"secrets":[],"data":[],"notes":["board: 1 migration pending on dev. pithy upgrade --migrate applies them."]}}
 ```
 
 ```
 $ pithy upgrade --json
-{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"unchanged","reason":null}}
+{"command":"upgrade","schemaVersion":1,"env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[],"agents":{"path":"AGENTS.md","state":"unchanged","reason":null}}
 ```
 
 ### The envelope
@@ -144,6 +144,7 @@ $ pithy upgrade --json
 | key | type | meaning |
 |---|---|---|
 | `command` | `"upgrade"` | The command that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The environment the run targeted — the validated `--env` |
 | `dryRun` | boolean | Whether `--dry-run` was passed. **This is what says which shape `workers` carries** |
 | `workers` | array | One entry per Worker in scope, in discovery order. A plan when `dryRun` is true, an applied result otherwise |

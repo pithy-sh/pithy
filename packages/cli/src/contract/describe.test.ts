@@ -53,6 +53,7 @@ describe("describeCommand", () => {
     }),
     {
       output: "document",
+      schemaVersion: 1,
       payload: z.object({ command: z.literal("probe").describe('`"probe"`.') }).describe("A probe."),
       mutates: false,
       idempotent: true,
@@ -66,6 +67,31 @@ describe("describeCommand", () => {
     expect(described.payload).not.toHaveProperty("additionalProperties", false);
   });
 
+  /** A caller learns which version of the shape to expect before it runs anything (#697). */
+  test("publishes the payload's schemaVersion, and the payload's JSON Schema names it", async () => {
+    const described = await describeCommand({ path: ["probe"], cmd: leaf as CommandDef });
+    expect(described.schemaVersion).toBe(1);
+    expect(described.payload).toMatchObject({
+      properties: { schemaVersion: { const: 1 } },
+      required: expect.arrayContaining(["command", "schemaVersion"]),
+    });
+    expect(described.events).toBeNull();
+  });
+
+  test("publishes the --events record beside the payload, at the same version", async () => {
+    const streaming = withContract(defineCommand({ meta: { name: "long" }, run: () => undefined }), {
+      output: "document",
+      schemaVersion: 2,
+      payload: z.object({ command: z.literal("long").describe('`"long"`.') }).describe("Done."),
+      events: z.object({ event: z.literal("start").describe("Start.") }).describe("A record."),
+      mutates: true,
+      idempotent: true,
+      needsNetwork: false,
+    });
+    const described = await describeCommand({ path: ["long"], cmd: streaming as CommandDef });
+    expect(described.events).toMatchObject({ properties: { event: { const: "start" }, schemaVersion: { const: 2 } } });
+  });
+
   test("names a command's own aliases", async () => {
     expect((await describeCommand({ path: ["probe"], cmd: leaf as CommandDef })).aliases).toEqual(["p"]);
   });
@@ -77,6 +103,8 @@ describe("describeCommand", () => {
       subcommands: ["group probe"],
       output: "none",
       payload: null,
+      schemaVersion: null,
+      events: null,
       mutates: false,
       idempotent: true,
       needsNetwork: false,

@@ -61,12 +61,13 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy turnstile provision --json
-{"command":"turnstile provision","modes":["visible"],"widgets":[{"mode":"visible","sitekey":"0x4AAA…","created":true}],"productionSecretWritten":true,"sitekeys":{"visible":{"dev":"1x00000000000000000000AA","staging":"1x00000000000000000000AA","prod":"0x4AAA…"}},"strandedVarsRemoved":[{"name":"TURNSTILE_SITEKEY_VISIBLE","environment":"prod"}],"configFile":"apps/web/pithy.config.ts","redeployRequired":true,"environmentsWithoutSitekeys":[]}
+{"command":"turnstile provision","schemaVersion":1,"modes":["visible"],"widgets":[{"mode":"visible","sitekey":"0x4AAA…","created":true}],"productionSecretWritten":true,"sitekeys":{"visible":{"dev":"1x00000000000000000000AA","staging":"1x00000000000000000000AA","prod":"0x4AAA…"}},"strandedVarsRemoved":[{"name":"TURNSTILE_SITEKEY_VISIBLE","environment":"prod"}],"configFile":"apps/web/pithy.config.ts","redeployRequired":true,"environmentsWithoutSitekeys":[]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"turnstile provision"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `modes` | `("visible" \| "invisible")[]` | The widget modes the config declares, and that this run acted on |
 | `widgets` | `object[]` | One entry per production widget — see below |
 | `widgets[].mode` | `"visible" \| "invisible"` | Which widget this entry is |
@@ -81,12 +82,13 @@ $ pithy turnstile provision --json
 
 ```
 $ pithy turnstile deprovision --json
-{"command":"turnstile deprovision","modes":["visible","invisible"]}
+{"command":"turnstile deprovision","schemaVersion":1,"modes":["visible","invisible"]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"turnstile deprovision"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `modes` | `("visible" \| "invisible")[]` | The widget modes torn down. Empty when the Worker composes no turnstile, and nothing was |
 
 ## Errors

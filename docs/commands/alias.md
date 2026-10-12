@@ -79,37 +79,38 @@ One line, one object. The payload's shape follows the path taken, and there are 
 
 ```
 $ pithy alias --json
-{"command":"alias","action":"install","installed":true,"alreadyInstalled":false,"shell":"bash","rcPath":"/home/you/.bashrc","alias":"alias p.='pithy'"}
+{"command":"alias","schemaVersion":1,"action":"install","installed":true,"alreadyInstalled":false,"shell":"bash","rcPath":"/home/you/.bashrc","alias":"alias p.='pithy'"}
 ```
 
 **Remove** — `pithy alias --remove --json`.
 
 ```
 $ pithy alias --remove --json
-{"command":"alias","action":"remove","removed":true,"rcPath":"/home/you/.bashrc"}
+{"command":"alias","schemaVersion":1,"action":"remove","removed":true,"rcPath":"/home/you/.bashrc"}
 ```
 
 **Status** — `pithy alias --status --json`.
 
 ```
 $ pithy alias --status --json
-{"command":"alias","action":"status","installed":true,"shell":"bash","rcPath":"/home/you/.bashrc"}
+{"command":"alias","schemaVersion":1,"action":"status","installed":true,"shell":"bash","rcPath":"/home/you/.bashrc"}
 ```
 
 **Unknown shell**, from an install or a remove. `action` says which of the two was asked for, and `manual` says nothing was written.
 
 ```
 $ pithy alias --json
-{"command":"alias","action":"install","shell":null,"manual":true,"alias":"alias p.='pithy'"}
+{"command":"alias","schemaVersion":1,"action":"install","shell":null,"manual":true,"alias":"alias p.='pithy'"}
 ```
 
-`--status` under an unknown shell reports nulls the same way: `{"command":"alias","action":"status","installed":false,"shell":null,"rcPath":null}`.
+`--status` under an unknown shell reports nulls the same way: `{"command":"alias","schemaVersion":1,"action":"status","installed":false,"shell":null,"rcPath":null}`.
 
 This path used to carry no `action` at all — so the one case where the command exited 0 and changed nothing was the one case a consumer keying on `action` could not classify. It is the case that most needs detecting.
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"alias"` | The command that produced the line. On every payload |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `action` | `"install" \| "remove" \| "status"` | Which path ran. On every payload, the unknown-shell one included |
 | `installed` | boolean | Install: always `true` — the alias is in place, whether this run put it there or found it. Status: whether the marker block is in the rc file |
 | `alreadyInstalled` | boolean | Install only. `true` when the block, or a hand-added `alias p.=`, was already there and nothing was written |

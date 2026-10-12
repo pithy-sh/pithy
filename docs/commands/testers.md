@@ -145,6 +145,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers provision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `results` | array | One entry per environment provisioned |
 | `results[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `results[].worker` | string | The deployed daily-pass worker name, `<project>-<env>-testers` |
@@ -161,6 +162,7 @@ When **every** selected environment was skipped the line is still written to std
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers deprovision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `results` | array | One entry per environment torn down |
 | `results[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `results[].worker` | string | The daily-pass worker name that was deleted. Absent is success — teardown is idempotent |
@@ -172,6 +174,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers create"` \| `"testers close"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `cohort` | object | The cohort row |
 | `cohort.id` | string | The cohort's UUID. Text rather than a sequential id, which would leak how many test programs a project has run |
 | `cohort.name` | string | The human label |
@@ -190,6 +193,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers list"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `cohorts` | array | Every cohort, newest first |
 | `cohorts[].id` | string | The cohort id |
 | `cohorts[].name` | string | The cohort's human label |
@@ -204,6 +208,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers invite"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `cohort` | string | The resolved cohort **id**, whether you passed a name or an id |
 | `invited` | array | One entry per `--email`, in the order given |
 | `invited[].id` | string | The member id. Stable across a revival, so history stays attached to one person |
@@ -215,6 +220,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers pending"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `cohort` | string | The resolved cohort id |
 | `emails` | array of string | Every tester in the `accepted` state — they have agreed to test and are waiting to be added to the store's tester list |
 
@@ -223,6 +229,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers remove"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `member` | object | The removed tester |
 | `member.id` | string | Their member id |
 | `member.email` | string | Their address |
@@ -232,6 +239,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers run"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `results` | array | One entry per cohort the pass ran for — one with `--cohort`, otherwise every open cohort |
 | `results[].cohortId` | string | The cohort this entry describes |
 | `results[].snapshotOn` | string | The UTC day the pass recorded, `YYYY-MM-DD` |
@@ -255,6 +263,7 @@ That difference reaches `cohort.trend`. `direction` and every delta come off the
 | key | type | meaning |
 |---|---|---|
 | `command` | `"testers roster"` \| `"testers status"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `cohort` | object | The cohort view |
 | `cohort.id` | string | The cohort id |
 | `cohort.name` | string | The cohort's human label |
@@ -546,19 +555,19 @@ Take the addresses that are waiting and paste them into the Play console:
 
 ```
 $ pithy testers pending closed-test --json
-{"command":"testers pending","cohort":"7c2f…","emails":["sam@example.com","pat@example.com"]}
+{"command":"testers pending","schemaVersion":1,"cohort":"7c2f…","emails":["sam@example.com","pat@example.com"]}
 ```
 
 Run a pass by hand without sending anything:
 
 ```
 $ pithy testers run --cohort closed-test --skip-nudges --json
-{"command":"testers run","results":[{"cohortId":"7c2f…","snapshotOn":"2026-08-08","nudged":{"confirm":0,"store":0,"inactive":0,"closing":0},"estimatedOptedInCount":11,"estimatedHeldDays":6,"trendDirection":"steady","pruned":0}]}
+{"command":"testers run","schemaVersion":1,"results":[{"cohortId":"7c2f…","snapshotOn":"2026-08-08","nudged":{"confirm":0,"store":0,"inactive":0,"closing":0},"estimatedOptedInCount":11,"estimatedHeldDays":6,"trendDirection":"steady","pruned":0}]}
 ```
 
 Deploy the daily pass to every declared environment:
 
 ```
 $ pithy testers provision --json
-{"command":"testers provision","results":[{"env":"staging","worker":"acme-staging-testers"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"sends":true}
+{"command":"testers provision","schemaVersion":1,"results":[{"env":"staging","worker":"acme-staging-testers"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"sends":true}
 ```

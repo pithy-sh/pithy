@@ -256,6 +256,7 @@ describe("pithy feature destroy --branch, from a detached HEAD — #660", () => 
     // before, and the reason a merged pull request left its environment standing.
     expect(report).toEqual({
       command: "feature.destroy",
+      schemaVersion: 1,
       deletedResources: [
         { kind: "worker", name: "replay-f12-x--board", id: "replay-f12-x--board" },
         { kind: "d1", name: "replay-f12-x--db-d1", id: "db-uuid-1" },

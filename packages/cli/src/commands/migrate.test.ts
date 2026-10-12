@@ -237,14 +237,13 @@ describe("migrate command", () => {
     test("--json conforms to its published payload: a run, a rollback, and one that died partway", async () => {
       const render = { project: "acme", env: "staging", rollback: false, json: true, group: "2026-10-11T00:00:00Z" };
       const shared = run("api", "app", "DB", ["0100_auth_0001"]);
-      await expectConforms("migrate", formatMigrateReport([shared, { worker: "web", databases: [] }], render));
+      await expectConforms("migrate", () => formatMigrateReport([shared, { worker: "web", databases: [] }], render));
       const kept: WorkerMigrationRun = {
         worker: "api",
         databases: [{ database: "app", binding: "DB", results: [], boundBy: ["prod"], sharedWith: ["web"] }],
       };
-      await expectConforms("migrate", formatMigrateReport([kept], { ...render, rollback: true }));
-      await expectConforms(
-        "migrate",
+      await expectConforms("migrate", () => formatMigrateReport([kept], { ...render, rollback: true }));
+      await expectConforms("migrate", () =>
         formatMigrateProgress(
           {
             migrated: [shared],

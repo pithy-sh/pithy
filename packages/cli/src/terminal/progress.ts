@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { stripVTControlCharacters } from "node:util";
 
 /**
  * **How a long command narrates itself. Not how provisioning does (#578).**
@@ -34,6 +35,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * say where it got to. A non-TTY renders these plain, exactly as the terminal seam already does with
  * color, because they *are* plain: no frames, no cursor movement, nothing that turns a redirected log
  * into escape soup.
+ *
+ * **`--json --events` is the one way past that gate (#697).** `deploy` and `provision` take it, and under it
+ * each step is a JSON record rather than silence: {@link progressRecord} is the record, and
+ * `terminal/output.ts` is the sink, because the sink frames it the way `pithy dev`'s stream is framed. A
+ * producer may hand a step the structured row behind its line (`data`), which is what the record carries for
+ * a machine; the line itself goes along with its paint taken out.
  */
 
 /** One unit of work reaching, then leaving, a long command's work loop. */
@@ -43,12 +50,16 @@ export type ProgressEvent =
       phase: "start";
       /** What is being worked on — a Worker name, a capability, a resource. */
       what: string;
+      /** What the producer knows about it, as keys an `--events` record carries. Never printed as text. */
+      data?: Record<string, unknown>;
     }
   /** Settled: done, failed, or skipped. Carries the line the command would print for it either way. */
   | {
       phase: "settled";
       /** The caller's own summary line for this unit, printed as it settles rather than at the end. */
       line: string;
+      /** The row the line summarizes, as keys an `--events` record carries. Never printed as text. */
+      data?: Record<string, unknown>;
     };
 
 /**
@@ -77,13 +88,27 @@ export function formatStep(what: string): string {
  * **Where a run narrates itself, or nothing at all.**
  *
  * The gate is `--json` and only `--json`: every command is agent-drivable, and a machine reads exactly
- * one line.
+ * one line — unless it asked for `--events`, whose sink is `terminal/output.ts`'s `eventsProgress`.
  */
 export function commandProgress(options: { json: boolean }): Progress | undefined {
   if (options.json) return undefined;
   return (event) => {
     process.stdout.write(`${event.phase === "start" ? formatStep(event.what) : event.line}\n`);
   };
+}
+
+/**
+ * One step as an `--events` record for `command`: `{ command, event: "start", what, … }` or
+ * `{ command, event: "settled", line, … }`, with the producer's `data` beside. The line loses its paint here —
+ * a settled line is red when it failed, and an escape byte in a stream a program parses is corruption.
+ *
+ * **The framing is written last, so it is the record's whatever `data` holds.** A reader dispatches on
+ * `command` and `event`; a producer's row with a key of either name must not turn a settle into a start.
+ */
+export function progressRecord(command: string, event: ProgressEvent): Record<string, unknown> {
+  return event.phase === "start"
+    ? { ...event.data, command, event: "start", what: event.what }
+    : { ...event.data, command, event: "settled", line: stripVTControlCharacters(event.line) };
 }
 
 /** The sink for the span currently running, if any. */
@@ -96,7 +121,8 @@ const SILENT: Progress = () => {};
  * Run `work` with `progress` installed as the sink every step inside it reaches.
  *
  * `undefined` installs silence rather than inheriting whatever an enclosing span set, because the one
- * caller that passes `undefined` is a `--json` run and the one line it writes must stay the only one.
+ * caller that passes `undefined` is a `--json` run without `--events`, and the one line it writes must stay
+ * the only one.
  */
 export function narrate<T>(progress: Progress | undefined, work: () => Promise<T>): Promise<T> {
   return CURRENT.run(progress ?? SILENT, work);
@@ -106,11 +132,14 @@ export function narrate<T>(progress: Progress | undefined, work: () => Promise<T
  * **A unit of work is starting.** Raised by whoever is about to spawn, upload, or wait — outside a
  * narrated span it is silent, never fatal: a producer is not entitled to know whether anyone is reading.
  */
-export function startStep(what: string): void {
-  CURRENT.getStore()?.({ phase: "start", what });
+export function startStep(what: string, data?: Record<string, unknown>): void {
+  CURRENT.getStore()?.({ phase: "start", what, ...(data === undefined ? {} : { data }) });
 }
 
-/** **That unit has settled**, as the line the command would otherwise have held until the summary. */
-export function settleStep(line: string): void {
-  CURRENT.getStore()?.({ phase: "settled", line });
+/**
+ * **That unit has settled**, as the line the command would otherwise have held until the summary — and, for
+ * an `--events` reader, the row the line was written from.
+ */
+export function settleStep(line: string, data?: Record<string, unknown>): void {
+  CURRENT.getStore()?.({ phase: "settled", line, ...(data === undefined ? {} : { data }) });
 }

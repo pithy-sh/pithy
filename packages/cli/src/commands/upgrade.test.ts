@@ -965,7 +965,7 @@ describe("runUpgrade --packages", () => {
     expect(upgradeText(run, false)).toEqual([...__test.renderUpgrade(run), "Done."]);
     const json = JSON.parse(upgradeJsonLine(run, "dev", false)) as Record<string, unknown>;
     expect(Object.keys(json)).toEqual(["command", "env", "dryRun", "workers", "manifestFaults", "agents"]);
-    await expectConforms("upgrade", upgradeJsonLine(run, "dev", false));
+    await expectConforms("upgrade", () => upgradeJsonLine(run, "dev", false));
     expect(await readFile(join(dir, "package.json"), "utf8")).toContain('"@pithy-sh/auth": "^0.2.0"');
   });
 
@@ -1134,7 +1134,7 @@ describe("runUpgrade --packages", () => {
       "plan",
     ]);
     expect(Plan.parse(json.plan).files.map((file) => file.path)).toContain("package.json");
-    await expectConforms("upgrade", upgradeJsonLine(dry, "dev", true));
+    await expectConforms("upgrade", () => upgradeJsonLine(dry, "dev", true));
   });
 
   test("a registry that does not answer: nothing written, the reconcile still runs, and the run fails", async () => {
@@ -1263,7 +1263,7 @@ describe("runUpgrade — agent instructions", () => {
         why: "2 migrations are not applied to staging. Upgrade migrates only under --migrate.",
       },
     ]);
-    await expectConforms("upgrade", upgradeJsonLine(real, "staging", false));
+    await expectConforms("upgrade", () => upgradeJsonLine(real, "staging", false));
     expect(Object.hasOwn(JSON.parse(upgradeJsonLine(real, "staging", false, true)), "next")).toBe(false);
     const dry = await runUpgrade({ ...options, dryRun: true, resolveWorkers: workers });
     expect(Object.hasOwn(JSON.parse(upgradeJsonLine(dry, "staging", true)), "next")).toBe(false);
@@ -1277,7 +1277,7 @@ describe("runUpgrade — agent instructions", () => {
     expect(text[0]).toBe("AGENTS.md: Pithy block added.");
     expect(text.indexOf("api:")).toBeGreaterThan(0);
     expect(JSON.parse(upgradeJsonLine(result, "dev", false)).agents).toEqual(result.agents);
-    await expectConforms("upgrade", upgradeJsonLine(result, "dev", false));
+    await expectConforms("upgrade", () => upgradeJsonLine(result, "dev", false));
   });
 
   test("a stale block is refreshed, and the text outside it is byte-identical", async () => {

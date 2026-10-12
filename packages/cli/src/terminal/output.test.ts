@@ -23,6 +23,7 @@ import {
   latchJsonFormat,
   withErrorReporting,
 } from "./output";
+import { withSchemaVersion } from "./schemaVersion";
 
 describe("formatDone", () => {
   test("is exactly Done. — the period is the brand", () => {
@@ -34,6 +35,12 @@ describe("formatDone", () => {
 describe("formatJsonLine", () => {
   test("one machine-readable line", () => {
     expect(formatJsonLine({ command: "init", appName: "x" })).toBe('{"command":"init","appName":"x"}');
+  });
+
+  /** The call site writes the payload; the command it runs in supplies the version (#697). */
+  test("inside a command, the line carries that command's schemaVersion after its name", () => {
+    const line = withSchemaVersion(1, () => formatJsonLine({ command: "init", appName: "x" }));
+    expect(line).toBe('{"command":"init","schemaVersion":1,"appName":"x"}');
   });
 });
 
@@ -343,6 +350,11 @@ describe("formatJsonStreamLine", () => {
     const line = formatJsonStreamLine({ n: 1, s: "x" });
     expect(line).not.toContain("\u001b");
     expect(line).toBe('{"n":1,"s":"x"}');
+  });
+
+  test("inside a command, every record carries its schemaVersion too", () => {
+    const line = withSchemaVersion(2, () => formatJsonStreamLine({ command: "dev", event: "logs", logs: [] }));
+    expect(line).toBe('{"command":"dev","schemaVersion":2,"event":"logs","logs":[]}');
   });
 
   test("agrees with the document formatter whenever that one is compact", () => {

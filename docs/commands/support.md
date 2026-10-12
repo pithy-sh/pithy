@@ -96,6 +96,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | key | type | meaning |
 |---|---|---|
 | `command` | `"support provision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `bucket` | object | The R2 bucket, and what happened to it |
 | `bucket.bucket` | string | The bucket name — `<project>-global-support`. Reported even when the step was skipped, so the name is always readable |
 | `bucket.created` | boolean | True only when this run created it. False when it already existed, and false when skipped |
@@ -120,6 +121,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"support deprovision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The one environment torn down — the value of `--env` |
 | `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether the bucket and everything in it was deleted |
 | `routingZone` | string \| null | The zone id the rule was removed from, or `null` when `--routing-zone` was not passed and the rule was left in place |
@@ -196,7 +198,7 @@ With routing, machine-readable:
 
 ```
 $ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help.example.com --app-worker acme-prod --json
-{"command":"support provision","bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[]}
+{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[]}
 ```
 
 Take staging's worker down but keep the history and the rule:
@@ -212,5 +214,5 @@ Take the lot down, mail included, once production is the last environment standi
 
 ```
 $ pithy support deprovision --env prod --routing-zone 0a1b2c3d --storage --json
-{"command":"support deprovision","env":"prod","storageDeleted":true,"routingZone":"0a1b2c3d"}
+{"command":"support deprovision","schemaVersion":1,"env":"prod","storageDeleted":true,"routingZone":"0a1b2c3d"}
 ```

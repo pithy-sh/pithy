@@ -27,7 +27,7 @@ const WHERE = "docs/commands/dev.md";
 
 /** The session-line sample the page pastes: the `pithy dev` object that carries `workers`. */
 function sessionLine(): Record<string, unknown> {
-  const sample = /```json\n(\{"command":"dev","workers".*)\n```/.exec(PAGE)?.[1];
+  const sample = /```json\n(\{"command":"dev","schemaVersion":\d+,"workers".*)\n```/.exec(PAGE)?.[1];
   if (sample === undefined) throw new Error(`${WHERE} no longer pastes a session line. Repin or restore it.`);
   return JSON.parse(sample) as Record<string, unknown>;
 }

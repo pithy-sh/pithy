@@ -42,6 +42,7 @@ One line on stdout. The whole tree:
 | key | type | meaning |
 |---|---|---|
 | `command` | `"schema"` | The command that produced the line. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `version` | string | The installed CLI's version. Everything in the document describes this version. |
 | `commands` | object[] | Every command in the tree, groups included, sorted by path. |
 | `globalFlags` | object[] | The flags every command takes, answered before any command runs. |
@@ -69,7 +70,9 @@ Each entry of `commands`:
 | `commands[].flags` | object[] | `name`, `type` (`boolean` or `string`), `required`, `default`, `enum`, `repeatable`, `description`, `negativeDescription`, and `aliases` — each `{ flag, kind }`. |
 | `commands[].flagGroups` | object[] | Rules over several flags. `kind` is `exactlyOne`, `atMostOne` or `allOrNone` with `flags`, or `requires` with `flag`, `needs` and `any` — whether any one of `needs` is enough. Each carries its `rule` in a sentence. |
 | `commands[].output` | string | `document`, `stream`, or `none`. |
-| `commands[].payload` | object \| null | The JSON Schema of its `--json` output: the one document, or any one record of a stream. `null` when `output` is `none`. |
+| `commands[].payload` | object \| null | The JSON Schema of its `--json` output: the one document, or any one record of a stream. `null` when `output` is `none`. It names `schemaVersion` as a constant, so a validator refuses a line at another version. |
+| `commands[].schemaVersion` | integer \| null | The version every `--json` line the command writes carries as `schemaVersion`. Bumped only when a key is removed or retyped (`docs/CLI.md` §1.2). `null` when `output` is `none`. |
+| `commands[].events` | object \| null | The JSON Schema of one `--json --events` progress record, at the same version. `null` for every command but `deploy` and `provision`, the two that take `--events`. |
 | `commands[].errorLine` | object | `{"$ref": "#/errorLine"}`. |
 | `commands[].mutates` | boolean | Whether a successful run can change anything: files, Cloudflare, a database, a store. It describes the default run, with no optional flag. |
 | `commands[].idempotent` | boolean | Whether running it again with the same arguments, after it succeeded, succeeds and changes nothing further. A second run that is refused is not idempotent. |
@@ -102,7 +105,7 @@ pithy schema dashboard connect --json | jq '.commands[0].flags[] | select(.name 
 ```
 
 ```json
-{"command":"schema","version":"0.13.1","path":"token mint","commands":[{"path":"token mint","description":"Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)","aliases":[],"subcommands":[],"runs":true,"positionals":[{"name":"profile","required":true,"variadic":false,"description":"Token profile: ci-system (the CI credential), or a capability's worker-consumer profile"}],"flags":[{"name":"--env","type":"string","required":false,"default":"dev","repeatable":false,"description":"Target environment: dev, staging, prod, or one declared in pithy.config.ts","aliases":[]},…],"flagGroups":[],"output":"document","payload":{…},"errorLine":{"$ref":"#/errorLine"},"mutates":true,"idempotent":false,"needsNetwork":true}],"errorLine":{…}}
+{"command":"schema","schemaVersion":1,"version":"0.13.1","path":"token mint","commands":[{"path":"token mint","description":"Mint a profile's scoped account token, or roll an existing one's value (rotate re-scopes)","aliases":[],"subcommands":[],"runs":true,"positionals":[{"name":"profile","required":true,"variadic":false,"description":"Token profile: ci-system (the CI credential), or a capability's worker-consumer profile"}],"flags":[{"name":"--env","type":"string","required":false,"default":"dev","repeatable":false,"description":"Target environment: dev, staging, prod, or one declared in pithy.config.ts","aliases":[]},…],"flagGroups":[],"output":"document","payload":{…},"schemaVersion":1,"events":null,"errorLine":{"$ref":"#/errorLine"},"mutates":true,"idempotent":false,"needsNetwork":true}],"errorLine":{…}}
 ```
 
 Nothing it prints is a credential. It reads no configuration and no environment beyond the CLI's own code.

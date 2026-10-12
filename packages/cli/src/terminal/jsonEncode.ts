@@ -13,9 +13,10 @@ import { cyan, dim } from "./style";
  *
  * **Held to `JSON.stringify`, not to a layout of its own.** The indented form is written character for
  * character as `JSON.stringify(value, null, 2)` writes it, and `jsonEncode.test.ts` asserts that against
- * the real function rather than against a transcript. The kit prints JSON — never JSONL, never NDJSON —
- * so indenting a document that was always one document cannot break a framing that does not exist, and
- * every e2e suite that parses `--json` stdout keeps parsing the same bytes.
+ * the real function rather than against a transcript. A one-document command prints JSON, not NDJSON, so
+ * indenting a document that was always one document cannot break a framing that does not exist, and every
+ * e2e suite that parses `--json` stdout keeps parsing the same bytes. The streams — `pithy dev`, and
+ * `deploy` and `provision` under `--events` — are never indented (`output.ts`, `formatJsonStreamLine`).
  */
 
 /** The two tiers this encoder paints with. Injectable so a test asserts placement without a terminal. */

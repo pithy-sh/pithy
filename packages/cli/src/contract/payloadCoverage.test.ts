@@ -144,8 +144,10 @@ const OPEN_SUBTREES = [
   "payments reconcile: $.report|0",
   "provision: $.declined[]",
   "provision: $.declined[].declines[]",
+  "schema: $|0.commands[].events|0",
   "schema: $|0.commands[].payload|0",
   "schema: $|0.errorLine",
+  "schema: $|1.commands[].events|0",
   "schema: $|1.commands[].payload|0",
   "schema: $|1.errorLine",
   "secrets verify: $.environments[].verification",
@@ -278,8 +280,19 @@ describe("every command declares what it promises", () => {
    * refused — so a passing `expectConforms` is a statement about the line rather than about a lenient parse.
    */
   test("a line that is not the published shape is refused, in either direction", async () => {
-    const status = { command: "alias", action: "status", installed: true, shell: "zsh", rcPath: "/home/you/.zshrc" };
+    const status = {
+      command: "alias",
+      schemaVersion: 1,
+      action: "status",
+      installed: true,
+      shell: "zsh",
+      rcPath: "/home/you/.zshrc",
+    };
     await expectConforms("alias", JSON.stringify(status));
+    // Without its version, or at one the command does not declare, it is not the published shape either.
+    const { schemaVersion: _version, ...unversioned } = status;
+    await expect(expectConforms("alias", JSON.stringify(unversioned))).rejects.toThrow();
+    await expect(expectConforms("alias", JSON.stringify({ ...status, schemaVersion: 2 }))).rejects.toThrow();
     await expect(expectConforms("alias", JSON.stringify({ ...status, extra: 1 }))).rejects.toThrow();
     const { installed: _, ...missing } = status;
     await expect(expectConforms("alias", JSON.stringify(missing))).rejects.toThrow();

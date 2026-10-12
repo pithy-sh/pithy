@@ -583,6 +583,7 @@ export default withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: InitPayload,
     mutates: true,
     // A second run into the same directory is refused: the files it writes are already there.

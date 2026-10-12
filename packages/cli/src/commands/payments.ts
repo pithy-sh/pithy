@@ -398,6 +398,7 @@ const provision = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: PaymentsProvisionPayload,
     mutates: true,
     idempotent: true,
@@ -502,6 +503,7 @@ const reconcile = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: PaymentsReconcilePayload,
     // Repairs drift, unless `--dry-run`.
     mutates: true,

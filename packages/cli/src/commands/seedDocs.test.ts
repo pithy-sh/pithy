@@ -14,7 +14,7 @@ import { buildDryRunPlan } from "../seed/plan";
 import { buildSeedPlan } from "../seed/registry";
 import type { SeedRunReport } from "../seed/run";
 import { formatJsonLine } from "../terminal/output";
-import { expectConforms } from "../test-utils/payloadContract";
+import { asCommand, expectConforms } from "../test-utils/payloadContract";
 import { renderSeedText } from "./seed";
 
 /**
@@ -263,7 +263,10 @@ describe("docs/commands/seed.md — `--json`", () => {
   test("the json line is what the command writes for a dry run", async () => {
     const planned = report({ env: "dev", capabilities: [leaderboard()], dryRun: true });
     // The command's own line: the report, the dev secrets it did not seed, and the one plan shape (#697).
-    const rendered = formatJsonLine({ ...planned, devSecrets: null, plan: seedDryRunPlan(planned) });
+    // Formatted as the command formats it, at its own version (#697).
+    const rendered = await asCommand("seed", async () =>
+      formatJsonLine({ ...planned, devSecrets: null, plan: seedDryRunPlan(planned) }),
+    );
     expect(transcript(JSON_BLOCKS, "`--json`", 0, "$ pithy seed --env dev --dry-run --json")).toBe(rendered);
     // And the line is the shape `pithy schema seed` publishes (#697), sets and writes included.
     await expectConforms("seed", rendered);

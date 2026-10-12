@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
 import { EXIT_CLASSES, exitClassOf, exitCodeOf, fixOf } from "./exitClass";
 import { encodeJson, plainPaint, stylePaint } from "./jsonEncode";
 import type { JsonStream } from "./jsonMode";
-import { commandProgress, narrate } from "./progress";
+import { commandProgress, narrate, type Progress, progressRecord } from "./progress";
+import { stampSchemaVersion } from "./schemaVersion";
 import { red, saffron } from "./style";
 
 /** Completion, brand voice: `Done.` with the saffron period (docs/CLI.md §3.2). */
@@ -45,17 +47,30 @@ function encodingFor(stream: JsonStream): { pretty: boolean; paint: typeof style
   return { pretty: stream.mode === "pretty", paint: stream.color ? stylePaint : plainPaint };
 }
 
-/** One machine-readable line — every command's `--json` output shape, indented when a person reads it. */
+/**
+ * Set inside a `--json --events` run (#697): its stdout is a stream, so the document that closes it is a
+ * stream line too. Ambient, so the command's own `formatJsonLine({ … })` site — the one the docs gate reads —
+ * stays exactly as it is in every other run.
+ */
+const STREAMING = new AsyncLocalStorage<true>();
+
+/**
+ * One machine-readable line — every command's `--json` output shape, indented when a person reads it.
+ *
+ * Stamped with the running command's `schemaVersion` here, so no call site writes it (`schemaVersion.ts`).
+ * Inside an `--events` run it is the stream's last record, so it is framed as one: compact and unpainted.
+ */
 export function formatJsonLine(payload: Record<string, unknown>): string {
-  return encodeJson(payload, encodingFor(streams.stdout));
+  if (STREAMING.getStore()) return formatJsonStreamLine(payload);
+  return encodeJson(stampSchemaVersion(payload), encodingFor(streams.stdout));
 }
 
 /**
  * One line of a **JSON stream** — compact, always, whatever this run was latched with.
  *
- * `pithy dev --json` is the kit's one streaming surface: `docs/commands/dev.md` §`--json` promises one
- * object per line for the life of a session, because a session never ends and a consumer can only read
- * it line by line. Indenting those objects hands that consumer `{` as its first line and breaks every
+ * `pithy dev --json` streams: `docs/commands/dev.md` §`--json` promises one object per line for the life
+ * of a session, because a session never ends and a consumer can only read it line by line. So does
+ * `--json --events` on `deploy` and `provision` (#697), for the length of the run. Indenting those objects hands that consumer `{` as its first line and breaks every
  * line after it — at a terminal, and under exactly the PTY-allocating agent harness `jsonMode.ts` exists
  * to accommodate.
  *
@@ -64,7 +79,7 @@ export function formatJsonLine(payload: Record<string, unknown>): string {
  * command name in `bin.ts` would have put that fact somewhere no reader of `orchestrator.ts` would look.
  */
 export function formatJsonStreamLine(payload: Record<string, unknown>): string {
-  return encodeJson(payload, { pretty: false, paint: plainPaint });
+  return encodeJson(stampSchemaVersion(payload), { pretty: false, paint: plainPaint });
 }
 
 /**
@@ -115,6 +130,17 @@ export function formatErrorJson(payload: ErrorPayload, fix?: string): string {
 }
 
 /**
+ * **Where a `--json --events` run narrates itself (#697): one record per step, on stdout, framed as a stream.**
+ * `command` names the run on every record, as the closing document does. The record is
+ * `progress.ts`'s; the framing is this module's, which is why the sink is built here.
+ */
+export function eventsProgress(command: string): Progress {
+  return (event) => {
+    process.stdout.write(`${formatJsonStreamLine(progressRecord(command, event))}\n`);
+  };
+}
+
+/**
  * Run a command body; on `PithyError`, report it to stderr and exit with its class's code
  * (`exitClass.ts`) — as the `{ error: … }` JSON line when `json` is set, otherwise the
  * problem/action lines. Anything else is a CLI bug and keeps its stack trace.
@@ -125,10 +151,18 @@ export function formatErrorJson(payload: ErrorPayload, fix?: string): string {
  * `pithy deploy` came to print nothing at all for minutes after `pithy provision` had solved this once
  * already. A producer raises a step; the span installed here decides who hears it, and `--json` installs
  * silence so a machine still reads exactly one line.
+ *
+ * **`events` is the exception (#697)**: `deploy` and `provision` pass their name under `--json --events`,
+ * and each step becomes a record ({@link eventsProgress}), closed by the document the run would have written.
  */
-export async function withErrorReporting(json: boolean, work: () => Promise<void>): Promise<void> {
+export async function withErrorReporting(
+  json: boolean,
+  work: () => Promise<void>,
+  options: { events?: string } = {},
+): Promise<void> {
   try {
-    await narrate(commandProgress({ json }), work);
+    if (options.events === undefined) await narrate(commandProgress({ json }), work);
+    else await STREAMING.run(true, () => narrate(eventsProgress(options.events as string), work));
   } catch (error) {
     if (!(error instanceof PithyError)) throw error;
     process.stderr.write(`${json ? formatErrorJson(error.payload, fixOf(error)) : formatError(error.payload)}\n`);

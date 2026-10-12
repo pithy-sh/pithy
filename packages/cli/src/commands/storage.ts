@@ -307,6 +307,7 @@ const provision = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: StorageProvisionPayload,
     mutates: true,
     idempotent: true,
@@ -392,7 +393,14 @@ const deprovision = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: StorageDeprovisionPayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: StorageDeprovisionPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 export default defineCommand({

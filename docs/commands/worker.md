@@ -69,12 +69,13 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy worker add web --json
-{"command":"worker.add","worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","port":null,"reconciled":false,"devVarsRefused":[],"domains":null}
+{"command":"worker.add","schemaVersion":1,"worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","port":null,"reconciled":false,"devVarsRefused":[],"domains":null}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.add"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `worker` | `string` | The `apps/` directory the Worker was scaffolded at — the name given on the command line |
 | `deployedAs` | `string` | The script name it will deploy under, `<project>-<worker>` as scaffolded |
 | `dir` | `string` | The absolute directory the Worker was scaffolded at |
@@ -89,12 +90,13 @@ $ pithy worker add web --json
 
 ```
 $ pithy worker list --json
-{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"autostartLocal":null,"hasWrangler":true,"port":8787}],"staleAutostart":[]}
+{"command":"worker.list","schemaVersion":1,"workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"autostartLocal":null,"hasWrangler":true,"port":8787}],"staleAutostart":[]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.list"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `workers` | `object[]` | The discovered Workers, in discovery order |
 | `workers[].worker` | `string` | The Worker's `apps/` directory |
 | `workers[].deployedAs` | `string` | The Worker's `wrangler.jsonc` `name` — the deployed script name — or the directory basename when the file declares none |
@@ -111,7 +113,7 @@ $ pithy worker list --json
 
 ```
 $ pithy worker remove web --json
-{"command":"worker.remove","worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","reconciled":true}
+{"command":"worker.remove","schemaVersion":1,"worker":"web","deployedAs":"acme-web","dir":"/repo/apps/web","reconciled":true}
 ```
 
 The name argument is matched against either identity, so both `pithy worker remove web` and `pithy worker remove acme-web` find the same Worker. The payload always reports both.
@@ -119,6 +121,7 @@ The name argument is matched against either identity, so both `pithy worker remo
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.remove"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `worker` | `string` | The removed Worker's `apps/` directory |
 | `deployedAs` | `string` | The script name it deployed under — its `wrangler.jsonc` `name`, or the directory basename when it declares none |
 | `dir` | `string` | The directory that was deleted |
@@ -126,7 +129,7 @@ The name argument is matched against either identity, so both `pithy worker remo
 
 ```
 $ pithy worker rename api board --json
-{"command":"worker.rename","dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
+{"command":"worker.rename","schemaVersion":1,"dryRun":false,"worker":"board","deployedAs":"acme-board","from":"api","to":"board","dir":"/repo/apps/board","script":{"from":"acme-api","to":"acme-board"},"orphaned":[],"accountChecked":true,"reconciled":false}
 ```
 
 `worker` and `deployedAs` describe the Worker **after** the move, so a caller reading the identity keys gets the same two facts here it gets from the other four subcommands. `from`, `to` and `script` are what a rename adds on top: the transition. `deployedAs` is therefore always the script name the Worker deploys under now — including when `script` is `null` because a name the adopter chose was left alone.
@@ -134,6 +137,7 @@ $ pithy worker rename api board --json
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.rename"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was moved or written when it is `true`, and every other key is what the rename would report |
 | `worker` | `string` | The Worker's `apps/` directory after the move. The same string as `to` |
 | `deployedAs` | `string` | The script name it deploys under after the move. The same string as `script.to`, and the unchanged declared name when `script` is `null` |
@@ -150,12 +154,13 @@ $ pithy worker rename api board --json
 
 ```
 $ pithy worker sync --worker api --json
-{"command":"worker.sync","worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}]}
+{"command":"worker.sync","schemaVersion":1,"worker":"api","deployedAs":"acme-api","routes":[{"env":"prod","pattern":"api.example.com","baseUrl":"https://api.example.com","changed":true}],"runs":[{"env":"dev","workflows":[{"binding":"KEY_ROTATION","name":"acme-dev-app-key-rotation","class_name":"KeyRotationWorkflow"}],"crons":["0 4 * * *"],"changed":true}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"worker.sync"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `worker` | `string` | The `apps/` directory. What `--worker` accepts, and what sibling paths are relative to |
 | `deployedAs` | `string` | The deployed script name, from `wrangler.jsonc`. What the Cloudflare dashboard shows |
 | `routes` | `object[]` | One entry per environment the `domains` block declares. Empty when the Worker declares none, or when `--env` names one it does not carry |

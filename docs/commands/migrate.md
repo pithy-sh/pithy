@@ -102,6 +102,7 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"migrate"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `project` | string | The project this run was claimed as — `name` from the root `pithy.config.ts`. |
 | `env` | string | The environment migrated. |
 | `rollback` | boolean | Whether the run reversed a group rather than running forward. Mirrors `--rollback`. |
@@ -126,7 +127,7 @@ A fan-out has no transaction across databases: the third one throws and the firs
 
 ```
 $ pithy migrate --env staging --json
-{"command":"migrate","project":"acme","env":"staging","rollback":false,"group":"2026-10-03T19:52:47.611Z","dryRun":false,"workers":[{"worker":"api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0100_auth_0001_init","direction":"Up","status":"Success"}]}]}],"failed":{"binding":"COLLAB_DB","database":"collab"},"unreached":[{"binding":"MEDIA_DB","database":"media"}],"interrupted":true}
+{"command":"migrate","schemaVersion":1,"project":"acme","env":"staging","rollback":false,"group":"2026-10-03T19:52:47.611Z","dryRun":false,"workers":[{"worker":"api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0100_auth_0001_init","direction":"Up","status":"Success"}]}]}],"failed":{"binding":"COLLAB_DB","database":"collab"},"unreached":[{"binding":"MEDIA_DB","database":"media"}],"interrupted":true}
 ```
 
 | key | type | meaning |
@@ -190,7 +191,7 @@ Dry run. Nothing written.
 ```
 
 ```json
-{"command":"migrate","project":"acme","env":"prod","rollback":false,"group":"2026.10.3-1","dryRun":false,"workers":[{"worker":"acme-api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"auth_0001_init","direction":"Up","status":"Success"}],"sharedWith":["acme-collab"]}]},{"worker":"acme-collab","databases":[{"database":"app","binding":"DB","results":[],"sharedWith":["acme-api"]}]}]}
+{"command":"migrate","schemaVersion":1,"project":"acme","env":"prod","rollback":false,"group":"2026.10.3-1","dryRun":false,"workers":[{"worker":"acme-api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"auth_0001_init","direction":"Up","status":"Success"}],"sharedWith":["acme-collab"]}]},{"worker":"acme-collab","databases":[{"database":"app","binding":"DB","results":[],"sharedWith":["acme-api"]}]}]}
 ```
 
 Nothing in this payload is a credential.

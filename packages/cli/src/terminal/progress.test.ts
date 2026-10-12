@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test, vi } from "vitest";
-import { withErrorReporting } from "./output";
-import { commandProgress, formatStep, narrate, settleStep, startStep } from "./progress";
+import { formatJsonLine, latchJsonFormat, withErrorReporting } from "./output";
+import { commandProgress, formatStep, narrate, progressRecord, settleStep, startStep } from "./progress";
 
 /** Everything one body wrote to stdout, with the spy put back either way. */
 async function captured(work: () => Promise<void>): Promise<string> {
@@ -121,5 +121,95 @@ describe("withErrorReporting installs the narration", () => {
 
     expect(out).toBe('{"command":"deploy"}\n');
     expect(out.trimEnd().split("\n")).toHaveLength(1);
+  });
+});
+
+/**
+ * **`--json --events`: the one exception to one line (#697).** `deploy` and `provision` can run for minutes,
+ * and a long run that says nothing is the run an agent kills. So under `--events` each step is a compact JSON
+ * record on stdout, framed as `pithy dev`'s stream is, and the document a `--json` run would have written closes
+ * the stream as its last line.
+ */
+/** A line as `red` paints it at a color terminal. The test run has color off, so it is spelled out. */
+const PAINTED = "\u001b[31mapi: failed.\u001b[39m";
+
+describe("progressRecord", () => {
+  test("a start names what is starting, beside whatever the producer knows about it", () => {
+    expect(progressRecord("provision", { phase: "start", what: "acme-staging-db", data: { binding: "DB" } })).toEqual({
+      command: "provision",
+      event: "start",
+      what: "acme-staging-db",
+      binding: "DB",
+    });
+  });
+
+  test("a settle carries its line with the paint taken out, and the row behind it", () => {
+    const row = { name: "api", ok: false, error: "boom" };
+    const record = progressRecord("deploy", { phase: "settled", line: `${PAINTED} boom`, data: { worker: row } });
+    expect(record).toEqual({ command: "deploy", event: "settled", line: "api: failed. boom", worker: row });
+  });
+
+  /**
+   * **The framing is the record's, whatever the producer hands beside it (#697).** A reader dispatches on
+   * `command` and `event`, so a producer's row carrying a key of the same name must never replace them: it
+   * would turn a settle into a start, or put the stream under another command's name.
+   */
+  test("a producer's key named event, command, what or line never replaces the framing", () => {
+    const data = { event: "start", command: "provision", what: "x", line: "y", binding: "DB" };
+    expect(progressRecord("deploy", { phase: "settled", line: "api: deployed.", data })).toMatchObject({
+      command: "deploy",
+      event: "settled",
+      line: "api: deployed.",
+      binding: "DB",
+    });
+    expect(
+      progressRecord("deploy", { phase: "start", what: "api", data: { ...data, event: "settled" } }),
+    ).toMatchObject({ command: "deploy", event: "start", what: "api", binding: "DB" });
+  });
+});
+
+describe("withErrorReporting with events", () => {
+  const COMPACT = { stdout: { mode: "compact", color: false }, stderr: { mode: "compact", color: false } } as const;
+
+  test("every step is one compact record, and the document closes the stream compact too", async () => {
+    // Pretty and painted were asked for: the framing wins, as it does for `pithy dev`.
+    latchJsonFormat({ stdout: { mode: "pretty", color: true }, stderr: { mode: "compact", color: false } });
+    try {
+      const out = await captured(() =>
+        withErrorReporting(
+          true,
+          async () => {
+            startStep("api");
+            settleStep(PAINTED, { worker: { name: "api", ok: false } });
+            process.stdout.write(`${formatJsonLine({ command: "deploy", workers: [] })}\n`);
+          },
+          { events: "deploy" },
+        ),
+      );
+      const lines = out.trimEnd().split("\n");
+      expect(lines.map((line) => JSON.parse(line) as unknown)).toEqual([
+        { command: "deploy", event: "start", what: "api" },
+        { command: "deploy", event: "settled", line: "api: failed.", worker: { name: "api", ok: false } },
+        { command: "deploy", workers: [] },
+      ]);
+      expect(out).not.toContain("\u001b");
+      expect(out).not.toContain("▸");
+    } finally {
+      latchJsonFormat(COMPACT);
+    }
+  });
+
+  test("outside an --events run the document keeps whatever shape was asked for", async () => {
+    latchJsonFormat({ stdout: { mode: "pretty", color: false }, stderr: { mode: "compact", color: false } });
+    try {
+      const out = await captured(() =>
+        withErrorReporting(true, async () => {
+          process.stdout.write(`${formatJsonLine({ command: "deploy", workers: [] })}\n`);
+        }),
+      );
+      expect(out).toContain("\n  ");
+    } finally {
+      latchJsonFormat(COMPACT);
+    }
   });
 });

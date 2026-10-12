@@ -79,11 +79,15 @@ describe("wantsPretty", () => {
     expect(wantsPretty(["secrets", "rotate", "API_KEY", "--json", "--no-pretty"])).toBe(false);
   });
 
-  /** Last wins, which is what every parser does with a repeated flag and what a shell alias relies on. */
-  test("the last one typed wins, so an alias can be overridden on the command line", () => {
+  /**
+   * Read by citty's rule, as every boolean flag is (`booleanToken.ts`, #697 review): a bare `--no-pretty` wins
+   * wherever it is, so an alias carrying `--pretty` is overridden by `--no-pretty`, and one carrying `--no-pretty`
+   * is not undone by `--pretty`. `PITHY_JSON` is the lever for a session-wide setting.
+   */
+  test("a bare --no-pretty wins wherever it is; otherwise the last --pretty decides", () => {
     expect(wantsPretty(["--pretty", "--no-pretty"])).toBe(false);
-    expect(wantsPretty(["--no-pretty", "--pretty"])).toBe(true);
-    expect(wantsPretty(["--pretty", "--no-pretty", "--pretty"])).toBe(true);
+    expect(wantsPretty(["--no-pretty", "--pretty"])).toBe(false);
+    expect(wantsPretty(["--pretty=false", "--pretty"])).toBe(true);
   });
 
   test("stops at `--`, so passthrough payload is never read as a Pithy flag", () => {
@@ -172,10 +176,12 @@ describe("wantsNoInput", () => {
     expect(wantsNoInput(["add", "auth", "--no-input"])).toBe(true);
   });
 
-  test("=true and =false are read, and the last one wins", () => {
+  /** Read by the one rule every boolean flag is read by (`booleanToken.ts`): a bare `--no-input` wins wherever it is. */
+  test("=true and =false are read, the last of them wins, and a bare --no-input wins over both", () => {
     expect(wantsNoInput(["init", "--no-input=true"])).toBe(true);
     expect(wantsNoInput(["init", "--no-input=false"])).toBe(false);
-    expect(wantsNoInput(["init", "--no-input", "--no-input=false"])).toBe(false);
+    expect(wantsNoInput(["init", "--no-input=true", "--no-input=false"])).toBe(false);
+    expect(wantsNoInput(["init", "--no-input", "--no-input=false"])).toBe(true);
   });
 
   test("a malformed value is no answer here; malformedNoInputFlag reports it", () => {

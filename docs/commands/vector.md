@@ -46,12 +46,13 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy vector provision --env staging --json
-{"command":"vector provision","env":"staging","indexes":[{"index":"docs","indexName":"acme-staging-vector-docs","created":[{"propertyName":"ownerId","indexType":"string"}],"extra":[],"observed":[{"propertyName":"ownerId","indexType":"string"}]}]}
+{"command":"vector provision","schemaVersion":1,"env":"staging","indexes":[{"index":"docs","indexName":"acme-staging-vector-docs","created":[{"propertyName":"ownerId","indexType":"string"}],"extra":[],"observed":[{"propertyName":"ownerId","indexType":"string"}]}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"vector provision"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | `string` | The environment provisioned |
 | `indexes` | `object[]` | One entry per configured index — see below |
 | `indexes[].index` | `string` | The config's name for the index |
@@ -68,7 +69,7 @@ $ pithy vector provision --env staging --json
 
 ```
 $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset staging" --json
-{"command":"vector reset","env":"staging","indexes":[…],"deleted":["acme-staging-vector-docs"],"reprocessed":["docs"]}
+{"command":"vector reset","schemaVersion":1,"env":"staging","indexes":[…],"deleted":["acme-staging-vector-docs"],"reprocessed":["docs"]}
 ```
 
 `reset` emits everything `provision` does — it rebuilds through the same path — plus two fields.
@@ -76,6 +77,7 @@ $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"vector reset"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | `string` | The environment reset |
 | `indexes` | `object[]` | Each rebuilt index, in the shape `provision` reports above |
 | `deleted` | `string[]` | The indexes that were deleted and rebuilt, by their Vectorize names |
@@ -83,12 +85,13 @@ $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset 
 
 ```
 $ pithy vector reprocess --env staging --index docs --json
-{"command":"vector reprocess","env":"staging","runs":[{"index":"docs","report":{"indexName":"acme-staging-vector-docs","pages":2,"scanned":140,"reembedded":140,"skipped":0}}]}
+{"command":"vector reprocess","schemaVersion":1,"env":"staging","runs":[{"index":"docs","report":{"indexName":"acme-staging-vector-docs","pages":2,"scanned":140,"reembedded":140,"skipped":0}}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"vector reprocess"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | `string` | The environment the runs happened in |
 | `runs` | `object[]` | One entry per index reprocessed, in run order |
 | `runs[].index` | `string` | The config's name for the index |

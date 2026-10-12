@@ -78,7 +78,8 @@ if (!colorEnabled()) process.env.NO_COLOR = "1";
 
 const { main } = await import("./main");
 const { ownNamesOnly, runTree, usageTarget } = await import("./dispatch");
-const { asksForJson, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags } = await import("./declaredFlags");
+const { asksForJson, refuseEventsFlag, refuseJsonFlag, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags } =
+  await import("./declaredFlags");
 const { JSON_MODE_ENV, jsonStreams } = await import("./terminal/jsonMode");
 const { latchInputMode, NONINTERACTIVE_ENV, resolveInputForbidden } = await import("./terminal/inputMode");
 const { latchJsonFormat, withErrorReporting } = await import("./terminal/output");
@@ -114,6 +115,9 @@ const root = ownNamesOnly(main);
  *
  * `refusePrettyFlags` is after the undeclared-flag check on purpose: a typo in a safety flag is
  * the more urgent of the two things `pithy secrets rotate API_KEY --dry-rn --pretty` got wrong.
+ * `refuseEventsFlag` is beside it, for the same pairing with `--json` (#697). `refuseJsonFlag` is ahead of both:
+ * every one of these flags is read by the one rule in `booleanToken.ts`, which is citty's, and a `--json` spelling
+ * citty would read other than as written is refused before anything is decided on it.
  *
  * **Whether this run may prompt is latched here too, and nowhere else (#697).** `PITHY_NONINTERACTIVE=1`,
  * `--no-input` and `--json` each forbid it; `terminal/inputMode.ts` is the rule and the one seam every
@@ -140,7 +144,9 @@ await withErrorReporting(asksForJson(argv), async () => {
     }),
   );
   await refuseUndeclaredFlags(root, argv);
+  refuseJsonFlag(argv);
   refusePrettyFlags(argv);
+  refuseEventsFlag(argv);
   refuseNoInputFlag(argv);
 });
 

@@ -203,7 +203,14 @@ const add = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: WorkerAddPayload, mutates: true, idempotent: false, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerAddPayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: true,
+  },
 );
 
 /** `pithy worker list` — the discovered workers with autostart state and pinned port. */
@@ -244,7 +251,14 @@ const list = withContract(
         process.stdout.write(`${formatList(rows)}\n`);
       }),
   }),
-  { output: "document", payload: WorkerListPayload, mutates: false, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerListPayload,
+    mutates: false,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 /** `pithy worker remove <name>` — delete apps/<name> and release its port. */
@@ -266,7 +280,14 @@ const remove = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: WorkerRemovePayload, mutates: true, idempotent: false, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerRemovePayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: false,
+  },
 );
 
 /**
@@ -329,7 +350,14 @@ const rename = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: WorkerRenamePayload, mutates: true, idempotent: false, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerRenamePayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: true,
+  },
 );
 
 /**
@@ -459,7 +487,14 @@ const sync = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: WorkerSyncPayload, mutates: true, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: WorkerSyncPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 export default defineCommand({

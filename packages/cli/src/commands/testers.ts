@@ -747,7 +747,7 @@ const TestersRunPayload = z
   .describe("What `pithy testers run` did.");
 
 /** The roster commands read and write the project's D1, through Cloudflare outside `dev`. */
-const ROSTER = { output: "document", needsNetwork: true } as const;
+const ROSTER = { output: "document", schemaVersion: 1, needsNetwork: true } as const;
 
 const provision = withContract(
   defineCommand({

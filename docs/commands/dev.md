@@ -345,7 +345,7 @@ All `pithy dev` output obeys the brand voice (`docs/CLI.md` §3 / `BRAND.md` §5
 
 ## `--json`
 
-**Every line on stdout is one object.** A session keeps running, so a script reads `pithy dev --json` line by line rather than waiting for it to end. `pithy dev --list --json` is the other shape: it writes one line and exits.
+**Every line on stdout is one object**, and every one carries `schemaVersion` — the version of the record shapes below, which `pithy schema dev` publishes (`docs/CLI.md` §1.2). Every one carries `command` too, except the session-log records `pithy dev logs --app` writes, which are the file's own. A session keeps running, so a script reads `pithy dev --json` line by line rather than waiting for it to end. `pithy dev --list --json` is the other shape: it writes one line and exits.
 
 Everything said to a person moves to stderr under `--json` — the `Starting …` line, the delivery verdict, a `.dev.vars` refusal, and the workers' own output, which is the bulk of the stream and every line wrangler and Vite print. It used to share stdout with the JSON, so `pithy dev --json | jq` choked on the first thing wrangler said and a consumer's only rule was to try each line and skip whatever failed to parse — which skips a JSON line we get wrong just as quietly. Splitting by descriptor costs a person nothing: both halves still reach the terminal, and each worker's session log carries its own output in either mode. A run that stops on an error writes the `{"error": …}` line to stderr, as every `pithy` command does.
 
@@ -354,12 +354,13 @@ Everything said to a person moves to stderr under `--json` — the `Starting …
 Written as soon as every worker is started. It is what tells a script where the workers are.
 
 ```json
-{"command":"dev","workers":{"api":{"port":8787,"origin":"http://localhost:8787"},"web":{"port":8788,"origin":"http://localhost:8788"}},"identities":[{"userId":"example-ada","email":"ada@example.com","expiresAt":"2027-07-27T00:00:00.000Z"}]}
+{"command":"dev","schemaVersion":1,"workers":{"api":{"port":8787,"origin":"http://localhost:8787"},"web":{"port":8788,"origin":"http://localhost:8788"}},"identities":[{"userId":"example-ada","email":"ada@example.com","expiresAt":"2027-07-27T00:00:00.000Z"}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"dev"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `workers` | object | One entry per started worker, keyed by its name. |
 | `workers.<name>.port` | number | The port that worker was assigned in `.dev.config.json`, verified free before it started. |
 | `workers.<name>.origin` | string | The localhost address its siblings were told to call it on. |
@@ -377,7 +378,7 @@ The field arrived with `#667`, which is also when the artifact gained an entry p
 Written 90 seconds after the last worker is spawned, and every 30 seconds after that, while any worker has started and not become ready (What it does, above). Not written while every worker is ready — and written again, on the same schedule, once a restart leaves one of them not ready.
 
 ```json
-{"command":"dev","event":"still-waiting","waiting":["support"]}
+{"command":"dev","schemaVersion":1,"event":"still-waiting","waiting":["support"]}
 ```
 
 | key | type | meaning |
@@ -392,7 +393,7 @@ Written 90 seconds after the last worker is spawned, and every 30 seconds after 
 Written once at the top of a session, and by `pithy dev --list` as a `staleAutostart` key on the list line, when the registry holds autostart answers under a checkout root that is gone from disk ([Keeping a worker out of your dev set](#keeping-a-worker-out-of-your-dev-set)). Not written at all when every root in the registry is on disk.
 
 ```json
-{"command":"dev","event":"autostart-stale","roots":[{"root":"/home/you/Projects/app","branches":[{"branch":"main","workers":["payments"]}]}]}
+{"command":"dev","schemaVersion":1,"event":"autostart-stale","roots":[{"root":"/home/you/Projects/app","branches":[{"branch":"main","workers":["payments"]}]}]}
 ```
 
 | key | type | meaning |
@@ -411,8 +412,8 @@ Written once at the top of a session, and by `pithy dev --list` as a `staleAutos
 Written by `pithy dev --list`, which writes this line and nothing else, then exits.
 
 ```json
-{"command":"dev","event":"list","members":[{"name":"api","kind":"app","autostart":true,"autostartLocal":false,"starts":true,"port":8787,"origin":"http://localhost:8787"}],"staleAutostart":[]}
-{"command":"dev","event":"autostart","branch":"main","apps":["payments"],"enabled":false,"autostart":{"payments":false}}
+{"command":"dev","schemaVersion":1,"event":"list","members":[{"name":"api","kind":"app","autostart":true,"autostartLocal":false,"starts":true,"port":8787,"origin":"http://localhost:8787"}],"staleAutostart":[]}
+{"command":"dev","schemaVersion":1,"event":"autostart","branch":"main","apps":["payments"],"enabled":false,"autostart":{"payments":false}}
 ```
 
 | key | type | meaning |
@@ -447,7 +448,7 @@ Notes — a project that states no name, a Worker whose capabilities could not b
 With no `--app`, one line describing what is readable:
 
 ```json
-{"command":"dev","event":"logs","logs":[{"branch":"main","worker":"api","lines":412,"bytes":38104,"lastWrite":"2026-07-27T09:14:02.881Z"}]}
+{"command":"dev","schemaVersion":1,"event":"logs","logs":[{"branch":"main","worker":"api","lines":412,"bytes":38104,"lastWrite":"2026-07-27T09:14:02.881Z"}]}
 ```
 
 | key | type | meaning |
@@ -460,17 +461,18 @@ With no `--app`, one line describing what is readable:
 | `logs[].bytes` | number | The file's size on disk. There is no cap and no rotation, so this is how growth stays visible. |
 | `logs[].lastWrite` | string | ISO-8601. When the file was last written. |
 
-With `--app`, **the records themselves**, one per line, exactly as they sit in the file:
+With `--app`, **the records themselves**, one per line, as they sit in the file with `schemaVersion` added first:
 
 ```json
-{"ts":"2026-07-27T09:12:00.004Z","event":"spawned","port":8787}
-{"ts":"2026-07-27T09:12:03.411Z","stream":"stdout","text":"Ready on http://localhost:8787"}
-{"ts":"2026-07-27T09:12:03.418Z","event":"ready"}
-{"ts":"2026-07-27T09:14:02.881Z","event":"exited","code":0}
+{"schemaVersion":1,"ts":"2026-07-27T09:12:00.004Z","event":"spawned","port":8787}
+{"schemaVersion":1,"ts":"2026-07-27T09:12:03.411Z","stream":"stdout","text":"Ready on http://localhost:8787"}
+{"schemaVersion":1,"ts":"2026-07-27T09:12:03.418Z","event":"ready"}
+{"schemaVersion":1,"ts":"2026-07-27T09:14:02.881Z","event":"exited","code":0}
 ```
 
 | key | type | meaning |
 |---|---|---|
+| `schemaVersion` | integer | The version of this payload's shape, the same number as the listing line's. Not in the file: it is added as the record is written out. |
 | `ts` | string | ISO-8601. When the record was written — what `--since` bounds against, and what merges two workers' files. |
 | `stream` | string | `"stdout"` or `"stderr"`. Present on an output record and on no other kind. |
 | `text` | string | The line the child wrote, ANSI stripped, newline-normalized, with no `[name]` prefix. |

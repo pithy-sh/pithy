@@ -259,7 +259,9 @@ const DevLogsPayload = z
       .describe("What is readable."),
     DevLogRecord,
   ])
-  .describe("One line of `pithy dev logs --json`: the listing, or one record exactly as it sits in the file.");
+  .describe(
+    "One line of `pithy dev logs --json`: the listing, or one record as it sits in the file with `schemaVersion` added.",
+  );
 
 export default withContract(
   defineCommand({
@@ -293,6 +295,7 @@ export default withContract(
   }),
   {
     output: "stream",
+    schemaVersion: 1,
     payload: DevLogsPayload,
     mutates: false,
     idempotent: true,

@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
+import { EVENTS_ARG, EVENTS_NEED_JSON, eventsOption, eventsRecord } from "../contract/events";
 import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
 import { establishedPending } from "../migrations/pendingCount";
@@ -193,6 +194,45 @@ const NO_ENV_FOR_KIT =
  */
 const KIT_IS_LOCAL_IN_DEV = "In dev the kit's Workers run locally under pithy dev, so none were deployed.";
 
+/** One Worker under `apps/`, as the payload lists it and as an `--events` record settles it. */
+const DeployedWorker = z
+  .object({
+    name: z.string().describe("The Worker's name."),
+    ok: z
+      .boolean()
+      .describe(
+        "Whether `wrangler deploy` succeeded for it. Under `--dry-run`, whether `wrangler deploy --dry-run` accepted its bundle.",
+      ),
+    versionId: z.string().optional().describe("The deployed version id, when wrangler printed one."),
+    url: z.string().optional().describe("The Worker's public URL, when wrangler printed one."),
+    built: z.boolean().optional().describe("Whether its UI build succeeded. Absent when it declares no UI."),
+    error: z.string().optional().describe("Why it failed. Present only when `ok` is false."),
+    exit: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "The exit a classified failure carries: `3` when Cloudflare refused the credentials or wrangler would not start after an earlier Worker already had a row. Absent on an ordinary failure.",
+      ),
+    verification: z
+      .enum(["verified", "mismatch", "inconclusive", "unreachable"])
+      .optional()
+      .describe("What probing the declared domain found. `mismatch` and `unreachable` fail the run."),
+    verificationDetail: z.string().optional().describe("The one line behind `verification`."),
+  })
+  .describe("One Worker under `apps/`.");
+
+/**
+ * `pithy deploy --json --events`: one record per step, before the payload closes the stream (#697). A Worker
+ * under `apps/` settles with its row as `worker`, a kit Worker with its row as `kit`.
+ */
+const DeployEvents = eventsRecord("deploy", {
+  settled: {
+    worker: DeployedWorker.describe("The row of the Worker under `apps/` that settled, as `workers` lists it."),
+    kit: KitWorkerDeploy.describe("The row of the kit Worker that settled, as `kit` lists it."),
+  },
+});
+
 /** `pithy deploy --json`: what each half shipped. `docs/commands/deploy.md`. */
 const DeployPayload = z
   .object({
@@ -208,29 +248,7 @@ const DeployPayload = z
       .describe(
         "Migrations the environment's databases have not applied, or `null` when it was not counted. Under `--dry-run`, the number `plan.notes` names.",
       ),
-    workers: z
-      .array(
-        z
-          .object({
-            name: z.string().describe("The Worker's name."),
-            ok: z
-              .boolean()
-              .describe(
-                "Whether `wrangler deploy` succeeded for it. Under `--dry-run`, whether `wrangler deploy --dry-run` accepted its bundle.",
-              ),
-            versionId: z.string().optional().describe("The deployed version id, when wrangler printed one."),
-            url: z.string().optional().describe("The Worker's public URL, when wrangler printed one."),
-            built: z.boolean().optional().describe("Whether its UI build succeeded. Absent when it declares no UI."),
-            error: z.string().optional().describe("Why it failed. Present only when `ok` is false."),
-            verification: z
-              .enum(["verified", "mismatch", "inconclusive", "unreachable"])
-              .optional()
-              .describe("What probing the declared domain found. `mismatch` and `unreachable` fail the run."),
-            verificationDetail: z.string().optional().describe("The one line behind `verification`."),
-          })
-          .describe("One Worker under `apps/`."),
-      )
-      .describe("The adopter's Workers. Empty when `--kit` narrowed the run."),
+    workers: z.array(DeployedWorker).describe("The adopter's Workers. Empty when `--kit` narrowed the run."),
     kit: z
       .array(KitWorkerDeploy)
       .nullable()
@@ -257,168 +275,176 @@ export default withContract(
       force: { type: "boolean", default: false, description: "Deploy every kit Worker, changed or not" },
       "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
+      events: EVENTS_ARG,
     },
     run: ({ args }) =>
-      withErrorReporting(args.json, async () => {
-        // Optional here, and only here: a bare `pithy deploy` ships each worker's top-level stanza, which
-        // is not an environment at all. A value that *is* given is held to the same rule as everywhere else.
-        const projectDir = process.cwd();
-        const env = await requireDeployEnvironment(args.env, async () =>
-          loadProjectEnvironments(await loadProject(projectDir)),
-        );
-        assertDeployFlags(args);
-        const selection = deploySelection(args);
-        // **A rate-limit namespace in the feature range is nobody's to declare (#643)**, for any selection and any
-        // environment: a feature of any project in the account can be allocated it, and the two would share counters.
-        await assertProjectDeclaresNoFeatureIds(projectDir);
-
-        // The three gates below are about the **adopter's** Workers: their bindings, their declared
-        // origins, their Workflow stanzas. `--kit` touches nothing under `apps/`, so it is not held to
-        // them — a kit Worker whose resources are missing is reported as a skipped row naming the
-        // provisioning command, which is the finer-grained answer to the same question.
-        const gateApps = selection.apps && env !== undefined;
-        // The migration warning only makes sense against a concrete remote target. A bare `pithy deploy`
-        // ships each worker's top-level config, whose deployed schema is not the local dev D1 — so skip the
-        // check (and its REST round trip) unless an `--env` names the environment being deployed.
-        // The account first, before anything resolves a credential. It is read from the project's own
-        // config and passed to every step below, rather than left to whatever a later load happens to
-        // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
-        // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
-        // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
-        // and with no hint that provisioning was a step they had missed (#240).
-        //
-        // **For every deploy of `apps/`, a bare one included (#589).** This read `gateApps && env`, on the
-        // reasoning that a bare deploy ships the top-level stanza "whose ids `pithy dev` resolves from
-        // Miniflare". That is exactly why it must be read: those are `database_name`s with no id, the shape
-        // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
-        // looked for an `env.dev` no project may declare. The deploy's argv now creates nothing either way;
-        // this is what says so in a sentence instead of in wrangler's stderr.
-        // The project's production policy decides only whether the refusal can name a `fix`: production is
-        // provisioned with a person's `--confirm` phrase, so it gets none.
-        //
-        // **A dry run makes this refusal, and the two below, exactly as the deploy would (#697).** A plan for a
-        // deploy that would be refused is a promise nobody can keep, so under `--json` the answer is the one
-        // error line with its exit class and `fix`, never a plan beside an exit code it does not explain.
-        if (selection.apps) {
-          const { seed } = await loadProject(projectDir);
-          await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
-        }
-        // And the other half of "is this environment ready to be real": does its config name every origin
-        // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
-        // the environment and the config, and this is the last moment before a staging Worker starts
-        // emailing real users magic links into production. Beside it rather than inside it because the two
-        // are different questions with different fixes; `assertOriginsDeclared` exempts a feature
-        // environment itself, which has no declared domain by design.
-        if (gateApps && env) await assertOriginsDeclared(projectDir, env);
-        // And the third half of it, on the same evidence and at the same moment: does this environment's
-        // stanza bind what its Workers' app capabilities declare (#267)? `reconcileAppWorkflows` writes
-        // that table and `pithy worker sync` is its only caller, so an adopter who declared a job and
-        // never ran it shipped a Worker with no `workflows` entry and no `triggers.crons` — the binding
-        // fails on the first request, and the cron simply never fires and says nothing at all. Beside the
-        // origins gate rather than inside it for the same reason that one is beside the binding gate: a
-        // different question with a different fix, and a feature environment is exempt from this one too.
-        if (gateApps && env) await assertWorkflowsBound(projectDir, env);
-
-        const account = await projectCloudflareAccount(projectDir);
-        // **The account is settled here, before anything best-effort runs (#236).** `pendingFor` swallows
-        // every failure on purpose — a database it cannot reach costs a warning line, not the deploy — and
-        // a pin the credentials contradict is not a reachability failure. Swallowed, it becomes
-        // `pendingMigrations: null`: an absence that reads as a fact. `cloudflareEnv` refuses it in the one
-        // sentence `pithy doctor` already reads out. A *missing* pair still passes, because `wrangler
-        // deploy` authenticates on its own OAuth login and always could.
-        cloudflareEnv({ account });
-        if (args["dry-run"]) {
-          await planDeploy({ projectDir, env, account, selection, force: args.force, json: args.json });
-          return;
-        }
-        const pending = env ? await pendingFor(projectDir, env, account) : undefined;
-        const audit = await buildAudit(projectDir, env ?? "dev", account);
-
-        // **Before the uploads, not after them (#578).** The count is about the schema this deploy is
-        // shipping code against, so it is worth reading before the first Worker goes up rather than in a
-        // block underneath the last one — and it is the first thing this command has ever printed, which
-        // is what tells an operator the run is alive. `--json` still writes one line and nothing else.
-        const warning = env && !args.json ? pendingWarning(pending, env) : undefined;
-        if (warning) process.stdout.write(`${warning}\n`);
-
-        // **Step one: the adopter's Workers, ungated.** Their code is the thing that changed.
-        const deploys = selection.apps ? await deployProject({ projectDir, account, env, audit }) : [];
-        // A deploy that shipped but is not the thing answering at the declared address is a failure too,
-        // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
-        // *consistent* mismatch, and nothing answering at all (#264). A gradual rollout and a Worker that
-        // answered without a version are both inconclusive, and failing on either would train everyone to
-        // ignore the check.
-        const appsFailed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
-
-        // **Step two: the kit's, gated.** Separately, so CI reads two exit-worthy facts rather than one.
-        // `dev` is not a target here at all — see {@link KIT_IS_LOCAL_IN_DEV}.
-        const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
-        const kit: KitDeployReport | null = runKit
-          ? await deployKitWorkers({
-              projectDir,
-              project: requireProjectName(await loadProject(projectDir)),
-              env: env as string,
-              account,
-              force: args.force,
-              // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
-              // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
-              ...(await featureOf(projectDir, env as string)),
-            })
-          : null;
-        const kitFailed = kit !== null && kitDeployFailed(kit);
-        const failed = appsFailed || kitFailed;
-
-        if (args.json) {
-          // `pithy migrate`, when the schema this deploy shipped against is behind it (#697). Absent otherwise.
-          const next = deployNext({ env, pending, failed });
-          process.stdout.write(
-            `${formatJsonLine({
-              command: "deploy",
-              env: env ?? null,
-              pendingMigrations: pending ?? null,
-              workers: deploys,
-              kit: kit?.workers ?? null,
-              // Beside the rows rather than among them: a problem names no capability, so it is not a
-              // row — and a payload that carried it as one would say a capability failed that this run
-              // never even saw. `null` when the kit half did not run, exactly as `kit` is.
-              kitProblems: kit?.problems ?? null,
-              dryRun: false,
-              next,
-            })}\n`,
+      withErrorReporting(
+        args.json,
+        async () => {
+          // Optional here, and only here: a bare `pithy deploy` ships each worker's top-level stanza, which
+          // is not an environment at all. A value that *is* given is held to the same rule as everywhere else.
+          const projectDir = process.cwd();
+          const env = await requireDeployEnvironment(args.env, async () =>
+            loadProjectEnvironments(await loadProject(projectDir)),
           );
-          if (failed) process.exitCode = runExit(deploys, appsFailed);
-          return;
-        }
+          assertDeployFlags(args);
+          const selection = deploySelection(args);
+          // **A rate-limit namespace in the feature range is nobody's to declare (#643)**, for any selection and any
+          // environment: a feature of any project in the account can be allocated it, and the two would share counters.
+          await assertProjectDeclaresNoFeatureIds(projectDir);
 
-        // Every per-Worker line has already been written, as that Worker settled — `project/deploy.ts`
-        // and `project/deployKit.ts` stream them through the narration seam. What is left here is what is
-        // true of the run as a whole.
-        if (kit) {
-          // After the rows, because a problem explains a set that is short rather than a Worker that
-          // failed — and because an operator scanning red lines must find it whether the set was short
-          // by one capability or by all of them.
-          for (const problem of kit.problems) process.stdout.write(`${summarizeKitProblem(problem)}\n`);
-        }
-        // Said out loud rather than left as an absence: a bare deploy used to ship only `apps/`, and now
-        // that it can ship both, "nothing about the kit appeared" must not be how an operator learns it.
-        if (selection.kit && !runKit) {
-          process.stdout.write(`${env === LOCAL_ENVIRONMENT ? KIT_IS_LOCAL_IN_DEV : NO_ENV_FOR_KIT}\n`);
-        }
-        if (failed) {
-          process.exitCode = runExit(deploys, appsFailed); // The per-worker lines are the report; non-zero for CI.
-          return;
-        }
-        process.stdout.write(`${formatDone()}\n`);
-      }),
+          // The three gates below are about the **adopter's** Workers: their bindings, their declared
+          // origins, their Workflow stanzas. `--kit` touches nothing under `apps/`, so it is not held to
+          // them — a kit Worker whose resources are missing is reported as a skipped row naming the
+          // provisioning command, which is the finer-grained answer to the same question.
+          const gateApps = selection.apps && env !== undefined;
+          // The migration warning only makes sense against a concrete remote target. A bare `pithy deploy`
+          // ships each worker's top-level config, whose deployed schema is not the local dev D1 — so skip the
+          // check (and its REST round trip) unless an `--env` names the environment being deployed.
+          // The account first, before anything resolves a credential. It is read from the project's own
+          // config and passed to every step below, rather than left to whatever a later load happens to
+          // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
+          // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
+          // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
+          // and with no hint that provisioning was a step they had missed (#240).
+          //
+          // **For every deploy of `apps/`, a bare one included (#589).** This read `gateApps && env`, on the
+          // reasoning that a bare deploy ships the top-level stanza "whose ids `pithy dev` resolves from
+          // Miniflare". That is exactly why it must be read: those are `database_name`s with no id, the shape
+          // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
+          // looked for an `env.dev` no project may declare. The deploy's argv now creates nothing either way;
+          // this is what says so in a sentence instead of in wrangler's stderr.
+          // The project's production policy decides only whether the refusal can name a `fix`: production is
+          // provisioned with a person's `--confirm` phrase, so it gets none.
+          //
+          // **A dry run makes this refusal, and the two below, exactly as the deploy would (#697).** A plan for a
+          // deploy that would be refused is a promise nobody can keep, so under `--json` the answer is the one
+          // error line with its exit class and `fix`, never a plan beside an exit code it does not explain.
+          if (selection.apps) {
+            const { seed } = await loadProject(projectDir);
+            await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
+          }
+          // And the other half of "is this environment ready to be real": does its config name every origin
+          // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
+          // the environment and the config, and this is the last moment before a staging Worker starts
+          // emailing real users magic links into production. Beside it rather than inside it because the two
+          // are different questions with different fixes; `assertOriginsDeclared` exempts a feature
+          // environment itself, which has no declared domain by design.
+          if (gateApps && env) await assertOriginsDeclared(projectDir, env);
+          // And the third half of it, on the same evidence and at the same moment: does this environment's
+          // stanza bind what its Workers' app capabilities declare (#267)? `reconcileAppWorkflows` writes
+          // that table and `pithy worker sync` is its only caller, so an adopter who declared a job and
+          // never ran it shipped a Worker with no `workflows` entry and no `triggers.crons` — the binding
+          // fails on the first request, and the cron simply never fires and says nothing at all. Beside the
+          // origins gate rather than inside it for the same reason that one is beside the binding gate: a
+          // different question with a different fix, and a feature environment is exempt from this one too.
+          if (gateApps && env) await assertWorkflowsBound(projectDir, env);
+
+          const account = await projectCloudflareAccount(projectDir);
+          // **The account is settled here, before anything best-effort runs (#236).** `pendingFor` swallows
+          // every failure on purpose — a database it cannot reach costs a warning line, not the deploy — and
+          // a pin the credentials contradict is not a reachability failure. Swallowed, it becomes
+          // `pendingMigrations: null`: an absence that reads as a fact. `cloudflareEnv` refuses it in the one
+          // sentence `pithy doctor` already reads out. A *missing* pair still passes, because `wrangler
+          // deploy` authenticates on its own OAuth login and always could.
+          cloudflareEnv({ account });
+          if (args["dry-run"]) {
+            await planDeploy({ projectDir, env, account, selection, force: args.force, json: args.json });
+            return;
+          }
+          const pending = env ? await pendingFor(projectDir, env, account) : undefined;
+          const audit = await buildAudit(projectDir, env ?? "dev", account);
+
+          // **Before the uploads, not after them (#578).** The count is about the schema this deploy is
+          // shipping code against, so it is worth reading before the first Worker goes up rather than in a
+          // block underneath the last one — and it is the first thing this command has ever printed, which
+          // is what tells an operator the run is alive. `--json` still writes one line and nothing else.
+          const warning = env && !args.json ? pendingWarning(pending, env) : undefined;
+          if (warning) process.stdout.write(`${warning}\n`);
+
+          // **Step one: the adopter's Workers, ungated.** Their code is the thing that changed.
+          const deploys = selection.apps ? await deployProject({ projectDir, account, env, audit }) : [];
+          // A deploy that shipped but is not the thing answering at the declared address is a failure too,
+          // and it fails the pipeline rather than printing a line nobody reads. Two shapes count: a
+          // *consistent* mismatch, and nothing answering at all (#264). A gradual rollout and a Worker that
+          // answered without a version are both inconclusive, and failing on either would train everyone to
+          // ignore the check.
+          const appsFailed = deploys.some((deploy) => !deploy.ok) || deployVerificationFailed(deploys);
+
+          // **Step two: the kit's, gated.** Separately, so CI reads two exit-worthy facts rather than one.
+          // `dev` is not a target here at all — see {@link KIT_IS_LOCAL_IN_DEV}.
+          const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
+          const kit: KitDeployReport | null = runKit
+            ? await deployKitWorkers({
+                projectDir,
+                project: requireProjectName(await loadProject(projectDir)),
+                env: env as string,
+                account,
+                force: args.force,
+                // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
+                // checkout that is not on one is the pass's own problem to state, not a throw that loses the report.
+                ...(await featureOf(projectDir, env as string)),
+              })
+            : null;
+          const kitFailed = kit !== null && kitDeployFailed(kit);
+          const failed = appsFailed || kitFailed;
+
+          if (args.json) {
+            // `pithy migrate`, when the schema this deploy shipped against is behind it (#697). Absent otherwise.
+            const next = deployNext({ env, pending, failed });
+            process.stdout.write(
+              `${formatJsonLine({
+                command: "deploy",
+                env: env ?? null,
+                pendingMigrations: pending ?? null,
+                workers: deploys,
+                kit: kit?.workers ?? null,
+                // Beside the rows rather than among them: a problem names no capability, so it is not a
+                // row — and a payload that carried it as one would say a capability failed that this run
+                // never even saw. `null` when the kit half did not run, exactly as `kit` is.
+                kitProblems: kit?.problems ?? null,
+                dryRun: false,
+                next,
+              })}\n`,
+            );
+            if (failed) process.exitCode = runExit(deploys, appsFailed);
+            return;
+          }
+
+          // Every per-Worker line has already been written, as that Worker settled — `project/deploy.ts`
+          // and `project/deployKit.ts` stream them through the narration seam. What is left here is what is
+          // true of the run as a whole.
+          if (kit) {
+            // After the rows, because a problem explains a set that is short rather than a Worker that
+            // failed — and because an operator scanning red lines must find it whether the set was short
+            // by one capability or by all of them.
+            for (const problem of kit.problems) process.stdout.write(`${summarizeKitProblem(problem)}\n`);
+          }
+          // Said out loud rather than left as an absence: a bare deploy used to ship only `apps/`, and now
+          // that it can ship both, "nothing about the kit appeared" must not be how an operator learns it.
+          if (selection.kit && !runKit) {
+            process.stdout.write(`${env === LOCAL_ENVIRONMENT ? KIT_IS_LOCAL_IN_DEV : NO_ENV_FOR_KIT}\n`);
+          }
+          if (failed) {
+            process.exitCode = runExit(deploys, appsFailed); // The per-worker lines are the report; non-zero for CI.
+            return;
+          }
+          process.stdout.write(`${formatDone()}\n`);
+        },
+        eventsOption("deploy", args),
+      ),
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: DeployPayload,
+    events: DeployEvents,
     mutates: true,
     idempotent: true,
     needsNetwork: true,
     flagGroups: [
       { kind: "requires", flag: "--force", needs: ["--env"], any: false, rule: "--force needs an environment." },
+      EVENTS_NEED_JSON,
     ],
   },
 );

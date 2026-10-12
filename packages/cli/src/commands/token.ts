@@ -450,6 +450,7 @@ const mint = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: TokenMintPayload,
     mutates: true,
     // Rolls the value every time.
@@ -483,7 +484,14 @@ const list = withContract(
         if (notice) process.stdout.write(notice);
       }),
   }),
-  { output: "document", payload: TokenListPayload, mutates: false, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: TokenListPayload,
+    mutates: false,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 const rotate = withContract(
@@ -518,6 +526,7 @@ const rotate = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: TokenRotatePayload,
     mutates: true,
     idempotent: false,
@@ -551,7 +560,14 @@ const revoke = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: TokenRevokePayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: TokenRevokePayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 export default defineCommand({

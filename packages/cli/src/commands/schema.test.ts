@@ -30,7 +30,14 @@ const tree: CommandDef = defineCommand({
             args: { profile: { type: "positional", description: "Which" } },
             run: () => undefined,
           }),
-          { output: "document", payload: Minted, mutates: true, idempotent: false, needsNetwork: true },
+          {
+            output: "document",
+            schemaVersion: 1,
+            payload: Minted,
+            mutates: true,
+            idempotent: false,
+            needsNetwork: true,
+          },
         ),
       },
     }),
@@ -68,6 +75,7 @@ describe("schemaDocument", () => {
     expect(leaf.commands[0]).toMatchObject({
       runs: true,
       output: "document",
+      schemaVersion: 1,
       mutates: true,
       idempotent: false,
       needsNetwork: true,
@@ -181,6 +189,7 @@ describe("pithy schema", () => {
     expect(document.commands[0]).toMatchObject({
       path: "schema",
       output: "document",
+      schemaVersion: 1,
       mutates: false,
       idempotent: true,
     });

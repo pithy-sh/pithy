@@ -719,7 +719,7 @@ const SecretsDeprovisionPayload = z
   .describe("What `pithy secrets deprovision` removed.");
 
 /** Every managed subcommand reaches the project's managers through Cloudflare. */
-const MANAGED = { output: "document", needsNetwork: true } as const;
+const MANAGED = { output: "document", schemaVersion: 1, needsNetwork: true } as const;
 
 const create = withContract(
   defineCommand({
@@ -944,7 +944,14 @@ const ls = withContract(
         );
       }),
   }),
-  { output: "document", payload: SecretsLsPayload, mutates: false, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: SecretsLsPayload,
+    mutates: false,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 /**
@@ -989,7 +996,14 @@ const edit = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: SecretsEditPayload, mutates: true, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: SecretsEditPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 /**

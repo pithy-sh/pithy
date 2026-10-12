@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { ReconcilePlan } from "../capabilities/reconcile";
 import { buildDoctorReport, type DoctorReport, doctorExitCode, renderDoctorJson } from "../commands/doctor";
+import { publishedPayload } from "../contract/commandContract";
 import { buildDocsCatalog } from "../docs/catalog";
 import { formatJsonLine } from "../terminal/output";
 import { cleanPlanFor, doctorHarness, ledgerStubPer, planStub } from "../test-utils/doctorHarness";
@@ -35,7 +36,7 @@ async function healthyWith(overrides: Parameters<typeof harness.healthyOptions>[
 const catalog = await buildDocsCatalog();
 
 /** `pithy doctor --json`'s payload as `pithy schema doctor` publishes it. */
-const doctorSchema = z.toJSONSchema((await contractAt("doctor")).payload as z.ZodType, { io: "input" });
+const doctorSchema = z.toJSONSchema(publishedPayload(await contractAt("doctor")) as z.ZodType, { io: "input" });
 
 /**
  * Why `fix` is not a command this CLI has, with flags it declares — or `null` when it is. The question
@@ -1010,7 +1011,7 @@ describe("every finding in every block carries fix", () => {
   test("the payload conforms to the schema that requires it, and every fix in it runs as written", async () => {
     const report = await everywhere();
     const payload = renderDoctorJson(report);
-    await expectConforms("doctor", formatJsonLine(payload));
+    await expectConforms("doctor", () => formatJsonLine(payload));
     const fixes = everyFix(payload);
     expect(fixes.length).toBeGreaterThan(findingLists.length);
     expect(fixes.every((fix) => fix === null || typeof fix === "string")).toBe(true);

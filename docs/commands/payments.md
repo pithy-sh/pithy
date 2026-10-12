@@ -60,12 +60,13 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy payments provision --json
-{"command":"payments provision","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
+{"command":"payments provision","schemaVersion":1,"environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"payments provision"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environments` | `string[]` | Every environment a reconcile worker was deployed for, in order. `dev` is local-only and never a deploy target |
 | `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
 | `skippedEnvironments[].env` | `string` | The environment that was skipped |
@@ -76,12 +77,13 @@ When **every** environment was skipped the line above is still written to stdout
 
 ```
 $ pithy payments reconcile --env staging --json
-{"command":"payments reconcile","env":"staging","dryRun":false,"report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
+{"command":"payments reconcile","schemaVersion":1,"env":"staging","dryRun":false,"report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"payments reconcile"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | `string` | The environment the pass ran in |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. No drift was repaired when it is `true` |
 | `report` | `object` | The Workflow's own return value, passed through verbatim |

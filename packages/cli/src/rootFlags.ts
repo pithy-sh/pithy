@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readBooleanToken } from "./booleanToken";
+
 /**
- * The root flags `bin.ts` answers before citty ever parses. Kept here, dependency-free, so the rule is a
- * pure function with its own tests — `bin.ts` is an entry script with top-level side effects and cannot
+ * The root flags `bin.ts` answers before citty ever parses. Kept here, with no dependency but the pure
+ * `booleanToken.ts`, so the rule is a pure function with its own tests — `bin.ts` is an entry script with top-level side effects and cannot
  * be imported.
  */
 
@@ -84,38 +86,6 @@ export function wantsVersion(argv: string[]): boolean {
 }
 
 /**
- * One pretty token, read: which spelling it is and what value it carries, or `null` if it is not one.
- *
- * **The `=value` spelling has to be read, because the parser already accepts it.** `scan()` in
- * `declaredFlags.ts` records Node `parseArgs`' `rawName`, which is `--pretty` for `--pretty=true`, so
- * the undeclared-flag check lets the token through. Matching only the bare spelling left
- * `--pretty=false` at a terminal accepted, ignored, and *indented* — the operator asked for compact and
- * got the opposite, which is the ambient surprise this whole feature exists to close. `asksForJson`
- * already reads `--json=false`, so mirroring that spelling onto `--pretty` is the expected path.
- *
- * A value that is neither `true` nor `false` is reported as `invalid` rather than guessed at, on the
- * same rule `PITHY_JSON` is held to.
- */
-function readPretty(token: string): { pretty: boolean } | { invalid: true } | null {
-  const equals = token.indexOf("=");
-  const name = equals === -1 ? token : token.slice(0, equals);
-  if (name !== PRETTY && name !== NO_PRETTY) return null;
-  // The bare spelling means the flag's own polarity: `--pretty` on, `--no-pretty` off.
-  const asserted = name === PRETTY;
-  if (equals === -1) return { pretty: asserted };
-  const value = token.slice(equals + 1);
-  if (value !== "true" && value !== "false") return { invalid: true };
-  // `--no-pretty=false` is a double negative and means pretty, which is what the parser would make of it.
-  return { pretty: value === "true" ? asserted : !asserted };
-}
-
-/** The flag tokens of this invocation — everything before `--`, which is payload for a child process. */
-function flagTokens(argv: readonly string[]): readonly string[] {
-  const separator = argv.indexOf(PASSTHROUGH);
-  return separator === -1 ? argv : argv.slice(0, separator);
-}
-
-/**
  * Whether this invocation asked for indented `--json`, on any command: `true` for `--pretty`, `false`
  * for `--no-pretty`, `undefined` when neither was typed and the ambient default should decide.
  *
@@ -123,20 +93,17 @@ function flagTokens(argv: readonly string[]): readonly string[] {
  * before citty is handed the arguments — there is no parse yet to read it off, and the decision has to
  * be latched before the first byte a command writes.
  *
- * **Last wins.** A repeated flag resolves the way every parser resolves one, which is what lets a shell
- * alias carrying `--pretty` be overridden by `--no-pretty` typed after it.
- *
- * Both the bare and the `=true`/`=false` spellings count, for the reason in {@link readPretty}. A
- * malformed value is not an answer, so it is skipped here and refused by {@link malformedPrettyFlag}.
- * `--prettier`, a positional named `pretty`, and anything after `--` all pass through untouched.
+ * **Read by the one rule every boolean flag is read by** (`booleanToken.ts`): a bare `--no-pretty` wins wherever
+ * it is, else the last `--pretty` or `--pretty=<value>` decides, so a shell alias carrying `--pretty` is
+ * overridden by `--no-pretty` typed after it. The `=true`/`=false` spellings count, because the parser already
+ * lets them through: `scan()` in `declaredFlags.ts` records Node `parseArgs`' `rawName`, which is `--pretty` for
+ * `--pretty=false`, and reading only the bare spelling left `--pretty=false` at a terminal accepted, ignored, and
+ * *indented*. `--no-pretty=false` is the double negative it spells, and means pretty. A malformed value is not an
+ * answer, so it is skipped here and refused by {@link malformedPrettyFlag}. `--prettier`, a positional named
+ * `pretty`, and anything after `--` all pass through untouched.
  */
 export function wantsPretty(argv: readonly string[]): boolean | undefined {
-  let asked: boolean | undefined;
-  for (const token of flagTokens(argv)) {
-    const read = readPretty(token);
-    if (read !== null && "pretty" in read) asked = read.pretty;
-  }
-  return asked;
+  return readBooleanToken(argv, "pretty").value;
 }
 
 /**
@@ -147,46 +114,32 @@ export function wantsPretty(argv: readonly string[]): boolean | undefined {
  * feature closes. `declaredFlags.ts` raises it; this only finds it, so the module stays dependency-free.
  */
 export function malformedPrettyFlag(argv: readonly string[]): string | undefined {
-  for (const token of flagTokens(argv)) {
-    const read = readPretty(token);
-    if (read !== null && "invalid" in read) return token;
-  }
-  return undefined;
-}
-
-/** One `--no-input` token, read: whether it forbids, `invalid`, or `null` when it is not one. */
-function readNoInput(token: string): { forbids: boolean } | { invalid: true } | null {
-  const equals = token.indexOf("=");
-  const name = equals === -1 ? token : token.slice(0, equals);
-  if (name !== NO_INPUT) return null;
-  if (equals === -1) return { forbids: true };
-  const value = token.slice(equals + 1);
-  if (value !== "true" && value !== "false") return { invalid: true };
-  return { forbids: value === "true" };
+  return readBooleanToken(argv, "pretty").malformed;
 }
 
 /**
  * Whether this invocation typed `--no-input`: `true` for the bare flag or `=true`, `false` for `=false`,
- * `undefined` when it was not typed. Last wins, as {@link wantsPretty} does.
+ * `undefined` when it was not typed. Read as every boolean flag is (`booleanToken.ts`), as the negation of
+ * `input`: a bare `--no-input` forbids wherever it is typed, and otherwise the last `--no-input=<value>` decides.
  *
  * `false` grants nothing. `PITHY_NONINTERACTIVE=1` and `--json` each forbid prompts on their own, and
  * `terminal/inputMode.ts` lets any one of the three forbid; the `=false` spelling is read only so a shell
- * alias carrying `--no-input` can be overridden in the one case nothing else forbade.
+ * alias carrying `--no-input=true` can be overridden in the one case nothing else forbade.
  */
 export function wantsNoInput(argv: readonly string[]): boolean | undefined {
-  let asked: boolean | undefined;
-  for (const token of flagTokens(argv)) {
-    const read = readNoInput(token);
-    if (read !== null && "forbids" in read) asked = read.forbids;
-  }
-  return asked;
+  const input = readBooleanToken(noInputTokens(argv), "input").value;
+  return input === undefined ? undefined : !input;
 }
 
 /** The first `--no-input` carrying a value that is neither `true` nor `false`, as typed — or `undefined`. */
 export function malformedNoInputFlag(argv: readonly string[]): string | undefined {
-  for (const token of flagTokens(argv)) {
-    const read = readNoInput(token);
-    if (read !== null && "invalid" in read) return token;
-  }
-  return undefined;
+  return readBooleanToken(noInputTokens(argv), "input").malformed;
+}
+
+/**
+ * The tokens `--no-input` is read from: its own spellings and the `--` that ends the flags. Only the negative
+ * spelling exists, so a positive `--input` is not this flag — the undeclared-flag check names it instead.
+ */
+function noInputTokens(argv: readonly string[]): string[] {
+  return argv.filter((token) => token === PASSTHROUGH || token === NO_INPUT || token.startsWith(`${NO_INPUT}=`));
 }

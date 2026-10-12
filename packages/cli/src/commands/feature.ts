@@ -286,7 +286,14 @@ const create = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: FeatureCreatePayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: FeatureCreatePayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 /**
@@ -379,7 +386,14 @@ const sync = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: FeatureSyncPayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: FeatureSyncPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 /**
@@ -583,7 +597,14 @@ const destroy = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: FeatureDestroyPayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: FeatureDestroyPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 /**
@@ -629,7 +650,14 @@ const prune = withContract(
         process.stdout.write(report.dryRun ? "Dry run. Nothing written.\n" : `${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: FeaturePrunePayload, mutates: true, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: FeaturePrunePayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 export default defineCommand({

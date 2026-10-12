@@ -3,6 +3,7 @@
 
 import { runCommand } from "citty";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { refuseEventsFlag } from "../declaredFlags";
 import { main } from "../main";
 import { planGroupRollback } from "../migrations/groups";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
@@ -68,6 +69,20 @@ async function refusal(path: string, argv: readonly string[]): Promise<{ exit: n
   return { exit, message: line.error?.message ?? "" };
 }
 
+/**
+ * `--events` without `--json` is refused by the bin, before any command runs, as `--pretty` is — so the case
+ * asks the one function the bin asks, with the command's own argv.
+ */
+function eventsRefusal(argv: readonly string[]): { exit: number | undefined; message: string } {
+  try {
+    refuseEventsFlag(argv);
+  } catch (error) {
+    const { payload } = error as { payload: { code: string; message: string } };
+    return { exit: exitCodeOf(payload), message: payload.message };
+  }
+  return { exit: undefined, message: "" };
+}
+
 /** One group's identity, as the census compares it. */
 function keyOf(path: string, group: FlagGroup): string {
   const flags = group.kind === "requires" ? [group.flag, ...group.needs] : group.flags;
@@ -90,12 +105,14 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
   "dashboard connect: requires --update --worker-url --scope --public-key": () =>
     refusal("dashboard connect", ["--update"]),
   "deploy: requires --force --env": () => refusal("deploy", ["--force"]),
+  "deploy: requires --events --json": async () => eventsRefusal(["deploy", "--env", "staging", "--events"]),
   "docs connect: atMostOne --client --all": () => refusal("docs connect", ["--client", "cursor", "--all"]),
   "docs disconnect: atMostOne --client --all": () => refusal("docs disconnect", ["--client", "cursor", "--all"]),
   "email provision: allOrNone --routing-zone --inbound-address --app-worker": () =>
     refusal("email provision", ["--routing-zone", "zone"]),
   "support provision: allOrNone --routing-zone --inbound-address --app-worker": () =>
     refusal("support provision", ["--routing-zone", "zone"]),
+  "provision: requires --events --json": async () => eventsRefusal(["provision", "--env", "staging", "--events"]),
   "provision: exactlyOne --env --feature": async () => {
     const both = await refusal("provision", ["--env", "staging", "--feature"]);
     const neither = await refusal("provision", []);

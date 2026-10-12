@@ -3836,6 +3836,7 @@ export default withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: DoctorPayload,
     // The default run, as every contract's `mutates` is (`commandContract.ts`). It writes nothing of the
     // project's, the account's or a database's: the update-notifier cache it refreshes is the CLI's own

@@ -223,8 +223,7 @@ describe("pithy dev --list", () => {
       else process.env.PITHY_CONFIG_DIR = previous;
       await rm(configDir, { recursive: true, force: true });
     }
-    await expectConforms(
-      "dev",
+    await expectConforms("dev", () =>
       formatSessionLine({
         workers: [{ name: "acme-api", port: 8787, origin: "http://localhost:8787" }],
         identities: [{ userId: "example-ada", email: "ada@example.com", expiresAt: "2027-07-27T00:00:00.000Z" }],
@@ -239,6 +238,7 @@ describe("pithy dev --list", () => {
 
     expect(parsed).toEqual({
       command: "dev",
+      schemaVersion: 1,
       event: "list",
       // Present and empty on a machine with nothing stale (#685) — a consumer reads a field, never the
       // absence of one.

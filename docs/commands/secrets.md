@@ -74,7 +74,7 @@ support-r2-credentials      not applicable — SUPPORT_BUCKET declined in pithy.
 `--all` applies to `--json` too, rather than only the terminal — an agent is asking the same question a person is. Every row carries `applies` and, when it is `false`, `reason`, so nothing has to read the sentence; `hidden` counts what the flag would add:
 
 ```json
-{"command":"secrets ls","secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true}],"hidden":2,"unresolved":[]}
+{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true}],"hidden":2,"unresolved":[]}
 ```
 
 A secret is hidden only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
@@ -304,7 +304,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 ### `secrets verify`
 
 ```json
-{"command":"secrets verify","verdict":"failed","verified":false,"exitCode":5,"environments":[{"env":"prod","state":"verified","verification":{"keySet":"resolved","rows":14,"readable":12,"unreadable":2,"keyVersions":[{"keyVersion":2,"rows":2},{"keyVersion":3,"rows":12}],"heldVersions":[3],"currentVersion":3,"currentVersionHeld":true,"missingVersions":[2],"rotationInProgress":false}}],"sweep":{"counts":{"accounted":9,"unscoped":1,"orphan":0,"key-material":0,"unknown-scope":0,"feature":0,"foreign":3},"unscoped":["SECRETS_ENCRYPTION_KEYS"],"orphans":[],"keyMaterial":[],"unknownScope":[],"withheld":null}}
+{"command":"secrets verify","schemaVersion":1,"verdict":"failed","verified":false,"exitCode":5,"environments":[{"env":"prod","state":"verified","verification":{"keySet":"resolved","rows":14,"readable":12,"unreadable":2,"keyVersions":[{"keyVersion":2,"rows":2},{"keyVersion":3,"rows":12}],"heldVersions":[3],"currentVersion":3,"currentVersionHeld":true,"missingVersions":[2],"rotationInProgress":false}}],"sweep":{"counts":{"accounted":9,"unscoped":1,"orphan":0,"key-material":0,"unknown-scope":0,"feature":0,"foreign":3},"unscoped":["SECRETS_ENCRYPTION_KEYS"],"orphans":[],"keyMaterial":[],"unknownScope":[],"withheld":null}}
 ```
 
 | Key | Type | Meaning |
@@ -327,6 +327,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets create"`, `"secrets update"`, or `"secrets delete"` — `rm` reports the mode it ran, which is `delete`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `name` | string | The secret name given on the command line. |
 | `environments` | string[] | The managed environments the write reached: `"staging"`, `"prod"`, or both. What landed, never what was planned — on an interrupted fan-out it names only the environments actually written. |
 | `interrupted` | boolean | Present and `true` only on a `global` fan-out that failed after at least one environment was written. `environments` then names what landed, the `{ "error": … }` line is on stderr, and the exit is non-zero by the failure's kind (`docs/CLI.md` §3.8). Absent on a run that finished, and absent on a failure that wrote nothing. |
@@ -336,6 +337,7 @@ Nothing on either stream carries a secret's name, a value, or what a decrypt fai
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets rotate"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `name` | string | The secret name given on the command line. |
 | `dryRun` | boolean | Whether this was `--dry-run`. Nothing was rolled or written when it is `true`. |
 | `rotations` | object[] | One record per secret. Always one today, because there is no `--all` — the shape is per secret so that no aggregate field can ever be added beside it and disagree. |
@@ -356,6 +358,7 @@ An `unrecorded` run also writes one `{ "error": … }` line to stderr with code 
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets ls"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `secrets` | object[] | Every declared name, sorted. |
 | `secrets[].name` | string | The registry key — a secret name, or a keyspace. |
 | `secrets[].description` | string | The entry's routing facts, joined by ` · `: backend (`d1` or `cf-secrets-store`), then scope (`environment` or `global`), then `rotatable` when it is, then `keyspace` when the entry is keyed. |
@@ -372,6 +375,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets edit"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `path` | string | The absolute path of `<config>/<project>/secrets.jsonc`. |
 | `changed` | boolean | Whether the file was written. `false` for an edit that changed nothing, which is not a failure. |
 | `secrets` | number | How many secrets the file holds now. A count — the names are not in this payload. |
@@ -381,6 +385,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets provision"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environments` | object[] | One entry per managed environment, in order. |
 | `environments[].env` | string | `"staging"` or `"prod"`. |
 | `environments[].databaseId` | string | The id of that environment's secrets D1. |
@@ -409,6 +414,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets deprovision"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The one environment torn down — the value of `--env`. |
 | `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the environment's master key was deleted with the rest. |
 | `managerTokenDeleted` | boolean | Whether the shared manager token was removed. `true` only when no declared environment still runs a manager. |
@@ -465,14 +471,14 @@ pithy secrets deprovision --env staging --json
 ```
 
 ```json
-{"command":"secrets create","name":"STRIPE_SECRET_KEY","environments":["prod"]}
-{"command":"secrets update","name":"partner-webhook-secret","environments":["staging","canary"],"interrupted":true}
-{"command":"secrets ls","secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
-{"command":"secrets rotate","name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
-{"command":"secrets rotate","name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
-{"command":"secrets edit","path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
-{"command":"secrets provision","environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
-{"command":"secrets deprovision","environment":"staging","keysDeleted":false,"managerTokenDeleted":false}
+{"command":"secrets create","schemaVersion":1,"name":"STRIPE_SECRET_KEY","environments":["prod"]}
+{"command":"secrets update","schemaVersion":1,"name":"partner-webhook-secret","environments":["staging","canary"],"interrupted":true}
+{"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
+{"command":"secrets rotate","schemaVersion":1,"name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
+{"command":"secrets rotate","schemaVersion":1,"name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
+{"command":"secrets edit","schemaVersion":1,"path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
+{"command":"secrets provision","schemaVersion":1,"environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
+{"command":"secrets deprovision","schemaVersion":1,"environment":"staging","keysDeleted":false,"managerTokenDeleted":false}
 ```
 
 No example above contains a value, and none of these payloads can carry one.

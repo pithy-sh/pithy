@@ -20,7 +20,7 @@ import {
   workerSet,
   zsh,
 } from "../test-utils/doctorHarness";
-import { expectConforms } from "../test-utils/payloadContract";
+import { asCommand, expectConforms } from "../test-utils/payloadContract";
 import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDoctorText } from "./doctor";
 
 /**
@@ -1237,7 +1237,11 @@ describe("the docs say what the code emits", () => {
     const block = JSON_SAMPLES[0];
     if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     const sample: unknown = JSON.parse(block.split("\n").slice(1).join("\n"));
-    expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(Object.keys(renderDoctorJson(report)).sort());
+    // The line as the command writes it, `schemaVersion` included (#697).
+    const line = await asCommand("doctor", async () => formatJsonLine(renderDoctorJson(report)));
+    expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(
+      Object.keys(JSON.parse(line) as Record<string, unknown>).sort(),
+    );
   });
 
   /**
@@ -1246,14 +1250,10 @@ describe("the docs say what the code emits", () => {
    * the documented example are one shape.
    */
   test("the --json line, inside a project and out of one, and the page's sample, conform to the published payload", async () => {
-    await expectConforms(
-      "doctor",
-      formatJsonLine(renderDoctorJson(await buildDoctorReport(docOptions(harness.healthyOptions())))),
-    );
-    await expectConforms(
-      "doctor",
-      formatJsonLine(renderDoctorJson(await buildDoctorReport(docOptions(harness.baseOptions())))),
-    );
+    const healthy = await buildDoctorReport(docOptions(harness.healthyOptions()));
+    await expectConforms("doctor", () => formatJsonLine(renderDoctorJson(healthy)));
+    const outside = await buildDoctorReport(docOptions(harness.baseOptions()));
+    await expectConforms("doctor", () => formatJsonLine(renderDoctorJson(outside)));
     const block = JSON_SAMPLES[0];
     if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     await expectConforms("doctor", JSON.stringify(JSON.parse(block.split("\n").slice(1).join("\n"))));
@@ -1648,6 +1648,36 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   removed: ["alias", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
+  // On every payload, `doctor`'s included: the version of the payload's shape, stamped by the formatter (#697).
+  schemaVersion: [
+    "add",
+    "alias",
+    "dashboard",
+    "deploy",
+    "dev",
+    "docs",
+    "doctor",
+    "email",
+    "env",
+    "feature",
+    "init",
+    "media",
+    "migrate",
+    "payments",
+    "provision",
+    "schema",
+    "secrets",
+    "seed",
+    "storage",
+    "support",
+    "testers",
+    "token",
+    "turnstile",
+    "ui",
+    "upgrade",
+    "vector",
+    "worker",
+  ],
   // Both report an environment's `secrets_store_secrets`: provision says which entries it wrote, doctor
   // says which a declared environment still has no binding for. One subject, two directions.
   secretBindings: ["doctor", "provision"],
@@ -1709,6 +1739,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   removed: "boolean",
   routing: "object",
   runs: "object[]",
+  schemaVersion: "number",
   shell: "string",
   skippedEnvironments: "object[]",
   staleAutostart: "object[]",

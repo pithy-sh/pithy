@@ -105,6 +105,7 @@ describe("pithy init", () => {
     // and a required prompt would break that. A project declares `domains` in pithy.config.ts directly.
     expect(result).toEqual({
       command: "init",
+      schemaVersion: 1,
       appName: "smoke",
       targetDir: target,
       worker: "api",
@@ -224,6 +225,7 @@ describe("pithy migrate", () => {
     // `group` is the timestamp this run stamped itself with (#694) — generated, so matched by shape.
     expect(JSON.parse(stdout.trim())).toEqual({
       command: "migrate",
+      schemaVersion: 1,
       env: "dev",
       project: "app",
       rollback: false,
@@ -236,6 +238,7 @@ describe("pithy migrate", () => {
     const rollback = await run("bun", [bin, "migrate", "--rollback", "--json"], { cwd: target });
     expect(JSON.parse(rollback.stdout.trim())).toEqual({
       command: "migrate",
+      schemaVersion: 1,
       env: "dev",
       project: "app",
       rollback: true,

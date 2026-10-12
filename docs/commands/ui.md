@@ -148,26 +148,27 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy ui add react --worker api --json
-{"command":"ui.add","dryRun":false,"worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/pithy-screens.css","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"unstyled":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
+{"command":"ui.add","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/pithy-screens.css","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"unstyled":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
 ```
 
 `worker` is the `apps/` directory the front end was written into; `deployedAs` is the Worker's deployed script name. **That split holds across every command**, and it is the one thing to know about reading this output: `worker` is what `--worker` accepts and what every path in the same payload is relative to, while `deployedAs` is what the Cloudflare dashboard shows. A run reporting the deployed name (`<project>-<worker>`) beside directory-relative paths described a directory that does not exist, which is what the two fields exist to prevent. `created` and `skipped` are worker-relative and sorted; together they are every file the template declares, so a backfilling run reports the untouched ones rather than staying silent about them. `unstyled` is the second claim: **wrote the screens** and **the screens are styled** are two things, and only the first was ever reported. It is read off the stylesheets as they stand on disk after the write, not off the template, because a stylesheet the adopter has since edited is the case it exists for. `dependencies`, `devDependencies` and `scripts` name only what this run added.
 
 ```
 $ pithy ui sync --worker api --json
-{"command":"ui.sync","worker":"api","deployedAs":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"uncovered":[],"notFoundHandling":"single-page-application"}
+{"command":"ui.sync","schemaVersion":1,"worker":"api","deployedAs":"pithy-app-api","before":["/auth","/auth/*","/health","/health/*"],"after":["/auth","/auth/*","/health","/health/*","/leaderboard","/leaderboard/*"],"changed":true,"uncovered":[],"notFoundHandling":"single-page-application"}
 ```
 
 `before` and `after` are the allowlist either side of the run, so a CI job can log the delta without recomputing it. `changed` covers everything the call can have moved — the allowlist, or a `not_found_handling` it had to write because the stanza carried none. `uncovered` names the routes the list **in the file** does not cover: always empty after a write, and under `--check` it is the finding, the one thing that fails the exit. `notFoundHandling` is reported because SPA routing depends on it and `sync` does not overwrite a value the adopter chose.
 
 ```
 $ pithy ui list --json
-{"command":"ui.list","stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"}]}
+{"command":"ui.list","schemaVersion":1,"stubs":[{"id":"react","description":"React 19 SPA on Vite, served by the worker as static assets"}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | string | The subcommand's dotted name: `ui.add`, `ui.sync`, or `ui.list`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `dryRun` | boolean | `add`. Whether this was `--dry-run`. Nothing was written when it is `true`, and every other key is what the run would report. |
 | `worker` | string | `add`, `sync`. The `apps/` directory the front end was written into, and what every path in the same payload is relative to. |
 | `deployedAs` | string | `add`, `sync`. The Worker's deployed script name — what the Cloudflare dashboard shows. |

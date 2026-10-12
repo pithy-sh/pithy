@@ -79,6 +79,7 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   const { stdout } = await run("bun", [bin, "migrate", "--json"], { cwd: target });
   expect(JSON.parse(stdout.trim())).toEqual({
     command: "migrate",
+    schemaVersion: 1,
     env: "dev",
     project: "smoke-app",
     rollback: false,

@@ -298,7 +298,7 @@ const EmailTestPayload = z
   .describe("What `pithy email test` sent.");
 
 /** Every subcommand reaches Cloudflare and none of them reads only. */
-const EMAIL = { output: "document", mutates: true, needsNetwork: true } as const;
+const EMAIL = { output: "document", schemaVersion: 1, mutates: true, needsNetwork: true } as const;
 
 const provision = withContract(
   defineCommand({

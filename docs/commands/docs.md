@@ -92,7 +92,7 @@ One line, one object. `command` names the subcommand that wrote it, and the rest
 
 ```
 $ pithy docs connect --all --scope user --json
-{"command":"docs connect","written":[{"client":"codex","scope":"user","path":"/home/you/.codex/config.toml","state":"added","reason":null,"snippet":null}]}
+{"command":"docs connect","schemaVersion":1,"written":[{"client":"codex","scope":"user","path":"/home/you/.codex/config.toml","state":"added","reason":null,"snippet":null}]}
 ```
 
 `written` is `[]` when no client was detected. That is exit 0 and not an error — there was nothing to write.
@@ -101,28 +101,28 @@ $ pithy docs connect --all --scope user --json
 
 ```
 $ pithy docs connect --client cursor --scope user --json
-{"command":"docs connect","written":[{"client":"cursor","scope":"user","path":"/home/you/.cursor/mcp.json","state":"refused","reason":"The file is not valid JSON, so nothing was written.","snippet":"{\n  \"mcpServers\": { \"pithy\": { \"url\": \"https://pithy.sh/mcp\" } }\n}\n"}]}
+{"command":"docs connect","schemaVersion":1,"written":[{"client":"cursor","scope":"user","path":"/home/you/.cursor/mcp.json","state":"refused","reason":"The file is not valid JSON, so nothing was written.","snippet":"{\n  \"mcpServers\": { \"pithy\": { \"url\": \"https://pithy.sh/mcp\" } }\n}\n"}]}
 ```
 
 **Connect, `--print`** — nothing was written, so there is no `written` array at all.
 
 ```
 $ pithy docs connect --print --client cursor --json
-{"command":"docs connect","printed":{"client":"cursor","path":"/home/you/.cursor/mcp.json","snippet":"{\n  \"mcpServers\": { \"pithy\": { \"url\": \"https://pithy.sh/mcp\" } }\n}\n"}}
+{"command":"docs connect","schemaVersion":1,"printed":{"client":"cursor","path":"/home/you/.cursor/mcp.json","snippet":"{\n  \"mcpServers\": { \"pithy\": { \"url\": \"https://pithy.sh/mcp\" } }\n}\n"}}
 ```
 
 **Disconnect.**
 
 ```
 $ pithy docs disconnect --all --scope user --json
-{"command":"docs disconnect","disconnected":[{"client":"cursor","scope":"user","path":"/home/you/.cursor/mcp.json","state":"removed","reason":null}]}
+{"command":"docs disconnect","schemaVersion":1,"disconnected":[{"client":"cursor","scope":"user","path":"/home/you/.cursor/mcp.json","state":"removed","reason":null}]}
 ```
 
 **Status** — every client in the registry, detected or not, with one record per scope it declares.
 
 ```
 $ pithy docs status --json
-{"command":"docs status","clients":[{"client":"cursor","label":"Cursor","detected":true,"scopes":[{"scope":"project","path":"/home/you/app/.cursor/mcp.json","connected":false,"url":null,"current":false},{"scope":"user","path":"/home/you/.cursor/mcp.json","connected":true,"url":"https://pithy.sh/mcp","current":true}]}]}
+{"command":"docs status","schemaVersion":1,"clients":[{"client":"cursor","label":"Cursor","detected":true,"scopes":[{"scope":"project","path":"/home/you/app/.cursor/mcp.json","connected":false,"url":null,"current":false},{"scope":"user","path":"/home/you/.cursor/mcp.json","connected":true,"url":"https://pithy.sh/mcp","current":true}]}]}
 ```
 
 The top-level keys:
@@ -130,6 +130,7 @@ The top-level keys:
 | key | type | meaning |
 |---|---|---|
 | `command` | string | The subcommand that wrote the line: `docs connect`, `docs disconnect` or `docs status`. On every payload |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `printed` | object | `connect --print` only. What would have been written, and where. Nothing was |
 | `written` | object[] | `connect` only. One record per client and scope acted on; `[]` when nothing was detected |
 | `disconnected` | object[] | `disconnect` only. One record per client and scope acted on |

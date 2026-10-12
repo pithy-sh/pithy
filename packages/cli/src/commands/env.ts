@@ -162,5 +162,5 @@ export default withContract(
         process.stdout.write(renderEnvInventory(inventory, args.name));
       }),
   }),
-  { output: "document", payload: EnvPayload, mutates: false, idempotent: true, needsNetwork: false },
+  { output: "document", schemaVersion: 1, payload: EnvPayload, mutates: false, idempotent: true, needsNetwork: false },
 );

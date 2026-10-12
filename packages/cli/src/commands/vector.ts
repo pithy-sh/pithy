@@ -363,7 +363,14 @@ const provision = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: VectorProvisionPayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: VectorProvisionPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 const reset = withContract(
@@ -446,7 +453,14 @@ const reset = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: VectorResetPayload, mutates: true, idempotent: false, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: VectorResetPayload,
+    mutates: true,
+    idempotent: false,
+    needsNetwork: true,
+  },
 );
 
 const reprocess = withContract(
@@ -510,7 +524,14 @@ const reprocess = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: VectorReprocessPayload, mutates: true, idempotent: true, needsNetwork: true },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: VectorReprocessPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: true,
+  },
 );
 
 /** The interactive reset prompt: an `@clack/prompts` text field asking for the exact, environment-named phrase. */

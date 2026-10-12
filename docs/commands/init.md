@@ -49,12 +49,13 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"init"` | The command that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `targetDir` | string | The absolute directory the project was scaffolded into — `--dir` resolved against the working directory |
 | `appName` | string | The project name written into the root `pithy.config.ts` as `name`. From `--name`, or the target directory's basename |
 | `worker` | string | The first Worker's `apps/` directory. What `--worker` accepts, and what `--worker` on later commands names |
@@ -140,7 +141,7 @@ Scaffold headlessly. Both names given, so nothing is asked.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 Scaffold into a directory that does not exist yet. It is created.

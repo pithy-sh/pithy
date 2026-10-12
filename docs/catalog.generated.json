@@ -210,7 +210,9 @@
         "--dryRun",
         "--no-dry-run",
         "--json",
-        "--no-json"
+        "--no-json",
+        "--events",
+        "--no-events"
       ]
     },
     {
@@ -497,7 +499,9 @@
         "--dryRun",
         "--no-dry-run",
         "--json",
-        "--no-json"
+        "--no-json",
+        "--events",
+        "--no-events"
       ]
     },
     {

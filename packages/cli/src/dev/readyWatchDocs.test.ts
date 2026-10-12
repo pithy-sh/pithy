@@ -79,8 +79,13 @@ describe("docs/commands/dev.md states the deadline the code enforces", () => {
     // Named down to the event. The page pastes more than one `event` line now — `--list` emits its own —
     // and `exec` takes the first match, so a bare `"event"` here would silently repin this test on
     // whichever sample happened to sit higher up the page.
-    const sample = /```json\n(\{"command":"dev","event":"still-waiting".*)\n```/.exec(PAGE)?.[1];
+    const sample = /```json\n(\{"command":"dev","schemaVersion":\d+,"event":"still-waiting".*)\n```/.exec(PAGE)?.[1];
     if (sample === undefined) throw new Error(`${WHERE} no longer pastes a still-waiting sample. Repin or restore it.`);
-    expect(JSON.parse(sample)).toEqual({ command: "dev", event: "still-waiting", waiting: ["support"] });
+    expect(JSON.parse(sample)).toEqual({
+      command: "dev",
+      schemaVersion: 1,
+      event: "still-waiting",
+      waiting: ["support"],
+    });
   });
 });

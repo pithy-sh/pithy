@@ -243,6 +243,7 @@ describe("pithy payments reconcile --rail", () => {
     expect(dispatched.calls).toEqual([{ name: "acme-staging-payments-reconcile", params: { rail: "lemonSqueezy" } }]);
     expect(line).toEqual({
       command: "payments reconcile",
+      schemaVersion: 1,
       env: "staging",
       dryRun: false,
       report: { scanned: 4, drifted: 0, unchanged: 4, skipped: 0, failed: 0 },

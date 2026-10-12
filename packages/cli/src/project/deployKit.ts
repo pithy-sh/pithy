@@ -413,7 +413,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
     // `deployHostWorker`, which is where the spawn is; this is the outcome, and it covers the three
     // that never reach a spawn at all — unchanged, skipped, failed — so every capability in the set
     // accounts for itself while the run is still going rather than in a block at the end.
-    settleStep(summarizeKitDeploy(row));
+    settleStep(summarizeKitDeploy(row), { kit: row });
   }
 }
 

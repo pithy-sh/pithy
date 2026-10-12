@@ -463,6 +463,7 @@ const connectCommand = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: DocsConnectPayload,
     mutates: true,
     idempotent: true,
@@ -505,6 +506,7 @@ const disconnectCommand = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: DocsDisconnectPayload,
     mutates: true,
     idempotent: true,
@@ -540,7 +542,14 @@ const statusCommand = withContract(
         emit(statusRows(clients));
       }),
   }),
-  { output: "document", payload: DocsStatusPayload, mutates: false, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: DocsStatusPayload,
+    mutates: false,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 export default defineCommand({

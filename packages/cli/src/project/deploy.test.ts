@@ -219,11 +219,23 @@ describe("deployProject", () => {
       },
     );
 
+    // Each settle carries the row its line was written from, for an `--events` reader (#697).
+    const row = (name: string) => ({
+      worker: { name, ok: true, url: `https://${name}.acme.workers.dev`, versionId: `ver-${name}` },
+    });
     expect(events).toEqual([
       { phase: "start", what: "pithy-api" },
-      { phase: "settled", line: "pithy-api: deployed. https://pithy-api.acme.workers.dev ver-pithy-api" },
+      {
+        phase: "settled",
+        line: "pithy-api: deployed. https://pithy-api.acme.workers.dev ver-pithy-api",
+        data: row("pithy-api"),
+      },
       { phase: "start", what: "pithy-web" },
-      { phase: "settled", line: "pithy-web: deployed. https://pithy-web.acme.workers.dev ver-pithy-web" },
+      {
+        phase: "settled",
+        line: "pithy-web: deployed. https://pithy-web.acme.workers.dev ver-pithy-web",
+        data: row("pithy-web"),
+      },
     ]);
   });
 
@@ -249,10 +261,8 @@ describe("deployProject", () => {
     );
 
     const settled = events.filter((event) => event.phase === "settled");
-    expect(settled[0]).toEqual({
-      phase: "settled",
-      line: summarizeDeploy({ name: "pithy-api", ok: false, error: "wrangler exited 1." }),
-    });
+    const failure = { name: "pithy-api", ok: false, error: "wrangler exited 1." };
+    expect(settled[0]).toEqual({ phase: "settled", line: summarizeDeploy(failure), data: { worker: failure } });
     expect(events.indexOf(settled[0] as ProgressEvent)).toBe(1);
   });
 
@@ -832,7 +842,7 @@ describe("deployProject", () => {
 
       expect(events).toEqual([
         { phase: "start", what: "pithy-api" },
-        { phase: "settled", line: "pithy-api: would deploy." },
+        { phase: "settled", line: "pithy-api: would deploy.", data: { worker: { name: "pithy-api", ok: true } } },
       ]);
     });
   });

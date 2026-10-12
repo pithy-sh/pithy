@@ -63,7 +63,7 @@ It works on `--update` too, which is the case it exists for: widening an existin
 
 ```
 $ pithy dashboard connect --env prod --scope all --json
-{"command":"dashboard.connect",…,"scopes":["manifest:read","keys:rotate","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
+{"command":"dashboard.connect","schemaVersion":1,…,"scopes":["manifest:read","keys:rotate","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
 ```
 
 `--scope all` beside another `--scope` is refused, because they are two answers to one question and keeping either silently would decide an authorization for you.
@@ -121,12 +121,13 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy dashboard connect --env prod --json
-{"command":"dashboard.connect","environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false}
+{"command":"dashboard.connect","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"dashboard.connect"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environment` | `string` | The environment the connection is bound to |
 | `connectionId` | `string` | The connection's id — the token `aud`, and the row's primary key |
 | `issuer` | `string` | The management-client origin every token from this connection must carry |
@@ -139,12 +140,13 @@ $ pithy dashboard connect --env prod --json
 
 ```
 $ pithy dashboard rotate --env prod --json
-{"command":"dashboard.rotate","environment":"prod","connectionId":"b6a1f0c2-…","keyId":"cpk_2026_08","previousKeyIds":["cpk_2026_07"],"status":"connected"}
+{"command":"dashboard.rotate","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","keyId":"cpk_2026_08","previousKeyIds":["cpk_2026_07"],"status":"connected"}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"dashboard.rotate"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environment` | `string` | The environment rotated |
 | `connectionId` | `string` | The connection the key was appended to |
 | `keyId` | `string` | The newly registered key |
@@ -154,12 +156,13 @@ $ pithy dashboard rotate --env prod --json
 
 ```
 $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --yes --json
-{"command":"dashboard.revoke-key","environment":"prod","keyId":"cpk_2026_07","revoked":true,"connection":{"id":"b6a1f0c2-…","environment":"prod","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","basePath":"/control-plane","scopes":["manifest:read"],"keys":[…],"createdAt":"2026-07-01T09:00:00.000Z","updatedAt":"2026-08-05T11:12:13.000Z"}}
+{"command":"dashboard.revoke-key","schemaVersion":1,"environment":"prod","keyId":"cpk_2026_07","revoked":true,"connection":{"id":"b6a1f0c2-…","environment":"prod","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","basePath":"/control-plane","scopes":["manifest:read"],"keys":[…],"createdAt":"2026-07-01T09:00:00.000Z","updatedAt":"2026-08-05T11:12:13.000Z"}}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"dashboard.revoke-key"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environment` | `string` | The environment the key was revoked on |
 | `keyId` | `string` | The key named by `--key-id` |
 | `revoked` | `boolean` | `false` when no key answered to that id. Re-running a revoke is not an error |
@@ -183,12 +186,13 @@ $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --yes --json
 
 ```
 $ pithy dashboard disconnect --env prod --yes --json
-{"command":"dashboard.disconnect","environment":"prod","connectionId":"b6a1f0c2-…","removed":true,"dashboardNotified":true}
+{"command":"dashboard.disconnect","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","removed":true,"dashboardNotified":true}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"dashboard.disconnect"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environment` | `string` | The environment revoked |
 | `connectionId` | `string \| null` | The connection that was removed, or `null` when there was nothing registered |
 | `removed` | `boolean` | Whether a row was deleted. `false` on a re-run, which is not an error |
@@ -197,12 +201,13 @@ $ pithy dashboard disconnect --env prod --yes --json
 
 ```
 $ pithy dashboard status --env prod --json
-{"command":"dashboard.status","environment":"prod","connected":true,"connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keys":[{"keyId":"cpk_2026_07","live":true,"ageDays":35,"validFrom":"2026-07-01T09:00:00.000Z","validUntil":null,"revokedAt":null}],"status":"unverified"}
+{"command":"dashboard.status","schemaVersion":1,"environment":"prod","connected":true,"connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keys":[{"keyId":"cpk_2026_07","live":true,"ageDays":35,"validFrom":"2026-07-01T09:00:00.000Z","validUntil":null,"revokedAt":null}],"status":"unverified"}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"dashboard.status"` | The subcommand that produced the line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `environment` | `string` | The environment inspected |
 | `connected` | `boolean` | Whether anything is registered at all. `false` is the shipped, denying state |
 | `connectionId` | `string \| null` | The connection's id, or `null` when nothing is registered |

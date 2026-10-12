@@ -653,7 +653,7 @@ describe("each capability settles as it is decided", () => {
     );
 
     expect(events.filter((event) => event.phase === "settled")).toEqual(
-      rows.map((row) => ({ phase: "settled", line: summarizeKitDeploy(row) })),
+      rows.map((row) => ({ phase: "settled", line: summarizeKitDeploy(row), data: { kit: row } })),
     );
     // Not an empty set dressed up as agreement: the fixture composes email, so there is a row to settle.
     expect(rows).toHaveLength(1);
@@ -667,7 +667,8 @@ describe("each capability settles as it is decided", () => {
     );
 
     expect(rows[0]?.outcome).toBe("skipped");
-    expect(events).toEqual([{ phase: "settled", line: summarizeKitDeploy(rows[0] as KitWorkerDeploy) }]);
+    const row = rows[0] as KitWorkerDeploy;
+    expect(events).toEqual([{ phase: "settled", line: summarizeKitDeploy(row), data: { kit: row } }]);
   });
 });
 

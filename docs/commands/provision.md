@@ -7,8 +7,8 @@ Create an environment's own Cloudflare resources, wire them into every Worker, a
 ## Synopsis
 
 ```
-pithy provision --env <environment> [--yes] [--confirm <phrase>] [--seed] [--dry-run] [--json]
-pithy provision --feature [--dry-run] [--json]
+pithy provision --env <environment> [--yes] [--confirm <phrase>] [--seed] [--dry-run] [--json [--events]]
+pithy provision --feature [--dry-run] [--json [--events]]
 ```
 
 One job, two spellings. `--env` provisions an environment the root `pithy.config.ts` declares; `--feature` provisions the one this branch gets. **Exactly one of them is required**, and passing both is refused at the flag, before a config is loaded or a Cloudflare client is built.
@@ -67,6 +67,7 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 | `--seed` | `--env` | `false` | Also load seed fixtures once the schema is up. A prepared set run this way is offered the secrets **this run minted** — see below |
 | `--dry-run` | both | `false` | Show the plan and write nothing: the resources it would create or adopt, the config edits, the secrets, the migrations. Needs neither `--yes` nor `--confirm` |
 | `--json` | both | `false` | One line of machine-readable output |
+| `--events` | both | `false` | With `--json`, a progress record per line as the run goes, closed by the `--json` document. Refused without `--json`: `--events needs --json.` `--events=true` and `--events=false` are read too, and any other value is refused, as is `--no-events=<value>`, which the parse does not read. |
 
 `--yes`, `--confirm` and `--seed` say nothing a feature environment does not already do. It is created per pull request and destroyed on merge, so there is nothing to confirm — a gate every pipeline has to pass is a gate that has stopped meaning anything — and it is created empty, so it always seeds.
 
@@ -114,7 +115,7 @@ That pairing is also what makes an interrupted run readable. Provisioning is ide
 
 The migrations and seeds that close a run narrate the same way, in `pithy migrate`'s and `pithy seed`'s own words: `▸ DB (app) for board...`, `▸ Applying 0300_auth_0001_init to DB...`.
 
-Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command.
+Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command. **Under `--json --events` each step is a JSON record instead**, and the plan is not printed at all — see [`--events`](#--events).
 
 ## A manifest it could not read
 
@@ -243,17 +244,18 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy secrets provision","dryRun":false}
+{"command":"provision","schemaVersion":1,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy secrets provision","dryRun":false}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
+{"command":"provision","schemaVersion":1,"env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"provision"` | The command that produced the line. The same for both modes |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | `string` | The environment provisioned — a declared name, or `feature` |
 | `resources` | `object[]` | Every resource, in provision order |
 | `resources[].kind` | `"d1" \| "kv" \| "r2"` | The Cloudflare resource type |
@@ -303,6 +305,32 @@ $ pithy provision --feature --json
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was created, written or migrated when it is `true`, every other key is what the run would report, and a resource it would create carries its placeholder `id` |
 | `plan` | `object` | Present only under `--dry-run`: the resources to create or adopt, the config edits with their diffs, the secrets to bind or mint, and the migrations to apply, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) |
 | `next` | `object[]` | `[{ command, why }]`: `pithy deploy --env <env>` — `--env feature` for `--feature` — when a Worker this run named in `workers` has no deployed script on the account. Absent when every one is deployed, when the account could not be asked, and under `--dry-run`; never empty (`docs/CLI.md` §1.2) |
+
+### `--events`
+
+`--json --events` turns the one line into a stream: **one compact JSON record per line as each step starts and settles, then the document above as the last line.** It is framed as `pithy dev --json` is, so every line is compact and unpainted whatever `--pretty` or `PITHY_JSON` asked for. The last line has no `event` key and every record before it has one. The plan the confirmation is hung off is prose, so it is not printed; `--dry-run --json` is how a program reads a plan. Without `--json` it is refused: `--events needs --json.`, exit 2.
+
+| record key | type | meaning |
+|---|---|---|
+| `command` | string | `"provision"`, on every record. |
+| `schemaVersion` | integer | The same version the document carries. |
+| `event` | string | `"start"` as a step begins, `"settled"` as it ends. |
+| `what` | string | `start` only: what is being worked on — a resource's name, a migration, a seed set, a kit Worker. |
+| `binding` | string, optional | `start` of a resource: the binding it backs. |
+| `kind` | string, optional | `start` of a resource: `"d1"`, `"kv"` or `"r2"`. |
+| `line` | string | `settled` only: the line a person would have read for it, without color. |
+| `resource` | object, optional | `settled` of a resource: its row, exactly as `resources[]` lists it. |
+| `kit` | object, optional | `settled` of a feature's kit Worker: its row, exactly as `hosts[]` lists it. |
+
+A failure inside the command ends the stream with no document, and the `{"error": …}` line goes to stderr as it always does. `pithy schema provision --json` publishes the record's JSON Schema as `events`.
+
+```
+$ pithy provision --env staging --yes --json --events
+{"command":"provision","schemaVersion":1,"event":"start","what":"replay-staging-db","binding":"DB","kind":"d1"}
+{"command":"provision","schemaVersion":1,"event":"settled","line":"replay-staging-db: created.","resource":{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}}
+{"command":"provision","schemaVersion":1,"event":"start","what":"Applying 1000_app_0001_things to DB"}
+{"command":"provision","schemaVersion":1,"env":"staging","resources":[…],…}
+```
 
 ## Exit codes
 

@@ -15,7 +15,9 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * **Every captured child process a `pithy` command starts runs under a step naming what it is for, and
- * `--json` emits exactly one line.**
+ * `--json` emits exactly one line** — but for `deploy` and `provision` under `--json --events` (#697), which
+ * emit each step as a record and close the stream with that one line. That exception is held at runtime by
+ * `terminal/progress.test.ts` and `commands/deploy.test.ts`; nothing here changes for it.
  *
  * That is the invariant, and it is stated over a *set this file discovers* rather than over the commands
  * #578 was reported against. The reason is that report's own finding: #531 built the narration for
@@ -41,9 +43,11 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *    a step, or is called by something that does. What reaches a `pithy <command>` module still silent is the
  *    defect.
  * 3. *The command.* A step reaches a terminal only inside a narrated span, and every command body goes
- *    through one wrapper — `withErrorReporting`, which takes `json` and nothing else. So a command that
- *    reaches a narrating producer must route its body through it, which is also where the `--json` half is
- *    decided: `commandProgress({ json: true })` is no sink. `terminal/progress.test.ts` holds that at runtime.
+ *    through one wrapper — `withErrorReporting`, which takes `json` and, from `deploy` and `provision`, the
+ *    `--events` stream to narrate into instead. So a command that reaches a narrating producer must route its
+ *    body through it, which is also where the `--json` half is decided: `commandProgress({ json: true })` is no
+ *    sink, and `eventsProgress` is the one sink a `--json` run can have. `terminal/progress.test.ts` holds both
+ *    at runtime.
  *
  * **Not every child needs a step, and there are two exceptions.** A child whose executable is written as the
  * literal `"git"`, `"lsof"` or `"ps"` is a bounded local query — git's metadata, the process table — judged at

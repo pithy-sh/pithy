@@ -579,6 +579,7 @@ export default withContract(
   }),
   {
     output: "stream",
+    schemaVersion: 1,
     payload: DevPayload,
     mutates: true,
     idempotent: false,

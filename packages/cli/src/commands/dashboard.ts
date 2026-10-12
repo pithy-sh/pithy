@@ -710,7 +710,7 @@ const DashboardStatusPayload = z
   .describe("What `pithy dashboard status` found.");
 
 /** What every subcommand promises beyond its payload. Every one reaches the project's D1 and the client. */
-const DASHBOARD = { output: "document", mutates: true, needsNetwork: true } as const;
+const DASHBOARD = { output: "document", schemaVersion: 1, mutates: true, needsNetwork: true } as const;
 
 /** `pithy dashboard connect` — register a management client, or re-point the one already registered. */
 const connect = withContract(

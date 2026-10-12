@@ -7,7 +7,7 @@ Ship every Worker the project deploys to Cloudflare — the ones under `apps/` a
 ## Synopsis
 
 ```bash
-pithy deploy [--env <env>] [--apps] [--kit] [--force] [--dry-run] [--json]
+pithy deploy [--env <env>] [--apps] [--kit] [--force] [--dry-run] [--json [--events]]
 ```
 
 The shipping model — environments, credentials, worker discovery, migrate-then-deploy — is [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy). This page is the command surface.
@@ -22,6 +22,7 @@ The shipping model — environments, credentials, worker discovery, migrate-then
 | `--force` | Deploy every kit Worker whether it changed or not. Needs `--env staging` or `--env prod`; refused beside `--apps`. |
 | `--dry-run` | Show the plan and upload nothing: the migrations it would leave unapplied, and each Worker it would upload, after building it and running `wrangler deploy --dry-run` on it. Default `false`. |
 | `--json` | Machine-readable output. Default `false`. |
+| `--events` | With `--json`, a progress record per line as the deploy goes, closed by the `--json` document. Refused without `--json`: `--events needs --json.` `--events=true` and `--events=false` are read too, and any other value is refused, as is `--no-events=<value>`, which the parse does not read. Default `false`. |
 
 There is no `--worker`. Deploy ships the whole set.
 
@@ -35,7 +36,7 @@ There is no `--worker`. Deploy ships the whole set.
 
 **It says what it is on, while it is on it.** Capturing wrangler's output is the right call and it is not being reversed — but it removed the only evidence the command was alive, and this command used to print nothing whatever until every Worker had finished. So each Worker is named as it is reached, `▸ acme-api...`, and **its own summary line is printed the moment that Worker settles** rather than being held to a block at the end. The per-Worker lines moved; they are not printed twice. The migration warning now comes first, before the first upload, because it is about the schema this deploy is shipping code against.
 
-These are plain lines, printed once and never redrawn — no spinner, no cursor movement — so a redirected stdout and a CI log take them unharmed. **The only thing that silences them is `--json`**, which still writes exactly one line. Not a missing TTY: a run in CI is the run whose log most needs to say where it got to.
+These are plain lines, printed once and never redrawn — no spinner, no cursor movement — so a redirected stdout and a CI log take them unharmed. **The only thing that silences them is `--json`**, which still writes exactly one line. Not a missing TTY: a run in CI is the run whose log most needs to say where it got to. **`--json --events` says them as records instead**, for a program that wants to know where a long deploy got to (see [`--events`](#--events)).
 
 **A Worker that serves a front end is built first**, in its own directory, through the project's package manager, from its manifest's `ui.build`. A failed build fails that Worker and skips its deploy: shipping a Worker whose assets are stale is worse than not shipping it.
 
@@ -115,11 +116,12 @@ Credentials are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, resolved fro
 
 ## `--json`
 
-One line on stdout, after every Worker has been attempted. A failure inside the command — no project, no deployable Workers — is one `{"error": …}` line on stderr instead. A failed *deploy* is reported in the payload, and the exit code is 1 — except that a run whose failed Worker row carries `exit` exits with the first such row's `exit`.
+One line on stdout, after every Worker has been attempted — or, under `--events`, the last line of a stream (below). A failure inside the command — no project, no deployable Workers — is one `{"error": …}` line on stderr instead. A failed *deploy* is reported in the payload, and the exit code is 1 — except that a run whose failed Worker row carries `exit` exits with the first such row's `exit`.
 
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"deploy"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string \| null | The environment deployed, or `null` for a bare deploy of each Worker's top-level stanza. |
 | `pendingMigrations` | number \| null | Unapplied migrations for the target environment. `null` with no `--env`, and `null` when the count could not be taken — deploy never fails over it. Under `--dry-run`, the number of migrations `plan.notes` names. |
 | `workers` | object[] | One entry per Worker, in discovery order. Every Worker is attempted. |
@@ -129,6 +131,7 @@ One line on stdout, after every Worker has been attempted. A failure inside the 
 | `workers[].url` | string, optional | An address wrangler listed under this Worker's deployed triggers — its `workers.dev` host, or the host a custom domain or a route answers on. **Absent** when no trigger is an address: a cron, a queue or a workflow trigger is not one, and neither is a wildcard route. |
 | `workers[].built` | boolean, optional | Whether this Worker's UI build ran and succeeded. **Absent** when the Worker declares no `ui` block — so `false` means the build is what failed and the deploy never ran. |
 | `workers[].error` | string, optional | The failure reason. Present only when `ok` is `false` — the build's output, wrangler's, or the refusal to publish a configuration that is not the requested environment's, which names the file it was about to ship. |
+| `workers[].exit` | integer, optional | The exit a classified failure carries: `3` when Cloudflare refused the credentials or wrangler would not start after an earlier Worker already had a row. **Absent** on an ordinary failure. |
 | `workers[].verification` | string, optional | What probing the declared domain concluded: `"verified"`, `"mismatch"`, `"inconclusive"`, or `"unreachable"`. Absent when there was nothing to check. |
 | `workers[].verificationDetail` | string, optional | The one-line explanation behind `verification`. |
 | `kit` | object[] \| null | One entry per composed capability's Worker, in registry order. **`null`** when the kit half did not run — `--apps`, no `--env`, or `--env dev` — which is a different fact from it finding nothing. Under `--dry-run`, a Worker the deploy would upload is in `plan.resources` instead, so no row says `deployed`. |
@@ -142,6 +145,29 @@ One line on stdout, after every Worker has been attempted. A failure inside the 
 | `next` | object[] | `[{ command, why }]`: `pithy migrate --env <env>` when `pendingMigrations` is above zero and every Worker shipped, because deploy never migrates. Absent otherwise — on a bare deploy, which counts nothing, on a failed run, and under `--dry-run` — and never empty (`docs/CLI.md` §1.2). |
 
 **Exit code.** `0` when every Worker's `ok` is true, no Worker's verification is `mismatch` or `unreachable`, no kit Worker `failed`, `kitProblems` is empty, and the kit half did not skip every Worker it found; `3` when a Worker's row carries `exit: 3`, because the credentials or wrangler are the next step whatever else failed; `1` otherwise. The JSON line is printed either way, so a CI step can read the payload and still gate on the status. Under `--dry-run` the code is the one the deploy would have exited with: a gate's refusal is its error line and its class, and a row that would fail is this payload and 1 — see the section above.
+
+### `--events`
+
+`--json --events` turns the one line into a stream: **one compact JSON record per line as each step starts and settles, then the document above as the last line.** It is framed as `pithy dev --json` is, so every line is compact and unpainted whatever `--pretty` or `PITHY_JSON` asked for, and a reader takes it line by line. The last line has no `event` key and every record before it has one, which is how a reader tells them apart. Without `--json` it is refused: `--events needs --json.`, exit 2.
+
+| record key | type | meaning |
+|---|---|---|
+| `command` | string | `"deploy"`, on every record. |
+| `schemaVersion` | integer | The same version the document carries. |
+| `event` | string | `"start"` as a step begins, `"settled"` as it ends. |
+| `what` | string | `start` only: what is being worked on — a Worker's name, or the build step. |
+| `line` | string | `settled` only: the line a person would have read for it, without color. |
+| `worker` | object, optional | `settled` only: the row a Worker under `apps/` settled as, exactly as `workers[]` lists it. |
+| `kit` | object, optional | `settled` only: the row a kit Worker settled as, exactly as `kit[]` lists it. |
+
+A failure inside the command ends the stream with no document, and the `{"error": …}` line goes to stderr as it always does. `pithy schema deploy --json` publishes the record's JSON Schema as `events`.
+
+```console
+$ pithy deploy --env staging --apps --json --events
+{"command":"deploy","schemaVersion":1,"event":"start","what":"acme-api"}
+{"command":"deploy","schemaVersion":1,"event":"settled","line":"acme-api: deployed. https://acme-staging-api.example.workers.dev <version-id>","worker":{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}}
+{"command":"deploy","schemaVersion":1,"env":"staging","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}],"kit":null,"kitProblems":null,"dryRun":false}
+```
 
 ## Errors
 
@@ -177,6 +203,9 @@ pithy deploy
 pithy migrate --env prod --json
 pithy deploy --env prod --json
 
+# Ship everything, and say where it got to as it goes: a record per step, then the result.
+pithy deploy --env prod --json --events
+
 # See what a deploy would do: the plan, then wrangler's own dry run. Nothing is uploaded.
 pithy deploy --env prod --dry-run --json
 
@@ -202,7 +231,7 @@ pithy deploy --env dev
 ```
 
 ```json
-{"command":"deploy","env":"prod","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-prod-api.example.workers.dev","verification":"verified","verificationDetail":"https://api.example.com is serving the version just deployed."},{"name":"acme-web","ok":false,"built":false,"error":"vite build failed."}],"kit":[{"capability":"email","worker":"acme-prod-email","outcome":"unchanged","reason":"@pithy-sh/email 0.1.7 is deployed with this configuration."},{"capability":"media","worker":"acme-prod-media","outcome":"deployed","reason":"Its resolved configuration changed."}],"kitProblems":[]}
+{"command":"deploy","schemaVersion":1,"env":"prod","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-prod-api.example.workers.dev","verification":"verified","verificationDetail":"https://api.example.com is serving the version just deployed."},{"name":"acme-web","ok":false,"built":false,"error":"vite build failed."}],"kit":[{"capability":"email","worker":"acme-prod-email","outcome":"unchanged","reason":"@pithy-sh/email 0.1.7 is deployed with this configuration."},{"capability":"media","worker":"acme-prod-media","outcome":"deployed","reason":"Its resolved configuration changed."}],"kitProblems":[]}
 ```
 
 The two environment variables in the CI snippet are the names of secrets your provider holds. No value appears here, and no `pithy deploy` payload can carry one.

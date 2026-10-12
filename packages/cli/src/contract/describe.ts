@@ -17,7 +17,7 @@ import {
   type ExitCodeRow,
   type GlobalFlag,
 } from "./cliSchema";
-import { contractOf } from "./commandContract";
+import { contractOf, publishedEvents, publishedPayload } from "./commandContract";
 import { ENVIRONMENT_VARIABLES } from "./environment";
 
 /**
@@ -26,9 +26,9 @@ import { ENVIRONMENT_VARIABLES } from "./environment";
  * version's and the two documents cannot disagree.
  *
  * Every command contributes two halves. Its parser's facts — positionals, flags, their spellings — are
- * read off citty's `args` by `args.ts`. Its promises — the `--json` payload's JSON Schema, whether it
- * mutates, whether a rerun is safe, whether it needs the network, the flag groups citty cannot express —
- * are read off the contract it declares (`commandContract.ts`). A group declares no contract, because it
+ * read off citty's `args` by `args.ts`. Its promises — the `--json` payload's JSON Schema and `schemaVersion`
+ * (and its `--events` record, where it streams one), whether it mutates, whether a rerun is safe, whether it
+ * needs the network, the flag groups citty cannot express — are read off the contract it declares (`commandContract.ts`). A group declares no contract, because it
  * does nothing but print help.
  */
 
@@ -103,6 +103,8 @@ export async function describeCommand(node: TreeNode): Promise<CommandDescriptio
   const meta = cmd.meta === undefined ? undefined : await resolve(cmd.meta);
   const args = cmd.args === undefined ? undefined : await resolve(cmd.args);
   const contract = contractOf(cmd);
+  const payload = contract === undefined ? undefined : publishedPayload(contract);
+  const events = contract === undefined ? undefined : publishedEvents(contract);
   const { positionals, flags } = describeArgs(args, contract?.flags);
   const path = node.path.join(" ");
   return {
@@ -115,7 +117,9 @@ export async function describeCommand(node: TreeNode): Promise<CommandDescriptio
     flags,
     flagGroups: [...(contract?.flagGroups ?? [])],
     output: contract?.output ?? "none",
-    payload: contract?.payload === undefined ? null : jsonSchemaOf(contract.payload),
+    payload: payload === undefined ? null : jsonSchemaOf(payload),
+    schemaVersion: contract?.schemaVersion ?? null,
+    events: events === undefined ? null : jsonSchemaOf(events),
     errorLine: { $ref: ERROR_LINE_REF },
     mutates: contract?.mutates ?? false,
     idempotent: contract?.idempotent ?? true,

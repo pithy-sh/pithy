@@ -442,7 +442,7 @@ describe("--json", () => {
         environments: [verified("prod", { keySet: "unreadable", rows: 1, keyVersions: [], rotationInProgress: false })],
       }),
     ];
-    for (const shape of shapes) await expectConforms("secrets verify", formatJsonLine(verificationJson(shape)));
+    for (const shape of shapes) await expectConforms("secrets verify", () => formatJsonLine(verificationJson(shape)));
   });
 
   test("`verified` agrees with the verdict on every shape", () => {

@@ -103,6 +103,7 @@ One line, one object. The `command` field is the space-separated subcommand name
 | key | type | meaning |
 |---|---|---|
 | `command` | `"email provision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `suppressionDatabaseId` | string | The D1 id of the project's shared suppression database, created or reused |
 | `environments` | array of `"staging" \| "prod"` | The environments an email worker was deployed for |
 | `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
@@ -120,6 +121,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"email deprovision"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `env` | string | The one environment torn down — the value of `--env` |
 | `suppressionDeleted` | boolean | Whether `--suppression` was passed, and therefore whether the shared suppression database was deleted |
 
@@ -128,6 +130,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"email test"` | The subcommand that produced this line |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `template` | string | The template id that was rendered — the value of `--template` |
 | `to` | string | The recipient the sample was sent to |
 | `from` | string | The address it was sent from: `--from` when given, otherwise the configured `fromAddress` |
@@ -221,7 +224,7 @@ Production is untouched — no worker, no resources, exit 0. Run `pithy provisio
 
 ```
 $ pithy email provision --routing-zone 0a1b2c3d --inbound-address bounce@bounce.example.com --app-worker acme-prod --json
-{"command":"email provision","suppressionDatabaseId":"3f7c…","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"routing":{"created":true,"skipped":false}}
+{"command":"email provision","schemaVersion":1,"suppressionDatabaseId":"3f7c…","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"routing":{"created":true,"skipped":false}}
 ```
 
 Send yourself the magic-link template as your project renders it:
@@ -234,12 +237,12 @@ Done.
 
 ```
 $ pithy email test --to sam@example.com --template magicLink --json
-{"command":"email test","template":"magicLink","to":"sam@example.com","from":"hello@acme.com","messageId":"msg-4821"}
+{"command":"email test","schemaVersion":1,"template":"magicLink","to":"sam@example.com","from":"hello@acme.com","messageId":"msg-4821"}
 ```
 
 Take staging's worker down and keep the opt-out list:
 
 ```
 $ pithy email deprovision --env staging --json
-{"command":"email deprovision","env":"staging","suppressionDeleted":false}
+{"command":"email deprovision","schemaVersion":1,"env":"staging","suppressionDeleted":false}
 ```

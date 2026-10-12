@@ -349,6 +349,7 @@ export default withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: MigratePayload,
     mutates: true,
     idempotent: true,

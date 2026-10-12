@@ -461,6 +461,7 @@ describe("pithy docs disconnect", () => {
     await expectConforms("docs disconnect", out);
     expect(JSON.parse(oneLine(out))).toEqual({
       command: "docs disconnect",
+      schemaVersion: 1,
       disconnected: [
         { client: "cursor", scope: "user", path: pathOf("cursor", "user"), state: "removed", reason: null },
       ],
@@ -478,7 +479,7 @@ describe("pithy docs disconnect", () => {
     const { out, err, exitCode } = await run("disconnect", { all: true, scope: "user", json: true });
     expect(err).toBe("");
     expect(exitCode).toBe(0);
-    expect(JSON.parse(oneLine(out))).toEqual({ command: "docs disconnect", disconnected: [] });
+    expect(JSON.parse(oneLine(out))).toEqual({ command: "docs disconnect", schemaVersion: 1, disconnected: [] });
   });
 
   test("--scope is required even when nothing is detected, so CI does not depend on the machine", async () => {
@@ -591,7 +592,7 @@ describe("pithy docs connect with nothing detected", () => {
     const { out, err, exitCode } = await run("connect", { all: true, scope: "user", json: true });
     expect(err).toBe("");
     expect(exitCode).toBeUndefined();
-    expect(JSON.parse(oneLine(out))).toEqual({ command: "docs connect", written: [] });
+    expect(JSON.parse(oneLine(out))).toEqual({ command: "docs connect", schemaVersion: 1, written: [] });
   });
 });
 

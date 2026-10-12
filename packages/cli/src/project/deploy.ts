@@ -552,7 +552,7 @@ async function deployWorkers(
         await run(worker, [...argv, WRANGLER_DRY_RUN_ARG]);
         const planned: WorkerDeploy = { name: worker.name, ok: true, ...(built === undefined ? {} : { built }) };
         deploys.push(planned);
-        settleStep(summarizePlannedDeploy(planned));
+        settleStep(summarizePlannedDeploy(planned), { worker: planned });
         continue;
       }
       const stdout = await run(worker, argv);
@@ -576,7 +576,8 @@ async function deployWorkers(
       // command no longer prints it a second time, because two copies of one sentence drift the first
       // time either is reworded, and an operator comparing them has no way to tell a rewording from a
       // different Worker.
-      settleStep(summarizeDeploy(deploy));
+      // The row rides along for an `--events` reader (#697): the line is for a person, the row for a program.
+      settleStep(summarizeDeploy(deploy), { worker: deploy });
       await audit({
         action: "deploy/worker_deployed",
         outcome: "success",
@@ -608,7 +609,7 @@ async function deployWorkers(
       deploys.push(failure);
       // A failure settles too. The one thing worse than a silent deploy is a silent deploy whose one
       // broken Worker is reported after every other upload has finished.
-      settleStep(summarizeDeploy(failure));
+      settleStep(summarizeDeploy(failure), { worker: failure });
       // A dry run deployed nothing, so there is no deploy to record, failed or not.
       if (options.dryRun) continue;
       // A failed deploy is exactly what an audit trail is for — record it too, not just successes.

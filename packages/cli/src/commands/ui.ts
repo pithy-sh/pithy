@@ -215,6 +215,7 @@ const add = withContract(
   }),
   {
     output: "document",
+    schemaVersion: 1,
     payload: UiAddPayload,
     mutates: true,
     // A second identical add is refused with `core/conflict`: a Worker that already carries this front end
@@ -306,7 +307,14 @@ const sync = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { output: "document", payload: UiSyncPayload, mutates: true, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: UiSyncPayload,
+    mutates: true,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 /** `pithy ui list` — the framework stubs `pithy ui add` can scaffold. */
@@ -328,7 +336,14 @@ const list = withContract(
         );
       }),
   }),
-  { output: "document", payload: UiListPayload, mutates: false, idempotent: true, needsNetwork: false },
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: UiListPayload,
+    mutates: false,
+    idempotent: true,
+    needsNetwork: false,
+  },
 );
 
 export default defineCommand({
