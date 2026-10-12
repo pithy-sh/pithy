@@ -1,6 +1,7 @@
 ---
 "@pithy-sh/cli": minor
 "@pithy-sh/core": minor
+"@pithy-sh/email": minor
 "@pithy-sh/i18n": minor
 ---
 

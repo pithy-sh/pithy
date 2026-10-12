@@ -610,6 +610,8 @@ describe("renderDoctorText", () => {
           { worker: "api", version: "5.9.9" },
           { worker: "admin", version: "5.0.0" },
         ],
+        // A version skew is an install to settle, not a command to run (#697).
+        fix: null,
       },
     ]);
   });
@@ -2666,7 +2668,8 @@ describe("environment configs", () => {
     const json = renderDoctorJson(report) as {
       environmentConfigs: { unresolved: { environment: string; reason: string }[]; detail: string[] };
     };
-    expect(json.environmentConfigs.unresolved).toEqual(unloadable.unresolved);
+    // Each with `fix: null`: the config's own refusal is the remedy, and it is an edit (#697).
+    expect(json.environmentConfigs.unresolved).toEqual(unloadable.unresolved.map((entry) => ({ ...entry, fix: null })));
     expect(json.environmentConfigs.detail).toEqual(["prod: Set payments.billing in apps/api/pithy.config.ts."]);
   });
 

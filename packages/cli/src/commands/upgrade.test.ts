@@ -27,6 +27,7 @@ import upgrade, {
   type UpgradeWorker,
   type UpgradeWorkerResult,
   upgradeFailed,
+  upgradeFollowUp,
   upgradeIncomplete,
   upgradeJsonLine,
   upgradeText,
@@ -1203,6 +1204,13 @@ describe("runUpgrade --packages", () => {
       reconciled: false,
       installed: true,
     });
+    // The same command, as data: the reconcile this run left to the CLI it moved (#697).
+    expect(JSON.parse(upgradeJsonLine(run, "dev", false)).next).toEqual([
+      {
+        command: "bun x pithy upgrade",
+        why: "@pithy-sh/cli moved, so the new one reconciles. This run wrote no Worker.",
+      },
+    ]);
   });
 });
 
@@ -1239,6 +1247,26 @@ describe("runUpgrade — agent instructions", () => {
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * **`next` names `pithy migrate` for the migrations this run counted and did not run (#697)** — and nothing
+   * under `--migrate`, which ran them, or under `--dry-run`, which changed nothing to follow up on.
+   */
+  test("next names migrate for what it counted and did not apply, and nothing when it did or only planned", async () => {
+    const behind = async () => ({ state: "read" as const, pending: 2, undeclared: [] });
+    const options = { account: null, env: "staging", migrate: false, readLedger: behind, projectDir: dir } as const;
+    const real = await runUpgrade({ ...options, dryRun: false, resolveWorkers: workers });
+    expect(JSON.parse(upgradeJsonLine(real, "staging", false)).next).toEqual([
+      {
+        command: "pithy migrate --env staging",
+        why: "2 migrations are not applied to staging. Upgrade migrates only under --migrate.",
+      },
+    ]);
+    await expectConforms("upgrade", upgradeJsonLine(real, "staging", false));
+    expect(Object.hasOwn(JSON.parse(upgradeJsonLine(real, "staging", false, true)), "next")).toBe(false);
+    const dry = await runUpgrade({ ...options, dryRun: true, resolveWorkers: workers });
+    expect(Object.hasOwn(JSON.parse(upgradeJsonLine(dry, "staging", true)), "next")).toBe(false);
   });
 
   test("a project without the block gets it, says so above the Workers, and --json carries it", async () => {
@@ -1641,5 +1669,130 @@ describe("planUpgrade", () => {
     ]);
     // The command the real run spawns: `bun install`, never `bun x bun install`.
     expect(planned.notes).toEqual(["Then runs bun install at the project root."]);
+  });
+});
+
+/**
+ * **`upgradeFollowUp`, held directly (#697).** The two `runUpgrade` cases above reach it through the `--json`
+ * line on one state each; these are the rest of its inputs. The count is summed across Workers and is only
+ * ever whole — a Worker that is not reconciled, or a ledger read in part, fails the run, and a failed run
+ * names no step — and `--packages` defers to the project's own CLI only when it moved `@pithy-sh/cli` and
+ * left the reconcile to it.
+ */
+describe("upgradeFollowUp", () => {
+  const options = { env: "staging", dryRun: false, migrate: false } as const;
+
+  /** A reconciled Worker whose ledger read `pending`. */
+  const worker = (name: string, pending: number): UpgradeWorkerResult =>
+    entry({ ...plan, worker: name, ledger: { state: "read", pending, undeclared: [] } });
+
+  /** A `--packages` report that moved `names` and reconciled or not. */
+  const packagesMoving = (names: string[], reconciled: boolean): NonNullable<UpgradeRun["packages"]> => ({
+    state: "read",
+    packageManager: "bun",
+    installed: true,
+    reconciled,
+    moves: names.map((name) => ({
+      name,
+      manifest: "package.json",
+      field: "dependencies",
+      from: "^0.8.0",
+      to: "^0.9.0",
+      target: "0.9.0",
+    })),
+    held: [],
+    leftAlone: [],
+    mismatches: [],
+    templates: [],
+  });
+
+  const commands = (run: UpgradeRun) => upgradeFollowUp(run, options)?.map((step) => step.command);
+
+  test("pending migrations are summed across every reconciled Worker into one migrate step", () => {
+    const next = upgradeFollowUp({ workers: [worker("api", 2), worker("web", 1)], manifestFaults: [] }, options);
+    expect(next).toEqual([
+      {
+        command: "pithy migrate --env staging",
+        why: "3 migrations are not applied to staging. Upgrade migrates only under --migrate.",
+      },
+    ]);
+  });
+
+  test("nothing pending, --migrate that ran them, or a dry run, is no step", () => {
+    const behind: UpgradeRun = { workers: [worker("api", 2)], manifestFaults: [] };
+    expect(upgradeFollowUp({ workers: [worker("api", 0)], manifestFaults: [] }, options)).toBeUndefined();
+    expect(upgradeFollowUp(behind, { ...options, migrate: true })).toBeUndefined();
+    expect(upgradeFollowUp(behind, { ...options, dryRun: true })).toBeUndefined();
+  });
+
+  // The undercount a partial read would make is never a step: the run failed, and its failure is what to read.
+  test("a ledger read in part fails the run, so its counted pending is no step", () => {
+    const partial = entry({
+      ...plan,
+      ledger: {
+        state: "partial",
+        counted: { pending: 4, undeclared: [] },
+        unreadable: [{ database: "app", binding: "DB" }],
+      },
+    });
+    const run: UpgradeRun = { workers: [partial], manifestFaults: [] };
+    expect(upgradeFailed(run)).toBe(true);
+    expect(upgradeFollowUp(run, options)).toBeUndefined();
+  });
+
+  test("an unplanned, unapplied or refused Worker beside a behind one fails the run, so neither is a step", () => {
+    const others: UpgradeWorkerResult[] = [
+      { state: "unplanned", worker: "web" },
+      { state: "unapplied", worker: "web", plan },
+    ];
+    for (const other of others) {
+      const run: UpgradeRun = { workers: [worker("api", 2), other], manifestFaults: [] };
+      expect(upgradeFailed(run)).toBe(true);
+      expect(upgradeFollowUp(run, options)).toBeUndefined();
+    }
+    const refusing: ReconcilePlan = {
+      ...plan,
+      declinedBindings: {
+        state: "read",
+        declines: [{ state: "required", name: "DB", type: "d1", capability: "auth", reason: "own database" }],
+      },
+    };
+    const refusal = declineRefusal(refusing);
+    if (refusal === null) throw new Error("planted: a required decline is refused");
+    const refused: UpgradeRun = {
+      workers: [worker("api", 2), { state: "refused", worker: "web", plan: refusing, refusal: refusal.payload }],
+      manifestFaults: [],
+    };
+    expect(upgradeFollowUp(refused, options)).toBeUndefined();
+  });
+
+  test("--packages that moved only other packages and reconciled still names the migrations it counted", () => {
+    const run: UpgradeRun = {
+      workers: [worker("api", 2)],
+      manifestFaults: [],
+      packages: packagesMoving(["@pithy-sh/auth"], true),
+    };
+    expect(commands(run)).toEqual(["pithy migrate --env staging"]);
+  });
+
+  test("--packages that moved @pithy-sh/cli and reconciled anyway leaves no reconcile step", () => {
+    const run: UpgradeRun = {
+      workers: [worker("api", 0)],
+      manifestFaults: [],
+      packages: packagesMoving(["@pithy-sh/cli", "@pithy-sh/auth"], true),
+    };
+    expect(upgradeFollowUp(run, options)).toBeUndefined();
+    expect(commands({ ...run, workers: [worker("api", 1)] })).toEqual(["pithy migrate --env staging"]);
+  });
+
+  test("--packages that moved @pithy-sh/cli and left the reconcile names the project's own CLI, and only that", () => {
+    const run: UpgradeRun = {
+      workers: [],
+      manifestFaults: [],
+      packages: packagesMoving(["@pithy-sh/cli"], false),
+    };
+    expect(commands(run)).toEqual(["bun x pithy upgrade"]);
+    // A move that left the reconcile but did not touch the CLI is not this case: nothing is deferred.
+    expect(upgradeFollowUp({ ...run, packages: packagesMoving(["@pithy-sh/auth"], false) }, options)).toBeUndefined();
   });
 });

@@ -17,6 +17,10 @@ const { baseOptions, healthyOptions } = harness;
 const finding: DocsMcpCheck = {
   state: "unconnected",
   findings: ["Cursor — pithy docs connect --client cursor", "Codex CLI — pithy docs connect --client codex"],
+  clients: [
+    { client: "cursor", label: "Cursor" },
+    { client: "codex", label: "Codex CLI" },
+  ],
 };
 
 describe("the AI clients: block", () => {
@@ -50,7 +54,9 @@ describe("the AI clients: block", () => {
   });
 
   test("says nothing when every detected client already reads the docs", async () => {
-    const report = await buildDoctorReport(baseOptions({ checkDocsMcp: async () => ({ state: "ok", findings: [] }) }));
+    const report = await buildDoctorReport(
+      baseOptions({ checkDocsMcp: async () => ({ state: "ok", findings: [], clients: [] }) }),
+    );
     expect(renderDoctorText(report, "/home/u")).not.toContain("AI clients:");
   });
 

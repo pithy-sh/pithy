@@ -23,6 +23,7 @@ import { withContract } from "../contract/commandContract";
 import { type PackagesReport, runPackageStep } from "../kitPackages/apply";
 import type { RegistryFetch } from "../kitPackages/registry";
 import type { TemplateFinding, TemplateSection } from "../kitPackages/templates";
+import { establishedPending } from "../migrations/pendingCount";
 import { DRY_RUN_ARG, emptyPlan, type Plan, type PlanFile, PlanKey } from "../plan/plan";
 import { agentsLine, InstructionsFile, syncAgentsBlock } from "../project/agentInstructions";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -32,6 +33,7 @@ import { execArgs, type InstallRunner } from "../project/packageManager";
 import { pathExists } from "../project/scaffold";
 import { workerEntryPath } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
+import { NextKey, type NextStep, upgradeNext } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -326,13 +328,7 @@ export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: 
     if (worker.missingVersionMetadata) {
       edit(`${dir}/wrangler.jsonc`, "Adds the CF_VERSION_METADATA version_metadata binding.");
     }
-    const pending =
-      worker.ledger.state === "read"
-        ? worker.ledger.pending
-        : worker.ledger.state === "partial"
-          ? worker.ledger.counted.pending
-          : 0;
-    const migrations = count(pending, "migration");
+    const migrations = count(establishedPending(worker.ledger) ?? 0, "migration");
     if (migrations !== null) {
       plan.notes.push(
         migrate
@@ -745,6 +741,12 @@ function sectionLines(section: TemplateSection, noted: boolean): string[] {
   return lines;
 }
 
+/** The project's own CLI's `upgrade`, through its package manager — a bare `pithy` may be the old, global one. */
+function reconcileCommand(packages: PackagesReport): string {
+  const { command, args } = execArgs(packages.packageManager, "pithy", ["upgrade"]);
+  return [command, ...args].join(" ");
+}
+
 /**
  * The whole text report, closing line included. The package blocks sit above the Workers, because they
  * happened first and the reconcile read their result.
@@ -760,19 +762,45 @@ export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
   if (run.packages && !run.packages.reconciled && cli) {
     // The project's own CLI, through its package manager: a bare `pithy` may be a global one, which is the
     // old CLI this line exists to get past.
-    const { command, args } = execArgs(run.packages.packageManager, "pithy", ["upgrade"]);
-    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run ${[command, ...args].join(" ")} to reconcile with it.`);
+    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run ${reconcileCommand(run.packages)} to reconcile with it.`);
   }
   lines.push(dryRun ? "Dry run. Nothing written." : formatDone());
   return lines;
 }
 
 /**
+ * What this run left required, as `next` (#697): the project's own CLI, when `--packages` moved it and the
+ * reconcile was left to the new one, or `pithy migrate` for the migrations it counted and did not run.
+ *
+ * **The count is only ever whole.** A Worker that is not `reconciled`, or whose ledger read in part or not at
+ * all, fails the run ({@link upgradeIncomplete}), and a failed run carries no `next` — so every count summed
+ * here read whole, and a short count never reaches an agent as a step. The count is `establishedPending`'s.
+ */
+export function upgradeFollowUp(
+  run: UpgradeRun,
+  options: { env: string; dryRun: boolean; migrate: boolean },
+): NextStep[] | undefined {
+  let pending = 0;
+  for (const result of run.workers) {
+    if (result.state === "reconciled") pending += establishedPending(result.plan.ledger) ?? 0;
+  }
+  const packages = run.packages;
+  const deferred =
+    packages !== undefined && !packages.reconciled && packages.moves.some((move) => move.name === "@pithy-sh/cli");
+  return upgradeNext({
+    ...options,
+    failed: upgradeFailed(run),
+    pending,
+    ...(deferred ? { reconcileWith: reconcileCommand(packages) } : {}),
+  });
+}
+
+/**
  * The `--json` line. `packages` rides only when `--packages` was passed: `formatJsonLine` drops an
  * `undefined`, so a run without the flag carries no `packages` key at all. `agents` rides on every run but
- * the one whose `--packages` moved `@pithy-sh/cli`, for the same reason.
+ * the one whose `--packages` moved `@pithy-sh/cli`, for the same reason, and so does `next`.
  */
-export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): string {
+export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean, migrate = false): string {
   // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
   // is no entry here whose absent fields could be read as empty ones.
   const workers = run.workers.map((result) =>
@@ -787,6 +815,7 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): 
             { state: result.state, worker: result.worker, plan: result.plan, ...operatorError(result.refusal) }
           : { state: result.state, worker: result.worker },
   );
+  const next = upgradeFollowUp(run, { env, dryRun, migrate });
   return formatJsonLine({
     command: "upgrade",
     env,
@@ -796,6 +825,7 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean): 
     packages: run.packages,
     agents: run.agents,
     plan: run.plan,
+    next,
   });
 }
 
@@ -828,6 +858,7 @@ const UpgradePayload = z
       "`AGENTS.md`, and what happened to the Pithy block in it. Absent only when `--packages` moved `@pithy-sh/cli` and the reconcile was left to the new one.",
     ),
     plan: PlanKey,
+    next: NextKey,
   })
   .describe("What `pithy upgrade` reconciled.");
 
@@ -875,7 +906,7 @@ export default withContract(
         if (upgradeFailed(run)) process.exitCode = EXIT.failed;
 
         if (args.json) {
-          process.stdout.write(`${upgradeJsonLine(run, env, dryRun)}\n`);
+          process.stdout.write(`${upgradeJsonLine(run, env, dryRun, args.migrate)}\n`);
           return;
         }
 

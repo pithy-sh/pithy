@@ -216,6 +216,7 @@ async function accountFindings(
       // One database for the whole project, and one run creates it. `pithy email provision` spans every
       // declared environment and takes no `--env`, so naming one here was a flag the CLI refuses (#594).
       action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
+      fix: "pithy email provision",
     });
   }
 
@@ -258,6 +259,7 @@ async function signingKeyFindings(context: SettingsAccountContext, environment: 
       problem: `The link-signing key has no Secrets Store entry in ${environment}, so no tracking or unsubscribe link can be signed.`,
       // No `--env`: the command spans every declared environment, and takes no such flag.
       action: "Run `pithy secrets provision`.",
+      fix: "pithy secrets provision",
     });
   }
   if (await context.account.vaultSecret({ name: EMAIL_LINK_SIGNING_KEY, environment })) {
@@ -266,6 +268,8 @@ async function signingKeyFindings(context: SettingsAccountContext, environment: 
       environment,
       problem: `The link-signing key is still held in ${environment}'s D1 vault, where nothing reads it. Links signed with it before the move no longer verify.`,
       action: `Once the Secrets Store entry is bound and deployed, run \`pithy secrets rm ${EMAIL_LINK_SIGNING_KEY} --env ${environment} --backend d1\`. See docs/commands/secrets.md#moving-a-secret-off-d1.`,
+      // No `fix`: the removal is safe only once the entry is bound and deployed, which this check does not
+      // establish, so an agent running it as written could delete the only copy that still answers (#697).
     });
   }
   return findings;

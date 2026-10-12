@@ -10,6 +10,7 @@ import { unpublishedKitNotice } from "../project/scaffold";
 import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
+import { NextKey, uiAddNext } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { listStubs, runUiAdd, runUiSync, type UiScreenSet } from "../ui/flow";
@@ -64,6 +65,7 @@ const UiAddPayload = z
     devDependencies: Names("Dev-dependency names added to the Worker's `package.json`."),
     scripts: Names("Script names added or superseded."),
     plan: PlanKey,
+    next: NextKey,
   })
   .describe("What `pithy ui add` scaffolded, or under `--dry-run` would.");
 
@@ -151,8 +153,14 @@ const add = withContract(
         });
 
         if (args.json) {
+          // The install, when this run wrote dependencies nothing has installed yet (#697). Absent otherwise.
+          const next = uiAddNext({
+            dryRun,
+            packageManager: report.packageManager,
+            added: report.dependencies.length + report.devDependencies.length,
+          });
           process.stdout.write(
-            `${formatJsonLine({ command: "ui.add", dryRun, ...report, ...workerIdentity(target) })}\n`,
+            `${formatJsonLine({ command: "ui.add", dryRun, ...report, ...workerIdentity(target), next })}\n`,
           );
           return;
         }

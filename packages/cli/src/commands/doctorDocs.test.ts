@@ -1632,6 +1632,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   interrupted: ["feature", "migrate", "secrets"],
   manifestFaults: ["add", "provision", "upgrade"],
   name: ["secrets", "token"],
+  // The follow-up a run left required, as `[{ command, why }]`, and absent otherwise — never empty (#697,
+  // `terminal/nextSteps.ts`). One shape on every command that can carry it.
+  next: ["add", "deploy", "provision", "ui", "upgrade"],
   packageManager: ["add", "ui"],
   // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
   // string, and both where the answer is: the file to open, the command the document describes.
@@ -1698,6 +1701,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   interrupted: "boolean",
   manifestFaults: "unknown[]",
   name: "string",
+  next: "object[]",
   packageManager: "string",
   path: "string",
   plan: "object",

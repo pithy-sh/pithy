@@ -52,7 +52,7 @@ async function connected(path: string, rootKey: string): Promise<void> {
 
 describe("checkDocsMcp", () => {
   test("a machine running none of the clients is `ok`, because nothing about it is wrong", async () => {
-    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [] });
+    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [], clients: [] });
   });
 
   test("a detected client with no entry names itself and the command that connects it", async () => {
@@ -81,13 +81,13 @@ describe("checkDocsMcp", () => {
   test("a detected client whose user configuration carries the entry contributes nothing", async () => {
     await install(".cursor");
     await connected(join(home, ".cursor", "mcp.json"), "mcpServers");
-    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [] });
+    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [], clients: [] });
   });
 
   test("the project scope counts too — a client is connected wherever its entry is", async () => {
     await install(".cursor");
     await connected(join(dir, ".cursor", "mcp.json"), "mcpServers");
-    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [] });
+    expect(await checkDocsMcp(dir, options())).toEqual({ state: "ok", findings: [], clients: [] });
   });
 
   test("one connected client does not answer for another", async () => {
@@ -95,7 +95,11 @@ describe("checkDocsMcp", () => {
     await install(".codex");
     await connected(join(home, ".cursor", "mcp.json"), "mcpServers");
     const check = await checkDocsMcp(dir, options());
-    expect(check).toEqual({ state: "unconnected", findings: ["Codex CLI — pithy docs connect --client codex"] });
+    expect(check).toEqual({
+      state: "unconnected",
+      findings: ["Codex CLI — pithy docs connect --client codex"],
+      clients: [{ client: "codex", label: "Codex CLI" }],
+    });
   });
 
   test("a configuration that will not parse is not a connection, and never throws", async () => {
@@ -103,7 +107,11 @@ describe("checkDocsMcp", () => {
     await mkdir(join(home, ".cursor"), { recursive: true });
     await writeFile(join(home, ".cursor", "mcp.json"), "{ not json");
     const check = await checkDocsMcp(dir, options());
-    expect(check).toEqual({ state: "unconnected", findings: ["Cursor — pithy docs connect --client cursor"] });
+    expect(check).toEqual({
+      state: "unconnected",
+      findings: ["Cursor — pithy docs connect --client cursor"],
+      clients: [{ client: "cursor", label: "Cursor" }],
+    });
   });
 
   test("nothing is created — a check that repaired the machine would not be a diagnostic", async () => {
@@ -116,15 +124,19 @@ describe("checkDocsMcp", () => {
 
 describe("describeDocsMcp", () => {
   test("says nothing is wrong when every detected client can read the docs", () => {
-    expect(describeDocsMcp({ state: "ok", findings: [] })).toBe(
+    expect(describeDocsMcp({ state: "ok", findings: [], clients: [] })).toBe(
       "Every AI client detected here can read the Pithy docs.",
     );
   });
 
   test("counts the clients, and one client is singular", () => {
-    expect(describeDocsMcp({ state: "unconnected", findings: ["Cursor — pithy docs connect --client cursor"] })).toBe(
-      "1 detected client cannot read the Pithy docs.",
-    );
+    expect(
+      describeDocsMcp({
+        state: "unconnected",
+        findings: ["Cursor — pithy docs connect --client cursor"],
+        clients: [{ client: "cursor", label: "Cursor" }],
+      }),
+    ).toBe("1 detected client cannot read the Pithy docs.");
   });
 
   test("two or more are plural", () => {
@@ -132,12 +144,16 @@ describe("describeDocsMcp", () => {
       describeDocsMcp({
         state: "unconnected",
         findings: ["Cursor — pithy docs connect --client cursor", "Codex CLI — pithy docs connect --client codex"],
+        clients: [
+          { client: "cursor", label: "Cursor" },
+          { client: "codex", label: "Codex CLI" },
+        ],
       }),
     ).toBe("2 detected clients cannot read the Pithy docs.");
   });
 
   test("a check that could not run claims nothing about the machine", () => {
-    expect(describeDocsMcp({ state: "could-not-check", findings: [] })).toBe(
+    expect(describeDocsMcp({ state: "could-not-check", findings: [], clients: [] })).toBe(
       "Could not read the AI clients' configuration.",
     );
   });

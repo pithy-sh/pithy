@@ -436,7 +436,7 @@ async function projectNameFor(projectDir: string): Promise<string | null> {
 }
 
 /** Whether a stale stanza is one a command can repoint. See {@link bindingScopeHealth} for why `dev` is not. */
-function isFixable(stale: StaleGlobalStanza): boolean {
+export function isFixable(stale: StaleGlobalStanza): boolean {
   return stale.env !== LOCAL_ENVIRONMENT;
 }
 

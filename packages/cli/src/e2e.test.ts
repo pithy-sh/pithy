@@ -240,9 +240,10 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   expect(health.project.health.workers[0]?.migrations).toEqual({
     ok: true,
     environments: [
-      { env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } },
-      { env: "staging", state: "not-provisioned", unprovisioned },
-      { env: "prod", state: "not-provisioned", unprovisioned },
+      { env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] }, fix: null },
+      // Each with its `fix` (#697): the provision for staging, and none for prod, whose provision is a person's.
+      { env: "staging", state: "not-provisioned", unprovisioned, fix: "pithy provision --env staging --yes" },
+      { env: "prod", state: "not-provisioned", unprovisioned, fix: null },
     ],
   });
   expect(checked.code, checked.stderr).toBe(0);
@@ -314,8 +315,8 @@ test("pithy doctor reports a composed capability whose prerequisite is absent, a
   expect(after.project.health.workers[0]?.prerequisites).toEqual({
     ok: false,
     missing: [
-      { capability: "auth", requires: "secrets" },
-      { capability: "auth", requires: "email" },
+      { capability: "auth", requires: "secrets", fix: "pithy add secrets --worker replay-board --with-prerequisites" },
+      { capability: "auth", requires: "email", fix: "pithy add email --worker replay-board --with-prerequisites" },
     ],
   });
   expect(after.project.health.ok).toBe(false);

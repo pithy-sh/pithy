@@ -302,6 +302,7 @@ $ pithy provision --feature --json
 | `pendingSecretsRemedy` | `string \| null` | The command that does create them. `"pithy secrets provision"` for `--env`; `"pithy provision --feature with SECRETS_STORE_ID set"` for `--feature`, whose own run creates them once it has a Secrets Store. A pipeline branches on this rather than on the mode |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was created, written or migrated when it is `true`, every other key is what the run would report, and a resource it would create carries its placeholder `id` |
 | `plan` | `object` | Present only under `--dry-run`: the resources to create or adopt, the config edits with their diffs, the secrets to bind or mint, and the migrations to apply, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) |
+| `next` | `object[]` | `[{ command, why }]`: `pithy deploy --env <env>` — `--env feature` for `--feature` — when a Worker this run named in `workers` has no deployed script on the account. Absent when every one is deployed, when the account could not be asked, and under `--dry-run`; never empty (`docs/CLI.md` §1.2) |
 
 ## Exit codes
 

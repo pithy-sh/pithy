@@ -11,6 +11,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { withContract } from "../contract/commandContract";
 import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
+import { establishedPending } from "../migrations/pendingCount";
 import { planMigrateProject, readProjectLedger } from "../migrations/run";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -34,6 +35,7 @@ import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from ".
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { EXIT } from "../terminal/exitClass";
+import { deployNext, NextKey } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -64,8 +66,7 @@ async function pendingFor(
     // over the databases that answered can only understate how far behind the project is, so it never
     // raises a false alarm — and this line is warn-only. Which database went unread is `pithy doctor`'s
     // sentence to say, in the report whose job is naming faults.
-    if (ledger.state === "partial") return ledger.counted.pending;
-    return ledger.state === "read" ? ledger.pending : undefined;
+    return establishedPending(ledger);
   } catch {
     return undefined;
   }
@@ -242,6 +243,7 @@ const DeployPayload = z
       .describe("What stopped the kit half knowing its set. Non-empty fails the run. `null` when it did not run."),
     dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was uploaded when it is `true`."),
     plan: PlanKey,
+    next: NextKey,
   })
   .describe("What `pithy deploy` shipped, or under `--dry-run` would.");
 
@@ -367,6 +369,8 @@ export default withContract(
         const failed = appsFailed || kitFailed;
 
         if (args.json) {
+          // `pithy migrate`, when the schema this deploy shipped against is behind it (#697). Absent otherwise.
+          const next = deployNext({ env, pending, failed });
           process.stdout.write(
             `${formatJsonLine({
               command: "deploy",
@@ -379,6 +383,7 @@ export default withContract(
               // never even saw. `null` when the kit half did not run, exactly as `kit` is.
               kitProblems: kit?.problems ?? null,
               dryRun: false,
+              next,
             })}\n`,
           );
           if (failed) process.exitCode = runExit(deploys, appsFailed);
@@ -433,8 +438,9 @@ interface PlanDeployOptions {
  *
  * Reached only once every gate the deploy refuses on has passed, so what is left is the plan. Pithy's half
  * first: the migrations the environment has not applied, named — the deploy leaves them to `pithy migrate`, and
- * says so. Then each app Worker is built and handed to `wrangler deploy --dry-run`, under its own step, so a
- * bundle that does not build fails here with the build's error rather than at the deploy. The kit half reads
+ * says so. Then each app Worker is built, in a private copy of the project, and handed to `wrangler deploy
+ * --dry-run`, under its own step, so a bundle that does not build fails here with the build's error rather than
+ * at the deploy. The kit half reads
  * each stamp and plans the uploads it would make. Nothing is uploaded and nothing is audited.
  *
  * It exits the way the real deploy would have: 0, or 1 for a Worker that would fail — a report with a failed

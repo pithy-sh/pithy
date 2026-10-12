@@ -187,4 +187,21 @@ describe("pithy ui --json conforms to its published payloads", () => {
     await expectConforms("ui sync", await runCaptured("ui sync", ["--json"]));
     await expectConforms("ui list", await runCaptured("ui list", ["--json"]));
   });
+
+  /** The install it left required, as `next`, and no key when it wrote no dependency (#697). */
+  test("add names the install when it wrote dependencies, and carries no next when it wrote none", async () => {
+    const wrote = JSON.parse((await runCaptured("ui add", ["react", "--json"])).join(""));
+    expect(wrote.next).toEqual([
+      { command: "bun install", why: "ui add wrote 2 packages into package.json, and the build needs them installed." },
+    ]);
+    const before = stub.add;
+    stub.add = { ...before, dependencies: [], devDependencies: [] };
+    try {
+      const none = await runCaptured("ui add", ["react", "--json"]);
+      expect(Object.hasOwn(JSON.parse(none.join("")), "next")).toBe(false);
+      await expectConforms("ui add", none);
+    } finally {
+      stub.add = before;
+    }
+  });
 });

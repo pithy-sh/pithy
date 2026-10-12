@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { fixOf } from "../terminal/exitClass";
 import { applyDomains } from "./applyDomains";
 import { composeFor } from "./composeFor";
-import { assertOriginsDeclared, checkOrigins, describeOriginDrift, originDrift } from "./domains";
+import { assertOriginsDeclared, checkOrigins, describeOriginDrift, originDrift, originDriftFix } from "./domains";
 
 let dir: string;
 
@@ -292,6 +293,9 @@ describe("assertOriginsDeclared", () => {
     const failure = await assertOriginsDeclared(dir, "prod").catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PithyError);
     expect((failure as PithyError).payload.action ?? "").toContain("workers_dev");
+    // An edit, not a command: exit 3 and no fix, exactly as doctor names none for it (#697).
+    expect((failure as PithyError).payload.code).toBe("core/precondition_failed");
+    expect(fixOf(failure as PithyError)).toBeUndefined();
   });
 
   /**
@@ -306,6 +310,9 @@ describe("assertOriginsDeclared", () => {
     expect(action).toContain("route");
     expect(action).toContain("pithy worker sync");
     expect(action).not.toContain("workers_dev");
+    // The project is out of step with itself, so it is a precondition with the command doctor names (#697).
+    expect((failure as PithyError).payload.code).toBe("core/precondition_failed");
+    expect(fixOf(failure as PithyError)).toBe("pithy worker sync --worker board --env prod");
   });
 
   test("lets an environment whose origins its config names and serves through", async () => {
@@ -367,6 +374,25 @@ describe("checkOrigins", () => {
     expect(unserved).toContain("route");
     expect(unserved).toContain("pithy worker sync");
     expect(unserved).not.toContain("workers_dev");
+  });
+
+  /**
+   * **The one fault a command rights, as that command (#697)** — `pithy doctor --json`'s `fix`, decided by the
+   * branch the sentence above is: a declared origin `pithy worker sync` writes the route for. A hand-set
+   * origin, an origin on `workers.dev`, a missing origin and an open `workers.dev` are edits, and name none.
+   */
+  test("only an unserved origin a declaration names has a command that rights it", () => {
+    const unserved = {
+      worker: "board",
+      env: "prod",
+      fault: "unserved-origin",
+      origin: "https://app.example.com",
+    } as const;
+    expect(originDriftFix({ ...unserved, source: "declaration" })).toBe("pithy worker sync --worker board --env prod");
+    expect(originDriftFix({ ...unserved, source: "var" })).toBeNull();
+    expect(originDriftFix({ ...unserved, origin: "https://board.acme.workers.dev", source: "declaration" })).toBeNull();
+    expect(originDriftFix({ worker: "board", env: "staging", fault: "no-origin", origin: null })).toBeNull();
+    expect(originDriftFix({ ...unserved, fault: "workers-dev-open" })).toBeNull();
   });
 
   /** A hand-set `vars.BASE_URL` is not generated from anything, so `worker sync` cannot write its route. */

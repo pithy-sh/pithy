@@ -147,6 +147,9 @@ $ pithy add secrets --json
 | `eject.promotedDependencies` | string[] | The `name@version` dependencies promoted into your project. Workspace-internal ones are excluded |
 | `eject.forced` | boolean | Whether an existing local copy was overwritten (`--force`) |
 | `plan` | object | Present only under `--dry-run`: what the add would write, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). `files` carries each file's diff; `secrets` the dev secrets it would mint; `notes` the migrate it would run |
+| `next` | object[] | The step this add left required, in the order to run them, and absent otherwise — never empty (`docs/CLI.md` §1.2). `pithy provision --env <env> --yes` for a declared environment a provision had readied before the add — a resource for every binding, and a D1 or KV id a provision wrote — that gained a binding without one, since deploy refuses that stanza and provisioning both creates and migrates; otherwise `pithy migrate --env <env>` for a provisioned environment with migrations it has not applied, counted from its whole ledger. A production environment gets no provision step, because its provision needs a person's `--confirm` phrase. Read only when this add applied a migration in `dev`, with credentials, and not offline. Never under `--dry-run` |
+| `next[].command` | string | The command to run next, whole, as typed at a shell |
+| `next[].why` | string | Why it is required, in one sentence |
 
 `kvNamespaces` is empty when the capability needs no KV, when no project name was resolved, and on a re-run — a binding already present is left alone.
 

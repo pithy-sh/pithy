@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type McpOptions, status } from "../mcp/connect";
+import { docsConnectFix } from "./findingFixes";
 
 /**
  * Which AI clients on this machine could be reading the Pithy documentation and are not.
@@ -29,6 +30,16 @@ export interface DocsMcpCheck {
   readonly state: "ok" | "unconnected" | "could-not-check";
   /** One line per detected-but-unconnected client, each naming the command that connects it. */
   readonly findings: readonly string[];
+  /** The same clients as data, in the same order: the id the command takes, and the name a person reads. */
+  readonly clients: readonly DocsMcpClient[];
+}
+
+/** One detected client with no docs-server entry anywhere. */
+export interface DocsMcpClient {
+  /** The id `pithy docs connect --client` takes. */
+  readonly client: string;
+  /** The name a person knows it by. */
+  readonly label: string;
 }
 
 /** The remedy line printed under the findings. */
@@ -38,10 +49,11 @@ export const DOCS_MCP_ACTION = "Each line is one command. `pithy docs status` sh
 export async function checkDocsMcp(projectDir: string, options?: McpOptions): Promise<DocsMcpCheck> {
   const resolved: McpOptions = options ?? { projectDir };
   const reported = await status(resolved);
-  const findings = reported
+  const clients = reported
     .filter((client) => client.detected && client.scopes.every((scope) => !scope.connected))
-    .map((client) => `${client.label} — pithy docs connect --client ${client.client}`);
-  return { state: findings.length > 0 ? "unconnected" : "ok", findings };
+    .map((client) => ({ client: client.client, label: client.label }));
+  const findings = clients.map((client) => `${client.label} — ${docsConnectFix(client.client)}`);
+  return { state: findings.length > 0 ? "unconnected" : "ok", findings, clients };
 }
 
 /** The one-sentence verdict, shared by the text renderer and the `--json` detail so neither words it twice. */

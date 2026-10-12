@@ -4,7 +4,7 @@
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { fixOf } from "../terminal/exitClass";
-import { withProvisionFix } from "./provisionFix";
+import { provisionFixCommand, withProvisionFix } from "./provisionFix";
 
 /**
  * **A `fix` is runnable as written, so a production environment gets none (#697).**
@@ -41,5 +41,25 @@ describe("withProvisionFix", () => {
     const error = refusal();
     expect(withProvisionFix(error, "prod")).toBe(error);
     expect(withProvisionFix(error, "staging")).toBe(error);
+  });
+});
+
+/** The same rule as a bare command, for a report that names a remedy without throwing — `pithy doctor` (#697). */
+describe("provisionFixCommand", () => {
+  test("the command withProvisionFix attaches, and none for production", () => {
+    expect(provisionFixCommand("staging")).toBe("pithy provision --env staging --yes");
+    expect(provisionFixCommand("feature")).toBe("pithy provision --feature");
+    expect(provisionFixCommand("prod")).toBeNull();
+    expect(provisionFixCommand("live", ["live"])).toBeNull();
+  });
+
+  test.each([
+    ["staging", []],
+    ["feature", []],
+    ["prod", []],
+    ["live", ["live"]],
+    ["qa", ["live"]],
+  ] as const)("agrees with the fix the refusal carries, for %s", (env, production) => {
+    expect(provisionFixCommand(env, production) ?? undefined).toBe(fixOf(withProvisionFix(refusal(), env, production)));
   });
 });

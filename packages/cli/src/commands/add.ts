@@ -10,6 +10,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
+import { addFollowUp, readyEnvironments } from "../capabilities/addFollowUp";
 import { buildCatalogListing, CATALOG } from "../capabilities/catalog";
 import { EjectResult } from "../capabilities/eject";
 import {
@@ -36,6 +37,7 @@ import { WorkerIdentity } from "../project/workerIdentity";
 import type { ResolvedWorker, ResolveOptions } from "../project/workerScope";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
+import { NextKey } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
 /** What {@link buildAudit} needs, plus the factory seam a test observes. */
@@ -356,6 +358,7 @@ const AddPayload = z
           .describe("The capabilities composed on the way to this one, deepest first."),
         eject: EjectResult.optional().describe("Present only when `--eject` ran, or under `--dry-run` would."),
         plan: PlanKey,
+        next: NextKey,
       })
       .describe("`pithy add <capability> --json`."),
   ])
@@ -443,6 +446,14 @@ export default withContract(
           return;
         }
 
+        // Read before the add writes anything, so its own bindings cannot hide which environments were ready.
+        // Only `--json` carries `next`, so only `--json` reads it (#697).
+        const ready = args.json ? await readyEnvironments({ projectDir }).catch(() => []) : [];
+        // The project's own production names, so a step whose provision needs a person's phrase is not one.
+        const productionEnvironments = args.json
+          ? ((await loadProject(projectDir).catch(() => null))?.seed?.productionEnvironments ?? [])
+          : [];
+
         const result = await runAdd({
           ...options,
           audit: await buildAudit({
@@ -455,7 +466,16 @@ export default withContract(
         });
 
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "add", dryRun: false, ...result })}\n`);
+          const next = await addFollowUp({
+            projectDir,
+            account,
+            worker: result.worker,
+            capability: result.capability,
+            ready,
+            productionEnvironments,
+            brought: result.databases.some((run) => run.results.some((one) => one.status === "Success")),
+          });
+          process.stdout.write(`${formatJsonLine({ command: "add", dryRun: false, ...result, next })}\n`);
           return;
         }
         // Said first, because it happened first, and because a capability composed on the adopter's behalf

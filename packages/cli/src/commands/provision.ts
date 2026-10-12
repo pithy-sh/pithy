@@ -59,8 +59,10 @@ import {
 import { type MintStoreSecret, secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
+import { provisionNextEntry } from "../provision/undeployed";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
+import { NextKey, type NextStep } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { commandProgress } from "../terminal/progress";
 
@@ -457,6 +459,8 @@ export function writeReport(
      * would change, and the text output is the plan alone.
      */
     plan?: Plan;
+    /** What the run left required (#697): `pithy deploy`, when a Worker it names is not deployed. JSON only. */
+    next?: NextStep[];
   },
 ): void {
   if (options.json) {
@@ -469,6 +473,7 @@ export function writeReport(
         dryRun: options.plan !== undefined,
         // Absent from the line when there is none: `JSON.stringify` drops an undefined member.
         plan: options.plan,
+        next: options.next,
       })}\n`,
     );
     return;
@@ -723,6 +728,7 @@ async function provisionDeclared(
     pending: deferredSecrets(capabilities, mode),
     registry: workerSecretRegistry(capabilities) ?? {},
     streamed: progress !== undefined,
+    ...(await provisionNextEntry(report, { json: options.json, account })),
   });
 }
 
@@ -841,6 +847,7 @@ async function provisionBranch(
     pending: featurePendingSecrets(deferredSecrets(capabilities, mode), report),
     registry: workerSecretRegistry(capabilities) ?? {},
     streamed: progress !== undefined,
+    ...(await provisionNextEntry(report, { json: options.json, account })),
   });
 }
 
@@ -984,6 +991,7 @@ const ProvisionPayload = z
         "Whether this was `--dry-run`. Nothing was created, written or migrated when it is `true`, and a resource the run would create carries a placeholder `id`.",
       ),
     plan: PlanKey,
+    next: NextKey,
   })
   .describe("What `pithy provision` created, adopted and wrote, or under `--dry-run` would.");
 

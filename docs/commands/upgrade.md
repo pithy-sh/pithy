@@ -157,6 +157,7 @@ $ pithy upgrade --json
 | `agents.state` | `"added"` \| `"updated"` \| `"unchanged"` \| `"refused"` | `added` — there was no block, and now there is. `updated` — the block was stale and was rewritten in place. `unchanged` — already current, and the file was not written. `refused` — not written, and `reason` says why; the exit is unchanged by it. On a dry run, what a write would do |
 | `agents.reason` | string or `null` | Why it was refused, in one line that never quotes the file. `null` otherwise |
 | `plan` | object | Present only under `--dry-run`: the same run, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) — below |
+| `next` | object[] | `[{ command, why }]`, the step this run left required: the project's own CLI's `upgrade` through its package manager (`bun x pithy upgrade`) when `--packages` moved `@pithy-sh/cli` and the reconcile was left to it, otherwise `pithy migrate --env <env>` for the migrations it counted and did not run without `--migrate`. Absent otherwise — under `--dry-run`, on a failed run — and never empty (`docs/CLI.md` §1.2) |
 
 ### `plan`
 

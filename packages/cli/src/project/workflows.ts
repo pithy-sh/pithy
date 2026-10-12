@@ -3,8 +3,9 @@
 
 import { basename } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { isSourceEnvironment } from "../provision/featureConfig";
+import { withFix } from "../terminal/exitClass";
 import {
   type AppWorkflowPlan,
   appOwnedWorkflows,
@@ -222,6 +223,24 @@ export function describeWorkflowDrift(drift: WorkflowDrift): string {
   return `${drift.worker} declares ${summarize(drift.declared)} for ${drift.env}, and env.${drift.env} binds ${summarize(drift.bound)}. Run pithy worker sync to write the declaration into wrangler.jsonc.`;
 }
 
+/**
+ * The command that rights `drift`, or `null` when none can — `pithy doctor --json`'s `fix` (#697), on the branch
+ * {@link describeWorkflowDrift} takes: `pithy worker sync` writes an unsynced stanza, and a declaration it
+ * cannot reduce is the config's to fix.
+ */
+export function workflowDriftFix(drift: WorkflowDrift): string | null {
+  return workflowSync(drift)?.fix ?? null;
+}
+
+/**
+ * {@link workflowDriftFix}, as the remedy `withFix` takes — so doctor's `fix` and the deploy refusal's are one
+ * literal, and `ci/actionLines.test.ts` reads it where it is written.
+ */
+function workflowSync(drift: WorkflowDrift): { fix: string } | null {
+  if (drift.fault === "unwritable-declaration") return null;
+  return { fix: `pithy worker sync --worker ${drift.worker} --env ${drift.env}` };
+}
+
 /** The throw-site context behind each fault — why this one is worth a refusal. */
 function workflowDetail(fault: WorkflowFault): string {
   return fault === "unwritable-declaration"
@@ -254,11 +273,15 @@ export async function assertWorkflowsBound(projectDir: string, env: string): Pro
   const drift = await workflowDrift(projectDir, project, [env]);
   if (drift.length === 0) return;
   const first = drift[0] as WorkflowDrift;
-  throw new ValidationError({
+  // As `assertOriginsDeclared` beside it: a precondition, exit 3, with doctor's own `fix` when one command
+  // rights all of it (#697).
+  const refusal = new PreconditionFailedError({
     message: `${env} does not bind what it declares: ${drift.map((entry) => entry.worker).join(", ")}.`,
     action: drift.map(describeWorkflowDrift).join(" "),
     detail: workflowDetail(first.fault),
   });
+  const remedy = drift.length === 1 ? workflowSync(first) : null;
+  throw remedy === null ? refusal : withFix(refusal, remedy);
 }
 
 /**

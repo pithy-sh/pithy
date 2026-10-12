@@ -9,6 +9,7 @@ import { DeclaredEnvironments, FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/na
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { requireManagedEnvironment } from "../project/environment";
 import type { ProvisionedDeclines, ProvisionedResource, ProvisionReport } from "../provision/environment";
+import { provisionNext } from "../terminal/nextSteps";
 import { expectConforms } from "../test-utils/payloadContract";
 import { provisionProgress, runProvision, writeReport } from "./provision";
 
@@ -330,6 +331,28 @@ describe("pithy provision narrates the run it is doing", () => {
     // And the flag that moves the human lines moves nothing here — there is one line either way.
     expect(captured(() => writeReport(full, { json: true, seeded: false, pending, registry }))).toBe(JSON_LINE);
     expect(streamed.trimEnd().split("\n")).toHaveLength(1);
+  });
+
+  /**
+   * **`next` is the deploy a Worker it names still needs, and no key otherwise (#697).** The condition is
+   * `terminal/nextSteps.test.ts`'s and the account's answer `provision/undeployed.test.ts`'s; this holds the
+   * line to carrying what it is handed, last, and to the published payload.
+   */
+  test("--json carries next only when the run hands it one", async () => {
+    const pending = { names: [], remedy: null };
+    const next = provisionNext({ env: "staging", undeployed: ["board-staging"] });
+    const line = captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {}, next }));
+    expect(line).toBe(
+      JSON_LINE.replace(
+        '"dryRun":false}',
+        '"dryRun":false,"next":[{"command":"pithy deploy --env staging","why":"board-staging is not deployed in staging."}]}',
+      ),
+    );
+    await expectConforms("provision", line);
+    const none = provisionNext({ env: "staging", undeployed: [] });
+    expect(captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {}, next: none }))).toBe(
+      JSON_LINE,
+    );
   });
 
   /** Held to the schema `pithy schema provision` publishes (#697): a declared run, and a feature's extras. */

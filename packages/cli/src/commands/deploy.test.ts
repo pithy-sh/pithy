@@ -24,7 +24,7 @@ import deploy, { assertDeployFlags, deploySelection, requireDeployEnvironment } 
  */
 
 /** The options every ledger read was handed. */
-const counted = vi.hoisted(() => ({ calls: [] as unknown[] }));
+const counted = vi.hoisted(() => ({ calls: [] as unknown[], ledger: { pending: 0, undeclared: [] } as unknown }));
 
 /** What each half of the deploy was asked to do this run — the two named steps, observed. */
 const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[] }));
@@ -57,7 +57,7 @@ vi.mock("../migrations/run", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../migrations/run")>()),
   readProjectLedger: async (options: unknown) => {
     counted.calls.push(options);
-    return { pending: 0, undeclared: [] };
+    return counted.ledger;
   },
 }));
 
@@ -483,6 +483,30 @@ describe("the two halves", () => {
     expect(JSON.parse(await invoke({ env: "staging" })).kitProblems).toEqual([]);
     expect(JSON.parse(await invoke({ env: "staging", apps: true })).kitProblems).toBeNull();
     expect(JSON.parse(await invoke({ env: "dev" })).kitProblems).toBeNull();
+  });
+
+  /**
+   * **`next` names `pithy migrate` when the schema is behind the code that shipped, and is absent otherwise (#697).**
+   * The count is the condition, read from the ledger the deploy already reads; the rest of the matrix is
+   * `terminal/nextSteps.test.ts`'s.
+   */
+  test("next names migrate for an environment the deploy left behind its code, and is absent otherwise", async () => {
+    counted.ledger = { state: "read", pending: 2, undeclared: [] };
+    try {
+      const behind = JSON.parse(await invoke({ env: "staging", apps: true }));
+      expect(behind.next).toEqual([
+        {
+          command: "pithy migrate --env staging",
+          why: "2 migrations are not applied to staging. Deploy does not migrate.",
+        },
+      ]);
+      await expectConforms("deploy", await invoke({ env: "staging", apps: true }));
+      expect(Object.hasOwn(JSON.parse(await invoke({ apps: true })), "next")).toBe(false);
+      counted.ledger = { state: "read", pending: 0, undeclared: [] };
+      expect(Object.hasOwn(JSON.parse(await invoke({ env: "staging", apps: true })), "next")).toBe(false);
+    } finally {
+      counted.ledger = { pending: 0, undeclared: [] };
+    }
   });
 
   /** Held to the schema `pithy schema deploy` publishes (#697): both halves, each half alone, and none. */

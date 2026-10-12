@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { fixOf } from "../terminal/exitClass";
-import { assertEnvironmentProvisioned, unprovisionedBindings } from "./unprovisioned";
+import { assertEnvironmentProvisioned, bindingProvisioning, unprovisionedBindings } from "./unprovisioned";
 
 describe("unprovisionedBindings", () => {
   let dir: string;
@@ -59,6 +59,31 @@ describe("unprovisionedBindings", () => {
       env: { staging: { d1_databases: [{ binding: "DB", database_id: "<database_id>" }] } },
     });
     expect(await unprovisionedBindings(dir, "staging")).toEqual([{ worker: "board", kind: "d1", binding: "DB" }]);
+  });
+
+  /**
+   * **An empty stanza is not a provisioned one (#697).** `pithy init` writes `d1_databases: []` into every
+   * environment, so "no binding lacks an id" is true of a project nobody ever provisioned. `provisioned`
+   * counts the positive evidence: a D1 or KV id a provision wrote. An R2 bucket's name is written by the
+   * scaffold, so it counts for nothing.
+   */
+  test("bindingProvisioning counts the D1 and KV ids a provision wrote, and an empty stanza has none", async () => {
+    await worker("board", {
+      name: "replay-board",
+      env: {
+        staging: {
+          d1_databases: [{ binding: "DB", database_id: "uuid" }],
+          kv_namespaces: [{ binding: "CACHE", id: "kv-id" }, { binding: "SESSIONS" }],
+          r2_buckets: [{ binding: "ASSETS", bucket_name: "replay-staging-assets" }],
+        },
+        prod: { d1_databases: [], kv_namespaces: [], r2_buckets: [{ binding: "ASSETS", bucket_name: "replay-prod" }] },
+      },
+    });
+    expect(await bindingProvisioning(dir, "staging")).toEqual({
+      missing: [{ worker: "board", kind: "kv", binding: "SESSIONS" }],
+      provisioned: 2,
+    });
+    expect(await bindingProvisioning(dir, "prod")).toEqual({ missing: [], provisioned: 0 });
   });
 
   test("a Worker with no stanza and no top-level bindings contributes nothing to check", async () => {

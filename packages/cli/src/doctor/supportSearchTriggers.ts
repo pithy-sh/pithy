@@ -120,6 +120,17 @@ export type EnvironmentSearchIndex =
       state: "not-composed";
     };
 
+/**
+ * The command that rights one environment's answer, or `null` — `pithy doctor --json`'s `fix` (#697). The two
+ * fault states are what `pithy support provision` repairs: it rewrites the table and its triggers. It spans
+ * every managed environment and takes no `--env`, so it is narrowed to the Worker instead, which a project
+ * with several is refused without. Every other state is not a fault and names nothing.
+ */
+export function supportSearchFix(answer: EnvironmentSearchIndex): string | null {
+  if (answer.state !== "drift" && answer.state !== "orphaned-triggers") return null;
+  return `pithy support provision --worker ${answer.worker}`;
+}
+
 /** What `doctor` learned about this project's support search index. */
 export interface SupportSearchTriggersCheck {
   state: SupportSearchTriggersState;

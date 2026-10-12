@@ -182,6 +182,7 @@ $ pithy ui list --json
 | `devDependencies` | string[] | `add`. Only what this run added. |
 | `scripts` | string[] | `add`. Only what this run added. |
 | `plan` | object | `add`, under `--dry-run` only. What it would write, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2): each file created or edited, with its diff. |
+| `next` | object[] | `add` only. `[{ command, why }]`: the project's install (`bun install`, `pnpm install`, …) when this run wrote dependencies into the Worker's `package.json`, because the build fails without them. Absent when it wrote none, and under `--dry-run`; never empty (`docs/CLI.md` §1.2). |
 | `before` | string[] | `sync`. The allowlist before the run. |
 | `after` | string[] | `sync`. The allowlist after it. |
 | `changed` | boolean | `sync`. Whether the call moved anything — the allowlist, or a `not_found_handling` it had to write. |

@@ -62,8 +62,15 @@ describe("the Turnstile: block", () => {
       turnstileSitekeys: TurnstileSitekeysCheck & { detail: string[] };
     };
 
-    expect(payload.turnstileSitekeys.stranded).toEqual(finding.stranded);
-    expect(payload.turnstileSitekeys.unrendered).toEqual(finding.unrendered);
+    // Each with the command that clears it, or `null` where none does (#697).
+    expect(payload.turnstileSitekeys.stranded).toEqual([
+      { ...finding.stranded[0], fix: "pithy turnstile provision --worker board" },
+    ]);
+    expect(payload.turnstileSitekeys.unrendered).toEqual([
+      { ...finding.unrendered[0], fix: "pithy turnstile provision --worker board" },
+      { ...finding.unrendered[1], fix: "pithy turnstile provision --worker board" },
+      { ...finding.unrendered[2], fix: null },
+    ]);
     expect(payload.turnstileSitekeys.detail).toHaveLength(3);
   });
 });

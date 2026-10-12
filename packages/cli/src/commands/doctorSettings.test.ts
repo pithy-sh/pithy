@@ -199,6 +199,8 @@ describe("--json", () => {
           problem: "Not a URL.",
           action: "Run pithy email provision.",
           detail: "email: BASE_URL (prod) — Not a URL. Run pithy email provision.",
+          // Never absent: a finding whose capability named no command reads `null` (#697).
+          fix: null,
         },
       ],
       unchecked: [{ worker: "collab", capability: "email", tier: "account" }],

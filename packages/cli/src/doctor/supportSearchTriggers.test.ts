@@ -8,6 +8,7 @@ import {
   checkSupportSearchTriggers,
   describeSupportSearchTriggers,
   type SupportSearchTriggersOptions,
+  supportSearchFix,
 } from "./supportSearchTriggers";
 
 /**
@@ -236,5 +237,24 @@ describe("checkSupportSearchTriggers", () => {
     );
 
     expect(seen).toEqual([[...SEARCH_OBJECTS], [...SEARCH_OBJECTS]]);
+  });
+});
+
+/**
+ * **The command each failing answer names, as `pithy doctor --json`'s `fix` (#697).** `pithy support provision`
+ * spans every managed environment and takes no `--env`, so it is narrowed to the Worker the answer read —
+ * the flag a project with several Workers is refused without. An answer that is not a fault names nothing.
+ */
+describe("supportSearchFix", () => {
+  test("drift and orphaned triggers are the provision, for the Worker read", () => {
+    const fix = "pithy support provision --worker api";
+    expect(supportSearchFix({ env: "prod", worker: "api", state: "drift", triggers: "none" })).toBe(fix);
+    expect(supportSearchFix({ env: "prod", worker: "api", state: "orphaned-triggers", triggers: "all" })).toBe(fix);
+  });
+
+  test("an answer that fails nothing names nothing", () => {
+    expect(supportSearchFix({ env: "prod", worker: "api", state: "ok" })).toBeNull();
+    expect(supportSearchFix({ env: "prod", worker: "api", state: "not-provisioned" })).toBeNull();
+    expect(supportSearchFix({ env: "prod", worker: "api", state: "unreadable" })).toBeNull();
   });
 });

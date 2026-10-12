@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { DOMAIN_ENVIRONMENTS, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isSourceEnvironment } from "../provision/featureConfig";
+import { withFix } from "../terminal/exitClass";
 import { composeFor } from "./composeFor";
 import { loadProject, loadProjectEnvironments, loadWorkerDomains, type WorkerConfig } from "./config";
 import {
@@ -304,6 +305,25 @@ export function describeOriginDrift(drift: OriginDrift): string {
   return `${drift.worker} answers on ${drift.origin} in ${drift.env}, and also on workers.dev, which nothing declared. Set "workers_dev": false in env.${drift.env} of its wrangler.jsonc — or "workers_dev": true to say you meant both.`;
 }
 
+/**
+ * The command that rights `drift`, or `null` when the remedy is an edit — `pithy doctor --json`'s `fix` (#697).
+ * The branch {@link routeRemedy} takes: only an origin a `domains` declaration names, off `workers.dev`, is one
+ * `pithy worker sync` writes the route for. Every other fault is a line in `wrangler.jsonc` or a declaration.
+ */
+export function originDriftFix(drift: OriginDrift): string | null {
+  return originSync(drift)?.fix ?? null;
+}
+
+/**
+ * {@link originDriftFix}, as the remedy `withFix` takes — so doctor's `fix` and the deploy refusal's are one
+ * literal, and `ci/actionLines.test.ts` reads it where it is written.
+ */
+function originSync(drift: OriginDrift): { fix: string } | null {
+  if (drift.fault !== "unserved-origin" || drift.source !== "declaration") return null;
+  if (isWorkersDevHost(hostnameOf(drift.origin))) return null;
+  return { fix: `pithy worker sync --worker ${drift.worker} --env ${drift.env}` };
+}
+
 /** The hostname a route pattern would have to carry, from the origin this reported. */
 function hostnameOf(origin: string | null): string {
   try {
@@ -362,7 +382,9 @@ export async function assertOriginsDeclared(projectDir: string, env: string): Pr
   const drift = await originDrift(projectDir, [env]);
   if (drift.length === 0) return;
   const first = drift[0] as OriginDrift;
-  throw new ValidationError({
+  // The project is out of step with itself, so it is a precondition, exit 3 (#697). The `fix` is the one doctor
+  // names for the same drift ({@link originSync}), and only when one command rights all of it.
+  const refusal = new PreconditionFailedError({
     message:
       first.fault === "unserved-origin"
         ? `${env} names an origin nothing serves: ${drift.map((entry) => entry.worker).join(", ")}.`
@@ -370,6 +392,8 @@ export async function assertOriginsDeclared(projectDir: string, env: string): Pr
     action: drift.map(describeOriginDrift).join(" "),
     detail: originDetail(first.fault),
   });
+  const remedy = drift.length === 1 ? originSync(first) : null;
+  throw remedy === null ? refusal : withFix(refusal, remedy);
 }
 
 /** The throw-site context behind each fault — why this one is worth a refusal. */

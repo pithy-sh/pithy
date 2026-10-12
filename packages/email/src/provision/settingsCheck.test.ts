@@ -195,6 +195,8 @@ describe("the account tier", () => {
       environment: null,
       problem: "No D1 database named acme-global-email-suppressions exists on this account.",
       action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
+      // The same command, runnable as written, for `pithy doctor --json` (#697).
+      fix: "pithy email provision",
     });
   });
 
@@ -218,6 +220,7 @@ describe("the account tier", () => {
         problem:
           "The link-signing key has no Secrets Store entry in prod, so no tracking or unsubscribe link can be signed.",
         action: "Run `pithy secrets provision`.",
+        fix: "pithy secrets provision",
       },
     ]);
   });
@@ -235,6 +238,7 @@ describe("the account tier", () => {
           "The link-signing key is still held in staging's D1 vault, where nothing reads it. Links signed with it before the move no longer verify.",
         action:
           "Once the Secrets Store entry is bound and deployed, run `pithy secrets rm email-link-signing-key --env staging --backend d1`. See docs/commands/secrets.md#moving-a-secret-off-d1.",
+        // No `fix` (#697): the removal is safe only once the entry serves, which this check does not establish.
       },
     ]);
   });

@@ -25,7 +25,24 @@ export function withProvisionFix<E extends PithyError>(
   env: string,
   productionEnvironments: readonly string[] = [],
 ): E {
-  if (env === FEATURE_ENVIRONMENT) return withFix(error, { fix: "pithy provision --feature" });
-  if (isProductionEnv(env, productionEnvironments)) return error;
-  return withFix(error, { fix: `pithy provision --env ${env} --yes` });
+  const remedy = provisionRemedy(env, productionEnvironments);
+  return remedy === null ? error : withFix(error, remedy);
+}
+
+/**
+ * The provisioning command {@link withProvisionFix} attaches, as a bare string, or `null` where it attaches
+ * none — for a report that names a remedy without throwing one, `pithy doctor`'s failing checks (#697).
+ */
+export function provisionFixCommand(env: string, productionEnvironments: readonly string[] = []): string | null {
+  return provisionRemedy(env, productionEnvironments)?.fix ?? null;
+}
+
+/**
+ * The one place the rule is written, for both of the above. Each `fix` is written at its key, so
+ * `ci/actionLines.test.ts` reads both commands and their flags against the real tree.
+ */
+function provisionRemedy(env: string, productionEnvironments: readonly string[]): { fix: string } | null {
+  if (env === FEATURE_ENVIRONMENT) return { fix: "pithy provision --feature" };
+  if (isProductionEnv(env, productionEnvironments)) return null;
+  return { fix: `pithy provision --env ${env} --yes` };
 }

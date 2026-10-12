@@ -48,9 +48,45 @@ describe("a self-administering project with an unbound stanza", () => {
     expect(text).toContain("deploys as replay-prod-board");
   });
 
-  test("names the command that writes it", async () => {
-    const text = renderDoctorText(await reportWith(UNBOUND), "/home/u");
-    expect(text).toContain("pithy provision --env");
+  /**
+   * One line per environment, naming the command `--json` gives as each entry's `fix` (#697). Two Workers
+   * missing in one environment are one provision, so one line; a production environment's provision needs a
+   * person's `--confirm` phrase, so its line says so rather than handing over a command that stops at one.
+   */
+  test("names the command that writes it, once per environment, and the phrase production needs", async () => {
+    const text = renderDoctorText(
+      await reportWith({
+        ...UNBOUND,
+        missing: [
+          ...UNBOUND.missing,
+          { worker: "api", env: "staging", boundTo: null, deploysAs: "replay-api-staging" },
+        ],
+      }),
+      "/home/u",
+    );
+    const commands = text.split("\n").filter((line) => line.includes("Run pithy provision"));
+    expect(commands.map((line) => line.trim())).toEqual([
+      "Run pithy provision --env staging --yes — it writes the binding with the stanza's own script name.",
+      "Run pithy provision --env prod --yes with its --confirm phrase — it writes the binding with the stanza's own script name.",
+    ]);
+    expect(text).not.toContain("<name>");
+  });
+
+  test("an environment the project declares production gets the phrase line too", async () => {
+    const text = renderDoctorText(
+      await buildDoctorReport(
+        healthyOptions({
+          loadProject: async () => ({ name: "pithy-app", seed: { productionEnvironments: ["live"] } }),
+          checkSelfBinding: async () => ({
+            state: "unbound",
+            declared: true,
+            missing: [{ worker: "board", env: "live", boundTo: null, deploysAs: "replay-board-live" }],
+          }),
+        }),
+      ),
+      "/home/u",
+    );
+    expect(text).toContain("Run pithy provision --env live --yes with its --confirm phrase");
   });
 
   /** The consequence is a timeout in production that nobody will read as a configuration fault. */
@@ -74,6 +110,7 @@ describe("a self-administering project with an unbound stanza", () => {
       boundTo: null,
       deploysAs: "replay-board-staging",
       detail: expect.stringContaining("SELF"),
+      fix: "pithy provision --env staging --yes",
     });
     // What it names and what it should name, both on the wire — a client showing the sentence alone is
     // not the only reader, and the pair is the whole finding.
@@ -83,6 +120,8 @@ describe("a self-administering project with an unbound stanza", () => {
       boundTo: "replay-board-prod",
       deploysAs: "replay-prod-board",
       detail: expect.stringContaining("replay-prod-board"),
+      // Production's provision stops at a person's phrase, so the finding names none (#697).
+      fix: null,
     });
   });
 });

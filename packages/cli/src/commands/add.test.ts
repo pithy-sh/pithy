@@ -28,6 +28,37 @@ vi.mock("../capabilities/flow", async (importOriginal) => ({
   runAdd: async () => flow.result,
 }));
 
+/**
+ * What the command handed the follow-up read (#697), recorded rather than performed: which environments it
+ * read as ready, and whether it read the add as having brought a migration. The reads themselves are
+ * `capabilities/addFollowUp.test.ts`'s; a ready environment the stub names stands in for a provisioned one.
+ */
+const followUp = vi.hoisted(() => ({
+  asked: [] as { ready: readonly string[]; brought: boolean; productionEnvironments?: readonly string[] }[],
+}));
+vi.mock("../capabilities/addFollowUp", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../capabilities/addFollowUp")>();
+  return {
+    ...real,
+    readyEnvironments: async () => ["staging"],
+    addFollowUp: async (options: Parameters<typeof real.addFollowUp>[0]) => {
+      followUp.asked.push({
+        ready: options.ready,
+        brought: options.brought,
+        ...(options.productionEnvironments !== undefined
+          ? { productionEnvironments: options.productionEnvironments }
+          : {}),
+      });
+      return real.addFollowUp({
+        ...options,
+        reachable: true,
+        unprovisioned: async () => [],
+        readLedger: async () => ({ state: "read", pending: 1, undeclared: [] }),
+      });
+    },
+  };
+});
+
 /** Discovery seam: the `apps/*` set, without a filesystem. */
 function discovery(...names: string[]) {
   return async (): Promise<WorkerTarget[]> => names.map((name) => ({ name, dir: `/project/apps/${name}` }));
@@ -271,6 +302,69 @@ describe("pithy add --json conforms to its published payload", () => {
       eject: { capability: "auth", path: "capabilities/auth", promotedDependencies: ["hono@4.0.0"], forced: false },
     } satisfies AddResult;
     await expectConforms("add", await runCaptured("add", ["auth", "--json"]));
+  });
+
+  /**
+   * **`next` names the migrate an add left a provisioned environment, and nothing when it brought none (#697).**
+   * Read off the add's own `dev` run: a migration it applied there is one a deployed environment lacks.
+   */
+  test("next carries migrate when the add brought migrations, and no key when it brought none", async () => {
+    await project();
+    const brought = {
+      capability: "auth",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      databases: [
+        {
+          database: "app",
+          binding: "DB",
+          results: [{ migrationName: "0300_auth_0001_init", direction: "Up", status: "Success" }],
+        },
+      ],
+      kvNamespaces: [],
+      notes: [],
+      prerequisites: [],
+    } satisfies AddResult;
+    followUp.asked.length = 0;
+    flow.result = brought;
+    const line = (await runCaptured("add", ["auth", "--json"])).join("");
+    expect(JSON.parse(line).next).toEqual([
+      { command: "pithy migrate --env staging", why: "1 migration is not applied to staging. Add migrates only dev." },
+    ]);
+    await expectConforms("add", line);
+
+    flow.result = { ...brought, databases: [{ database: "app", binding: "DB", results: [] }] };
+    const none = (await runCaptured("add", ["auth", "--json"])).join("");
+    expect(Object.hasOwn(JSON.parse(none), "next")).toBe(false);
+    expect(followUp.asked).toEqual([
+      { ready: ["staging"], brought: true, productionEnvironments: [] },
+      { ready: ["staging"], brought: false, productionEnvironments: [] },
+    ]);
+  });
+
+  /** A production environment's provision stops at a person's phrase, so the follow-up must know which are. */
+  test("hands the follow-up the project's own production environments", async () => {
+    await project();
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      'const config = { name: "acme", seed: { productionEnvironments: ["live"] } };\nexport default config;\n',
+    );
+    flow.result = {
+      capability: "auth",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      databases: [],
+      kvNamespaces: [],
+      notes: [],
+      prerequisites: [],
+    } satisfies AddResult;
+    followUp.asked.length = 0;
+    await runCaptured("add", ["auth", "--json"]);
+    expect(followUp.asked).toEqual([{ ready: ["staging"], brought: false, productionEnvironments: ["live"] }]);
   });
 });
 

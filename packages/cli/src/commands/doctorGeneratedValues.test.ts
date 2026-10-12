@@ -140,6 +140,10 @@ describe("--json", () => {
     const report = await reportWith(AGED);
     const json = renderDoctorJson(report) as { project: { health: unknown } };
     expect(checkedWorker(report.project?.health).bindings.generatedValues).toEqual(AGED);
-    expect(JSON.parse(JSON.stringify(json)).project.health.workers[0].bindings.generatedValues).toEqual(AGED);
+    // Each differing value is a finding with its `fix` beside it (#697): `null`, since the remedy is a decision.
+    expect(JSON.parse(JSON.stringify(json)).project.health.workers[0].bindings.generatedValues).toEqual({
+      ...AGED,
+      drift: [{ ...LIMITER, fix: null }],
+    });
   });
 });

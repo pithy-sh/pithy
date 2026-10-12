@@ -98,6 +98,44 @@ async function deployedConfig(workerDir: string, env: string | undefined): Promi
 }
 
 /**
+ * What a deploy for `env` would ship, read for ids: every binding with none, and how many carry a real one.
+ *
+ * `provisioned` counts D1 and KV bindings only. Their id is a separate field that a provision writes and a
+ * scaffold never does, so a real one is evidence an account was provisioned for the stanza. An R2 bucket's
+ * name is its id and the scaffold writes it, so a named bucket proves nothing either way.
+ */
+export interface BindingProvisioning {
+  /** Every binding with no id, in worker then binding order. See {@link unprovisionedBindings}. */
+  missing: UnprovisionedBinding[];
+  /** How many D1 and KV bindings carry a real id. */
+  provisioned: number;
+}
+
+/** {@link BindingProvisioning} for a deploy for `env` across the project's Workers. `undefined` is a bare deploy. */
+export async function bindingProvisioning(projectDir: string, env: string | undefined): Promise<BindingProvisioning> {
+  const missing: UnprovisionedBinding[] = [];
+  let provisioned = 0;
+  for (const target of await discoverWorkers(projectDir)) {
+    if (target.hasWrangler === false) continue;
+    const config = await deployedConfig(target.dir, env);
+    if (config === null) continue;
+    const stanza = stanzaOf(config, wranglerEnvironment(env));
+    const worker = basename(target.dir);
+    for (const entry of stanza.d1_databases ?? []) {
+      if (isId(entry.database_id)) provisioned += 1;
+      else missing.push({ worker, kind: "d1", binding: entry.binding ?? "" });
+    }
+    for (const entry of stanza.kv_namespaces ?? []) {
+      if (isId(entry.id)) provisioned += 1;
+      else missing.push({ worker, kind: "kv", binding: entry.binding ?? "" });
+    }
+    for (const entry of stanza.r2_buckets ?? [])
+      if (!isId(entry.bucket_name)) missing.push({ worker, kind: "r2", binding: entry.binding ?? "" });
+  }
+  return { missing, provisioned };
+}
+
+/**
  * Every binding a deploy for `env` would ship across the project's Workers that has no id yet, in worker
  * then binding order. `undefined` is a bare deploy. A Worker with no `env.<name>` stanza is held to the top
  * level, because that is what wrangler ships for it.
@@ -106,21 +144,7 @@ export async function unprovisionedBindings(
   projectDir: string,
   env: string | undefined,
 ): Promise<UnprovisionedBinding[]> {
-  const missing: UnprovisionedBinding[] = [];
-  for (const target of await discoverWorkers(projectDir)) {
-    if (target.hasWrangler === false) continue;
-    const config = await deployedConfig(target.dir, env);
-    if (config === null) continue;
-    const stanza = stanzaOf(config, wranglerEnvironment(env));
-    const worker = basename(target.dir);
-    for (const entry of stanza.d1_databases ?? [])
-      if (!isId(entry.database_id)) missing.push({ worker, kind: "d1", binding: entry.binding ?? "" });
-    for (const entry of stanza.kv_namespaces ?? [])
-      if (!isId(entry.id)) missing.push({ worker, kind: "kv", binding: entry.binding ?? "" });
-    for (const entry of stanza.r2_buckets ?? [])
-      if (!isId(entry.bucket_name)) missing.push({ worker, kind: "r2", binding: entry.binding ?? "" });
-  }
-  return missing;
+  return (await bindingProvisioning(projectDir, env)).missing;
 }
 
 /** How a report names one unprovisioned binding: the Worker, the binding, and the kind behind it. */

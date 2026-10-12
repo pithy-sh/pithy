@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { basename } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { SettingsAccountReader, SettingsEnvironment } from "@pithy-sh/core/src/capability/settings";
@@ -223,7 +224,7 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
   // Once per Worker. The runner asks per capability, doctor hands each Worker over once per environment, and
   // every answer composes each declared environment again — the same question, asked that many times.
   const environments = new Map<string, Promise<SettingsEnvironment[]>>();
-  return checkCapabilitySettings({
+  const check = await checkCapabilitySettings({
     project,
     workers: options.workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })),
     environments: (worker) => {
@@ -243,4 +244,25 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
         ...(options.env ? { env: options.env } : {}),
       }),
   });
+  if (check === null) return null;
+  // A capability names its command bare; one that acts on a single Worker names the Worker it was found in.
+  const findings = check.findings.map(({ fix, ...finding }) => {
+    const scoped = scopedSettingsFix(fix, dirs.get(finding.worker));
+    return scoped === undefined ? finding : { ...finding, fix: scoped };
+  });
+  return { ...check, findings };
+}
+
+/** The `fix` commands a capability's settings check names that act on one Worker, and ask which among several. */
+const ONE_WORKER_FIXES = new Set(["pithy email provision"]);
+
+/**
+ * A settings finding's `fix`, runnable in a project with several Workers (#697). A capability's check names its
+ * command bare — `@pithy-sh/email` names `pithy email provision` — and that command resolves one Worker, so with
+ * two it is refused `input/required`. The Worker the finding came from is the one to name, by its `apps/`
+ * directory; a finding whose Worker cannot be placed gets none. Any other `fix` is returned as it was.
+ */
+export function scopedSettingsFix(fix: string | undefined, workerDir: string | undefined): string | undefined {
+  if (fix === undefined || !ONE_WORKER_FIXES.has(fix)) return fix;
+  return workerDir === undefined ? undefined : `${fix} --worker ${basename(workerDir)}`;
 }

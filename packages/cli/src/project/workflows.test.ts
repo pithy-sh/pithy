@@ -6,9 +6,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { fixOf } from "../terminal/exitClass";
 import { reconcileAppWorkflows } from "./appWorkflows";
 import { composeFor } from "./composeFor";
-import { assertWorkflowsBound, checkWorkflows, describeWorkflowDrift, workflowDrift } from "./workflows";
+import {
+  assertWorkflowsBound,
+  checkWorkflows,
+  describeWorkflowDrift,
+  workflowDrift,
+  workflowDriftFix,
+} from "./workflows";
 
 /**
  * **What the app capability declares is what the environment's stanza binds.**
@@ -248,6 +255,21 @@ describe("describeWorkflowDrift", () => {
   });
 });
 
+/** The same two branches, as `pithy doctor --json`'s `fix` (#697): the sync for that Worker and environment, or none. */
+describe("workflowDriftFix", () => {
+  test("an unsynced stanza is the sync, narrowed to its Worker and environment", async () => {
+    await worker("board", { env: { prod: {} } }, DIGEST);
+    const [drift] = await workflowDrift(dir, PROJECT, ["prod"]);
+    expect(workflowDriftFix(drift as never)).toBe("pithy worker sync --worker board --env prod");
+  });
+
+  test("an unwritable declaration has no command", async () => {
+    await worker("board", { env: { prod: {} } }, { digest: { binding: "DIGEST" } });
+    const [drift] = await workflowDrift(dir, PROJECT, ["prod"]);
+    expect(workflowDriftFix(drift as never)).toBeNull();
+  });
+});
+
 describe("assertWorkflowsBound", () => {
   test("refuses the deploy, naming the Worker and the command", async () => {
     await project();
@@ -255,6 +277,10 @@ describe("assertWorkflowsBound", () => {
 
     await expect(assertWorkflowsBound(dir, "prod")).rejects.toBeInstanceOf(PithyError);
     await expect(assertWorkflowsBound(dir, "prod")).rejects.toThrow(/board/);
+    // The stanza is behind the declaration: a precondition, with the command doctor names for it (#697).
+    const failure = (await assertWorkflowsBound(dir, "prod").catch((error: unknown) => error)) as PithyError;
+    expect(failure.payload.code).toBe("core/precondition_failed");
+    expect(fixOf(failure)).toBe("pithy worker sync --worker board --env prod");
   });
 
   test("lets a synced environment through", async () => {
