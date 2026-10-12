@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 
 /**
  * What a browser's program actually contains, asked of the compiler that builds it.
@@ -146,16 +147,14 @@ function inside(dir: string, path: string): boolean {
  *
  * The **last** `node_modules` segment, because bun's store nests: a path under
  * `node_modules/.bun/@cloudflare+workers-types@5…/node_modules/@cloudflare/workers-types/` belongs to
- * the inner name and not to `.bun`.
+ * the inner name and not to `.bun`. What follows it is read as a specifier by core's `packageOf`, the one
+ * scope-aware copy of that rule (#709).
  */
-function packageOf(path: string): string | null {
+export function installedPackage(path: string): string | null {
   const parts = path.split(sep);
   const at = parts.lastIndexOf("node_modules");
-  if (at === -1) return null;
-  const first = parts[at + 1];
-  if (first === undefined) return null;
-  const second = parts[at + 2];
-  return first.startsWith("@") && second !== undefined ? `${first}/${second}` : first;
+  if (at === -1 || at === parts.length - 1) return null;
+  return packageOf(parts.slice(at + 1).join("/"));
 }
 
 /**
@@ -260,7 +259,7 @@ export function browserProgram(program: BrowserProgram): Included {
     // Installed code first, and not by location. A workspace link puts `node_modules` *inside* a
     // package directory, so asking "is this under `packages/`" before "is this installed" would file
     // a dependency reached through one as kit source.
-    const dependency = packageOf(file);
+    const dependency = installedPackage(file);
     if (dependency !== null) {
       if (!(TYPESCRIPT_PACKAGE.test(dependency) && LIB_FILE.test(basename(file)))) dependencies.add(dependency);
       continue;

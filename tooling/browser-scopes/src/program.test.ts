@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { browserProgram } from "./program";
+import { browserProgram, installedPackage } from "./program";
 
 /**
  * The instrument, held to each shape somebody has got past a gate here.
@@ -221,5 +221,47 @@ describe("what a browser's program includes, asked of the compiler", () => {
     expect(() =>
       browserProgram({ base: BASE, roots: [join(root, "alpha/src/http/responses.ts")], ours: [join(root, "beta")] }),
     ).toThrow(/is not under/);
+  });
+});
+
+/**
+ * The package an installed file belongs to. Scope-aware through core's `packageOf`, the one copy of that rule
+ * (#709): this module kept its own until `packages/cli/src/ci/packageOfCopies.test.ts` learned its shape.
+ */
+describe("installedPackage", () => {
+  it("names an unscoped package", () => {
+    expect(installedPackage(join("/repo", "node_modules", "zod", "index.d.ts"))).toBe("zod");
+  });
+
+  it("names a scoped package by scope and name", () => {
+    expect(installedPackage(join("/repo", "node_modules", "@cloudflare", "workers-types", "index.d.ts"))).toBe(
+      "@cloudflare/workers-types",
+    );
+  });
+
+  // bun's store nests: the inner `node_modules` names the package, not `.bun`.
+  it("reads the last node_modules segment", () => {
+    expect(
+      installedPackage(
+        join(
+          "/repo",
+          "node_modules",
+          ".bun",
+          "@cloudflare+workers-types@5",
+          "node_modules",
+          "@cloudflare",
+          "workers-types",
+          "index.d.ts",
+        ),
+      ),
+    ).toBe("@cloudflare/workers-types");
+  });
+
+  it("is null for a file that is not installed code", () => {
+    expect(installedPackage(join("/repo", "packages", "core", "src", "index.ts"))).toBeNull();
+  });
+
+  it("is null for a path that ends at node_modules", () => {
+    expect(installedPackage(join("/repo", "node_modules"))).toBeNull();
   });
 });

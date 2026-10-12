@@ -30,6 +30,10 @@ function isScript(name: string): boolean {
 /** The shapes a hand-written copy takes. */
 const COPY_SHAPES: readonly RegExp[] = [
   /startsWith\(\s*["']@["']\s*\)\s*\?\s*2\s*:\s*1\b/,
+  // A leading `@` choosing between a joined `scope/name` and the first segment alone, whatever else the
+  // condition checks: `first.startsWith("@") && second !== undefined ? `${first}/${second}` : first`.
+  // `tooling/browser-scopes` kept this one after the gate landed, because the gate knew only the two above.
+  /startsWith\(\s*["']@["']\s*\)[^;?]*\?\s*`\$\{[^}]+\}\/\$\{[^}]+\}`/,
   /\bscoped\s*\?\s*2\s*:\s*1\b/,
   /\^\(?@\[\^\/\]\+\\\/\[\^\/\]\+/,
 ];
@@ -49,6 +53,9 @@ describe("packageOf has one copy", () => {
     expect(copiesIn('const width = head.startsWith("@") ? 2 : 1;')).toEqual([1]);
     expect(copiesIn('const scoped = s.startsWith("@");\nparts.slice(0, scoped ? 2 : 1);')).toEqual([2]);
     expect(copiesIn("const scoped = /^(@[^/]+\\/[^/]+)/.exec(specifier);")).toEqual([1]);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is source text that holds a template literal.
+    const templated = 'return first.startsWith("@") && second !== undefined ? `${first}/${second}` : first;';
+    expect(copiesIn(templated)).toEqual([1]);
     expect(copiesIn('// head.startsWith("@") ? 2 : 1\nconst x = 1;')).toEqual([]);
     expect(copiesIn('cursor += text[cursor] === "\\\\" ? 2 : 1;')).toEqual([]);
   });
