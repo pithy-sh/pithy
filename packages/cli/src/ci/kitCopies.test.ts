@@ -24,7 +24,7 @@ import { duplicatedKitPackages, kitCopies } from "./kitCopies";
  * somewhere different:
  *
  * ```
- * bun 1.3.14, default (isolated) linker
+ * bun 1.3.14 and 1.4.2 alike, default (isolated) linker
  *   node_modules/.bun/@pithy-sh+core@0.2.0+f2f94bf0d8ae1a37/node_modules/@pithy-sh/core
  *   node_modules/.bun/@pithy-sh+core@0.3.1+f2f94bf0d8ae1a37/node_modules/@pithy-sh/core
  *   node_modules/.bun/@pithy-sh+turnstile@0.1.5+f2f94bf0d8ae1a37/node_modules/@pithy-sh/turnstile

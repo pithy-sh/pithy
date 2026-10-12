@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { access } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   causeMessage,
   failurePosition,
   importingPackage,
-  isBuildFailureWrapper,
   prop,
   rootCause,
   safeReason,
+  unresolvedKind,
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -40,8 +41,8 @@ export interface LoadedWorkerConfig {
  *
  * What the copies *cannot* be allowed to disagree about is anything that is not a sentence. Two kinds of
  * that were found, one issue apart, and both live in `@pithy-sh/core` — the one package this plugin
- * already depends on. What a runtime does to an error on its way out is the first: `rootCause`, `prop`
- * and `isBuildFailureWrapper`, facts no copy can derive and every copy got wrong (#223). Whether one of
+ * already depends on. What a runtime does to an error on its way out is the first: `rootCause` and
+ * `prop`, facts no copy can derive and every copy got wrong (#223). Whether one of
  * its strings is safe to show is the second: `safeReason`, `failurePosition`, `unresolvedSpecifier` and
  * `causeMessage`, because a path or a stack frame is a property of the string and not of the surface
  * quoting it — three near-verbatim copies of that filter meant the hole #223 found in it had to be closed
@@ -51,7 +52,7 @@ export interface LoadedWorkerConfig {
  * each. Those are genuinely per-surface, and this plugin still cannot import the CLI's.
  */
 export type WorkerConfigFailureKind =
-  /** An import in the config does not resolve. `bun install`, or a corrected specifier. */
+  /** An import in the config does not resolve. Which of three causes it was decides whether installing helps. */
   | "unresolved-import"
   /** The file does not parse. Installing will not help, and the adopter has read the opposite for years. */
   | "parse-error"
@@ -87,7 +88,8 @@ function isUnresolvedImport(cause: unknown): boolean {
     code === "ERR_MODULE_NOT_FOUND" ||
     code === "MODULE_NOT_FOUND" ||
     code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ||
-    code === "ERR_UNSUPPORTED_DIR_IMPORT"
+    code === "ERR_UNSUPPORTED_DIR_IMPORT" ||
+    code === "ERR_UNKNOWN_BUILTIN_MODULE"
   ) {
     return true;
   }
@@ -101,13 +103,57 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
-  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
-  // sees, since a failed module is cached and re-thrown emptied out. It proves a build produced
-  // diagnostics, so it is a parse error with no reason to quote. See core's `cause.ts` (#223).
-  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
+}
+
+/** A module the runtime itself provides, or does not: `node:x`, `bun:x`. */
+const BUILTIN = /^(?:node|bun):/;
+
+/**
+ * The remedy for an import that would not resolve — **one of three, because there are three causes**
+ * (#489), and core's {@link unresolvedKind} says which.
+ *
+ * An install helps only when a package is absent. The adopter's own missing file, a builtin the runtime
+ * does not have, and an installed package's own missing file each read the same as an absent package and
+ * are each untouched by one. Core has no filesystem and this plugin passes it no probe, so a deep import
+ * of a package that may or may not be installed stays hedged: both remedies, neither asserted.
+ *
+ * A specifier that arrives as a resolved path is never repeated. Node states one for a relative import,
+ * and it is our frame, not the adopter's import.
+ */
+function unresolvedAction(cause: unknown): string {
+  const written = unresolvedSpecifier(cause);
+  const specifier = written === undefined || isAbsolute(written) || written.startsWith("file:") ? undefined : written;
+  // A package name or nothing — core never hands a path back, so there is none to keep out of here.
+  const importer = importingPackage(cause);
+  const from = importer ? ` ${importer} is what imports it, not the config.` : "";
+  const kind = unresolvedKind(cause);
+
+  if (specifier !== undefined && BUILTIN.test(specifier)) {
+    return `"${specifier}" is not a module this runtime provides.${from} Correct that import — installing dependencies will not help.`;
+  }
+  if (kind === "local-file") {
+    // Node names the adopter's own missing file by its resolved path, which is dropped above. Still not an install.
+    const what = specifier === undefined ? "A file the config imports is not there." : `Nothing at "${specifier}".`;
+    return `${what} Create that file or correct the import — installing dependencies will not help.`;
+  }
+  if (kind === "package-subpath") {
+    if (importer) {
+      const what = specifier === undefined ? "a file" : `"${specifier}"`;
+      return `${importer} imports ${what}, and nothing provides it. Check the version of ${importer} you have, or report it to its maintainer — installing dependencies will not help.`;
+    }
+    const what = specifier === undefined ? "A file the config imports" : `"${specifier}"`;
+    return `${what} is not something its package provides. Check the version you have, or correct that import — installing dependencies will not help.`;
+  }
+  if (specifier === undefined) {
+    return "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.";
+  }
+  if (kind === "package") {
+    return `Nothing provides "${specifier}".${from} Install the project's dependencies (bun install), or correct that import.`;
+  }
+  return `Nothing resolves "${specifier}".${from} Correct that import, or install the project's dependencies (bun install).`;
 }
 
 /**
@@ -125,27 +171,12 @@ export function classifyWorkerConfigFailure(wrapped: unknown): WorkerConfigFailu
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
   if (isUnresolvedImport(cause)) {
-    const specifier = unresolvedSpecifier(cause);
-    // A package name or nothing — core never hands a path back, so there is none to keep out of here.
-    const importer = importingPackage(cause);
-    if (specifier === undefined) {
-      return {
-        kind: "unresolved-import",
-        action:
-          "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.",
-      };
-    }
-    return {
-      kind: "unresolved-import",
-      action: importer
-        ? `Nothing resolves "${specifier}". ${importer} is what imports it, not the config. Install the project's dependencies (bun install).`
-        : `Nothing resolves "${specifier}". Install the project's dependencies (bun install), or correct that import.`,
-    };
+    return { kind: "unresolved-import", action: unresolvedAction(cause) };
   }
 
   if (isParseError(cause)) {
-    // Both of these can answer "nothing", and Bun's build wrapper — a count and a path, and never a
-    // reason or a position — is one of the reasons they do. That suppression is core's, once (#223, #228).
+    // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is
+    // not quoted, and a position is never invented. That filter is core's, once (#228).
     const reason = safeReason(cause);
     const at = failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";

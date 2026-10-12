@@ -308,7 +308,7 @@ Run pithy worker list to see this project's workers. Known: replay-board.
 ```
 $ pithy upgrade
 Could not load apps/board/pithy.config.ts.
-Nothing resolves "@pithy-sh/core/src/capability/capability". Install the project's dependencies (bun install), or correct that import.
+Nothing provides "@pithy-sh/core/src/capability/capability". Install the project's dependencies (bun install), or correct that import.
 ```
 
 **`--migrate` on a project with no `name`.** Resolved before any Worker is reconciled, so nothing is written.

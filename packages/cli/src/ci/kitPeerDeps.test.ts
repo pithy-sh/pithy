@@ -52,8 +52,11 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  *
  * Re-releasing the dependents is neither necessary (`^0.3.0` already accepts 0.3.1) nor sufficient (an
  * adopter's lockfile holding `auth@0.1.6` keeps its resolution whatever `auth@0.1.7` declares). And bun
- * offers no way out: measured on 1.3.14, `bun pm dedupe` does not exist, `bun update @pithy-sh/core` and
- * `bun update --force` both leave the split, and only `overrides` or deleting the lockfile work.
+ * offers no general way out. Measured on 1.3.14: `bun pm dedupe` does not exist, `bun update @pithy-sh/core`
+ * and `bun update --force` both leave the split, and only `overrides` or deleting the lockfile work.
+ * Measured again on 1.4.2: `bun pm dedupe` still does not exist, a plain `bun install` still keeps a split
+ * the lockfile already holds, and `bun update @pithy-sh/core` now heals it — for an adopter who knows to
+ * run it, on bun, after the build has already failed. A peer is what stops the split being written.
  *
  * A `dependency` is the kit saying *I need some copy of this*. A `peerDependency` is the kit saying *you
  * and I must share one*, which is the true statement and the one every package manager can act on: npm,

@@ -14,7 +14,7 @@ The logic lives in the packages and upgrades with them. The surface you own is t
 
 ## Quickstart
 
-You need [Node.js](https://nodejs.org) 22.18 or newer. No Cloudflare account until you deploy.
+You need [Node.js](https://nodejs.org) 22.18 or newer. If you run Pithy under [Bun](https://bun.sh), use 1.4 or later; on an older Bun, upgrade Bun to 1.4.2. No Cloudflare account until you deploy.
 
 ```sh
 bun add --global @pithy-sh/cli      # or: npm install --global @pithy-sh/cli

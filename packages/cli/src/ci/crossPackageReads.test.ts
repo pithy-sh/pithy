@@ -54,7 +54,7 @@ const RECORD: Record<string, string> = {
   "node_modules/.bin/biome":
     "The workspace's Biome, run as a subprocess. `project/jsonc.test.ts` and `ui/formatting.test.ts` assert that a config Pithy writes is one the formatter the kit scaffolds would print unchanged (#249), and the only honest way to answer that is to ask the formatter.",
   "packages/core/src/error/cause.ts":
-    "`project/config.test.ts` asserts core's record of how Bun reports a build failure — that it wraps two or more diagnostics in an `AggregateError`, and re-throws it emptied on every import after the first (#223). The assertion belongs beside the classifier that depends on it, and the fact belongs in core, so the read crosses.",
+    "`project/config.test.ts` asserts core's record of how Bun reports a build failure — that it wraps two or more diagnostics in an `AggregateError` (#223), and that a second import of the same broken file gets every one of them back (#709). The assertion belongs beside the classifier that depends on it, and the fact belongs in core, so the read crosses.",
   "packages/core/src/naming/provisionScope.ts":
     "`ci/selfAdministration.test.ts` reads the scope factories core declares, so that the gate on the self service binding covers **every** scope a provisioning run can happen in rather than the two somebody thought of (#616). The rule it holds is per scope — each generated stanza binds `SELF` to the script that scope composes — and a third scope landing in core with nothing exercising it is exactly the hole the gate exists to refuse, so adding one has to re-run the CLI's suite.",
   packages:

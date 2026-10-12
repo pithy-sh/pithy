@@ -44,8 +44,8 @@ import { basename, dirname, join } from "node:path";
  * - `<package>/node_modules`, where npm and a hoisted linker put a version it could not hoist; and
  * - **the `node_modules` that *contains* the package's real directory**, which is where every isolated
  *   linker puts them. `node_modules/.bun/@pithy-sh+turnstile@0.1.5+<peers>/node_modules/@pithy-sh/core`
- *   is a *sibling* of the turnstile directory, not a child of it — measured on bun 1.3.14, and pnpm's
- *   `.pnpm` is the same shape with a different directory name.
+ *   is a *sibling* of the turnstile directory, not a child of it — measured on bun 1.3.14 and 1.4.2,
+ *   and pnpm's `.pnpm` is the same shape with a different directory name.
  *
  * The second is the general rule and not a patch for two linkers: Node resolves a package's imports from
  * the nearest `node_modules` at or above it, and for an installed package that is the one it sits in.

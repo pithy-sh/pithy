@@ -4,14 +4,15 @@
 import { isAbsolute } from "node:path";
 import {
   causeMessage,
-  isBuildFailureWrapper,
+  importingPackage,
   prop,
   rootCause,
   safeReason,
+  unresolvedKind,
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
 import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { packageInstalledFrom } from "../project/kitResolve";
+import { installedBeside, packageInstalledFrom } from "../project/kitResolve";
 import { capabilityNotComposed } from "./notComposed";
 
 /**
@@ -52,7 +53,10 @@ export type CapabilityLoadKind =
   | "dependency-unresolved"
   /** Something does not resolve, and nothing names which package. Both remedies, neither asserted. */
   | "unresolved-import"
-  /** The package is there and will not load — bad subpath, parse error, or its own throw. */
+  /**
+   * The package is there and will not load — bad subpath, parse error, its own throw, or an import that
+   * names a path the installed tree does not have.
+   */
   | "broken"
   /** None of the above. No remedy at all: a wrong action is worse than no action. */
   | "unknown";
@@ -85,7 +89,12 @@ function rawMessage(cause: unknown): string {
 /** A resolution failure — the module graph, not the module's own code. */
 function isUnresolvedImport(cause: unknown): boolean {
   const code = prop(cause, "code");
-  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT") {
+  if (
+    code === "ERR_MODULE_NOT_FOUND" ||
+    code === "MODULE_NOT_FOUND" ||
+    code === "ERR_UNSUPPORTED_DIR_IMPORT" ||
+    code === "ERR_UNKNOWN_BUILTIN_MODULE"
+  ) {
     return true;
   }
   if (prop(cause, "name") === "ResolveMessage") return true;
@@ -111,14 +120,13 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
-  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
-  // sees, since a failed module is cached and re-thrown emptied out. It proves a build produced
-  // diagnostics, so it is a parse error with no reason to quote. See core's `cause.ts` (#223).
-  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
 }
+
+/** A module the runtime itself provides, or does not: `node:x`, `bun:x`. Never a package to install. */
+const BUILTIN = /^(?:node|bun):/;
 
 /** `@pithy-sh/payments` from `@pithy-sh/payments/src/workflows/worker` — the package, not the subpath. */
 function packageOf(specifier: string): string {
@@ -174,6 +182,16 @@ export function classifyCapabilityLoadFailure(
         `An import did not resolve. Run \`pithy add ${capability}\` if it is not installed, or bun install if it is.`,
       );
     }
+    // A builtin the runtime does not provide. Bun 1.4.2 says ERR_UNKNOWN_BUILTIN_MODULE for `node:nope` and
+    // `Cannot find package` for `bun:nope`, and Node says the former with no field. Every install leaves
+    // the runtime as it was, so the package needs a runtime that has the module, or a fix of its own.
+    if (BUILTIN.test(specifier)) {
+      return failure(
+        "broken",
+        `The ${capability} capability is installed and will not load.`,
+        `${pkg} imports "${specifier}", which this runtime does not provide. Run it on a runtime that does, or report this to its maintainer.`,
+      );
+    }
     // A mapped subpath whose file is missing: node names the **resolved absolute path** rather than a
     // specifier. `packageOf` reduces a path to the empty string, which fell through to
     // `dependency-unresolved` and interpolated that path straight into `action` — the one thing this
@@ -182,8 +200,7 @@ export function classifyCapabilityLoadFailure(
     //
     // `isAbsolute` rather than a character class of our own. A hand-written path recognizer is half of
     // the message-safety filter `project/config.test.ts` exists to keep in `@pithy-sh/core` alone, and
-    // that gate fires on the pattern whatever it is doing there. `node:sqlite` is untouched by both
-    // arms, which is what keeps a missing builtin a dependency problem rather than a broken package.
+    // that gate fires on the pattern whatever it is doing there.
     if (isAbsolute(specifier) || specifier.startsWith(".")) {
       return failure(
         "broken",
@@ -208,17 +225,44 @@ export function classifyCapabilityLoadFailure(
         `Run \`pithy add ${capability}\`, then re-run this command.`,
       );
     }
-    return failure(
-      "dependency-unresolved",
-      `The ${capability} capability could not be loaded.`,
-      `${pkg} is installed, but nothing resolves "${specifier}". Install the project's dependencies (bun install), then re-run this command.`,
-    );
+    // Someone else's import, and Bun 1.4.2 does not say whether the package it names is absent or only
+    // the path inside it is (#709). A `#` import belongs to the package that wrote it, and a deep path
+    // into a dependency that is there is version skew; installing changes neither. Asked of the
+    // filesystem, from the importing file, so Bun answers what Node's resolved path already says.
+    const owner = importingPackage(cause) ?? pkg;
+    switch (unresolvedKind(cause, installedBeside)) {
+      case "package":
+        return failure(
+          "dependency-unresolved",
+          `The ${capability} capability could not be loaded.`,
+          `${pkg} is installed, but nothing resolves "${specifier}". Install the project's dependencies (bun install), then re-run this command.`,
+        );
+      case "package-subpath":
+      case "local-file":
+        if (specifier.startsWith("#")) {
+          return failure(
+            "broken",
+            `The ${capability} capability is installed and will not load.`,
+            `${owner} imports "${specifier}", which its own imports map does not provide. Report this to its maintainer — installing dependencies will not help.`,
+          );
+        }
+        return failure(
+          "broken",
+          `The ${capability} capability is installed and will not load.`,
+          `${owner} imports "${specifier}", and nothing provides it. Bring ${owner} and its dependencies to matching versions, or report this to its maintainer — installing dependencies will not help.`,
+        );
+      default:
+        return failure(
+          "dependency-unresolved",
+          `The ${capability} capability could not be loaded.`,
+          `${pkg} is installed, but nothing resolves "${specifier}". Install the project's dependencies (bun install), or bring ${pkg} and its dependencies to matching versions.`,
+        );
+    }
   }
 
   if (isParseError(cause)) {
-    // `safeReason` can answer nothing, and Bun's build wrapper — a count and an absolute path, and
-    // never anything else — is one of the reasons it does. That suppression is core's, written once
-    // rather than here and in two other classifiers that each had to be found and patched (#223, #228).
+    // `safeReason` can answer nothing: a diagnostic that carries a path, a stack frame or a newline is not
+    // quoted. That filter is core's, written once rather than here and in two other classifiers (#228).
     const reason = safeReason(cause);
     return failure(
       "broken",

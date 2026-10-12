@@ -9,7 +9,7 @@
 | Choice | Version | Reason |
 |---|---|---|
 | Node.js | 22+ LTS (minimum) | Current LTS at launch; native ESM, native `fetch`, native `--experimental-strip-types` available, `node:util` parseArgs. Declared in `package.json` `engines.node`. |
-| Bun | 1.3+ (supported but optional for end users) | Pithy is built and developed with Bun internally; published packages also run cleanly on Node 22 so adoption isn't gated behind a Bun install. |
+| Bun | 1.4 or later (optional for end users) | Pithy is built and tested with Bun 1.4.2; published packages also run cleanly on Node 22 so adoption isn't gated behind a Bun install. On an older Bun, upgrade Bun to 1.4.2. |
 | TypeScript | 7.0+ ready (5.x supported during migration) | TypeScript 7.0 stable shipped January 2026 with the Go-based compiler. Pithy targets TS 7 features and `tsgo` from day one. |
 | Module system | ESM only | Modern; no dual-bundle complexity; CLIs especially benefit from going ESM-only. |
 
@@ -23,7 +23,7 @@ Pithy is built with Bun (it's faster, simpler, and runs TypeScript natively with
 
 Concretely:
 
-- **Internal scripts** (build, test, lint, release) assume Bun. The repo's `package.json` declares `"packageManager": "bun@1.3.x"`.
+- **Internal scripts** (build, test, lint, release) assume Bun. The repo's `package.json` declares `"packageManager": "bun@1.4.2"`.
 - **Published packages** in `@pithy-sh/*` are pure ESM with no Bun-specific runtime calls. They run on Node 22+, Bun, Deno (with npm: specifiers), and Cloudflare Workers.
 - **Users install via** their preferred package manager. The CLI detects which one (see `CLI.md` Section 5.3) and suggests the matching upgrade command.
 
@@ -415,8 +415,8 @@ The repo declares Bun as the canonical manager:
 ```json
 // package.json
 {
-  "packageManager": "bun@1.3.x",
-  "engines": { "node": ">=22.0.0", "bun": ">=1.3.0" }
+  "packageManager": "bun@1.4.2",
+  "engines": { "node": ">=22.0.0", "bun": ">=1.4.0" }
 }
 ```
 
@@ -865,10 +865,10 @@ Configure the root `package.json`:
 
 ```json
 {
-  "packageManager": "bun@1.3.0",
+  "packageManager": "bun@1.4.2",
   "engines": {
     "node": ">=22.0.0",
-    "bun": ">=1.3.0"
+    "bun": ">=1.4.0"
   },
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {

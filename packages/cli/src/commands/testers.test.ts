@@ -250,8 +250,9 @@ describe("the optional email import classifies rather than asserts", () => {
     expect((thrown as ValidationError).payload.message).toBe("The email capability is installed but incomplete.");
   });
 
-  // The `bin` ships on Bun, whose `ResolveMessage` is not `instanceof Error`. Vitest runs on Node, so a
-  // fixture built out of `Error` proves nothing about the runtime adopters use.
+  // The `bin` ships on Bun, and the classifier reads a `ResolveMessage` by its fields, never its class: on
+  // Bun 1.3 it was not `instanceof Error`, and on 1.4 it is. A fixture built out of `Error` would pass
+  // whichever way a gate on the class went, so this one carries Bun's fields alone.
   test("a Bun-shaped ResolveMessage for the package itself is still an absence", async () => {
     expect(
       await loadOptionalEmail(() => {

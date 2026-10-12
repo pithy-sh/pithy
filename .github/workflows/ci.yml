@@ -85,7 +85,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       # **Both Node versions gate — 24 is not a courtesy leg.** `CLAUDE.md` sets a Node 22 LTS floor, so 22
       # is what an adopter must work on; 24 is LTS too, and a kit that answers differently on the two is
@@ -223,7 +223,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       # Restore turbo's local task cache so unchanged typecheck/build work is reused.
       # GitHub cache keys are immutable, so the sha suffix saves fresh each run; restore-keys
@@ -365,7 +365,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       # Per-shard cache key: GitHub cache keys are immutable and first-writer-wins, so shards
       # sharing one key would leave all but one silently unable to save.
@@ -429,7 +429,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       - name: Setup Node ${{ matrix.node }}
         uses: actions/setup-node@v6
@@ -511,7 +511,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       - name: Install
         run: bun install
@@ -555,7 +555,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.2
 
       # The floor exactly, as `packages/cli`'s `engines.node` states it — not the newest 22.x.
       - name: Setup Node at the floor

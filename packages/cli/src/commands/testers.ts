@@ -260,7 +260,7 @@ const EMAIL_MODULE = "@pithy-sh/email/src/capability";
  * That is `docs/CONVENTIONS.md` §Refusals — **a `catch` reachable by more than one underlying failure
  * may not name a single specific remedy** — and {@link classifyCapabilityLoadFailure} is the function
  * #217 left for it. Exported so it is tested as a pure function against both runtimes' cause shapes,
- * per the same convention: the `bin` runs on Bun, whose resolver errors are not `instanceof Error`.
+ * per the same convention: the `bin` runs on Bun, and a cause is read by its fields, never its class.
  */
 export async function loadOptionalEmail<T>(load: () => Promise<T> | T, projectDir?: string): Promise<T | undefined> {
   try {

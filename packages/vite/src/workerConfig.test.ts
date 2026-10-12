@@ -110,14 +110,15 @@ describe("loadWorkerConfig", () => {
  * commoner failure, and drops the only thing that would have settled it: the reason.
  *
  * The classifier is exported so it is tested against the shapes each runtime throws. `pithy dev` runs
- * this plugin under **Bun**, whose `ResolveMessage` and `BuildMessage` are their own classes and are not
- * `instanceof Error` — so these fixtures are plain objects, as they really are, never `new Error(...)`.
+ * this plugin under **Bun**, and `runnerImport` throws Vite's own shapes on top. The classifier reads
+ * fields, never the class, so the Bun fixtures are plain objects carrying the fields Bun 1.4.2 throws.
+ * The Vite fixtures are what Vite 8.3.0's runner threw, under Node 24 and Bun 1.4.2 alike.
  */
 describe("classifyWorkerConfigFailure", () => {
-  test("Bun's ResolveMessage is not an Error: the specifier is named, the referrer is not", () => {
+  test("Bun's ResolveMessage, read by its fields: the specifier is named, the referrer is not", () => {
     const cause = {
       name: "ResolveMessage",
-      message: "Cannot find package '@pithy-sh/auth' from '/home/a/apps/api/pithy.config.ts'",
+      message: "Cannot find package '@pithy-sh/auth' imported from /home/a/apps/api/pithy.config.ts",
       code: "ERR_MODULE_NOT_FOUND",
       specifier: "@pithy-sh/auth",
       referrer: "/home/a/apps/api/pithy.config.ts",
@@ -140,8 +141,7 @@ describe("classifyWorkerConfigFailure", () => {
   test("a dependency's failing import names the dependency, and still never a path", () => {
     const cause = {
       name: "ResolveMessage",
-      message:
-        "Cannot find module '@pithy-sh/core/src/capability/capability' from '/home/a/node_modules/@pithy-sh/email/src/index.ts'",
+      message: "Cannot find package '@pithy-sh/core' imported from /home/a/node_modules/@pithy-sh/email/src/index.ts",
       code: "ERR_MODULE_NOT_FOUND",
       specifier: "@pithy-sh/core/src/capability/capability",
       referrer: "/home/a/node_modules/@pithy-sh/email/src/index.ts",
@@ -152,9 +152,134 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).toContain("not the config");
     expect(action).not.toContain("/home/a");
     expect(action).not.toMatch(/is not installed|is missing/i);
+    // A deep import of a package that may or may not be there. This plugin has no probe, so it hedges.
+    expect(action).not.toMatch(/will not help/);
+    expect(action).toMatch(/bun install/i);
   });
 
-  test("Bun's BuildMessage is not an Error: the parser's reason reaches the adopter, install does not", () => {
+  /**
+   * **Three causes, three remedies (#489), on the shapes this loader actually sees.** Installing helps
+   * only when a package is absent. The adopter's own missing file, a builtin the runtime does not have,
+   * and a package's own missing file are each answered by something an install cannot do.
+   */
+  describe("which unresolved import it was", () => {
+    const viteModule = (specifier: string, importer = "/home/a/apps/api/pithy.config.ts") => ({
+      name: "Error",
+      code: "ERR_MODULE_NOT_FOUND",
+      message: `Cannot find module '${specifier}' imported from '${importer}'`,
+      runnerError: {},
+    });
+
+    test("a package that is not installed: install, and the specifier is named", () => {
+      const { kind, action } = classifyWorkerConfigFailure(viteModule("absentpkg"));
+      expect(kind).toBe("unresolved-import");
+      expect(action).toContain('"absentpkg"');
+      expect(action).toMatch(/bun install/i);
+      expect(action).not.toContain("/home/a");
+    });
+
+    test("the adopter's own file that is not there: create it, and never install", () => {
+      const cause = {
+        name: "Error",
+        code: "ERR_LOAD_URL",
+        message:
+          "Failed to load url ./src/x (resolved id: ./src/x) in /home/a/apps/api/pithy.config.ts. Does the file exist?",
+        runnerError: {},
+      };
+      const { kind, action } = classifyWorkerConfigFailure(cause);
+      expect(kind).toBe("unresolved-import");
+      expect(action).toContain('"./src/x"');
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install/i);
+      expect(action).not.toContain("/home/a");
+    });
+
+    test("a builtin the runtime does not provide: never install, on Node or on Bun", () => {
+      const node = { code: "ERR_UNKNOWN_BUILTIN_MODULE", message: "No such built-in module: node:nope" };
+      const bun = {
+        name: "ResolveMessage",
+        code: "ERR_UNKNOWN_BUILTIN_MODULE",
+        message: "No such built-in module: node:nope",
+        specifier: "node:nope",
+        referrer: "/home/a/node_modules/vite/dist/node/module-runner.js",
+      };
+      for (const cause of [node, bun]) {
+        const { kind, action } = classifyWorkerConfigFailure(cause);
+        expect(kind).toBe("unresolved-import");
+        expect(action).toContain('"node:nope"');
+        expect(action).toMatch(/runtime/);
+        expect(action).toMatch(/installing dependencies will not help/);
+        expect(action).not.toMatch(/bun install/i);
+        expect(action).not.toContain("/home/a");
+      }
+    });
+
+    test("a relative import that fails inside an installed package: that package's defect, named", () => {
+      const bun = {
+        name: "ResolveMessage",
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find module './missing.js' imported from /home/a/node_modules/fakepkg/src/index.js",
+        specifier: "./missing.js",
+        referrer: "/home/a/node_modules/fakepkg/src/index.js",
+      };
+      // Node hands the resolved path instead, and it is never repeated.
+      const node = {
+        code: "ERR_MODULE_NOT_FOUND",
+        message:
+          "Cannot find module '/home/a/node_modules/fakepkg/src/missing.js' imported from /home/a/node_modules/fakepkg/src/index.js",
+        url: "file:///home/a/node_modules/fakepkg/src/missing.js",
+      };
+      for (const cause of [bun, node]) {
+        const { kind, action } = classifyWorkerConfigFailure(cause);
+        expect(kind).toBe("unresolved-import");
+        expect(action).toContain("fakepkg");
+        expect(action).toMatch(/installing dependencies will not help/);
+        expect(action).not.toMatch(/bun install/i);
+        expect(action).not.toContain("/home/a");
+      }
+    });
+
+    // Node's shapes: the specifier is the already-resolved path, so it is never repeated, and `url` is
+    // what says which of the two it was. Neither may fall through to an install.
+    test("Node's shape for the adopter's own missing file: create it, never install, and no path", () => {
+      const cause = {
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find module '/home/a/apps/api/src/x' imported from /home/a/apps/api/pithy.config.ts",
+        url: "file:///home/a/apps/api/src/x",
+      };
+      const { kind, action } = classifyWorkerConfigFailure(cause);
+      expect(kind).toBe("unresolved-import");
+      expect(action).toMatch(/Create that file or correct the import/);
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install/i);
+      expect(action).not.toContain("/home/a");
+    });
+
+    test("Node's shape for a package's missing file the config itself imports: never install, and no path", () => {
+      const cause = {
+        code: "ERR_MODULE_NOT_FOUND",
+        message:
+          "Cannot find module '/home/a/node_modules/fakepkg/src/nope.js' imported from /home/a/apps/api/pithy.config.ts",
+        url: "file:///home/a/node_modules/fakepkg/src/nope.js",
+      };
+      const { kind, action } = classifyWorkerConfigFailure(cause);
+      expect(kind).toBe("unresolved-import");
+      expect(action).toMatch(/^A file the config imports is not something its package provides\./);
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install/i);
+      expect(action).not.toContain("/home/a");
+    });
+
+    test("a deep import of a package that may be absent hedges, because nothing here can look", () => {
+      const { action } = classifyWorkerConfigFailure(viteModule("fakepkg/src/nope"));
+      expect(action).toContain('"fakepkg/src/nope"');
+      expect(action).toMatch(/bun install/i);
+      expect(action).toMatch(/correct that import/i);
+      expect(action).not.toMatch(/will not help/);
+    });
+  });
+
+  test("Bun's BuildMessage, read by its fields: the parser's reason reaches the adopter, install does not", () => {
     const cause = {
       name: "BuildMessage",
       message: 'Expected identifier but found "{"',
@@ -190,19 +315,6 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).toContain('Expected identifier but found "{"');
     expect(action).toContain("Line 1, column 24");
     expect(action).not.toContain("/home/a");
-  });
-
-  // And the second import of the same broken config is a *third* shape: Bun caches the failure and
-  // re-throws the wrapper with its `errors` gone, leaving only the count and the path (#223). Unwrapping
-  // cannot help. The message still proves a build produced diagnostics, which is not a throw.
-  test("the re-thrown wrapper has no diagnostics left, and is still a parse error", () => {
-    const cause = { name: "AggregateError", message: '4 errors building "/home/a/apps/api/pithy.config.ts"' };
-    const { kind, action } = classifyWorkerConfigFailure(cause);
-    expect(kind).toBe("parse-error");
-    expect(action).not.toMatch(/threw while loading/);
-    expect(action).not.toMatch(/bun install/i);
-    expect(action).not.toContain("/home/a");
-    expect(action).not.toContain("4 errors building");
   });
 
   test("a config that throws on load gets its own reason, and neither other remedy", () => {

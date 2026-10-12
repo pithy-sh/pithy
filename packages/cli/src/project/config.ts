@@ -13,7 +13,6 @@ import {
   causeMessage,
   failurePosition,
   importingPackage,
-  isBuildFailureWrapper,
   prop,
   rootCause,
   safeReason,
@@ -31,6 +30,7 @@ import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/n
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
+import { installedBeside } from "./kitResolve";
 import { registerTypeScriptResolution } from "./typescriptResolve";
 import { discoverWorkers } from "./workers";
 
@@ -597,10 +597,6 @@ function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
   if (prop(cause, "code") === "PARSE_ERROR") return true;
-  // Bun's build wrapper with its diagnostics already dropped — the shape every caller after the first
-  // sees, and the one `pithy doctor` renders. It proves a build produced diagnostics, so it is a parse
-  // error with no reason and no position rather than a config that threw. See core's `cause.ts`.
-  if (isBuildFailureWrapper(cause)) return true;
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
@@ -647,6 +643,9 @@ function isParseError(cause: unknown): boolean {
  * `relativeTo` exists because on node the "specifier" *is* an already-resolved absolute path, so this
  * message printed `/home/…` for every relative import — contradicting the rule the rest of this module
  * keeps, and the tests that assert an action never carries one.
+ *
+ * {@link installedBeside} answers the one question Bun 1.4 leaves open: whether a deep import's package is
+ * absent or only its path is (#709). Without that answer a fresh clone was told installing will not help.
  */
 function unresolvedAction(cause: unknown, relativeTo: string | undefined): string {
   const specifier = unresolvedSpecifier(cause);
@@ -658,7 +657,7 @@ function unresolvedAction(cause: unknown, relativeTo: string | undefined): strin
   const importer = importingPackage(cause);
   const from = importer === undefined ? "" : ` It is imported by ${importer}.`;
 
-  switch (unresolvedKind(cause)) {
+  switch (unresolvedKind(cause, installedBeside)) {
     case "package":
       return `Nothing provides "${shown}".${from} Install the project's dependencies (bun install), or correct that import.`;
     case "package-subpath":
@@ -693,9 +692,9 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
   }
 
   if (isParseError(cause)) {
-    // Both of these can answer "nothing" — and one of the reasons they can is Bun's build wrapper, whose
-    // whole message is a count and a path. That suppression is core's, once, rather than written out here
-    // and in two other classifiers that each had to be found and patched (#223, #228).
+    // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is
+    // not quoted, and a position is never invented. That filter is core's, once rather than here and in two
+    // other classifiers that each had to be found and patched (#228).
     const reason = safeReason(cause);
     const at = failurePosition(cause);
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
@@ -731,10 +730,7 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
  * reporting a clean run. `pithy add auth` left a Worker that booted and answered 500 on every auth route,
  * because the tables were not there (#273).
  *
- * **Only a different file busts it.** Measured on Bun 1.3: a `?t=…` query on the file URL does not, and
- * neither does the same file reached by a differently-spelled path. So this imports a copy, beside the
- * original — where the config's own relative imports and `import.meta.dirname` still resolve to the same
- * directory — and removes it. Dot-prefixed and uniquely named, so two concurrent runs cannot collide.
+ * **A different file is the bust that holds everywhere.** Re-measured on Bun 1.4.2 (#709): a `?t=…` query on the file URL now busts it, and the same file reached by a differently-spelled path still does not. A query is one runtime's behavior and has changed once already; a new file is new to every module cache. So this imports a copy, beside the original — where the config's own relative imports and `import.meta.dirname` still resolve to the same directory — and removes it. Dot-prefixed and uniquely named, so two concurrent runs cannot collide.
  *
  * ## It writes into the adopter's source tree, so it cleans up three ways
  *

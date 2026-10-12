@@ -6,10 +6,10 @@ import {
   causeMessage,
   failurePosition,
   importingPackage,
-  isBuildFailureWrapper,
   prop,
   rootCause,
   safeReason,
+  unresolvedKind,
   unresolvedSpecifier,
 } from "./cause";
 
@@ -72,33 +72,9 @@ describe("rootCause", () => {
   });
 });
 
-/**
- * The wrapper survives its own diagnostics. Bun caches a failed module and re-throws the `AggregateError`
- * with `errors` gone, so every caller after the first gets the count and the path and nothing else — and
- * on the `pithy doctor` path that is the caller whose sentence an adopter reads.
- */
-describe("isBuildFailureWrapper", () => {
-  test("recognizes the wrapper by its own message, with or without diagnostics attached", () => {
-    expect(isBuildFailureWrapper({ name: "AggregateError", message: '4 errors building "/a/x.ts"' })).toBe(true);
-    expect(isBuildFailureWrapper({ message: '1 error building "/a/x.ts"' })).toBe(true);
-    expect(isBuildFailureWrapper({ message: '2 errors building "/a/x.ts"', errors: [{ name: "BuildMessage" }] })).toBe(
-      true,
-    );
-  });
-
-  test("refuses anything that merely resembles it — the count and the quote are the signature", () => {
-    expect(isBuildFailureWrapper({ message: "errors building the account" })).toBe(false);
-    expect(isBuildFailureWrapper({ message: 'Something 4 errors building "/a/x.ts"' })).toBe(false);
-    expect(isBuildFailureWrapper({ message: "Cannot find package 'zod'" })).toBe(false);
-    expect(isBuildFailureWrapper(new Error("boom"))).toBe(false);
-    expect(isBuildFailureWrapper(null)).toBe(false);
-    expect(isBuildFailureWrapper("4 errors building")).toBe(false);
-  });
-});
-
 describe("prop", () => {
   test("reads a field off anything object-shaped, `instanceof Error` or not", () => {
-    // Bun's BuildMessage is its own class and is NOT an Error. That is the whole reason this exists.
+    // A cause is `unknown`. Bun 1.3's BuildMessage was not an Error and 1.4's is; the read is the same.
     expect(prop({ name: "BuildMessage" }, "name")).toBe("BuildMessage");
     expect(prop(new Error("boom"), "message")).toBe("boom");
   });
@@ -151,8 +127,8 @@ describe("safeReason", () => {
   });
 
   test("reads a value that is not an Error — the whole reason this is duck-typed", () => {
-    // Bun's BuildMessage is its own class. An `instanceof Error` gate here passes on Node and drops the
-    // parser's sentence on the runtime that ships (#207).
+    // A cause is `unknown`, and an `instanceof Error` gate is a claim about a runtime's classes. Bun 1.3's
+    // BuildMessage broke that claim and shipped #207; the filter reads fields, so no class can break it.
     expect(safeReason({ name: "BuildMessage", message: "Unexpected end of input" })).toBe("Unexpected end of input");
   });
 
@@ -181,29 +157,6 @@ describe("safeReason", () => {
     // biome-ignore lint/suspicious/noControlCharactersInRegex: an escape code is exactly what must not leak.
     expect(reason).not.toMatch(/\u001b\[/);
   });
-
-  /**
-   * **The #223 suppression, once rather than three times.**
-   *
-   * Bun's build-failure wrapper is throw-site context in full: a count that is not the adopter's problem
-   * and a path that must not travel. It is refused on **provenance** — before a single content test runs —
-   * because the content tests exist for a diagnostic that *might* be safe, and this one never is. The leak
-   * that proved it: a path Bun quoted without a leading slash sailed through the absolute-path check, and
-   * `failurePosition` then dragged a fabricated `Line 12, column 5` out of the file name's own characters.
-   */
-  test("Bun's build-failure wrapper is refused on provenance, whatever its message happens to look like", () => {
-    expect(
-      safeReason({ name: "AggregateError", message: '4 errors building "/home/a/pithy.config.ts"' }),
-    ).toBeUndefined();
-    expect(safeReason({ message: '2 errors building "app/config:12:5.ts"' })).toBeUndefined();
-    expect(safeReason({ message: '1 error building "x.ts"' })).toBeUndefined();
-  });
-
-  test("prose that merely mentions building is not the wrapper, and keeps its sentence", () => {
-    expect(safeReason({ message: "Stripe is still building the account" })).toBe(
-      "Stripe is still building the account",
-    );
-  });
 });
 
 /**
@@ -230,13 +183,6 @@ describe("failurePosition", () => {
     expect(failurePosition({ position: "somewhere" })).toBeUndefined();
     expect(failurePosition(null)).toBeUndefined();
   });
-
-  test("the build-failure wrapper yields no position — the one that was fabricated from a file name", () => {
-    expect(failurePosition({ message: '2 errors building "app/config:12:5.ts"' })).toBeUndefined();
-    expect(
-      failurePosition({ name: "AggregateError", message: '4 errors building "/home/a/x.ts:9:2"' }),
-    ).toBeUndefined();
-  });
 });
 
 /** The specifier that did not resolve — the adopter's own import, never the referrer around it. */
@@ -244,8 +190,10 @@ describe("unresolvedSpecifier", () => {
   test("the field is preferred, because the prose around it names our frame", () => {
     const cause = {
       name: "ResolveMessage",
-      message: "Cannot find package 'stripe' from '/p/node_modules/@pithy-sh/payments/src/capability.ts'",
+      code: "ERR_MODULE_NOT_FOUND",
+      message: "Cannot find package 'stripe' imported from /p/node_modules/@pithy-sh/payments/src/capability.ts",
       specifier: "stripe",
+      referrer: "/p/node_modules/@pithy-sh/payments/src/capability.ts",
     };
     expect(unresolvedSpecifier(cause)).toBe("stripe");
   });
@@ -257,10 +205,232 @@ describe("unresolvedSpecifier", () => {
     expect(unresolvedSpecifier({ message: 'Cannot find module "./missing" imported from /a/b.ts' })).toBe("./missing");
   });
 
+  // Measured on Vite 8.3.0's `runnerImport`, under Node 24 and Bun 1.4.2 alike: a relative import that is
+  // not there is Vite's own sentence, and a missing builtin under Node carries no field at all.
+  test("Vite's module runner and Node's builtin loader state it in their own sentences", () => {
+    expect(
+      unresolvedSpecifier({
+        code: "ERR_LOAD_URL",
+        message:
+          "Failed to load url ./src/x (resolved id: ./src/x) in /p/apps/api/pithy.config.ts. Does the file exist?",
+      }),
+    ).toBe("./src/x");
+    expect(
+      unresolvedSpecifier({ code: "ERR_UNKNOWN_BUILTIN_MODULE", message: "No such built-in module: node:nope" }),
+    ).toBe("node:nope");
+  });
+
   test("nothing to name is undefined, and an empty field is nothing", () => {
     expect(unresolvedSpecifier({ message: "Failed to resolve module" })).toBeUndefined();
     expect(unresolvedSpecifier({ specifier: "" })).toBeUndefined();
     expect(unresolvedSpecifier(null)).toBeUndefined();
+  });
+});
+
+/**
+ * **Which of three causes an unresolved import was — measured on Bun 1.4.2 and Node 24 (#489, #709).**
+ *
+ * Bun 1.4 writes Node's sentence for every bare specifier that fails, `Cannot find package '<name>'
+ * imported from <path>`, whether the package is absent or only the subpath is. So the sentence cannot
+ * keep an install away from an installed package's missing subpath, which is the remedy #489 exists to
+ * keep away. Bun's `specifier` field is what tells them apart, and the fixtures below are what 1.4.2
+ * threw, paths shortened.
+ */
+describe("unresolvedKind", () => {
+  /** A Bun 1.4.2 `ResolveMessage`, as measured: the sentence names the package, the field the import. */
+  function bun(specifier: string, named: string, referrer = "/p/apps/api/pithy.config.ts") {
+    return {
+      name: "ResolveMessage",
+      code: "ERR_MODULE_NOT_FOUND",
+      message: `Cannot find package '${named}' imported from ${referrer}`,
+      specifier,
+      referrer,
+      importKind: "import-statement",
+    };
+  }
+
+  test("Bun: a package that is not installed is a package", () => {
+    expect(unresolvedKind(bun("absentpkg", "absentpkg"))).toBe("package");
+    expect(unresolvedKind(bun("@pithy-sh/auth", "@pithy-sh/auth"))).toBe("package");
+  });
+
+  // The regression. Bun 1.4.2 says `Cannot find package 'fakepkg'` for `fakepkg/src/nope` whether `fakepkg`
+  // is installed or not, and the field is the same in both. The shape cannot tell them apart, so it does not
+  // pretend to: the caller's probe asks the filesystem, from the file the import was written in.
+  test("Bun: a bare specifier with a path is a subpath only when its package is installed", () => {
+    const seen: string[][] = [];
+    const installed = (pkg: string, referrer: string) => {
+      seen.push([pkg, referrer]);
+      return pkg !== "absentpkg";
+    };
+    expect(unresolvedKind(bun("fakepkg/src/nope", "fakepkg"), installed)).toBe("package-subpath");
+    expect(unresolvedKind(bun("@pithy-sh/core/src/capability/capability", "@pithy-sh/core"), installed)).toBe(
+      "package-subpath",
+    );
+    expect(unresolvedKind(bun("absentpkg/src/x", "absentpkg"), installed)).toBe("package");
+    expect(seen).toEqual([
+      ["fakepkg", "/p/apps/api/pithy.config.ts"],
+      ["@pithy-sh/core", "/p/apps/api/pithy.config.ts"],
+      ["absentpkg", "/p/apps/api/pithy.config.ts"],
+    ]);
+  });
+
+  // #480's shape: a fresh clone, or a kit package whose own dependency is not linked. Every kit import is a
+  // deep path, so this is the common case, and calling it a subpath tells the adopter not to install.
+  test("Bun: with no probe, a bare specifier with a path cannot be told, and says so", () => {
+    expect(unresolvedKind(bun("@pithy-sh/core/src/capability/capability", "@pithy-sh/core"))).toBeUndefined();
+    expect(unresolvedKind(bun("fakepkg/src/nope", "fakepkg"))).toBeUndefined();
+    // A bare name alone is the package itself, and needs no probe.
+    expect(unresolvedKind(bun("absentpkg", "absentpkg"))).toBe("package");
+  });
+
+  test("Bun: with no referrer to probe from, a bare specifier with a path cannot be told", () => {
+    const cause = { name: "ResolveMessage", message: "Cannot find package 'fakepkg'", specifier: "fakepkg/src/nope" };
+    expect(unresolvedKind(cause, () => true)).toBeUndefined();
+  });
+
+  test("Bun: a relative import is the adopter's own file", () => {
+    const cause = {
+      ...bun("./src/x", "./src/x"),
+      message: "Cannot find module './src/x' imported from /p/apps/api/pithy.config.ts",
+    };
+    expect(unresolvedKind(cause)).toBe("local-file");
+    expect(unresolvedKind(bun("../shared/x", "../shared/x"))).toBe("local-file");
+    expect(unresolvedKind(bun("C:\\p\\src\\x", "C:\\p\\src\\x"))).toBe("local-file");
+    // A path written into an installed package is that package's missing file, not the adopter's.
+    expect(unresolvedKind(bun("/p/node_modules/pkg/src/x", "/p/node_modules/pkg/src/x"))).toBe("package-subpath");
+  });
+
+  // Measured on 1.4.2: `pkg2/index.js` imports `./nope.js`, and Bun names that file as the referrer.
+  test("Bun: a relative import that fails inside an installed package is that package's defect", () => {
+    const cause = {
+      ...bun("./nope.js", "./nope.js", "/p/node_modules/pkg2/index.js"),
+      message: "Cannot find module './nope.js' imported from /p/node_modules/pkg2/index.js",
+    };
+    expect(unresolvedKind(cause)).toBe("package-subpath");
+    expect(unresolvedKind(bun("../x", "../x", "/p/node_modules/.bun/a@1/node_modules/a/src/i.ts"))).toBe(
+      "package-subpath",
+    );
+  });
+
+  // Measured on 1.4.2: a `#` import the imports map does not satisfy reads `Cannot find package '#x'`, and
+  // the field carries it as written, `#internal/x` included.
+  test("Bun: a # import is its importer's own imports map, the adopter's or the package's", () => {
+    expect(unresolvedKind(bun("#internal", "#internal"))).toBe("local-file");
+    expect(unresolvedKind(bun("#internal/x", "#internal"))).toBe("local-file");
+    expect(unresolvedKind(bun("#own", "#own", "/p/node_modules/pkg3/index.js"))).toBe("package-subpath");
+    // Never a package, so never an install, and never a probe.
+    expect(unresolvedKind(bun("#internal/x", "#internal"), () => false)).toBe("local-file");
+  });
+
+  // Bun 1.4.2 hands a file URL over already converted to a path. A runtime that does not is read the same.
+  test("Bun: a file URL is a path, not a package called file:", () => {
+    expect(unresolvedKind(bun("file:///p/src/x.ts", "file:"))).toBe("local-file");
+    expect(unresolvedKind(bun("file:///p/node_modules/pkg/src/x.ts", "file:"))).toBe("package-subpath");
+    expect(unresolvedKind(bun("/p/src/x.ts", "/p/src/x.ts"))).toBe("local-file");
+  });
+
+  // Measured on 1.4.2: `node:nope` and `node:fs/promsies` throw ERR_UNKNOWN_BUILTIN_MODULE, `bun:nope` throws
+  // `Cannot find package 'bun:nope'`, and the field carries each as written. The runtime provides these.
+  test("Bun: a builtin scheme is the runtime's, never a package to install", () => {
+    const builtin = (specifier: string, referrer = "/p/apps/api/pithy.config.ts") => ({
+      name: "ResolveMessage",
+      code: "ERR_UNKNOWN_BUILTIN_MODULE",
+      message: `No such built-in module: ${specifier}`,
+      specifier,
+      referrer,
+    });
+    expect(unresolvedKind(builtin("node:nope"))).toBe("package-subpath");
+    expect(unresolvedKind(builtin("node:nope"), () => false)).toBe("package-subpath");
+    expect(unresolvedKind(builtin("node:fs/promsies"), () => false)).toBe("package-subpath");
+    expect(unresolvedKind(bun("bun:nope", "bun:nope"), () => false)).toBe("package-subpath");
+    // A drive letter is not a scheme: a Windows path is still judged by where it points.
+    expect(unresolvedKind(bun("C:\\p\\src\\x.ts", "C:\\p\\src\\x.ts"))).toBe("local-file");
+  });
+
+  test("Node: the sentence decides, and a resolved path under node_modules is a subpath", () => {
+    expect(
+      unresolvedKind({ code: "ERR_MODULE_NOT_FOUND", message: "Cannot find package 'pkg' imported from /p/a.ts" }),
+    ).toBe("package");
+    expect(
+      unresolvedKind({
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find module '/p/node_modules/pkg/src/nope.js' imported from /p/a.ts",
+        url: "file:///p/node_modules/pkg/src/nope.js",
+      }),
+    ).toBe("package-subpath");
+    expect(
+      unresolvedKind({
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find module '/p/apps/board/src/x' imported from /p/apps/board/pithy.config.ts",
+        url: "file:///p/apps/board/src/x",
+      }),
+    ).toBe("local-file");
+  });
+
+  // A `file:` URL whose escapes do not decode is still a path. It is judged by the specifier as written.
+  test("a file URL that will not decode is read as written, never thrown", () => {
+    expect(unresolvedKind(bun("file:///p/src/%E0.ts", "file:"))).toBe("local-file");
+    expect(unresolvedKind(bun("file:///p/node_modules/pkg/%E0.ts", "file:"))).toBe("package-subpath");
+  });
+
+  /**
+   * Vite 8.3.0's `runnerImport`, measured under Node 24 and Bun 1.4.2: the same shapes on both. It says
+   * `Cannot find module` for a bare specifier **as written**, absent or installed alike, and quotes the
+   * importer. A relative file that is not there is its own `ERR_LOAD_URL` sentence. No field, no `url`.
+   */
+  describe("Vite's module runner", () => {
+    const vite = (specifier: string, importer = "/p/apps/api/pithy.config.ts") => ({
+      name: "Error",
+      code: "ERR_MODULE_NOT_FOUND",
+      message: `Cannot find module '${specifier}' imported from '${importer}'`,
+      runnerError: {},
+    });
+
+    test("a bare name alone is the package itself", () => {
+      expect(unresolvedKind(vite("absentpkg"))).toBe("package");
+      expect(unresolvedKind(vite("@pithy-sh/auth"))).toBe("package");
+    });
+
+    test("a bare name with a path is asked of the probe, from the importer it quoted", () => {
+      const seen: string[][] = [];
+      const installed = (pkg: string, referrer: string) => {
+        seen.push([pkg, referrer]);
+        return pkg === "fakepkg";
+      };
+      expect(unresolvedKind(vite("fakepkg/src/nope"), installed)).toBe("package-subpath");
+      expect(unresolvedKind(vite("absentpkg/src/x"), installed)).toBe("package");
+      expect(seen).toEqual([
+        ["fakepkg", "/p/apps/api/pithy.config.ts"],
+        ["absentpkg", "/p/apps/api/pithy.config.ts"],
+      ]);
+      // Core has no filesystem. With no probe the two cannot be told apart, and it says so.
+      expect(unresolvedKind(vite("fakepkg/src/nope"))).toBeUndefined();
+    });
+
+    test("a relative file that is not there is the adopter's, or the package's it was written in", () => {
+      const missing = (importer: string) => ({
+        name: "Error",
+        code: "ERR_LOAD_URL",
+        message: `Failed to load url ./src/x (resolved id: ./src/x) in ${importer}. Does the file exist?`,
+        runnerError: {},
+      });
+      expect(unresolvedKind(missing("/p/apps/api/pithy.config.ts"))).toBe("local-file");
+      expect(unresolvedKind(missing("/p/node_modules/pkg2/index.js"))).toBe("package-subpath");
+      expect(importingPackage(missing("/p/node_modules/pkg2/index.js"))).toBe("pkg2");
+    });
+
+    // Under Node the builtin loader throws before Vite's runner sees it: a code and a sentence, nothing else.
+    test("a builtin that does not exist is the runtime's, never a package to install", () => {
+      const cause = { code: "ERR_UNKNOWN_BUILTIN_MODULE", message: "No such built-in module: node:nope" };
+      expect(unresolvedKind(cause)).toBe("package-subpath");
+      expect(unresolvedKind(cause, () => false)).toBe("package-subpath");
+    });
+  });
+
+  test("nothing to read is undefined", () => {
+    expect(unresolvedKind({ message: "Failed to resolve module" })).toBeUndefined();
+    expect(unresolvedKind(null)).toBeUndefined();
   });
 });
 
@@ -271,12 +441,11 @@ describe("unresolvedSpecifier", () => {
  * config importing `@pithy-sh/email/src/index`, and `@pithy-sh/email`'s own import of core failing.
  */
 describe("importingPackage", () => {
-  /** Bun 1.3.14, verbatim, for exactly the tree #480 hit. */
+  /** Bun 1.4.2, verbatim but for the path, for exactly the tree #480 hit. */
   const BUN = {
     name: "ResolveMessage",
     code: "ERR_MODULE_NOT_FOUND",
-    message:
-      "Cannot find module '@pithy-sh/core/src/capability/capability' from '/p/node_modules/@pithy-sh/email/src/index.ts'",
+    message: "Cannot find package '@pithy-sh/core' imported from /p/node_modules/@pithy-sh/email/src/index.ts",
     specifier: "@pithy-sh/core/src/capability/capability",
     referrer: "/p/node_modules/@pithy-sh/email/src/index.ts",
     importKind: "import-statement",
@@ -295,11 +464,20 @@ describe("importingPackage", () => {
     ).toBe("@pithy-sh/email");
   });
 
+  test("Vite's module runner quotes it, and the quotes are not part of the path", () => {
+    expect(
+      importingPackage({
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find module '@pithy-sh/core/src/x' imported from '/p/node_modules/kysely'",
+      }),
+    ).toBe("kysely");
+  });
+
   test("an unscoped package is named without inventing a scope", () => {
     expect(importingPackage({ referrer: "/p/node_modules/kysely/dist/index.js" })).toBe("kysely");
   });
 
-  // Every store nests, and the owner is the last one. Both layouts measured, on pnpm and on Bun 1.3.14.
+  // Every store nests, and the owner is the last one. Both layouts measured, on pnpm and on Bun 1.4.2.
   test("the innermost node_modules wins, so a content-addressed store names the package and not its id", () => {
     expect(importingPackage({ referrer: "/p/node_modules/.pnpm/hono@4.6.3/node_modules/hono/dist/index.js" })).toBe(
       "hono",

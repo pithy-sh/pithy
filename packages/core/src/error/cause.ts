@@ -12,7 +12,7 @@
  * that decides whether one of its strings is safe to put in front of an adopter.
  *
  * **The filter is here for the same reason the facts are, and the argument took two issues to finish.**
- * #223 moved `rootCause`, `prop` and `isBuildFailureWrapper` in and deliberately left `safeReason` beside
+ * #223 moved `rootCause` and `prop` in and deliberately left `safeReason` beside
  * the three refusals, on the reading that what a surface may say is that surface's business. That is true
  * of the sentences and false of the filter: whether a string carries a path, a stack frame or half a
  * parser's ANSI box is a property of the string, and the answer cannot differ between the CLI, a
@@ -26,11 +26,12 @@
 /**
  * Read a property off an unknown throwable without widening anything to `any`.
  *
- * Deliberately duck-typed. Bun's `ResolveMessage` and `BuildMessage` — the two shapes the CLI's `bin` and
- * the vite plugin actually catch, since both run on Bun — are their own classes and are **not**
- * `instanceof Error`. An `instanceof` gate here passes a whole suite under vitest, which runs on Node,
- * and silently drops the parser's own sentence on the runtime that ships. That is #207, and it is why
- * every reader of a cause in this kit goes through this function.
+ * Deliberately duck-typed. A cause is `unknown`, and an `instanceof Error` gate is a claim about a
+ * runtime's classes that the runtime can break. Bun did: on 1.3 its `ResolveMessage` and `BuildMessage`
+ * were **not** `instanceof Error`, so a gate passed a whole suite under vitest, which runs on Node, and
+ * silently dropped the parser's own sentence on the runtime that ships. That is #207. Bun 1.4 made both
+ * real `Error`s (measured on 1.4.2), and nothing here had to change, which is the point: every reader of
+ * a cause in this kit goes through this function and reads fields, never a class.
  *
  * Non-enumerable properties are read too — `AggregateError.errors` is one, and {@link rootCause}
  * depends on it.
@@ -49,7 +50,7 @@ export function prop(cause: unknown, key: string): unknown {
  * and only by running on Bun with a failure of the *realistic* shape.
  *
  * **And the realistic shape is the wrapped one.** A stray brace cascades — one missing `}` in a
- * `pithy.config.ts` produced four diagnostics on Bun 1.3.14 — so a syntax error arrives wrapped far more
+ * `pithy.config.ts` produces four diagnostics on Bun 1.4.2 — so a syntax error arrives wrapped far more
  * often than bare. Classified as-is, the wrapper matches nothing: not a resolution failure, not a parse
  * error, just something with a message. The refusal then says *the config threw while loading, run the
  * file directly* while holding the line and column in its hand. #207 fixed the bare case and left this
@@ -71,33 +72,6 @@ export function rootCause(cause: unknown): unknown {
     current = errors[0];
   }
   return current;
-}
-
-/** Bun's wrapper announces itself: `4 errors building "<absolute path>"`, and nothing else says that. */
-const BUILD_FAILURE = /^\d+ errors? building "/;
-
-/**
- * The wrapper **after the diagnostics are gone** — a build that failed, and that is all that is left.
- *
- * {@link rootCause} handles the first `import()`. It cannot handle the second: Bun caches a failed module
- * and re-throws an `AggregateError` with **no `errors` at all**, just the count and the path. There is
- * nothing to unwrap, so a classifier that only unwraps reads a syntax error as "it threw" from the second
- * caller onward — which is what `pithy doctor` shows an adopter, because resolving the project's account
- * loads the root config before the report does (#206, #223).
- *
- * Nothing else Bun throws degrades this way: a `ResolveMessage`, a bare `BuildMessage` and a module's own
- * `Error` are byte-identical on every import. Only the wrapper forgets.
- *
- * So the wrapper is recognized by its own message. **What it proves is narrow and worth stating:** the
- * module reached the builder and the builder produced diagnostics. It did not fail to resolve — Bun
- * throws the first `ResolveMessage` bare, wrapping nothing, even for a file with several bad imports —
- * and it did not run, so it cannot have thrown. It failed to parse or to build. A caller may say that
- * much and no more: the message itself carries an absolute path and a count, neither of which is the
- * adopter's business, so it is a *predicate* here rather than a string anyone is tempted to print.
- */
-export function isBuildFailureWrapper(cause: unknown): boolean {
-  const message = prop(cause, "message");
-  return typeof message === "string" && BUILD_FAILURE.test(message);
 }
 
 /** Escape sequences a runtime colors its diagnostics with. They are formatting, and they never travel. */
@@ -139,19 +113,9 @@ export function causeMessage(cause: unknown): string | undefined {
  * developer one frame of digging, and a mistake puts a path, a source line or a stack frame in a field
  * that is rendered.
  *
- * **Provenance first, then content.** Bun's build-failure wrapper is refused outright, before a single
- * content test runs. The content tests exist for a diagnostic that *might* be safe; the wrapper never is,
- * because its whole message is a count nobody asked for and a path that must not travel. Leaving it to
- * the content tests is what leaked: `2 errors building "app/config:12:5.ts"` has no leading slash, sailed
- * through the absolute-path check, and produced *The config does not parse: 2 errors building
- * "app/config:12:5.ts". Line 12, column 5.* — a path the adopter never wrote, and a position fabricated
- * out of a file name (#223). That suppression was written three times because the filter was. It is
- * written once here, and {@link failurePosition} refuses the same shape for the same reason.
- *
  * A trailing period comes off: every caller puts this inside a sentence of its own.
  */
 export function safeReason(cause: unknown): string | undefined {
-  if (isBuildFailureWrapper(cause)) return undefined;
   const text = (causeMessage(cause) ?? "").trim();
   if (text.length === 0 || text.length > REASON_LIMIT) return undefined;
   if (text.includes("\n")) return undefined;
@@ -175,13 +139,8 @@ export interface FailurePosition {
  * such field states the same thing in its message tail. Only the two numbers are lifted out — never the
  * path they are appended to. Whether a surface prints them is that surface's policy: two of the three
  * classifiers do, and the capability loader deliberately does not.
- *
- * Refuses Bun's build-failure wrapper on provenance, exactly as {@link safeReason} does. That message
- * holds a file name and a count and nothing about where anything failed, so a `:12:5` found in it is a
- * coincidence of the path's own characters — and a fabricated position reads as authoritative.
  */
 export function failurePosition(cause: unknown): FailurePosition | undefined {
-  if (isBuildFailureWrapper(cause)) return undefined;
   const position = prop(cause, "position");
   const line = prop(position, "line");
   const column = prop(position, "column");
@@ -205,6 +164,15 @@ function insideNodeModules(path: string): boolean {
   return path.split(/[\\/]/).includes("node_modules");
 }
 
+/** A specifier that names a file rather than a package: `./`, `../`, `/`, or a Windows drive. */
+const RELATIVE_OR_ABSOLUTE = /^(?:\.|\/|[A-Za-z]:[\\/])/;
+
+/**
+ * Whether `pkg` is installed where `referrer` would look for it. The caller's to answer: core touches no
+ * filesystem, and on Bun 1.4 nothing in the cause says.
+ */
+export type InstalledProbe = (pkg: string, referrer: string) => boolean;
+
 /**
  * Which of the three unresolved-import causes this was, or `undefined` when it cannot be told.
  *
@@ -215,37 +183,95 @@ function insideNodeModules(path: string): boolean {
  * *guaranteed* to change nothing. That is #489's class exactly: guidance a caller cannot follow, worst
  * for the caller it is written for, which has no human to shrug and try something else.
  *
- * Measured across Node 24.13.0 and Bun 1.3.14, because the two runtimes hand back different halves and
- * each hands back exactly one usable one:
+ * Measured across Node 24.13.0 and Bun 1.4.2, because the two runtimes hand back different halves:
  *
  * | cause | Node says | Bun's `specifier` |
  * |---|---|---|
- * | package absent | `Cannot find package 'pkg'`, no `url` | `pkg` |
+ * | package absent | `Cannot find package 'pkg'`, no `url` | `pkg`, or `pkg/src/x` |
  * | subpath missing | `Cannot find module '/abs/node_modules/pkg/src/nope.js'`, `url` under node_modules | `pkg/src/nope` |
  * | adopter's file | `Cannot find module '/abs/apps/board/src/x'`, `url` outside node_modules | `./src/x` |
  *
- * Bun gives the **specifier as written**, so a leading `.` settles it. Node gives the **already-resolved
- * path**, where being under `node_modules` settles it. Neither read works on both runtimes; the pair
- * does, and it is the same predicate — *is this inside node_modules* — applied to whichever fact the
- * runtime supplied.
+ * Node gives the **already-resolved path**, where being under `node_modules` settles it. Bun gives the
+ * **specifier as written** and the **referrer**, the file the import was written in. Together they
+ * settle every case but one. Vite 8.3.0's module runner, which loads the dev server's config, also gives
+ * the specifier as written, with the importer in its prose and no `url`, so it is read the way Bun is.
+ * So is Node's `No such built-in module: node:x`, which carries neither.
+ *
+ * **The one case is a bare name with a path after it, and Bun 1.4 does not say which it was (#709).** It
+ * writes Node's sentence, `Cannot find package 'pkg' imported from <path>`, for `pkg/src/x` whether `pkg`
+ * is absent or installed without that path, and the field is the same in both. Every kit import is a deep
+ * path, so this is the common shape: a fresh clone with nothing installed, or #480's package whose own
+ * dependency is not linked. Guessing *subpath* tells those adopters installing will not help, which is
+ * the opposite of the fix. So `installed` asks the filesystem, from the referrer. Without it, or without a
+ * referrer, this answers `undefined` and the caller says the hedged thing.
  */
-export function unresolvedKind(cause: unknown): UnresolvedKind | undefined {
+export function unresolvedKind(cause: unknown, installed?: InstalledProbe): UnresolvedKind | undefined {
+  const field = prop(cause, "specifier");
+  if (typeof field === "string" && field.length > 0) return writtenKind(field, importerPath(cause), installed);
+
   if (/Cannot find package /.test(causeMessage(cause) ?? "")) return "package";
 
   const specifier = unresolvedSpecifier(cause);
   if (specifier === undefined) return undefined;
 
-  // Bun's field is the specifier as written: relative means the adopter's own file.
-  if (/^(?:\.|\/|[A-Za-z]:[\\/])/.test(specifier)) {
-    return insideNodeModules(specifier) ? "package-subpath" : "local-file";
-  }
-
-  // Node states an already-resolved absolute path; a bare specifier reaching here is a package subpath.
+  // Node states an already-resolved path, and carries it as `url`. Under `node_modules` settles it.
   const url = prop(cause, "url");
-  if (typeof url === "string" && url.length > 0) {
-    return insideNodeModules(url) ? "package-subpath" : "local-file";
+  if (typeof url === "string" && url.length > 0) return fileKind(url);
+
+  // No `url` means the specifier is as written: Vite's module runner, or Node's builtin loader.
+  return writtenKind(specifier, importerPath(cause), installed);
+}
+
+/** A path that did not resolve: inside an installed package, or in the adopter's own tree. */
+function fileKind(path: string): UnresolvedKind {
+  return insideNodeModules(path) ? "package-subpath" : "local-file";
+}
+
+/**
+ * The cause, from a specifier **as it was written** and the file it was written in — Bun's two fields.
+ *
+ * - A `file:` URL is a path. Bun 1.4.2 converts it before it reaches the field; one that arrives as a URL
+ *   is read as the path it names, never as a package called `file:`.
+ * - Any other scheme is the runtime's own. Bun 1.4.2 carries `node:nope` and `node:fs/promsies` as written,
+ *   with `ERR_UNKNOWN_BUILTIN_MODULE`, and `bun:nope` the same way. The runtime is installed and does not
+ *   provide that module, which is a subpath's remedy: installing will not help.
+ * - A relative specifier, or a `#` one from the importer's own `imports` map, belongs to whoever wrote the
+ *   import. Under `node_modules` that is a package, and the file is the package's to provide. Anywhere
+ *   else it is the adopter's.
+ * - An absolute path is judged by where it points.
+ * - A bare name alone is the package itself. A bare name with a path after it is asked of `installed`.
+ */
+function writtenKind(
+  specifier: string,
+  referrer: string | undefined,
+  installed: InstalledProbe | undefined,
+): UnresolvedKind | undefined {
+  if (specifier.startsWith("file:")) return fileKind(urlPath(specifier));
+  // `node:nope`, `bun:nope`: the runtime provides these, so no install will. Never a package by its name.
+  if (URL_SCHEME.test(specifier)) return "package-subpath";
+  const inPackage = referrer !== undefined && insideNodeModules(referrer);
+  if (specifier.startsWith("#") || specifier.startsWith(".")) {
+    return inPackage ? "package-subpath" : fileKind(specifier);
   }
-  return "package-subpath";
+  if (RELATIVE_OR_ABSOLUTE.test(specifier)) return fileKind(specifier);
+
+  const segments = specifier.split("/");
+  const nameLength = specifier.startsWith("@") ? 2 : 1;
+  if (segments.length <= nameLength) return "package";
+  if (installed === undefined || referrer === undefined) return undefined;
+  return installed(segments.slice(0, nameLength).join("/"), referrer) ? "package-subpath" : "package";
+}
+
+/** A specifier that opens with a URL scheme: `node:`, `bun:`, `data:`. A Windows drive letter is one letter. */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]+:/i;
+
+/** The path a `file:` URL names, or the specifier itself when it will not parse as one. */
+function urlPath(specifier: string): string {
+  try {
+    return decodeURIComponent(new URL(specifier).pathname);
+  } catch {
+    return specifier;
+  }
 }
 
 /**
@@ -253,14 +279,20 @@ export function unresolvedKind(cause: unknown): UnresolvedKind | undefined {
  *
  * A recorded fact about two runtimes: Bun's `ResolveMessage` carries it as a **field**, and Node states it
  * in prose. The field is preferred wherever there is one, because the prose around it names the referrer's
- * absolute path — the specifier is the adopter's own import, the referrer is our frame.
+ * absolute path — the specifier is the adopter's own import, the referrer is our frame. Vite 8.3.0's
+ * module runner states a missing relative file as `Failed to load url <specifier> (resolved id: …)`, and
+ * Node states a missing builtin as `No such built-in module: <specifier>`. Both measured.
  *
  * Whether a surface names it, and what it advises when it does, is that surface's policy and stays there.
  */
 export function unresolvedSpecifier(cause: unknown): string | undefined {
   const field = prop(cause, "specifier");
   if (typeof field === "string" && field.length > 0) return field;
-  const match = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(causeMessage(cause) ?? "");
+  const message = causeMessage(cause) ?? "";
+  const match =
+    /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(message) ??
+    /^Failed to load url (\S+) \(resolved id: /.exec(message) ??
+    /^No such built-in module: (\S+)$/.exec(message);
   return match?.[1];
 }
 
@@ -275,9 +307,14 @@ function importerPath(cause: unknown): string | undefined {
   const field = prop(cause, "referrer");
   if (typeof field === "string" && field.length > 0) return field;
   const message = causeMessage(cause) ?? "";
-  // Node ends its sentence with the path, so it is taken to the end of the line — a directory may
-  // contain a space. Bun quotes it when it states one in prose, and always carries the field as well.
-  return (/ imported from (.+)$/.exec(message) ?? /\bfrom ['"]([^'"]+)['"]/.exec(message))?.[1];
+  // Node ends its sentence with the path, so it is taken to the end of the line — a directory may contain
+  // a space. Vite's module runner writes the same sentence with the path quoted, and its own `ERR_LOAD_URL`
+  // sentence names the importer before `. Does the file exist?` (Vite 8.3.0, measured).
+  const match =
+    / imported from '(.+)'$/.exec(message) ??
+    / imported from (.+)$/.exec(message) ??
+    /^Failed to load url \S+ \(resolved id: [^)]*\) in (.+)\. Does the file exist\?$/.exec(message);
+  return match?.[1];
 }
 
 /**
@@ -295,7 +332,7 @@ function importerPath(cause: unknown): string | undefined {
  * refusal named the one dependency that was definitely fine, and an adopter following it ran `bun
  * install` against a tree that already had core in it. The importer is the half that would have pointed
  * at `email`, and both runtimes hand it over: **Bun's `ResolveMessage` carries `referrer` as a field**
- * (measured on 1.3.14) and Node states it in prose as `imported from <path>`.
+ * (measured on 1.4.2) and Node states it in prose as `imported from <path>`.
  *
  * **A package name, or nothing.** The referrer is an absolute path — our frame, and the reason
  * {@link unresolvedSpecifier} drops the prose around the specifier — so what travels is the one part of

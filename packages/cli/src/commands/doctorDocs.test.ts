@@ -164,7 +164,7 @@ function transcript(blocks: string[], where: string, index: number, prompt: stri
 const harness = doctorHarness();
 
 /** The runtime every transcript is taken under — Bun, which is what gives the `(Node … compat)` suffix. */
-const BUN = { name: "Bun", version: "1.2.4", nodeCompat: "22.10.0" };
+const BUN = { name: "Bun", version: "1.4.2", nodeCompat: "26.3.0" };
 
 /**
  * What every transcript shares, layered over whichever harness fixture a test starts from.

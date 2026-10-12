@@ -457,7 +457,7 @@ The testers capability is not configured.
 Add `testers({ baseUrl: '...' })` to pithy.config.ts (run `pithy add testers`).
 ```
 
-**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/testers` missing answers `The testers capability is not installed.` with `pithy add testers`; the package present with one of its own imports unresolved answers `The testers capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The testers capability is installed and will not load.`
+**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/testers` missing answers `The testers capability is not installed.` with `pithy add testers`; the package present with a dependency of its own not installed answers `The testers capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The testers capability is installed and will not load.`, and so does one whose import names something no install provides: a path a dependency does not have, a `#` import its own imports map lacks, or a `node:` or `bun:` module this runtime does not have. No install fixes any of those, so its action never offers one.
 
 **A missing positional.**
 

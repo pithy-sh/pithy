@@ -153,6 +153,17 @@ export function packageDirFrom(projectDir: string, pkg: string): string | null {
 }
 
 /**
+ * Whether `pkg` sits on the `node_modules` chain above `referrer`, the file whose import of it failed — the
+ * chain the runtime walked and found nothing on, asked again of the filesystem.
+ *
+ * Core's `InstalledProbe`. Bun 1.4.2 writes one sentence for a deep import whether its package is absent or
+ * installed without that path (#709), so this is what tells an install that will help from one that will not.
+ */
+export function installedBeside(pkg: string, referrer: string): boolean {
+  return packageDirFrom(dirname(referrer), pkg) !== null;
+}
+
+/**
  * The project's Worker directories — `apps/*`, and nothing else.
  *
  * The Worker registry read for the one fact resolution needs — which directories can hold an install — so

@@ -341,27 +341,37 @@ describe("httpDashboardClient — refusals name the failure they had", () => {
     });
   });
 
-  // **Found by running Bun's own fetch, not by a node fixture.** Bun does not wrap in a `TypeError` and
-  // does not use node's errnos: a dead host, a bogus TLD and a refused port all arrive as one
-  // `code: "ConnectionRefused"` on a plain `Error`. Bun cannot tell them apart, so neither may this —
-  // one sentence that covers both, which is the hedge the convention asks for. Verified on Bun 1.3.14.
-  test("Bun's ConnectionRefused covers DNS and a refused port, so the action covers both", () => {
-    const cause = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), {
+  // **Found by running Bun's own fetch, not by a node fixture.** Bun 1.3 threw a plain `Error` with
+  // `code: "ConnectionRefused"` for a dead host, a bogus TLD and a refused port alike, so this hedged across
+  // both. Bun 1.4 tells them apart, measured on 1.4.2: a host that does not resolve is a `TypeError` with
+  // `code: "ENOTFOUND"` on the error itself, and `ConnectionRefused` is left meaning a refused port alone.
+  test("Bun's ENOTFOUND sits on the error itself, and says the host does not resolve", () => {
+    const cause = Object.assign(new TypeError("getaddrinfo ENOTFOUND nope.example"), { code: "ENOTFOUND" });
+    const client = httpDashboardClient({ origin: "https://nope.example", fetch: failingFetch(cause) });
+
+    return expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.action).toMatch(/does not resolve/);
+      expect(error.payload.action).toMatch(/--origin/);
+      return true;
+    });
+  });
+
+  test("Bun's ConnectionRefused is a refused port, and gets node's ECONNREFUSED sentence", () => {
+    const cause = Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), {
       code: "ConnectionRefused",
     });
     const client = httpDashboardClient({ origin: "https://nope.example", fetch: failingFetch(cause) });
 
     return expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
-      expect(error.payload.action).toMatch(/listening/i);
-      expect(error.payload.action).toMatch(/--origin/);
-      // And never the bare errno-hedge, which would say nothing an operator can act on.
-      expect(error.payload.action).not.toMatch(/Check network access/);
+      expect(error.payload.action).toBe(
+        "Nothing is listening at https://nope.example. Start it, or point --origin somewhere that is.",
+      );
       return true;
     });
   });
 
   test("Bun reports TLS with node's own codes, so the certificate sentence still fires", () => {
-    const cause = Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
+    const cause = Object.assign(new TypeError("certificate has expired"), { code: "CERT_HAS_EXPIRED" });
     const client = httpDashboardClient({ fetch: failingFetch(cause) });
 
     return expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {

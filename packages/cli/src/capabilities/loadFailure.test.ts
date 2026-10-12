@@ -1,21 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
 import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
 import { capabilityLoadError, capabilityLoadErrorNow, classifyCapabilityLoadFailure } from "./loadFailure";
 
 /**
  * The loader classifier, against the error shapes each runtime actually throws.
  *
- * The CLI's `bin` runs on **Bun**, whose `ResolveMessage` and `BuildMessage` are their own classes and
- * are **not** `instanceof Error`. #207's first draft gated on `instanceof Error`, passed all 32 tests
- * under vitest (which runs on Node), and dropped the parser's own sentence on the shipping runtime. So
- * the Bun fixtures here are plain objects, as they really are — never `new Error(...)`.
+ * The CLI's `bin` runs on **Bun**, and vitest runs on Node. The classifier reads fields alone, never the
+ * class, so the Bun fixtures here are plain objects carrying the fields Bun 1.4.2 throws, never
+ * `new Error(...)`. A gate on the class fails them, which is the point: #207's first draft gated on it.
  */
 describe("classifyCapabilityLoadFailure", () => {
   test("the capability's own package does not resolve: `pithy add` is the remedy, and it is earned", () => {
@@ -28,10 +28,10 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).toContain("pithy add payments");
   });
 
-  test("Bun's ResolveMessage is not an Error, and the capability is still recognized as absent", () => {
+  test("Bun's ResolveMessage, read by its fields: the capability is still recognized as absent", () => {
     const cause = {
       name: "ResolveMessage",
-      message: "Cannot find package '@pithy-sh/vector' from '/home/a/x.ts'",
+      message: "Cannot find package '@pithy-sh/vector' imported from /home/a/x.ts",
       code: "ERR_MODULE_NOT_FOUND",
       specifier: "@pithy-sh/vector",
       referrer: "/home/a/x.ts",
@@ -46,7 +46,7 @@ describe("classifyCapabilityLoadFailure", () => {
   test("a transitive dependency does not resolve: never `pithy add`, and the specifier is named", () => {
     const cause = {
       name: "ResolveMessage",
-      message: "Cannot find package 'stripe' from '/p/node_modules/@pithy-sh/payments/src/capability.ts'",
+      message: "Cannot find package 'stripe' imported from /p/node_modules/@pithy-sh/payments/src/capability.ts",
       code: "ERR_MODULE_NOT_FOUND",
       specifier: "stripe",
       referrer: "/p/node_modules/@pithy-sh/payments/src/capability.ts",
@@ -61,16 +61,102 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).not.toContain("/p/node_modules");
   });
 
-  test("Bun's ResolveMessage carries the specifier as a field, and the prose path is not read", () => {
-    const cause = {
+  // Bun 1.4.2 writes one sentence, `Cannot find package '<pkg>' imported from <referrer>`, for a deep import
+  // whether `<pkg>` is absent or installed without that path, and the `specifier` field is the same in both.
+  // Only the filesystem tells them apart. These fixtures are what Bun 1.4.2 threw with @pithy-sh/core
+  // installed beside @pithy-sh/email; the project below stages exactly that tree.
+  describe("an import the runtime cannot tell apart, asked of the filesystem (Bun 1.4.2)", () => {
+    const root = mkdtempSync(join(tmpdir(), "pithy-load-failure-"));
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+    for (const pkg of ["core", "email"]) {
+      mkdirSync(join(root, "node_modules", "@pithy-sh", pkg, "src"), { recursive: true });
+      writeFileSync(join(root, "node_modules", "@pithy-sh", pkg, "package.json"), `{"name":"@pithy-sh/${pkg}"}`);
+    }
+    const referrer = join(root, "node_modules", "@pithy-sh", "email", "src", "capability.ts");
+    const bun = (specifier: string, sentence = "package") => ({
       name: "ResolveMessage",
-      message: "Cannot find package 'node:sqlite' from '/home/a/node_modules/@pithy-sh/support/src/x.ts'",
-      specifier: "node:sqlite",
-    };
-    const { kind, action } = classifyCapabilityLoadFailure("support", "@pithy-sh/support", cause);
-    expect(kind).toBe("dependency-unresolved");
-    expect(action).toContain("node:sqlite");
-    expect(action).not.toContain("/home/a");
+      code: "ERR_MODULE_NOT_FOUND",
+      message: `Cannot find ${sentence} '${specifier}' imported from ${referrer}`,
+      specifier,
+      referrer,
+    });
+
+    test("a deep import into a dependency that is installed and lacks the path is broken, never an install", () => {
+      const cause = bun("@pithy-sh/core/src/new/thing");
+      const { kind, message, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", cause, root);
+      expect(kind).toBe("broken");
+      expect(message).not.toMatch(/is not installed/);
+      expect(action).toContain('"@pithy-sh/core/src/new/thing"');
+      expect(action).toMatch(/@pithy-sh\/email/);
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install|pithy add/i);
+      expect(action).not.toContain(root);
+    });
+
+    test("the capability's own `#` import is its package's defect, never an install", () => {
+      const cause = bun("#internal/x");
+      const { kind, message, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", cause, root);
+      expect(kind).toBe("broken");
+      expect(message).not.toMatch(/is not installed/);
+      expect(action).toContain('"#internal/x"');
+      expect(action).toMatch(/@pithy-sh\/email imports/);
+      expect(action).toMatch(/imports map/);
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install|pithy add/i);
+      expect(action).not.toContain(root);
+    });
+
+    test("a deep import into a dependency that is genuinely absent still earns the install", () => {
+      const cause = bun("@pithy-sh/absent/src/thing");
+      const { kind, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", cause, root);
+      expect(kind).toBe("dependency-unresolved");
+      expect(action).toContain('"@pithy-sh/absent/src/thing"');
+      expect(action).toMatch(/bun install/);
+      expect(action).not.toMatch(/pithy add/);
+    });
+
+    test("a deep import with no referrer to look from hedges: both remedies, neither asserted", () => {
+      const { referrer: _, ...cause } = bun("@pithy-sh/core/src/new/thing");
+      const message = cause.message.replace(/ imported from .*$/, "");
+      const { kind, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", { ...cause, message }, root);
+      expect(kind).toBe("dependency-unresolved");
+      expect(action).toMatch(/bun install/);
+      expect(action).toMatch(/version/);
+      expect(action).not.toMatch(/pithy add/);
+    });
+  });
+
+  // Measured on Bun 1.4.2: `node:nope` throws ERR_UNKNOWN_BUILTIN_MODULE and `bun:nope` throws
+  // `Cannot find package 'bun:nope'`, each with the specifier as written. Under Node the same `node:nope`
+  // carries the code and the sentence alone. The runtime provides these, so no install ever will.
+  test("a builtin the runtime does not provide is never an install, on Bun or on Node", () => {
+    const referrer = "/home/a/node_modules/@pithy-sh/support/src/x.ts";
+    const causes = [
+      {
+        name: "ResolveMessage",
+        code: "ERR_UNKNOWN_BUILTIN_MODULE",
+        message: "No such built-in module: node:nope",
+        specifier: "node:nope",
+        referrer,
+      },
+      {
+        name: "ResolveMessage",
+        code: "ERR_MODULE_NOT_FOUND",
+        message: `Cannot find package 'bun:nope' imported from ${referrer}`,
+        specifier: "bun:nope",
+        referrer,
+      },
+      Object.assign(new Error("No such built-in module: node:nope"), { code: "ERR_UNKNOWN_BUILTIN_MODULE" }),
+    ];
+    for (const cause of causes) {
+      const { kind, message, action } = classifyCapabilityLoadFailure("support", "@pithy-sh/support", cause, "/home/a");
+      expect(kind).toBe("broken");
+      expect(message).not.toMatch(/is not installed/);
+      expect(action).toMatch(/runtime/);
+      expect(action).toMatch(/:nope"/);
+      expect(action).not.toMatch(/bun install|pithy add/i);
+      expect(action).not.toContain("/home/a");
+    }
   });
 
   test("a subpath the installed package does not export is broken, not absent", () => {
@@ -84,7 +170,7 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).toMatch(/reinstall/i);
   });
 
-  test("Bun's BuildMessage is not an Error: an installed package that will not parse is broken", () => {
+  test("Bun's BuildMessage, read by its fields: an installed package that will not parse is broken", () => {
     const cause = {
       name: "BuildMessage",
       message: 'Expected identifier but found "{"',
@@ -122,10 +208,10 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).toMatch(/pithy doctor|check/i);
   });
 
-  // **Found by running the real CLI on Bun, not by a fixture.** Bun does not throw a `BuildMessage` from
-  // `import()` — it throws an `AggregateError` whose `errors` hold them, and whose own message is a count
-  // and an absolute path. Classifying the wrapper reads it as "the package threw", loses the parser's
-  // sentence, and is #207's trap wearing a different hat. Verified against Bun 1.3.14.
+  // **Found by running the real CLI on Bun, not by a fixture.** Bun throws a `BuildMessage` bare from
+  // `import()` only when there is one; two or more arrive in an `AggregateError` whose `errors` hold them,
+  // and whose own message is a count and an absolute path. Classifying the wrapper reads it as "the package threw", loses the parser's
+  // sentence, and is #207's trap wearing a different hat. Verified against Bun 1.4.2.
   test("Bun wraps BuildMessages in an AggregateError, and the parser's sentence still gets through", () => {
     const cause = {
       name: "AggregateError",
@@ -146,27 +232,19 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).not.toContain("/p/node_modules");
   });
 
-  // Bun caches a failed module and re-throws the wrapper **emptied out** on every later import — so the
-  // second loader to touch a broken package gets the count and the path and nothing else (#223). There is
-  // nothing to unwrap; the wrapper's own message is what proves a build ran and produced diagnostics.
-  test("the re-thrown wrapper has no diagnostics left, and the package is still broken and unparseable", () => {
-    const cause = {
-      name: "AggregateError",
-      message: '2 errors building "/p/node_modules/@pithy-sh/storage/src/capability.ts"',
-    };
-    const { kind, action } = classifyCapabilityLoadFailure("storage", "@pithy-sh/storage", cause);
-    expect(kind).toBe("broken");
-    expect(action).toMatch(/does not parse/);
-    expect(action).not.toMatch(/threw while loading/);
-    expect(action).not.toContain("/p/node_modules");
-    expect(action).not.toContain("2 errors building");
-  });
-
   test("an AggregateError wrapping a ResolveMessage is still a resolution failure", () => {
     const cause = {
       name: "AggregateError",
       message: '1 error building "/p/x.ts"',
-      errors: [{ name: "ResolveMessage", message: "Cannot find package 'stripe'", specifier: "stripe" }],
+      errors: [
+        {
+          name: "ResolveMessage",
+          code: "ERR_MODULE_NOT_FOUND",
+          message: "Cannot find package 'stripe' imported from /p/node_modules/@pithy-sh/payments/src/x.ts",
+          specifier: "stripe",
+          referrer: "/p/node_modules/@pithy-sh/payments/src/x.ts",
+        },
+      ],
     };
     const { kind, action } = classifyCapabilityLoadFailure("payments", "@pithy-sh/payments", cause);
     expect(kind).toBe("dependency-unresolved");
@@ -187,8 +265,10 @@ describe("capabilityLoadError", () => {
   test("the target reaches detail and never action — detail is throw-site context", async () => {
     const cause = {
       name: "ResolveMessage",
-      message: "Cannot find package 'stripe' from '/p/node_modules/@pithy-sh/payments/src/x.ts'",
+      code: "ERR_MODULE_NOT_FOUND",
+      message: "Cannot find package 'stripe' imported from /p/node_modules/@pithy-sh/payments/src/x.ts",
       specifier: "stripe",
+      referrer: "/p/node_modules/@pithy-sh/payments/src/x.ts",
     };
     const error = await capabilityLoadError("payments", "@pithy-sh/payments/src/capability", cause);
     expect(error).toBeInstanceOf(PithyError);
@@ -200,9 +280,10 @@ describe("capabilityLoadError", () => {
 
   const missingTesters = {
     name: "ResolveMessage",
-    message: "Cannot find package '@pithy-sh/testers/src/workflows/worker'",
+    message: "Cannot find package '@pithy-sh/testers' imported from /p/apps/api/x.ts",
     code: "ERR_MODULE_NOT_FOUND",
     specifier: "@pithy-sh/testers/src/workflows/worker",
+    referrer: "/p/apps/api/x.ts",
   };
 
   test("the capability package is derived from the target, so a deep subpath still classifies", async () => {
