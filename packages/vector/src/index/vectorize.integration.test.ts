@@ -5,6 +5,7 @@ import { CloudflareAIManager } from "@pithy-sh/cloudflare/src/ai/aiManager";
 import { CloudflareVectorizeManager } from "@pithy-sh/cloudflare/src/ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "@pithy-sh/cloudflare/src/ai/vectorizeProvisioner";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import { waitFor, waitForStable } from "@pithy-sh/cloudflare/src/test-utils/settle";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { VectorIndexConfig } from "../config/config";
@@ -39,9 +40,10 @@ import { metadataIndexes } from "./metadata";
  * **The metadata-index list is eventually consistent *and not monotonic*.** A 3-minute probe against a live
  * index watched it report `[]` for 26s, then both properties, then — 18s later, with nothing else running —
  * one of the two, then both again for the remaining two minutes. So a single confirming read proves nothing;
- * this suite waits for {@link STABLE_READS} consecutive agreeing reads and then asserts against **that**
- * snapshot rather than issuing a fresh read per assertion, because a fresh read can disagree with the one
- * before it. `compareMetadataIndexes` is pure, which is what makes snapshot-based assertions possible at all.
+ * this suite waits for three consecutive agreeing reads and then asserts against **that** snapshot rather
+ * than issuing a fresh read per assertion, because a fresh read can disagree with the one before it. The
+ * budget and the rule live in `@pithy-sh/cloudflare/src/test-utils/settle`, which both live Vectorize
+ * suites share. `compareMetadataIndexes` is pure, which is what makes snapshot-based assertions possible at all.
  *
  * Credentials come from `.dev.vars` through the shared harness (one file at the repo root, symlinked per
  * package — CLAUDE.md §Worktree dev lifecycle), with a `process.env` overlay for CI. No credentials, or no
@@ -67,21 +69,6 @@ const MODEL = "@cf/baai/bge-small-en-v1.5";
 /** `bge-small-en-v1.5`'s output width. Asserted against the model's real response rather than trusted. */
 const DIMENSIONS = 384;
 
-/** How often a poll re-checks. Vectorize applies changes in tens of seconds, so a tighter loop only burns quota. */
-const POLL_INTERVAL_MS = 2_000;
-
-/** Ceiling for a control-plane wait — index and metadata-index visibility. Measured at 25–50s live. */
-const CONTROL_PLANE_TIMEOUT_MS = 120_000;
-
-/** Ceiling for a data-plane wait — an upsert becoming queryable. Measured at ~30s live. */
-const DATA_PLANE_TIMEOUT_MS = 120_000;
-
-/**
- * Consecutive agreeing reads that count as settled. Three, because the metadata-index list is not monotonic:
- * one confirming read can be a stale replica, and two in a row six seconds apart is a far weaker coincidence.
- */
-const STABLE_READS = 3;
-
 /**
  * The metadata an index's vectors carry, with the filterable fields marked — the declaration that drives
  * provisioning, the filter's type, and the drift check. `stage` is deliberately left unmarked: the footgun
@@ -102,50 +89,6 @@ function at<T>(values: readonly T[], position: number): T {
   const value = values[position];
   if (value === undefined) throw new Error(`expected an element at position ${position}, found none`);
   return value;
-}
-
-/**
- * Poll until `ready`, or fail with a message naming what was being waited for. A bare timeout tells the next
- * reader nothing; naming the step tells them whether Cloudflare was slow or something is actually broken.
- */
-async function waitFor(what: string, ready: () => Promise<boolean>, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await ready()) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${what}. Vectorize applies changes asynchronously — this is either a slower-than-usual apply or a real failure.`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-}
-
-/**
- * Poll until `settled` holds on {@link STABLE_READS} consecutive reads, and return the last value read. The
- * caller asserts against the returned snapshot, never against a fresh read — see the note on non-monotonic
- * metadata-index lists at the top of this file.
- */
-async function waitForStable<T>(
-  what: string,
-  read: () => Promise<T>,
-  settled: (value: T) => boolean,
-  timeoutMs: number,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  let agreed = 0;
-  let last = await read();
-  for (;;) {
-    agreed = settled(last) ? agreed + 1 : 0;
-    if (agreed >= STABLE_READS) return last;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${what} to settle across ${STABLE_READS} reads. Last read: ${JSON.stringify(last)}.`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    last = await read();
-  }
 }
 
 /**
@@ -199,7 +142,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         await waitFor(
           `index ${name} to be addressable`,
           async () => (await provisioner.findIndexByName(name)) !== null,
-          CONTROL_PLANE_TIMEOUT_MS,
         );
 
         // The order the package exists to enforce: every metadata index created before the first vector.
@@ -214,7 +156,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           `the ${declared.length} metadata indexes on ${name}`,
           () => provisioner.listMetadataIndexes(name),
           (entries) => entries.length === declared.length,
-          CONTROL_PLANE_TIMEOUT_MS,
         );
         expect([...live].sort((a, b) => a.propertyName.localeCompare(b.propertyName))).toEqual([
           { propertyName: "rank", indexType: "number" },
@@ -276,7 +217,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         await waitFor(
           `index ${name} to be addressable`,
           async () => (await provisioner.findIndexByName(name)) !== null,
-          CONTROL_PLANE_TIMEOUT_MS,
         );
 
         // Provision the declared metadata indexes first, before a single vector exists. `stage` is not among
@@ -289,7 +229,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           `the metadata indexes on ${name}`,
           () => provisioner.listMetadataIndexes(name),
           (entries) => entries.length === declared.length,
-          CONTROL_PLANE_TIMEOUT_MS,
         );
 
         // One model serves writes and queries. That is the point of pinning it per index: an index built with
@@ -319,7 +258,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the first upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 3, returnMetadata: true }),
           (result) => result.count === 3,
-          DATA_PLANE_TIMEOUT_MS,
         );
 
         // The decoded query response, from the real wire: a count, and matches nearest first.
@@ -335,7 +273,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           () =>
             queryVectors(store, indexConfig, probe, { topK: 10, filter: vectorFilter(DocMeta, { tenantId: "acme" }) }),
           (result) => result.count === 2,
-          DATA_PLANE_TIMEOUT_MS,
         );
         expect(acme.matches.map((match) => match.id).sort()).toEqual(["apple", "train"]);
 
@@ -348,7 +285,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
               filter: vectorFilter(DocMeta, { rank: { $gte: 2 } }),
             }),
           (result) => result.count === 2,
-          DATA_PLANE_TIMEOUT_MS,
         );
         expect(highRank.matches.map((match) => match.id).sort()).toEqual(["banana", "train"]);
 
@@ -359,7 +295,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           `the late \`stage\` metadata index on ${name}`,
           () => provisioner.listMetadataIndexes(name),
           (entries) => entries.some((entry) => entry.propertyName === "stage"),
-          CONTROL_PLANE_TIMEOUT_MS,
         );
 
         // One more vector, written after the index exists, carrying the same `stage: "early"` value.
@@ -371,7 +306,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the late upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 10 }),
           (result) => result.count === 4,
-          DATA_PLANE_TIMEOUT_MS,
         );
         expect(whole.matches.map((match) => match.id).sort()).toEqual(["apple", "apple-late", "banana", "train"]);
 
@@ -386,7 +320,6 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
               filter: compileFilter([{ propertyName: "stage", indexType: "string" }], { stage: "early" }),
             }),
           (result) => result.count >= 1,
-          DATA_PLANE_TIMEOUT_MS,
         );
         // Only the vector written after the metadata index existed matches. No error, no warning — the filter
         // simply returns less than the corpus holds. This is the behavior the whole package is built around,

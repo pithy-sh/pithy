@@ -1,0 +1,81 @@
+// SPDX-FileCopyrightText: 2026 Pithy
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it } from "vitest";
+import { SETTLE_TIMEOUT_MS, STABLE_READS, waitFor, waitForStable } from "./settle";
+
+/** A read that answers each value in turn, then repeats the last one. Counts its calls. */
+function sequence<T>(values: readonly T[]): { read: () => Promise<T>; calls: () => number } {
+  let index = 0;
+  return {
+    read: async () => {
+      const value = values[Math.min(index, values.length - 1)] as T;
+      index += 1;
+      return value;
+    },
+    calls: () => index,
+  };
+}
+
+const fast = { intervalMs: 1 } as const;
+
+describe("the settle budget", () => {
+  // The numbers the live Vectorize suites share. Measured at 25-50s for a control-plane change, and the
+  // metadata-index list was watched flapping for 18s after it first agreed, so 60s and one read were not
+  // enough: the cloudflare suite failed on exactly that budget (#709).
+  it("is 120s and three agreeing reads", () => {
+    expect(SETTLE_TIMEOUT_MS).toBe(120_000);
+    expect(STABLE_READS).toBe(3);
+  });
+});
+
+describe("waitFor", () => {
+  it("returns as soon as the condition holds", async () => {
+    const reads = sequence([false, false, true]);
+    await waitFor("the thing", reads.read, { ...fast, timeoutMs: 1_000 });
+    expect(reads.calls()).toBe(3);
+  });
+
+  it("names what it waited for when the budget runs out", async () => {
+    await expect(waitFor("index x to be addressable", async () => false, { ...fast, timeoutMs: 5 })).rejects.toThrow(
+      /Timed out after \d+s waiting for index x to be addressable/,
+    );
+  });
+});
+
+describe("waitForStable", () => {
+  it("returns the last value once it has settled across the required reads", async () => {
+    const reads = sequence([[], ["a"], ["a"], ["a"]]);
+    const settled = await waitForStable("the list", reads.read, (value) => value.length === 1, {
+      ...fast,
+      timeoutMs: 1_000,
+    });
+    expect(settled).toEqual(["a"]);
+    expect(reads.calls()).toBe(1 + STABLE_READS);
+  });
+
+  // The flap a live probe watched: the list reported the property, then dropped it, then reported it again.
+  // One agreeing read is not settled, so a disagreement starts the count over.
+  it("starts the count over when a read disagrees", async () => {
+    const reads = sequence([["a"], ["a"], [], ["a"], ["a"], ["a"]]);
+    await waitForStable("the list", reads.read, (value) => value.length === 1, { ...fast, timeoutMs: 1_000 });
+    expect(reads.calls()).toBe(6);
+  });
+
+  it("takes the number of agreeing reads as an option", async () => {
+    const reads = sequence([true]);
+    await waitForStable("the flag", reads.read, (value) => value, { ...fast, timeoutMs: 1_000, stableReads: 1 });
+    expect(reads.calls()).toBe(1);
+  });
+
+  it("names what it waited for, and the last read, when the budget runs out", async () => {
+    await expect(
+      waitForStable(
+        "the list",
+        async () => ["b"],
+        (value) => value.includes("a"),
+        { ...fast, timeoutMs: 5 },
+      ),
+    ).rejects.toThrow(/waiting for the list to settle across 3 reads\. Last read: \["b"\]/);
+  });
+});
