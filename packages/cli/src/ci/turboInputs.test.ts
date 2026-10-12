@@ -813,6 +813,8 @@ describe("a gate is keyed on what it reads", () => {
         "It sweeps `packages/cli/src` for modules that build a management client or read `args.origin`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that calls a dashboard from outside a Worker. Turbo's default inputs are already exactly right for it.",
       "interactiveGate.test.ts":
         "It sweeps `packages/cli/src` for reads of `process.stdin.isTTY` outside `terminal/inputMode.ts`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that asks a person anything. Turbo's default inputs are already exactly right for it.",
+      "linkGuards.test.ts":
+        "It sweeps `packages/cli/src` for modules that ask `isSymbolicLink()` without asking `project/linkView.ts`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that plans a run in a copy of an adopter's project. Turbo's default inputs are already exactly right for it.",
       "promptSites.test.ts":
         "It sweeps `packages/cli/src` for the modules that import `@clack/prompts`, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that opens a prompt. Turbo's default inputs are already exactly right for it.",
       "exitCodes.test.ts":

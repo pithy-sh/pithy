@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { writeFileAtomic } from "../project/atomic";
+import { lstatAsProject } from "../project/linkView";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { MCP_CLIENTS, type McpClient, type Scope, scopesOf } from "./clients";
@@ -230,7 +231,7 @@ async function contained(target: Target): Promise<string | null> {
   // And then the file itself, which `ensureScaffoldPath` no longer sees. A link here redirects the write
   // exactly as completely as one on the way to it, and `git clone` creates it as the victim, so
   // `writeFileAtomic`'s "is this link ours" rule reads it as ours and follows it.
-  const entry = await lstat(target.path).catch(() => null);
+  const entry = await lstatAsProject(target.path).catch(() => null);
   if (entry?.isSymbolicLink()) {
     return `${relative(target.root, target.path)} is a symlink.`;
   }

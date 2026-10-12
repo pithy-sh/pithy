@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash } from "node:crypto";
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 
 /**
  * **Every file under `dir`, by path, as a hash of its bytes** — the before-and-after a `--dry-run` test
  * compares to prove the run wrote nothing (#697). A symlink is recorded by where it points, never
  * followed, so a link swapped for another is a change and a link into a large tree costs nothing. Empty
- * directories are recorded too: a dry run that leaves one behind has written something.
+ * directories are recorded too: a dry run that leaves one behind has written something. A file that cannot
+ * be read is recorded by its mode, so a fixture can lock one and still be compared.
  */
 export async function snapshotTree(dir: string): Promise<Map<string, string>> {
   const snapshot = new Map<string, string>();
@@ -20,13 +21,15 @@ export async function snapshotTree(dir: string): Promise<Map<string, string>> {
       const path = join(current, entry.name);
       if (entry.isSymbolicLink()) snapshot.set(rel(path), `link:${await readlink(path)}`);
       else if (entry.isDirectory()) await walk(path);
-      else
+      else {
+        const bytes = await readFile(path).catch(() => null);
         snapshot.set(
           rel(path),
-          createHash("sha256")
-            .update(await readFile(path))
-            .digest("hex"),
+          bytes === null
+            ? `unreadable:${((await lstat(path)).mode & 0o777).toString(8)}`
+            : createHash("sha256").update(bytes).digest("hex"),
         );
+      }
     }
   };
   const rel = (path: string) => relative(dir, path).split(sep).join("/");

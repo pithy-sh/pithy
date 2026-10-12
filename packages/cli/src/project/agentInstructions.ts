@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { exitCodes } from "../contract/describe";
@@ -9,6 +9,7 @@ import type { MergeResult } from "../mcp/document";
 import { NONINTERACTIVE_ENV } from "../terminal/inputMode";
 import { JSON_MODE_ENV } from "../terminal/jsonMode";
 import { writeFileAtomic } from "./atomic";
+import { lstatAsProject } from "./linkView";
 import { readFileOutcome } from "./readOptionalFile";
 
 /**
@@ -201,7 +202,7 @@ function errnoOf(error: unknown): string {
 
 /** Whether `path` is a symlink. A path that is not there, or will not stat, is not one. */
 async function isSymlink(path: string): Promise<boolean> {
-  const entry = await lstat(path).catch(() => null);
+  const entry = await lstatAsProject(path).catch(() => null);
   return entry?.isSymbolicLink() ?? false;
 }
 

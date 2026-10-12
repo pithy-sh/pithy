@@ -314,7 +314,9 @@ describe("pithy provision narrates the run it is doing", () => {
     '"configs":[{"worker":"board","path":"apps/board/wrangler.jsonc","ids":1}]',
     '"committed":true',
     '"pendingSecrets":[]',
-    '"pendingSecretsRemedy":null}',
+    '"pendingSecretsRemedy":null',
+    // #697: every run says whether it was a dry run, so a parser never has to infer it from the plan.
+    '"dryRun":false}',
   ].join(",")}\n`;
 
   test("--json is one line, unchanged, whether or not the human run streams", () => {

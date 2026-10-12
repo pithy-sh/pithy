@@ -182,6 +182,7 @@ describe("a long command narrates itself", () => {
       "packages/cli/src/dev/ports.ts",
       "packages/cli/src/feature/ports.ts",
       "packages/cli/src/feature/worktree.ts",
+      "packages/cli/src/plan/shadow.ts",
       "packages/cli/src/platform/browser.ts",
       "packages/cli/src/platform/editor.ts",
       "packages/cli/src/project/deploy.ts",

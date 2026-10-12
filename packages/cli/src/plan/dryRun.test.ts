@@ -57,7 +57,9 @@ describe("--dry-run, across the tree", () => {
     expect(planning.map(pathOf).sort()).toEqual([
       "add",
       "feature prune",
+      "migrate",
       "payments reconcile",
+      "provision",
       "secrets rotate",
       "seed",
       "ui add",

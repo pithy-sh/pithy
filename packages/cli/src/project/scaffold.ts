@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { lstatSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -19,6 +19,7 @@ import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.genera
 import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { errnoOf } from "./atomic";
 import { loadProjectEnvironments } from "./config";
+import { lstatAsProject } from "./linkView";
 import { committedFiles } from "./templateFiles";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
 import { topLevelKeysToRepeat } from "./wranglerInheritance";
@@ -167,6 +168,11 @@ function descent(root: string, target: string): string[] {
  * about `target` is the half-fix #147 shipped — a link at `apps` carries the scaffold out of the project
  * exactly as completely as a link at `apps/<name>`, and `pithy worker add` walked through it.
  *
+ * **Asked through `lstatAsProject`, never `lstat` itself** (`linkView.ts`). A dry run works in a copy where a
+ * link out of the project to a directory is a snapshot of it, and a snapshot is a directory; the seam answers
+ * for it with the link's own `lstat`, so the copy is refused exactly where the project is. A real run asks
+ * plain `lstat`.
+ *
  * **Missing stops the walk**, because everything below a missing directory is missing too, and creating it
  * is what the scaffold is for.
  *
@@ -176,7 +182,7 @@ function descent(root: string, target: string): string[] {
  */
 export async function ensureScaffoldPath(root: string, target: string, intent: PathIntent = "write"): Promise<void> {
   for (const step of descent(root, target)) {
-    const entry = await probe(lstat(step));
+    const entry = await probe(lstatAsProject(step));
     if (entry.state === "unanswerable") throw cannotSee(root, step, entry.reason);
     if (entry.state === "missing") return; // missing, and so is everything below it
     if (entry.value.isDirectory()) continue;
@@ -411,7 +417,7 @@ export type Survivors =
  * suite can stage against a real `rm`, and the only state the old sentence was ever true for.
  */
 export async function survivorsOf(target: string): Promise<Survivors> {
-  const entry = await probe(lstat(target));
+  const entry = await probe(lstatAsProject(target));
   if (entry.state === "missing") return { state: "gone" };
   if (entry.state === "unanswerable") return { state: "unknown", reason: entry.reason };
   if (!entry.value.isDirectory()) return { state: "left", paths: [] };
@@ -473,7 +479,7 @@ export async function ensureEmptyTarget(root: string, targetDir: string): Promis
  */
 export async function pathExists(path: string): Promise<boolean> {
   try {
-    await lstat(path);
+    await lstatAsProject(path);
     return true;
   } catch {
     return false;
@@ -490,7 +496,7 @@ export async function pathExists(path: string): Promise<boolean> {
  */
 async function blocksDirectory(path: string): Promise<boolean> {
   try {
-    return !(await lstat(path)).isDirectory();
+    return !(await lstatAsProject(path)).isDirectory();
   } catch {
     return false;
   }
@@ -512,7 +518,7 @@ async function blocksDirectory(path: string): Promise<boolean> {
  */
 async function occupied(path: string): Promise<boolean> {
   try {
-    if (!(await lstat(path)).isDirectory()) return true;
+    if (!(await lstatAsProject(path)).isDirectory()) return true;
   } catch {
     return false; // missing — nothing to take over
   }

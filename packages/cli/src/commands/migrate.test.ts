@@ -64,6 +64,7 @@ describe("migrate command", () => {
       "rollback",
       "confirm-rollback",
       "destroy-retained",
+      "dry-run",
       "json",
     ]);
     expect(args.env).toMatchObject({ type: "string", default: "dev" });
@@ -268,6 +269,7 @@ describe("migrate command", () => {
         project: "acme",
         env: "staging",
         rollback: false,
+        dryRun: false,
         workers: [
           {
             worker: "api",

@@ -1126,6 +1126,10 @@ describe("the gate on the gate", () => {
       probes: "access",
       why: "Asks which lockfile is beside the project, and a lockfile reached through a link is still that project's lockfile — following is the right answer, and the probe decides nothing but which package manager to spawn. It writes to one path and it is not one this probe answered about: `declareOnWorker` writes `apps/<worker>/package.json` (#480), through `writeFileAtomic`, having read that same path with `readOptionalFile` rather than probing it.",
     },
+    "cli/src/plan/shadow.ts": {
+      probes: "stat",
+      why: "Asks what a link out of the project leads to, to copy the project into a private directory for a dry run. Following is the question: a link to a file becomes a regular copy of that file, because the real run writes through it, and any other stays a link that leads nowhere. It writes only inside its own temporary directory, at the path `lstat` already found to be a link, never where the link leads.",
+    },
     "cli/src/capabilities/remove.ts": {
       probes: "stat",
       why: "Asks whether `node_modules/<pkg>` is installed. Nothing is written there, and following is the right answer — a shared-store package manager links that path.",
@@ -1278,6 +1282,8 @@ describe("the gate on the gate", () => {
       "Removes the worktree directory that `teardownWorktree` has just had git forget, at `<root>/.worktrees/<issue>-<slug>` composed by `featureNames` from the main checkout root — never a path an adopter named. It cannot go through `removeScaffoldPath`: that primitive is for a path inside a project being scaffolded, and this is the project directory itself, already unregistered and guarded on `hasLiveDevSession` so a running `pithy dev` keeps its files.",
     "cli/src/capabilities/eject.ts":
       "Discards the fork it is about to re-copy under `--force`, on the exact path `ensureScaffoldPath(projectDir, dest)` cleared on the line above and `pathExists` then confirmed with an `lstat`. The gate is there; only the `rm` is local.",
+    "cli/src/migrations/localStateCopy.ts":
+      "Removes the copy of the local D1 store a `pithy migrate --dry-run` read, on the path `mkdtemp` under `os.tmpdir()` handed back — never a path an adopter named and never one inside a project. The copy exists so that opening Miniflare cannot write to the project's own store, and it must leave nothing behind.",
     "cli/src/plan/shadow.ts":
       "Removes the private copy a dry run made its writes in, on the path `mkdtemp` under `os.tmpdir()` handed back and `realpath` resolved — never a path an adopter named and never one inside a project. `removeScaffoldPath` guards a path inside a project being scaffolded, and this is the opposite: a directory this module created, owns outright, and must leave nothing of.",
   };

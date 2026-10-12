@@ -246,6 +246,8 @@ describe("every D1 delete in the CLI is counted first, or is the feature teardow
         return /\bdelete\b/.test(blankStrings(module.code)) || /\[\s*["'\x60]delete["'\x60]\s*\]/.test(module.code);
       })
       .map((module) => module.path);
-    expect(offenders).toEqual(["feature/provision.ts"]);
+    // `provision/dryRun.ts` names `delete` only to refuse it: the account a dry run hands provisioning answers
+    // `find`, creates nothing, and throws on a delete (#697, held by `provision/dryRun.test.ts`).
+    expect(offenders).toEqual(["feature/provision.ts", "provision/dryRun.ts"]);
   });
 });

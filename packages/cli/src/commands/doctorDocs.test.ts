@@ -1597,7 +1597,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   domains: ["init", "worker"],
   // The same question on every command that takes `--dry-run`: was anything written. `feature prune` joined in
   // #637, and #697 put it on every one of them, beside the plan.
-  dryRun: ["add", "feature", "payments", "secrets", "seed", "ui", "upgrade", "worker"],
+  dryRun: ["add", "feature", "migrate", "payments", "provision", "secrets", "seed", "ui", "upgrade", "worker"],
   env: [
     "deploy",
     "email",
@@ -1625,7 +1625,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // string, and both where the answer is: the file to open, the command the document describes.
   path: ["schema", "secrets"],
   // What `--dry-run` would change, in the one shape every planning command shares (#697, `plan/plan.ts`).
-  plan: ["add", "feature", "payments", "secrets", "seed", "ui", "upgrade", "worker"],
+  plan: ["add", "feature", "migrate", "payments", "provision", "secrets", "seed", "ui", "upgrade", "worker"],
   project: ["doctor", "migrate"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.

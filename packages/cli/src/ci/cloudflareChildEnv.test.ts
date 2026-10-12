@@ -81,6 +81,7 @@ const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
   "dev/ports.ts": "runs `lsof`/`ps` to find the workerd processes a previous session left.",
   "feature/ports.ts": "runs `git rev-parse` to key the port registry on the main checkout's root.",
   "feature/worktree.ts": "runs `git worktree` to create and prune a feature's checkout.",
+  "plan/shadow.ts": "runs `git check-ignore` to ask whether a build-output directory is one the repository ignores.",
   "platform/browser.ts": "runs the platform's browser opener on a URL the operator was just shown.",
   "platform/editor.ts": "runs the operator's `$EDITOR` on a config file.",
   "project/packageManager.ts":

@@ -13,8 +13,10 @@ import {
   type MigrationProgress,
   migratedBeforeFailure,
   migrateProject,
+  planMigrateProject,
   type WorkerMigrationRun,
 } from "../migrations/run";
+import { DRY_RUN_ARG, emptyPlan, type Plan, PlanKey, planText } from "../plan/plan";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { canceled } from "../terminal/exitClass";
@@ -44,8 +46,8 @@ export interface MigrateRender {
   json: boolean;
   /**
    * The run's group (#694) — the caller's `--group`, or the timestamp this run generated for itself.
-   * Optional because a rollback that was refused never renders, and a caller rendering a report of its
-   * own may hold no group.
+   * Optional because a rollback that was refused never renders, a forward `--dry-run` naming no `--group`
+   * generates none, and a caller rendering a report of its own may hold no group.
    */
   group?: string;
 }
@@ -69,6 +71,7 @@ export function formatMigrateReport(workers: WorkerMigrationRun[], options: Migr
       env: options.env,
       rollback: options.rollback,
       group: options.group,
+      dryRun: false,
     };
     return `${formatJsonLine({ ...payload, workers })}\n`;
   }
@@ -118,6 +121,7 @@ export function formatMigrateProgress(progress: MigrationProgress, options: Migr
       env: options.env,
       rollback: options.rollback,
       group: options.group,
+      dryRun: false,
       workers: progress.migrated,
       failed: progress.failed,
       unreached: progress.unreached,
@@ -136,6 +140,26 @@ export function formatMigrateProgress(progress: MigrationProgress, options: Migr
     lines.push(`Not reached: ${named}.`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Render `pithy migrate --dry-run`: the `--json` line with its plan, or the plan's lines and the line that
+ * says nothing was written (#697). `workers` is empty, because nothing ran; `plan.migrations` is what would.
+ */
+export function formatMigratePlan(plan: Plan, options: MigrateRender): string {
+  if (options.json) {
+    return `${formatJsonLine({
+      command: "migrate",
+      project: options.project,
+      env: options.env,
+      rollback: options.rollback,
+      group: options.group,
+      dryRun: true,
+      workers: [],
+      plan,
+    })}\n`;
+  }
+  return `${[...planText(plan), "Dry run. Nothing written."].join("\n")}\n`;
 }
 
 /**
@@ -198,7 +222,9 @@ const MigratePayload = z
     group: z
       .string()
       .optional()
-      .describe("The run's group: the `--group` named, or the timestamp it generated. Absent from a refused rollback."),
+      .describe(
+        "The run's group: the `--group` named, or the timestamp it generated. Absent from a refused rollback, and from a forward `--dry-run` that names no `--group`.",
+      ),
     workers: z
       .array(
         z
@@ -208,15 +234,19 @@ const MigratePayload = z
           })
           .describe("One Worker's slice of the run."),
       )
-      .describe("Every Worker, in fan-out order. On an interrupted run, only what completed."),
+      .describe(
+        "Every Worker, in fan-out order. On an interrupted run, only what completed. Empty under `--dry-run`, which runs nothing.",
+      ),
     failed: Target.optional().describe("The database the run died on. Present only when `interrupted`."),
     unreached: z
       .array(Target)
       .optional()
       .describe("Every database the run never opened. Present only when `interrupted`."),
     interrupted: z.literal(true).optional().describe("Present only on a run that failed partway."),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was applied or reversed when it is `true`."),
+    plan: PlanKey,
   })
-  .describe("What `pithy migrate` applied or reversed.");
+  .describe("What `pithy migrate` applied or reversed, or under `--dry-run` would.");
 
 export default withContract(
   defineCommand({
@@ -241,6 +271,7 @@ export default withContract(
         description: 'Unlock a non-dev rollback non-interactively: "yes, i really want to roll back <env>"',
       },
       "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -261,7 +292,10 @@ export default withContract(
         // resolved here, so the line this command prints and the value the run records are the same one. A
         // rollback is handed exactly what the operator passed: none is the refusal, not a new group (#694).
         const named = requireMigrationGroup(args.group);
-        const group = args.rollback ? named : (named ?? generatedMigrationGroup());
+        const dryRun = args["dry-run"];
+        // A plan applies nothing, so it generates no group: one it named would never be the group the real
+        // run records, and an agent handed it would reverse nothing with it.
+        const group = args.rollback || dryRun ? named : (named ?? generatedMigrationGroup());
         const render = {
           project,
           env,
@@ -270,6 +304,26 @@ export default withContract(
           ...(group !== undefined ? { group } : {}),
         };
         const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
+        const scope = {
+          projectDir,
+          project,
+          account,
+          env,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          ...(args.binding !== undefined ? { binding: args.binding } : {}),
+          ...(group !== undefined ? { group } : {}),
+          rollback: args.rollback,
+          ...(destroyRetained !== undefined ? { destroyRetained } : {}),
+          ...(config.seed?.productionEnvironments
+            ? { productionEnvironments: config.seed.productionEnvironments }
+            : {}),
+        };
+        if (dryRun) {
+          // Before the rollback phrase: a plan reverses nothing, so there is nothing for anybody to agree to.
+          const migrations = await planMigrateProject(scope);
+          process.stdout.write(formatMigratePlan({ ...emptyPlan(), migrations }, render));
+          return;
+        }
         // A rollback outside dev is asked for in words (#588). The flag wins wherever it is present; a
         // terminal without it is asked; a script without it is refused by `migrateProject`, which checks.
         const confirmRollback = await rollbackPhrase({
@@ -281,21 +335,7 @@ export default withContract(
         });
         let workers: WorkerMigrationRun[];
         try {
-          workers = await migrateProject({
-            projectDir,
-            project,
-            account,
-            env,
-            ...(args.worker !== undefined ? { worker: args.worker } : {}),
-            ...(args.binding !== undefined ? { binding: args.binding } : {}),
-            ...(group !== undefined ? { group } : {}),
-            rollback: args.rollback,
-            ...(confirmRollback !== undefined ? { confirmRollback } : {}),
-            ...(destroyRetained !== undefined ? { destroyRetained } : {}),
-            ...(config.seed?.productionEnvironments
-              ? { productionEnvironments: config.seed.productionEnvironments }
-              : {}),
-          });
+          workers = await migrateProject({ ...scope, ...(confirmRollback !== undefined ? { confirmRollback } : {}) });
         } catch (error) {
           // A run that failed on the third database has already moved the first two, and until #380 the
           // report of it died with the throw. What ran is printed here, then the same error is rethrown

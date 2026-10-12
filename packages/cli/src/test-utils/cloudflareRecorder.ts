@@ -6,7 +6,8 @@
  *
  * `--dry-run` promises that nothing is called that writes, and a promise like that is only tested by
  * something that would notice the call. This stands in for `cloudflareClients`: every manager it hands out
- * answers a read — a method whose name starts `list`, `get`, `find` or `exists` — with nothing, and records
+ * answers a read — a method whose name starts `list`, `get`, `find` or `exists`, or one of the few reads named
+ * otherwise, such as `accountSubdomain` — with nothing, and records
  * any other call as a write before refusing it. A test mocks `cloudflare/clients` with {@link recorder}'s
  * `clients` and asserts `writes` is empty.
  *
@@ -15,6 +16,8 @@
  */
 
 const READ = /^(list|get|find|exists)/;
+/** Reads whose names do not say so: the account's `workers.dev` subdomain is a `GET`. */
+const NAMED_READS = new Set(["accountSubdomain"]);
 
 export interface CloudflareRecorder {
   /** Every call made, as `manager.method`. */
@@ -37,7 +40,7 @@ export function recorder(): CloudflareRecorder {
           return async () => {
             const call = `${name}.${method}`;
             calls.push(call);
-            if (READ.test(method)) return method.startsWith("list") ? [] : null;
+            if (READ.test(method) || NAMED_READS.has(method)) return method.startsWith("list") ? [] : null;
             writes.push(call);
             throw new Error(`A dry run called ${call}, which writes.`);
           };

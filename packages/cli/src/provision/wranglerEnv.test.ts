@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { type FeatureIdentity, featureWorkerName, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
@@ -87,6 +88,28 @@ describe("applyProvisionedEnv", () => {
     expect(stanza?.r2_buckets).toContainEqual({ binding: "ASSETS", bucket_name: "bucket-1" });
     expect(raw).toContain("// a starting comment");
   });
+
+  /**
+   * **A config that will not open is a refusal naming it (#697).** The read was a bare `readFile`, so a
+   * `wrangler.jsonc` the run could not read escaped as node's own `EACCES`: a stack trace, no `--json` line, and
+   * nothing a dry run could agree with. It is the one reader's refusal now, the one every other command gives.
+   */
+  test.skipIf(process.getuid?.() === 0)(
+    "an unreadable wrangler.jsonc is refused by name, as every reader refuses it",
+    async () => {
+      await chmod(wranglerPath, 0o000);
+      try {
+        const refusal = await apply(environmentScope("replay", "staging")).catch((e: unknown) => e);
+        expect(refusal).toBeInstanceOf(ConflictError);
+        expect((refusal as ConflictError).payload).toMatchObject({
+          code: "core/conflict",
+          message: `Can't read ${wranglerPath}.`,
+        });
+      } finally {
+        await chmod(wranglerPath, 0o644);
+      }
+    },
+  );
 
   /**
    * The stanza is the scope's, never a separate argument. Two scopes over the same file therefore write

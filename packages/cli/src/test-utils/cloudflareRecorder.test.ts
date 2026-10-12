@@ -20,4 +20,11 @@ describe("recorder", () => {
     await expect(clients.d1().createDatabase()).rejects.toThrow(/d1.createDatabase, which writes/);
     expect(account.writes).toEqual(["d1.createDatabase"]);
   });
+
+  test("a read whose name does not say so is still a read", async () => {
+    const account = recorder();
+    const clients = (await account.clients()) as { workers: () => { accountSubdomain: () => Promise<unknown> } };
+    expect(await clients.workers().accountSubdomain()).toBeNull();
+    expect(account.writes).toEqual([]);
+  });
 });

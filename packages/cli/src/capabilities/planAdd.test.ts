@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -170,6 +170,76 @@ describe("planAdd", () => {
     });
     expect(plan.files.some((file) => file.path.startsWith(`apps/${DEFAULT_WORKER}/capabilities/auth/`))).toBe(false);
     expect(await snapshotTree(dir)).toEqual(before);
+  });
+
+  /**
+   * **A file the add edits may be a link out of the project, and the plan is still the add (#697).** The real
+   * add writes through the adopter's link; the dry run crashed on it with a raw `ENOTDIR` naming its temporary
+   * copy, exit 1 and no `--json` line. It plans the edit at the path the add wrote, says where it lands, and
+   * leaves the file outside alone.
+   */
+  describe("a link out of the project", () => {
+    let outside: string;
+    beforeEach(async () => {
+      outside = await mkdtemp(join(tmpdir(), "pithy-plan-add-outside-"));
+    });
+    afterEach(async () => {
+      await rm(outside, { recursive: true, force: true });
+    });
+
+    test("a pithy.config.ts linked from outside is planned as the edit the real add makes through the link", async () => {
+      await install(authManifest);
+      const config = join(worker, "pithy.config.ts");
+      const shared = join(outside, "pithy.config.ts");
+      await rename(config, shared);
+      await symlink(relative(worker, shared), config);
+      const original = await readFile(shared, "utf8");
+      const before = await snapshotTree(dir);
+
+      const { plan } = await planAdd({ ...base(), capability: "auth" });
+
+      const path = `apps/${DEFAULT_WORKER}/pithy.config.ts`;
+      const edit = plan.files.find((file) => file.path === path);
+      expect(edit?.action).toBe("edit");
+      expect(edit?.diff).toContain('+import { auth } from "@pithy-sh/auth/src/index";');
+      expect(plan.notes).toContain(`${path} is a link to a file outside the project. The edit lands in that file.`);
+      expect(JSON.stringify(plan)).not.toMatch(/pithy-plan-[A-Za-z0-9]{6}\//);
+      expect(await readFile(shared, "utf8")).toBe(original);
+      expect(await snapshotTree(dir)).toEqual(before);
+
+      // And the real add makes exactly that edit, through the link, to the file outside.
+      await runAdd({
+        ...base(),
+        capability: "auth",
+        install: async () => ({ packageManager: "npm" }),
+        migrate: async () => [],
+        bootstrap: async () => [],
+      });
+      expect((await lstat(config)).isSymbolicLink()).toBe(true);
+      const after = (await readFile(shared, "utf8")).split("\n");
+      const added = (edit?.diff ?? "").split("\n").filter((line) => line.startsWith("+"));
+      expect(added.length).toBeGreaterThan(0);
+      for (const line of added) expect(after).toContain(line.slice(1));
+    });
+
+    test("a directory linked from outside is refused as the real add refuses it", async () => {
+      await install(authManifest);
+      await symlink(outside, join(worker, "capabilities"));
+      const real = await runAdd({
+        ...base(),
+        capability: "auth",
+        eject: true,
+        install: async () => ({ packageManager: "npm" }),
+        migrate: async () => [],
+        bootstrap: async () => [],
+      }).catch((error: unknown) => error);
+      expect(real).toBeInstanceOf(PithyError);
+      const planned = await planAdd({ ...base(), capability: "auth", eject: true }).catch((error: unknown) => error);
+      expect(planned).toBeInstanceOf(PithyError);
+      expect((planned as PithyError).payload.code).toBe((real as PithyError).payload.code);
+      expect((planned as PithyError).payload.message).toBe((real as PithyError).payload.message);
+      expect(await readdir(outside)).toEqual([]);
+    });
   });
 
   test("a re-run over a project that already composes it plans no wiring", async () => {

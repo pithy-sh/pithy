@@ -8,7 +8,7 @@ Run every Worker's migration registry against one environment's D1, or reverse t
 
 ```bash
 pithy migrate [--env <env>] [--worker <name>] [--binding <binding>] [--group <value>]
-              [--rollback] [--confirm-rollback <phrase>] [--destroy-retained <n>] [--json]
+              [--rollback] [--confirm-rollback <phrase>] [--destroy-retained <n>] [--dry-run] [--json]
 ```
 
 The shipping model these commands sit in — environments, credentials, the ownership stamp, migrate-then-deploy — is [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy). This page is the command surface.
@@ -24,6 +24,7 @@ The shipping model these commands sit in — environments, credentials, the owne
 | `--rollback` | Reverse the `--group` named, in every database in scope, instead of running forward. Narrow it with `--worker` and `--binding`. Refuses without a group. Default `false`. |
 | `--confirm-rollback <phrase>` | Unlock a non-`dev` rollback non-interactively: the exact phrase `yes, i really want to roll back <env>`. |
 | `--destroy-retained <n>` | **DESTRUCTIVE.** Let a rollback drop rows in retained tables. Must equal the row count the refusal printed. |
+| `--dry-run` | Show the plan and write nothing: the migrations the run would apply, or on `--rollback` reverse, with every refusal the run makes. Needs no `--confirm-rollback`. Default `false`. |
 | `--json` | Machine-readable output. Default `false`. |
 
 ## What it does
@@ -88,6 +89,8 @@ The refusal is database-wide. Any `down` against a database holding retained row
 
 **After a rollback fails partway, fix the `down` before anything else.** The databases that already moved stay moved. Each migration's group row is forgotten as it comes down, so re-running the *same* `--group` reverses what is left of it and nothing else — but `pithy doctor` is what shows where each database stands first.
 
+**`--dry-run` lists what the run would move, and moves nothing.** It reads each database exactly as the run reads it before the first write — the ledger refusal, the group pre-flight, the retained count all stand, so a plan for a run that would be refused is refused — and then names, per database, the migrations the run would apply, or on `--rollback` the group's own, newest first. It claims no database: one another project owns is refused in the run's words, and one nobody owns stays unowned. In `dev` it reads a copy of the local store, because opening a Miniflare store can write to it. It asks for no rollback phrase, because nothing it plans comes down. A forward plan with no `--group` names none, because the timestamp the run would generate does not exist yet. The plan is the shape every `--dry-run` shares (`docs/CLI.md` §1.2).
+
 **Migrate never seeds and never deploys.** It moves schema. Data fixtures are `pithy seed`; shipping code is `pithy deploy`, which warns when the target environment's schema is behind but never migrates for you.
 
 Credentials for a remote run are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, from `<config>/cloudflare.json` locally — or straight from the environment in CI, which has no config file. A `dev` run needs neither.
@@ -102,8 +105,9 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 | `project` | string | The project this run was claimed as — `name` from the root `pithy.config.ts`. |
 | `env` | string | The environment migrated. |
 | `rollback` | boolean | Whether the run reversed a group rather than running forward. Mirrors `--rollback`. |
-| `group` | string | The group this run applied under, or reversed — the `--group` value, or the ISO-8601 timestamp the run generated. Reported in both directions. |
-| `workers` | object[] | One entry per Worker in the fan-out, in report order. A Worker with no migrations still appears. |
+| `group` | string | The group this run applied under, or reversed — the `--group` value, or the ISO-8601 timestamp the run generated. Reported in both directions, except from a forward `--dry-run` that names no `--group`, which generates none. |
+| `dryRun` | boolean | Whether this was `--dry-run`. Nothing was applied or reversed when it is `true`. |
+| `workers` | object[] | One entry per Worker in the fan-out, in report order. A Worker with no migrations still appears. Empty under `--dry-run`, which runs nothing. |
 | `workers[].worker` | string | The Worker's name. |
 | `workers[].databases` | object[] | The databases that Worker's registry touched, in registry order. Empty when it composes no migrations. |
 | `workers[].databases[].database` | string | The database name — a capability's `databases` key. |
@@ -114,6 +118,7 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 | `…results[].status` | string | `"Success"`, `"Error"`, or `"NotExecuted"` — the last meaning an earlier migration failed first. |
 | `workers[].databases[].sharedWith` | string[], optional | The other Workers bound to this same physical D1. Present **only** when the database is shared. |
 | `workers[].databases[].boundBy` | string[], optional | The other environments whose stanzas bind this same database. Present **only** on a rollback that kept it for that reason; its `results` is empty. |
+| `plan` | object | Present only under `--dry-run`: `plan.migrations` names each migration the run would apply (`up`) or reverse (`down`), with its environment, Worker, database and binding, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). |
 
 ### A run that died partway
 
@@ -121,7 +126,7 @@ A fan-out has no transaction across databases: the third one throws and the firs
 
 ```
 $ pithy migrate --env staging --json
-{"command":"migrate","project":"acme","env":"staging","rollback":false,"group":"2026-10-03T19:52:47.611Z","workers":[{"worker":"api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0100_auth_0001_init","direction":"Up","status":"Success"}]}]}],"failed":{"binding":"COLLAB_DB","database":"collab"},"unreached":[{"binding":"MEDIA_DB","database":"media"}],"interrupted":true}
+{"command":"migrate","project":"acme","env":"staging","rollback":false,"group":"2026-10-03T19:52:47.611Z","dryRun":false,"workers":[{"worker":"api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0100_auth_0001_init","direction":"Up","status":"Success"}]}]}],"failed":{"binding":"COLLAB_DB","database":"collab"},"unreached":[{"binding":"MEDIA_DB","database":"media"}],"interrupted":true}
 ```
 
 | key | type | meaning |
@@ -172,10 +177,20 @@ pithy migrate --env staging --rollback --group 2026.10.3-1 --binding DB --confir
 
 # One Worker only.
 pithy migrate --env prod --worker api --json
+
+# See what a release would apply before it applies it.
+pithy migrate --env prod --dry-run
+```
+
+```
+$ pithy migrate --env staging --dry-run
+▸ Checking DB...
+Would apply 1000_app_0002_more to app (DB, staging).
+Dry run. Nothing written.
 ```
 
 ```json
-{"command":"migrate","project":"acme","env":"prod","rollback":false,"group":"2026.10.3-1","workers":[{"worker":"acme-api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"auth_0001_init","direction":"Up","status":"Success"}],"sharedWith":["acme-collab"]}]},{"worker":"acme-collab","databases":[{"database":"app","binding":"DB","results":[],"sharedWith":["acme-api"]}]}]}
+{"command":"migrate","project":"acme","env":"prod","rollback":false,"group":"2026.10.3-1","dryRun":false,"workers":[{"worker":"acme-api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"auth_0001_init","direction":"Up","status":"Success"}],"sharedWith":["acme-collab"]}]},{"worker":"acme-collab","databases":[{"database":"app","binding":"DB","results":[],"sharedWith":["acme-api"]}]}]}
 ```
 
 Nothing in this payload is a credential.

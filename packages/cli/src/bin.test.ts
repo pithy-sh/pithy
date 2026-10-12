@@ -227,6 +227,7 @@ describe("pithy migrate", () => {
       env: "dev",
       project: "app",
       rollback: false,
+      dryRun: false,
       group: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
       workers: [{ worker: "app-api", databases: [] }],
     });
@@ -238,6 +239,7 @@ describe("pithy migrate", () => {
       env: "dev",
       project: "app",
       rollback: true,
+      dryRun: false,
       workers: [{ worker: "app-api", databases: [] }],
     });
   });

@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope, featureScope, type ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { isProvisionableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
@@ -23,6 +23,7 @@ import { featureOwnedIds } from "../feature/hosts";
 import { branchIdentity } from "../feature/identity";
 import { FeatureResource } from "../feature/manifest";
 import { provisionFeature } from "../feature/provision";
+import { DRY_RUN_ARG, type Plan, PlanKey, planText } from "../plan/plan";
 import { resolveWorkersFor } from "../project/composeFor";
 import {
   administersItself,
@@ -36,6 +37,7 @@ import { deployKitWorkers, KitWorkerDeploy, summarizeKitDeploy } from "../projec
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
+import { plannedFeatureHosts, planProvision } from "../provision/dryRun";
 import {
   type ProvisionedDecline,
   type ProvisionedResource,
@@ -54,7 +56,7 @@ import {
   type FeatureIndexes,
   type ResourceProvisioners,
 } from "../provision/resources";
-import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import { type MintStoreSecret, secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { canceled } from "../terminal/exitClass";
@@ -254,6 +256,24 @@ export interface ProvisionRunOptions {
   seed: boolean;
   /** `--json`. */
   json: boolean;
+  /** `--dry-run`: plan the run, and create, write and migrate nothing. */
+  dryRun?: boolean;
+}
+
+/**
+ * A Worker's `secrets_store_secrets` entries, over one store, minting through `mint` — the seam both the run
+ * and its plan hand `provisionEnvironment`, so the two bind the same secrets by the same rule.
+ */
+function storeBindings(store: SecretsStore, scope: ProvisionScope, mint: MintStoreSecret) {
+  return async (workerCapabilities: Capability[]) =>
+    secretsStoreBindings({
+      // A Worker composing no secrets capability declares no secrets, and gets no stanza.
+      registry: workerSecretRegistry(workerCapabilities) ?? {},
+      scope,
+      storeId: store.storeId,
+      exists: (name) => store.exists(name),
+      mint,
+    });
 }
 
 /**
@@ -432,6 +452,11 @@ export function writeReport(
      * Defaulted off, because `--json` streams nothing and neither does any caller that passes no sink.
      */
     streamed?: boolean;
+    /**
+     * The plan, under `--dry-run` (#697). The report beside it is the run's as it would be; the plan is what
+     * would change, and the text output is the plan alone.
+     */
+    plan?: Plan;
   },
 ): void {
   if (options.json) {
@@ -441,8 +466,18 @@ export function writeReport(
         ...report,
         pendingSecrets: options.pending.names,
         pendingSecretsRemedy: options.pending.remedy,
+        dryRun: options.plan !== undefined,
+        // Absent from the line when there is none: `JSON.stringify` drops an undefined member.
+        plan: options.plan,
       })}\n`,
     );
+    return;
+  }
+  if (options.plan !== undefined) {
+    for (const line of manifestFaultLines(report.manifestFaults)) process.stderr.write(`${line}\n`);
+    for (const line of planText(options.plan)) process.stdout.write(`${line}\n`);
+    for (const line of pendingSecretLines(options.pending)) process.stdout.write(`${line}\n`);
+    process.stdout.write("Dry run. Nothing written.\n");
     return;
   }
   if (!options.streamed) {
@@ -561,6 +596,61 @@ async function provisionDeclared(
   // Resolved once, read by the plan and by the run — so the two cannot name different Workers.
   const resolved = workerSetOnce(projectDir, scope.stanza);
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
+  // Read from the root config this command already loaded, never from the shape of what it composes:
+  // composing the control plane makes a Worker administrable by anybody, and only the project can say
+  // that the client is itself (#616). Read once, for the run and for its plan.
+  const declared = { administersItself: administersItself(config) };
+  if (options.dryRun) {
+    // Before the confirmation, as `pithy seed --dry-run` is: a plan creates nothing, so there is nothing to agree to.
+    // Not before the credentials: the run refuses without them before it creates anything, and a dry run makes
+    // every refusal the run makes before it plans (`docs/CLI.md` §1.2). A plan the run would refuse is a
+    // promise nobody can keep.
+    const account = loadProjectCloudflare(config) ?? null;
+    const provisioners = await requireProvisioners(account, environment);
+    const capabilities = projectCapabilities(await resolved());
+    const { report, plan } = await planProvision({
+      projectDir,
+      project,
+      env: scope.stanza,
+      account,
+      provisioners,
+      store: await buildStore(account),
+      seed: options.seed,
+      ...(config.seed?.productionEnvironments !== undefined
+        ? { productionEnvironments: config.seed.productionEnvironments }
+        : {}),
+      run: async (seams) =>
+        provisionEnvironment({
+          projectDir: seams.projectDir,
+          scope,
+          capabilities,
+          provisioners: seams.provisioners,
+          resolveWorkers: async () => seams.workers(await workers()),
+          ...(seams.store
+            ? {
+                secretBindings: storeBindings(
+                  seams.store,
+                  scope,
+                  storeSecretMinter({ store: seams.store, environment: scope.stanza, audit: seams.audit }),
+                ),
+              }
+            : {}),
+          seedData: options.seed,
+          ...declared,
+          migrate: seams.migrate,
+          seed: seams.seed,
+          audit: seams.audit,
+        }),
+    });
+    writeReport(report, {
+      json: options.json,
+      seeded: options.seed,
+      pending: deferredSecrets(capabilities, mode),
+      registry: workerSecretRegistry(capabilities) ?? {},
+      plan,
+    });
+    return;
+  }
   const progress = provisionProgress(options);
   await assertProvisionConfirmed({
     env: environment,
@@ -606,20 +696,16 @@ async function provisionDeclared(
     ...(progress ? { onProgress: progress } : {}),
     ...(store
       ? {
-          secretBindings: async (workerCapabilities) =>
-            secretsStoreBindings({
-              // A Worker composing no secrets capability declares no secrets, and gets no stanza.
-              registry: workerSecretRegistry(workerCapabilities) ?? {},
-              scope,
-              storeId: store.storeId,
-              exists: (name) => store.exists(name),
-              // A declared secret whose value is arbitrary is created here rather than printed as
-              // homework (#321). Absence is checked first, so an existing value is never replaced.
-              // Remembered for this process's seed step, which runs only under `--seed` (#660). What is
-              // created here goes into a store the CLI cannot read back, so a fixture that must seal
-              // something under one of these values has this run and no other.
-              mint: storeSecretMinter({ store, environment: scope.stanza, audit, minted }),
-            }),
+          secretBindings: storeBindings(
+            store,
+            scope,
+            // A declared secret whose value is arbitrary is created here rather than printed as
+            // homework (#321). Absence is checked first, so an existing value is never replaced.
+            // Remembered for this process's seed step, which runs only under `--seed` (#660). What is
+            // created here goes into a store the CLI cannot read back, so a fixture that must seal
+            // something under one of these values has this run and no other.
+            storeSecretMinter({ store, environment: scope.stanza, audit, minted }),
+          ),
         }
       : {}),
     // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
@@ -628,10 +714,7 @@ async function provisionDeclared(
     // The read side of the record the minter above fills. Empty on a re-run, and empty when this project
     // reaches no Secrets Store at all — both of which are answers rather than faults (#660).
     mintedThisRun: minted,
-    // Read from the root config this command already loaded, never from the shape of what it composes:
-    // composing the control plane makes a Worker administrable by anybody, and only the project can say
-    // that the client is itself (#616).
-    administersItself: administersItself(config),
+    ...declared,
     audit,
   });
   writeReport(report, {
@@ -663,6 +746,46 @@ async function provisionBranch(
   const scope = featureScope(identity);
   const resolved = workerSetOnce(projectDir, scope.stanza);
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
+  if (options.dryRun) {
+    const account = await projectCloudflareAccount(projectDir);
+    // The run's own refusal, in the run's words, before anything is planned (`docs/CLI.md` §1.2).
+    const provisioners = await requireProvisioners(account, "a feature environment");
+    const store = await buildStore(account);
+    const { report, plan } = await planProvision({
+      projectDir,
+      project: identity.project,
+      env: scope.stanza,
+      account,
+      provisioners,
+      store,
+      // A feature is always seeded, as the run always seeds it.
+      seed: true,
+      run: async (seams) =>
+        provisionFeature({
+          projectDir: seams.projectDir,
+          capabilities,
+          ...(seams.store ? { store: seams.store } : {}),
+          identity,
+          provisioners: seams.provisioners,
+          administersItself: selfAdministering,
+          resolveWorkers: async () => seams.workers(await workers()),
+          // A read — the address each generated stanza is stamped with.
+          workersSubdomain: accountWorkersSubdomain(account),
+          migrate: seams.migrate,
+          seed: seams.seed,
+          audit: seams.audit,
+        }),
+    });
+    const hosts = plannedFeatureHosts(identity, capabilities, { store: store !== null });
+    writeReport(report, {
+      json: options.json,
+      seeded: true,
+      pending: featurePendingSecrets(deferredSecrets(capabilities, mode), report),
+      registry: workerSecretRegistry(capabilities) ?? {},
+      plan: { ...plan, resources: [...plan.resources, ...hosts.resources], notes: [...hosts.notes, ...plan.notes] },
+    });
+    return;
+  }
   const progress = provisionProgress(options);
   // No confirmation gate here — a feature environment is created per pull request, so there is no prompt
   // to hang the plan off. It goes where the confirmation's would: before the first Cloudflare call.
@@ -855,8 +978,14 @@ const ProvisionPayload = z
       .array(z.string().describe("A secret's name."))
       .describe("The `d1` secrets this run declares and did not create."),
     pendingSecretsRemedy: z.string().nullable().describe("The command that does create them."),
+    dryRun: z
+      .boolean()
+      .describe(
+        "Whether this was `--dry-run`. Nothing was created, written or migrated when it is `true`, and a resource the run would create carries a placeholder `id`.",
+      ),
+    plan: PlanKey,
   })
-  .describe("What `pithy provision` created, adopted and wrote.");
+  .describe("What `pithy provision` created, adopted and wrote, or under `--dry-run` would.");
 
 export default withContract(
   defineCommand({
@@ -877,6 +1006,7 @@ export default withContract(
         default: false,
         description: "With --env: also load seed fixtures once the schema is up",
       },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -888,6 +1018,7 @@ export default withContract(
           confirm: args.confirm,
           seed: args.seed,
           json: args.json,
+          dryRun: args["dry-run"],
         }),
       ),
   }),

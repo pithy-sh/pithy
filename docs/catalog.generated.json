@@ -447,6 +447,9 @@
         "--confirmRollback",
         "--destroy-retained",
         "--destroyRetained",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]
@@ -487,6 +490,9 @@
         "--confirm",
         "--seed",
         "--no-seed",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]

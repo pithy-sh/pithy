@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -505,6 +505,22 @@ describe("pithy ui add --dry-run", () => {
       `apps/${WORKER}/wrangler.jsonc`,
       "tsconfig.json",
     ]);
+  });
+
+  test("a link out of the project is refused as the real run refuses it, and nothing lands where it points", async () => {
+    // `apps/<worker>/src` leading out of the project, relatively: the copy used to drop it, so the dry run wrote
+    // a fresh `src` and planned success where the real run stops at the link.
+    const elsewhere = await mkdtemp(join(tmpdir(), "pithy-ui-dry-elsewhere-"));
+    try {
+      await symlink(relative(workerDir, elsewhere), join(workerDir, "src"));
+      const real = runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options });
+      await expect(real).rejects.toThrow(/src is a symlink/);
+      const dry = runUiAdd({ projectDir, workerDir, config: WITHOUT_AUTH, ...options, dryRun: true });
+      await expect(dry).rejects.toThrow(/src is a symlink/);
+      expect(await readdir(elsewhere)).toEqual([]);
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
+    }
   });
 
   test("the same refusals as the real run: a second front end is refused before anything is planned", async () => {

@@ -115,7 +115,7 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   const secrets: PlanSecret[] = [];
   const steps = new Set<string>();
 
-  const { result, files } = await inShadow(projectDir, async (shadow) => {
+  const { result, files, notes } = await inShadow(projectDir, async (shadow) => {
     const added = await runAdd({
       ...options,
       projectDir: shadow.root,
@@ -167,6 +167,6 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   return {
     ...result,
     ...workerIdentity({ name: worker, dir: workerDir }),
-    plan: { ...emptyPlan(), files: planned, secrets, notes: [...steps] },
+    plan: { ...emptyPlan(), files: planned, secrets, notes: [...steps, ...notes] },
   };
 }

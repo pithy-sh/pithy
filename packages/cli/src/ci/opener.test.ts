@@ -108,6 +108,8 @@ const SPAWNS: Readonly<Record<string, string>> = {
   "dev/orchestrator.ts command": "Runs each worker's dev server — the command is the resolved package manager.",
   'feature/ports.ts "git"': "Reads the branch a feature's port block belongs to.",
   'feature/worktree.ts "git"': "Creates and removes the worktree a feature branch lives in.",
+  'plan/shadow.ts "git"':
+    "Asks whether a directory named like build output is ignored, so a dry run's copy leaves it out.",
   "platform/browser.ts command": "The one browser opener. The command is this platform's, from `openCommand`.",
   "platform/editor.ts command":
     "The one editor launcher. The command is `$VISUAL`, `$EDITOR`, or the platform default.",

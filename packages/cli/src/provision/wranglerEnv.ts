@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
@@ -15,6 +15,7 @@ import { type AppOwnedWorkflow, applyAppWorkflows, planAppWorkflows } from "../p
 import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
+import { readWranglerConfig } from "../project/wrangler";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, featureConfigPath, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
@@ -161,8 +162,8 @@ async function editStanza(
   source: boolean,
   mutate: (stanza: EnvBindings, top: Record<string, unknown>) => void,
 ): Promise<string> {
-  const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
-  const config = parse(raw) as unknown as Record<string, unknown>;
+  // Through the one reader, so a config that will not open is a refusal naming it, never node's own errno (#697).
+  const config = (await readWranglerConfig(workerDir)) as Record<string, unknown>;
 
   // Through the one stanza reader (#581), never `config.env[key] ??= {}`. A stanza this creates — and for
   // `feature` it always creates one, since `env.feature` is unwritable in a tracked config — starts with

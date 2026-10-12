@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { lstat, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -9,6 +9,7 @@ import { devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { type SecretRegistry, storeBindingCollisions } from "@pithy-sh/secrets/src/registry";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
+import { lstatAsProject } from "../project/linkView";
 import { ensureScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
 import { bindingSecrets } from "../provision/secretBindings";
@@ -267,7 +268,7 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
 
     // A symlink is the old design's own artifact — nothing but pithy ever made one here — and it holds no
     // content, so removing it loses nothing. The file it pointed at is untouched and still on disk.
-    const entry = await lstat(path).catch(() => null);
+    const entry = await lstatAsProject(path).catch(() => null);
     if (entry?.isSymbolicLink()) {
       await unlink(path);
       relinked.push(dir);

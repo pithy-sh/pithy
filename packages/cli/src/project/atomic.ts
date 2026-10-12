@@ -7,6 +7,7 @@ import type { FileHandle } from "node:fs/promises";
 import { lstat, open, readdir, readlink, rename, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { ConflictError, InternalError, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { linkStandingAt } from "./linkView";
 
 /** How many links deep a walk may go before it is called a loop. Well past anything deliberate. */
 const MAX_LINK_DEPTH = 16;
@@ -387,6 +388,10 @@ async function resolveWritePath(path: string): Promise<string> {
     try {
       const entry = await lstat(next);
       if (!entry.isSymbolicLink()) {
+        // A dry run's snapshot of a link out of the project is a directory here, and the link it stands for is
+        // owned by whoever made it: its owner is checked as this walk checks every link it follows (`linkView.ts`).
+        const standIn = linkStandingAt(next);
+        if (standIn !== undefined) ensureOurs(next, standIn.uid, path);
         resolved = next;
         // A file, a socket, a device: real, and nothing below it exists to reach. Whatever follows is the
         // kernel's ENOTDIR to give, not ours to normalize away.

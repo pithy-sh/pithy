@@ -352,7 +352,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
       return withRollback(scope, () => write(projectDir, workerDir));
     });
     result = run.result;
-    planned = { ...emptyPlan(), files: run.files };
+    planned = { ...emptyPlan(), files: run.files, notes: run.notes };
   } else {
     const scope = { root: options.projectDir, paths: touchedPaths(options, plan.files) };
     result = await withRollback(scope, () => write(options.projectDir, options.workerDir));
