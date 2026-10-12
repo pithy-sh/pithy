@@ -5,6 +5,8 @@ import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { type InstalledProbe, nodeModulesProbe } from "@pithy-sh/core/src/error/unresolved";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 
 /**
  * **A `@pithy-sh/*` module, resolved from the project — never from wherever the CLI is installed.**
@@ -124,12 +126,6 @@ import { pathToFileURL } from "node:url";
  * it means removing those static imports, which is its own issue.
  */
 
-/** `@pithy-sh/payments` from `@pithy-sh/payments/src/capability` — the package, not the subpath. */
-function packageOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? specifier);
-}
-
 /**
  * Where `pkg` lives on the `node_modules` chain `projectDir` walks, or `null`.
  *
@@ -156,12 +152,12 @@ export function packageDirFrom(projectDir: string, pkg: string): string | null {
  * Whether `pkg` sits on the `node_modules` chain above `referrer`, the file whose import of it failed — the
  * chain the runtime walked and found nothing on, asked again of the filesystem.
  *
- * Core's `InstalledProbe`. Bun 1.4.2 writes one sentence for a deep import whether its package is absent or
- * installed without that path (#709), so this is what tells an install that will help from one that will not.
+ * Core's `nodeModulesProbe` over `node:fs`: the walk, and the `realpath` it starts from, are core's, so the
+ * CLI and the vite plugin cannot walk two different chains. Bun 1.4.2 writes one sentence for a deep import
+ * whether its package is absent or installed without that path (#709), so this is what tells an install
+ * that will help from one that will not.
  */
-export function installedBeside(pkg: string, referrer: string): boolean {
-  return packageDirFrom(dirname(referrer), pkg) !== null;
-}
+export const installedBeside: InstalledProbe = nodeModulesProbe({ exists: existsSync, realpath: realpathSync });
 
 /**
  * The project's Worker directories — `apps/*`, and nothing else.

@@ -61,5 +61,7 @@ jobs:
       # The loaders fall back to process.env, so the creds above are picked up with no .dev.vars file.
       # wrangler runs via `bun x wrangler` (the workspace devDependency) and authenticates from
       # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — no `wrangler login`.
+      # No build step: turbo's `test:integration` depends on `^build` and `build`, as `ci.yml`'s test jobs
+      # do, so every package is built before the suites that import its `dist/` (#709).
       - name: Live integration tests
         run: bun run test:integration

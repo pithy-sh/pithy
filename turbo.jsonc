@@ -857,6 +857,12 @@
     "test:workers": { "dependsOn": ["^build", "build"] },
     "test:integration": {
       // Live Cloudflare — never cached; only packages that define the script run it.
+      //
+      // Built first, exactly as `test` is and for the same reason: every `@pithy-sh/*` import resolves
+      // through an `exports` map into `dist/`. `integration.yml` installs and runs this with no build step
+      // of its own, so without the `dependsOn` its first run died on `Cannot find module` before a single
+      // suite started (#709). `ci/integrationBuild.test.ts` asks turbo's plan that it still does.
+      "dependsOn": ["^build", "build"],
       "cache": false
     },
     "lint": {},

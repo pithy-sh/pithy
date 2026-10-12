@@ -172,7 +172,8 @@ describe("classifyConfigLoadFailure", () => {
     };
     const { kind, action } = classifyConfigLoadFailure(cause);
     expect(kind).toBe("unresolved-import");
-    expect(action).toContain("@pithy-sh/core/src/x");
+    // The package is named — the half Node's sentence gives too, so both runtimes say the same thing.
+    expect(action).toContain('"@pithy-sh/core" is not installed.');
     expect(action).not.toContain("/home/a/pithy.config.ts");
     // Nothing named `@pithy-sh/core` is installed anywhere above /home/a, so installing is the remedy.
     expect(action).toContain("Install the project's dependencies (bun install)");
@@ -223,7 +224,7 @@ describe("classifyConfigLoadFailure", () => {
       const { action } = classifyConfigLoadFailure(
         resolveMessage("@pithy-sh/core/src/capability/capability", "@pithy-sh/core", join(email, "src", "index.ts")),
       );
-      expect(action).toContain("It is imported by @pithy-sh/email.");
+      expect(action).toMatch(/^@pithy-sh\/email imports "@pithy-sh\/core", which is not installed\./);
       expect(action).toContain("Install the project's dependencies (bun install)");
       expect(action).not.toContain("will not help");
     });
@@ -234,7 +235,7 @@ describe("classifyConfigLoadFailure", () => {
       await writeFile(join(home, "package.json"), '{"name":"fakepkg"}');
       const referrer = join(outside, "apps", "api", "pithy.config.ts");
       const { action } = classifyConfigLoadFailure(resolveMessage("fakepkg/src/nope", "fakepkg", referrer));
-      expect(action).toContain('"fakepkg/src/nope" is not something its package provides.');
+      expect(action).toContain('"fakepkg/src/nope" is not something the installed fakepkg provides.');
       expect(action).toContain("installing dependencies will not help");
       expect(action).not.toContain("bun install");
     });
@@ -268,7 +269,7 @@ describe("classifyConfigLoadFailure", () => {
         specifier: "./nope.js",
         referrer,
       });
-      expect(action).toContain("It is imported by pkg2.");
+      expect(action).toContain('pkg2 is missing its own file "pkg2/nope.js".');
       expect(action).not.toContain("Create that file");
       expect(action).not.toContain(outside);
     });
@@ -999,6 +1000,10 @@ describe("the gate on the filter (#228)", () => {
     [
       "packages/core/src/error/cause.ts",
       "The one that is allowed to. `safeReason` and `failurePosition` live here, and every surface imports them — including @pithy-sh/vite, which depends on core and on nothing else in the kit.",
+    ],
+    [
+      "packages/core/src/error/unresolved.ts",
+      "The unresolved-import classifier, beside it in core. It reads paths to decide the kind, and decides what of one may be shown — never an absolute path or a `file:` URL — for all three surfaces at once (#709). It recognizes a path for the same reason `safeReason` does, and it is the one place that may.",
     ],
   ]);
 

@@ -110,7 +110,7 @@ describe("classifyCapabilityLoadFailure", () => {
       const cause = bun("@pithy-sh/absent/src/thing");
       const { kind, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", cause, root);
       expect(kind).toBe("dependency-unresolved");
-      expect(action).toContain('"@pithy-sh/absent/src/thing"');
+      expect(action).toMatch(/^@pithy-sh\/email imports "@pithy-sh\/absent", which is not installed\./);
       expect(action).toMatch(/bun install/);
       expect(action).not.toMatch(/pithy add/);
     });
@@ -121,14 +121,15 @@ describe("classifyCapabilityLoadFailure", () => {
       const { kind, action } = classifyCapabilityLoadFailure("email", "@pithy-sh/email", { ...cause, message }, root);
       expect(kind).toBe("dependency-unresolved");
       expect(action).toMatch(/bun install/);
-      expect(action).toMatch(/version/);
-      expect(action).not.toMatch(/pithy add/);
+      expect(action).toMatch(/correct that import/);
+      expect(action).not.toMatch(/will not help|pithy add/);
     });
   });
 
-  // Measured on Bun 1.4.2: `node:nope` throws ERR_UNKNOWN_BUILTIN_MODULE and `bun:nope` throws
-  // `Cannot find package 'bun:nope'`, each with the specifier as written. Under Node the same `node:nope`
-  // carries the code and the sentence alone. The runtime provides these, so no install ever will.
+  // Measured on Bun 1.4.2: `node:nope` throws ERR_UNKNOWN_BUILTIN_MODULE with the specifier as written.
+  // Under Node 22 the same `node:nope` carries the code and the sentence alone, and `bun:nope` is a scheme
+  // Node has no loader for. The runtime provides these, so no install ever will. (Bun 1.4.2 itself drops
+  // the scheme from `bun:nope` and reports a package called `nope`; nothing in that cause is left to read.)
   test("a builtin the runtime does not provide is never an install, on Bun or on Node", () => {
     const referrer = "/home/a/node_modules/@pithy-sh/support/src/x.ts";
     const causes = [
@@ -139,21 +140,20 @@ describe("classifyCapabilityLoadFailure", () => {
         specifier: "node:nope",
         referrer,
       },
-      {
-        name: "ResolveMessage",
-        code: "ERR_MODULE_NOT_FOUND",
-        message: `Cannot find package 'bun:nope' imported from ${referrer}`,
-        specifier: "bun:nope",
-        referrer,
-      },
       Object.assign(new Error("No such built-in module: node:nope"), { code: "ERR_UNKNOWN_BUILTIN_MODULE" }),
+      Object.assign(
+        new Error(
+          "Only URLs with a scheme in: file, data, and node are supported by the default ESM loader. Received protocol 'bun:'",
+        ),
+        { code: "ERR_UNSUPPORTED_ESM_URL_SCHEME" },
+      ),
     ];
     for (const cause of causes) {
       const { kind, message, action } = classifyCapabilityLoadFailure("support", "@pithy-sh/support", cause, "/home/a");
       expect(kind).toBe("broken");
       expect(message).not.toMatch(/is not installed/);
       expect(action).toMatch(/runtime/);
-      expect(action).toMatch(/:nope"/);
+      expect(action).toMatch(/"(?:node:nope|bun:)"/);
       expect(action).not.toMatch(/bun install|pithy add/i);
       expect(action).not.toContain("/home/a");
     }
@@ -166,8 +166,11 @@ describe("classifyCapabilityLoadFailure", () => {
     });
     const { kind, action } = classifyCapabilityLoadFailure("media", "@pithy-sh/media", cause);
     expect(kind).toBe("broken");
-    expect(action).not.toMatch(/pithy add/);
-    expect(action).toMatch(/reinstall/i);
+    expect(action).not.toMatch(/pithy add|bun install/);
+    expect(action).toContain(
+      '"@pithy-sh/media/src/capability" is not something the installed @pithy-sh/media provides.',
+    );
+    expect(action).toMatch(/installing dependencies will not help/);
   });
 
   test("Bun's BuildMessage, read by its fields: an installed package that will not parse is broken", () => {

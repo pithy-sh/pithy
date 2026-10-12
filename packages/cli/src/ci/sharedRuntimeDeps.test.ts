@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { relative, resolve, sep } from "node:path";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
@@ -114,13 +115,7 @@ function imports(source: string): Set<string> {
   for (const match of blankComments(source).matchAll(/(?:from|import)\s*\(?\s*["']([^"']+)["']/g)) {
     const specifier = match[1] as string;
     if (specifier.startsWith(".") || specifier.startsWith("#")) continue;
-    const scoped = specifier.startsWith("@");
-    found.add(
-      specifier
-        .split("/")
-        .slice(0, scoped ? 2 : 1)
-        .join("/"),
-    );
+    found.add(packageOf(specifier));
   }
   return found;
 }

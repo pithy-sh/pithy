@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -148,11 +148,10 @@ describe("classifyWorkerConfigFailure", () => {
     };
     const { kind, action } = classifyWorkerConfigFailure(cause);
     expect(kind).toBe("unresolved-import");
-    expect(action).toContain("@pithy-sh/email");
-    expect(action).toContain("not the config");
+    // The import is email's, so email is named as the one that imports it — never the config, never a path.
+    expect(action).toMatch(/^@pithy-sh\/email imports /);
     expect(action).not.toContain("/home/a");
-    expect(action).not.toMatch(/is not installed|is missing/i);
-    // A deep import of a package that may or may not be there. This plugin has no probe, so it hedges.
+    // Nothing is installed at /home/a, and this plugin asks the filesystem: core is absent, so install.
     expect(action).not.toMatch(/will not help/);
     expect(action).toMatch(/bun install/i);
   });
@@ -264,18 +263,46 @@ describe("classifyWorkerConfigFailure", () => {
       };
       const { kind, action } = classifyWorkerConfigFailure(cause);
       expect(kind).toBe("unresolved-import");
-      expect(action).toMatch(/^A file the config imports is not something its package provides\./);
+      // Named from the package it sits in, never from the path it sits at.
+      expect(action).toMatch(/^"fakepkg\/src\/nope\.js" is not something the installed fakepkg provides\./);
       expect(action).toMatch(/installing dependencies will not help/);
       expect(action).not.toMatch(/bun install/i);
       expect(action).not.toContain("/home/a");
     });
 
-    test("a deep import of a package that may be absent hedges, because nothing here can look", () => {
-      const { action } = classifyWorkerConfigFailure(viteModule("fakepkg/src/nope"));
-      expect(action).toContain('"fakepkg/src/nope"');
-      expect(action).toMatch(/bun install/i);
-      expect(action).toMatch(/correct that import/i);
-      expect(action).not.toMatch(/will not help/);
+    // Vite says `Cannot find module` for a deep import whether its package is absent or only the path is.
+    // This plugin used to pass core no probe, so both hedged. It asks the filesystem now, from the config.
+    test("a deep import is asked of the filesystem: an install only when the package is absent", async () => {
+      const dir = await workerDir({ "pithy.config.ts": "export default {};\n" });
+      await mkdir(join(dir, "node_modules", "fakepkg"), { recursive: true });
+      await writeFile(join(dir, "node_modules", "fakepkg", "package.json"), '{"name":"fakepkg"}');
+      const config = join(dir, "pithy.config.ts");
+
+      const installed = classifyWorkerConfigFailure(viteModule("fakepkg/src/nope", config), dir).action;
+      expect(installed).toContain('"fakepkg/src/nope"');
+      expect(installed).toMatch(/installing dependencies will not help/);
+      expect(installed).not.toMatch(/bun install/i);
+
+      const absent = classifyWorkerConfigFailure(viteModule("absentpkg/src/x", config), dir).action;
+      expect(absent).toContain('"absentpkg"');
+      expect(absent).toMatch(/bun install/i);
+      expect(absent).not.toContain(dir);
+    });
+
+    // A finding from the last review round: Node's unexported subpath carried no `Cannot find`, so this
+    // loader had no specifier and told the adopter to run `bun install` against an installed package.
+    test("a subpath the installed package does not export: named, and never an install", () => {
+      const cause = {
+        code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+        message:
+          "Package subpath './hidden.js' is not defined by \"exports\" in /home/a/node_modules/expkg/package.json imported from /home/a/apps/api/pithy.config.ts",
+      };
+      const { kind, action } = classifyWorkerConfigFailure(cause);
+      expect(kind).toBe("unresolved-import");
+      expect(action).toContain('"expkg/hidden.js"');
+      expect(action).toMatch(/installing dependencies will not help/);
+      expect(action).not.toMatch(/bun install/i);
+      expect(action).not.toContain("/home/a");
     });
   });
 

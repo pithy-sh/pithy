@@ -4,27 +4,19 @@
 import { randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { access, copyFile, lstat, readdir, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
-import {
-  causeMessage,
-  failurePosition,
-  importingPackage,
-  prop,
-  rootCause,
-  safeReason,
-  unresolvedKind,
-  unresolvedSpecifier,
-} from "@pithy-sh/core/src/error/cause";
+import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import {
   fromZodError,
   InternalError,
   NotFoundError,
   PreconditionFailedError,
 } from "@pithy-sh/core/src/error/pithyError";
+import { unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
@@ -577,22 +569,6 @@ function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
 }
 
-function isUnresolvedImport(cause: unknown): boolean {
-  const code = prop(cause, "code");
-  if (
-    code === "ERR_MODULE_NOT_FOUND" ||
-    code === "MODULE_NOT_FOUND" ||
-    code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ||
-    code === "ERR_UNSUPPORTED_DIR_IMPORT"
-  ) {
-    return true;
-  }
-  if (prop(cause, "name") === "ResolveMessage") return true;
-  return /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url /.test(
-    rawMessage(cause),
-  );
-}
-
 function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
   if (name === "SyntaxError" || name === "BuildMessage") return true;
@@ -614,7 +590,8 @@ function isParseError(cause: unknown): boolean {
  *
  * So each cause gets the sentence that fits it, and the fourth gets none:
  *
- * - **unresolved-import** — the specifier is named, and `bun install` is right *here*, where it was earned.
+ * - **unresolved-import** — core's `unresolvedImport` names the import and whose it is, and says to install
+ *   only where installing helps. This surface keeps no rule of its own about imports (#709).
  * - **parse-error** — the parser's reason and position. It says installing will not help, because the
  *   adopter has read the opposite for as long as this refusal has existed.
  * - **threw-on-load** — the config's own error, which is neither of the above.
@@ -627,69 +604,13 @@ function isParseError(cause: unknown): boolean {
  *   Bun wraps two or more build diagnostics in an `AggregateError`, and a stray brace cascades, so the
  *   wrapped shape is the *common* one. #207 fixed the bare case and this one classified worse than it.
  */
-/**
- * The remedy for an import that would not resolve — **one of three, because there are three causes.**
- *
- * Until #489 they wore one sentence: *Install the project's dependencies (bun install), or correct that
- * import.* For a missing dependency that is right. For the other two, `bun install` is **guaranteed** to
- * be a no-op, which is what makes the sentence unfollowable rather than merely unhelpful — and an agent
- * following it has no next move, because the message *was* the recovery path.
- *
- * #480 is the case that showed it: `pithy add email` reported `Nothing resolves
- * "@pithy-sh/core/src/capability/capability"` while core was installed and resolving throughout. The
- * specifier was honest; the package genuinely absent was the one being added, and the importer is what
- * would have pointed at it. {@link importingPackage} recovers that where the runtime supplies it.
- *
- * `relativeTo` exists because on node the "specifier" *is* an already-resolved absolute path, so this
- * message printed `/home/…` for every relative import — contradicting the rule the rest of this module
- * keeps, and the tests that assert an action never carries one.
- *
- * {@link installedBeside} answers the one question Bun 1.4 leaves open: whether a deep import's package is
- * absent or only its path is (#709). Without that answer a fresh clone was told installing will not help.
- */
-function unresolvedAction(cause: unknown, relativeTo: string | undefined): string {
-  const specifier = unresolvedSpecifier(cause);
-  if (specifier === undefined) {
-    return "An import in the config does not resolve. Check its imports, then install the project's dependencies.";
-  }
-
-  const shown = readable(specifier, relativeTo);
-  const importer = importingPackage(cause);
-  const from = importer === undefined ? "" : ` It is imported by ${importer}.`;
-
-  switch (unresolvedKind(cause, installedBeside)) {
-    case "package":
-      return `Nothing provides "${shown}".${from} Install the project's dependencies (bun install), or correct that import.`;
-    case "package-subpath":
-      // The package is installed and does not export this path. Installing it again produces the same
-      // tree; the fix is a version that has it, or a corrected import.
-      return `"${shown}" is not something its package provides.${from} Check the version you have, or correct that import — installing dependencies will not help.`;
-    case "local-file":
-      return `Nothing at "${shown}". Create that file or correct the import — installing dependencies will not help.`;
-    default:
-      return `Nothing resolves "${shown}".${from} Correct that import, or install the project's dependencies.`;
-  }
-}
-
-/**
- * A specifier as an adopter would write it: relative to their config when it arrived as a resolved path.
- *
- * Node hands back `/home/jo/app/apps/board/src/x`; what they typed was `./src/x`. Printing the former
- * puts our frame in their message and a machine-specific path in a line meant to be acted on.
- */
-function readable(specifier: string, relativeTo: string | undefined): string {
-  if (relativeTo === undefined || !isAbsolute(specifier)) return specifier;
-  const within = relative(relativeTo, specifier);
-  return within.startsWith("..") ? specifier : `./${within.split(sep).join("/")}`;
-}
-
 export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string): ConfigLoadFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
 
-  if (isUnresolvedImport(cause)) {
-    return { kind: "unresolved-import", action: unresolvedAction(cause, relativeTo) };
-  }
+  // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
+  const unresolved = unresolvedImport(cause, { installed: installedBeside, relativeTo, loader: "@pithy-sh/cli" });
+  if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
 
   if (isParseError(cause)) {
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is

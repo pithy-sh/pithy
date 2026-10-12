@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -31,5 +31,24 @@ describe("installedBeside", () => {
 
   test("the chain is the importer's, so a project file reaches the root's node_modules too", () => {
     expect(installedBeside("@pithy-sh/core", join(root, "apps", "api", "pithy.config.ts"))).toBe(true);
+  });
+
+  // Bun's isolated linker, on disk: the root links `email` into its store, and email's own dependency sits
+  // beside email's real directory and nowhere on the root's chain. The resolver walks from the real path.
+  // Walked from the link as given, `stripe` was reported absent and the adopter told to install it.
+  test("a symlinked importer is walked from where it really is, as the resolver walked it", () => {
+    const store = join(root, "node_modules", ".bun", "@pithy-sh+email@1.0.0", "node_modules");
+    mkdirSync(join(store, "@pithy-sh", "email", "src"), { recursive: true });
+    writeFileSync(join(store, "@pithy-sh", "email", "package.json"), '{"name":"@pithy-sh/email"}');
+    writeFileSync(join(store, "@pithy-sh", "email", "src", "capability.js"), "");
+    mkdirSync(join(store, "stripe"), { recursive: true });
+    writeFileSync(join(store, "stripe", "package.json"), '{"name":"stripe"}');
+    const linked = join(root, "linked");
+    mkdirSync(join(linked, "node_modules", "@pithy-sh"), { recursive: true });
+    symlinkSync(join(store, "@pithy-sh", "email"), join(linked, "node_modules", "@pithy-sh", "email"), "dir");
+
+    expect(installedBeside("stripe", join(linked, "node_modules", "@pithy-sh", "email", "src", "capability.js"))).toBe(
+      true,
+    );
   });
 });

@@ -3,6 +3,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { readSource, sourcePaths } from "./sourceFiles";
@@ -159,8 +160,7 @@ function resolveSpecifier(specifier: string, fromFile: string): Resolved | null 
     }
     return null;
   }
-  const scoped = /^(@[^/]+\/[^/]+)/.exec(specifier);
-  return { kind: "package", name: scoped ? (scoped[1] ?? specifier) : (specifier.split("/")[0] ?? specifier) };
+  return { kind: "package", name: packageOf(specifier) };
 }
 
 /** One walk's answer: which heavy packages an entry reaches, and the shortest chain of modules to each. */

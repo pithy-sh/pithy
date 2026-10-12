@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { duplicatedKitPackages, kitCopies } from "./kitCopies";
@@ -197,7 +198,7 @@ function kitImports(directory: string): string[] {
     for (const match of blankComments(text).matchAll(
       /(?:\bfrom|^\s*(?:import|export)|\bimport\s*\()\s*\(?\s*["'](@pithy-sh\/[^"']+)["']/gm,
     )) {
-      const name = (match[1] as string).split("/").slice(0, 2).join("/");
+      const name = packageOf(match[1] as string);
       if (name !== self) found.add(name);
     }
   }

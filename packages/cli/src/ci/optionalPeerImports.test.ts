@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { parseAst } from "rolldown/parseAst";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
@@ -79,7 +80,7 @@ interface OptionalPeerImport {
 /** The kit package a scoped specifier names, or undefined for a relative or non-kit one. */
 function kitPackage(specifier: string): string | undefined {
   if (!specifier.startsWith(SCOPE)) return undefined;
-  return specifier.split("/").slice(0, 2).join("/");
+  return packageOf(specifier);
 }
 
 /**

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative, resolve } from "node:path";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { readSource, sourcePaths } from "./sourceFiles";
@@ -241,11 +242,6 @@ function staticPackages(source: string): string[] {
   return [...found].sort();
 }
 
-/** `@pithy-sh/secrets` from `@pithy-sh/secrets/src/keyspace`. */
-function packageOf(specifier: string): string {
-  return specifier.split("/").slice(0, 2).join("/");
-}
-
 /** Every `import.meta.resolve(` in a file, whatever it is given. */
 function metaResolves(source: string): number {
   return [...blankComments(source).matchAll(/\bimport\.meta\.resolve\s*\(/g)].length;
@@ -321,11 +317,18 @@ describe("kit modules resolve from the project", () => {
 
   // The resolver itself, reached from where the loaders are. A cycle here would not be a slow build —
   // `capabilities/*` and `audit/*` and `doctor/*` all import it, and it must stay importable from each.
-  test("the resolver imports node builtins and nothing else", () => {
+  //
+  // So nothing from the CLI, ever. Two of core's modules are named, and only those two: the kit's one
+  // `packageOf` and its one unresolved-import probe (#709). A copy kept here to satisfy this gate is the
+  // drift #709 removed, and core cannot import the CLI, so neither can close a cycle.
+  test("the resolver imports node builtins, core's two pure helpers, and nothing else", () => {
+    const allowed = new Set(["@pithy-sh/core/src/naming/packageName", "@pithy-sh/core/src/error/unresolved"]);
     const text = readSource(join(CLI_SRC, "project", "kitResolve.ts")) ?? "";
-    const imports = [...blankComments(text).matchAll(/^import\s[^"]*"([^"]+)"/gm)].map((m) => m[1]);
+    const imports = [...blankComments(text).matchAll(/^import\s[^"]*"([^"]+)"/gm)].map((m) => m[1] ?? "");
     expect(imports.length).toBeGreaterThan(0);
-    for (const specifier of imports) expect(specifier).toMatch(/^node:/);
+    for (const specifier of imports) {
+      expect(specifier.startsWith("node:") || allowed.has(specifier), specifier).toBe(true);
+    }
   });
 });
 

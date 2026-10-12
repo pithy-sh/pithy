@@ -1,17 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { isAbsolute } from "node:path";
-import {
-  causeMessage,
-  importingPackage,
-  prop,
-  rootCause,
-  safeReason,
-  unresolvedKind,
-  unresolvedSpecifier,
-} from "@pithy-sh/core/src/error/cause";
+import { causeMessage, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type UnresolvedImport, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
+import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { installedBeside, packageInstalledFrom } from "../project/kitResolve";
 import { capabilityNotComposed } from "./notComposed";
 
@@ -86,35 +79,6 @@ function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";
 }
 
-/** A resolution failure — the module graph, not the module's own code. */
-function isUnresolvedImport(cause: unknown): boolean {
-  const code = prop(cause, "code");
-  if (
-    code === "ERR_MODULE_NOT_FOUND" ||
-    code === "MODULE_NOT_FOUND" ||
-    code === "ERR_UNSUPPORTED_DIR_IMPORT" ||
-    code === "ERR_UNKNOWN_BUILTIN_MODULE"
-  ) {
-    return true;
-  }
-  if (prop(cause, "name") === "ResolveMessage") return true;
-  return /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url /.test(
-    rawMessage(cause),
-  );
-}
-
-/**
- * A subpath the installed package does not export.
- *
- * Deliberately **not** an unresolved import here, though Node groups them: the package resolved, so it
- * is installed, and `pithy add` would reinstall the same broken export map. Ejected from the resolution
- * branch on purpose — this is the one resolver error that proves the capability is present.
- */
-function isBadSubpath(cause: unknown): boolean {
-  const code = prop(cause, "code");
-  return code === "ERR_PACKAGE_PATH_NOT_EXPORTED" || /is not defined by "exports"/.test(rawMessage(cause));
-}
-
 /** The package's own source would not parse or build. */
 function isParseError(cause: unknown): boolean {
   const name = prop(cause, "name");
@@ -123,15 +87,6 @@ function isParseError(cause: unknown): boolean {
   return /Transform failed|\[PARSE_ERROR]|Parse (?:error|failure)|Unexpected (?:token|end of input)/.test(
     rawMessage(cause),
   );
-}
-
-/** A module the runtime itself provides, or does not: `node:x`, `bun:x`. Never a package to install. */
-const BUILTIN = /^(?:node|bun):/;
-
-/** `@pithy-sh/payments` from `@pithy-sh/payments/src/workflows/worker` — the package, not the subpath. */
-function packageOf(specifier: string): string {
-  const parts = specifier.split("/");
-  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? specifier);
 }
 
 /**
@@ -163,102 +118,14 @@ export function classifyCapabilityLoadFailure(
     detail: `${kind}: ${target} — ${raw}`,
   });
 
-  // Present, and its export map or its source is wrong. Checked before resolution, because Node reports
-  // a bad subpath with a resolver code and the package plainly resolved for it to be reached.
-  if (isBadSubpath(cause)) {
-    return failure(
-      "broken",
-      `The ${capability} capability is installed but incomplete.`,
-      `${pkg} does not export what this command needs. Reinstall it, or report this to its maintainer.`,
-    );
-  }
-
-  if (isUnresolvedImport(cause)) {
-    const specifier = unresolvedSpecifier(cause);
-    if (specifier === undefined) {
-      return failure(
-        "unresolved-import",
-        `The ${capability} capability could not be loaded.`,
-        `An import did not resolve. Run \`pithy add ${capability}\` if it is not installed, or bun install if it is.`,
-      );
-    }
-    // A builtin the runtime does not provide. Bun 1.4.2 says ERR_UNKNOWN_BUILTIN_MODULE for `node:nope` and
-    // `Cannot find package` for `bun:nope`, and Node says the former with no field. Every install leaves
-    // the runtime as it was, so the package needs a runtime that has the module, or a fix of its own.
-    if (BUILTIN.test(specifier)) {
-      return failure(
-        "broken",
-        `The ${capability} capability is installed and will not load.`,
-        `${pkg} imports "${specifier}", which this runtime does not provide. Run it on a runtime that does, or report this to its maintainer.`,
-      );
-    }
-    // A mapped subpath whose file is missing: node names the **resolved absolute path** rather than a
-    // specifier. `packageOf` reduces a path to the empty string, which fell through to
-    // `dependency-unresolved` and interpolated that path straight into `action` — the one thing this
-    // file's own tests assert never happens. A path inside a package exists only because the package
-    // resolved, so this is the incomplete-install case and is answered as one.
-    //
-    // `isAbsolute` rather than a character class of our own. A hand-written path recognizer is half of
-    // the message-safety filter `project/config.test.ts` exists to keep in `@pithy-sh/core` alone, and
-    // that gate fires on the pattern whatever it is doing there.
-    if (isAbsolute(specifier) || specifier.startsWith(".")) {
-      return failure(
-        "broken",
-        `The ${capability} capability is installed but incomplete.`,
-        `${pkg} is missing a file this command needs. Reinstall it, or report this to its maintainer.`,
-      );
-    }
-    if (packageOf(specifier) === pkg) {
-      // The claim is checked before it is made. `pithy add` on a package that is already there installs
-      // nothing and then rewrites a hand-built `pithy.config.ts` — the remedy is destructive on exactly
-      // the projects where it is wrong, which is why this branch earns its extra syscall (#533).
-      if (projectDir !== undefined && packageInstalledFrom(projectDir, pkg)) {
-        return failure(
-          "unreachable",
-          `The ${capability} capability is installed and could not be reached.`,
-          `${pkg} is in this project's node_modules but nothing resolves "${specifier}". Reinstall the project's dependencies (bun install) and check ${pkg} is up to date.`,
-        );
-      }
-      return failure(
-        "not-installed",
-        `The ${capability} capability is not installed.`,
-        `Run \`pithy add ${capability}\`, then re-run this command.`,
-      );
-    }
-    // Someone else's import, and Bun 1.4.2 does not say whether the package it names is absent or only
-    // the path inside it is (#709). A `#` import belongs to the package that wrote it, and a deep path
-    // into a dependency that is there is version skew; installing changes neither. Asked of the
-    // filesystem, from the importing file, so Bun answers what Node's resolved path already says.
-    const owner = importingPackage(cause) ?? pkg;
-    switch (unresolvedKind(cause, installedBeside)) {
-      case "package":
-        return failure(
-          "dependency-unresolved",
-          `The ${capability} capability could not be loaded.`,
-          `${pkg} is installed, but nothing resolves "${specifier}". Install the project's dependencies (bun install), then re-run this command.`,
-        );
-      case "package-subpath":
-      case "local-file":
-        if (specifier.startsWith("#")) {
-          return failure(
-            "broken",
-            `The ${capability} capability is installed and will not load.`,
-            `${owner} imports "${specifier}", which its own imports map does not provide. Report this to its maintainer — installing dependencies will not help.`,
-          );
-        }
-        return failure(
-          "broken",
-          `The ${capability} capability is installed and will not load.`,
-          `${owner} imports "${specifier}", and nothing provides it. Bring ${owner} and its dependencies to matching versions, or report this to its maintainer — installing dependencies will not help.`,
-        );
-      default:
-        return failure(
-          "dependency-unresolved",
-          `The ${capability} capability could not be loaded.`,
-          `${pkg} is installed, but nothing resolves "${specifier}". Install the project's dependencies (bun install), or bring ${pkg} and its dependencies to matching versions.`,
-        );
-    }
-  }
+  // Which import, whose, and what to do are core's, for all three surfaces that refuse a module (#709).
+  // What stays here is the one fact core cannot know: which package this loader was loading.
+  const unresolved = unresolvedImport(cause, {
+    installed: installedBeside,
+    relativeTo: projectDir,
+    loader: "@pithy-sh/cli",
+  });
+  if (unresolved !== undefined) return unresolvedFailure(capability, pkg, unresolved, projectDir, failure);
 
   if (isParseError(cause)) {
     // `safeReason` can answer nothing: a diagnostic that carries a path, a stack frame or a newline is not
@@ -288,6 +155,61 @@ export function classifyCapabilityLoadFailure(
     `The ${capability} capability could not be loaded.`,
     `Run \`pithy doctor\` to check what the project resolves, then re-run this command.`,
   );
+}
+
+/**
+ * A capability that would not load because an import did not resolve.
+ *
+ * Core's {@link unresolvedImport} has decided the kind, the owner and the remedy, and that remedy is the
+ * `action` here — the same sentence the config loader and the vite plugin give for the same cause. Two
+ * things are this loader's own, and both are about the **target**, never about an import:
+ *
+ * - **The capability's own package is absent.** That is `pithy add`, not `bun install`, and the claim is
+ *   checked against the project before it is made (#533): `pithy add` on a package that is already there
+ *   installs nothing and then rewrites a hand-built `pithy.config.ts`.
+ * - **Nothing names the import.** Then the capability itself may be what is missing, so both remedies are
+ *   named and neither is asserted.
+ *
+ * Everything else is the capability installed and not loading, or a dependency of it not installed.
+ */
+function unresolvedFailure(
+  capability: string,
+  pkg: string,
+  unresolved: UnresolvedImport,
+  projectDir: string | undefined,
+  failure: (kind: CapabilityLoadKind, message: string, action: string) => CapabilityLoadFailure,
+): CapabilityLoadFailure {
+  const { kind, remedy } = unresolved;
+  if (unresolved.package === pkg && (kind === "package" || kind === "undetermined")) {
+    if (projectDir !== undefined && packageInstalledFrom(projectDir, pkg)) {
+      return failure(
+        "unreachable",
+        `The ${capability} capability is installed and could not be reached.`,
+        `${pkg} is in this project's node_modules but nothing resolves "${unresolved.shown ?? pkg}". Reinstall the project's dependencies (bun install) and check ${pkg} is up to date.`,
+      );
+    }
+    return failure(
+      "not-installed",
+      `The ${capability} capability is not installed.`,
+      `Run \`pithy add ${capability}\`, then re-run this command.`,
+    );
+  }
+  if (kind === "unnamed") {
+    return failure(
+      "unresolved-import",
+      `The ${capability} capability could not be loaded.`,
+      `An import did not resolve. Run \`pithy add ${capability}\` if it is not installed, or bun install if it is.`,
+    );
+  }
+  if (unresolved.installHelps) {
+    return failure("dependency-unresolved", `The ${capability} capability could not be loaded.`, remedy);
+  }
+  // A path an installed package does not have, or does not export, is an install that is incomplete.
+  const incomplete = kind === "package-subpath" || kind === "package-file";
+  const message = incomplete
+    ? `The ${capability} capability is installed but incomplete.`
+    : `The ${capability} capability is installed and will not load.`;
+  return failure("broken", message, remedy);
 }
 
 /**
