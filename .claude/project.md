@@ -33,6 +33,14 @@ Security: <the issue's Security sentence — omit this line entirely when it is 
 
 **The `Security:` line goes in the body, never the frontmatter.** `@changesets/parse` reads every frontmatter key as a package name, so a `security:` key there breaks `changeset version`. Omit the line when the field is `N/A`; never invent one, and never drop one the issue states. See `docs/RELEASING.md`.
 
+## Docs
+
+`/update-docs` assesses each of these, and edits what a change made wrong. `/ship` runs it on every issue. The website is not listed here: it is shared by both repos, and `/update-docs` covers all of it.
+
+- **Repo docs:** `docs/*.md` — `CLI.md`, `NAMING.md` and `I18N.md` are binding and state their rule once, so fix them there rather than restating it elsewhere. `docs/commands/<command>.md`, one page per command, for any flag, output or error that moved. `README.md`, `packages/*/README.md`, `CONTRIBUTING.md`, and `CLAUDE.md` when a convention changed.
+- **Never edit by hand:** any `CHANGELOG.md` (Changesets writes it) and `docs/catalog.generated.json` (generated).
+- **Pinned by tests:** some docs are, for example `docs/NAMING.md` by `cli/src/project/namingDocs.test.ts`, and `docs/commands/` by the CLI gates. Run the gates after any doc edit.
+
 ## Isolation
 
 `scripts/worktree.ts`, via `bun run worktree setup|teardown <N> <slug>`. It cuts `feature/<N>-<slug>` and a `.worktrees/<N>-<slug>` worktree off `origin/main`, installs deps, and links `.dev.vars` when one exists. Teardown drops the gitlink, prunes the registration, then removes the directory — **never** `git worktree remove`. It keeps the files when `.dev-state.json` says a `pithy dev` session may still be watching. Both are idempotent.
