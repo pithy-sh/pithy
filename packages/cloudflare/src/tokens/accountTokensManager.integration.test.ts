@@ -140,7 +140,9 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
     const tokens = new CloudflareAccountTokensManager(config);
     const zones = new CloudflareZonesManager(config);
     const bootstrapWorkers = new CloudflareWorkersManager(config);
-    const zoneName = fixtureValue("workers-route-zone", "WORKERS_ROUTE_ZONE");
+    // Guarded, not read outright: vitest runs a skipped describe's body to collect it, so an ungated read
+    // here failed the whole file whenever the fixture was absent or malformed (#709).
+    const zoneName = fixtureReady("workers-route-zone") ? fixtureValue("workers-route-zone", "WORKERS_ROUTE_ZONE") : "";
 
     /** The account-scoped custom-domain endpoint, by hand, so the test names the call it is about. */
     const domainsUrl = `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/workers/domains`;
