@@ -54,8 +54,11 @@ const INDENT = "  ";
 /**
  * Encode one JSON document for whoever is reading it.
  *
- * Compact is `JSON.stringify` and nothing else, because that is the contract `docs/CLI.md` states and
- * every call site already ships.
+ * Compact is `JSON.stringify` and nothing else, because that is the contract `docs/CLI.md` states and every
+ * call site already ships. **Faithful to every value (#697):** JSON escapes every control character, so a
+ * value holding an escape byte — a planned diff of a file with one in it, a name somebody typed — is valid
+ * and parses back to itself. A child's color is noise, and it is taken out where the child's output is
+ * captured (`project/wrangler.ts`, the build and the install), never here, where it cannot be told from data.
  */
 export function encodeJson(value: unknown, { pretty, paint = stylePaint }: EncodeJsonOptions): string {
   const compact = JSON.stringify(value);

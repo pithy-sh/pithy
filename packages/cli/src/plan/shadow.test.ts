@@ -470,6 +470,41 @@ describe("inShadow", () => {
     });
   });
 
+  /**
+   * **A `.env` file the repository tracks is source, by the repository's own choice (#697).** A front end's
+   * build reads `apps/web/.env.production`, and a dry run that left it out built a different bundle from the
+   * one the deploy ships. So a tracked `.env*` is copied; an untracked or ignored one is a secret until the
+   * repository says otherwise, and `.dev.vars*` is a secret whatever git says.
+   */
+  test("a .env file git tracks is copied; an untracked or ignored one, and every .dev.vars, is not", async () => {
+    await execFileAsync("git", ["init", "-q"], { cwd: project });
+    await writeFile(join(project, ".gitignore"), ".env\n");
+    await mkdir(join(project, "apps", "web"), { recursive: true });
+    await writeFile(join(project, "apps", "web", ".env.production"), "VITE_API=https://api.acme.dev\n");
+    await writeFile(join(project, "apps", "api", ".dev.vars"), "SECRET=1\n");
+    await execFileAsync("git", ["add", "-f", ".gitignore", "apps/web/.env.production", "apps/api/.dev.vars"], {
+      cwd: project,
+    });
+    await writeFile(join(project, ".env"), "SECRET=1\n");
+    await writeFile(join(project, "apps", "web", ".env.local"), "SECRET=1\n");
+    await inShadow(project, async (shadow) => {
+      expect(await readFile(join(shadow.root, "apps", "web", ".env.production"), "utf8")).toBe(
+        "VITE_API=https://api.acme.dev\n",
+      );
+      for (const path of [".env", "apps/web/.env.local", "apps/api/.dev.vars"]) {
+        expect(existsSync(join(shadow.root, path)), path).toBe(false);
+      }
+    });
+  });
+
+  test("with no repository to ask, no .env file is copied, committed-looking or not", async () => {
+    await mkdir(join(project, "apps", "web"), { recursive: true });
+    await writeFile(join(project, "apps", "web", ".env.production"), "VITE_API=https://api.acme.dev\n");
+    await inShadow(project, async (shadow) => {
+      expect(existsSync(join(shadow.root, "apps", "web", ".env.production"))).toBe(false);
+    });
+  });
+
   test("the copy's own path never reaches a plan: a diff and a sentence both name the project", async () => {
     const { result, files } = await inShadow(project, async (shadow) => {
       await writeFile(shadow.at(join(project, "apps", "api", "keep.ts")), `// ${shadow.root}/apps/api\n`);

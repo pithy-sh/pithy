@@ -303,8 +303,10 @@ export async function runWrangler(
         resolve({ stdout, stderr });
         return;
       }
-      // Surface the captured output (the errors) even in quiet mode; in passthrough it already streamed.
-      const captured = options.passthrough ? "" : `\n${(stderr || stdout).trim()}`;
+      // Surface the captured output (the errors) even in quiet mode; in passthrough it already streamed. Without
+      // its color (#697): this is a `--json` payload's `detail` and a deploy row's `error`, and the encoder
+      // writes every value as it is, so the capture is the one place wrangler's paint is known to be noise.
+      const captured = options.passthrough ? "" : `\n${stripVTControlCharacters(stderr || stdout).trim()}`;
       // **wrangler's own reason goes under the failure line, not only into `detail`** (#645). `detail` never
       // reaches a terminal, so a deploy that could not bundle said `wrangler deploy failed.` and the line
       // naming the import it could not resolve was only in wrangler's log file.

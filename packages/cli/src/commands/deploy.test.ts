@@ -501,6 +501,21 @@ describe("the two halves", () => {
     }
   });
 
+  /**
+   * wrangler colors its `✘ [ERROR]`, and the captured stderr is the reason a row carries (#697). The color is
+   * taken out where wrangler's output is captured (`project/deploy.test.ts` drives the real `runWrangler`), and
+   * the `--json` encoder writes the row's text as it is — so what the row holds is what a reader gets.
+   */
+  test("a Worker's error under --json is the row's own text, byte for byte", async () => {
+    shipped.rows = [{ name: "acme-web", ok: false, error: "✘ [ERROR] Build failed" }] satisfies WorkerDeploy[];
+    try {
+      const out = await invoke({ env: "staging", apps: true });
+      expect(JSON.parse(out).workers[0].error).toBe("✘ [ERROR] Build failed");
+    } finally {
+      shipped.rows = [];
+    }
+  });
+
   test("a bare deploy ships apps/ and says out loud why the kit half did not run", async () => {
     ran.apps = 0;
     ran.kit.length = 0;

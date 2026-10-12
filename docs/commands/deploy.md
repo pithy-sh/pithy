@@ -7,7 +7,7 @@ Ship every Worker the project deploys to Cloudflare — the ones under `apps/` a
 ## Synopsis
 
 ```bash
-pithy deploy [--env <env>] [--apps] [--kit] [--force] [--json]
+pithy deploy [--env <env>] [--apps] [--kit] [--force] [--dry-run] [--json]
 ```
 
 The shipping model — environments, credentials, worker discovery, migrate-then-deploy — is [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy). This page is the command surface.
@@ -20,6 +20,7 @@ The shipping model — environments, credentials, worker discovery, migrate-then
 | `--apps` | Deploy only the Workers under `apps/`. |
 | `--kit` | Deploy only the kit's Workers. Needs `--env staging` or `--env prod`. |
 | `--force` | Deploy every kit Worker whether it changed or not. Needs `--env staging` or `--env prod`; refused beside `--apps`. |
+| `--dry-run` | Show the plan and upload nothing: the migrations it would leave unapplied, and each Worker it would upload, after building it and running `wrangler deploy --dry-run` on it. Default `false`. |
 | `--json` | Machine-readable output. Default `false`. |
 
 There is no `--worker`. Deploy ships the whole set.
@@ -86,6 +87,28 @@ A capability that owns Workflows ships a Worker of its own — `<project>-<env>-
 
 **Deploy never migrates.** With `--env`, it takes a best-effort count of unapplied migrations for that environment and warns when the schema is behind. A config it cannot load or a database it cannot reach yields no warning rather than a failed deploy. Promote the schema with `pithy migrate` first, then ship.
 
+### Seeing it first: `--dry-run`
+
+`--dry-run` is Pithy's plan, then wrangler's, and it uploads nothing. The plan is the shape every `--dry-run` shares (`docs/CLI.md` §1.2).
+
+- **Every gate the deploy refuses on refuses the dry run too, first.** A binding with no id, a rate-limit namespace in the feature range, an undeclared origin, an unbound Workflow: each is the deploy's own refusal, with its exit code and its `fix`, and under `--json` it is the one error line on stderr with nothing on stdout. A plan for a deploy that would be refused is a promise nobody can keep. Then Pithy's plan: the migrations the environment has not applied are read the way `pithy migrate --dry-run` reads them, and named in a note beside the command that applies them. They are never `plan.migrations`: that list is what a command would apply, and a deploy applies none. A ledger it cannot read is a note too, never a failure, because a deploy never fails over one.
+- **Then each Worker under `apps/` is built and handed to `wrangler deploy --dry-run`**, on the deploy's own argv, under its own `▸` step. wrangler bundles and validates and stops, so a bundle that does not build fails its row here, with the build's error or wrangler's, rather than at the deploy. A Worker it accepts is one `plan.resources` upload. Nothing is probed and nothing is audited, because nothing shipped.
+- **The build and the bundle happen in a private copy of the project**, under the system temporary directory, and the copy is gone before the command exits. So `dist/`, `.wrangler/` and whatever the build's own hooks write land in the copy, and the project is byte-identical afterwards; a failure names the project's paths, never the copy's. A directory the project links to from outside it — an `apps/api/src` kept in a shared checkout — is in the copy as a snapshot of that directory, so the bundle reads the source the deploy would. Two things differ from the deploy, and both are said here rather than discovered. The installed packages are reached through a link to `node_modules`, so a build that keeps a cache there writes that cache. And no `.dev.vars` file is copied, nor a `.env` file git does not track, because a secret has no business in a temporary directory, so a build that reads one builds without it. A `.env` file the repository tracks — an `apps/web/.env.production` a front end's build reads — is copied, because committing it said it is no secret; with no repository to ask, none is.
+- **The kit half reads each stamp and stops.** A kit Worker the deploy would upload is a `plan.resources` upload with the deploy's reason; one that is current, or that this environment cannot deploy yet, stays a `kit` row with the outcome the deploy would print. No temporary config is written and no wrangler runs.
+
+**It writes nothing in the project, and only reads the account.** The build's output — `dist/` and the `.wrangler/deploy/config.json` redirect — and wrangler's scratch under `.wrangler/` land in the copy and go with it. The one write that reaches past the copy is a cache a build keeps in `node_modules`.
+
+```console
+$ pithy deploy --env staging --dry-run
+▸ acme-api...
+acme-api: would deploy.
+Would upload worker acme-api (staging).
+1 migration unapplied for staging: 1000_app_0001_things. Deploy does not migrate — run pithy migrate --env staging.
+Dry run. Nothing uploaded.
+```
+
+It exits the way the deploy would have: with the refusal's class when a gate refuses — 3 for a binding with no id in a named environment, 2 for one in the top-level stanza — else 3 when a Worker's row carries `exit: 3`, else 1 when a Worker's bundle or a kit Worker would fail, else 0.
+
 Every Worker deploy — success and failure — is audited as `deploy/worker_deployed` when the project has audit wired, recording the Worker, the version id, and the verification outcome. Shipping to `prod` is recorded at warning severity; everything else is routine.
 
 Credentials are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, resolved from the account the project's root `pithy.config.ts` names — `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` — and passed explicitly to wrangler, so a local deploy authenticates the same way CI does. The account is resolved before anything else, and a pinned `cloudflare.accountId` that disagrees with the credentials refuses before wrangler is ever spawned. That refusal is the point: a deploy that authenticates against the wrong tenant succeeds, and says nothing.
@@ -98,24 +121,26 @@ One line on stdout, after every Worker has been attempted. A failure inside the 
 |---|---|---|
 | `command` | string | `"deploy"`. |
 | `env` | string \| null | The environment deployed, or `null` for a bare deploy of each Worker's top-level stanza. |
-| `pendingMigrations` | number \| null | Unapplied migrations for the target environment. `null` with no `--env`, and `null` when the count could not be taken — deploy never fails over it. |
+| `pendingMigrations` | number \| null | Unapplied migrations for the target environment. `null` with no `--env`, and `null` when the count could not be taken — deploy never fails over it. Under `--dry-run`, the number of migrations `plan.notes` names. |
 | `workers` | object[] | One entry per Worker, in discovery order. Every Worker is attempted. |
 | `workers[].name` | string | The Worker's name. |
-| `workers[].ok` | boolean | Whether `wrangler deploy` succeeded for this Worker. |
+| `workers[].ok` | boolean | Whether `wrangler deploy` succeeded for this Worker. Under `--dry-run`, whether `wrangler deploy --dry-run` accepted its bundle; such a row carries no `versionId`, `url` or `verification`, because nothing shipped. |
 | `workers[].versionId` | string, optional | The deployed version id, when wrangler's output carried one. |
 | `workers[].url` | string, optional | An address wrangler listed under this Worker's deployed triggers — its `workers.dev` host, or the host a custom domain or a route answers on. **Absent** when no trigger is an address: a cron, a queue or a workflow trigger is not one, and neither is a wildcard route. |
 | `workers[].built` | boolean, optional | Whether this Worker's UI build ran and succeeded. **Absent** when the Worker declares no `ui` block — so `false` means the build is what failed and the deploy never ran. |
 | `workers[].error` | string, optional | The failure reason. Present only when `ok` is `false` — the build's output, wrangler's, or the refusal to publish a configuration that is not the requested environment's, which names the file it was about to ship. |
 | `workers[].verification` | string, optional | What probing the declared domain concluded: `"verified"`, `"mismatch"`, `"inconclusive"`, or `"unreachable"`. Absent when there was nothing to check. |
 | `workers[].verificationDetail` | string, optional | The one-line explanation behind `verification`. |
-| `kit` | object[] \| null | One entry per composed capability's Worker, in registry order. **`null`** when the kit half did not run — `--apps`, no `--env`, or `--env dev` — which is a different fact from it finding nothing. |
+| `kit` | object[] \| null | One entry per composed capability's Worker, in registry order. **`null`** when the kit half did not run — `--apps`, no `--env`, or `--env dev` — which is a different fact from it finding nothing. Under `--dry-run`, a Worker the deploy would upload is in `plan.resources` instead, so no row says `deployed`. |
 | `kit[].capability` | string | The capability that owns the Worker, e.g. `"email"`. |
 | `kit[].worker` | string \| null | The deployed script name, e.g. `"acme-prod-email"`. `null` when the run never got far enough to derive one. |
 | `kit[].outcome` | string | `"deployed"`, `"unchanged"`, `"skipped"`, or `"failed"`. |
 | `kit[].reason` | string | One sentence saying why. Never empty, for every outcome. |
 | `kitProblems` | string[] \| null | What stopped the kit half knowing the set: a Worker whose capabilities could not be read, a composition that would not assemble, a failure that ended the pass. Beside the rows rather than among them, because none of them names a capability. Non-empty exits 1. **`null`** exactly when `kit` is. |
+| `dryRun` | boolean | Whether this was `--dry-run`. Nothing was uploaded when it is `true`. |
+| `plan` | object | Present only under `--dry-run`: `plan.resources` holds each Worker it would upload, and `plan.notes` the migrations it would leave unapplied, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2). |
 
-**Exit code.** `0` when every Worker's `ok` is true, no Worker's verification is `mismatch` or `unreachable`, no kit Worker `failed`, `kitProblems` is empty, and the kit half did not skip every Worker it found; `3` when a Worker's row carries `exit: 3`, because the credentials or wrangler are the next step whatever else failed; `1` otherwise. The JSON line is printed either way, so a CI step can read the payload and still gate on the status.
+**Exit code.** `0` when every Worker's `ok` is true, no Worker's verification is `mismatch` or `unreachable`, no kit Worker `failed`, `kitProblems` is empty, and the kit half did not skip every Worker it found; `3` when a Worker's row carries `exit: 3`, because the credentials or wrangler are the next step whatever else failed; `1` otherwise. The JSON line is printed either way, so a CI step can read the payload and still gate on the status. Under `--dry-run` the code is the one the deploy would have exited with: a gate's refusal is its error line and its class, and a row that would fail is this payload and 1 — see the section above.
 
 ## Errors
 
@@ -126,7 +151,7 @@ Each refusal is a `PithyError`, the problem then the action, and exits by its ki
 - **A Cloudflare account mismatch.** The project pins one account and the resolved credentials belong to another. Refused before wrangler is spawned, naming both ids and which source supplied the wrong one — a file is a local misconfiguration, the environment is a CI job pointed at the wrong tenant. Exit 3.
 - **Cloudflare refusing the credentials.** wrangler reports an authentication error (`[code: 10000]` or `[code: 9106]`), or finds no token where nobody can log in. The credentials are the same for every Worker, so on the first Worker the run stops and exits 3, `core/precondition_failed`, with wrangler's lines under `wrangler deploy failed.` and the action `Run pithy doctor to see whether the token or the account is wrong`. It carries no `fix`: a token is minted in the dashboard. Once any Worker has a row — shipped, or failed on its own — a later refusal is that Worker's row instead, with `exit: 3`, so the report keeps every earlier row, and the run exits 3.
 - **`Could not run wrangler.`** The program the project runs wrangler with is not on `PATH`. Exit 3, on the same terms as the credentials: it would be every Worker's failure.
-- **`<stanza> declares bindings with no Cloudflare resource behind them: <worker>.<BINDING> (<kind>), ….`** Refused before anything is built, for a bare deploy and every `--env`. The action is `pithy provision --env <name> --yes` for a named environment, `pithy provision --feature` for a feature environment, and `--env staging` or `--env prod` for the top-level stanza, whose resources are local to `pithy dev`. For a named or feature environment it is `core/precondition_failed`, exit 3, and that command is its `fix`; for the top-level stanza it is a usage error, exit 2.
+- **`<stanza> declares bindings with no Cloudflare resource behind them: <worker>.<BINDING> (<kind>), ….`** Refused before anything is built, for a bare deploy and every `--env`. The action is `pithy provision --env <name> --yes` for a named environment, `pithy provision --feature` for a feature environment, and `--env staging` or `--env prod` for the top-level stanza, whose resources are local to `pithy dev`. For a named or feature environment it is `core/precondition_failed`, exit 3, and that command is its `fix`; for the top-level stanza it is a usage error, exit 2. `--dry-run` refuses the same way, with the same code and `fix`, before it plans anything.
 - **`This deploy could create Cloudflare resources, so nothing was deployed.`** A `wrangler deploy` argv without `--experimental-provision=false`, or with a second statement about provisioning. Not reachable from a released CLI — it is the refusal that keeps it that way — and reported on the Worker's row.
 - **An environment whose named and served origins do not line up.** Refused before anything is built, naming the Worker, the environment, and the one edit that answers it. See the section above for the three shapes.
 - **An environment that does not bind what its Workers declare.** Refused before anything is built, naming the Worker, both sides of the comparison — what the app declares and what the stanza binds — and `pithy worker sync`.
@@ -150,6 +175,9 @@ pithy deploy
 # Ship everything for an environment. Migrate first.
 pithy migrate --env prod --json
 pithy deploy --env prod --json
+
+# See what a deploy would do: the plan, then wrangler's own dry run. Nothing is uploaded.
+pithy deploy --env prod --dry-run --json
 
 # Your Workers only.
 pithy deploy --env prod --apps

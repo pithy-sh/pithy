@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { configFromArgs, NO_PROVISION_ARG, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
 import { DEPLOY_STAMP_VAR, deployStamp } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
-import { deployHostWorker, type HostDeployOptions } from "./hostDeploy";
+import { deployHostWorker, type HostDeployOptions, planHostDeploy } from "./hostDeploy";
 
 /**
  * The gate, driven through the path every provisioner now calls. Nothing here spawns wrangler and
@@ -232,6 +232,63 @@ describe("deployHostWorker", () => {
       await run({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } });
       expect(await readdir(dir)).toEqual([]);
     });
+  });
+});
+
+/**
+ * **`pithy deploy --dry-run` asks the gate and stops there (#697).** The verdict is the one a real deploy
+ * would reach — the stamp read, the reason worded the same — and nothing after it happens: no temporary
+ * config beside the package, no wrangler, no narration of an upload that is not coming.
+ */
+describe("planHostDeploy", () => {
+  /** The plan for one host, against the deployed vars the account would answer with. */
+  function plan(options: Partial<HostDeployOptions> & { vars?: Record<string, string> | null }) {
+    const { vars, ...rest } = options;
+    return planHostDeploy({
+      capability: "email",
+      pkg: "@pithy-sh/email",
+      version: "0.1.7",
+      config: config(),
+      dir,
+      env: "prod",
+      readVars: async () => vars ?? null,
+      runDeploy: async (args) => {
+        deploys.push({ args, configPath: "", dir: "", config: config() });
+      },
+      ...rest,
+    });
+  }
+
+  test("a Worker the run would upload is planned with the run's own reason, and nothing is written or run", async () => {
+    const events: ProgressEvent[] = [];
+    const planned = await narrate(
+      (event) => events.push(event),
+      () => plan({ vars: null }),
+    );
+    expect(planned).toEqual({
+      capability: "email",
+      worker: "acme-prod-email",
+      deploy: true,
+      reason: "It was not on the account.",
+    });
+    expect(deploys).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  test("a current Worker is planned as staying, with the reason the run would print", async () => {
+    expect(await plan({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } })).toEqual({
+      capability: "email",
+      worker: "acme-prod-email",
+      deploy: false,
+      reason: "@pithy-sh/email 0.1.7 is deployed with this configuration.",
+    });
+    expect(deploys).toEqual([]);
+  });
+
+  test("refuses a configuration that names no Worker, as the run does", async () => {
+    await expect(plan({ config: config({ name: "" }), vars: null })).rejects.toThrowError(/names no Worker/);
+    expect(await readdir(dir)).toEqual([]);
   });
 });
 

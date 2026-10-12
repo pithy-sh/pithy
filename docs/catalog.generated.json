@@ -206,6 +206,9 @@
         "--no-kit",
         "--force",
         "--no-force",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
         "--json",
         "--no-json"
       ]

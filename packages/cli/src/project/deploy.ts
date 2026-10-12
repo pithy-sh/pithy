@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { inShadow } from "../plan/shadow";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { settleStep, startStep } from "../terminal/progress";
@@ -112,7 +113,18 @@ export interface DeployProjectOptions {
    * behavior is exercised without waiting for it.
    */
   verifyDeploy?: VerifyDeploy;
+  /**
+   * **`pithy deploy --dry-run` (#697).** Every Worker is built as the deploy builds it and handed to `wrangler
+   * deploy --dry-run` on the deploy's own argv, so a bundle that does not build fails its row here. wrangler
+   * bundles and stops: nothing is uploaded, so nothing is probed and nothing is audited, and a row carries no
+   * version or address because there is none. Both happen in a private copy of the project, so neither the
+   * build's output nor the bundle is written here.
+   */
+  dryRun?: boolean;
 }
+
+/** The switch that makes `wrangler deploy` bundle and validate, and upload nothing. */
+export const WRANGLER_DRY_RUN_ARG = "--dry-run";
 
 /** Probe one address for one expected version. The seam `verifyDeployedVersion` fills by default. */
 export type VerifyDeploy = (options: { url: string; expectedVersion: string }) => Promise<VerifyDeployResult>;
@@ -354,7 +366,8 @@ const defaultRunBuild: RunBuild = async (target, command, args, buildEnv) => {
     throw new InternalError({
       message: `${command} ${args.join(" ")} failed.`,
       action: `Build ${target.name} by hand: ${command} ${args.join(" ")}.`,
-      detail: cause instanceof Error ? cause.message : String(cause),
+      // The child's captured output, without its color: it becomes the row's `error` (#697).
+      detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
     });
   }
 };
@@ -436,6 +449,36 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
     });
   }
 
+  if (!options.dryRun) return deployWorkers(options, workers, (text) => text);
+  // **`--dry-run` builds and bundles in a private copy of the project (#697).** The build writes its output and
+  // whatever its hooks write, and wrangler bundles under `.wrangler/tmp`, so in the project a plan that promised
+  // to write nothing would have written all of it. In the copy each Worker builds from the same source — a
+  // directory linked from outside the project is a snapshot of it there — and the same installed packages, through
+  // a linked `node_modules`, and the copy is gone afterwards. Not exactly as here: no `.env` or `.dev.vars` is
+  // copied, and a build that keeps a cache in `node_modules` writes it (`docs/commands/deploy.md` says both).
+  // A failure names the project's paths, never the copy's.
+  const { result } = await inShadow(
+    options.projectDir,
+    (shadow) =>
+      deployWorkers(
+        { ...options, projectDir: shadow.root },
+        workers.map((worker) => ({ ...worker, dir: shadow.at(worker.dir) })),
+        shadow.toProject,
+      ),
+    { plan: false },
+  );
+  return result;
+}
+
+/**
+ * Build and deploy each Worker in turn — under `--dry-run`, each one in the copy {@link deployProject} made, with
+ * `toProject` putting the copy's paths back to the project's in what a row reports.
+ */
+async function deployWorkers(
+  options: DeployProjectOptions,
+  workers: readonly WorkerTarget[],
+  toProject: (text: string) => string,
+): Promise<WorkerDeploy[]> {
   const run = options.runDeploy ?? defaultRunDeploy(options.account);
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
@@ -504,6 +547,14 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         processEnv: options.processEnv ?? process.env,
       });
       stage = "deploy";
+      if (options.dryRun) {
+        // Last on the argv, after the gates above have read it exactly as the real run's.
+        await run(worker, [...argv, WRANGLER_DRY_RUN_ARG]);
+        const planned: WorkerDeploy = { name: worker.name, ok: true, ...(built === undefined ? {} : { built }) };
+        deploys.push(planned);
+        settleStep(summarizePlannedDeploy(planned));
+        continue;
+      }
       const stdout = await run(worker, argv);
       const deploy: WorkerDeploy = {
         name: worker.name,
@@ -546,7 +597,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       // the refusal is this Worker's row instead, carrying its exit, and the report exits with it.
       const refusal = refusesTheRun(error);
       if (refusal && deploys.length === 0) throw error;
-      const reason = reasonOf(error);
+      const reason = toProject(reasonOf(error));
       const failure: WorkerDeploy = {
         name: worker.name,
         ok: false,
@@ -558,6 +609,8 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       // A failure settles too. The one thing worse than a silent deploy is a silent deploy whose one
       // broken Worker is reported after every other upload has finished.
       settleStep(summarizeDeploy(failure));
+      // A dry run deployed nothing, so there is no deploy to record, failed or not.
+      if (options.dryRun) continue;
       // A failed deploy is exactly what an audit trail is for — record it too, not just successes.
       await audit({
         action: "deploy/worker_deployed",
@@ -600,6 +653,15 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
   }
   const failed = red(`${deploy.name}: deployed, and not verified.`);
   return `${detail ? `${failed} ${detail}` : failed}\n  ${red(note)}`;
+}
+
+/**
+ * One Worker's line under `--dry-run`: what the deploy would do. A failure reads exactly as the real run's,
+ * because it is the same failure — the build, or wrangler refusing the bundle — met one step earlier.
+ */
+export function summarizePlannedDeploy(deploy: WorkerDeploy): string {
+  if (!deploy.ok) return summarizeDeploy(deploy);
+  return deploy.built ? `${deploy.name}: built, and would deploy.` : `${deploy.name}: would deploy.`;
 }
 
 /** Whether any Worker's declared address is consistently serving something other than what just shipped. */

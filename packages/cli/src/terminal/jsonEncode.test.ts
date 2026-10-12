@@ -30,6 +30,35 @@ describe("encodeJson — compact", () => {
   });
 });
 
+/**
+ * **The encoder is faithful: a value is the bytes it was (#697).** JSON already escapes every control
+ * character, so an escape byte in a value is valid JSON and parses back to itself. A planned diff of a file
+ * that holds one, a name somebody typed with one in it: either is data, and an encoder that rewrote it would
+ * hand a program a value the command never had. A child's color is stripped where its output is captured
+ * instead (`project/wrangler.ts`, the build and the install), which is the one place it is noise.
+ */
+describe("encodeJson — faithful to every value", () => {
+  const diff = `@@ -1 +1 @@\n-plain\n+${ESC}[31mred${ESC}[0m\n`;
+
+  test("compact: a planned diff holding a literal escape survives byte for byte", () => {
+    const payload = { command: "add", plan: { files: [{ path: "banner.txt", diff }] } };
+    const line = encodeJson(payload, { pretty: false, paint: plain });
+    expect(line).toBe(JSON.stringify(payload));
+    expect(line).toContain("\\u001b");
+    expect(JSON.parse(line).plan.files[0].diff).toBe(diff);
+  });
+
+  test("pretty: the same value, with only the paint's own color around it", () => {
+    const payload = { diff, link: `${ESC}]8;;https://pithy.sh${ESC}\\docs${ESC}]8;;${ESC}\\` };
+    expect(JSON.parse(encodeJson(payload, { pretty: true, paint: plain }))).toEqual(payload);
+  });
+
+  test("a value with no escape is untouched, so every other line is the bytes it always was", () => {
+    const payload = { message: "Deploy failed.", path: "apps/api", n: 1 };
+    expect(encodeJson(payload, { pretty: false, paint: plain })).toBe(JSON.stringify(payload));
+  });
+});
+
 describe("encodeJson — pretty", () => {
   test("two-space indent, exactly what JSON.stringify's own indent produces", () => {
     const payload = { command: "doctor", checks: [{ name: "node", ok: true }] };

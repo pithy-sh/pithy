@@ -36,8 +36,10 @@ import type { PlanFile } from "./plan";
  * private copy, and the plan is the difference between the copy and the project.
  *
  * **What is copied is what a wiring step reads.** Not `.git`, not `.wrangler`'s local state, not build
- * output, and never a `.dev.vars` or `.env` file: a secret has no business in a temporary directory, and a
- * step that needs one is not a step a dry run runs. `.wrangler/pithy/` is the exception inside `.wrangler`:
+ * output, and never a `.dev.vars` file or a `.env` file git does not track: a secret has no business in a
+ * temporary directory, and a step that needs one is not a step a dry run runs. A `.env` file the repository
+ * tracks is source by the repository's own choice — a front end's build reads `.env.production` — so it is
+ * copied, and a dry run builds the bundle the deploy ships. With no repository to ask, none is. `.wrangler/pithy/` is the exception inside `.wrangler`:
  * it holds the config `pithy provision --feature` generates, so a re-run regenerating it plans an edit
  * against the file that is there rather than a creation against nothing. `node_modules` is linked rather
  * than copied, so an installed package reads exactly as it does in the project — and nothing a dry run runs
@@ -93,6 +95,8 @@ const WRANGLER = ".wrangler";
 const GENERATED = "pithy";
 /** A file a secret lives in. */
 const SECRET_FILE = /^\.(dev\.vars|env)(\..*)?$/;
+/** The `.env` files among them: copied where git tracks one, since a committed file is no secret by the repository's choice. */
+const ENV_FILE = /^\.env(\..*)?$/;
 const NODE_MODULES = "node_modules";
 /** What a read that could not be made says. The path is left out of the copy, and the plan goes on. */
 const UNREADABLE = new Set(["EACCES", "EPERM", "ENOENT", "ELOOP", "ENOTDIR"]);
@@ -161,6 +165,23 @@ function ignoredByGit(projectDir: string, path: string): Promise<boolean | undef
   });
 }
 
+/**
+ * Every `.env*` file git tracks under `projectDir`, as project-relative POSIX paths — empty when there is no
+ * repository, or no git, to ask, so with nobody to say a file is committed every one stays a secret.
+ */
+function trackedEnvFiles(projectDir: string): Promise<Set<string>> {
+  return new Promise((done) => {
+    execFile(
+      "git",
+      ["ls-files", "-z", "--", ":(glob)**/.env", ":(glob)**/.env.*"],
+      { cwd: projectDir },
+      (error, out) => {
+        done(error === null ? new Set(String(out).split("\0").filter(Boolean)) : new Set());
+      },
+    );
+  });
+}
+
 /** A copied file as it was left: its hash, and the stat that says whether anything has written it since. */
 interface CopiedFile {
   sha: string;
@@ -185,6 +206,10 @@ async function copyTree(projectDir: string, shadow: string, blocked: string): Pr
   const outside = new Map<string, Stats>();
   const unreadable = new Map<string, string>();
   const projectReal = await realpath(projectDir);
+  const trackedEnv = await trackedEnvFiles(projectDir);
+  /** Whether a file is copied: anything but a secret, and of the secrets only a `.env*` the repository tracks. */
+  const copies = (name: string, at: string) =>
+    !SECRET_FILE.test(name) || (ENV_FILE.test(name) && trackedEnv.has(toPosix(at)));
   /** Every directory outside the project copied so far, by its real path, to where its snapshot is in the copy. */
   const snapshots = new Map<string, string>();
   /** List `from` into the copy at `at`, and say whether it could be listed. */
@@ -206,7 +231,7 @@ async function copyTree(projectDir: string, shadow: string, blocked: string): Pr
       } else if (entry.isDirectory()) {
         if (entry.name === WRANGLER) await walkGenerated(source, path);
         else if (!(await skipsDirectory(entry.name, source))) await walk(source, path);
-      } else if (entry.isFile() && !SECRET_FILE.test(entry.name)) {
+      } else if (entry.isFile() && copies(entry.name, path)) {
         await copyFile(source, path);
       }
     }

@@ -26,6 +26,7 @@ import {
   kitDeployFailed,
   summarizeKitDeploy,
   summarizeKitProblem,
+  summarizePlannedKitDeploy,
 } from "./deployKit";
 import type { WorkerTarget } from "./workers";
 
@@ -132,6 +133,8 @@ interface RunOptions {
   alsoWorkers?: WorkerTarget[];
   /** The capabilities one Worker composes, per directory. Defaults to `composes` for every Worker. */
   capabilitiesFor?: (dir: string) => Promise<Capability[]>;
+  /** `pithy deploy --dry-run`: plan the uploads, make none. */
+  dryRun?: boolean;
 }
 
 /** One `pithy deploy --kit` run against the fixture — the rows. {@link runReport} for the whole report. */
@@ -149,6 +152,7 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
     env: "prod",
     account: null,
     force: options.force,
+    ...(options.dryRun ? { dryRun: true } : {}),
     workers,
     capabilitiesFor: options.capabilitiesFor ?? (async () => options.composes ?? [EMAIL]),
     readTemplate: options.readTemplate ?? (async () => structuredClone(template)),
@@ -472,6 +476,61 @@ describe("deployKitWorkers", () => {
   });
 });
 
+/**
+ * **`pithy deploy --dry-run`'s kit half (#697): every gate asked, no Worker uploaded.** A Worker the run would
+ * ship is planned rather than reported as a row — a row's `deployed` would be a sentence about an upload that
+ * never happened — and the rows that stay are the ones the run would print without uploading anything:
+ * unchanged, skipped, failed.
+ */
+describe("deployKitWorkers under --dry-run", () => {
+  test("a Worker the run would upload is planned, with the run's reason, and wrangler never runs", async () => {
+    const events: ProgressEvent[] = [];
+    const report = await narrate(
+      (event) => events.push(event),
+      () => runReport({ vars: null, dryRun: true }),
+    );
+    expect(report).toEqual({
+      workers: [],
+      problems: [],
+      planned: [{ capability: "email", worker: "acme-prod-email", reason: "It was not on the account." }],
+    });
+    expect(deployed).toEqual([]);
+    expect(events).toEqual([{ phase: "settled", line: "acme-prod-email: would deploy. It was not on the account." }]);
+  });
+
+  test("a current Worker is the row the run would print, and nothing is planned for it", async () => {
+    await run();
+    const stamp = deployed[0]?.vars?.[DEPLOY_STAMP_VAR] as string;
+    deployed = [];
+    const report = await runReport({ vars: { [DEPLOY_STAMP_VAR]: stamp }, dryRun: true });
+    expect(report.workers.map((row) => row.outcome)).toEqual(["unchanged"]);
+    expect(report.planned).toEqual([]);
+    expect(deployed).toEqual([]);
+  });
+
+  test("a Worker this environment cannot deploy yet is skipped exactly as the run skips it", async () => {
+    const report = await runReport({ bindings: [{ binding: "DB", database_id: "db-1" }], dryRun: true });
+    expect(report.workers.map((row) => row.outcome)).toEqual(["skipped"]);
+    expect(report.planned).toEqual([]);
+  });
+
+  test("a real run carries no planned list at all", async () => {
+    expect(await runReport({ vars: null })).not.toHaveProperty("planned");
+  });
+});
+
+describe("summarizePlannedKitDeploy", () => {
+  test("names the Worker, what would happen, and why", () => {
+    expect(
+      summarizePlannedKitDeploy({
+        capability: "email",
+        worker: "acme-prod-email",
+        reason: "It was not on the account.",
+      }),
+    ).toBe("acme-prod-email: would deploy. It was not on the account.");
+  });
+});
+
 describe("kitDeployFailed", () => {
   /** A report with no problems — the shape every row-only case is about. */
   const rows = (workers: KitWorkerDeploy[]): KitDeployReport => ({ workers, problems: [] });
@@ -507,6 +566,16 @@ describe("kitDeployFailed", () => {
       kitDeployFailed(
         rows([{ capability: "email", worker: "acme-prod-email", outcome: "unchanged", reason: "current" }]),
       ),
+    ).toBe(false);
+  });
+
+  test("a dry run whose only other rows are skips does not fail, because something would ship", () => {
+    expect(
+      kitDeployFailed({
+        workers: [{ capability: "email", worker: null, outcome: "skipped", reason: "run provision" }],
+        problems: [],
+        planned: [{ capability: "media", worker: "acme-prod-media", reason: "It was not on the account." }],
+      }),
     ).toBe(false);
   });
 

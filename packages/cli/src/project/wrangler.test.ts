@@ -175,6 +175,22 @@ describe("runWrangler", () => {
   });
 
   /**
+   * **wrangler's color stops at the capture (#697).** Its `✘ [ERROR]` is red and its links are OSC 8, and the
+   * captured output is what a `--json` payload carries as a failure's `detail` and a deploy row's `error`. The
+   * encoder writes every value faithfully, so the noise is taken out here, where it is known to be a terminal's.
+   */
+  test("the captured output in detail carries no terminal control sequence", async () => {
+    const error = (await runWrangler(
+      await standIn(
+        "process.stderr.write('\\u001b[31m\\u2718 [ERROR]\\u001b[0m boom \\u001b]8;;https://x.dev\\u001b\\\\docs\\u001b]8;;\\u001b\\\\\\n'); process.exit(1)",
+      ),
+      { account: null, bin: NODE },
+    ).catch((e: unknown) => e)) as PithyError;
+    expect(error.payload.detail).toBe("exit 1\n\u2718 [ERROR] boom docs");
+    expect(error.payload.message).not.toContain("\u001b");
+  });
+
+  /**
    * **wrangler's own reason is on screen, not only in its log file** (#645). A failed deploy printed
    * `wrangler deploy failed.` and nothing else; the one line that said why — `Could not resolve
    * "@pithy-sh/ledger/src/ledger"` — was in `~/.wrangler/logs`. The error block is lifted into the message,

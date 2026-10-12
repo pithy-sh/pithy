@@ -11,7 +11,8 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { withContract } from "../contract/commandContract";
 import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
-import { readProjectLedger } from "../migrations/run";
+import { planMigrateProject, readProjectLedger } from "../migrations/run";
+import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import {
   deployFailureExit,
@@ -27,6 +28,7 @@ import {
   kitDeployFailed,
   summarizeKitProblem,
 } from "../project/deployKit";
+import { type DeployPlanInput, deployPlan, deployPlanExit, readPendingForPlan } from "../project/deployPlan";
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from "../project/environment";
 import { assertWorkflowsBound } from "../project/workflows";
@@ -202,13 +204,19 @@ const DeployPayload = z
       .number()
       .int()
       .nullable()
-      .describe("Migrations the environment's databases have not applied, or `null` when it was not counted."),
+      .describe(
+        "Migrations the environment's databases have not applied, or `null` when it was not counted. Under `--dry-run`, the number `plan.notes` names.",
+      ),
     workers: z
       .array(
         z
           .object({
             name: z.string().describe("The Worker's name."),
-            ok: z.boolean().describe("Whether `wrangler deploy` succeeded for it."),
+            ok: z
+              .boolean()
+              .describe(
+                "Whether `wrangler deploy` succeeded for it. Under `--dry-run`, whether `wrangler deploy --dry-run` accepted its bundle.",
+              ),
             versionId: z.string().optional().describe("The deployed version id, when wrangler printed one."),
             url: z.string().optional().describe("The Worker's public URL, when wrangler printed one."),
             built: z.boolean().optional().describe("Whether its UI build succeeded. Absent when it declares no UI."),
@@ -222,13 +230,20 @@ const DeployPayload = z
           .describe("One Worker under `apps/`."),
       )
       .describe("The adopter's Workers. Empty when `--kit` narrowed the run."),
-    kit: z.array(KitWorkerDeploy).nullable().describe("The kit's Workers, or `null` when the kit half did not run."),
+    kit: z
+      .array(KitWorkerDeploy)
+      .nullable()
+      .describe(
+        "The kit's Workers, or `null` when the kit half did not run. Under `--dry-run`, a Worker that would upload is in `plan.resources` instead.",
+      ),
     kitProblems: z
       .array(z.string().describe("One problem."))
       .nullable()
       .describe("What stopped the kit half knowing its set. Non-empty fails the run. `null` when it did not run."),
+    dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was uploaded when it is `true`."),
+    plan: PlanKey,
   })
-  .describe("What `pithy deploy` shipped.");
+  .describe("What `pithy deploy` shipped, or under `--dry-run` would.");
 
 export default withContract(
   defineCommand({
@@ -238,6 +253,7 @@ export default withContract(
       apps: { type: "boolean", default: false, description: "Deploy only the Workers under apps/" },
       kit: { type: "boolean", default: false, description: "Deploy only the kit's Workers" },
       force: { type: "boolean", default: false, description: "Deploy every kit Worker, changed or not" },
+      "dry-run": DRY_RUN_ARG,
       json: { type: "boolean", default: false, description: "Machine-readable output" },
     },
     run: ({ args }) =>
@@ -277,6 +293,10 @@ export default withContract(
         // this is what says so in a sentence instead of in wrangler's stderr.
         // The project's production policy decides only whether the refusal can name a `fix`: production is
         // provisioned with a person's `--confirm` phrase, so it gets none.
+        //
+        // **A dry run makes this refusal, and the two below, exactly as the deploy would (#697).** A plan for a
+        // deploy that would be refused is a promise nobody can keep, so under `--json` the answer is the one
+        // error line with its exit class and `fix`, never a plan beside an exit code it does not explain.
         if (selection.apps) {
           const { seed } = await loadProject(projectDir);
           await assertEnvironmentProvisioned(projectDir, env, seed?.productionEnvironments);
@@ -305,6 +325,10 @@ export default withContract(
         // sentence `pithy doctor` already reads out. A *missing* pair still passes, because `wrangler
         // deploy` authenticates on its own OAuth login and always could.
         cloudflareEnv({ account });
+        if (args["dry-run"]) {
+          await planDeploy({ projectDir, env, account, selection, force: args.force, json: args.json });
+          return;
+        }
         const pending = env ? await pendingFor(projectDir, env, account) : undefined;
         const audit = await buildAudit(projectDir, env ?? "dev", account);
 
@@ -354,6 +378,7 @@ export default withContract(
               // row — and a payload that carried it as one would say a capability failed that this run
               // never even saw. `null` when the kit half did not run, exactly as `kit` is.
               kitProblems: kit?.problems ?? null,
+              dryRun: false,
             })}\n`,
           );
           if (failed) process.exitCode = runExit(deploys, appsFailed);
@@ -393,9 +418,77 @@ export default withContract(
   },
 );
 
-/** The exit a failed run ends with: a classified Worker row's, when the apps half failed with one, or 1. */
-function runExit(deploys: readonly WorkerDeploy[], appsFailed: boolean): number {
-  return appsFailed ? deployFailureExit(deploys) : EXIT.failed;
+/** What {@link planDeploy} is handed: the run's own settled inputs. */
+interface PlanDeployOptions {
+  projectDir: string;
+  env: string | undefined;
+  account: CloudflareAccountSelection | null;
+  selection: { apps: boolean; kit: boolean };
+  force: boolean;
+  json: boolean;
+}
+
+/**
+ * **`pithy deploy --dry-run` (#697): Pithy's plan, then wrangler's.**
+ *
+ * Reached only once every gate the deploy refuses on has passed, so what is left is the plan. Pithy's half
+ * first: the migrations the environment has not applied, named — the deploy leaves them to `pithy migrate`, and
+ * says so. Then each app Worker is built and handed to `wrangler deploy --dry-run`, under its own step, so a
+ * bundle that does not build fails here with the build's error rather than at the deploy. The kit half reads
+ * each stamp and plans the uploads it would make. Nothing is uploaded and nothing is audited.
+ *
+ * It exits the way the real deploy would have: 0, or 1 for a Worker that would fail — a report with a failed
+ * row, as the deploy's own is (`docs/CLI.md` §3.8).
+ */
+async function planDeploy(options: PlanDeployOptions): Promise<void> {
+  const { projectDir, env, account, selection } = options;
+  // Read as `pithy migrate --dry-run` reads it, refusals and all; a refusal here is the note's reason.
+  const pending = await readPendingForPlan(env, async () =>
+    planMigrateProject({
+      projectDir,
+      project: requireProjectName(await loadProject(projectDir)),
+      account,
+      env: env as string,
+    }),
+  );
+  const deploys = selection.apps ? await deployProject({ projectDir, account, env, dryRun: true }) : [];
+  const runKit = selection.kit && env !== undefined && env !== LOCAL_ENVIRONMENT;
+  const kit: KitDeployReport | null = runKit
+    ? await deployKitWorkers({
+        projectDir,
+        project: requireProjectName(await loadProject(projectDir)),
+        env: env as string,
+        account,
+        force: options.force,
+        dryRun: true,
+        ...(await featureOf(projectDir, env as string)),
+      })
+    : null;
+  const input: DeployPlanInput = { env, pending, deploys, kit };
+  const plan = deployPlan(input);
+  const exit = deployPlanExit(input);
+
+  if (options.json) {
+    process.stdout.write(
+      `${formatJsonLine({
+        command: "deploy",
+        env: env ?? null,
+        pendingMigrations: pending.state === "read" ? pending.migrations.length : null,
+        workers: deploys,
+        kit: kit?.workers ?? null,
+        kitProblems: kit?.problems ?? null,
+        dryRun: true,
+        plan,
+      })}\n`,
+    );
+  } else {
+    for (const problem of kit?.problems ?? []) process.stdout.write(`${summarizeKitProblem(problem)}\n`);
+    if (selection.kit && !runKit) {
+      process.stdout.write(`${env === LOCAL_ENVIRONMENT ? KIT_IS_LOCAL_IN_DEV : NO_ENV_FOR_KIT}\n`);
+    }
+    process.stdout.write(`${[...planText(plan), "Dry run. Nothing uploaded."].join("\n")}\n`);
+  }
+  if (exit !== EXIT.ok) process.exitCode = exit;
 }
 
 /** The feature a `--env feature` deploy is, read off the branch — or nothing, which the kit pass refuses by name. */
@@ -403,4 +496,9 @@ async function featureOf(projectDir: string, env: string): Promise<{ feature?: F
   if (env !== FEATURE_ENVIRONMENT) return {};
   const feature = await branchIdentityWithoutWorkers(projectDir).catch(() => undefined);
   return feature ? { feature } : {};
+}
+
+/** The exit a failed run ends with: a classified Worker row's, when the apps half failed with one, or 1. */
+function runExit(deploys: readonly WorkerDeploy[], appsFailed: boolean): number {
+  return appsFailed ? deployFailureExit(deploys) : EXIT.failed;
 }

@@ -207,15 +207,35 @@ function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
   };
 }
 
+/** What {@link planHostDeploy} decided for one kit Worker: whether a deploy would upload it, and why. */
+export interface HostDeployPlan {
+  /** The capability that owns the Worker — `email`. */
+  capability: string;
+  /** The script name the deploy would publish, e.g. `acme-prod-email`. */
+  worker: string;
+  /** Whether wrangler would run. `false` is the stamp matching. */
+  deploy: boolean;
+  /** The sentence the run would print beside its outcome. */
+  reason: string;
+}
+
+/** The gate's answer, and everything the upload after it needs. */
+interface HostDeployDecision extends HostDeployPlan {
+  /** The config wrangler would read, stamped when the version is known. */
+  stamped: WorkflowHostTemplate;
+  /** Where the generated entry is written, when the host is handed one. */
+  entryPath: string | undefined;
+  /** Where the temporary config is written. */
+  configPath: string;
+  /** The argv wrangler is spawned with. */
+  args: string[];
+}
+
 /**
- * Deploy one kit Worker, unless its deployed stamp says nothing has changed.
- *
- * The temp config carries the stamp, so the bundle and the claim about it are written by one atomic
- * operation — there is no second API write, and no way for a stamp to describe a deploy that failed.
- * It is removed whether the deploy worked or not: it holds provisioned resource ids and it lives
- * inside an installed package.
+ * The stamp verdict, and every refusal the upload is held to — everything a deploy decides before it writes.
+ * Shared by {@link deployHostWorker} and {@link planHostDeploy}, so a plan and a deploy cannot disagree.
  */
-export async function deployHostWorker(options: HostDeployOptions): Promise<HostDeployOutcome> {
+async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployDecision> {
   const worker = options.config.name;
   // The generated entry is `main` before the stamp is taken, so a host that starts or stops being handed a peer
   // is a changed config and redeploys rather than being skipped as current.
@@ -238,26 +258,61 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
           force: options.force,
         });
 
-  if (!verdict.deploy) {
-    return { capability: options.capability, worker, outcome: "unchanged", reason: verdict.reason };
+  const configPath = join(options.dir, `.wrangler.${options.env}.json`);
+  const args = hostDeployArgs(configPath);
+  if (verdict.deploy) {
+    // **The last moment this is still recoverable, and it is ahead of the narration and the write.** After
+    // the upload the only remedy is deleting a live Worker; before it, a refusal is a sentence. Asked of
+    // the argv about to be spawned rather than of the code that built it, so a call site that starts
+    // building its own is covered on the day it does (#584).
+    assertPublishesDeclaredWorker({
+      configPath,
+      config: stamped,
+      args,
+      processEnv: options.processEnv ?? process.env,
+    });
+    // And the same argv creates nothing. Every provisioner reaches this, and a provisioner's resources are
+    // created by its own API calls before it gets here — never by the upload.
+    assertCreatesNoResources(args);
+  }
+  return {
+    capability: options.capability,
+    worker,
+    deploy: verdict.deploy,
+    reason: verdict.reason,
+    stamped,
+    entryPath,
+    configPath,
+    args,
+  };
+}
+
+/**
+ * **What {@link deployHostWorker} would do, without doing it (#697)** — `pithy deploy --dry-run`'s kit half.
+ * The stamp is read and every refusal is made exactly as the deploy makes them; then it stops, before the
+ * temporary config is written, before wrangler, and before the upload is announced.
+ */
+export async function planHostDeploy(options: HostDeployOptions): Promise<HostDeployPlan> {
+  const { capability, worker, deploy, reason } = await decideHostDeploy(options);
+  return { capability, worker, deploy, reason };
+}
+
+/**
+ * Deploy one kit Worker, unless its deployed stamp says nothing has changed.
+ *
+ * The temp config carries the stamp, so the bundle and the claim about it are written by one atomic
+ * operation — there is no second API write, and no way for a stamp to describe a deploy that failed.
+ * It is removed whether the deploy worked or not: it holds provisioned resource ids and it lives
+ * inside an installed package.
+ */
+export async function deployHostWorker(options: HostDeployOptions): Promise<HostDeployOutcome> {
+  const decision = await decideHostDeploy(options);
+  const { worker, stamped, entryPath, configPath, args } = decision;
+  if (!decision.deploy) {
+    return { capability: options.capability, worker, outcome: "unchanged", reason: decision.reason };
   }
 
   const run = options.runDeploy ?? defaultRunDeploy(options.account ?? null);
-  const configPath = join(options.dir, `.wrangler.${options.env}.json`);
-  const args = hostDeployArgs(configPath);
-  // **The last moment this is still recoverable, and it is ahead of the narration and the write.** After
-  // the upload the only remedy is deleting a live Worker; before it, a refusal is a sentence. Asked of
-  // the argv about to be spawned rather than of the code that built it, so a call site that starts
-  // building its own is covered on the day it does (#584).
-  assertPublishesDeclaredWorker({
-    configPath,
-    config: stamped,
-    args,
-    processEnv: options.processEnv ?? process.env,
-  });
-  // And the same argv creates nothing. Every provisioner reaches this, and a provisioner's resources are
-  // created by its own API calls before it gets here — never by the upload.
-  assertCreatesNoResources(args);
   // **The one place a kit Worker's upload is announced, so every command that ships one inherits it
   // (#578).** `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` —
   // through two packages that carry no progress parameter and should not grow one. Raised after the
@@ -272,5 +327,5 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
     await unlink(configPath).catch(() => {});
     if (entryPath !== undefined) await unlink(entryPath).catch(() => {});
   }
-  return { capability: options.capability, worker, outcome: "deployed", reason: verdict.reason };
+  return { capability: options.capability, worker, outcome: "deployed", reason: decision.reason };
 }

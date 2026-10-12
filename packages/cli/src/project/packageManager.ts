@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { access, readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { startStep } from "../terminal/progress";
 import { writeFileAtomic } from "./atomic";
@@ -168,7 +168,8 @@ const spawnInstall: InstallRunner = async (command, args, cwd) => {
     throw new InternalError({
       message: `${command} ${args.join(" ")} failed.`,
       action: `Install the package by hand: ${command} ${args.join(" ")}.`,
-      detail: cause instanceof Error ? cause.message : String(cause),
+      // The installer's captured output, without its color: a `--json` error line carries it (#697).
+      detail: stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause)),
     });
   }
 };
