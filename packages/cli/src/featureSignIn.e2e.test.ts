@@ -463,6 +463,63 @@ async function signsIn(account: Account): Promise<void> {
   expect(((await session.json()) as { user?: { email?: string } } | null)?.user?.email).toBe(PERSON);
 }
 
+/** The code this test chose: six digits, the kit's default `otpLength`. */
+const CODE = "424242";
+
+/**
+ * **Write the row the email-OTP plugin reads, straight into the feature's D1 (#712).** The mail is the magic-link
+ * test's to prove; what is left is that a code the plugin finds signs somebody in.
+ *
+ * The identifier and value are the installed `better-auth`'s own formats (1.7.1), and each is read from its source,
+ * not guessed:
+ *
+ * - Identifier: `toOTPIdentifier(type, email)` in `node_modules/better-auth/dist/plugins/email-otp/utils.mjs` is
+ *   `` `${type}-otp-${email}` ``, and `/sign-in/email-otp` looks up `toOTPIdentifier("sign-in", email)` with the
+ *   address lowercased (`dist/plugins/email-otp/routes.mjs`, `signInEmailOTP`). The kit sets no
+ *   `verification.storeIdentifier`, so `dist/db/verification-token-storage.mjs` stores it as written.
+ * - Value: `` `${storedOTP}:0` `` — the code, a colon, the attempts used (`createVerificationOTP` in `routes.mjs`,
+ *   split back by `splitAtLastColon` in `utils.mjs`). The kit sets no `storeOTP`, so `storeOTP` in
+ *   `dist/plugins/email-otp/otp-token.mjs` keeps the code plain.
+ *
+ * A version that changes either finds no row here, answers `INVALID_OTP`, and fails this test, rather than passing
+ * on a row nothing reads. The table is `pithyAuthVerifications` (`packages/auth/src/instance/auth.ts`) through the
+ * kit's `CamelCasePlugin`, on auth's default `DB` binding; a date column holds ISO text, as the Kysely adapter
+ * writes it for SQLite.
+ */
+async function writeSignInCode(account: Account): Promise<void> {
+  const stanza = await featureStanza();
+  const bound = stanza.d1_databases?.find((entry) => entry.binding === "DB");
+  if (!bound) throw new Error("the feature stanza binds no DB");
+  const now = new Date();
+  // Inside `verificationExpiresIn`, whose default is five minutes.
+  const expiresAt = new Date(now.getTime() + 60_000);
+  await account
+    .database(bound.database_id)
+    .prepare(
+      "insert into pithy_auth_verifications (id, identifier, value, expires_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(
+      "otp-712",
+      `sign-in-otp-${PERSON}`,
+      `${CODE}:0`,
+      expiresAt.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+    )
+    .run();
+}
+
+/** Sign in with an email OTP, from the feature's own origin. */
+async function signInWithCode(worker: Awaited<ReturnType<typeof appWorker>>): Promise<Response> {
+  return worker.fetch(
+    new Request(`${ORIGIN}/auth/sign-in/email-otp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: ORIGIN },
+      body: JSON.stringify({ email: PERSON, otp: CODE }),
+    }),
+  );
+}
+
 /** The host scripts this project composes, named for the feature — derived from the registry, never listed. */
 async function composedHostScripts(): Promise<string[]> {
   const composed = featureHostCapabilities(
@@ -549,6 +606,39 @@ describe("a feature deployment, after provision and deploy", () => {
         expect.arrayContaining([SCRIPT, ...expected]),
       );
       expect([...account.entries.keys()]).toEqual([]);
+    } finally {
+      await account.miniflare.dispose();
+    }
+  }, 300_000);
+
+  /**
+   * **Email OTP signs the person in through the same Worker, table and cookie as magic link (#712).** The left-over
+   * check from #84: a code in the feature's `verification` table is accepted once, sets the session, and is gone.
+   */
+  test("a code in the feature's verification table signs the person in by email OTP, once", async () => {
+    const account = await standInAccount();
+    try {
+      await provision(account);
+      await writeSignInCode(account);
+
+      const worker = await appWorker(account, []);
+      const signedIn = await signInWithCode(worker);
+      expect(signedIn.status).toBe(200);
+      expect(((await signedIn.json()) as { user?: { email?: string } }).user?.email).toBe(PERSON);
+      const cookie = (signedIn.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+      expect(cookie.startsWith("__Secure-better-auth.session_token=")).toBe(true);
+
+      const session = await worker.fetch(new Request(`${ORIGIN}/auth/get-session`, { headers: { cookie } }));
+      expect(session.status).toBe(200);
+      expect(((await session.json()) as { user?: { email?: string } } | null)?.user?.email).toBe(PERSON);
+
+      // The row was consumed: the same code a second time, in a fresh isolate, signs nobody in.
+      const again = await signInWithCode(await appWorker(account, []));
+      expect({ status: again.status, code: ((await again.json()) as { code?: string }).code }).toEqual({
+        status: 400,
+        code: "INVALID_OTP",
+      });
+      expect(again.headers.get("Set-Cookie") ?? "").not.toContain("session_token=");
     } finally {
       await account.miniflare.dispose();
     }
