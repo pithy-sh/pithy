@@ -63,5 +63,7 @@ jobs:
       # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — no `wrangler login`.
       # No build step: turbo's `test:integration` depends on `^build` and `build`, as `ci.yml`'s test jobs
       # do, so every package is built before the suites that import its `dist/` (#709).
+      # The env above reaches the suites because `test:integration` lists it in `passThroughEnv`: turbo's
+      # strict env mode hands a task nothing it does not declare. A new key a suite reads goes there too.
       - name: Live integration tests
         run: bun run test:integration

@@ -3,10 +3,13 @@
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { LIVE_FIXTURES } from "@pithy-sh/cloudflare/src/test-utils/fixtures";
 import { describe, expect, test } from "vitest";
+import { readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * **`integration.yml` builds what its tests import (#709).**
@@ -19,6 +22,12 @@ import { describe, expect, test } from "vitest";
  * `ci.yml`'s test jobs get their build from turbo — `test` depends on `^build` and `build` — so this does
  * it the same way, and asks turbo for the plan rather than reading the config: a `dependsOn` that is
  * present and does not do what it looks like is the failure a plan shows and a parse does not.
+ *
+ * **And it hands them their credentials.** The second run built, and then every live suite reported
+ * `CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN are not set` with both set on the job: turbo runs in strict
+ * env mode, so a task sees only the variables it declares, and `test:integration` declared none. So the plan
+ * is asked for those too, against the keys the suites actually read: the fixture registry, the credential
+ * loader's list, and every `process.env.X` a live suite or its harness names.
  */
 
 /** The repository root. This file lives at `packages/cli/src/ci/`. */
@@ -32,6 +41,7 @@ interface Planned {
   package: string;
   command: string;
   dependencies: string[];
+  environmentVariables: { specified: { passThroughEnv: string[] | null } };
 }
 
 /** Turbo's plan for `task` across the workspace. */
@@ -71,5 +81,32 @@ describe("the integration suites run on a build", () => {
     // `^build` too: the CLI's suites import core and cloudflare through their `exports` maps.
     const cli = suites.find((entry) => entry.package === "@pithy-sh/cli");
     expect(cli?.dependencies).toEqual(expect.arrayContaining(["@pithy-sh/core#build", "@pithy-sh/cloudflare#build"]));
+  });
+
+  test("every package with an integration suite is handed every variable a live suite reads", {
+    timeout: 60_000,
+  }, async () => {
+    const read = new Set<string>([
+      ...CLOUDFLARE_ENV_KEYS,
+      ...Object.values(LIVE_FIXTURES).flatMap((fixture) => fixture.keys),
+    ]);
+    for (const path of sourcePaths(join(REPO_ROOT, "packages"), { keep: (name) => name.endsWith(".ts") })) {
+      if (!path.endsWith(".integration.test.ts") && !path.includes(`${sep}test-utils${sep}`)) continue;
+      const text = readSource(path) ?? "";
+      for (const match of text.matchAll(/process\.env(?:\.([A-Z][A-Z0-9_]*)|\[["']([A-Z][A-Z0-9_]*)["']\])/g)) {
+        read.add((match[1] ?? match[2]) as string);
+      }
+    }
+    // Not vacuous: the credentials, a fixture-only key, and a key only a suite names.
+    expect([...read]).toEqual(
+      expect.arrayContaining(["CLOUDFLARE_API_TOKEN", "WORKERS_ROUTE_ZONE", "PITHY_EMAIL_LIVE"]),
+    );
+    const tasks = await plan("test:integration");
+    const suites = tasks.filter((entry) => entry.task === "test:integration" && entry.command !== NO_SCRIPT);
+    for (const suite of suites) {
+      // `specified`, not `passthrough`: the latter lists only what this shell happens to have set.
+      const handed = new Set(suite.environmentVariables.specified.passThroughEnv ?? []);
+      expect([...read].filter((key) => !handed.has(key)).sort(), suite.taskId).toEqual([]);
+    }
   });
 });

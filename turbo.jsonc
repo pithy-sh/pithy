@@ -863,6 +863,33 @@
       // of its own, so without the `dependsOn` its first run died on `Cannot find module` before a single
       // suite started (#709). `ci/integrationBuild.test.ts` asks turbo's plan that it still does.
       "dependsOn": ["^build", "build"],
+      // Handed through, never hashed: they are credentials and switches, and the task is never cached.
+      // Turbo's strict env mode gives a task only what it declares, so without this list every live suite
+      // reported its credentials unset with both set on the job (#709). Each key is one a live suite reads:
+      // `LIVE_FIXTURES` in `@pithy-sh/cloudflare/src/test-utils/fixtures`, `CLOUDFLARE_ENV_KEYS`, and the
+      // `process.env` switches the suites name. `ci/integrationBuild.test.ts` fails on one missing here.
+      "passThroughEnv": [
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_API_TOKEN",
+        "SECRETS_STORE_ID",
+        "R2_CREDENTIALS",
+        "CUSTOM_HOSTNAME_ZONE_ID",
+        "CUSTOM_HOSTNAME_CUSTOMER_ZONE_ID",
+        "EMAIL_ROUTING_ZONE_ID",
+        "EMAIL_ROUTING_ADDRESS",
+        "EMAIL_SENDING_FROM",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "PITHY_LIVE_DEPLOY",
+        "TURNSTILE_SITE_KEY",
+        "TURNSTILE_SECRET_KEY",
+        "WORKERS_ROUTE_ZONE",
+        "PITHY_IMAGES_PAID",
+        "PITHY_STREAM_PAID",
+        "PITHY_EMAIL_FROM",
+        "PITHY_EMAIL_TO",
+        "PITHY_EMAIL_LIVE"
+      ],
       "cache": false
     },
     "lint": {},
