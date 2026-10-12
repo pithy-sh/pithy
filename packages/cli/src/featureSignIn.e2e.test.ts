@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import { AuthConfig } from "@pithy-sh/auth/src/capability";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";
 import { type FeatureIdentity, isFeatureOwnedName } from "@pithy-sh/core/src/naming/feature";
@@ -454,10 +455,17 @@ async function signsIn(account: Account): Promise<void> {
   const worker = await appWorker(account, []);
   const opened = await worker.fetch(new Request(link as string, { headers: { origin: ORIGIN } }));
   expect(opened.status).toBe(302);
-  const cookie = (opened.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
-  expect(cookie.startsWith("__Secure-better-auth.session_token=")).toBe(true);
+  await expectSignedIn(worker, opened);
+}
 
-  // Signed in: the deployment's own session endpoint knows who this is.
+/**
+ * **The response set a session, and the deployment knows whose (#712).** Takes the session cookie from the response
+ * and asks the deployment's own session endpoint who it belongs to. Magic link and email OTP both end here, so the
+ * cookie name and the session shape are checked in one place.
+ */
+async function expectSignedIn(worker: Awaited<ReturnType<typeof appWorker>>, response: Response): Promise<void> {
+  const cookie = (response.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  expect(cookie.startsWith("__Secure-better-auth.session_token=")).toBe(true);
   const session = await worker.fetch(new Request(`${ORIGIN}/auth/get-session`, { headers: { cookie } }));
   expect(session.status).toBe(200);
   expect(((await session.json()) as { user?: { email?: string } } | null)?.user?.email).toBe(PERSON);
@@ -465,6 +473,13 @@ async function signsIn(account: Account): Promise<void> {
 
 /** The code this test chose: six digits, the kit's default `otpLength`. */
 const CODE = "424242";
+
+/**
+ * How long the row lives: `verificationExpiresIn`, the lifetime the kit hands the email-OTP plugin as `expiresIn`
+ * (`packages/auth/src/instance/plugins.ts`) and so the expiry the plugin writes itself. The scaffolded project sets
+ * no value, so it is the schema's default, read from the schema rather than restated.
+ */
+const VERIFICATION_EXPIRES_IN = AuthConfig.shape.verificationExpiresIn.parse(undefined);
 
 /**
  * **Write the row the email-OTP plugin reads, straight into the feature's D1 (#712).** The mail is the magic-link
@@ -491,8 +506,7 @@ async function writeSignInCode(account: Account): Promise<void> {
   const bound = stanza.d1_databases?.find((entry) => entry.binding === "DB");
   if (!bound) throw new Error("the feature stanza binds no DB");
   const now = new Date();
-  // Inside `verificationExpiresIn`, whose default is five minutes.
-  const expiresAt = new Date(now.getTime() + 60_000);
+  const expiresAt = new Date(now.getTime() + VERIFICATION_EXPIRES_IN * 1000);
   await account
     .database(bound.database_id)
     .prepare(
@@ -500,7 +514,7 @@ async function writeSignInCode(account: Account): Promise<void> {
     )
     .bind(
       "otp-712",
-      `sign-in-otp-${PERSON}`,
+      `sign-in-otp-${PERSON.toLowerCase()}`,
       `${CODE}:0`,
       expiresAt.toISOString(),
       now.toISOString(),
@@ -520,6 +534,33 @@ async function signInWithCode(worker: Awaited<ReturnType<typeof appWorker>>): Pr
   );
 }
 
+/**
+ * **Email OTP signs the person in through the same Worker, table and cookie as magic link (#712).** The left-over
+ * check from #84: a code in the feature's `verification` table is accepted once, sets the session, and is gone.
+ *
+ * The Worker is composed before the row is written, so the row's lifetime is spent on the sign-in alone and not
+ * on a cold load. Status and body are asserted together: a format drift reads as `INVALID_OTP`, an expired row as
+ * `OTP_EXPIRED`, and neither hides behind a bare 400.
+ */
+async function signsInWithCode(account: Account): Promise<void> {
+  const worker = await appWorker(account, []);
+  await writeSignInCode(account);
+  const signedIn = await signInWithCode(worker);
+  expect({ status: signedIn.status, body: await signedIn.json() }).toMatchObject({
+    status: 200,
+    body: { user: { email: PERSON } },
+  });
+  await expectSignedIn(worker, signedIn);
+
+  // The row was consumed: the same code a second time, in a fresh isolate, signs nobody in.
+  const again = await signInWithCode(await appWorker(account, []));
+  expect({ status: again.status, code: ((await again.json()) as { code?: string }).code }).toEqual({
+    status: 400,
+    code: "INVALID_OTP",
+  });
+  expect(again.headers.get("Set-Cookie") ?? "").not.toContain("session_token=");
+}
+
 /** The host scripts this project composes, named for the feature — derived from the registry, never listed. */
 async function composedHostScripts(): Promise<string[]> {
   const composed = featureHostCapabilities(
@@ -530,7 +571,7 @@ async function composedHostScripts(): Promise<string[]> {
 }
 
 describe("a feature deployment, after provision and deploy", () => {
-  test("stands up every composed host, sends a magic link that signs the person in, and destroy takes it all", async () => {
+  test("stands up every composed host, signs the person in by magic link and by email OTP, and destroy takes it all", async () => {
     const account = await standInAccount();
     try {
       const report = await provision(account);
@@ -575,6 +616,8 @@ describe("a feature deployment, after provision and deploy", () => {
       expect(isFeatureOwnedName(identity, "replay-f643-feature-address--board-rotate")).toBe(true);
 
       await signsIn(account);
+      // The same deployment, the same person, now an existing user: a code signs them in too.
+      await signsInWithCode(account);
 
       // `pithy feature destroy`: every host and every Workflow it hosts, and every store entry, gone.
       const hostedWorkflows = [...account.hosts.values()].flatMap((host) =>
@@ -606,39 +649,6 @@ describe("a feature deployment, after provision and deploy", () => {
         expect.arrayContaining([SCRIPT, ...expected]),
       );
       expect([...account.entries.keys()]).toEqual([]);
-    } finally {
-      await account.miniflare.dispose();
-    }
-  }, 300_000);
-
-  /**
-   * **Email OTP signs the person in through the same Worker, table and cookie as magic link (#712).** The left-over
-   * check from #84: a code in the feature's `verification` table is accepted once, sets the session, and is gone.
-   */
-  test("a code in the feature's verification table signs the person in by email OTP, once", async () => {
-    const account = await standInAccount();
-    try {
-      await provision(account);
-      await writeSignInCode(account);
-
-      const worker = await appWorker(account, []);
-      const signedIn = await signInWithCode(worker);
-      expect(signedIn.status).toBe(200);
-      expect(((await signedIn.json()) as { user?: { email?: string } }).user?.email).toBe(PERSON);
-      const cookie = (signedIn.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
-      expect(cookie.startsWith("__Secure-better-auth.session_token=")).toBe(true);
-
-      const session = await worker.fetch(new Request(`${ORIGIN}/auth/get-session`, { headers: { cookie } }));
-      expect(session.status).toBe(200);
-      expect(((await session.json()) as { user?: { email?: string } } | null)?.user?.email).toBe(PERSON);
-
-      // The row was consumed: the same code a second time, in a fresh isolate, signs nobody in.
-      const again = await signInWithCode(await appWorker(account, []));
-      expect({ status: again.status, code: ((await again.json()) as { code?: string }).code }).toEqual({
-        status: 400,
-        code: "INVALID_OTP",
-      });
-      expect(again.headers.get("Set-Cookie") ?? "").not.toContain("session_token=");
     } finally {
       await account.miniflare.dispose();
     }
