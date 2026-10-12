@@ -7,7 +7,7 @@ Scaffold a front end into an existing Worker and wire it end to end — Vite, th
 ## Synopsis
 
 ```
-pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--dry-run] [--json]
+pithy ui add <framework> [--worker <name>] [--auth | --no-auth] [--payments | --no-payments] [--organization | --no-organization] [--dry-run] [--json]
 pithy ui sync [--worker <name>] [--check] [--json]
 pithy ui list [--json]
 ```
@@ -19,7 +19,9 @@ pithy ui list [--json]
 | `<framework>` | `add` | required | The stub to scaffold. `react` is the only stub Pithy ships |
 | `--worker <name>` | `add`, `sync` | resolved — see Resolving the Worker | The Worker under `apps/` to scaffold into, or to re-derive |
 | `--check` | `sync` | `false` | Report the drift, write nothing, exit non-zero on a shadowed route — the CI gate |
-| `--auth` / `--no-auth` | `add` | see The auth screens | Scaffold the sign-in screens, or leave them out |
+| `--auth` / `--no-auth` | `add` | see The screen sets | Scaffold the sign-in screens, or leave them out |
+| `--payments` / `--no-payments` | `add` | see The screen sets | Scaffold the paywall and subscription screens, or leave them out |
+| `--organization` / `--no-organization` | `add` | see The screen sets | Scaffold the account chooser, or leave it out |
 | `--dry-run` | `add` | `false` | Show the plan and write nothing. Every refusal still applies |
 | `--json` | all three | `false` | One line of machine-readable output. Implies non-interactive: `pithy ui` never prompts when `--json` is set, nor under `--no-input` or `PITHY_NONINTERACTIVE=1` |
 
@@ -35,19 +37,21 @@ pithy ui list [--json]
 
 `ui list` takes no `--worker`: it reports the framework stubs `ui add` can scaffold, not the Workers that already carry one. For the per-Worker view — which Workers exist, which autostart, which port each holds — use `pithy worker list`.
 
-### The auth screens
+### The screen sets
 
-`pithy ui add` asks once whether to scaffold the sign-in screens:
+`pithy ui add` scaffolds up to three sets of Pithy's screens, one per capability, and at a terminal it asks about each:
 
 ```
-Scaffold the sign-in screens? [Y/n]
+Scaffold the passwordless sign-in screens?
+Scaffold the paywall and subscription screens?
+Scaffold the account chooser?
 ```
 
-- The default is **yes when the target Worker composes the `auth` capability**. The prompt is skipped entirely when it does not — there is nothing for a sign-in screen to call.
-- `--auth` and `--no-auth` answer it non-interactively. Under `--json` the resolved default applies unless one of them is passed.
-- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens — and the router's route guard. With auth off, everything else is still scaffolded; only Pithy's screens are omitted.
+- The suggested answer is **yes when the target Worker composes that capability** — `auth`, `payments`, `organization` — and no when it does not.
+- `--auth` / `--no-auth`, `--payments` / `--no-payments` and `--organization` / `--no-organization` answer them without asking. Where nobody may be asked (`--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`), the suggested answer applies unless a flag is passed.
+- With auth on, the stub adds `src/routes/pithy/` — the magic-link, OTP, and callback screens — and the router's route guard. Payments adds the paywall, pricing and subscription screens; organization adds the account chooser. Everything else is scaffolded either way. `docs/UI.md` lists every file and the flag that writes it.
 
-Passing `--auth` to a Worker that does not compose auth is an error, not a warning (Errors, below).
+Asking for a set on a Worker that does not compose its capability is an error, not a warning (Errors, below).
 
 ### What it writes
 
@@ -148,7 +152,7 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy ui add react --worker api --json
-{"command":"ui.add","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/pithy-screens.css","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"unstyled":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"]}
+{"command":"ui.add","schemaVersion":1,"dryRun":false,"worker":"api","deployedAs":"pithy-app-api","framework":"react","auth":true,"payments":false,"organization":false,"created":["client-env.d.ts","index.html","src/client.tsx","src/pithy-config.tsx","src/pithy-screens.css","src/router.tsx","src/routes/app/home.tsx","src/routes/pithy/callback.tsx","src/routes/pithy/otp.tsx","src/routes/pithy/sign-in.tsx","src/session.tsx","src/styles.css","src/turnstile.tsx","tsconfig.client.json","tsconfig.node.json","vite.config.ts"],"skipped":[],"unstyled":[],"runWorkerFirst":["/auth","/auth/*","/health","/health/*"],"packageManager":"bun","dependencies":["react","react-dom"],"devDependencies":["@cloudflare/vite-plugin","@pithy-sh/vite","@types/react","@types/react-dom","@vitejs/plugin-react","vite"],"scripts":["dev","build","preview"],"next":[{"command":"bun install","why":"ui add wrote 8 packages into package.json, and the build needs them installed."}]}
 ```
 
 `worker` is the `apps/` directory the front end was written into; `deployedAs` is the Worker's deployed script name. **That split holds across every command**, and it is the one thing to know about reading this output: `worker` is what `--worker` accepts and what every path in the same payload is relative to, while `deployedAs` is what the Cloudflare dashboard shows. A run reporting the deployed name (`<project>-<worker>`) beside directory-relative paths described a directory that does not exist, which is what the two fields exist to prevent. `created` and `skipped` are worker-relative and sorted; together they are every file the template declares, so a backfilling run reports the untouched ones rather than staying silent about them. `unstyled` is the second claim: **wrote the screens** and **the screens are styled** are two things, and only the first was ever reported. It is read off the stylesheets as they stand on disk after the write, not off the template, because a stylesheet the adopter has since edited is the case it exists for. `dependencies`, `devDependencies` and `scripts` name only what this run added.
@@ -174,6 +178,8 @@ $ pithy ui list --json
 | `deployedAs` | string | `add`, `sync`. The Worker's deployed script name — what the Cloudflare dashboard shows. |
 | `framework` | string | `add`. The stub that was scaffolded. |
 | `auth` | boolean | `add`. Whether Pithy's sign-in screens were scaffolded. |
+| `payments` | boolean | `add`. Whether the paywall and subscription screens were scaffolded. |
+| `organization` | boolean | `add`. Whether the account chooser was scaffolded. |
 | `created` | string[] | `add`. The files this run wrote, worker-relative and sorted. |
 | `skipped` | string[] | `add`. The template's files already on disk, left byte-for-byte alone. |
 | `unstyled` | string[] | `add`. Class names Pithy's screens render that no stylesheet in the Worker defines. Empty on an ordinary run; anything else is the exact list to fix. |
@@ -215,7 +221,7 @@ The check is the manifest's `ui` block, not the presence of files. The stub is s
 
 **A template file already on disk.** Exit 3. Pithy never overwrites a file it did not just write, so a first scaffold that finds one names every such file and writes nothing.
 
-**`--auth` without the auth capability.** Exit 3, `core/precondition_failed`, with `pithy add auth --worker api --with-prerequisites` as its `fix`, since auth declares `secrets` and `email`: the Worker is missing what the screens depend on.
+**`--auth`, `--payments` or `--organization` without its capability.** Exit 3, `core/precondition_failed`, with the `pithy add` that composes it as its `fix`. For auth that is `pithy add auth --worker api --with-prerequisites`, since auth declares `secrets` and `email`: the Worker is missing what the screens depend on.
 
 ```
 $ pithy ui add react --worker api --auth

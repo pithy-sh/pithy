@@ -64,7 +64,7 @@ Two more pieces ride along with every project. The [control plane](https://pithy
 
 ## Built for agents too
 
-Every command takes full flags, never requires a prompt, and answers with `--json`, so you and your coding agent drive the same CLI. `pithy docs connect` points Claude Code, Cursor, VS Code and seven other clients at the Pithy documentation server. See [Pithy for agents](https://pithy.sh/docs/agents/).
+Every command but the deliberately manual `pithy remove` takes full flags, answers with `--json`, and never prompts when told not to. `pithy schema --json` describes each one, and a failure exits with a code that says what to do next. So you and your coding agent drive the same CLI. `pithy docs connect` points Claude Code, Cursor, VS Code and seven other clients at the Pithy documentation server. See [Pithy for agents](https://pithy.sh/docs/agents/).
 
 ## One project, or two?
 

@@ -45,11 +45,12 @@ A prepared set is handed the origin its Worker answers on (`context.origin`, `do
 
 `--host` overrides all three: `--host preview.example.com`. A bare host takes the environment's scheme — `http` in `dev`, `https` everywhere else — and a full `http://` or `https://` origin is taken as written. One rule decides what a host is, and it refuses rather than repairs, before anything is written:
 
-- every label a DNS label, so an encoded host like `%2e%2e` is refused;
+- every label a DNS label, so an encoded host like `%2e%2e` is refused, and the whole name at most 253 characters;
+- no internationalized name: a label beginning `xn--` is refused, so `xn--a.test` is refused on every runtime, while `myxn--a.test` is the ordinary name it looks like;
 - nothing after the host — a path, a query, a fragment, a trailing `/` — and no credentials;
 - off `dev`, no port and no `http`: a deployed Worker answers over https on the default port;
 - `localhost`, `127.0.0.1` and `*.localhost` in `dev` only;
-- as a URL parser reads it: a host `new URL` refuses — `xn--a.test` — is refused, and a spelling it rewrites is refused rather than taken, so `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `0` are the loopback they parse to. Off `dev`, loopback in any spelling, `0.0.0.0` and IPv6 `[::1]` are refused, and so is every IP address: a deployed Worker answers on a name.
+- as a URL parser reads it: a host `new URL` cannot parse is refused, and a spelling it rewrites is refused rather than taken, so `127.1`, `0177.0.0.1`, `0x7f.0.0.1` and `0` are the loopback they parse to. Off `dev`, loopback in any spelling, `0.0.0.0` and IPv6 `[::1]` are refused, and so is every IP address: a deployed Worker answers on a name.
 
 **`pithy seed` mints nothing, so it offers a prepared set an empty channel.** `context.mintedThisRun` answers `undefined` for every name here, in every environment. That is not a failure: the only commands that mint and seed in one process are `pithy provision --feature` and `pithy provision --env <environment> --seed`, and a set that has to seal something under a freshly minted secret runs through one of those. See [`SEED.md`](../SEED.md#what-this-run-just-minted-contextmintedthisrun).
 
