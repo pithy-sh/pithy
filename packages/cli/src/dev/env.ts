@@ -100,7 +100,12 @@ export function startCommand(
     const resolved = custom.map((part) => part.replaceAll(DEV_PORT_TOKEN, String(port)));
     return { command: resolved[0] as string, args: resolved.slice(1) };
   }
+  // wrangler's own `--cwd`, ahead of the command, as `runWrangler` passes it (#709). The spawn's `cwd` is
+  // where the runner starts: `npx` runs from the nearest package root, so in an npm workspace wrangler
+  // started there, found no `wrangler.jsonc`, and tried to autoconfigure the directory as a static site.
   return launchWrangler([
+    "--cwd",
+    worker.dir,
     "dev",
     "--port",
     String(port),

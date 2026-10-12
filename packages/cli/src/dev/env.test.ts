@@ -84,7 +84,7 @@ describe("ownOriginFor and childEnvFor", () => {
 describe("startCommand", () => {
   const launch: (args: string[]) => { command: string; args: string[] } = (args) => execArgs("bun", "wrangler", args);
 
-  test("a wrangler worker runs `wrangler dev --port <port> --inspector-port 0 --persist-to <store>`", () => {
+  test("a wrangler worker runs `wrangler --cwd <dir> dev --port <port> --inspector-port 0 --persist-to <store>`", () => {
     const worker: WorkerTarget = {
       name: "api",
       dir: "/p/apps/api",
@@ -96,6 +96,8 @@ describe("startCommand", () => {
       args: [
         "x",
         "wrangler",
+        "--cwd",
+        "/p/apps/api",
         "dev",
         "--port",
         "8787",
@@ -325,6 +327,8 @@ describe("startCommand", () => {
     expect(args).toEqual([
       "x",
       "wrangler",
+      "--cwd",
+      "/p/apps/api",
       "dev",
       "--port",
       "8787",

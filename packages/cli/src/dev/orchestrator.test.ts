@@ -514,7 +514,7 @@ describe("ensureDevConfig", () => {
 });
 
 describe("startDev — spawn commands and env", () => {
-  test("wrangler worker gets `wrangler dev --port … --inspector-port 0`; custom command runs verbatim", async () => {
+  test("wrangler worker gets `wrangler --cwd <dir> dev --port … --inspector-port 0`; custom command runs verbatim", async () => {
     const h = harness();
     await startDev(h.options);
     const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
@@ -524,6 +524,8 @@ describe("startDev — spawn commands and env", () => {
       args: [
         "x",
         "wrangler",
+        "--cwd",
+        "/proj/apps/api",
         "dev",
         "--port",
         "8787",
