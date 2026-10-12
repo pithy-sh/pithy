@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AUDIT_MIGRATION_ORDER } from "@pithy-sh/audit/src/capability";
 import { resolveActor } from "@pithy-sh/audit/src/cli/resolveActor";
@@ -52,9 +51,20 @@ function auditMigrations(): MigrationProvider {
   return provider;
 }
 
-/** A minimal project on disk: one Worker whose `staging` stanza binds `DB` to the throwaway database. */
+/** This package's root: `src/audit/` is two levels down. */
+const PACKAGE_ROOT = join(import.meta.dirname, "..", "..");
+
+/**
+ * A minimal project on disk: one Worker whose `staging` stanza binds `DB` to the throwaway database.
+ *
+ * **Inside the package, not the OS tmpdir (#709).** `createCliAudit` loads `@pithy-sh/audit` from the
+ * *project's* install (`kitImport`, #533), and a directory under `/tmp` has none, so the import failed, the
+ * emit was the silent no-op an uninstalled audit gets, and the row this test reads back was never written.
+ * Under `packages/cli/` the project's `node_modules` chain reaches the workspace's linked `@pithy-sh/audit`,
+ * which is the shape of a real project that has it installed. `deploy.integration.test.ts` does the same.
+ */
 async function writeProject(databaseId: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-live-"));
+  const dir = await mkdtemp(join(PACKAGE_ROOT, ".cliaudit-it-"));
   const worker = join(dir, "apps", "api");
   await mkdir(worker, { recursive: true });
   await writeFile(

@@ -39,6 +39,7 @@ dist/
 .boot-*/
 .migrate-*/
 .deploy-it-*/
+.cliaudit-it-*/
 
 # editor / os
 .DS_Store
