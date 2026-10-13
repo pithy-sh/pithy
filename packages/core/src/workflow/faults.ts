@@ -259,8 +259,10 @@ export function classifiedSteps(
      * answer that cannot change.
      */
     sleep(name: string, durationMs: number): Promise<void> {
-      const pause = step.sleep;
-      if (pause === undefined) {
+      // Read to test for presence, then called off `step` itself. On Cloudflare the step is an RPC
+      // stub, where a property read is another stub: `.call` on it is a remote call to a method named
+      // `call`, which the receiver does not implement.
+      if (step.sleep === undefined) {
         return runner.do<void>(`${name}/cannot-pause`, async () => {
           throw new InternalError({
             message: "This Workflow step runner cannot pause.",
@@ -269,7 +271,7 @@ export function classifiedSteps(
           });
         });
       }
-      return pause.call(step, name, durationMs);
+      return step.sleep(name, durationMs);
     },
   };
   return runner;

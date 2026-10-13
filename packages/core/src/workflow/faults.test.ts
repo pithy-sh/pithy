@@ -183,6 +183,30 @@ function pausingStep(): WorkflowStepLike & { sleeps: string[] } {
   };
 }
 
+/**
+ * A step that behaves like the Workers RPC stub Cloudflare hands a Workflow. A property read off a stub
+ * is itself a stub, so `step.sleep.call(…)` is not `Function.prototype.call`: it is a remote call to a
+ * method named `call`, which the receiver does not implement. Calling the method off the stub works.
+ */
+function rpcStubStep<T extends object>(target: T): T {
+  const remote = (method: string) => (): never => {
+    throw new TypeError(`The RPC receiver does not implement the method "${method}".`);
+  };
+  return new Proxy(target, {
+    get(on, key, receiver) {
+      const value = Reflect.get(on, key, receiver);
+      if (typeof value !== "function") return value;
+      return new Proxy(value, {
+        get(fn, member) {
+          if (member === "call" || member === "apply" || member === "bind") return remote(member);
+          return Reflect.get(fn, member);
+        },
+        apply: (fn, _this, args) => Reflect.apply(fn, on, args),
+      });
+    },
+  });
+}
+
 describe("a classified runner can also pause", () => {
   test("a sleep reaches the runner underneath, with the name and the duration it was given", async () => {
     const step = pausingStep();
@@ -190,6 +214,20 @@ describe("a classified runner can also pause", () => {
     await classifiedSteps(step, policy, Terminal).sleep("wait-for-propagation", 15_000);
 
     expect(step.sleeps).toEqual(["wait-for-propagation:15000"]);
+  });
+
+  test("a sleep reaches a runner that is an RPC stub, calling its method rather than `.call` on it", async () => {
+    const step = rpcStubStep(pausingStep());
+
+    await classifiedSteps(step, policy, Terminal).sleep("wait-for-propagation", 15_000);
+
+    expect(step.sleeps).toEqual(["wait-for-propagation:15000"]);
+  });
+
+  test("a step on an RPC stub is driven by calling its method, not `.call` on it", async () => {
+    const step = rpcStubStep(pausingStep());
+
+    await expect(classifiedSteps(step, policy, Terminal).do("write", async () => "done")).resolves.toBe("done");
   });
 
   test("a sleep that raises is forwarded untouched — a pause raises no fault to classify", async () => {

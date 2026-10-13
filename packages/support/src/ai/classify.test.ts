@@ -56,6 +56,24 @@ describe("classifyMessage", () => {
     });
   });
 
+  test("a binding that behaves like an RPC stub is run by calling its method, not `.call` on it", async () => {
+    // A property read off a Workers RPC stub is itself a stub, so `ai.run.call(ai, …)` asks the
+    // receiver for a remote method named `call`. Calling `run` off the binding is the one form that
+    // works on a stub and on a plain object alike.
+    const binding = saying('{"category":"billing","priority":"urgent","sentiment":"frustrated","confidence":0.88}');
+    const run = binding.run;
+    const remote = (method: string) => (): never => {
+      throw new TypeError(`The RPC receiver does not implement the method "${method}".`);
+    };
+    const stubbed = new Proxy(run, {
+      get: (fn, member) =>
+        member === "call" || member === "apply" || member === "bind" ? remote(member) : Reflect.get(fn, member),
+    });
+    const ai: SupportAi = { run: stubbed };
+
+    await expect(classifyMessage(ai, options())).resolves.toMatchObject({ category: "billing" });
+  });
+
   test("the model id passed in is the model id run", async () => {
     const seen: string[] = [];
     const ai: SupportAi = {

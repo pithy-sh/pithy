@@ -177,8 +177,12 @@ export async function classifyMessage(
   // would have called an outage and the step would have re-driven five times against an env that is
   // not going to grow a binding. This is the deployment error `support/classification_failed` names,
   // and it is terminal.
-  const run = (ai as Partial<SupportAi> | undefined)?.run;
-  if (typeof run !== "function") {
+  //
+  // The presence test reads `run`; the call below goes through the binding itself. A Workers binding
+  // can be an RPC stub, where a property read is another stub and `.call` on it is a remote call to a
+  // method named `call` — the fault that broke `classifiedSteps().sleep` on a live `WorkflowStep`.
+  const binding = ai as Partial<SupportAi> | undefined;
+  if (typeof binding?.run !== "function") {
     throw new SupportClassificationError({
       detail: "the AI binding is absent from this worker's env; classification cannot run",
     });
@@ -186,7 +190,7 @@ export async function classifyMessage(
 
   let raw: unknown;
   try {
-    raw = await run.call(ai, options.model, {
+    raw = await binding.run(options.model, {
       messages: [
         { role: "system", content: classificationPrompt(options.categories) },
         { role: "user", content: classificationInput(options.subject, options.body, options.maxChars) },
