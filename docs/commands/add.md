@@ -47,7 +47,7 @@ Each one is a real `pithy add`: its package installed, its config and bindings w
 
 ```
 $ pithy add auth --json
-{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run `pithy add auth --worker board --with-prerequisites --json`, or compose them first: `pithy add secrets --worker board --json`, then `pithy add email --worker board --json`.","exit":2,"retryable":false,"fix":"pithy add auth --worker board --with-prerequisites --json"}}
 ```
 
 Composing something nobody asked for is not a thing to do behind an adopter's back. Reporting `Done.` on a project that cannot boot is worse. A prompt where there is someone to ask and a flag where there is not is how the rest of this CLI settles that (§`--worker`, `pithy init`'s domains).
@@ -116,7 +116,7 @@ A faulted package is reported rather than refused: one broken manifest must not 
 
 ```
 $ pithy add secrets --json
-{"command":"add","schemaVersion":1,"capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run pithy init, then pithy add secrets again.", …]}
+{"command":"add","schemaVersion":1,"capability":"secrets","worker":"board","deployedAs":"replay-board","package":"@pithy-sh/secrets","packageManager":"npm","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0300_auth_0001_init","direction":"Up","status":"Success"}]}],"kvNamespaces":[],"notes":["SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run `pithy add secrets --worker board --json` again.", …]}
 ```
 
 | key | type | meaning |
@@ -178,7 +178,7 @@ Run pithy add --list to see what's available.
 
 ```
 $ pithy add audit --json
-{"error":{"code":"input/required","status":400,"flag":"--worker","choices":["relay-deck","relay-tally"],"message":"This project has several workers, so which one to wire is ambiguous.","action":"Pass --worker <name>. Known: relay-deck, relay-tally."}}
+{"error":{"code":"input/required","status":400,"flag":"--worker","choices":["deck","tally"],"message":"This project has several workers, so which one to wire is ambiguous.","action":"Pass --worker <name>. Known: deck, tally.","exit":2,"retryable":false}}
 ```
 
 **A `--worker` that names nothing.**
@@ -186,7 +186,7 @@ $ pithy add audit --json
 ```
 $ pithy add audit --worker nope
 No worker named "nope".
-Run pithy worker list to see this project's workers. Known: relay-deck, relay-tally.
+Run pithy worker list to see this project's workers. Known: deck, tally.
 ```
 
 **An unknown `--set` key.** The valid keys come back with it, so an agent and a human get the same correction.
@@ -217,7 +217,7 @@ Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 
 ```
 $ pithy add payments --json
-{"error":{"code":"input/required","status":400,"flag":"--set","choices":["billingSubject=user","billingSubject=organization"],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
+{"error":{"code":"input/required","status":400,"flag":"--set","choices":["billingSubject=user","billingSubject=organization"],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization.","exit":2,"retryable":false}}
 ```
 
 **A choice whose other half is code.** Some values compose only alongside a function — `pithy add` renders JSON into `pithy.config.ts`, not behavior. Where the kit knows what that function's file looks like, it writes one: the choice is taken, a seam module is scaffolded beside it, and the Worker refuses to boot until you have finished the module.
@@ -250,7 +250,7 @@ Pass one of: user, organization.
 
 ```
 $ pithy add auth --json
-{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email."}}
+{"error":{"code":"input/required","status":400,"flag":"--with-prerequisites","message":"auth requires secrets and email, which board does not compose.","action":"Run `pithy add auth --worker board --with-prerequisites --json`, or compose them first: `pithy add secrets --worker board --json`, then `pithy add email --worker board --json`.","exit":2,"retryable":false,"fix":"pithy add auth --worker board --with-prerequisites --json"}}
 ```
 
 **A dry run of a capability that is not installed.** Exit 3: the plan is read from the manifest, and installing it is the one step a dry run cannot make in a copy.
@@ -258,10 +258,10 @@ $ pithy add auth --json
 ```
 $ pithy add auth --dry-run
 @pithy-sh/auth is not installed, so there is no manifest to plan auth from.
-Install it with bun add @pithy-sh/auth, then run pithy add auth --dry-run again.
+Install it with bun add @pithy-sh/auth, then run `pithy add auth --worker board --with-prerequisites --dry-run` again.
 ```
 
-**A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with `Run pithy add <name> to install it.`
+**A capability whose manifest is not there**, when the install did not run or did not land. `No capability named "<name>" is installed.` — with ``Run `pithy add <name> --worker <dir> --with-prerequisites` to install it.``, naming the Worker by its `apps/` directory and `--with-prerequisites` when the capability brings any that Worker lacks. In a project with several Workers it names one such command per Worker, joined by "or".
 
 **A malformed manifest on the direct path.** The `--list` scan reports a fault and carries on; asking for that capability by name refuses, naming the package and the schema's own reason.
 

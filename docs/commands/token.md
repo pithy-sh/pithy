@@ -93,13 +93,13 @@ The token's value and its composed Cloudflare name are both on the internal resu
 
 ## Errors
 
-- **`Cloudflare credentials are missing.`** Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the bootstrap token — or record them with `pithy init`.
+- **`Cloudflare credentials are missing.`** Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the bootstrap token — then run it again. No command records them inside a project: `pithy init` does only as it scaffolds a new one.
 - **`Unknown token permission key: <key>.`** The refusal lists every legal key.
 - **`Unknown token store: <value>.`** Legal values are `secrets-store`, `dev-vars`, `ephemeral`.
 - **`Unknown token profile: <name>.`** The refusal lists the profiles this project actually resolves — the aggregate of its composed capabilities' declarations and its config overrides.
 - **No storage is declared for the token.** The profile names no store and its secret is not in the registry. Declare the secret as `cf-secrets-store`, or mint with `--store dev-vars`.
 - **The secret is declared `d1`.** A token whose value is read outside the Worker cannot live in the encrypted D1 store. Same two fixes.
-- **`No CF Secrets Store is configured for the secrets-store store.`** Run `pithy add secrets` to record `SECRETS_STORE_ID`, or mint with `--store dev-vars`.
+- **`No CF Secrets Store is configured for the secrets-store store.`** Run `pithy add secrets --worker api` to record `SECRETS_STORE_ID`, naming the Worker that composes `secrets`, or mint with `--store dev-vars`. In a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 - **No project name.** The root `pithy.config.ts` needs `name`. Every token name and Secrets Store entry starts with it, and `revoke` deletes every account token of the name it computes — a guess would point that sweep at another project's credentials.
 - **`--env` is validated at the flag.** `production` is answered with `prod`; anything over seven characters or outside the charset is refused before a single Cloudflare call.
 

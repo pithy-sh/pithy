@@ -214,7 +214,7 @@ Run pithy ui list to see the frameworks you can add. Known: react.
 ```
 $ pithy ui add react --worker api
 api already has a react front end.
-Add screens by dropping files into src/routes/app/. Run pithy ui sync to re-derive its route allowlist.
+Add screens by dropping files into src/routes/app/. Run pithy ui sync --worker api to re-derive its route allowlist.
 ```
 
 The check is the manifest's `ui` block, not the presence of files. The stub is scaffolded once; a second `add` would create nothing and imply otherwise. A Worker carrying a different stub is refused the same way, exit 3: one Worker, one front end.
@@ -226,10 +226,10 @@ The check is the manifest's `ui` block, not the presence of files. The stub is s
 ```
 $ pithy ui add react --worker api --auth
 The auth screens need the auth capability, and api doesn't compose it.
-Run pithy add auth --worker api first, or leave them out with --no-auth.
+Run `pithy add auth --worker api --with-prerequisites` first, or leave them out with --no-auth.
 ```
 
-**`pithy ui sync` on a Worker with no front end.** Exit 3, and the action is `pithy ui add react --worker <name>`.
+**`pithy ui sync` on a Worker with no front end.** Exit 3, and the action names that Worker: ``Run `pithy ui add react --worker api` to scaffold one.``
 
 **Several Workers, no `--worker`, where nobody may be asked.** The resolution error from 7.2 — the same `input/required` refusal `pithy add` raises, naming the Workers it found. Exit 2.
 

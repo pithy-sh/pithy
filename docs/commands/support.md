@@ -61,7 +61,7 @@ The refusal exists because enabling Email Routing on a zone points its MX at Clo
 
 An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after the bucket and staging's worker already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
 
-The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 3 (`core/precondition_failed`, with a `fix`) rather than reporting a success for a run that did nothing.
+The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 3 (`core/precondition_failed`, with a `fix`) rather than reporting a success, and the refusal names the bucket when this run created it.
 
 `deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
@@ -112,9 +112,26 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `search[].dropped` | boolean | The index was dropped in this run. Both false means it already matched the config |
 | `routing` | object | What happened to the inbound Email Routing rule |
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when no routing flags were supplied, or when no environment was ready, so no rule was made |
+| `routing.skipped` | boolean | True when no routing flags were supplied, so no rule was made |
+| `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
+**One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`, and its message names the bucket when this run created it. `support provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
+
+```
+$ pithy support provision --worker api --json
+{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":true,"skipped":false},"environments":["staging"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":true,"dropped":false,"repaired":false}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
+$ echo $?
+0
+```
+
+```
+$ pithy support provision --worker api --json
+{"error":{"code":"core/precondition_failed","status":412,"message":"No environment is ready — staging and prod have no DB database_id. It created the project's support bucket (acme-global-support), which every environment shares.","action":"Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy support provision --json --worker api` again.","exit":3,"retryable":false,"fix":"pithy provision --env staging --yes"}}
+$ echo $?
+3
+```
+
+The second line is on stderr, and stdout is empty.
 
 `pithy support deprovision`
 
@@ -143,18 +160,18 @@ Pass --routing-zone, --inbound-address, and --app-worker together, or none of th
 
 ```
 <worker> does not compose the support capability.
-Add `support({ ... })` to <worker>'s pithy.config.ts (run `pithy add support --worker <worker>`), or name the Worker that composes it with --worker.
+Add `support({ ... })` to <worker>'s pithy.config.ts (run `pithy add support --worker <worker> --with-prerequisites`), or name the Worker that composes it with --worker.
 ```
 
-Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with `pithy add support --worker <worker> --with-prerequisites` as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because support declares prerequisites in its manifest; a `fix` runs with nobody to ask.
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with that same command as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because support declares `secrets` and that Worker does not compose it yet; a Worker that already does is named without it. The command is built from support's manifest — the installed one, or the kit's own when none is installed — so the line and the `fix` cannot disagree.
 
-**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/support` missing answers `The support capability is not installed.` with `pithy add support`; the package present with a dependency of its own not installed answers `The support capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The support capability is installed and will not load.`, and so does one whose import names something no install provides: a `#` import its own imports map lacks, or a `node:` module this runtime does not have. A path an installed package does not have, or does not export, answers `The support capability is installed but incomplete.` No install fixes any of those, so the action never offers one, and it names the package that wrote the import.
+**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/support` missing answers `The support capability is not installed.` with `pithy add support --worker <w> --with-prerequisites` — read from the kit's own manifest, since none is installed — and, in a project with several Workers, one such command for each Worker; a project with no Worker is told to create one with `pithy worker add` first; the package present with a dependency of its own not installed answers `The support capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The support capability is installed and will not load.`, and so does one whose import names something no install provides: a `#` import its own imports map lacks, or a `node:` module this runtime does not have. A path an installed package does not have, or does not export, answers `The support capability is installed but incomplete.` No install fixes any of those, so the action never offers one, and it names the package that wrote the import.
 
 **Credentials are missing.**
 
 ```
 Cloudflare credentials are missing.
-Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
+Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
 ```
 
 **The project has no name.** The bucket is found by name and reused, so a guessed name would adopt another project's inbox. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
@@ -163,11 +180,11 @@ Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or expo
 pithy.config.ts has no `name`.
 ```
 
-**No environment is ready.** Every declared environment was skipped, so nothing was provisioned.
+**No environment is ready.** Every declared environment was skipped, so no environment was provisioned: exit 3, `core/precondition_failed`. The action names the provision every skipped environment needs. Its `fix` is `pithy provision --env <env> --yes` when exactly one of them is an environment an agent may provision; a production one is a person's decision. The bucket is the one thing the run may have made — it is created however many environments skip — and when this run created it, the refusal says so, by name, so the one outcome is the whole account of the run. A bucket an earlier run made is reused and not mentioned.
 
 ```
-No environment is ready — staging and prod have no DB database_id.
-Run pithy provision --env staging to create its app database, then run pithy support provision again.
+No environment is ready — staging and prod have no DB database_id. It created the project's support bucket (acme-global-support), which every environment shares.
+Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy support provision --worker api` again.
 ```
 
 **The app Worker declares an environment it has no stanza for.** Config drift rather than provisioning state, so it is refused rather than skipped.
@@ -189,7 +206,7 @@ Provision everything but the rule, then add it once the zone is decided:
 $ pithy support provision
 Bucket acme-global-support ready.
   staging  classification worker deployed, search index created
-  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
+  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
 No routing rule. Pass --routing-zone, --inbound-address, and --app-worker to create one.
 Done.
 ```
@@ -198,7 +215,7 @@ With routing, machine-readable:
 
 ```
 $ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help.example.com --app-worker acme-prod --json
-{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[]}
+{"command":"support provision","schemaVersion":1,"bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[],"exitCode":0}
 ```
 
 Take staging's worker down but keep the history and the rule:

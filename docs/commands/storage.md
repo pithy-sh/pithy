@@ -78,8 +78,25 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `skippedEnvironments[].env` | `string` | The environment that was skipped |
 | `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
+| `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
+**One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`. `storage provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
+
+```
+$ pithy storage provision --worker api --json
+{"command":"storage provision","schemaVersion":1,"environments":[{"env":"staging","bucketName":"acme-staging-storage"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
+$ echo $?
+0
+```
+
+```
+$ pithy storage provision --worker api --json
+{"error":{"code":"core/precondition_failed","status":412,"message":"No environment is ready — staging and prod have no DB database_id.","action":"Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy storage provision --json --worker api` again.","exit":3,"retryable":false,"fix":"pithy provision --env staging --yes"}}
+$ echo $?
+3
+```
+
+The second line is on stderr, and stdout is empty.
 
 `pithy storage deprovision`
 
@@ -100,26 +117,28 @@ Each is a `PithyError`: the problem, then the action.
 
 ```
 <worker> does not compose the storage capability.
-Add `storage({ ... })` to <worker>'s pithy.config.ts (run `pithy add storage --worker <worker>`), or name the Worker that composes it with --worker.
+Add `storage({ ... })` to <worker>'s pithy.config.ts (run `pithy add storage --worker <worker> --with-prerequisites`), or name the Worker that composes it with --worker.
 ```
 
-Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with `pithy add storage --worker <worker> --with-prerequisites` as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because storage declares prerequisites in its manifest; a `fix` runs with nobody to ask.
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with that same command as its `fix`, `<worker>` being the Worker's `apps/` directory. `--with-prerequisites` is there because storage declares `secrets` and that Worker does not compose it yet; a Worker that already does is named without it. The command is built from storage's manifest — the installed one, or the kit's own when none is installed — so the line and the `fix` cannot disagree.
 
-**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/storage` missing answers `The storage capability is not installed.` with `pithy add storage`; the package present with a dependency of its own not installed answers `The storage capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The storage capability is installed and will not load.`, and so does one whose import names something no install provides: a `#` import its own imports map lacks, or a `node:` module this runtime does not have. A path an installed package does not have, or does not export, answers `The storage capability is installed but incomplete.` No install fixes any of those, so the action never offers one, and it names the package that wrote the import.
+**The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/storage` missing answers `The storage capability is not installed.` with `pithy add storage --worker <w> --with-prerequisites` — read from the kit's own manifest, since none is installed — and, in a project with several Workers, one such command for each Worker; a project with no Worker is told to create one with `pithy worker add` first; the package present with a dependency of its own not installed answers `The storage capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The storage capability is installed and will not load.`, and so does one whose import names something no install provides: a `#` import its own imports map lacks, or a `node:` module this runtime does not have. A path an installed package does not have, or does not export, answers `The storage capability is installed but incomplete.` No install fixes any of those, so the action never offers one, and it names the package that wrote the import.
 
 **Credentials are missing.**
 
 ```
 Cloudflare credentials are missing.
-Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
+Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
 ```
 
 **No Secrets Store id.** The sweep worker decrypts its credentials from it. Both subcommands resolve credentials through the same reader, so `deprovision` is refused without it too, though it writes no secret.
 
 ```
 The CF Secrets Store id is missing.
-Run pithy add secrets to record SECRETS_STORE_ID (the sweep worker decrypts its credentials from it).
+Run `pithy add secrets --worker <worker>` to record SECRETS_STORE_ID (the sweep worker decrypts its credentials from it).
 ```
+
+`<worker>` is a Worker composing `secrets`, by its `apps/` directory — the ones that do when any does, every Worker when none does. In a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 
 **Half an R2 key pair**, or none at all.
 
@@ -145,7 +164,7 @@ pithy.config.ts has no `name`.
 
 ```
 No environment is ready — staging and prod have no DB database_id.
-Run pithy provision --env staging to create its app database, then run pithy storage provision again.
+Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy storage provision --worker api` again.
 ```
 
 **The app Worker declares an environment it has no stanza for.** Config drift rather than provisioning state, so it is refused rather than skipped.
@@ -159,7 +178,7 @@ Add the staging environment to apps/api/wrangler.jsonc with its DB binding.
 
 ```
 The staging secrets database (acme-staging-secrets) does not exist.
-Run `pithy secrets provision` first — the sweep worker reads its credentials from it.
+`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It creates this database — the sweep worker reads its credentials from it.
 ```
 
 ## Examples
@@ -169,7 +188,7 @@ Provision every environment from `R2_CREDENTIALS` in the account config:
 ```
 $ pithy storage provision
   staging  bucket acme-staging-storage ready, sweep worker deployed
-  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
+  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
 Done.
 ```
 
@@ -177,7 +196,7 @@ The same run, machine-readable:
 
 ```
 $ pithy storage provision --json
-{"command":"storage provision","schemaVersion":1,"environments":[{"env":"staging","bucketName":"acme-staging-storage"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
+{"command":"storage provision","schemaVersion":1,"environments":[{"env":"staging","bucketName":"acme-staging-storage"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
 ```
 
 Take staging's sweep worker down and leave the files alone:

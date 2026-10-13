@@ -251,7 +251,7 @@ $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --json
 {"error":{"code":"input/required","status":400,"flag":"--yes","message":"Revoke key cpk_2026_07 on prod?","action":"Pass --yes to revoke it without asking."}}
 ```
 
-**Nothing is connected.** `rotate` against an environment with no registration raises `controlplane/not_connected`, whose action names `pithy dashboard connect --env <environment>`.
+**Nothing is connected.** `rotate` against an environment with no registration raises `controlplane/not_connected`, whose action names the `pithy dashboard connect --env <environment>` that runs as written: no `--worker` in a project with one Worker, and with several, one command for each Worker that composes `controlplane()`.
 
 **`--public-key` without `--issuer`.** The issuer is compared on every call, so there is no default to fall back on.
 

@@ -71,7 +71,7 @@ One line on stdout.
 
 The command exits 0 for every state it is meant to report, including a completely unprovisioned project. Two things still refuse:
 
-- **`No workers here.`** Nothing under `apps/` carries a `wrangler.jsonc`. Run `pithy init` to start a project.
+- **`No workers here.`** Nothing under `apps/` carries a `wrangler.jsonc`. Name one and create it with `pithy worker add`.
 - **`No worker named "<name>".`** `--worker` matched nothing. The refusal lists the Workers that do exist.
 
 A Worker whose `wrangler.jsonc` vanished between discovery and reading is skipped rather than failing the inventory. A Worker whose config is present and will not open still refuses — a Worker silently missing from an inventory is the under-report this command exists to prevent.

@@ -168,8 +168,10 @@ A `d1` secret — the auth session secret — is sealed under a master key that 
 
 ```
 auth-session-secret: not created here — they need a deployed manager.
-Run pithy secrets provision to create them.
+`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.
 ```
+
+`pithy secrets provision` deploys every declared environment's manager, production included, so after a `--env staging` run it is named as a person's decision rather than a command to run.
 
 `--feature` creates them the way `pithy secrets provision` does, when the account has a Secrets Store (#643). A feature has its own `SECRETS` database, so it gets its own secrets manager: the run creates the feature's own master key, only if absent, through the provisioner `pithy secrets provision` uses, deploys the feature's manager with its other kit Workers, and then asks that manager to create every `d1` secret the registry says may be generated, through the same `mintDeclaredSecrets` pass. **No token.** A feature's manager binds no Cloudflare API token and rotates nothing, so branch code never holds write access to the account's Secrets Store. Nothing is pending:
 
@@ -190,7 +192,7 @@ A `cf-secrets-store` secret the registry calls arbitrary — the email link-sign
 
 `pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared, so that command does nothing for one; `pithy provision --feature` is what gives a branch its manager.
 
-`--json` carries the distinction as `pendingSecretsRemedy` — the command that creates them.
+`--json` carries the distinction as `pendingSecretsRemedy` — the command that creates them, or the person's decision it is.
 
 ## Production
 
@@ -244,7 +246,7 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","schemaVersion":1,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy secrets provision","dryRun":false}
+{"command":"provision","schemaVersion":1,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.","dryRun":false}
 ```
 
 ```
@@ -301,7 +303,7 @@ $ pithy provision --feature --json
 | `hosts` | `object[]` | `--feature` only: every kit Worker the feature stood up for itself, one row each, as `pithy deploy --json` reports `kit` |
 | `routesDropped` | `object[]` | `--feature` only, and only when there were any: each Worker's route patterns the feature stanza gave up, as `{ worker, routes }` |
 | `bindingsDropped` | `object[]` | `--feature` only, and only when there were any: each Worker's `durable_objects` or `services` entries naming a script this project does not own, which the feature stanza gave up, as `{ worker, bindings }` |
-| `pendingSecretsRemedy` | `string \| null` | The command that does create them. `"pithy secrets provision"` for `--env`; `"pithy provision --feature with SECRETS_STORE_ID set"` for `--feature`, whose own run creates them once it has a Secrets Store. A pipeline branches on this rather than on the mode |
+| `pendingSecretsRemedy` | `string \| null` | What does create them. For `--env`, `pithy secrets provision` said as a person's decision — it runs against every environment, production included; `"pithy provision --feature with SECRETS_STORE_ID set"` for `--feature`, whose own run creates them once it has a Secrets Store. A pipeline branches on this rather than on the mode |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was created, written or migrated when it is `true`, every other key is what the run would report, and a resource it would create carries its placeholder `id` |
 | `plan` | `object` | Present only under `--dry-run`: the resources to create or adopt, the config edits with their diffs, the secrets to bind or mint, and the migrations to apply, in the shape every `--dry-run` shares (`docs/CLI.md` §1.2) |
 | `next` | `object[]` | `[{ command, why }]`: `pithy deploy --env <env>` — `--env feature` for `--feature` — when a Worker this run named in `workers` has no deployed script on the account. Absent when every one is deployed, when the account could not be asked, and under `--dry-run`; never empty (`docs/CLI.md` §1.2) |

@@ -124,7 +124,7 @@ Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fi
 
 ```
 Cloudflare credentials are missing.
-Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
+Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
 ```
 
 **No `DB` id for this environment.** The document corpus lives in the app database, so provisioning refuses rather than standing up an index with nothing to fill it: `<worker>'s wrangler.jsonc has no DB database_id for <env>.`

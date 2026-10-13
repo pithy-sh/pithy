@@ -60,7 +60,7 @@ Project health:
                  env: staging, prod
     migrations   dev: 2 pending — run: pithy migrate --env dev
                  staging: 1 pending — run: pithy migrate --env staging
-                 prod: DB (app) not provisioned — run: pithy provision --env prod
+                 prod: DB (app) not provisioned — `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
     entitlements no gated route without a provider ✓
   collab: healthy ✓
 
@@ -79,7 +79,7 @@ The **`migrations`** check answers **every environment**, one line each: `dev`, 
 A deployed environment's line is one of four things, and none of them is ever another environment's number:
 
 - **A count** — its ledger read, exactly as `dev`'s is below.
-- **`DB (app) not provisioned — run: pithy provision --env prod`** — the databases it migrates have no `database_id` in its stanza. Read from `wrangler.jsonc`, so it says so offline too. Never a count: there is nothing there to count against.
+- **`DB (app) not provisioned — run: pithy provision --env staging --yes`** — in production, the person's-decision sentence instead, as in the sample above — the databases it migrates have no `database_id` in its stanza. Read from `wrangler.jsonc`, so it says so offline too. Never a count: there is nothing there to count against.
 - **`skipped — offline, so no database was read`**, or **`skipped — no Cloudflare credentials, so no database was read`** — a deployed read reaches your account, and this run cannot or was told not to.
 - **`couldn't be checked — pithy.config.ts does not compose for qa`** — the config throws for that environment, so there is no migration set to compare. So does another Worker's: a database this Worker shares holds that Worker's rows too, and read against the Workers that did compose, they would come back undeclared, with advice to delete them. What it threw is the `Environment configs:` block's line.
 
@@ -127,7 +127,7 @@ Project health:
   api:
     prereqs      every composed capability has its peers ✓
     config       parses against every capability schema ✓
-    bindings     MultiplayerSession not exported from this worker's entry — run `pithy upgrade`
+    bindings     MultiplayerSession not exported from this worker's entry — run `pithy upgrade --worker api`
     migrations   dev: none pending, none undeclared ✓
                  staging: none pending, none undeclared ✓
                  prod: none pending, none undeclared ✓
@@ -152,7 +152,7 @@ Project health:
 
 **This is the one block that appears on a project where every check passes**, and a Worker that declines something is never collapsed to `healthy ✓`. Silence here would put the next person back where this started: unable to tell a deliberate absence from a forgotten one. It does not fail the exit — a decline is a configuration, not a defect.
 
-A decline that cannot be honored does fail it, and `pithy upgrade` refuses before writing anything. A required binding is never left out; a Workflow binding absent means *not provisioned*, which `pithy <capability> provision` fixes; a Durable Object cannot be declined because its class migration tag is written once and never revisited. A decline naming a binding nothing composes is reported and stays green — `pithy remove <capability>` leaves exactly that state, and a red no command could clear would be worse than the line naming it:
+A decline that cannot be honored does fail it, and `pithy upgrade` refuses before writing anything. A required binding is never left out; a Workflow binding absent means *not provisioned*, which `pithy <capability> provision --worker <name>` fixes, named once per environment with `--env` for `vector`, whose provision acts on one environment; a Durable Object cannot be declined because its class migration tag is written once and never revisited. A decline naming a binding nothing composes is reported and stays green — `pithy remove <capability>` leaves exactly that state, and a red no command could clear would be worse than the line naming it:
 
 ```
     bindings     all required bindings present ✓
@@ -188,8 +188,8 @@ The block's first per-Worker line is **`prereqs`**, and it is the only check her
 ```
 Project health:
   api:
-    prereqs      auth requires secrets — run: pithy add secrets
-                 auth requires email — run: pithy add email
+    prereqs      auth requires secrets — run: `pithy add secrets --worker api`
+                 auth requires email — run: `pithy add email --worker api --with-prerequisites`
                  This worker will not boot until they are composed.
 ```
 
@@ -225,7 +225,7 @@ Project health:
       composed by api
       Nothing resolves it — not the project root, not any Worker's own node_modules — so
       every command that reaches into it refuses, and every check below skips it.
-      Run: pithy add payments
+      Run: `pithy add payments --worker api --with-prerequisites --set billingSubject=user` or `pithy add payments --worker api --with-prerequisites --set billingSubject=organization`
   api: healthy ✓
 ```
 
@@ -258,7 +258,7 @@ Project health:
       api env.staging points at acme-staging-email-suppressions
       Copy the rows across first. The repoint changes which database is read, not what is in it:
       every unsubscribe recorded above stops being honored, and nothing moves it for you.
-      Make the destination if it is not there yet: pithy email provision
+      Make the destination if it is not there yet: pithy email provision --worker api
       The copy is not an export and an import. A whole dump carries the migration ledger and its
       own row ids, and it aborts against the destination having copied nothing.
       The sequence that works: https://pithy.sh/docs/cli/commands/doctor#carrying-the-data-across
@@ -266,7 +266,7 @@ Project health:
       earlier row, unless one of them expires and the other does not — a permanent suppression is never
       replaced by a temporary one. Everything the kit writes is permanent, so it is usually the date.
       The old databases are left where they are.
-      Then run: pithy provision --env staging
+      Then run: pithy provision --env staging --yes
       No command rewrites env dev, and locally the binding is the address — edit it or leave it.
   api: healthy ✓
 ```
@@ -312,8 +312,8 @@ Project health:
       earlier row, unless one of them expires and the other does not — a permanent suppression is never
       replaced by a temporary one. Everything the kit writes is permanent, so it is usually the date.
       The database that loses is left where it is.
-      Then run: pithy provision --env staging
-      Then run: pithy provision --env prod
+      Then run: pithy provision --env staging --yes
+      `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
   api: healthy ✓
 ```
 
@@ -438,7 +438,7 @@ The same block names what is in a **`.dev.vars.local`** — the root one, which 
 
 None of the three fails the exit. It is in `--json` as `devVarsLocal`.
 
-And one more, from the neighboring `Dev secrets:` lines: **a project with no `SECRETS_ENCRYPTION_KEYS` at all** is told to run `pithy add secrets`, which mints one into `secrets.jsonc`. It is the one declared secret nobody outside the project issues, and until it exists the local `SECRETS` store cannot be opened.
+And one more, from the neighboring `Dev secrets:` lines: **a project with no `SECRETS_ENCRYPTION_KEYS` at all** is told to run `pithy add secrets --worker api`, naming the first Worker that composes `secrets`, which mints one into `secrets.jsonc`. It is the one declared secret nobody outside the project issues, and until it exists the local `SECRETS` store cannot be opened.
 
 **That line is for the master key by name, not for `bootstrap` secrets in general.** `pithy add secrets` mints exactly that one binding, so a `bootstrap` secret of your own — read straight from its binding, before any store is open — gets its own line and its own answer: `No dev value for CONNECT_ATTESTATION_KEY. Nothing mints it, and it is read straight from the binding before the store opens. Run pithy secrets edit, and write it into <path>.` Nothing generates that value, and it is not "fine to leave until you need it" either: whatever reads it fails when the Worker starts rather than at the first request that wants it.
 
@@ -496,8 +496,8 @@ A **`Support search:`** block appears when a deployed environment's `pithy_suppo
 
 One line per deployed environment, and only for an environment with something to say:
 
-- **A table with no triggers**: `prod: pithy_support_search is provisioned and has no triggers, so nothing indexes a new message. Run pithy support provision.` The command creates the triggers and backfills the messages written while none existed.
-- **A partial trigger set**: `prod: pithy_support_search has only some of its triggers, so some writes are not indexed. Run pithy support provision.` Two of three is drift, not a pass — it leaves one statement kind unindexed while the others look fine.
+- **A table with no triggers**: `prod: pithy_support_search is provisioned and has no triggers, so nothing indexes a new message. Run pithy support provision --worker api.` The command creates the triggers and backfills the messages written while none existed.
+- **A partial trigger set**: `prod: pithy_support_search has only some of its triggers, so some writes are not indexed. Run pithy support provision --worker api.` Two of three is drift, not a pass — it leaves one statement kind unindexed while the others look fine.
 - **An environment with no app database**: `prod: not provisioned — env.prod has no DB database_id, so there is no index to check.` Read from files, so it is true offline too.
 - **A read that did not happen**: `prod: skipped — offline, so no index was read.`, or `prod: skipped — no Cloudflare credentials, so no index was read.`, or `prod: could not be read, so whether the index has its triggers is unknown.` **Said out loud on purpose.** A skip that printed nothing would be indistinguishable from a healthy project, which is the one thing this check exists to prevent.
 
@@ -517,11 +517,11 @@ A **`Secret bindings:`** block appears when a declared environment's `wrangler.j
 
 `pithy add` deliberately cannot write a `secret` binding — the entry needs a `store_id` and a `secret_name` that do not exist until an account has been reached — and `pithy secrets provision` is the step that comes back and writes it. Nothing said so, and a Worker deployed without `SECRETS_ENCRYPTION_KEYS` answers its first request with `Missing required bindings: secret:SECRETS_ENCRYPTION_KEYS`. This line is what says it before the deploy.
 
-**A Worker and environment splits into two lines when its secrets have two answers, and there are exactly two.** `pithy secrets provision` creates a store entry where it can compose the value: a secret the registry says is arbitrary, and the master key, which it mints itself before it binds anything. For everything else — an OAuth client secret, a payment rail's key, a `bootstrap` secret of your own — the value is one only you hold, so the line names the command that takes it from you: `board env.prod binds no STRIPE_SECRET_KEY. Run pithy secrets create STRIPE_SECRET_KEY --env prod to supply its value, then pithy secrets provision to write the stanza.`
+**A Worker and environment splits into two lines when its secrets have two answers, and there are exactly two.** `pithy secrets provision` creates a store entry where it can compose the value: a secret the registry says is arbitrary, and the master key, which it mints itself before it binds anything. For everything else — an OAuth client secret, a payment rail's key, a `bootstrap` secret of your own — the value is one only you hold, so the line names the command that takes it from you: `` board env.prod binds no STRIPE_SECRET_KEY. Run pithy secrets create STRIPE_SECRET_KEY --env prod to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza. ``
 
 Both commands, because it is two acts: `create` writes the store entry and has no stanza to write, and `provision` binds on existence, so an entry written a moment earlier is bound exactly like one it minted itself. `pithy provision` prints the same sentence for the same finding, from the same code — the two reports contradicted each other on one project for a whole round of [#517](https://github.com/pithy-sh/pithy/issues/517), which is why there is one renderer now.
 
-A **`global`** secret — one value across every environment — resolves to a **single** account-level `<project>-global-<secret>` entry, so it gets **one line for the whole Worker** rather than one per environment, and its command carries no `--env`, because narrowing a global secret is refused: `board env.dev, env.staging, env.prod bind no GOOGLE_CLIENT_SECRET. Run pithy secrets create GOOGLE_CLIENT_SECRET to supply its value, then pithy secrets provision to write every stanza.` Every stanza short of it is named, since provisioning writes them all from the one entry; the remedy is stated once, since it is done once. Every line here names something that actually resolves the finding — established by running it against a recording Secrets Store and a recording database and re-reading the report, because four earlier rounds of this line were settled by reasoning and each of them was wrong.
+A **`global`** secret — one value across every environment — resolves to a **single** account-level `<project>-global-<secret>` entry, so it gets **one line for the whole Worker** rather than one per environment, and its command carries no `--env`, because narrowing a global secret is refused: `` board env.dev, env.staging, env.prod bind no GOOGLE_CLIENT_SECRET. Run pithy secrets create GOOGLE_CLIENT_SECRET to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes every stanza. `` Every stanza short of it is named, since provisioning writes them all from the one entry; the remedy is stated once, since it is done once. Every line here names something that actually resolves the finding — established by running it against a recording Secrets Store and a recording database and re-reading the report, because four earlier rounds of this line were settled by reasoning and each of them was wrong.
 
 It reads files only and never asks the Secrets Store: whether an *entry* exists is provisioning's question, and a declared secret whose entry has not been written is reported rather than bound, because wrangler refuses a config naming an absent entry. **`dev` never appears** — not by being filtered, but because the environments walked are the ones the root `pithy.config.ts` declares, and local dev materializes these secrets into each Worker's generated `.dev.vars` instead. A `d1`-backed secret is a row rather than a binding and never appears either, and neither does a keyspace, which has no single entry to name. It **never fails the exit**: every project that composed `secrets` and has not yet provisioned is in this state, and that is a step not yet taken rather than a contradiction.
 
@@ -581,7 +581,7 @@ A **`Local delivery:`** block answers the one question none of the above asks: d
 ```
 Local delivery:
   Email: no Cloudflare credentials, so real delivery is not possible here — using the simulator.
-    run: pithy init, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+    set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for real delivery
 ```
 
 The verdict is **the same one `pithy dev` reaches** — literally the same preflight, worded once — so the two commands cannot disagree about one project. Which capability answers is the host registry's business: `email` holds the kit's only binding that sends a message, and a tenth capability that puts something on the wire is reported here with no change. **It is not a fault and never fails the exit** — `email({ devDelivery: "simulator" })` selects the simulator deliberately, and an offline machine has no other option — but it prints in the terse report too, because silence would be read as "of course it sends". The block is absent when nothing composed sends anything.
@@ -720,7 +720,7 @@ Syncing a bucket is an S3-protocol job, so it is `rclone`, `aws s3 sync`, or any
 
 ```
 $ pithy doctor --json
-{"schemaVersion":1,"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current","command":null,"declaredAs":null}],"health":{"ok":true,"workers":[{"state":"checked","worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[],"missingExports":[],"declinedBindings":{"state":"read","declines":[]},"generatedValues":{"state":"read","drift":[],"stalePins":[]}},"migrations":{"ok":true,"environments":[{"env":"dev","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null},{"env":"staging","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null},{"env":"prod","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null}]},"entitlements":{"ok":true,"gap":{"state":"read","gates":[]}},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]},"bindingScope":{"ok":true,"split":[],"divergent":[],"partial":false},"capabilityReach":{"ok":true,"reachable":[],"unreachable":[],"split":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"token active; checked: API tokens — no other product was reached; from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[],"reserved":[],"convention":[]},"featureRatelimitIds":{"state":"ok","findings":[]},"docsMcp":{"state":"ok","findings":[],"clients":[],"detail":"Every AI client detected here can read the Pithy docs."},"selfBinding":{"state":"ok","declared":false,"missing":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"environmentInheritance":{"state":"ok","unrepeated":[]},"turnstileSitekeys":{"state":"ok","stranded":[],"unrendered":[],"detail":[]},"supportSearchTriggers":{"state":"not-applicable","environments":[],"detail":[]},"environmentConfigs":{"unresolved":[],"detail":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"portsRegistry":{"path":"/Users/jo/.config/pithy/dev-ports.json","present":true,"stray":null,"root":"/Users/jo/code/acme","unreadable":null,"entries":[{"root":"/Users/jo/code/acme","branch":"main","block":0,"base":8787,"size":20,"own":true,"onDisk":true,"orphaned":false},{"root":"/Users/jo/code/other-app","branch":"main","block":2,"base":8827,"size":20,"own":false,"onDisk":true,"orphaned":false}],"detail":null},"devSecretsFile":{"state":"checked","path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"settings":{"state":"ok","account":{"state":"checked","reason":null},"checked":[{"worker":"api","capability":"email"}],"findings":[],"unchecked":[],"detail":"account checks ran"},"sharedRuntimes":{"duplicated":[],"copies":{"zod":["/Users/jo/code/acme/node_modules/zod"],"kysely":["/Users/jo/code/acme/node_modules/kysely"],"hono":["/Users/jo/code/acme/node_modules/hono"]},"detail":"One copy each of zod, kysely, hono."},"localDelivery":{"live":true,"capability":"email","detail":"Email: sending for real from hello@acme.dev, as Cloudflare account 0a1b2c3d."},"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.4.2","nodeCompat":"26.3.0"},"node":"26.3.0","failures":[]}
+{"schemaVersion":1,"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current","command":null,"declaredAs":null}],"health":{"ok":true,"workers":[{"state":"checked","worker":"api","directory":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[],"missingExports":[],"declinedBindings":{"state":"read","declines":[]},"generatedValues":{"state":"read","drift":[],"stalePins":[]}},"migrations":{"ok":true,"environments":[{"env":"dev","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null},{"env":"staging","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null},{"env":"prod","state":"checked","ledger":{"state":"read","pending":0,"undeclared":[]},"fix":null}]},"entitlements":{"ok":true,"gap":{"state":"read","gates":[]}},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]},"bindingScope":{"ok":true,"split":[],"divergent":[],"partial":false},"capabilityReach":{"ok":true,"reachable":[],"unreachable":[],"split":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"token active; checked: API tokens — no other product was reached; from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[],"reserved":[],"convention":[]},"featureRatelimitIds":{"state":"ok","findings":[]},"docsMcp":{"state":"ok","findings":[],"clients":[],"detail":"Every AI client detected here can read the Pithy docs."},"selfBinding":{"state":"ok","declared":false,"missing":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"environmentInheritance":{"state":"ok","unrepeated":[]},"turnstileSitekeys":{"state":"ok","stranded":[],"unrendered":[],"detail":[]},"supportSearchTriggers":{"state":"not-applicable","environments":[],"detail":[]},"environmentConfigs":{"unresolved":[],"detail":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"portsRegistry":{"path":"/Users/jo/.config/pithy/dev-ports.json","present":true,"stray":null,"root":"/Users/jo/code/acme","unreadable":null,"entries":[{"root":"/Users/jo/code/acme","branch":"main","block":0,"base":8787,"size":20,"own":true,"onDisk":true,"orphaned":false},{"root":"/Users/jo/code/other-app","branch":"main","block":2,"base":8827,"size":20,"own":false,"onDisk":true,"orphaned":false}],"detail":null},"devSecretsFile":{"state":"checked","path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"settings":{"state":"ok","account":{"state":"checked","reason":null},"checked":[{"worker":"api","capability":"email"}],"findings":[],"unchecked":[],"detail":"account checks ran"},"sharedRuntimes":{"duplicated":[],"copies":{"zod":["/Users/jo/code/acme/node_modules/zod"],"kysely":["/Users/jo/code/acme/node_modules/kysely"],"hono":["/Users/jo/code/acme/node_modules/hono"]},"detail":"One copy each of zod, kysely, hono."},"localDelivery":{"live":true,"capability":"email","detail":"Email: sending for real from hello@acme.dev, as Cloudflare account 0a1b2c3d."},"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.4.2","nodeCompat":"26.3.0"},"node":"26.3.0","failures":[]}
 ```
 
 Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognized by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `selfBinding`, `featureRatelimitIds`, `docsMcp`, `environments`, `origins`, `workflows`, `devPreferences`, `devSecretsFile`, `devSecrets`, `secretBindings`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. **And a check that threw is neither of those.** Every probe is guarded, so one that fails costs its own line rather than the report — and it says so on its own value rather than being filed under `null`. `projectName`, `workerNames`, `selfBinding`, `featureRatelimitIds`, `docsMcp`, `environments`, `origins`, `workflows` and `secretBindings` report `"state":"could-not-check"`; `devPreferences` does too; `cloudflare` reports `"state":"probe_failed"`, distinct from `not_checked`, which is the caller having said not to look; and `devSecretsFile`, `devSecrets`, `devVarsLocal` and `devVars` carry a `state` of `checked` or `could-not-check` beside their findings, so a bag of empty lists can never be read as an all-clear. None of these states fails the exit: a check that did not run established nothing. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.
@@ -736,7 +736,7 @@ Three rules hold across the payload. **Paths are absolute here, never tilde-abbr
 | `workflows` | `pithy worker sync --worker <worker> --env <env>`, for an unsynced stanza |
 | `supportSearchTriggers` | `pithy support provision --worker <worker>` |
 | `settings` | The capability's own command, where its finding names one (`docs/CLI.md` §5.6) |
-| `project` | `pithy add <peer> --worker <worker>` for a missing prerequisite; `pithy upgrade --worker <worker>` for a missing option, binding or entry export; `pithy migrate --env dev` for `dev`'s pending migrations; `pithy add <capability> --worker <worker>` for a capability composed and installed nowhere |
+| `project` | `pithy add <peer> --worker <worker>` for a missing prerequisite, and `pithy add <capability> --worker <worker>` for a capability composed and installed nowhere — each with `--with-prerequisites` when it brings a prerequisite that Worker lacks, and `null` when it has an option with no default that the Worker's config does not already state, which is a person's choice; `pithy upgrade --worker <worker>` for a missing option, binding or entry export; `pithy migrate --env dev` for `dev`'s pending migrations |
 
 Everything else that fails the exit — credentials, the project name, a stamp, an environment declaration, a config that throws, a `dev.json`, a decline, an entitlement gate nothing resolves, an undeclared migration in `dev` — carries `fix: null`.
 
@@ -750,9 +750,9 @@ Everything else that fails the exit — credentials, the project name, a stamp, 
 | `project.health.workers[].bindings.declinedBindings.declines`, `.generatedValues.drift`, `.generatedValues.stalePins` | `null` — each is an edit to `pithy.config.ts` or `wrangler.jsonc`, or a decision to pin |
 | `project.health.manifests.faults`, `project.health.bindingScope.split`, `.divergent`, `project.health.capabilityReach.split` | `null` |
 | `projectName.misnamed` | `null` — a rename orphans what is provisioned, so it is yours to make |
-| `secretBindings.missing` | `pithy secrets provision` for a value the kit composes; `pithy secrets create <secret>` for one only you have, with `--env <env>` unless the secret is `global` — then `pithy secrets provision` binds it |
+| `secretBindings.missing` | `null` for a value the kit composes — `pithy secrets provision` mints it, and runs against every environment, production included, so it is a person's decision; `pithy secrets create <secret>` for one only you have, with `--env <env>` unless the secret is `global` — then `pithy secrets provision` binds it |
 | `docsMcp.clients` | `pithy docs connect --client <id>` |
-| `devVars.empty` | `pithy seed` |
+| `devVars.empty` | `pithy seed --env dev` |
 | `turnstileSitekeys.unrendered` | `pithy turnstile provision --worker <worker>` for a blank sitekey; `null` for a feature's blank or an environment no sitekey reaches |
 | `turnstileSitekeys.stranded` | `pithy turnstile provision --worker <worker>` where that provision removes it; `null` where nothing does |
 | `selfBinding.missing`, `origins.drift`, `workflows.drift`, `supportSearchTriggers.environments`, `settings.findings` | As in `failures` above |

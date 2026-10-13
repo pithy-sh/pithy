@@ -54,8 +54,10 @@ The group lives in `pithy_migrations_groups`, beside the ledger and the owner st
 ```
 $ pithy migrate --rollback
 Refusing to roll back without a group. The newest group is 2026-10-03T19:52:47.611Z, applied 2026-10-03 19:52 UTC: DB holds 2000_app_0003_release_notes, EMAIL_SUPPRESSIONS holds 0100_email_0002_reasons.
-Reverse it with pithy migrate --rollback --group 2026-10-03T19:52:47.611Z.
+Reverse it. `pithy migrate --env dev --rollback --group 2026-10-03T19:52:47.611Z` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.
 ```
+
+The command it names is your own run, with the group added: every flag you passed is carried, `--worker` and `--binding` included, so it reverses the group in exactly the databases your run was scoped to. When the databases in scope hold different newest groups, it says to reverse one database at a time and names the first, by `--binding` and, where you named no Worker, by `--worker`.
 
 That is the breaking change, and it is the point: a rollback used to step back one migration in *every* database in scope, so what one command reversed depended on what each database happened to apply last, and reversing a deploy that moved three migrations was three invocations with the count coming from outside the tool.
 

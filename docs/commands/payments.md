@@ -58,11 +58,6 @@ Each console is per environment on its own terms: Stripe's test mode, Paddle's a
 
 One line, one object, one shape per subcommand. The `command` field carries the space-separated form (`payments provision`), not the dotted one.
 
-```
-$ pithy payments provision --json
-{"command":"payments provision","schemaVersion":1,"environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
-```
-
 | key | type | meaning |
 |---|---|---|
 | `command` | `"payments provision"` | The subcommand that produced the line |
@@ -72,8 +67,25 @@ $ pithy payments provision --json
 | `skippedEnvironments[].env` | `string` | The environment that was skipped |
 | `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
+| `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
+**One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`. `payments provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
+
+```
+$ pithy payments provision --worker api --json
+{"command":"payments provision","schemaVersion":1,"environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
+$ echo $?
+0
+```
+
+```
+$ pithy payments provision --worker api --json
+{"error":{"code":"core/precondition_failed","status":412,"message":"No environment is ready — staging and prod have no DB database_id.","action":"Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy payments provision --json --worker api` again.","exit":3,"retryable":false,"fix":"pithy provision --env staging --yes"}}
+$ echo $?
+3
+```
+
+The second line is on stderr, and stdout is empty.
 
 ```
 $ pithy payments reconcile --env staging --json
@@ -111,31 +123,33 @@ Each one is a `PithyError` — the problem, then the action. Under `--json` they
 
 ```
 <worker> does not compose the payments capability.
-Add `payments({ ... })` to <worker>'s pithy.config.ts (run `pithy add payments --worker <worker>`), or name the Worker that composes it with --worker.
+Add `payments({ ... })` to <worker>'s pithy.config.ts (run `pithy add payments --worker <worker> --with-prerequisites --set billingSubject=user` or `pithy add payments --worker <worker> --with-prerequisites --set billingSubject=organization`), or name the Worker that composes it with --worker.
 ```
 
-Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with no `fix`: `pithy add payments` needs `--set billingSubject=…`, which has no default and is yours to choose, so no command runs as written (`docs/CLI.md` §3.8). `<worker>` is the Worker's `apps/` directory.
+Named with `--worker`, it is a usage error, exit 2: another `--worker` is the fix. The project's only Worker, unnamed, is `core/precondition_failed`, exit 3, with no `fix`: `pithy add payments` needs `--set billingSubject=…`, which has no default and is yours to choose, so the action names one command per value and none of them is the `fix` (`docs/CLI.md` §3.8). Each runs as written; a value `pithy add` refuses is never offered. `<worker>` is the Worker's `apps/` directory.
 
 `reconcile` writes into no Worker, and reads the first Worker composing `payments`. With none it is `core/precondition_failed`, exit 3, and no `fix`, for the same reason:
 
 ```
 The payments capability is not configured.
-Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments`).
+Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments --worker <worker> --with-prerequisites --set billingSubject=user` or `pithy add payments --worker <worker> --with-prerequisites --set billingSubject=organization`).
 ```
 
 **Cloudflare credentials are missing.** Raised before any client is built.
 
 ```
 Cloudflare credentials are missing.
-Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
+Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
 ```
 
 **The Secrets Store id is missing.** `provision` only — the reconcile Worker decrypts each rail's credentials from it.
 
 ```
 The CF Secrets Store id is missing.
-Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).
+Run `pithy add secrets --worker <worker>` to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).
 ```
+
+`<worker>` is a Worker composing `secrets`, by its `apps/` directory — the ones that do when any does, every Worker when none does. In a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 
 **`--env dev`.** Checked at the flag, before a single Cloudflare client exists.
 
@@ -144,11 +158,11 @@ Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts 
 This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead.
 ```
 
-**No environment is ready.** Every declared environment was skipped, so nothing was deployed and the run exits 3, `core/precondition_failed`, with `pithy provision --env <first> --yes` as its `fix`: `No environment is ready — staging and prod have no DB database_id.` A run where some environment was ready exits 0 and reports the rest as skipped.
+**No environment is ready.** Every declared environment was skipped, so nothing was deployed and the run exits 3, `core/precondition_failed`: `No environment is ready — staging and prod have no DB database_id.` The action names the provision every skipped environment needs. Its `fix` is `pithy provision --env <env> --yes` when exactly one of them is an environment an agent may provision; a production one is a person's decision. A run where some environment was ready exits 0 and reports the rest as skipped.
 
 **The environment has no wrangler stanza at all.** `api's wrangler.jsonc has no env.<env> stanza.` — config drift rather than provisioning state, so it is refused rather than skipped; `pithy provision --env <name>` does not write a stanza.
 
-**The environment's secrets database does not exist.** `The <env> secrets database (<name>) does not exist.` Run `pithy secrets provision` first.
+**The environment's secrets database does not exist.** `The <env> secrets database (<name>) does not exist.` `pithy secrets provision` creates it, and runs against every environment, production included — so the refusal names it as a person's decision and carries no `fix`.
 
 **The project has no name.** Every deployed name leads with it, and it is never guessed: a wrong one dispatches into a Workflow nothing deployed. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
@@ -161,7 +175,7 @@ Stand the reconcile Worker up across every managed environment.
 ```
 $ pithy payments provision
   staging  reconcile worker deployed, PAYMENTS_RECONCILE bound
-  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
+  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
 Set each rail's credentials with `pithy secrets create payments-provider-credentials` — nothing can mint them.
 Done.
 ```

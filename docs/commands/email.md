@@ -112,9 +112,26 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `routing` | object | What happened to the inbound Email Routing rule |
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when the routing flags were absent or incomplete, or when no environment was ready, so no rule was made |
+| `routing.skipped` | boolean | True when the routing flags were absent or incomplete, so no rule was made |
+| `exitCode` | integer | The status the run exits with: `0`. A run that provisions nothing writes no report |
 
-When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 3 and its `fix`.
+**One outcome, never two.** A run that went ahead writes this report alone and exits 0, whether or not some environments were skipped — `exitCode` says so, and it matches `$?`. A run in which **every** environment was skipped provisioned no environment, so it writes nothing on stdout: the `{"error":…}` line on stderr is the whole answer, exit 3, with the provisioning command as its `fix`. `email provision` is not one of the commands whose report is the answer to a failure (`docs/CLI.md` §3.8).
+
+```
+$ pithy email provision --worker api --json
+{"command":"email provision","schemaVersion":1,"suppressionDatabaseId":"0f4c2a9e-5b1d-4e8a-9c3f-7a2b6d1e8f40","environments":["staging"],"routing":{"created":false,"skipped":true},"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"exitCode":0}
+$ echo $?
+0
+```
+
+```
+$ pithy email provision --worker api --json
+{"error":{"code":"core/precondition_failed","status":412,"message":"No environment is ready — staging and prod have no DB database_id. It created and migrated the project's suppression database (3f7c…), which every environment shares.","action":"Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy email provision --json --worker api` again.","exit":3,"retryable":false,"fix":"pithy provision --env staging --yes"}}
+$ echo $?
+3
+```
+
+The second line is on stderr, and stdout is empty.
 
 `pithy email deprovision`
 
@@ -142,26 +159,28 @@ A failing run writes `{"error":{…}}` to stderr instead and exits by its kind (
 
 Each is a `PithyError`: the problem, then the action.
 
-**The capability is not configured.** No Worker's `pithy.config.ts` composes `email`. It is `core/precondition_failed`, exit 3. With one Worker its `fix` is `pithy add email --with-prerequisites` — email declares `secrets` — and with several there is no `fix`, because nothing says which Worker should compose it (`docs/CLI.md` §3.8).
+**The capability is not configured.** No Worker's `pithy.config.ts` composes `email`. It is `core/precondition_failed`, exit 3. With one Worker its `fix` is `pithy add email --worker <worker> --with-prerequisites` — email declares `secrets`, and the Worker is named by its `apps/` directory — and with several there is no `fix`, because nothing says which Worker should compose it (`docs/CLI.md` §3.8): the action names one command per Worker, each runnable as written.
 
 ```
 The email capability is not configured.
-Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).
+Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email --worker <worker> --with-prerequisites`).
 ```
 
 **Credentials are missing.**
 
 ```
 Cloudflare credentials are missing.
-Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
+Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.
 ```
 
 **No Secrets Store id.** The email worker binds its master key and its link-signing key from it. All three subcommands resolve credentials through the same reader, so `deprovision` and `test` are refused without it too, though neither writes a secret.
 
 ```
 The CF Secrets Store id is missing.
-Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).
+Run `pithy add secrets --worker <worker>` to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).
 ```
+
+`<worker>` is a Worker composing `secrets`, by its `apps/` directory — the ones that do when any does, every Worker when none does. In a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 
 **The project has no name.** The suppression database is found by name and reused, so a guessed name would adopt another project's opt-out list. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
 
@@ -169,11 +188,11 @@ Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its lin
 pithy.config.ts has no `name`.
 ```
 
-**No environment is ready.** Nothing was provisioned, so this exits 3, `core/precondition_failed`, with `pithy provision --env <first> --yes` as its `fix`, rather than reporting a success for a run that did nothing. A run where *some* environment was ready exits 0 and reports the rest as skipped.
+**No environment is ready.** No environment was provisioned, so this exits 3, `core/precondition_failed`, rather than reporting a success. The action names the provision every skipped environment needs. Its `fix` is `pithy provision --env <env> --yes` when exactly one of them is an environment an agent may provision; a production one is a person's decision. The suppression database is the one thing the run did touch, however many environments skip, and the refusal says what it did with it, with its id: created and migrated, or reused from an earlier run with any missing migration applied. So the one outcome is the whole account of the run. A run where *some* environment was ready exits 0 and reports the rest as skipped.
 
 ```
-No environment is ready — staging and prod have no DB database_id.
-Run pithy provision --env staging to create its app database, then run pithy email provision again.
+No environment is ready — staging and prod have no DB database_id. It created and migrated the project's suppression database (3f7c…), which every environment shares.
+Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy email provision --worker api` again.
 ```
 
 **The app Worker declares an environment it has no stanza for.** This is config drift rather than provisioning state — `pithy provision --env <name>` does not write the stanza — so it is refused rather than skipped, the same drift `pithy doctor` reports.
@@ -196,7 +215,7 @@ What a `pattern` and a `zone` may be is [`docs/CLI.md`'s](../CLI.md) to say, onc
 
 ```
 The prod secrets database (acme-prod-secrets) does not exist.
-Run `pithy secrets provision` first — the email worker binds it, and that run creates the link-signing key it signs with.
+`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It creates this database — the email worker binds it, and that run creates the link-signing key it signs with.
 ```
 
 **An unknown template.**
@@ -216,7 +235,7 @@ Provision without routing, then add the rule once the bounce subdomain exists:
 $ pithy email provision
 Suppression database ready.
   staging  email worker deployed
-  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
+  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.
 Done.
 ```
 
@@ -224,7 +243,7 @@ Production is untouched — no worker, no resources, exit 0. Run `pithy provisio
 
 ```
 $ pithy email provision --routing-zone 0a1b2c3d --inbound-address bounce@bounce.example.com --app-worker acme-prod --json
-{"command":"email provision","schemaVersion":1,"suppressionDatabaseId":"3f7c…","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"routing":{"created":true,"skipped":false}}
+{"command":"email provision","schemaVersion":1,"suppressionDatabaseId":"3f7c…","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix."}],"routing":{"created":true,"skipped":false},"exitCode":0}
 ```
 
 Send yourself the magic-link template as your project renders it:
