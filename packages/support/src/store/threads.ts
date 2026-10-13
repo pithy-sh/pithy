@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { type SqlBool, sql } from "kysely";
 import { SupportAttachment } from "../data/attachment";
@@ -138,7 +139,7 @@ export async function listThreads(
     // surfaces instead of silently degrading forever.
     if (options.fts && isMissingSearchTable(error)) {
       options.log?.warn("support FTS index is configured but absent — falling back to a LIKE scan", {
-        action: "Run `pithy support provision` to create and backfill it, or set `search.fts: false`.",
+        action: `Run \`${pithyCommandOf("support provision", {}, { runtime: true })}\` to create and backfill it, or set \`search.fts: false\`.`,
       });
       return runListThreads(db, query, { ...options, fts: false });
     }

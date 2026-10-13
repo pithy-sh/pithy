@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type {
@@ -179,7 +180,7 @@ export function providerUnavailable(provider: SocialProviderId): PithyError {
     code: "auth/provider_unavailable",
     status: 503,
     message: `Signing in with ${provider} is unavailable right now. Use a magic link instead.`,
-    action: `Provision \`auth-${provider}-credentials\` for this environment with \`pithy secrets create\`, or set \`${provider}.enabled\` to false in pithy.config.ts.`,
+    action: `Provision \`auth-${provider}-credentials\` for this environment with \`${pithyCommand("secrets create", { args: [`auth-${provider}-credentials`] })}\`, or set \`${provider}.enabled\` to false in pithy.config.ts.`,
     detail: `provider ${provider} is enabled and its credential could not be resolved; the instance was built without it`,
   });
 }

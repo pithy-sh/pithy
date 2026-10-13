@@ -72,12 +72,13 @@ describe("loadWorkerConfig", () => {
     expect(capabilities.size).toBe(0);
   });
 
-  test("a missing config names the file and the command that writes it", async () => {
+  test("a missing config names the file and how to point the plugin at it", async () => {
     const dir = await workerDir({});
     const error = await caught(loadWorkerConfig(join(dir, "pithy.config.ts")));
     expect(error.payload.code).toBe("core/not_found");
     expect(error.payload.message).toContain("pithy.config.ts");
-    expect(error.payload.action).toContain("pithy ui add");
+    // No `pithy ui add` to run: it needs a Worker and a framework the plugin cannot name (#711).
+    expect(error.payload.action).toContain("pithy({ configFile })");
   });
 
   test("a config that throws on import is reported with its cause in detail, not as a stack", async () => {

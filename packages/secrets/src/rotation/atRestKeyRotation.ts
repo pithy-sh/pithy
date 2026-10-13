@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { remedy } from "@pithy-sh/core/src/cli/command";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
@@ -443,7 +444,7 @@ export async function runAtRestKeyRotation(
         failure = "at-rest-unconfirmed";
         throw new SecretCryptoError({
           message: "The rotated master key did not come back through the binding.",
-          action: `Check that the manager's PROJECT and ENVIRONMENT vars name the Secrets Store entry its ${MASTER_KEY_BINDING} binding reads, then redeploy it with \`pithy secrets provision\`.`,
+          action: `Check that the manager's PROJECT and ENVIRONMENT vars name the Secrets Store entry its ${MASTER_KEY_BINDING} binding reads, then redeploy it. ${remedy("secrets provision").say((command) => `Redeploy it with \`${command}\`.`)}`,
           detail: `at-rest rotation: key version ${nextVersion} was written to '${deps.configWriter.entryName}' and ${readBack.attempts} reads of ${MASTER_KEY_BINDING} did not hold it; nothing was re-encrypted and the store is unchanged`,
         });
       },

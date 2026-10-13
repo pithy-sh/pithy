@@ -4,6 +4,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
+import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
@@ -15,6 +16,7 @@ import type { VectorAi } from "../embed/embed";
 import { VectorIndexNotFoundError } from "../error/errors";
 import { compileFilter } from "../index/filter";
 import type { VectorStore } from "../index/index";
+import { provisionVectors } from "../index/provisioned";
 import { type ReprocessReport, reprocessIndex } from "./reprocess";
 import { vectorWorkflowRetry } from "./retryPolicy";
 import { VECTOR_CAPABILITY, VectorReprocessParams } from "./specs";
@@ -56,7 +58,10 @@ function workerConfig(env: VectorWorkerEnv): VectorWorkerConfig {
   if (!env.VECTOR_CONFIG) {
     throw new InternalError({
       message: "The vector worker has no configuration.",
-      action: "Run `pithy vector provision` — it deploys this worker with its config.",
+      action: provisionVectors(
+        compositionEnvironment(env as unknown as AmbientEnv),
+        "deploy this worker with its config",
+      ),
       detail: "VECTOR_CONFIG was absent from the worker env",
     });
   }
@@ -91,7 +96,10 @@ export class VectorReprocessWorkflow extends WorkflowEntrypoint<VectorWorkerEnv,
     if (!store) {
       throw new InternalError({
         message: "The vector worker cannot reach that index.",
-        action: "Re-run `pithy vector provision` so the worker binds every configured index.",
+        action: provisionVectors(
+          compositionEnvironment(this.env as unknown as AmbientEnv),
+          "bind every configured index to this worker",
+        ),
         detail: `the \`${index.binding}\` Vectorize binding was not present on the worker env`,
       });
     }

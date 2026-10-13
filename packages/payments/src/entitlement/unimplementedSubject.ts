@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { PaymentsSubjectResolver } from "./subjectSeam";
 
@@ -57,8 +58,7 @@ export const unimplementedSubject: PaymentsSubjectResolver = Object.defineProper
     throw new InternalError({
       message: "The subject resolver for this project has not been written.",
       action: "Implement resolveSubject in this Worker's src/billing/subject.ts.",
-      detail:
-        'pithy add scaffolded an unimplemented resolveSubject and it is still the one composed. Under billingSubject: "organization" only the application can say which organization a caller is acting for.',
+      detail: `The resolveSubject that ${commandName("add")} scaffolded is unimplemented, and it is still the one composed. Under billingSubject: "organization" only the application can say which organization a caller is acting for.`,
     });
   },
   UNIMPLEMENTED_SUBJECT,
@@ -83,7 +83,6 @@ export function requireImplementedSubject(resolver: PaymentsSubjectResolver | un
     message: "This project bills organizations, and its subject resolver is still the scaffolded placeholder.",
     action:
       'Implement resolveSubject in this Worker\'s src/billing/subject.ts, or set `billingSubject: "user"` in pithy.config.ts.',
-    detail:
-      "pithy add wrote src/billing/subject.ts exporting an unimplemented resolveSubject, and it is unchanged. Payments has no members table and never guesses a holder, so booting on it would deny every entitlement gate and raise payments/subject_unresolved on every write, for every caller, forever.",
+    detail: `src/billing/subject.ts, as ${commandName("add")} wrote it, exports an unimplemented resolveSubject, and it is unchanged. Payments has no members table and never guesses a holder, so booting on it would deny every entitlement gate and raise payments/subject_unresolved on every write, for every caller, forever.`,
   });
 }

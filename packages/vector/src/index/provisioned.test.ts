@@ -8,7 +8,9 @@ import { VectorConfig } from "../config/config";
 import { filterable } from "./filter";
 import {
   assertProvisionedMetadataIndexes,
+  provisionVectors,
   readProvisionRecord,
+  resetVectors,
   VECTOR_PROVISIONED_VAR,
   type VectorProvisionRecord,
 } from "./provisioned";
@@ -124,5 +126,85 @@ describe("readProvisionRecord", () => {
   it("refuses a var that parses but is not a record", () => {
     const env = { [VECTOR_PROVISIONED_VAR]: JSON.stringify({ indexes: { docs: { indexName: 7 } } }) };
     expect(() => readProvisionRecord(env)).toThrow(PithyError);
+  });
+});
+
+/**
+ * **The provision and the reset this Worker names, by environment (#711).** The environment is the deployed
+ * Worker's own, read at run time, so every branch is a value it can hold: none, a staging one, and each production
+ * name — which makes the provision a person's decision, said as one, never thrown.
+ */
+describe("provisionVectors", () => {
+  it("names the flag, not a command that provisions dev, when the Worker does not know its environment", () => {
+    expect(provisionVectors(undefined, "create it")).toBe(
+      "Provision this environment with `pithy vector provision` and its --env to create it.",
+    );
+  });
+
+  it("names the environment the Worker runs in", () => {
+    expect(provisionVectors("staging", "create it")).toBe("Run `pithy vector provision --env staging` to create it.");
+  });
+
+  for (const env of ["prod", "production"]) {
+    it(`says a provision of ${env} as a person's decision, and does not throw`, () => {
+      expect(provisionVectors(env, "create it")).toBe(
+        `\`pithy vector provision --env ${env}\` runs against ${env}, a production environment. That is a person's decision, not a fix. It is the way to create it.`,
+      );
+    });
+  }
+});
+
+describe("resetVectors", () => {
+  it("says the reset as a person's decision when the Worker does not know its environment", () => {
+    expect(resetVectors(undefined)).toBe(
+      "`pithy vector reset` for this environment, which deletes every vector in the index. That is a person's decision, not a fix.",
+    );
+  });
+
+  for (const env of ["staging", "prod", "production"]) {
+    it(`says the reset of ${env} as a person's decision, with its confirmation left to the person`, () => {
+      const said = resetVectors(env);
+      expect(said).toMatch(new RegExp(`^\`pithy vector reset --env ${env}\` with its --confirm-reset phrase`));
+      expect(said).toContain("deletes every vector in the index. That is a person's decision, not a fix.");
+    });
+  }
+});
+
+describe("the boot check in each environment the Worker can run in", () => {
+  for (const env of [undefined, "staging", "prod", "production"]) {
+    it(`refuses drift in ${env ?? "an unknown environment"} with its own error, not core/internal`, () => {
+      const mistyped = record([
+        { propertyName: "tenantId", indexType: "string" },
+        { propertyName: "published", indexType: "string" },
+      ]);
+      expect(payloadOf(() => assertProvisionedMetadataIndexes(config, mistyped, env)).code).toBe(
+        "vector/metadata_index_drift",
+      );
+      expect(payloadOf(() => assertProvisionedMetadataIndexes(config, undefined, env)).code).toBe(
+        "vector/metadata_index_drift",
+      );
+    });
+
+    it(`refuses an unreadable record in ${env ?? "an unknown environment"} with its own error`, () => {
+      const vars = env === undefined ? {} : { ENVIRONMENT: env };
+      expect(payloadOf(() => readProvisionRecord({ ...vars, [VECTOR_PROVISIONED_VAR]: "{bad" })).code).toBe(
+        "vector/metadata_index_drift",
+      );
+    });
+  }
+
+  it("offers the reset of a mis-typed index as a person's decision, not as a fix", () => {
+    const payload = payloadOf(() =>
+      assertProvisionedMetadataIndexes(
+        config,
+        record([
+          { propertyName: "tenantId", indexType: "string" },
+          { propertyName: "published", indexType: "string" },
+        ]),
+        "staging",
+      ),
+    );
+    expect(payload.action).toContain("Run `pithy vector provision --env staging` to create the missing metadata");
+    expect(payload.action).toContain(resetVectors("staging"));
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callerOf, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { describe, expect, test, vi } from "vitest";
 import { TURNSTILE_SECRET_NAME, type TurnstileSecrets, turnstileSecretsRegistry } from "../secret/registry";
 import {
@@ -14,6 +15,12 @@ import {
   type TurnstileProvisioner,
 } from "./provisionTurnstile";
 import { PROVISIONED_TEST_KEY_ENVIRONMENTS, TEST_KEY_ENVIRONMENTS, TEST_SECRET } from "./testKeys";
+
+/** The Worker every provision here is for, by its `apps/` directory. */
+const web = workerDirOf({ dir: "/project/apps/web" });
+
+/** The caller every provision here is run by: `pithy turnstile provision`, given nothing. */
+const run = callerOf("turnstile provision", {});
 
 describe("naming helpers", () => {
   test("production widget names are stable per mode", () => {
@@ -98,7 +105,7 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
       removeStrandedSitekeyVars: async () => [],
       ensureProductionWidget: async (mode) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` }),
     },
-    { modes: ["visible", "invisible"], productionDomain: "app.example.com" },
+    { modes: ["visible", "invisible"], productionDomain: "app.example.com", worker: web, caller: run },
   );
   return written;
 }
@@ -106,7 +113,12 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
 describe("provisionTurnstile", () => {
   test("writes the test secret to dev and staging, and a real widget to production", async () => {
     const p = fakeProvisioner();
-    const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+    const result = await provisionTurnstile(p, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
+    });
 
     const testSecret = { visible: { key: TEST_SECRET } };
     expect(p.writeDev).toHaveBeenCalledWith(testSecret);
@@ -124,6 +136,8 @@ describe("provisionTurnstile", () => {
     const result = await provisionTurnstile(p, {
       modes: ["visible", "invisible"],
       productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
     });
 
     const expected = {
@@ -138,7 +152,12 @@ describe("provisionTurnstile", () => {
   test("removes the stranded sitekey vars and reports what it removed", async () => {
     const stranded = [{ name: "TURNSTILE_SITEKEY_VISIBLE", environment: "prod" }];
     const p = fakeProvisioner({ removeStrandedSitekeyVars: vi.fn().mockResolvedValue(stranded) });
-    const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+    const result = await provisionTurnstile(p, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
+    });
 
     expect(p.removeStrandedSitekeyVars).toHaveBeenCalledTimes(1);
     expect(result.strandedVarsRemoved).toEqual(stranded);
@@ -146,7 +165,12 @@ describe("provisionTurnstile", () => {
 
   test("composes the production secret across both widgets as one JSON object", async () => {
     const p = fakeProvisioner();
-    await provisionTurnstile(p, { modes: ["visible", "invisible"], productionDomain: "app.example.com" });
+    await provisionTurnstile(p, {
+      modes: ["visible", "invisible"],
+      productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
+    });
     expect(p.writeManagedSecret).toHaveBeenCalledWith("prod", {
       visible: { key: "secret-visible" },
       invisible: { key: "secret-invisible" },
@@ -158,7 +182,12 @@ describe("provisionTurnstile", () => {
       findProductionWidget: vi.fn(async () => ({ sitekey: "existing" })),
       ensureProductionWidget: vi.fn(async () => ({ sitekey: "existing", secret: null })),
     });
-    const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+    const result = await provisionTurnstile(p, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
+    });
 
     // staging is still written (test value), but production secret is left as-is and flagged so the caller warns.
     expect(p.writeManagedSecret).toHaveBeenCalledWith("staging", expect.any(Object));
@@ -173,7 +202,7 @@ describe("provisionTurnstile", () => {
       assertDomainAvailable: vi.fn().mockRejectedValue(new Error("domain taken")),
     });
     await expect(
-      provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" }),
+      provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com", worker: web, caller: run }),
     ).rejects.toThrowError("domain taken");
 
     expect(p.assertDomainAvailable).toHaveBeenCalledWith("app.example.com");
@@ -184,12 +213,13 @@ describe("provisionTurnstile", () => {
     expect(p.writeSitekeys).not.toHaveBeenCalled();
   });
 
-  test("allowSharedDomain skips the guard (CF itself permits several widgets per domain)", async () => {
+  test("--allow-shared-domain skips the guard (CF itself permits several widgets per domain)", async () => {
     const p = fakeProvisioner();
     await provisionTurnstile(p, {
       modes: ["visible"],
       productionDomain: "app.example.com",
-      allowSharedDomain: true,
+      worker: web,
+      caller: callerOf("turnstile provision", { "allow-shared-domain": true }),
     });
     expect(p.assertDomainAvailable).not.toHaveBeenCalled();
     expect(p.ensureProductionWidget).toHaveBeenCalledWith("visible", "app.example.com");
@@ -226,10 +256,115 @@ describe("provisionTurnstile", () => {
       ),
     });
     await expect(
-      provisionTurnstile(p, { modes: ["visible", "invisible"], productionDomain: "app.example.com" }),
+      provisionTurnstile(p, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      }),
     ).rejects.toThrowError(
-      expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          code: "validation/invalid_input",
+          // Both commands name the Worker the run was for, so each runs in a project with several (#711).
+          action:
+            "Starting over is the way to a consistent production secret. `pithy turnstile deprovision --worker web` deletes the Turnstile widget, whose sitekey every client embeds. That is a person's decision, not a fix. After it, `pithy turnstile provision --worker web` writes the secret again.",
+        }),
+      }),
     );
+  });
+
+  // The provision it names is the caller's own run again: one let past the domain guard keeps the flag that let it.
+  test("the provision a mixed state names keeps --allow-shared-domain when the run had it", async () => {
+    const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async (mode: string) => (mode === "visible" ? null : { sitekey: "i" })),
+    });
+    await expect(
+      provisionTurnstile(p, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: callerOf("turnstile provision", { "allow-shared-domain": true }),
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          action: expect.stringContaining(
+            "After it, `pithy turnstile provision --allow-shared-domain --worker web` writes the secret again.",
+          ),
+        }),
+      }),
+    );
+  });
+
+  // The provision it names is the caller's own run, built from its context: an agent that asked for JSON reads JSON
+  // from the rerun too (#711). It was built from the Worker and one flag, and dropped --json.
+  test("the provision a mixed state names is the caller's own run, --json included", async () => {
+    const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async (mode: string) => (mode === "visible" ? null : { sitekey: "i" })),
+    });
+    await expect(
+      provisionTurnstile(p, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: callerOf("turnstile provision", { json: true, worker: "web" }),
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          action: expect.stringContaining(
+            "After it, `pithy turnstile provision --json --worker web` writes the secret again.",
+          ),
+        }),
+      }),
+    );
+  });
+
+  // A widget made or deleted by someone else between the lookup and the create: the one refusal that comes after
+  // writes. It says what the run did, so the one outcome is the whole account of it (#711).
+  test("a mixed state found after the writes names what the run already did", async () => {
+    const p = fakeProvisioner({
+      ensureProductionWidget: vi.fn(async (mode: string) =>
+        mode === "visible" ? { sitekey: "v", secret: "new-v" } : { sitekey: "i", secret: null },
+      ),
+    });
+    await expect(
+      provisionTurnstile(p, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          message:
+            "Turnstile production widgets are in a mixed state — some exist, some do not. It wrote the test secret for dev and staging, and created the visible production widget (v).",
+        }),
+      }),
+    );
+  });
+
+  test("a mixed state found before any write claims nothing", async () => {
+    const p = fakeProvisioner({
+      findProductionWidget: vi.fn(async (mode: string) => (mode === "visible" ? null : { sitekey: "i" })),
+    });
+    await expect(
+      provisionTurnstile(p, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          message: "Turnstile production widgets are in a mixed state — some exist, some do not.",
+        }),
+      }),
+    );
+    expect(p.writeDev).not.toHaveBeenCalled();
   });
 });
 
@@ -325,7 +460,12 @@ describe("a refused sitekey check leaves nothing written", () => {
     const { seam, calls } = recorded(fakeProvisioner({ assertSitekeysWritable: vi.fn(refusal) }));
 
     await expect(
-      provisionTurnstile(seam, { modes: ["visible", "invisible"], productionDomain: "app.example.com" }),
+      provisionTurnstile(seam, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      }),
     ).rejects.toThrow("sitekeys refused");
 
     expect(calls).toContain("assertSitekeysWritable");
@@ -338,9 +478,14 @@ describe("a refused sitekey check leaves nothing written", () => {
       ensureProductionWidget: vi.fn(async () => ({ sitekey: "existing-v", secret: null })),
     });
     // An existing widget's sitekey is known before anything is written; a widget still to be created has none.
-    await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+    await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com", worker: web, caller: run });
     const q = fakeProvisioner();
-    await provisionTurnstile(q, { modes: ["invisible"], productionDomain: "app.example.com" });
+    await provisionTurnstile(q, {
+      modes: ["invisible"],
+      productionDomain: "app.example.com",
+      worker: web,
+      caller: run,
+    });
 
     expect(p.assertSitekeysWritable).toHaveBeenCalledWith({
       visible: { dev: "1x00000000000000000000AA", staging: "1x00000000000000000000AA", prod: "existing-v" },
@@ -358,7 +503,12 @@ describe("a refused sitekey check leaves nothing written", () => {
     );
 
     await expect(
-      provisionTurnstile(seam, { modes: ["visible", "invisible"], productionDomain: "app.example.com" }),
+      provisionTurnstile(seam, {
+        modes: ["visible", "invisible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      }),
     ).rejects.toThrowError(
       expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
     );

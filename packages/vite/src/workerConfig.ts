@@ -5,6 +5,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -184,7 +185,9 @@ export async function loadWorkerConfig(configFile: string): Promise<LoadedWorker
   } catch {
     throw new NotFoundError({
       message: `No pithy.config.ts at ${configFile}.`,
-      action: "Run pithy ui add from the project root, or point the plugin at it with pithy({ configFile }).",
+      // No command here (#711): `pithy ui add` acts on one Worker and takes a framework, and a plugin that has
+      // lost its config cannot say which of either. Pointing the plugin is the remedy that always applies.
+      action: `Point the plugin at the Worker's pithy.config.ts with pithy({ configFile }). A front end scaffolded by ${commandName("ui add")} is pointed at it already.`,
     });
   }
 

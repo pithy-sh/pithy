@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { RotationTrigger } from "../data/secretRotations";
 import type { OpenRotation, RotationLedger } from "../rotation/rotationLedger";
 import { rotationClosure } from "../rotation/rotationLedger";
@@ -43,7 +44,7 @@ import type { SecretRotationRecorder } from "./dispatch";
  * which one was resolved. What this row does say — and what the audit trail cannot — is which of the two
  * paths performed the act.
  */
-export const CLI_ROTATED_BY = "pithy secrets rotate";
+export const CLI_ROTATED_BY = commandName("secrets rotate");
 
 /** What a dispatched ledger needs: where the rotation lands, and how the rows are labeled. */
 export interface DispatchedRotationLedgerOptions {

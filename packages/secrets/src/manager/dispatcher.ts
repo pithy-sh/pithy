@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
 import { InternalError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -59,6 +60,12 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
   if (feature) return workflowScriptName({ project, capability: SECRETS_CAPABILITY, job: "rotate", env, feature });
   return resourceNames(project).env(env).workflow(SECRETS_CAPABILITY, "rotate");
 }
+
+/**
+ * What redeploys a manager: `pithy secrets provision`, which redeploys every environment's, production included — a
+ * person's decision, never a fix for one environment's manager (#711).
+ */
+const REDEPLOY = remedy("secrets provision");
 
 /**
  * The real {@link PreflightSecretDispatcher}: dispatches a write to the target environment's manager
@@ -149,7 +156,7 @@ export class WorkflowSecretDispatcher
     if (request.mode === "create" && present) {
       throw new SecretAlreadyExistsError({
         message: `Secret '${request.name}' already exists.`,
-        action: `Use pithy secrets update ${request.name} to replace it.`,
+        action: `Use ${pithyCommand("secrets update", { args: [request.name], flags: { "--env": request.env } })} to replace it.`,
         detail: `create '${request.name}': already present in the ${request.env} manager's store (pre-flight)`,
       });
     }
@@ -192,7 +199,7 @@ export class WorkflowSecretDispatcher
     if (!parsed.success) {
       throw new UpstreamError({
         message: `The ${request.env} secrets manager gave no usable answer about '${request.name}'.`,
-        action: "Redeploy the manager with pithy secrets provision, then run this again.",
+        action: `${REDEPLOY.say((command) => `Redeploy the manager with ${command}.`)} Once it is redeployed, run this again.`,
         detail: `probe ${request.name} in ${request.env}: unexpected write-workflow output`,
       });
     }
@@ -221,7 +228,7 @@ export class WorkflowSecretDispatcher
     if (!parsed.success || parsed.data.outcome !== "verified" || parsed.data.verification === undefined) {
       throw new UpstreamError({
         message: `The ${request.env} secrets manager gave no usable account of its store.`,
-        action: "Redeploy the manager with pithy secrets provision, then run this again.",
+        action: `${REDEPLOY.say((command) => `Redeploy the manager with ${command}.`)} Once it is redeployed, run this again.`,
         detail: `verify in ${request.env}: unexpected write-workflow output`,
       });
     }
@@ -247,7 +254,7 @@ export class WorkflowSecretDispatcher
     if (!parsed.success || parsed.data.outcome !== "opened" || parsed.data.rotationId === undefined) {
       throw new UpstreamError({
         message: `The ${request.env} secrets manager did not record a rotation of '${request.name}'.`,
-        action: "Redeploy the manager with pithy secrets provision so its rotation history is written again.",
+        action: `${REDEPLOY.say((command) => `Redeploy the manager with ${command}.`)} Once it is redeployed, its rotation history is written again.`,
         detail: `rotation-open ${request.name} in ${request.env}: unexpected write-workflow output`,
       });
     }

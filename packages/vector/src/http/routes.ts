@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
@@ -14,6 +15,7 @@ import type { VectorAi } from "../embed/embed";
 import { VectorIndexNotFoundError } from "../error/errors";
 import type { VectorStore } from "../index/index";
 import { type MetadataIndexDescriptor, metadataIndexes } from "../index/metadata";
+import { provisionVectors } from "../index/provisioned";
 import { requireAuth } from "./guard";
 import { deleteDocument, getDocument, type HandlerDeps, queryDocuments, upsertDocuments } from "./handlers";
 import { QueryInput, UpsertDocumentsInput, VectorDocumentParams, VectorIndexParams } from "./schemas";
@@ -59,13 +61,17 @@ export interface VectorRoutesOptions {
   resolveDeps?: (c: Context<PithyHonoEnv>, indexName: string) => HandlerDeps;
 }
 
-/** Read a binding by name, throwing rather than returning undefined — a missing binding is a config fault. */
-function binding<T>(c: Context<PithyHonoEnv>, name: string, action: string): T {
+/**
+ * Read a binding by name, throwing rather than returning undefined — a missing binding is a config fault. The
+ * remedy is built only then: it is read off the Worker's environment, and building it on every request put a
+ * sentence on the path of every search that only a missing binding ever needs (#711).
+ */
+function binding<T>(c: Context<PithyHonoEnv>, name: string, action: () => string): T {
   const value = (c.env as Record<string, unknown>)[name] as T | undefined;
   if (!value) {
     throw new InternalError({
       message: "Search is not configured.",
-      action,
+      action: action(),
       detail: `the \`${name}\` binding was not present on env`,
     });
   }
@@ -100,13 +106,14 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
     ((c: Context<PithyHonoEnv>, indexName: string): HandlerDeps => {
       const index = indexConfig(config, indexName);
       return {
-        documents: vectorDocuments(vectorDatabase(binding<D1Database>(c, "DB", "Bind a D1 database named DB."))),
+        documents: vectorDocuments(vectorDatabase(binding<D1Database>(c, "DB", () => "Bind a D1 database named DB."))),
         store: binding<VectorStore>(
           c,
           index.binding,
-          `Bind the Vectorize index as \`${index.binding}\` in wrangler.jsonc, then run \`pithy vector provision\`.`,
+          () =>
+            `Bind the Vectorize index as \`${index.binding}\` in wrangler.jsonc. ${provisionVectors(compositionEnvironment(c.env as AmbientEnv), "create it")}`,
         ),
-        ai: binding<VectorAi>(c, "AI", "Bind Workers AI as `AI` in wrangler.jsonc."),
+        ai: binding<VectorAi>(c, "AI", () => "Bind Workers AI as `AI` in wrangler.jsonc."),
         index,
         indexName,
         filterable: filterable.get(indexName) ?? [],

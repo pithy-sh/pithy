@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db";
@@ -62,8 +63,7 @@ export type StoredSecretValue =
 export function unreadableSecret(name: string): SecretCryptoError {
   return new SecretCryptoError({
     message: `Secret '${name}' is stored and could not be read.`,
-    action:
-      "Check SECRETS_ENCRYPTION_KEYS still holds the key version this row was sealed under. If it does not, re-seal the secret with `pithy secrets update`.",
+    action: `Check SECRETS_ENCRYPTION_KEYS still holds the key version this row was sealed under. If it does not, re-seal the secret with \`${pithyCommand("secrets update", { args: [name] })}\`.`,
     detail: `d1 secret '${name}' has a row that did not decrypt`,
   });
 }

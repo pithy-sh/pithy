@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { secretsHealth } from "./admin/health";
 import { EncryptionConfig } from "./crypto/envelope";
 import { secretsRetainedTables, secretsTables } from "./data/tables";
@@ -86,7 +87,7 @@ export const masterKeyRegistryEntry: SecretRegistryEntry = {
   schema: EncryptionConfig,
   origin: { kind: "minted", recipe: { kind: "encryptionConfig" } },
   rotation: { kind: "local" },
-  notes: "The at-rest master key every other secret is encrypted under. Minted by pithy add secrets.",
+  notes: `The at-rest master key every other secret is encrypted under. Minted when ${commandName("add")} composes secrets.`,
 };
 
 /** Sort order of the secrets migrations within the `SECRETS` database. */

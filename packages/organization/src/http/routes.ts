@@ -8,11 +8,13 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
+import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
 import { InternalError, NotFoundError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
+import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { chooseActing, listActable, noSuchOrganization, resolveActing } from "../acting/acting";
 import { OrganizationAuditActions } from "../audit/actions";
@@ -381,7 +383,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     if (!found) {
       throw new InternalError({
         message: "The organization database is not configured.",
-        action: `Bind a D1 database named ${binding} in wrangler.jsonc, then run pithy migrate.`,
+        action: `Bind a D1 database named ${binding} in wrangler.jsonc, then ${migrateStep(c.env as AmbientEnv)}.`,
         detail: `the organization routes require a "${binding}" D1 binding; none was present on env`,
       });
     }
@@ -398,7 +400,7 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       if (!found) {
         throw new InternalError({
           message: "The organization database is not configured.",
-          action: `Bind a D1 database named ${binding} in wrangler.jsonc, then run pithy migrate.`,
+          action: `Bind a D1 database named ${binding} in wrangler.jsonc, then ${migrateStep(env as AmbientEnv)}.`,
           detail: `the organization gates require a "${binding}" D1 binding; none was present on env`,
         });
       }

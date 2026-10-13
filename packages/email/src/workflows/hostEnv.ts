@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { pithyCommandOf, remedy } from "@pithy-sh/core/src/cli/command";
 import { defineHostEnv, type HostEnvProvider } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretBinding } from "@pithy-sh/secrets/src/env/bindings";
 import { z } from "zod";
@@ -46,14 +47,20 @@ import type { SendWorkflowInstances } from "./instances";
  *
  * No `--env`: it spans every declared environment in one run and declares no such flag, and a flag a
  * command does not declare is refused (#594) — so a remedy naming one is a remedy that cannot be followed.
+ *
+ * No `--worker` either, and only here: this is the sentence the deployed host writes into its own log, and
+ * a host does not know which app Worker's `apps/` directory provisioned it. `pithy doctor` reports the same
+ * finding for a Worker it knows, and names it there (`provision/settingsCheck.ts`, #711).
  */
-const PROVISION = "pithy email provision";
+export const EMAIL_PROVISION = pithyCommandOf("email provision", {}, { runtime: true });
+const PROVISION = EMAIL_PROVISION;
 
 /**
- * The command that writes both host secrets below. No `--env`, for the same reason: `pithy secrets provision`
- * provisions every declared environment in one run and declares no such flag.
+ * What writes both host secrets below, said as a person's decision. No `--env`, for the same reason: `pithy secrets
+ * provision` provisions every declared environment in one run, production included, and declares no such flag — so
+ * it is never a `Run` line for one host's secret (#711).
  */
-const SECRETS_PROVISION = "pithy secrets provision";
+const SECRETS_PROVISION = remedy("secrets provision", {}, { runtime: true }).say((command) => command);
 
 /** A binding `pithy email provision` wires into the resolved `wrangler.jsonc`. */
 const binding = (name: string): HostEnvProvider => ({ kind: "binding", name, command: PROVISION });
@@ -210,12 +217,12 @@ export const emailHostEnv = defineHostEnv({
     SECRETS_ENCRYPTION_KEYS: {
       kind: "secret",
       name: "SECRETS_ENCRYPTION_KEYS",
-      command: SECRETS_PROVISION,
+      decision: SECRETS_PROVISION,
     },
     [EMAIL_LINK_SIGNING_KEY_BINDING]: {
       kind: "secret",
       name: EMAIL_LINK_SIGNING_KEY,
-      command: SECRETS_PROVISION,
+      decision: SECRETS_PROVISION,
     },
     EMAIL: binding("EMAIL"),
     EMAIL_SENDER: binding("EMAIL_SENDER"),

@@ -3,10 +3,12 @@
 
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { type AmbientEnv, ambientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
@@ -86,7 +88,7 @@ export function registerDevLoginRoute(
  */
 function noSeededSession(): NotFoundError {
   return new NotFoundError({
-    message: "No dev login has been seeded for this environment. Run pithy seed, then open this URL again.",
+    message: `No dev login has been seeded for this environment. Run ${pithyCommand("seed", { flags: { "--env": LOCAL_ENVIRONMENT } })}, then open this URL again.`,
   });
 }
 
@@ -162,7 +164,7 @@ async function serveDevLogin(
         createdAt: now,
         updatedAt: now,
         ipAddress: "127.0.0.1",
-        userAgent: "pithy dev login",
+        userAgent: `${commandName("dev")} login`,
         deviceId: null,
         familyId: null,
         // A dev login is a real sign-in, so it is authenticated now — what the live hook stamps.

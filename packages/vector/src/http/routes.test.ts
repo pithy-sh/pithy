@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -251,5 +252,82 @@ describe("what the vector routes declare they accept", () => {
     const response = await configuredApp().request("/vector/NOPE/documents/a", { headers: authed });
     expect(response.status).toBe(400);
     expect(await errorOf(response)).toMatchObject({ code: "validation/invalid_input" });
+  });
+});
+
+/**
+ * **A Worker in production serves search (#711).** The remedy a missing binding names was built on every request,
+ * and for a production environment the builder refused the production provision it names — so every vector route
+ * of a Worker deployed with `ENVIRONMENT=prod` answered 500, every binding present. The remedy is built only when a
+ * binding is missing, and a production one is a person's decision, said as one.
+ */
+describe("the vector routes in a production Worker", () => {
+  /** A D1 that answers every query with no rows: a corpus that holds nothing. */
+  const emptyD1 = {
+    prepare: () => {
+      const statement = {
+        bind: () => statement,
+        all: async () => ({ results: [], success: true, meta: { changes: 0, last_row_id: 0 } }),
+        raw: async () => [],
+        first: async () => null,
+        run: async () => ({ results: [], success: true, meta: { changes: 0, last_row_id: 0 } }),
+      };
+      return statement;
+    },
+  };
+  const binding = config.indexes.docs?.binding ?? "";
+
+  /** The routes over the real resolver, keeping what was thrown: the `action` is the operator's, never the wire's. */
+  function watchedApp(): { hono: Hono<PithyHonoEnv>; thrown: PithyError[] } {
+    const thrown: PithyError[] = [];
+    const hono = new Hono<PithyHonoEnv>();
+    hono.use("*", async (c, next) => {
+      c.set("auth", { userId: "ada", sessionId: "s1", scopes: [] });
+      await next();
+    });
+    hono.onError((err, c) => {
+      if (err instanceof PithyError) thrown.push(err);
+      return pithyErrorHandler(err, c);
+    });
+    registerVectorRoutes({ config })(hono);
+    return { hono, thrown };
+  }
+
+  for (const env of ["prod", "production"]) {
+    it(`serves with every binding present in ${env}`, async () => {
+      const response = await configuredApp().request(
+        "/vector/docs/documents/a",
+        { headers: authed },
+        { ENVIRONMENT: env, DB: emptyD1, AI: ai, [binding]: store },
+      );
+      expect(response.status).toBe(404);
+      expect(await errorOf(response)).toMatchObject({ code: "core/not_found" });
+    });
+
+    it(`refuses a missing index binding in ${env} with the provision as a person's decision`, async () => {
+      const { hono, thrown } = watchedApp();
+      const response = await hono.request(
+        "/vector/docs/documents/a",
+        { headers: authed },
+        { ENVIRONMENT: env, DB: emptyD1, AI: ai },
+      );
+      expect(response.status).toBe(500);
+      expect(thrown[0]?.payload.message).toBe("Search is not configured.");
+      expect(thrown[0]?.payload.action).toBe(
+        `Bind the Vectorize index as \`${binding}\` in wrangler.jsonc. \`pithy vector provision --env ${env}\` runs against ${env}, a production environment. That is a person's decision, not a fix. It is the way to create it.`,
+      );
+    });
+  }
+
+  it("names the staging provision as the remedy in staging", async () => {
+    const { hono, thrown } = watchedApp();
+    await hono.request(
+      "/vector/docs/documents/a",
+      { headers: authed },
+      { ENVIRONMENT: "staging", DB: emptyD1, AI: ai },
+    );
+    expect(thrown[0]?.payload.action).toBe(
+      `Bind the Vectorize index as \`${binding}\` in wrangler.jsonc. Run \`pithy vector provision --env staging\` to create it.`,
+    );
   });
 });

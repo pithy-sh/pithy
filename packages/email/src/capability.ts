@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
@@ -345,7 +346,7 @@ export function email(config: EmailConfigInput): EmailCapability {
     if (!binding) {
       throw new InternalError({
         message: "The suppression list is not available.",
-        action: "Run `pithy add email` to provision it, or bind the EMAIL_SUPPRESSIONS D1 database.",
+        action: `Run \`${pithyCommandOf("add", { args: ["email"], flags: { "--with-prerequisites": true } }, { runtime: true })}\` to provision it, or bind the EMAIL_SUPPRESSIONS D1 database.`,
         detail: "email.suppressions() was called with an env carrying no `EMAIL_SUPPRESSIONS` D1 binding.",
       });
     }

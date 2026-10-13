@@ -1,11 +1,44 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, personDecision, remedy } from "@pithy-sh/core/src/cli/command";
+import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { z } from "zod";
 import type { VectorConfig } from "../config/config";
 import { VectorMetadataIndexDriftError } from "../error/errors";
 import { compareMetadataIndexes } from "./drift";
 import { type MetadataIndexDescriptor, metadataIndexes } from "./metadata";
+
+/**
+ * **`pithy vector provision` as this deployed Worker can name it (#711)**, and why: `purpose` is what it does here,
+ * as a verb phrase. For the environment the Worker runs in, which the command would otherwise default to `dev`, and
+ * with no `--worker` — a deployed Worker cannot know the `apps/` directory that provisioned it. Where it does not
+ * know its environment, it names the flag rather than a command that would provision the wrong one. A production
+ * environment makes the provision a person's decision, said as one: the environment is the Worker's own, read at run
+ * time, and a refusal that threw over it became `core/internal` in the one environment that most needs the remedy.
+ *
+ * The one place the vector package names it: the app Worker's boot check, its search routes, and the vector host.
+ */
+export function provisionVectors(environment: string | undefined, purpose: string): string {
+  if (environment === undefined) {
+    return `Provision this environment with \`${commandName("vector provision")}\` and its --env to ${purpose}.`;
+  }
+  const provision = remedy("vector provision", { flags: { "--env": environment } }, { runtime: true });
+  return provision.fix === undefined
+    ? `${provision.say((command) => command)} It is the way to ${purpose}.`
+    : provision.say((command) => `Run \`${command}\` to ${purpose}.`);
+}
+
+/**
+ * The reset that rebuilds a mis-typed index — which deletes every vector in it, so it is a person's decision, said
+ * as one (#711), never a remedy to run as written.
+ */
+export function resetVectors(environment: string | undefined): string {
+  if (environment === undefined) {
+    return `\`${commandName("vector reset")}\` for this environment, which deletes every vector in the index. That is a person's decision, not a fix.`;
+  }
+  return personDecision("vector reset", { flags: { "--env": environment } }, { runtime: true });
+}
 
 /**
  * The provisioning record — what `pithy vector provision` observed on the live indexes — and the boot check
@@ -102,7 +135,10 @@ export function readProvisionRecord(env: Record<string, unknown>): VectorProvisi
     throw new VectorMetadataIndexDriftError(
       {
         message: `The ${VECTOR_PROVISIONED_VAR} var is not valid JSON, so the metadata indexes cannot be checked.`,
-        action: `Run \`pithy vector provision --env <env>\` to rewrite ${VECTOR_PROVISIONED_VAR}, then redeploy.`,
+        action: provisionVectors(
+          compositionEnvironment(env as AmbientEnv),
+          `rewrite ${VECTOR_PROVISIONED_VAR}, then redeploy`,
+        ),
         detail: cause instanceof Error ? cause.message : String(cause),
       },
       { cause },
@@ -113,7 +149,10 @@ export function readProvisionRecord(env: Record<string, unknown>): VectorProvisi
   if (!parsed.success) {
     throw new VectorMetadataIndexDriftError({
       message: `The ${VECTOR_PROVISIONED_VAR} var is not a provisioning record, so the metadata indexes cannot be checked.`,
-      action: `Run \`pithy vector provision --env <env>\` to rewrite ${VECTOR_PROVISIONED_VAR}, then redeploy.`,
+      action: provisionVectors(
+        compositionEnvironment(env as AmbientEnv),
+        `rewrite ${VECTOR_PROVISIONED_VAR}, then redeploy`,
+      ),
       detail: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "),
     });
   }
@@ -142,6 +181,7 @@ function declaredFilterable(config: VectorConfig): Map<string, MetadataIndexDesc
 export function assertProvisionedMetadataIndexes(
   config: VectorConfig,
   record: VectorProvisionRecord | undefined,
+  environment?: string,
 ): void {
   const declared = declaredFilterable(config);
   if (declared.size === 0) return;
@@ -152,7 +192,7 @@ export function assertProvisionedMetadataIndexes(
     );
     throw new VectorMetadataIndexDriftError({
       message: `No metadata index has been provisioned for ${fields.join(", ")}, so every filter naming one returns partial results.`,
-      action: "Run `pithy vector provision --env <env>`, then redeploy. Re-embed anything written before it.",
+      action: `${provisionVectors(environment, "create them, then redeploy")} Re-embed anything written before it.`,
       detail: `no ${VECTOR_PROVISIONED_VAR} var on env; declared filterable: ${fields.join(", ")}`,
     });
   }
@@ -176,8 +216,7 @@ export function assertProvisionedMetadataIndexes(
   ].filter(Boolean);
   throw new VectorMetadataIndexDriftError({
     message: `Search is not configured correctly — ${problems.join("; ")}.`,
-    action:
-      "Run `pithy vector provision --env <env>` to create the missing metadata indexes, then redeploy and re-embed. A mis-typed index is fixed only by `pithy vector reset`, which rebuilds the index from the corpus.",
-    detail: `${problems.join("; ")}; checked against what \`pithy vector provision\` last observed, not against Cloudflare now`,
+    action: `${provisionVectors(environment, "create the missing metadata indexes, then redeploy and re-embed")} A mis-typed index is fixed only by rebuilding the index from the corpus: ${resetVectors(environment)}`,
+    detail: `${problems.join("; ")}; checked against what \`${commandName("vector provision")}\` last observed, not against Cloudflare now`,
   });
 }

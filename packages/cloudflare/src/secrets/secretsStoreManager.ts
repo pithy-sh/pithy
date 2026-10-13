@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { remedy } from "@pithy-sh/core/src/cli/command";
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
@@ -207,7 +208,7 @@ export class CloudflareSecretsStoreManager extends CloudflareManager {
     if (!target) {
       throw new NotFoundError({
         message: `Secret '${name}' is not in the store, so there is nothing to update.`,
-        action: "Run `pithy secrets provision` to establish the entry, then run this again.",
+        action: `${remedy("secrets provision").say((command) => `Run \`${command}\`.`)} It establishes the entry; then run this again.`,
         detail: `update secret ${name}: no live entry of that name, and this verb never creates one`,
       });
     }

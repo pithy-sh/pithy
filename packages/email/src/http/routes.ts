@@ -8,9 +8,11 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
+import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono } from "hono";
 import { EmailAuditActions } from "../audit/actions";
 import {
@@ -145,7 +147,7 @@ function d1(c: Context<PithyHonoEnv>, binding: "DB" | "EMAIL_SUPPRESSIONS"): D1D
   if (!found) {
     throw new InternalError({
       message: "Email is not fully configured on this Worker.",
-      action: `Bind a D1 database named ${binding} in wrangler.jsonc, then run pithy migrate.`,
+      action: `Bind a D1 database named ${binding} in wrangler.jsonc, then ${migrateStep(c.env as AmbientEnv)}.`,
       detail: `the email management routes require a \`${binding}\` D1 binding; none was present on env`,
     });
   }

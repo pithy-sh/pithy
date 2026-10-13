@@ -5,6 +5,7 @@ import type {
   CfSecretEntry,
   CloudflareSecretsStoreManager,
 } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { EncryptionConfig } from "../crypto/envelope";
@@ -128,7 +129,7 @@ export function rotationConfigWriter(
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
       message: "The secrets manager's ENVIRONMENT var is not a managed environment.",
-      action: "Redeploy the manager with `pithy secrets provision`, which stamps it.",
+      action: `${remedy("secrets provision").say((command) => `Redeploy the manager with \`${command}\`.`)} Redeploying it stamps the var.`,
       detail: `rotation write-back: ENVIRONMENT=${environment}`,
     });
   }
@@ -138,7 +139,7 @@ export function rotationConfigWriter(
   if (parsed.data === FEATURE_ENVIRONMENT) {
     throw new ValidationError({
       message: "A feature's secrets manager does not rotate its key.",
-      action: "Nothing to do. A feature's key is created once by pithy provision --feature and deleted with it.",
+      action: `Nothing to do. A feature's key is created once by ${pithyCommand("provision", { flags: { "--feature": true } })} and deleted with it.`,
       detail: "rotation write-back: ENVIRONMENT=feature",
     });
   }

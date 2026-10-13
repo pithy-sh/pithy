@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { z } from "zod";
 import type { PaymentsRail } from "../data/rail";
@@ -289,8 +290,8 @@ export function railCredentials<R extends PaymentsRail>(
   const block = credentials[rail];
   if (!block) {
     throw new PaymentsRailNotConfiguredError({
-      detail: `The ${rail} rail has no credentials in "${PAYMENTS_PROVIDER_SECRET}" for this environment. Run \`pithy secrets set\` for it.`,
-      action: `Take the ${rail} credentials from ${PAYMENTS_RAIL_CONSOLES[rail]} and set them with \`pithy secrets set ${PAYMENTS_PROVIDER_SECRET}\`.`,
+      detail: `The ${rail} rail has no credentials in "${PAYMENTS_PROVIDER_SECRET}" for this environment. Run \`${pithyCommand("secrets update", { args: [PAYMENTS_PROVIDER_SECRET] })}\` for it.`,
+      action: `Take the ${rail} credentials from ${PAYMENTS_RAIL_CONSOLES[rail]} and set them with \`${pithyCommand("secrets update", { args: [PAYMENTS_PROVIDER_SECRET] })}\`.`,
     });
   }
   return block as NonNullable<PaymentsProviderCredentials[R]>;

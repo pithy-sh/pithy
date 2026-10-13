@@ -17,7 +17,9 @@ const SRC = join(HERE, "..");
 
 const context = (overrides: Partial<SettingsCheckContext> = {}): SettingsCheckContext => ({
   project: "acme",
-  worker: "api",
+  // A scaffolded project's shape: `apps/api` deploys as `acme-api`, and `--worker` takes the directory (#711).
+  worker: "acme-api",
+  workerDirectory: "api",
   environments: [
     { name: "staging", origin: "https://staging.acme.dev" },
     { name: "prod", origin: "https://api.acme.dev" },
@@ -96,6 +98,9 @@ describe("the local tier", () => {
     expect(findings[0]?.environment).toBeNull();
     // The action is the provider sentence the host writes into its own startup log.
     expect(findings[0]?.action).toContain("Var BASE_URL in the host's wrangler.jsonc.");
+    // …and the command in it names the Worker the check ran for (#711).
+    expect(findings[0]?.action).toContain("Run pithy email provision --worker api.");
+    expect(findings[0]?.fix).toBe("pithy email provision --worker api");
   });
 
   test("a base URL no declared environment answers on is a finding", async () => {
@@ -194,9 +199,11 @@ describe("the account tier", () => {
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: "No D1 database named acme-global-email-suppressions exists on this account.",
-      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
+      // The Worker the check ran for, by its apps/ directory: `email provision` acts on one, and in a project
+      // with several a bare one is refused (#711).
+      action: "Run `pithy email provision --worker api`. Nothing is suppressed until it exists.",
       // The same command, runnable as written, for `pithy doctor --json` (#697).
-      fix: "pithy email provision",
+      fix: "pithy email provision --worker api",
     });
   });
 
@@ -219,8 +226,9 @@ describe("the account tier", () => {
         environment: "prod",
         problem:
           "The link-signing key has no Secrets Store entry in prod, so no tracking or unsubscribe link can be signed.",
-        action: "Run `pithy secrets provision`.",
-        fix: "pithy secrets provision",
+        // One environment's entry; the provision that creates it runs against all of them, production included (#711).
+        action:
+          "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.",
       },
     ]);
   });
@@ -237,7 +245,7 @@ describe("the account tier", () => {
         problem:
           "The link-signing key is still held in staging's D1 vault, where nothing reads it. Links signed with it before the move no longer verify.",
         action:
-          "Once the Secrets Store entry is bound and deployed, run `pithy secrets rm email-link-signing-key --env staging --backend d1`. See docs/commands/secrets.md#moving-a-secret-off-d1.",
+          "Once the Secrets Store entry is bound and deployed, the D1 copy can go: `pithy secrets rm email-link-signing-key --env staging --backend d1` deletes a stored secret. That is a person's decision, not a fix. See docs/commands/secrets.md#moving-a-secret-off-d1.",
         // No `fix` (#697): the removal is safe only once the entry serves, which this check does not establish.
       },
     ]);

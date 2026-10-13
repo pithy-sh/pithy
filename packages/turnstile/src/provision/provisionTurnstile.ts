@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Caller, personDecision, rerunCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { type TurnstileConfig, type TurnstileMode, TurnstileSitekeys } from "../config/config";
@@ -239,11 +240,22 @@ export interface TurnstilePlan {
   /** The production domain the real widget is bound to (resolved from per-environment config). */
   productionDomain: string;
   /**
-   * Provision even though a foreign widget already covers the domain (`--allow-shared-domain`). The
-   * escape hatch for the one legitimate case: an adopter who already runs a hand-made widget on that
-   * host and is not ready to retire it. Off by default — the refusal is the useful answer.
+   * The Worker this run provisions for, by its `apps/` directory — what `--worker` takes. A refusal names it in
+   * every command it offers, since in a project with several a bare one is refused (#711).
    */
-  allowSharedDomain?: boolean;
+  worker: WorkerDir;
+  /**
+   * The caller's own `pithy turnstile provision` (#711): what a refusal names to run again, every flag it was given.
+   * Its `--allow-shared-domain` is also what lets the run past a domain a foreign widget already covers — the escape
+   * hatch for an adopter who runs a hand-made widget on that host and is not ready to retire it. Off by default: the
+   * refusal is the useful answer.
+   */
+  caller: Caller<"turnstile provision">;
+}
+
+/** Whether the caller passed `--allow-shared-domain`. */
+function allowsSharedDomain(plan: TurnstilePlan): boolean {
+  return plan.caller.given["allow-shared-domain"] === true;
 }
 
 /**
@@ -267,7 +279,7 @@ export interface TurnstilePlan {
  * secret, so it errors with guidance rather than write a half-secret.
  *
  * **Before anything is created or written**, three refusals are decided: a production domain a *foreign*
- * widget already covers (`allowSharedDomain` opts out), a mixed production state, and a sitekey the writer
+ * widget already covers (`--allow-shared-domain` opts out), a mixed production state, and a sitekey the writer
  * would refuse. A refused run leaves the account and every file as it found them.
  */
 export async function provisionTurnstile(
@@ -277,12 +289,12 @@ export async function provisionTurnstile(
   // **Everything that can refuse the run is decided before the first write** (#590 review). A domain a
   // foreign widget covers, a mixed production state, and a sitekey the writer cannot write are all readable
   // now, and each used to be found after a real widget was minted and its secret stored.
-  if (!plan.allowSharedDomain) await provisioner.assertDomainAvailable(plan.productionDomain);
+  if (!allowsSharedDomain(plan)) await provisioner.assertDomainAvailable(plan.productionDomain);
 
   const existing = new Map<TurnstileMode, { sitekey: string } | null>();
   for (const mode of plan.modes) existing.set(mode, await provisioner.findProductionWidget(mode));
   const found = [...existing.values()].filter((widget) => widget !== null).length;
-  if (found > 0 && found < plan.modes.length) throw mixedProductionState();
+  if (found > 0 && found < plan.modes.length) throw mixedProductionState(plan);
 
   const planned: PlannedSitekeys = {};
   for (const mode of plan.modes) planned[mode] = sitekeysFor(mode, existing.get(mode)?.sitekey ?? null);
@@ -306,7 +318,16 @@ export async function provisionTurnstile(
   // Checked again after the lookups above: a widget created or deleted by someone else in between is the
   // one way a run that read a consistent state can still end in a mixed one.
   const created = widgets.filter((widget) => widget.created).length;
-  if (created > 0 && created < plan.modes.length) throw mixedProductionState();
+  if (created > 0 && created < plan.modes.length) {
+    // The one refusal that comes after writes, so it says what this run already did: a refusal that left them
+    // out would read as a run that changed nothing (#711).
+    const made = widgets
+      .filter((widget) => widget.created)
+      .map((widget) => `the ${widget.mode} production widget (${widget.sitekey})`);
+    throw mixedProductionState(plan, [
+      `It wrote the test secret for dev and staging, and created ${made.join(" and ")}.`,
+    ]);
+  }
   // All new → write the freshly-composed production secret. All reused → Cloudflare won't return the
   // existing widgets' secret, so it can't be recomposed and is left as-is (the caller warns).
   const productionSecretWritten = created === plan.modes.length;
@@ -319,11 +340,19 @@ export async function provisionTurnstile(
   return { modes: plan.modes, widgets, productionSecretWritten, sitekeys, strandedVarsRemoved };
 }
 
-/** The refusal for production widgets some of which exist and some of which do not. */
-function mixedProductionState(): ValidationError {
+/**
+ * The refusal for production widgets some of which exist and some of which do not, with `did` naming what the run
+ * had already written when it found them.
+ */
+function mixedProductionState(plan: TurnstilePlan, did: readonly string[] = []): ValidationError {
+  // Starting over deletes the widgets that do exist, and every client embeds their sitekeys, so it is not a
+  // remedy to run as written (#711): the line says so, and names the provision that follows it — the caller's
+  // own run again, from its context, so `--json` and the flag that let it past the domain guard both carry.
+  const worker = plan.worker;
+  const reprovision = rerunCommand(plan.caller, { flags: { "--worker": worker } });
   return new ValidationError({
-    message: "Turnstile production widgets are in a mixed state — some exist, some do not.",
-    action: "Run `pithy turnstile deprovision`, then provision again to write a consistent production secret.",
+    message: ["Turnstile production widgets are in a mixed state — some exist, some do not.", ...did].join(" "),
+    action: `Starting over is the way to a consistent production secret. ${personDecision("turnstile deprovision", { flags: { "--worker": worker } })} After it, \`${reprovision}\` writes the secret again.`,
   });
 }
 

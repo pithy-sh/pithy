@@ -23,6 +23,7 @@ const config = (input: I18nConfigInput = {}): I18nConfig => I18nConfig.parse(inp
 const CONTEXT: SettingsCheckContext = {
   project: "acme",
   worker: "api",
+  workerDirectory: "api",
   environments: [{ name: "dev", origin: null }],
 };
 

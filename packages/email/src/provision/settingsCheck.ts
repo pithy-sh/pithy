@@ -9,12 +9,13 @@ import type {
   SettingsFinding,
 } from "@pithy-sh/core/src/capability/settings";
 import { hostEnvFindings } from "@pithy-sh/core/src/capability/settings";
+import { type Command, personDecision, pithyCommand, remedy, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ORIGIN } from "@pithy-sh/core/src/naming/domains";
 import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
-import { checkHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
+import { checkHostEnv, type HostEnvReport } from "@pithy-sh/core/src/workflow/hostEnv";
 import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING, emailSigningRegistry } from "../crypto/signingKey";
 import type { EmailTheme } from "../templates/theme";
-import { emailHostEnv } from "../workflows/hostEnv";
+import { EMAIL_PROVISION, emailHostEnv } from "../workflows/hostEnv";
 import { suppressionDatabaseName } from "./provisionEmail";
 
 /**
@@ -103,7 +104,7 @@ function originOf(url: string): string | null {
  * config object per Worker, so a `BASE_URL` that is not a URL is one edit however many environments a
  * project declares. Three lines about one key is how a report stops being read.
  */
-function localHostEnv(config: EmailSettingsInput): SettingsFinding[] {
+function localHostEnv(config: EmailSettingsInput, workerDirectory: string): SettingsFinding[] {
   const candidate = {
     ...stubBindings(),
     BASE_URL: config.baseUrl,
@@ -112,7 +113,33 @@ function localHostEnv(config: EmailSettingsInput): SettingsFinding[] {
     // failure this catches.
     ...(config.theme ? { EMAIL_THEME: JSON.stringify(config.theme) } : {}),
   };
-  return hostEnvFindings(checkHostEnv(emailHostEnv, candidate), null);
+  return hostEnvFindings(forWorker(checkHostEnv(emailHostEnv, candidate), workerDirectory), null);
+}
+
+/**
+ * **`pithy email provision` for the Worker this check ran for (#711).** It acts on one Worker, and in a project
+ * with several a bare one is refused `input/required`. Takes the Worker's `apps/` directory, which is what
+ * `--worker` takes and what that refusal lists. Not its `wrangler.jsonc` name: a scaffold deploys `apps/api` as
+ * `acme-api`.
+ */
+function provisionCommand(workerDirectory: string): Command {
+  return pithyCommand("email provision", { flags: { "--worker": workerDirOf({ dir: workerDirectory }) } });
+}
+
+/**
+ * The host's own report, with its provisioning command named for this Worker by its `apps/` directory. The host
+ * writes the bare command into its log because it cannot know the Worker; a check that does know names it, in
+ * the action and the `fix` alike.
+ */
+function forWorker(report: HostEnvReport<unknown>, workerDirectory: string): HostEnvReport<unknown> {
+  return {
+    ...report,
+    problems: report.problems.map((problem) =>
+      problem.provider.command === EMAIL_PROVISION
+        ? { ...problem, provider: { ...problem.provider, command: provisionCommand(workerDirectory) } }
+        : problem,
+    ),
+  };
 }
 
 /**
@@ -215,8 +242,8 @@ async function accountFindings(
       problem: `No D1 database named ${suppressions} exists on this account.`,
       // One database for the whole project, and one run creates it. `pithy email provision` spans every
       // declared environment and takes no `--env`, so naming one here was a flag the CLI refuses (#594).
-      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
-      fix: "pithy email provision",
+      action: `Run \`${provisionCommand(context.workerDirectory)}\`. Nothing is suppressed until it exists.`,
+      fix: provisionCommand(context.workerDirectory),
     });
   }
 
@@ -246,6 +273,9 @@ async function accountFindings(
  * **What this sees:** a row under this registry name. A secret some other declaration moved off D1 has its
  * own check to write, or none; nothing here walks the vault for strays, because the vault cannot be listed.
  */
+/** What creates a missing link-signing entry: a provision of every environment, production included (#711). */
+const PROVISION_SECRETS = remedy("secrets provision");
+
 async function signingKeyFindings(context: SettingsAccountContext, environment: string): Promise<SettingsFinding[]> {
   const findings: SettingsFinding[] = [];
   const entry = environmentScope(context.project, environment).secretEntry(
@@ -257,9 +287,10 @@ async function signingKeyFindings(context: SettingsAccountContext, environment: 
       setting: EMAIL_LINK_SIGNING_KEY,
       environment,
       problem: `The link-signing key has no Secrets Store entry in ${environment}, so no tracking or unsubscribe link can be signed.`,
-      // No `--env`: the command spans every declared environment, and takes no such flag.
-      action: "Run `pithy secrets provision`.",
-      fix: "pithy secrets provision",
+      // No `--env`: the command spans every declared environment, production included, and takes no such flag — so
+      // for one environment's entry it is a person's decision, never a `fix` (#711).
+      action: PROVISION_SECRETS.say((command) => `Run \`${command}\`.`),
+      ...(PROVISION_SECRETS.fix === undefined ? {} : { fix: PROVISION_SECRETS.fix }),
     });
   }
   if (await context.account.vaultSecret({ name: EMAIL_LINK_SIGNING_KEY, environment })) {
@@ -267,7 +298,7 @@ async function signingKeyFindings(context: SettingsAccountContext, environment: 
       setting: EMAIL_LINK_SIGNING_KEY,
       environment,
       problem: `The link-signing key is still held in ${environment}'s D1 vault, where nothing reads it. Links signed with it before the move no longer verify.`,
-      action: `Once the Secrets Store entry is bound and deployed, run \`pithy secrets rm ${EMAIL_LINK_SIGNING_KEY} --env ${environment} --backend d1\`. See docs/commands/secrets.md#moving-a-secret-off-d1.`,
+      action: `Once the Secrets Store entry is bound and deployed, the D1 copy can go: ${personDecision("secrets rm", { args: [EMAIL_LINK_SIGNING_KEY], flags: { "--env": environment, "--backend": "d1" } })} See docs/commands/secrets.md#moving-a-secret-off-d1.`,
       // No `fix`: the removal is safe only once the entry is bound and deployed, which this check does not
       // establish, so an agent running it as written could delete the only copy that still answers (#697).
     });
@@ -278,7 +309,11 @@ async function signingKeyFindings(context: SettingsAccountContext, environment: 
 /** Email's settings check, built from one composition's resolved config. Declared on the capability. */
 export function emailSettings(config: EmailSettingsInput): CapabilitySettings {
   return {
-    local: (context) => [...localHostEnv(config), ...localForAddress(config), ...localBaseUrlOrigin(config, context)],
+    local: (context) => [
+      ...localHostEnv(config, context.workerDirectory),
+      ...localForAddress(config),
+      ...localBaseUrlOrigin(config, context),
+    ],
     account: (context) => accountFindings(config, context),
   };
 }

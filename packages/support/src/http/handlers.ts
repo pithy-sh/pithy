@@ -3,6 +3,7 @@
 
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { ObjectStore } from "@pithy-sh/storage/src/object/store";
@@ -251,7 +252,7 @@ export async function reclassifyConversation(
     // ran — forever, and with a success event in the audit trail to corroborate it.
     throw new SupportClassificationError({
       message: "Classification is not available on this deployment.",
-      action: "Run `pithy support provision` to deploy the classification worker, then retry.",
+      action: `Run \`${pithyCommandOf("support provision", {}, { runtime: true })}\` to deploy the classification worker, then retry.`,
       detail: `the ${"SUPPORT_CLASSIFY"} workflow binding is absent, so no instance was started`,
     });
   }

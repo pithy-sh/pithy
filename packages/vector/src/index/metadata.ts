@@ -151,7 +151,9 @@ export function metadataIndexes(metadata: z.ZodObject): MetadataIndexDescriptor[
   if (problems.length > 0) {
     throw new ValidationError({
       message: "This index's metadata schema cannot be provisioned.",
-      action: "Fix the fields marked filterable in the index's metadata schema, then run `pithy vector provision`.",
+      // No command (#711): provisioning and the drift check both call this, and neither knows the other's Worker.
+      // The run that hit it is the one to repeat.
+      action: "Fix the fields marked filterable in the index's metadata schema, then provision again.",
       detail: problems.join(" "),
       issues: problems.map((problem) => ({ path: ["metadata"], message: problem, code: "custom" })),
     });

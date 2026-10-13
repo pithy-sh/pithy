@@ -2,9 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError, messageOf } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { PaymentsConfig } from "../config/config";
+
+/**
+ * The provision that rewrites this host's config, as the host can name it: it cannot know the `apps/` directory
+ * of the app Worker that provisioned it, so it names no `--worker`, and the run asks (#711).
+ */
+const PROVISION = pithyCommandOf("payments provision", {}, { runtime: true });
 
 /**
  * The reconcile worker's env, and the one function that reads its config out of a var.
@@ -54,7 +61,7 @@ export function reconcileWorkerConfig(env: PaymentsWorkerEnv): PaymentsConfig {
   } catch (cause) {
     throw new InternalError({
       message: "The reconcile worker's PAYMENTS_CONFIG var is not valid JSON.",
-      action: "Re-run `pithy payments provision` for this environment to rewrite it.",
+      action: `Re-run \`${PROVISION}\` for this environment to rewrite it.`,
       detail: messageOf(cause),
     });
   }
@@ -65,8 +72,7 @@ export function reconcileWorkerConfig(env: PaymentsWorkerEnv): PaymentsConfig {
       message: "The reconcile worker's PAYMENTS_CONFIG var is not a payments config this build can run.",
       // The two halves of the repair, in the order they have to happen: the value is the adopter's, and the
       // var is a copy of it. Fixing only the second is a provision that writes the same refusal back.
-      action:
-        "Set the missing keys in this Worker's pithy.config.ts — `billingSubject` is required — then re-run `pithy payments provision` for this environment.",
+      action: `Set the missing keys in this Worker's pithy.config.ts — \`billingSubject\` is required — then re-run \`${PROVISION}\` for this environment.`,
     });
   }
   return parsed.data;

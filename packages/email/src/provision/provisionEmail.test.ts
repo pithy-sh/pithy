@@ -14,8 +14,8 @@ import {
   suppressionDatabaseName,
 } from "./provisionEmail";
 
-/** A fake provisioner that records the call order and returns a fixed suppression DB id. */
-function fakeProvisioner(): { provisioner: EmailProvisioner; calls: string[] } {
+/** A fake provisioner that records the call order and returns a fixed suppression DB id, new to the run or not. */
+function fakeProvisioner(created = true): { provisioner: EmailProvisioner; calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
@@ -25,7 +25,7 @@ function fakeProvisioner(): { provisioner: EmailProvisioner; calls: string[] } {
       },
       async ensureSuppressionDatabase() {
         calls.push("ensureSuppressionDatabase");
-        return { databaseId: "sup-db" };
+        return { databaseId: "sup-db", created };
       },
       async migrateSuppression(id) {
         calls.push(`migrate:${id}`);
@@ -56,6 +56,7 @@ describe("provisionEmail", () => {
     ]);
     expect(result).toEqual({
       suppressionDatabaseId: "sup-db",
+      suppressionDatabaseCreated: true,
       environments: ["staging", "prod"],
       routing: { created: true, skipped: false },
     });
@@ -82,6 +83,12 @@ describe("provisionEmail", () => {
     expect(result.suppressionDatabaseId).toBe("sup-db");
   });
 
+  // What the CLI says the run did depends on it: a database an earlier run made is not this run's to claim (#711).
+  test("says whether this run created the suppression DB, or reused one", async () => {
+    expect((await provisionEmail(fakeProvisioner(false).provisioner, [])).suppressionDatabaseCreated).toBe(false);
+    expect((await provisionEmail(fakeProvisioner(true).provisioner, [])).suppressionDatabaseCreated).toBe(true);
+  });
+
   test("no environment at all still creates the suppression DB, and makes no routing rule", async () => {
     const { provisioner, calls } = fakeProvisioner();
     const result = await provisionEmail(provisioner, []);
@@ -92,6 +99,7 @@ describe("provisionEmail", () => {
     expect(calls).toEqual(["preflight", "ensureSuppressionDatabase", "migrate:sup-db"]);
     expect(result).toEqual({
       suppressionDatabaseId: "sup-db",
+      suppressionDatabaseCreated: true,
       environments: [],
       routing: { created: false, skipped: true },
     });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
 import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, type DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
@@ -376,7 +377,7 @@ export const authDevSessionSeed: SeedSet = defineSeed({
         // fail again with the same sentence. The path is deliberately unnamed rather than guessed: this
         // set runs inside a Worker with no filesystem and no config directory to resolve, and `pithy
         // doctor` prints the resolved path on every run precisely so a message like this does not have to.
-        action: `Add ${AUTH_SESSION_SECRET} to this project's dev secrets file — pithy doctor prints its path — then seed again.`,
+        action: `Add ${AUTH_SESSION_SECRET} to this project's dev secrets file — ${commandName("doctor")} prints its path — then seed again.`,
       });
     }
 

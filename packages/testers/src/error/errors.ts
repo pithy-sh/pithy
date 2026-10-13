@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
@@ -36,7 +37,9 @@ export class TestersCohortNotFoundError extends PithyError {
         code: "testers/cohort_not_found",
         status: 404,
         message: args.message ?? "No such cohort.",
-        action: args.action ?? "List your cohorts with `pithy testers list` and retry with an id from there.",
+        action:
+          args.action ??
+          `List this environment's cohorts with \`${commandName("testers list")}\` and its --env, and retry with an id from there.`,
         detail: args.detail,
         params: args.params,
       },
@@ -53,7 +56,7 @@ export class TestersMemberNotFoundError extends PithyError {
         code: "testers/member_not_found",
         status: 404,
         message: args.message ?? "No such tester on that cohort.",
-        action: args.action ?? "Check the roster with `pithy testers roster <cohort>`.",
+        action: args.action ?? `Check the cohort's roster with \`${commandName("testers roster")}\`.`,
         detail: args.detail,
         params: args.params,
       },

@@ -6,12 +6,15 @@ import { zValidator } from "@hono/zod-validator";
 import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
+import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono } from "hono";
 import { TestersAuditActions } from "../audit/actions";
 import { confirmUrl, isStoreOptInUrl, optInUrl, optOutUrl, type TestersConfig } from "../config/config";
@@ -190,7 +193,7 @@ function database(c: Context<PithyHonoEnv>): D1Database {
   if (!binding) {
     throw new TestersNotConfiguredError({
       message: "Testers is not configured.",
-      action: "Bind a D1 database named DB in wrangler.jsonc, then run pithy migrate.",
+      action: `Bind a D1 database named DB in wrangler.jsonc, then ${migrateStep(c.env as AmbientEnv)}.`,
       detail: "the testers routes require a `DB` D1 binding; none was present on env",
     });
   }
@@ -728,7 +731,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
         if (input.kind === "store" && !(cohort.storeOptInUrl && isStoreOptInUrl(cohort.storeOptInUrl))) {
           throw new TestersNotConfiguredError({
             message: "This cohort has no store opt-in link, so there is nothing to send.",
-            action: "Set one with `pithy testers create --store-url`, then send again.",
+            action: `Give the cohort a store opt-in link with the --store-url of \`${commandName("testers create")}\`, then send again.`,
             detail: `cohort ${cohort.id} storeOptInUrl is ${cohort.storeOptInUrl === null ? "null" : "not a store URL"}`,
           });
         }

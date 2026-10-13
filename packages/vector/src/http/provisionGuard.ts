@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
+import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import type { VectorConfig } from "../config/config";
 import { assertProvisionedMetadataIndexes, readProvisionRecord } from "../index/provisioned";
 
@@ -30,7 +31,8 @@ export function provisionGuard(config: VectorConfig): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
       if (!verified) {
-        assertProvisionedMetadataIndexes(config, readProvisionRecord(c.env as Record<string, unknown>));
+        const env = c.env as Record<string, unknown>;
+        assertProvisionedMetadataIndexes(config, readProvisionRecord(env), compositionEnvironment(env as AmbientEnv));
         verified = true;
       }
       await next();

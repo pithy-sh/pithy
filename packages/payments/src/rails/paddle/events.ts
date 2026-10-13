@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { z } from "zod";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { VerifiedNotification } from "../contract";
@@ -198,7 +199,7 @@ export async function sweepPaddleEvents(options: PaddleSweepOptions): Promise<Pa
         events: [],
         cursor: options.cursor,
         hasMore: false,
-        gap: `Paddle no longer knows event ${options.cursor}, so the sweep cannot resume from it. Paddle retains ${PADDLE_EVENT_RETENTION_DAYS} days of events, and anything between that cursor and the retention window is gone. Reconcile the affected purchases with \`pithy payments reconcile --rail paddle\`, then clear the cursor to restart from the oldest retained event.`,
+        gap: `Paddle no longer knows event ${options.cursor}, so the sweep cannot resume from it. Paddle retains ${PADDLE_EVENT_RETENTION_DAYS} days of events, and anything between that cursor and the retention window is gone. Reconcile the affected purchases with \`${commandName("payments reconcile")}\`, passing --rail paddle and this environment's --env, then clear the cursor to restart from the oldest retained event.`,
       };
     }
     throw cause;

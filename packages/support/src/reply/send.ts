@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { SupportAuditActions } from "../audit/actions";
 import type { SupportConfig } from "../config/config";
@@ -210,7 +211,7 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     if (!enqueue) {
       throw new SupportReplyFailedError({
         message: "This deployment cannot send mail.",
-        action: "Add the email capability (`pithy add email`) and provision it, then retry.",
+        action: `Compose the email capability into this Worker with \`${commandName("add")}\` and provision it, then retry.`,
         detail: `thread ${input.threadId} needs a mailed reply and no email capability is composed`,
       });
     }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { VectorMetadataIndexDriftError } from "../error/errors";
 import type { MetadataIndexDescriptor, MetadataIndexType } from "./metadata";
 
@@ -105,7 +106,7 @@ export async function assertMetadataIndexes(
     );
     throw new VectorMetadataIndexDriftError({
       message: `Search on \`${indexName}\` is not configured correctly.`,
-      action: `Run \`pithy vector provision\` to create the missing metadata indexes on \`${indexName}\`, then re-embed — Vectorize does not index vectors written before an index existed.`,
+      action: `Create the missing metadata indexes on \`${indexName}\` with \`${commandName("vector provision")}\` and the environment's --env, then re-embed — Vectorize does not index vectors written before an index existed.`,
       detail: [
         missing.length > 0 ? `missing: ${missing.join(", ")}` : "",
         mismatched.length > 0 ? `mismatched: ${mismatched.join(", ")}` : "",

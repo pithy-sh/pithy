@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
@@ -34,7 +35,7 @@ export class VectorMetadataIndexDriftError extends PithyError {
         message: args.message ?? "Search is not configured correctly.",
         action:
           args.action ??
-          "Run `pithy vector provision` to create the missing metadata indexes, then re-embed anything written before them.",
+          `Create the missing metadata indexes with \`${commandName("vector provision")}\` and this environment's --env, then re-embed anything written before them.`,
         detail: args.detail,
         params: args.params,
       },
@@ -136,7 +137,7 @@ export class VectorUnfilterableFieldError extends PithyError {
         message: args.message ?? "You cannot filter on that field.",
         action:
           args.action ??
-          "Mark the field `.meta({ filterable: true })` in the index's metadata schema, run `pithy vector provision`, and re-embed — Vectorize does not index what was written before the metadata index existed.",
+          `Mark the field \`.meta({ filterable: true })\` in the index's metadata schema, provision it with \`${commandName("vector provision")}\` and this environment's --env, and re-embed — Vectorize does not index what was written before the metadata index existed.`,
         detail: args.detail,
         params: args.params,
       },

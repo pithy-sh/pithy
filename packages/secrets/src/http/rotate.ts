@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Context } from "hono";
 import type { SecretBinding, SecretsStoreEnv } from "../env/bindings";
@@ -104,8 +105,7 @@ export function workerRotationEnvironment(environment: string): ManagedEnvironme
   if (!parsed.success) {
     throw new SecretRotationUnsupportedError({
       message: "This deployment cannot say which environment it is, so it will not replace a credential.",
-      action:
-        "Stamp ENVIRONMENT on the Worker's vars (pithy provision does), or rotate from a machine that holds the project: pithy secrets rotate <NAME> --env <env>.",
+      action: `Stamp ENVIRONMENT on the Worker's vars (${commandName("provision")} does), or rotate it from a machine that holds the project with ${commandName("secrets rotate")}, naming the secret and its --env.`,
       detail: `rotate refused: the verified control-plane environment '${environment}' is not a deployed environment`,
     });
   }
@@ -120,18 +120,20 @@ export function workerRotationEnvironment(environment: string): ManagedEnvironme
  * rotatable from the CLI — so the refusal names the command rather than suggesting the declaration is
  * wrong.
  */
-export function refuseUnrotatableHere(name: string, entry: SecretRegistryEntry): void {
+export function refuseUnrotatableHere(name: string, entry: SecretRegistryEntry, environment: string): void {
+  const rotateHere = pithyCommand("secrets rotate", { args: [name], flags: { "--env": environment } });
+  const rotateEverywhere = pithyCommand("secrets rotate", { args: [name] });
   if (entry.backend === "cf-secrets-store") {
     throw new SecretRotationUnsupportedError({
-      message: `Secret '${name}' lives in Cloudflare's Secrets Store, which no application Worker writes to. Rotate it with pithy secrets rotate ${name}.`,
-      action: `Run pithy secrets rotate ${name} --env <env>. The secrets manager holds the Cloudflare credential this write needs; an application Worker binds that store read-only and must not hold one.`,
+      message: `Secret '${name}' lives in Cloudflare's Secrets Store, which no application Worker writes to. Rotate it with ${rotateHere}.`,
+      action: `Run ${rotateHere}. The secrets manager holds the Cloudflare credential this write needs; an application Worker binds that store read-only and must not hold one.`,
       detail: `rotate refused: '${name}' is backend cf-secrets-store, which is written through the CF REST API and not from this Worker`,
     });
   }
   if (entry.scope === "global") {
     throw new SecretRotationUnsupportedError({
-      message: `Secret '${name}' is the same in every environment, and this Worker can only write its own. Rotate it with pithy secrets rotate ${name}.`,
-      action: `Run pithy secrets rotate ${name}. It writes every declared environment in one run, which is what keeps a global secret identical everywhere.`,
+      message: `Secret '${name}' is the same in every environment, and this Worker can only write its own. Rotate it with ${rotateEverywhere}.`,
+      action: `Run ${rotateEverywhere}. It writes every declared environment in one run, which is what keeps a global secret identical everywhere.`,
       detail: `rotate refused: '${name}' is scope global, and a Worker-side rotation would write one of its environments and strand the rest`,
     });
   }
@@ -169,7 +171,7 @@ export async function runWorkerRotation(
 ): Promise<SecretRotationOutcome> {
   const { name, entry } = request;
   refuseUnrotatable(name, entry);
-  refuseUnrotatableHere(name, entry);
+  refuseUnrotatableHere(name, entry, request.environment);
 
   // A human in a console, and nothing to call. The core answers this too, and answering it here is what
   // keeps a rotation row from being opened for an act that never starts: a history of attempts that logs
@@ -192,7 +194,7 @@ export async function runWorkerRotation(
   if (!(await deps.store.has(name))) {
     throw new SecretNotFoundError({
       message: `Secret '${name}' has never been stored in this environment, so there is nothing to replace.`,
-      action: `Create it first: pithy secrets create ${name} --env ${request.environment}.`,
+      action: `Create it first: ${pithyCommand("secrets create", { args: [name], flags: { "--env": request.environment } })}.`,
       detail: `rotate refused: '${name}' has no row in this environment's store`,
     });
   }

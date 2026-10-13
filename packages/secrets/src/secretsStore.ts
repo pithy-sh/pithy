@@ -3,7 +3,9 @@
 
 import type { AuditActorType, AuditOutcome } from "@pithy-sh/core/src/audit/auditEvent";
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type SecretsAuditAction, SecretsAuditActions } from "./audit/actions";
 import {
   currentValue,
@@ -764,7 +766,7 @@ function unprovisioned(name: string, bound: boolean): Error {
   }
   return new ValidationError({
     message: `Secret '${name}' is bound as a plain value, and a d1 secret is never read from a binding.`,
-    action: `Put '${name}' in the dev secrets file and run pithy seed. Deployed environments get it from pithy secrets create.`,
+    action: `Put '${name}' in the dev secrets file and run ${pithyCommand("seed", { flags: { "--env": LOCAL_ENVIRONMENT } })}. Deployed environments get it from ${pithyCommand("secrets create", { args: [name] })}.`,
     detail: `d1 secret '${name}' has no row in the secrets store, and a binding of the same name was ignored`,
   });
 }

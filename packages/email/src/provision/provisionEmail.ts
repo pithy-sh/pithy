@@ -124,8 +124,11 @@ export interface EmailProvisioner {
    * Throws a clear, actionable error so provisioning fails fast and clean rather than mid-deploy.
    */
   preflight(): Promise<void>;
-  /** Create (or reuse) the project's suppression D1; returns its id. Idempotent. Runs once, before any env. */
-  ensureSuppressionDatabase(): Promise<{ databaseId: string }>;
+  /**
+   * Create (or reuse) the project's suppression D1; returns its id, and whether this call created it. Idempotent.
+   * Runs once, before any env.
+   */
+  ensureSuppressionDatabase(): Promise<{ databaseId: string; created: boolean }>;
   /** Run the `email_0001_suppressions` migration against the suppression D1. Idempotent (applied ones skip). */
   migrateSuppression(databaseId: string): Promise<void>;
   /** Deploy the prebuilt email worker for this environment, wired to the suppression DB and the env's own resources. */
@@ -142,6 +145,8 @@ export interface EmailProvisioner {
 /** What provisioning produced. */
 export interface EmailProvisionResult {
   suppressionDatabaseId: string;
+  /** Whether this run created the suppression database, or found one an earlier run made. */
+  suppressionDatabaseCreated: boolean;
   environments: ManagedEnvironment[];
   /** Whether the inbound routing rule was created, already present, or skipped (not configured). */
   routing: { created: boolean; skipped: boolean };
@@ -166,7 +171,7 @@ export async function provisionEmail(
   environments: DeclaredEnvironments | readonly string[],
 ): Promise<EmailProvisionResult> {
   await provisioner.preflight();
-  const { databaseId } = await provisioner.ensureSuppressionDatabase();
+  const { databaseId, created } = await provisioner.ensureSuppressionDatabase();
   await provisioner.migrateSuppression(databaseId);
   const deployed = managedEnvironments(environments);
   for (const env of deployed) {
@@ -177,7 +182,7 @@ export async function provisionEmail(
   // was never deployed, which is the window this ordering exists to close.
   const routing =
     deployed.length > 0 ? await provisioner.ensureRoutingRule() : { created: false, skipped: true as const };
-  return { suppressionDatabaseId: databaseId, environments: deployed, routing };
+  return { suppressionDatabaseId: databaseId, suppressionDatabaseCreated: created, environments: deployed, routing };
 }
 
 /** The teardown seam — the inverse of {@link EmailProvisioner}. Every step idempotent (a missing resource is a no-op). */

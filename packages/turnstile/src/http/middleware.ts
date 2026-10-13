@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand, pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { workerIdentity } from "@pithy-sh/core/src/worker/identity";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -15,6 +16,12 @@ import {
   type TurnstileSecrets,
   turnstileSecretsRegistry,
 } from "../secret/registry";
+
+/**
+ * The provision that writes this Worker's widget secret, as a deployed Worker can name it: it cannot know the
+ * `apps/` directory that provisioned it, so it names no `--worker`, and the run asks (#711).
+ */
+const PROVISION = pithyCommandOf("turnstile provision", {}, { runtime: true });
 
 /** Cloudflare's server-side endpoint a Turnstile token is validated against. */
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
@@ -74,8 +81,7 @@ function assertSecretRecognized(codes: string[], status: number): void {
   if (fault === undefined) return;
   throw new TurnstileConfigError({
     message: "The humanity check is not configured.",
-    action:
-      "Cloudflare does not recognize this widget's secret key. Run `pithy turnstile provision` for this environment.",
+    action: `Cloudflare does not recognize this widget's secret key. Run \`${PROVISION}\` for this environment.`,
     detail: `siteverify answered ${status} with "${fault}" — the secret, not the token, was refused.`,
   });
 }
@@ -139,7 +145,7 @@ function noWidgetSecret(environment: string | null, cause: unknown): TurnstileCo
   return new TurnstileConfigError(
     {
       message: `The humanity check has no widget secret for ${where}.`,
-      action: `Run \`pithy turnstile provision\` and redeploy ${environment ?? "this Worker"}, or remove the turnstile() gate from this route. \`pithy doctor\` names every environment whose widget cannot render.`,
+      action: `Run \`${PROVISION}\` and redeploy ${environment ?? "this Worker"}, or remove the turnstile() gate from this route. \`${pithyCommand("doctor")}\` names every environment whose widget cannot render.`,
       detail: `${where}: ${why}`,
     },
     { cause },
@@ -334,7 +340,7 @@ export function turnstile(options: TurnstileOptions = {}): MiddlewareHandler {
     if (fromTestingKey(result) && !isTestKeyEnvironment(environment)) {
       throw new TurnstileConfigError({
         message: "The humanity check is not configured.",
-        action: `This widget secret is a Cloudflare Turnstile test key, which passes every caller, and ENVIRONMENT here is "${environment ?? "unstamped"}". Run \`pithy turnstile provision\` so this deployment verifies against its own widget. A test key's verdict is accepted only where ENVIRONMENT is ${TEST_KEY_ENVIRONMENTS.join(", ")}, so the remedy is the secret and never the stamp — restamping a deployed Worker to reach that list is how a production login page is opened.`,
+        action: `This widget secret is a Cloudflare Turnstile test key, which passes every caller, and ENVIRONMENT here is "${environment ?? "unstamped"}". Run \`${PROVISION}\` so this deployment verifies against its own widget. A test key's verdict is accepted only where ENVIRONMENT is ${TEST_KEY_ENVIRONMENTS.join(", ")}, so the remedy is the secret and never the stamp — restamping a deployed Worker to reach that list is how a production login page is opened.`,
         detail: `siteverify set metadata.result_with_testing_key on environment "${environment ?? "unstamped"}".`,
       });
     }

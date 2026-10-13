@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { mintSecretValue } from "../mintValue";
@@ -207,14 +208,14 @@ export function refuseUnrotatable(name: string, entry: SecretRegistryEntry): voi
   if (entry.rotation === undefined) {
     throw new ValidationError({
       message: `Secret '${name}' does not declare how it rotates.`,
-      action: `Add a rotation to its registry entry, then run this again. Until then, replace it with pithy secrets update ${name}.`,
+      action: `Add a rotation to its registry entry, then run this again. Until then, replace it with ${pithyCommand("secrets update", { args: [name] })}.`,
       detail: `rotate refused: '${name}' declares no rotation`,
     });
   }
   if (entry.rotation.kind === "provider" && entry.rotator === undefined) {
     throw new ValidationError({
       message: `Secret '${name}' rotates by calling ${entry.rotation.issuer}, and this project supplies no rotator for it.`,
-      action: `Attach a rotator to its registry entry, or roll it at ${entry.rotation.issuer} by hand and record it with pithy secrets update ${name}.`,
+      action: `Attach a rotator to its registry entry, or roll it at ${entry.rotation.issuer} by hand and record it with ${pithyCommand("secrets update", { args: [name] })}.`,
       detail: `rotate refused: '${name}' is rotation.kind provider with no rotator on the registry entry`,
     });
   }
@@ -233,7 +234,7 @@ export function refuseUnrotatable(name: string, entry: SecretRegistryEntry): voi
   if (entry.devValue === undefined) {
     throw new ValidationError({
       message: `Secret '${name}' is minted from a structure this command cannot produce.`,
-      action: `Replace it with pithy secrets update ${name}.`,
+      action: `Replace it with ${pithyCommand("secrets update", { args: [name] })}.`,
       detail: `rotate refused: '${name}' is rotation.kind local with no devValue recipe`,
     });
   }
@@ -260,7 +261,7 @@ async function nextValue(options: {
       // and it is raised where the caller classifies it as one.
       throw new ValidationError({
         message: `The rotator for '${options.name}' returned no value.`,
-        action: `Check whether ${entry.rotation.issuer} issued a new credential, and record it with pithy secrets update ${options.name}.`,
+        action: `Check whether ${entry.rotation.issuer} issued a new credential, and record it with ${pithyCommand("secrets update", { args: [options.name] })}.`,
         detail: `rotator for '${options.name}' resolved without a newValue string`,
       });
     }
