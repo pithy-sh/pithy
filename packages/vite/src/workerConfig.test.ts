@@ -344,6 +344,19 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).not.toContain("/home/a");
   });
 
+  // #709: a line and column in another file, quoted as the config's, sends the adopter to the wrong place.
+  test("a position in another file is never quoted as the config's", () => {
+    const at = (file: string) => ({
+      name: "BuildMessage",
+      message: "Unexpected ;",
+      position: { file, line: 1, column: 18, lineText: "export const x = ;" },
+    });
+    const config = "/home/a/apps/api/pithy.config.ts";
+    const other = classifyWorkerConfigFailure(at("/home/a/apps/api/src/helpers.ts"), "/home/a/apps/api", config);
+    expect(other.action).not.toMatch(/Line \d/);
+    expect(classifyWorkerConfigFailure(at(config), "/home/a/apps/api", config).action).toContain("Line 1, column 18");
+  });
+
   test("a config that throws on load gets its own reason, and neither other remedy", () => {
     const { kind, action } = classifyWorkerConfigFailure(new Error("AUTH_SECRET is required"));
     expect(kind).toBe("threw-on-load");

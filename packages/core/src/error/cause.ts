@@ -143,9 +143,15 @@ export interface FailurePosition {
  * such field states the same thing in its message tail. Only the two numbers are lifted out — never the
  * path they are appended to. Whether a surface prints them is that surface's policy: two of the three
  * classifiers do, and the capability loader deliberately does not.
+ *
+ * `isOwn`, when given, is asked about the file a structured position names, and a position in a file it
+ * disowns is no position at all: Bun's line and column in a file the config imports, quoted as the config's,
+ * send the adopter to a place in their config that is fine (#709).
  */
-export function failurePosition(cause: unknown): FailurePosition | undefined {
+export function failurePosition(cause: unknown, isOwn?: (file: string) => boolean): FailurePosition | undefined {
   const position = prop(cause, "position");
+  const file = prop(position, "file");
+  if (isOwn !== undefined && typeof file === "string" && !isOwn(file)) return undefined;
   const line = prop(position, "line");
   const column = prop(position, "column");
   if (typeof line === "number" && line > 0 && typeof column === "number") return { line, column };

@@ -605,8 +605,14 @@ function isParseError(cause: unknown): boolean {
  * @param wrapped whatever the `try` caught, wrapper and all. {@link rootCause} opens it first — see #223:
  *   Bun wraps two or more build diagnostics in an `AggregateError`, and a stray brace cascades, so the
  *   wrapped shape is the *common* one. #207 fixed the bare case and this one classified worse than it.
+ * @param configFile the config that was imported. A parser's position is quoted only when it is in this
+ *   file or its fresh copy: Bun gives one in whatever file did not parse, which may be one the config imports.
  */
-export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string): ConfigLoadFailure {
+export function classifyConfigLoadFailure(
+  wrapped: unknown,
+  relativeTo?: string,
+  configFile?: string,
+): ConfigLoadFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
 
@@ -628,7 +634,7 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
     // not quoted, and a position is never invented. That filter is core's, once rather than here and in two
     // other classifiers that each had to be found and patched (#228).
     const reason = safeReason(cause);
-    const at = failurePosition(cause);
+    const at = failurePosition(cause, configFile === undefined ? undefined : (file) => isConfigFile(file, configFile));
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
     return {
       kind: "parse-error",
@@ -698,6 +704,16 @@ async function importFreshCopy(path: string): Promise<{ default?: unknown }> {
     openCopies.delete(copy);
     await rm(copy, { force: true });
   }
+}
+
+/**
+ * Whether `file` is the config at `configFile`, or a fresh copy of it, which is imported in its place — so a
+ * position in either is the config's own, and a position in any other file is not (#709).
+ */
+function isConfigFile(file: string, configFile: string): boolean {
+  const at = resolve(file);
+  if (at === resolve(configFile)) return true;
+  return dirname(at) === dirname(resolve(configFile)) && basename(at).startsWith(RELOAD_PREFIX);
 }
 
 /** What a fresh copy is called. One prefix, so the sweep and the writer cannot drift apart. */
@@ -817,7 +833,7 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
     // That boundary is unchanged. What changed is that the part of the cause an adopter can act on now
     // reaches them through `action`, in a form that carries no path, no source line, and no stack.
     // The config's own directory, so a resolved absolute path is shown the way it was written.
-    const { kind, action } = classifyConfigLoadFailure(cause, dirname(path));
+    const { kind, action } = classifyConfigLoadFailure(cause, dirname(path), path);
     throw new InternalError({
       message: `Could not load ${path}.`,
       action,

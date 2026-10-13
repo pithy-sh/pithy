@@ -131,7 +131,10 @@ export function classifyCapabilityLoadFailure(
   // A file inside an installed package that would not load names that package — the capability's own, or
   // one it imports — rather than the capability this loader happened to be loading (#709).
   const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/cli" });
-  if (foreign !== undefined) {
+  // Bun's parse failure in the capability's own package is this loader's to word: the parser's reason is
+  // carried below, and it names the same package.
+  const ownBuild = foreign?.owner === pkg && prop(cause, "name") === "BuildMessage";
+  if (foreign !== undefined && !ownBuild) {
     return failure("broken", `The ${capability} capability is installed and will not load.`, foreign.remedy);
   }
 

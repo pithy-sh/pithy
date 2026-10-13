@@ -1048,6 +1048,24 @@ describe("packageLoadFailure", () => {
     );
   });
 
+  // Bun 1.4.2, from a real tree: a package's file that does not parse is a `BuildMessage` with no stack at
+  // all. The file is in its `position`, and nowhere else.
+  test("on Bun, a package's file that does not parse is named from the BuildMessage's position", () => {
+    const build = {
+      name: "BuildMessage",
+      message: "Unexpected ;",
+      position: { file: "/p/node_modules/badpkg/index.js", line: 1, column: 18, lineText: "export const x = ;" },
+    };
+    const remedy =
+      "The installed badpkg does not parse. Check the version of badpkg you have, or report this to its maintainer — installing dependencies will not help.";
+    expect(packageLoadFailure(build)).toEqual({ owner: "badpkg", remedy });
+    expect(packageLoadFailure({ name: "AggregateError", message: "2 errors", errors: [build, build] })?.owner).toBe(
+      "badpkg",
+    );
+    const own = { ...build, position: { ...build.position, file: "/p/apps/api/pithy.config.ts" } };
+    expect(packageLoadFailure(own)).toBeUndefined();
+  });
+
   test("thrown in the adopter's own file, it is theirs, and nothing is said here", () => {
     const own = {
       ...REFERENCE,
@@ -1067,6 +1085,31 @@ describe("packageLoadFailure", () => {
       ].join("\n"),
     };
     expect(packageLoadFailure(called)).toBeUndefined();
+  });
+
+  // Node 24.21.0 and Vite's runner, from a real tree: json5's `parse` throws a SyntaxError of its own on bad
+  // input. Its first frame is the package's function, called by the config — the input is the adopter's.
+  test("a SyntaxError a package's function throws on purpose is never read as the package failing to load", () => {
+    const deliberate = (caller: string) => ({
+      name: "SyntaxError",
+      message: "JSON5: invalid character ',' at 1:2",
+      stack: [
+        "SyntaxError: JSON5: invalid character ',' at 1:2",
+        "    at parse (file:///p/node_modules/fake5/index.js:2:34)",
+        caller,
+      ].join("\n"),
+    });
+    expect(packageLoadFailure(deliberate("    at file:///p/pithy.config.ts:2:1"))).toBeUndefined();
+    expect(packageLoadFailure(deliberate("    at eval (/p/pithy.config.ts:6:32)"))).toBeUndefined();
+    // A type mismatch is read only from a frame at a module's top level, never from inside a function.
+    const inFunction = {
+      ...REFERENCE,
+      stack: REFERENCE.stack.replace(
+        "at file:///p/node_modules/cjsinesm/index.js:1:1",
+        "at load (file:///p/node_modules/cjsinesm/index.js:1:1)",
+      ),
+    };
+    expect(packageLoadFailure(inFunction)).toBeUndefined();
   });
 
   test("only what a module throws while it loads: a package's own TypeError is the config's to read", () => {

@@ -301,6 +301,22 @@ describe("classifyConfigLoadFailure", () => {
     expect(action).not.toMatch(/\bbun install\b/i);
   });
 
+  // #709: Bun puts the file a position is in beside it. A line and column in another file, quoted as the
+  // config's, sends the adopter to a place in their config that is fine.
+  test("a position Bun gives in another file is never quoted as the config's", () => {
+    const at = (file: string) => ({
+      name: "BuildMessage",
+      message: "Unexpected ;",
+      position: { file, line: 1, column: 18, lineText: "export const x = ;" },
+    });
+    const config = "/home/a/pithy.config.ts";
+    expect(classifyConfigLoadFailure(at("/home/a/src/helpers.ts"), "/home/a", config).action).not.toMatch(/Line \d/);
+    expect(classifyConfigLoadFailure(at(config), "/home/a", config).action).toContain("Line 1, column 18");
+    // A fresh read imports a copy beside the config, and the copy's position is the config's own.
+    const copy = "/home/a/.pithy.reload.0b6f1c52-5a1e-4c4e-9d7e-2f0f3d6b8a10.ts";
+    expect(classifyConfigLoadFailure(at(copy), "/home/a", config).action).toContain("Line 1, column 18");
+  });
+
   test("a multi-line diagnostic contributes its position and nothing else", () => {
     const cause = new Error(
       "Transform failed with 1 error:\n\n\u001b[31m[PARSE_ERROR] \u001b[0mUnexpected token\n  ╭─[ .smoke-x/pithy.config.ts:1:17 ]",

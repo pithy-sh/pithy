@@ -793,11 +793,14 @@ const MODULE_TYPE =
  * parse*: the adopter told to fix a file that is fine. A package's file that does not parse at all is the
  * same fault in the same place, and is named the same way.
  *
- * **The file is the one the error was thrown in, and only that one.** Node heads a compile error with the
- * file and line it could not compile; any other error's first stack frame is where it was thrown. Any later
- * frame is a caller, and a caller in a package is the config calling into it — so a package's deliberate
- * throw, which the config provoked, is never laid at the package's door. Only errors a module throws while
- * it is loaded are read: a `SyntaxError`, and a `ReferenceError` for a CommonJS global in a module's scope.
+ * **The file is the one that failed to load, and only that one.** Node heads a compile error with the file
+ * and line it could not compile, and Bun 1.4.2 hands over a `BuildMessage` with no stack at all, the file
+ * in its `position`. Otherwise the error's first stack frame must be a module's own top level, run as it
+ * is imported — `at file:///…:L:C`, or Vite's `at eval (…)`, with no function of its own. A first frame
+ * inside a function is the config calling into a package, and a later frame is a caller: so a package's
+ * deliberate throw, which the config provoked — json5's `parse` throws a `SyntaxError` on bad input — is
+ * never laid at the package's door. Only errors a module throws while it is loaded are read: a
+ * `SyntaxError` or a `BuildMessage`, and a `ReferenceError` for a CommonJS global in a module's scope.
  *
  * `undefined` when the cause is not one, or was thrown in the adopter's own file — that stays theirs.
  */
@@ -807,8 +810,9 @@ export function packageLoadFailure(
 ): PackageLoadFailure | undefined {
   const cause = rootCause(wrapped);
   const typeMismatch = MODULE_TYPE.test(causeMessage(cause) ?? "");
-  if (!typeMismatch && prop(cause, "name") !== "SyntaxError") return undefined;
-  const owner = ownerOf(thrownIn(cause), options.loader);
+  const name = prop(cause, "name");
+  if (!typeMismatch && name !== "SyntaxError" && name !== "BuildMessage") return undefined;
+  const owner = ownerOf(failedToLoad(cause), options.loader);
   if (owner === undefined) return undefined;
   const check = `Check the version of ${owner} you have, or report this to its maintainer — ${NO_INSTALL}`;
   return {
@@ -820,18 +824,25 @@ export function packageLoadFailure(
 }
 
 /**
- * The file an error was thrown in, from its stack: the file and line Node heads a compile error with, or
- * else the first frame. **Module-private**, like {@link importerPath}: it is an absolute path.
+ * The file that failed as it loaded, or none: the file and line Node heads a compile error with, the file a
+ * stackless `BuildMessage` names in its `position` (Bun 1.4.2), or a first frame at a module's top level.
+ * Never a frame inside a function, which is code running after its module loaded. **Module-private**, like
+ * {@link importerPath}: it is an absolute path.
  */
-function thrownIn(cause: unknown): string | undefined {
+function failedToLoad(cause: unknown): string | undefined {
   const stack = prop(cause, "stack");
-  if (typeof stack !== "string") return undefined;
+  if (typeof stack !== "string") {
+    const file = prop(prop(cause, "position"), "file");
+    return typeof file === "string" ? locationPath(file) : undefined;
+  }
   const lines = stack.split("\n");
   const head = /^(.+):\d+$/.exec(lines[0] ?? "")?.[1];
   if (head !== undefined && (head.startsWith("file:") || ABSOLUTE.test(head))) return locationPath(head);
   const frame = lines.find((line) => /^\s+at /.test(line));
   if (frame === undefined) return undefined;
-  const at = /\((.+):\d+:\d+\)$/.exec(frame)?.[1] ?? /^\s+at (.+):\d+:\d+$/.exec(frame)?.[1];
+  // A module's top level: no function at all, or the `eval` Vite's runner evaluates a module in.
+  const at =
+    /^\s+at eval \((.+?):\d+(?::\d+)?\)$/.exec(frame)?.[1] ?? /^\s+at ([^()]+?):\d+(?::\d+)?$/.exec(frame)?.[1];
   return at === undefined ? undefined : locationPath(at);
 }
 

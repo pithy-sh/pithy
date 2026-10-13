@@ -131,7 +131,31 @@ const TREE: Record<string, string> = {
   "node_modules/cjsinesm/index.js": "module.exports = 1;",
   "node_modules/esmincjs/package.json": '{"name":"esmincjs","type":"commonjs","main":"index.js"}',
   "node_modules/esmincjs/index.js": 'import { sep } from "node:path";\nexport default sep;\n',
+  "node_modules/badparse/package.json": '{"name":"badparse","type":"module","main":"index.js"}',
+  "node_modules/badparse/index.js": "export const x = ;\n",
+  "node_modules/fake5/package.json": '{"name":"fake5","type":"module","main":"index.js"}',
+  "node_modules/fake5/index.js":
+    "export function parse(text) {\n  throw new SyntaxError(\"JSON5: invalid character ',' at 1:2\");\n}\n",
 };
+
+/**
+ * **Two loads that are not an import failing to resolve**, so they are not rows of {@link REMEDIES}: what a
+ * surface says for them is not one sentence across the three. Each is a whole case file, not one import.
+ *
+ * - `packageParse` — an installed package whose own file does not parse. Bun 1.4.2 throws a `BuildMessage`
+ *   with no stack, and names the file only in its `position`.
+ * - `packageThrows` — the config calls a package's function with bad input, and the function throws a
+ *   `SyntaxError` on purpose, as json5's `parse` does. The package loaded; the input is the adopter's.
+ */
+const LOADS = {
+  packageParse: 'import "badparse";\n',
+  packageThrows: 'import { parse } from "fake5";\nparse("{,}");\n',
+} as const;
+
+type Load = keyof typeof LOADS;
+const LOAD_CASES = Object.keys(LOADS) as Load[];
+/** Every case file each loader imports. */
+const ALL_CASES: string[] = [...CASES, ...LOAD_CASES];
 
 const INSTALL = "Install the project's dependencies (bun install)";
 const NO_INSTALL = "installing dependencies will not help.";
@@ -230,6 +254,7 @@ function stage(): string {
   for (const [name, specifier] of Object.entries(IMPORTS)) {
     writeFileSync(join(root, `case-${name}.js`), `import ${JSON.stringify(specifier.replace("<root>", root))};\n`);
   }
+  for (const [name, text] of Object.entries(LOADS)) writeFileSync(join(root, `case-${name}.js`), text);
   return root;
 }
 
@@ -291,7 +316,7 @@ async function underBun(): Promise<Record<string, Verdicts | null>> {
       "console.log(JSON.stringify(out));",
     ].join("\n"),
   );
-  const { stdout } = await run("bun", [script, root, ...CASES], { cwd: scripts });
+  const { stdout } = await run("bun", [script, root, ...ALL_CASES], { cwd: scripts });
   return JSON.parse(stdout) as Record<string, Verdicts | null>;
 }
 
@@ -329,7 +354,7 @@ async function underNode(): Promise<Record<string, Verdicts | null>> {
       "console.log(JSON.stringify(out));",
     ].join("\n"),
   );
-  const { stdout } = await run(process.execPath, ["--no-deprecation", script, root, ...CASES], { cwd: scripts });
+  const { stdout } = await run(process.execPath, ["--no-deprecation", script, root, ...ALL_CASES], { cwd: scripts });
   const causes = JSON.parse(stdout) as Record<string, Record<string, unknown> | null>;
   return Object.fromEntries(
     Object.entries(causes).map(([name, cause]) => [name, cause === null ? null : cliSurfaces(rebuilt(cause))]),
@@ -354,7 +379,7 @@ function rebuilt(dumped: Record<string, unknown>): Error {
 /** **Vite**: the plugin's own loader, in this process, and the refusal it throws. */
 async function underVite(): Promise<Record<string, Verdicts | null>> {
   const out: Record<string, Verdicts | null> = {};
-  for (const name of CASES) {
+  for (const name of ALL_CASES) {
     try {
       await loadWorkerConfig(join(root, `case-${name}.js`));
       out[name] = null;
@@ -419,6 +444,54 @@ describe("every case, thrown by each surface's real loader, says one thing", () 
         expect(remedy.includes("bun install"), `${name} from ${source}`).toBe(says);
         if (reinstalls.has(name)) expect(remedy, `${name} from ${source}`).toContain("remove it and install it again");
         else if (!says) expect(remedy, `${name} from ${source}`).toContain(NO_INSTALL);
+      }
+    }
+  });
+});
+
+/**
+ * **A package is named for a file of its own that would not load, and only for that (#709).**
+ *
+ * Both halves read off what each real loader threw. A package whose file does not parse is that package's
+ * fault, never the config's and never the capability being loaded. A package that loaded and then threw a
+ * `SyntaxError` because the config handed it bad input is not: the adopter keeps the parser's reason.
+ */
+describe("a package's own file that would not load, and a package's deliberate throw", () => {
+  const PARSE = `The installed badparse does not parse. Check the version of badparse you have, or report this to its maintainer — ${NO_INSTALL}`;
+
+  test("on Bun, a package's file that does not parse is that package's, on every surface", () => {
+    const said = verdicts.bun?.packageParse;
+    expect(said, "Bun loaded a file that does not parse").toBeTruthy();
+    for (const [surface, { kind, action }] of Object.entries(said ?? {})) {
+      expect(action, surface).toBe(PARSE);
+      if (surface !== CAPABILITY_SURFACE) expect(kind, surface).toBe("package-load");
+      // Never the config's position: the line and column Bun gives are in the package's file.
+      expect(action, surface).not.toMatch(/Line \d+, column \d+/);
+    }
+  });
+
+  // Pinned: Node 24.21.0 throws this `SyntaxError` with only its own internal frames and no file anywhere
+  // on it, and Vite hands a package's import to Node. A Node that starts naming the file turns this red.
+  test("on Node and through Vite, the file is withheld, so no package is named", () => {
+    for (const source of ["node", "vite"] as const) {
+      const said = verdicts[source]?.packageParse;
+      expect(said, `${source} loaded a file that does not parse`).toBeTruthy();
+      for (const [surface, { kind }] of Object.entries(said ?? {})) {
+        if (surface !== CAPABILITY_SURFACE) expect(kind, `${surface} from ${source}`).toBe("parse-error");
+      }
+    }
+  });
+
+  test("a SyntaxError a package's function throws at the config's call is never the package failing to load", () => {
+    for (const source of SOURCES) {
+      const said = verdicts[source]?.packageThrows;
+      expect(said, `${source} loaded a config that throws`).toBeTruthy();
+      for (const [surface, { kind, action }] of Object.entries(said ?? {})) {
+        const where = `${surface} from ${SOURCE_NAME[source]}`;
+        expect(kind, where).not.toBe("package-load");
+        expect(action, where).not.toContain("fake5");
+        // The parser's own reason reaches the adopter, wherever they read it.
+        expect(action, where).toContain("JSON5: invalid character ',' at 1:2");
       }
     }
   });

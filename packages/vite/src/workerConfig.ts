@@ -3,7 +3,7 @@
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
@@ -117,9 +117,14 @@ const entry = packageEntryProbe({
  * An unresolved import is core's {@link unresolvedImport}: the same sentence the CLI gives for the same
  * cause, naming the package the import is written in when it is not the config (#480, #489), and an
  * install only where an install can help (#709). `relativeTo` is the config's directory, so an adopter's
- * own missing file is shown as the import they wrote and never as an absolute path.
+ * own missing file is shown as the import they wrote and never as an absolute path. A parser's position is
+ * quoted only when it is in `configFile`, never when it is in a file the config imports.
  */
-export function classifyWorkerConfigFailure(wrapped: unknown, relativeTo?: string): WorkerConfigFailure {
+export function classifyWorkerConfigFailure(
+  wrapped: unknown,
+  relativeTo?: string,
+  configFile?: string,
+): WorkerConfigFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
   // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
@@ -134,7 +139,11 @@ export function classifyWorkerConfigFailure(wrapped: unknown, relativeTo?: strin
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is
     // not quoted, and a position is never invented. That filter is core's, once (#228).
     const reason = safeReason(cause);
-    const at = failurePosition(cause);
+    // A position in a file the config imports is not the config's, and is never quoted as if it were (#709).
+    const at = failurePosition(
+      cause,
+      configFile === undefined ? undefined : (file) => resolve(file) === resolve(configFile),
+    );
     const where = at ? ` Line ${at.line}, column ${at.column}.` : "";
     return {
       kind: "parse-error",
@@ -189,7 +198,7 @@ export async function loadWorkerConfig(configFile: string): Promise<LoadedWorker
     // The config is there and would not load. Which of the four ways it failed decides what to tell the
     // adopter — see {@link classifyWorkerConfigFailure}. The raw cause still goes to `detail` and stops
     // there: the CLI renderer prints `message` and `action` only, and the HTTP codec strips `detail`.
-    const { kind, action } = classifyWorkerConfigFailure(cause, dirname(configFile));
+    const { kind, action } = classifyWorkerConfigFailure(cause, dirname(configFile), configFile);
     throw new InternalError({
       message: `Could not load ${configFile}.`,
       action,
