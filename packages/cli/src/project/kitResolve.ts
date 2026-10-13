@@ -165,9 +165,10 @@ export function packageDirFrom(projectDir: string, pkg: string): string | null {
 export const installedBeside: InstalledProbe = nodeModulesProbe({ exists: existsSync, realpath: realpathSync });
 
 /**
- * The entry an installed `pkg` declares for an import of its bare name, read from its `package.json` on the
- * same chain. Bun 1.4.2 writes the absent-package sentence for one that declares no entry and for one whose
- * declared entry is not on disk, and only the manifest tells *import a path* from *rebuild it* (#709).
+ * An installed `pkg`'s `package.json` on the same chain, and what is on disk beside it. Bun 1.4.2 writes the
+ * absent-package sentence for one that declares no entry and for one whose declared entry is not on disk,
+ * and only the manifest tells *import a path* from *rebuild it* — for a bare name and, through `exports`, for
+ * a deep import too (#709).
  */
 export const entryBeside: EntryProbe = packageEntryProbe({
   exists: existsSync,

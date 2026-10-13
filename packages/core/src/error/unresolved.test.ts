@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { declaredEntry, importingPackage, nodeModulesProbe, packageEntryProbe, unresolvedImport } from "./unresolved";
+import {
+  declaredEntry,
+  exportedTarget,
+  importingPackage,
+  nodeModulesProbe,
+  packageEntryProbe,
+  packageLoadFailure,
+  unresolvedImport,
+} from "./unresolved";
 
 /**
  * The one classifier for an import that would not resolve (#709), unit by unit.
@@ -261,7 +269,7 @@ describe("unresolvedImport", () => {
       const seen: string[][] = [];
       const entry = (pkg: string, from: string) => {
         seen.push([pkg, from]);
-        return null;
+        return { manifest: {}, has: () => false };
       };
       const found = unresolvedImport(
         node(`Cannot find package '/p/node_modules/nodot/index.js' imported from ${CONFIG}`),
@@ -304,7 +312,7 @@ describe("unresolvedImport", () => {
       const seen: string[][] = [];
       const entry = (pkg: string, from: string) => {
         seen.push([pkg, from]);
-        return null;
+        return { manifest: {}, has: () => false };
       };
       const found = unresolvedImport(
         {
@@ -338,10 +346,11 @@ describe("unresolvedImport", () => {
   describe("an installed package that names an entry it does not carry", () => {
     const MISSING =
       "The installed exmiss names an entry that is not there, so it is unbuilt or its install is broken. Rebuild exmiss, or remove it and install it again.";
-    const declares =
-      (entries: Record<string, string | null>) =>
-      (pkg: string): string | null | undefined =>
-        entries[pkg];
+    /** An installed package whose manifest's `main` is the entry given, or declares none for `null`. */
+    const declares = (entries: Record<string, string | null>) => (pkg: string) => {
+      const main = entries[pkg];
+      return main === undefined ? undefined : { manifest: main === null ? {} : { main }, has: () => false };
+    };
 
     test("Bun: installed, and its manifest declares an entry, so it is the entry that is missing", () => {
       const found = unresolvedImport(bun("exmiss", "Cannot find package 'exmiss'"), {
@@ -366,7 +375,7 @@ describe("unresolvedImport", () => {
       expect(found?.remedy).toContain("has no entry to import by its bare name");
     });
 
-    test("Bun: a deep import is never asked of the manifest, whatever it declares", () => {
+    test("Bun: a deep import of a package with no exports map is a path it lacks, whatever its main says", () => {
       const found = unresolvedImport(bun("exmiss/dist/index.js", "Cannot find package 'exmiss'"), {
         installed: has("exmiss"),
         entry: declares({ exmiss: "dist/index.js" }),
@@ -447,6 +456,118 @@ describe("unresolvedImport", () => {
       });
       expect(found?.owner).toBe("entrydep");
       expect(found?.remedy).toBe(`entrydep imports "exmiss", and ${MISSING.replace("The installed", "the installed")}`);
+    });
+  });
+
+  // Every @pithy-sh/* package exports `./src/*` as `./dist/*.js`. Unbuilt, every deep import of one matches
+  // the pattern and lands on nothing: Bun and Vite called that a path the package does not provide, and
+  // Node quoted the `dist` file it resolved to — a path nobody wrote.
+  describe("a deep import an exports pattern maps to a file that is not there", () => {
+    const PATTERN = { exports: { "./src/*": { types: "./dist/*.d.ts", default: "./dist/*.js" } } };
+    const UNBUILT =
+      'The installed patpkg exports "patpkg/src/capability" from a file that is not there, so it is unbuilt or its install is broken. Rebuild patpkg, or remove it and install it again.';
+    /** The package's manifest, and which of its paths are on disk. */
+    const installedWith =
+      (manifest: unknown, ...onDisk: string[]) =>
+      (pkg: string) =>
+        pkg === "patpkg" ? { manifest, has: (path: string) => onDisk.includes(path) } : undefined;
+
+    test("Bun: unbuilt — no dist at all — is the package to rebuild, shown as the import was written", () => {
+      const found = unresolvedImport(bun("patpkg/src/capability", "Cannot find module 'patpkg/src/capability'"), {
+        installed: has("patpkg"),
+        entry: installedWith(PATTERN),
+      });
+      expect(found).toEqual({
+        kind: "package-entry",
+        package: "patpkg",
+        shown: "patpkg/src/capability",
+        installHelps: false,
+        remedy: UNBUILT,
+      });
+    });
+
+    test("Bun: built, and the import matches the pattern and nothing in dist, is a typo", () => {
+      const found = unresolvedImport(bun("patpkg/src/capabilty", "Cannot find module 'patpkg/src/capabilty'"), {
+        installed: has("patpkg"),
+        entry: installedWith(PATTERN, "dist"),
+      });
+      expect(found).toMatchObject({ kind: "package-subpath", shown: "patpkg/src/capabilty" });
+      expect(found?.remedy).toContain("correct that import");
+    });
+
+    test("Vite: the same sentence with no field reads the same, from the importer it quotes", () => {
+      const found = unresolvedImport(
+        {
+          name: "Error",
+          code: "ERR_MODULE_NOT_FOUND",
+          message: `Cannot find module 'patpkg/src/capability' imported from '${CONFIG}'`,
+        },
+        { installed: has("patpkg"), entry: installedWith(PATTERN) },
+      );
+      expect(found?.remedy).toBe(UNBUILT);
+    });
+
+    test("Node: the dist file it resolved to is mapped back to the import, and never shown", () => {
+      const unbuilt = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/patpkg/dist/capability.js' imported from ${CONFIG}`,
+          "file:///p/node_modules/patpkg/dist/capability.js",
+        ),
+        { relativeTo: ROOT, entry: installedWith(PATTERN) },
+      );
+      expect(unbuilt).toMatchObject({ kind: "package-entry", shown: "patpkg/src/capability", remedy: UNBUILT });
+      const typo = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/patpkg/dist/capabilty.js' imported from ${CONFIG}`,
+          "file:///p/node_modules/patpkg/dist/capabilty.js",
+        ),
+        { relativeTo: ROOT, entry: installedWith(PATTERN, "dist") },
+      );
+      expect(typo).toMatchObject({ kind: "package-subpath", shown: "patpkg/src/capabilty" });
+      for (const found of [unbuilt, typo]) expect(found?.remedy).not.toContain("dist");
+    });
+
+    test("a key of its own whose file is missing is the package's, built or not", () => {
+      const manifest = { exports: { "./client": "./dist/client.js", "./src/*": "./dist/*.js" } };
+      const found = unresolvedImport(bun("patpkg/client", "Cannot find module 'patpkg/client'"), {
+        installed: has("patpkg"),
+        entry: installedWith(manifest, "dist"),
+      });
+      expect(found).toMatchObject({ kind: "package-entry", shown: "patpkg/client" });
+      const node24 = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/patpkg/dist/client.js' imported from ${CONFIG}`,
+          "file:///p/node_modules/patpkg/dist/client.js",
+        ),
+        { relativeTo: ROOT, entry: installedWith(manifest, "dist") },
+      );
+      expect(node24).toMatchObject({ kind: "package-entry", shown: "patpkg/client" });
+    });
+
+    test("a subpath the map does not export, or exports as null, is a path it does not provide", () => {
+      const manifest = { exports: { "./src/*": "./dist/*.js", "./src/internal/*": null } };
+      for (const specifier of ["patpkg/lib/x", "patpkg/src/internal/x"]) {
+        const found = unresolvedImport(bun(specifier, `Cannot find module '${specifier}'`), {
+          installed: has("patpkg"),
+          entry: installedWith(manifest),
+        });
+        expect(found, specifier).toMatchObject({ kind: "package-subpath", shown: specifier });
+      }
+    });
+
+    test("a dependency's deep import of an unbuilt package names both, and the package to rebuild", () => {
+      const referrer = "/p/node_modules/entrydep/index.js";
+      const found = unresolvedImport(
+        bun("patpkg/src/capability", "Cannot find module 'patpkg/src/capability'", referrer),
+        {
+          installed: has("patpkg"),
+          entry: installedWith(PATTERN),
+        },
+      );
+      expect(found?.owner).toBe("entrydep");
+      expect(found?.remedy).toBe(
+        'entrydep imports "patpkg/src/capability", and the installed patpkg exports it from a file that is not there, so it is unbuilt or its install is broken. Rebuild patpkg, or remove it and install it again.',
+      );
     });
   });
 
@@ -835,6 +956,133 @@ describe("declaredEntry", () => {
   });
 });
 
+describe("exportedTarget", () => {
+  test("an exact key, through the conditions an import matches", () => {
+    const manifest = { exports: { "./client": { types: "./c.d.ts", import: "./dist/client.js" } } };
+    expect(exportedTarget(manifest, "./client")).toEqual({ target: "dist/client.js" });
+  });
+
+  test("a pattern fills its target's *, and says the directory it expands under", () => {
+    const manifest = { exports: { "./src/*": { types: "./dist/*.d.ts", default: "./dist/*.js" } } };
+    expect(exportedTarget(manifest, "./src/capability")).toEqual({ target: "dist/capability.js", under: "dist" });
+    expect(exportedTarget(manifest, "./src/a/b")).toEqual({ target: "dist/a/b.js", under: "dist" });
+    expect(exportedTarget({ exports: { "./*": "./*.js" } }, "./x")).toEqual({ target: "x.js", under: "" });
+  });
+
+  test("the longest prefix wins, an exact key beats every pattern, and a suffix must match", () => {
+    const manifest = {
+      exports: { "./*": "./root/*.js", "./src/*": "./dist/*.js", "./src/a": "./a.js", "./css/*.css": "./s/*.css" },
+    };
+    expect(exportedTarget(manifest, "./src/x")?.target).toBe("dist/x.js");
+    expect(exportedTarget(manifest, "./src/a")?.target).toBe("a.js");
+    expect(exportedTarget(manifest, "./css/x.css")?.target).toBe("s/x.css");
+    expect(exportedTarget(manifest, "./css/x.js")?.target).toBe("root/css/x.js.js");
+  });
+
+  test("not exported is null, and no exports at all is undefined", () => {
+    expect(exportedTarget({ exports: { "./src/*": null } }, "./src/x")).toBeNull();
+    expect(exportedTarget({ exports: { "./a": "./a.js" } }, "./b")).toBeNull();
+    expect(exportedTarget({ exports: { "./a": { browser: "./a.js" } } }, "./a")).toBeNull();
+    expect(exportedTarget({ exports: "./index.js" }, "./x")).toBeNull();
+    expect(exportedTarget({ exports: "./index.js" }, ".")).toEqual({ target: "index.js" });
+    expect(exportedTarget({ main: "index.js" }, "./x")).toBeUndefined();
+  });
+});
+
+/**
+ * A package whose code contradicts its `"type"`, as Node 24.21.0 throws it from a real tree (shortened to
+ * `/p`): `module` over `module.exports` throws a `ReferenceError` whose first frame is the package's file,
+ * and `commonjs` over `import` a `SyntaxError` whose stack is headed by it. Vite's runner throws the same.
+ */
+describe("packageLoadFailure", () => {
+  const REFERENCE = {
+    name: "ReferenceError",
+    message:
+      "module is not defined in ES module scope\nThis file is being treated as an ES module because it has a '.js' file extension and '/p/node_modules/cjsinesm/package.json' contains \"type\": \"module\".",
+    stack: [
+      "ReferenceError: module is not defined in ES module scope",
+      "This file is being treated as an ES module because it has a '.js' file extension …",
+      "    at file:///p/node_modules/cjsinesm/index.js:1:1",
+      "    at ModuleJob.run (node:internal/modules/esm/module_job:561:25)",
+    ].join("\n"),
+  };
+  const SYNTAX = {
+    name: "SyntaxError",
+    message: "Cannot use import statement outside a module",
+    stack: [
+      "/p/node_modules/esmincjs/index.js:1",
+      'import fs from "node:fs";',
+      "^^^^^^",
+      "",
+      "SyntaxError: Cannot use import statement outside a module",
+      "    at wrapSafe (node:internal/modules/cjs/loader:1861:18)",
+    ].join("\n"),
+  };
+  const mismatch = (pkg: string) =>
+    `The installed ${pkg} does not load as the module type its package.json declares. Check the version of ${pkg} you have, or report this to its maintainer — installing dependencies will not help.`;
+
+  test("names the package a type mismatch was thrown in, by its first frame or its compile header", () => {
+    expect(packageLoadFailure(REFERENCE)).toEqual({ owner: "cjsinesm", remedy: mismatch("cjsinesm") });
+    expect(packageLoadFailure(SYNTAX)).toEqual({ owner: "esmincjs", remedy: mismatch("esmincjs") });
+  });
+
+  test("reads through Bun's AggregateError, and a scoped package or a store's nesting is named whole", () => {
+    const scoped = {
+      ...REFERENCE,
+      stack: REFERENCE.stack.replace(
+        "/p/node_modules/cjsinesm/",
+        "/p/node_modules/.bun/@sc+pk@1.0.0/node_modules/@sc/pk/",
+      ),
+    };
+    expect(packageLoadFailure({ name: "AggregateError", message: "x", errors: [scoped] })?.owner).toBe("@sc/pk");
+  });
+
+  test("a package's file that does not parse is named too, and never as the config's", () => {
+    const found = packageLoadFailure({
+      name: "SyntaxError",
+      message: "Unexpected token '}'",
+      stack: "file:///p/node_modules/badpkg/index.js:3\n}\n^\n\nSyntaxError: Unexpected token '}'",
+    });
+    expect(found?.remedy).toBe(
+      "The installed badpkg does not parse. Check the version of badpkg you have, or report this to its maintainer — installing dependencies will not help.",
+    );
+  });
+
+  test("thrown in the adopter's own file, it is theirs, and nothing is said here", () => {
+    const own = {
+      ...REFERENCE,
+      stack: REFERENCE.stack.replace("/p/node_modules/cjsinesm/index.js", "/p/apps/api/pithy.config.ts"),
+    };
+    expect(packageLoadFailure(own)).toBeUndefined();
+  });
+
+  test("a package that is only a caller further down the stack is never the owner", () => {
+    const called = {
+      name: "SyntaxError",
+      message: "Unexpected token 'x', \"xyz\" is not valid JSON",
+      stack: [
+        "SyntaxError: Unexpected token 'x', \"xyz\" is not valid JSON",
+        "    at JSON.parse (<anonymous>)",
+        "    at parse (file:///p/node_modules/jsonpkg/index.js:2:15)",
+      ].join("\n"),
+    };
+    expect(packageLoadFailure(called)).toBeUndefined();
+  });
+
+  test("only what a module throws while it loads: a package's own TypeError is the config's to read", () => {
+    const thrown = { ...REFERENCE, name: "TypeError", message: "AUTH_SECRET is required" };
+    expect(packageLoadFailure(thrown)).toBeUndefined();
+    const notModuleScope = { ...REFERENCE, message: "foo is not defined" };
+    expect(packageLoadFailure(notModuleScope)).toBeUndefined();
+  });
+
+  test("never names the loader, and says nothing with no stack to read", () => {
+    const loader = { ...REFERENCE, stack: REFERENCE.stack.replace("cjsinesm", "@pithy-sh/cli") };
+    expect(packageLoadFailure(loader, { loader: "@pithy-sh/cli" })).toBeUndefined();
+    expect(packageLoadFailure({ name: "ReferenceError", message: REFERENCE.message })).toBeUndefined();
+  });
+});
+
 describe("packageEntryProbe", () => {
   const files: Record<string, string> = {
     "/p/node_modules/exmiss/package.json": '{"exports":{".":"./dist/index.js"}}',
@@ -851,7 +1099,16 @@ describe("packageEntryProbe", () => {
   });
 
   test("walks the same chain as nodeModulesProbe, and reads the manifest it finds", () => {
-    expect(probe("exmiss", "/p/apps/api/pithy.config.ts")).toBe("dist/index.js");
+    const found = probe("exmiss", "/p/apps/api/pithy.config.ts");
+    expect(found?.manifest).toEqual({ exports: { ".": "./dist/index.js" } });
+    expect(declaredEntry(found?.manifest)).toBe("dist/index.js");
+  });
+
+  test("asks the disk beside the package, the package itself included", () => {
+    const found = probe("exmiss", "/p/apps/api/pithy.config.ts");
+    expect(found?.has("package.json")).toBe(true);
+    expect(found?.has("dist")).toBe(false);
+    expect(probe("exmiss", "/p/x.ts")?.has("")).toBe(false); // `/p/node_modules/exmiss` is not in `files`
   });
 
   test("a package that is not there, or a manifest that will not parse, says nothing", () => {

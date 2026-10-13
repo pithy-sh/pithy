@@ -36,6 +36,7 @@ import { causeMessage, prop, rootCause } from "./cause";
  * | installed package, `exports` with no `"."` | `Cannot find package 'pkg'` — the sentence for an absent one | `No "exports" main defined in …/pkg/package.json` |
  * | installed package, `main` names a missing file | the same sentence again | `Cannot find package '…/node_modules/pkg/<main>'` |
  * | installed package, `exports` `"."` names a missing file | the same sentence again | the resolved `url` of that file |
+ * | deep import, an `exports` pattern maps it to a missing file | the import as written, `referrer` | the resolved `url` of that file |
  * | a `file:` URL | converted to a path | the resolved `url` |
  * | a package's own relative import | the import as written, `referrer` in the package | the resolved `url` |
  *
@@ -56,6 +57,14 @@ import { causeMessage, prop, rootCause } from "./cause";
  * that package to rebuild or reinstall. Only the manifest says which, so {@link packageEntryProbe} reads
  * it, and every runtime's shape for the same tree reads to the same kind.
  *
+ * **And a deep import is resolved through `exports` too.** Every `@pithy-sh/*` package exports `./src/*` as
+ * `./dist/*.js`, so in an unbuilt one every deep import matches the pattern and lands on a file that is not
+ * there. Bun and Vite hand back the import as written and Node the `dist` file it resolved to; read at
+ * face value, the first two told an adopter the package does not provide a path it declares, and Node
+ * quoted a path nobody wrote. So the import is resolved through the manifest — patterns and conditions,
+ * as the runtimes do — and Node's file is mapped back to the import that reaches it, which is what is
+ * shown. A target the manifest declares and the disk does not have is {@link exportedKind}'s to call.
+ *
  * ## Vite's module runner says it a third way
  *
  * The vite plugin loads a config through `runnerImport` (Vite 8.3.0, measured), which resolves bare
@@ -74,6 +83,16 @@ import { causeMessage, prop, rootCause } from "./cause";
  * Every rendered field is built from what {@link UnresolvedImport.shown} allows: a bare specifier, a
  * path relative to the project, or a path inside a package named from that package. An absolute path or
  * a `file:` URL is never returned from here, so a surface cannot render one.
+ *
+ * ## A package that resolves and will not load
+ *
+ * One more failure belongs to an installed package and reads, unclassified, as the adopter's: a package
+ * whose code contradicts the `"type"` its `package.json` declares. Node throws it from inside that package
+ * — `module is not defined in ES module scope`, `Cannot use import statement outside a module` — and Vite's
+ * runner hands the import to Node, so it throws the same. Nothing resolves wrongly, so it is not an
+ * {@link unresolvedImport}; but a surface that falls through to its own rules says *the config threw* or
+ * *the config does not parse*. {@link packageLoadFailure} names the package instead, from the file the
+ * error was thrown in, and every surface asks it before deciding the failure was its own.
  */
 
 /** Which of the causes it was. Each has one remedy, and only three of them say to install. */
@@ -131,9 +150,10 @@ export interface UnresolvedImportOptions {
   /** Answers the one question the cause cannot. Without it, a deep import is `undetermined`. */
   installed?: InstalledProbe;
   /**
-   * Answers the next one: the entry an installed package declares. Without it, Bun's bare name is taken to
-   * have no entry there, and a loader that names the file or the package it could not load — Node reaching
-   * for a `main`, Vite's *Failed to resolve entry* — is taken to have reached for a declared one.
+   * Answers the next one: what an installed package declares, and what of it is on disk. Without it, Bun's
+   * bare name is taken to have no entry there, a loader that names the file or the package it could not
+   * load — Node reaching for a `main`, Vite's *Failed to resolve entry* — is taken to have reached for a
+   * declared one, and a deep import is a path the package does not provide.
    */
   entry?: EntryProbe;
   /** The directory an adopter's paths are shown relative to. Without it, a resolved path is never shown. */
@@ -143,12 +163,20 @@ export interface UnresolvedImportOptions {
 }
 
 /**
- * The entry an installed `pkg` declares for an ESM import of its bare name, as a path inside the package
- * (`dist/index.js`, `lib`), found on the chain above `from`. `null` when it declares none — no `exports`
- * `"."` an import can use, and no `main` — and `undefined` when there is no such package, or no manifest
- * to read. {@link packageEntryProbe} builds the answer.
+ * An installed `pkg` found on the chain above `from`: its manifest, and whether a path inside it is on disk.
+ * `undefined` when there is no such package, or no manifest to read. {@link packageEntryProbe} builds the
+ * answer; what the manifest *means* — the entry it declares, where an `exports` pattern leads — is decided
+ * here, by {@link declaredEntry} and {@link exportedTarget}, so no surface reads a manifest its own way.
  */
-export type EntryProbe = (pkg: string, from: string) => string | null | undefined;
+export type EntryProbe = (pkg: string, from: string) => InstalledPackage | undefined;
+
+/** What {@link EntryProbe} answers: one installed package's manifest, and its directory to ask of. */
+export interface InstalledPackage {
+  /** Its `package.json`, parsed. */
+  manifest: unknown;
+  /** Whether a path inside the package — a file or a directory, `""` for the package itself — is on disk. */
+  has(path: string): boolean;
+}
 
 /** The two filesystem calls {@link nodeModulesProbe} makes. `node:fs`'s `existsSync` and `realpathSync`. */
 export interface ProbeFileSystem {
@@ -175,19 +203,27 @@ export function nodeModulesProbe(fs: ProbeFileSystem): InstalledProbe {
 }
 
 /**
- * The {@link EntryProbe} a surface on Node or Bun passes: the same walk as {@link nodeModulesProbe}, and
- * then the package's own `package.json`, read for the entry an `import` of its bare name would take.
+ * The {@link EntryProbe} a surface on Node or Bun passes: the same walk as {@link nodeModulesProbe}, then
+ * the package's own `package.json`, and `exists` for the paths beside it.
  */
 export function packageEntryProbe(fs: ProbeFileSystem & { read(path: string): string }): EntryProbe {
   return (pkg, from) => {
     const dir = installedAt(fs, pkg, from);
     if (dir === undefined) return undefined;
+    let manifest: unknown;
     try {
-      return declaredEntry(JSON.parse(fs.read(`${dir}/package.json`)));
+      manifest = JSON.parse(fs.read(`${dir}/package.json`));
     } catch {
       return undefined;
     }
+    return { manifest, has: (path) => fs.exists(path === "" ? dir : `${dir}/${path}`) };
   };
+}
+
+/** The entry an installed `pkg` declares, through the probe: `undefined` when there is no probe or no package. */
+function declaredBy(options: UnresolvedImportOptions, pkg: string, from: string): string | null | undefined {
+  const installed = options.entry?.(pkg, from);
+  return installed === undefined ? undefined : declaredEntry(installed.manifest);
 }
 
 /** The directory `pkg` is installed in on the chain above `referrer`, walked from where it really is. */
@@ -218,13 +254,114 @@ const IMPORT_CONDITIONS = new Set(["import", "node", "module-sync", "default"]);
  */
 export function declaredEntry(manifest: unknown): string | null {
   const exports = prop(manifest, "exports");
-  if (exports !== undefined && exports !== null) {
-    const subpaths =
-      typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."));
-    return importTarget(subpaths ? prop(exports, ".") : exports);
-  }
+  if (exports !== undefined && exports !== null) return importTarget(subpathMap(exports)["."]);
   const main = prop(manifest, "main");
   return typeof main === "string" && main.length > 0 ? inside(main) : null;
+}
+
+/** An `exports` field as its subpath map: a target or a map of conditions alone is the package's `"."`. */
+function subpathMap(exports: unknown): Record<string, unknown> {
+  const subpaths =
+    typeof exports === "object" &&
+    exports !== null &&
+    !Array.isArray(exports) &&
+    Object.keys(exports).some((key) => key.startsWith("."));
+  return subpaths ? (exports as Record<string, unknown>) : { ".": exports };
+}
+
+/** Where one subpath leads through `exports`: the file, and for a pattern, the directory it expands under. */
+export interface ExportedTarget {
+  /** The file an import takes, as a path inside the package. */
+  target: string;
+  /**
+   * For a target reached through a pattern (`./src/*` → `./dist/*.js`), the directory inside the package
+   * its `*` expands under (`dist`; `""` for the package itself). Absent for a subpath with a key of its own.
+   */
+  under?: string;
+}
+
+/**
+ * What an import of `subpath` (`"."`, `"./src/capability"`) takes from a manifest's `exports`, as Node and
+ * Vite resolve it: an exact key first, then the pattern with the longest prefix, each target followed
+ * through the conditions an import matches. `null` when the map does not export it — no key, no pattern,
+ * or a `null` target — and `undefined` when the manifest has no `exports`, so the subpath is a file path.
+ */
+export function exportedTarget(manifest: unknown, subpath: string): ExportedTarget | null | undefined {
+  const exports = prop(manifest, "exports");
+  if (exports === undefined || exports === null) return undefined;
+  const map = subpathMap(exports);
+  if (Object.hasOwn(map, subpath) && !subpath.includes("*")) {
+    const target = importTarget(map[subpath]);
+    return target === null ? null : { target };
+  }
+  let best: { key: string; star: string } | undefined;
+  for (const key of Object.keys(map)) {
+    const at = key.indexOf("*");
+    if (at === -1 || key.indexOf("*", at + 1) !== -1) continue;
+    const prefix = key.slice(0, at);
+    const suffix = key.slice(at + 1);
+    if (!subpath.startsWith(prefix) || subpath === prefix) continue;
+    if (!subpath.endsWith(suffix) || subpath.length < key.length) continue;
+    // Node's PATTERN_KEY_COMPARE: the longer prefix wins, and then the longer key.
+    if (best !== undefined) {
+      const held = best.key.indexOf("*");
+      if (at < held || (at === held && key.length <= best.key.length)) continue;
+    }
+    best = { key, star: subpath.slice(prefix.length, subpath.length - suffix.length) };
+  }
+  if (best === undefined) return null;
+  const pattern = importTarget(map[best.key]);
+  if (pattern === null) return null;
+  return { target: pattern.replaceAll("*", best.star), under: patternBase(pattern) };
+}
+
+/**
+ * The import that reaches `file` — a path inside the package, the one Node reports — through `exports`:
+ * the key that maps to it, or the pattern whose `*` it fills. Only an answer that resolves back to `file`
+ * through {@link exportedTarget} counts, so a pattern a longer one shadows never names the import.
+ */
+function exportedSubpath(manifest: unknown, file: string): (ExportedTarget & { subpath: string }) | undefined {
+  const exports = prop(manifest, "exports");
+  if (exports === undefined || exports === null) return undefined;
+  for (const [key, value] of Object.entries(subpathMap(exports))) {
+    const target = importTarget(value);
+    if (target === null) continue;
+    let subpath: string | undefined;
+    const at = target.indexOf("*");
+    if (!key.includes("*")) subpath = target === file ? key : undefined;
+    else if (at !== -1) {
+      const prefix = target.slice(0, at);
+      const suffix = target.slice(at + 1).split("*")[0] ?? "";
+      if (file.startsWith(prefix) && file.endsWith(suffix) && file.length > prefix.length + suffix.length) {
+        subpath = key.replace("*", file.slice(prefix.length, file.length - suffix.length));
+      }
+    }
+    const back = subpath === undefined ? undefined : exportedTarget(manifest, subpath);
+    if (subpath !== undefined && back?.target === file) return { ...back, subpath };
+  }
+  return undefined;
+}
+
+/** The directory inside the package a pattern target's `*` expands under: `dist/*.js` → `dist`. */
+function patternBase(pattern: string): string {
+  const head = pattern.slice(0, pattern.indexOf("*"));
+  return head.slice(0, Math.max(head.lastIndexOf("/"), 0));
+}
+
+/**
+ * **A target the manifest declares and the disk does not have: the package unbuilt, or the import mistyped.**
+ *
+ * A key of its own is the package's word that the file exists, so its absence is the package's — unbuilt,
+ * or a broken install. A pattern says nothing of the sort: `./src/*` matches `./src/capabilty` as readily as
+ * `./src/capability`. What tells them apart is the directory the pattern expands under. With `dist` absent
+ * the package was never built, and every import of it fails the same way whatever was typed; with `dist`
+ * there, the build ran and this file is not in it, so the import names a path the package does not have.
+ * A file deleted from a built `dist` reads as the second, and its remedy — check the version you have —
+ * still leads to a reinstall.
+ */
+function exportedKind(found: ExportedTarget, installed: InstalledPackage): "package-entry" | "package-subpath" {
+  if (found.under === undefined) return "package-entry";
+  return installed.has(found.under) ? "package-subpath" : "package-entry";
 }
 
 /** One `exports` target, followed through conditions and fallbacks to the path an import takes. */
@@ -340,7 +477,7 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
   const unloadable = /Failed to resolve entry for package "([^"]+)"/.exec(message)?.[1];
   if (unloadable !== undefined) {
     const from = referrer ?? (options.relativeTo === undefined ? undefined : `${options.relativeTo}/package.json`);
-    const declared = from === undefined ? undefined : options.entry?.(unloadable, from);
+    const declared = from === undefined ? undefined : declaredBy(options, unloadable, from);
     return { kind: declared === null ? "package-subpath" : "package-entry", package: unloadable, shown: unloadable };
   }
 
@@ -366,7 +503,7 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
     // package's bare name, and whether it declared that path is the manifest's to say.
     const entry = /^Cannot find package '/.test(message) ? packageAt(specifier) : undefined;
     if (entry !== undefined) {
-      const declared = options.entry?.(entry.name, `${entry.dir}/package.json`);
+      const declared = declaredBy(options, entry.name, `${entry.dir}/package.json`);
       return { kind: declared === null ? "package-subpath" : "package-entry", package: entry.name, shown: entry.name };
     }
     return atPath(specifier, referrer, options);
@@ -382,10 +519,19 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
       : { kind: "undetermined", package: pkg, shown: specifier };
   }
   if (!options.installed(pkg, referrer)) return { kind: "package", package: pkg, shown: pkg };
-  // Installed, and Bun says no more. By its bare name, the manifest says whether an entry was declared.
-  const declared = bare ? options.entry?.(pkg, referrer) : undefined;
-  return typeof declared === "string"
-    ? { kind: "package-entry", package: pkg, shown: pkg }
+  // Installed, and Bun and Vite say no more. The manifest says whether the import was declared: by its bare
+  // name, an entry; by a path, a key or a pattern in `exports` — and then whether its file was built.
+  const installed = options.entry?.(pkg, referrer);
+  if (bare) {
+    const declared = installed === undefined ? undefined : declaredEntry(installed.manifest);
+    return typeof declared === "string"
+      ? { kind: "package-entry", package: pkg, shown: pkg }
+      : { kind: "package-subpath", package: pkg, shown: specifier };
+  }
+  const exported =
+    installed === undefined ? undefined : exportedTarget(installed.manifest, `./${specifier.slice(pkg.length + 1)}`);
+  return installed !== undefined && exported !== undefined && exported !== null
+    ? { kind: exportedKind(exported, installed), package: pkg, shown: specifier }
     : { kind: "package-subpath", package: pkg, shown: specifier };
 }
 
@@ -430,11 +576,19 @@ function atPath(
     const shown = inPackage.rest === "" ? inPackage.name : `${inPackage.name}/${inPackage.rest}`;
     const own = referrer !== undefined && packageAt(referrer)?.name === inPackage.name;
     if (own) return { kind: "package-file", package: inPackage.name, shown };
-    // Node resolves a bare name through `exports` and reports the file it landed on, so the path is the
+    // Node resolves an import through `exports` and reports the file it landed on, so the path is the
     // package's declared entry when the manifest names it — and the import was the bare name, not this.
-    const declared = options.entry?.(inPackage.name, `${inPackage.dir}/package.json`);
+    const installed = options.entry?.(inPackage.name, `${inPackage.dir}/package.json`);
+    const declared = installed === undefined ? undefined : declaredEntry(installed.manifest);
     if (typeof declared === "string" && isEntry(inPackage.rest, declared)) {
       return { kind: "package-entry", package: inPackage.name, shown: inPackage.name };
+    }
+    // Or a deep import an `exports` key or pattern led there: shown as it was written, never as the file.
+    const written = installed === undefined ? undefined : exportedSubpath(installed.manifest, inPackage.rest);
+    if (installed !== undefined && written !== undefined) {
+      const subpath = written.subpath.replace(/^\.\/?/, "");
+      const as = subpath === "" ? inPackage.name : `${inPackage.name}/${subpath}`;
+      return { kind: exportedKind(written, installed), package: inPackage.name, shown: as };
     }
     return { kind: "package-subpath", package: inPackage.name, shown };
   }
@@ -582,9 +736,15 @@ function remedy(found: Located, owner: string | undefined): string {
         ? `"${shown}" is not something the installed ${pkg} provides. Check the version of ${pkg} you have, or correct that import — ${NO_INSTALL}`
         : `${owner} imports "${shown}", which the installed ${pkg} does not provide. Bring ${owner} and ${pkg} to matching versions, or report this to its maintainer — ${NO_INSTALL}`;
     case "package-entry": {
-      const missing = `names an entry that is not there, so it is unbuilt or its install is broken. Rebuild ${pkg}, or remove it and install it again.`;
-      return owner === undefined || owner === pkg
-        ? `The installed ${pkg} ${missing}`
+      const fix = `so it is unbuilt or its install is broken. Rebuild ${pkg}, or remove it and install it again.`;
+      // A deep import is named as it was written: the path its `exports` maps it to is never shown.
+      const deep = shown !== undefined && shown !== pkg;
+      const missing = deep
+        ? `exports "${shown}" from a file that is not there, ${fix}`
+        : `names an entry that is not there, ${fix}`;
+      if (owner === undefined || owner === pkg) return `The installed ${pkg} ${missing}`;
+      return deep
+        ? `${owner} imports "${shown}", and the installed ${pkg} exports it from a file that is not there, ${fix}`
         : `${owner} imports "${pkg}", and the installed ${pkg} ${missing}`;
     }
     case "package-file":
@@ -610,4 +770,73 @@ function remedy(found: Located, owner: string | undefined): string {
     case "unnamed":
       return "An import does not resolve. Check the imports, then install the project's dependencies (bun install).";
   }
+}
+
+/** A package's file that would not load: the package it is in, and the one sentence for it. */
+export interface PackageLoadFailure {
+  /** The installed package whose own file threw. Never the loader. */
+  owner: string;
+  /** The one sentence every surface puts in its `action`. Names the package, never a path. */
+  remedy: string;
+}
+
+/** What Node says of code whose syntax contradicts the module type its package declares. */
+const MODULE_TYPE =
+  / is not defined in ES module scope|Cannot use import statement outside a module|Unexpected token 'export'|Cannot use 'import\.meta' outside a module/;
+
+/**
+ * **A file inside an installed package would not load, so the package is named and never the config.**
+ *
+ * A `"type"` its code contradicts — `module` over `module.exports`, `commonjs` over `import` — throws from
+ * inside that package, on Node and through Vite's runner alike, as a `ReferenceError` or a `SyntaxError`.
+ * Unclassified, the first read as *the config threw while loading* and the second as *the config does not
+ * parse*: the adopter told to fix a file that is fine. A package's file that does not parse at all is the
+ * same fault in the same place, and is named the same way.
+ *
+ * **The file is the one the error was thrown in, and only that one.** Node heads a compile error with the
+ * file and line it could not compile; any other error's first stack frame is where it was thrown. Any later
+ * frame is a caller, and a caller in a package is the config calling into it — so a package's deliberate
+ * throw, which the config provoked, is never laid at the package's door. Only errors a module throws while
+ * it is loaded are read: a `SyntaxError`, and a `ReferenceError` for a CommonJS global in a module's scope.
+ *
+ * `undefined` when the cause is not one, or was thrown in the adopter's own file — that stays theirs.
+ */
+export function packageLoadFailure(
+  wrapped: unknown,
+  options: Pick<UnresolvedImportOptions, "loader"> = {},
+): PackageLoadFailure | undefined {
+  const cause = rootCause(wrapped);
+  const typeMismatch = MODULE_TYPE.test(causeMessage(cause) ?? "");
+  if (!typeMismatch && prop(cause, "name") !== "SyntaxError") return undefined;
+  const owner = ownerOf(thrownIn(cause), options.loader);
+  if (owner === undefined) return undefined;
+  const check = `Check the version of ${owner} you have, or report this to its maintainer — ${NO_INSTALL}`;
+  return {
+    owner,
+    remedy: typeMismatch
+      ? `The installed ${owner} does not load as the module type its package.json declares. ${check}`
+      : `The installed ${owner} does not parse. ${check}`,
+  };
+}
+
+/**
+ * The file an error was thrown in, from its stack: the file and line Node heads a compile error with, or
+ * else the first frame. **Module-private**, like {@link importerPath}: it is an absolute path.
+ */
+function thrownIn(cause: unknown): string | undefined {
+  const stack = prop(cause, "stack");
+  if (typeof stack !== "string") return undefined;
+  const lines = stack.split("\n");
+  const head = /^(.+):\d+$/.exec(lines[0] ?? "")?.[1];
+  if (head !== undefined && (head.startsWith("file:") || ABSOLUTE.test(head))) return locationPath(head);
+  const frame = lines.find((line) => /^\s+at /.test(line));
+  if (frame === undefined) return undefined;
+  const at = /\((.+):\d+:\d+\)$/.exec(frame)?.[1] ?? /^\s+at (.+):\d+:\d+$/.exec(frame)?.[1];
+  return at === undefined ? undefined : locationPath(at);
+}
+
+/** A stack location as a path: a `file:` URL converted, an absolute path kept, anything else — `node:` — none. */
+function locationPath(location: string): string | undefined {
+  if (location.startsWith("file:")) return urlPath(location);
+  return ABSOLUTE.test(location) ? location : undefined;
 }

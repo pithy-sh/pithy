@@ -3,7 +3,7 @@
 
 import { causeMessage, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { type UnresolvedImport, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
+import { packageLoadFailure, type UnresolvedImport, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { entryBeside, installedBeside, packageInstalledFrom } from "../project/kitResolve";
 import { capabilityNotComposed } from "./notComposed";
@@ -127,6 +127,13 @@ export function classifyCapabilityLoadFailure(
     loader: "@pithy-sh/cli",
   });
   if (unresolved !== undefined) return unresolvedFailure(capability, pkg, unresolved, projectDir, failure);
+
+  // A file inside an installed package that would not load names that package — the capability's own, or
+  // one it imports — rather than the capability this loader happened to be loading (#709).
+  const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/cli" });
+  if (foreign !== undefined) {
+    return failure("broken", `The ${capability} capability is installed and will not load.`, foreign.remedy);
+  }
 
   if (isParseError(cause)) {
     // `safeReason` can answer nothing: a diagnostic that carries a path, a stack frame or a newline is not

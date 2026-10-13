@@ -16,7 +16,7 @@ import {
   NotFoundError,
   PreconditionFailedError,
 } from "@pithy-sh/core/src/error/pithyError";
-import { unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
+import { packageLoadFailure, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
@@ -544,14 +544,14 @@ function isProjectConfig(value: unknown): value is ProjectConfig {
 }
 
 /**
- * Why a `pithy.config.ts` would not import. Three causes an adopter fixes three different ways, plus the
- * honest fourth: the classifier does not recognize this one and will not invent a remedy for it.
+ * Why a `pithy.config.ts` would not import. Four causes fixed four different ways, plus the honest fifth:
+ * the classifier does not recognize this one and will not invent a remedy for it.
  */
-export type ConfigLoadFailureKind = "unresolved-import" | "parse-error" | "threw-on-load" | "unknown";
+export type ConfigLoadFailureKind = "unresolved-import" | "package-load" | "parse-error" | "threw-on-load" | "unknown";
 
 /** A classified config-load failure: what went wrong, and the one sentence that fits it. */
 export interface ConfigLoadFailure {
-  /** Which of the four causes this is. */
+  /** Which of the five causes this is. */
   kind: ConfigLoadFailureKind;
   /** The `action` line for the refusal — chosen from the failure, never asserted over it. */
   action: string;
@@ -592,6 +592,8 @@ function isParseError(cause: unknown): boolean {
  *
  * - **unresolved-import** — core's `unresolvedImport` names the import and whose it is, and says to install
  *   only where installing helps. This surface keeps no rule of its own about imports (#709).
+ * - **package-load** — core's `packageLoadFailure`: a file inside an installed package threw as it loaded —
+ *   a `"type"` its code contradicts, or code that does not parse. That package is named, never the config.
  * - **parse-error** — the parser's reason and position. It says installing will not help, because the
  *   adopter has read the opposite for as long as this refusal has existed.
  * - **threw-on-load** — the config's own error, which is neither of the above.
@@ -616,6 +618,10 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
     loader: "@pithy-sh/cli",
   });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
+
+  // A package's own file that would not load is the package's, before it can read as the config's (#709).
+  const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/cli" });
+  if (foreign !== undefined) return { kind: "package-load", action: foreign.remedy };
 
   if (isParseError(cause)) {
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is

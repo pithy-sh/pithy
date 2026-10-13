@@ -53,6 +53,8 @@ const IMPORTS = {
   mainMissing: "nomain",
   mainDirectory: "maindir",
   exportsMissing: "exmiss",
+  exportsSubpathMissing: "patpkg/src/capability",
+  patternTypo: "patbuilt/src/capabilty",
   builtin: "node:nope",
   builtinSubpath: "node:fs/promsies",
   bunScheme: "bun:nope",
@@ -65,6 +67,8 @@ const IMPORTS = {
   dependencyAbsent: "deppkg",
   dependencyBuiltin: "builtinpkg",
   dependencyEntryMissing: "entrydep",
+  typeModuleCommonjsCode: "cjsinesm",
+  typeCommonjsModuleCode: "esmincjs",
 } as const;
 
 type Case = keyof typeof IMPORTS;
@@ -77,8 +81,13 @@ const CASES = Object.keys(IMPORTS) as Case[];
  * differently and Bun words them all as an absent package: an `exports` map with no `"."`, one whose `"."`
  * matches no condition an ESM import uses, no `exports` and no `main` with no `index.js`, and three that
  * **declare** an entry whose file is missing — `main` to a file, `main` to a directory, and `exports` —
- * which is an unbuilt package or a broken install. A `"type"` that does not match the code is not here:
- * it is a `ReferenceError` or `SyntaxError` from inside the package, not a resolution failure.
+ * which is an unbuilt package or a broken install. A deep import is here twice through the `exports`
+ * pattern every `@pithy-sh/*` package declares (`./src/*` → `./dist/*.js`): once with no `dist` at all,
+ * which is that package unbuilt, and once with `dist` built and the import misspelled, which is not.
+ *
+ * And two packages whose `"type"` does not match their code: `module` over `module.exports`, and
+ * `commonjs` over `import`. Neither is a resolution failure — Node throws a `ReferenceError` and a
+ * `SyntaxError` from inside the package — but neither is the config's own throw or its own parse error.
  */
 const TREE: Record<string, string> = {
   "package.json": '{"name":"proj","type":"module"}',
@@ -112,6 +121,16 @@ const TREE: Record<string, string> = {
   "node_modules/builtinpkg/index.js": 'import "node:nope";',
   "node_modules/entrydep/package.json": '{"name":"entrydep","type":"module","main":"index.js"}',
   "node_modules/entrydep/index.js": 'import "exmiss";',
+  "node_modules/patpkg/package.json":
+    '{"name":"patpkg","type":"module","exports":{"./src/*":{"types":"./dist/*.d.ts","default":"./dist/*.js"}}}',
+  "node_modules/patpkg/src/capability.ts": "export default 1;",
+  "node_modules/patbuilt/package.json":
+    '{"name":"patbuilt","type":"module","exports":{"./src/*":{"types":"./dist/*.d.ts","default":"./dist/*.js"}}}',
+  "node_modules/patbuilt/dist/capability.js": "export default 1;",
+  "node_modules/cjsinesm/package.json": '{"name":"cjsinesm","type":"module","main":"index.js"}',
+  "node_modules/cjsinesm/index.js": "module.exports = 1;",
+  "node_modules/esmincjs/package.json": '{"name":"esmincjs","type":"commonjs","main":"index.js"}',
+  "node_modules/esmincjs/index.js": 'import { sep } from "node:path";\nexport default sep;\n',
 };
 
 const INSTALL = "Install the project's dependencies (bun install)";
@@ -124,6 +143,10 @@ const noEntry = (pkg: string) =>
 /** An installed package whose package.json names an entry that is not on disk. */
 const entryMissing = (pkg: string) =>
   `The installed ${pkg} names an entry that is not there, so it is unbuilt or its install is broken. Rebuild ${pkg}, or remove it and install it again.`;
+
+/** An installed package whose code and declared `"type"` disagree, named as the one that will not load. */
+const typeMismatch = (pkg: string) =>
+  `The installed ${pkg} does not load as the module type its package.json declares. Check the version of ${pkg} you have, or report this to its maintainer — ${NO_INSTALL}`;
 
 /** Where a cause came from: the runtime and loader that threw it. */
 type Source = "bun" | "node" | "vite";
@@ -144,7 +167,7 @@ const SOURCE_NAME: Record<Source, string> = {
  * the plugin cannot either. Bun 1.4.2 reports `bun:nope` as a package called `nope`, so on Bun it cannot be
  * told from an absent package.
  */
-const REMEDIES: Record<Case, string | ({ default: string } & Partial<Record<Source, string>>)> = {
+const REMEDIES: Record<Case, string | ({ default: string } & Partial<Record<Source, string | null>>)> = {
   absent: `"absentpkg" is not installed. ${INSTALL}, or correct that import.`,
   absentDeep: `"absentpkg" is not installed. ${INSTALL}, or correct that import.`,
   subpath: `"fakepkg/src/nope" is not something the installed fakepkg provides. Check the version of fakepkg you have, or correct that import — ${NO_INSTALL}`,
@@ -156,6 +179,8 @@ const REMEDIES: Record<Case, string | ({ default: string } & Partial<Record<Sour
   mainMissing: entryMissing("nomain"),
   mainDirectory: entryMissing("maindir"),
   exportsMissing: entryMissing("exmiss"),
+  exportsSubpathMissing: `The installed patpkg exports "patpkg/src/capability" from a file that is not there, so it is unbuilt or its install is broken. Rebuild patpkg, or remove it and install it again.`,
+  patternTypo: `"patbuilt/src/capabilty" is not something the installed patbuilt provides. Check the version of patbuilt you have, or correct that import — ${NO_INSTALL}`,
   builtin: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   builtinSubpath: `"node:fs/promsies" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   bunScheme: {
@@ -175,11 +200,24 @@ const REMEDIES: Record<Case, string | ({ default: string } & Partial<Record<Sour
     vite: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   },
   dependencyEntryMissing: `entrydep imports "exmiss", and ${entryMissing("exmiss").replace("The installed exmiss", "the installed exmiss")}`,
+  // Bun loads both: it reads a module's syntax, not its package's "type". Pinned, so a Bun that starts
+  // refusing them shows up here as a row to fill in.
+  typeModuleCommonjsCode: { default: typeMismatch("cjsinesm"), bun: null },
+  typeCommonjsModuleCode: { default: typeMismatch("esmincjs"), bun: null },
 };
 
-function remedyFor(name: Case, source: Source): string {
+/** The kind the config loader and the vite plugin report. Every other case is an import that did not resolve. */
+const KINDS: Partial<Record<Case, string>> = {
+  typeModuleCommonjsCode: "package-load",
+  typeCommonjsModuleCode: "package-load",
+};
+
+/** The remedy for a case from a source, or `null` where that runtime loads the case cleanly. */
+function remedyFor(name: Case, source: Source): string | null {
   const expected = REMEDIES[name];
-  return typeof expected === "string" ? expected : (expected[source] ?? expected.default);
+  if (typeof expected === "string") return expected;
+  const own = expected[source];
+  return own === undefined ? expected.default : own;
 }
 
 /** Stage {@link TREE} and one case file per import in a fresh directory, and return its real path. */
@@ -259,8 +297,9 @@ async function underBun(): Promise<Record<string, Verdicts | null>> {
 
 /**
  * **Node**: a Node child imports every case and hands back every string the thrown error carries — its
- * own properties and its prototypes', and the same of an `AggregateError`'s `errors` and of a `cause` —
- * which is everything a classifier could read. Rebuilt here as an `Error` with those properties.
+ * own properties and its prototypes', its `stack` among them, and the same of an `AggregateError`'s
+ * `errors` and of a `cause` — which is everything a classifier could read. Rebuilt here as an `Error` with
+ * those properties. The `stack` is the one place Node names the file a `"type"` mismatch threw from.
  */
 async function underNode(): Promise<Record<string, Verdicts | null>> {
   const script = join(scripts, "node-causes.mjs");
@@ -272,7 +311,7 @@ async function underNode(): Promise<Record<string, Verdicts | null>> {
       "  const out = {};",
       "  for (let o = e; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {",
       "    for (const k of Object.getOwnPropertyNames(o)) {",
-      '      if (k in out || k === "stack" || k === "constructor") continue;',
+      '      if (k in out || k === "constructor") continue;',
       "      let v; try { v = e[k]; } catch { continue; }",
       '      if (typeof v === "string") out[k] = v;',
       '      else if (k === "errors" && Array.isArray(v) && depth < 2) out[k] = v.map((x) => dump(x, depth + 1));',
@@ -338,13 +377,18 @@ describe("every case, thrown by each surface's real loader, says one thing", () 
     for (const source of SOURCES) {
       test(`${name}, thrown by ${SOURCE_NAME[source]}`, () => {
         const said = verdicts[source]?.[name];
-        expect(said, "the case imported cleanly, so nothing was tested").toBeTruthy();
         const remedy = remedyFor(name, source);
+        if (remedy === null) {
+          expect(said, "this runtime loads the case, and the table says so").toBeNull();
+          return;
+        }
+        expect(said, "the case imported cleanly, so nothing was tested").toBeTruthy();
         for (const [surface, { kind, action }] of Object.entries(said ?? {})) {
           expect(action, surface).toBe(remedy);
-          // Read as an import that did not resolve: never the config's own throw, never a parse error.
-          if (surface !== CAPABILITY_SURFACE) expect(kind, surface).toBe("unresolved-import");
+          // Never the config's own throw, never a parse error: the failure is a package's, or an import's.
+          if (surface !== CAPABILITY_SURFACE) expect(kind, surface).toBe(KINDS[name] ?? "unresolved-import");
           expect(kind, surface).not.toBe("unknown");
+          expect(action, surface).not.toMatch(/threw while loading|does not parse/);
           // No rendered field carries a path or a URL, whatever the loader handed over.
           expect(action, surface).not.toContain(root);
           expect(action, surface).not.toContain("file:");
@@ -359,10 +403,17 @@ describe("every case, thrown by each surface's real loader, says one thing", () 
   test("an install is named only where an install can help", () => {
     const installs = new Set<Case>(["absent", "absentDeep", "dependencyAbsent"]);
     // An entry that is not on disk is that one package's to rebuild or reinstall, not the project's.
-    const reinstalls = new Set<Case>(["mainMissing", "mainDirectory", "exportsMissing", "dependencyEntryMissing"]);
+    const reinstalls = new Set<Case>([
+      "mainMissing",
+      "mainDirectory",
+      "exportsMissing",
+      "exportsSubpathMissing",
+      "dependencyEntryMissing",
+    ]);
     for (const name of CASES) {
       for (const source of SOURCES) {
         const remedy = remedyFor(name, source);
+        if (remedy === null) continue;
         // Bun 1.4.2's `bun:nope` is the one a runtime takes out of our hands: see REMEDIES.
         const says = installs.has(name) || (name === "bunScheme" && source === "bun");
         expect(remedy.includes("bun install"), `${name} from ${source}`).toBe(says);
@@ -411,6 +462,9 @@ describe("the gate: one classifier", () => {
     if (code.includes('"ResolveMessage"')) found.push("ResolveMessage");
     if (code.includes("Cannot find (")) found.push("a resolver's sentence");
     if (code.includes('is not defined by "exports"/')) found.push("an exports-map sentence");
+    // A package whose "type" its code contradicts is core's to name too, by the same rule.
+    if (code.includes("in ES module scope")) found.push("a module-type sentence");
+    if (code.includes("Cannot use import statement")) found.push("a module-type sentence");
     return found.length === 0 ? null : found.join(", ");
   }
 

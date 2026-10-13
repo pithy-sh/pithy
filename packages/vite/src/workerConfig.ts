@@ -7,7 +7,12 @@ import { dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { nodeModulesProbe, packageEntryProbe, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
+import {
+  nodeModulesProbe,
+  packageEntryProbe,
+  packageLoadFailure,
+  unresolvedImport,
+} from "@pithy-sh/core/src/error/unresolved";
 import { runnerImport } from "vite";
 
 /** The default export of a Worker's `pithy.config.ts`, before it is trusted. */
@@ -40,7 +45,8 @@ export interface LoadedWorkerConfig {
  * path or a stack frame is a property of the string and not of the surface quoting it — three
  * near-verbatim copies of that filter meant the hole #223 found in it had to be closed three times (#228).
  * An import that did not resolve is the third: which kind, whose, and what to do are `unresolvedImport`'s,
- * because three surfaces deciding it kept giving three different remedies (#709).
+ * because three surfaces deciding it kept giving three different remedies (#709). A file inside an
+ * installed package that throws as it loads is the fourth, `packageLoadFailure`'s, for the same reason.
  *
  * What stays restated here is the rest of the policy: a parse error and the config's own throw. This
  * plugin still cannot import the CLI's.
@@ -48,6 +54,8 @@ export interface LoadedWorkerConfig {
 export type WorkerConfigFailureKind =
   /** An import in the config does not resolve. Which cause it was decides whether installing helps. */
   | "unresolved-import"
+  /** A file inside an installed package would not load: its `"type"` contradicts its code, or it does not parse. */
+  | "package-load"
   /** The file does not parse. Installing will not help, and the adopter has read the opposite for years. */
   | "parse-error"
   /** The config loaded far enough to throw its own error. Neither of the above. */
@@ -117,6 +125,10 @@ export function classifyWorkerConfigFailure(wrapped: unknown, relativeTo?: strin
   // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
   const unresolved = unresolvedImport(cause, { installed, entry, relativeTo, loader: "@pithy-sh/vite" });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
+
+  // A package's own file that would not load is the package's, before it can read as the config's (#709).
+  const foreign = packageLoadFailure(cause, { loader: "@pithy-sh/vite" });
+  if (foreign !== undefined) return { kind: "package-load", action: foreign.remedy };
 
   if (isParseError(cause)) {
     // Both of these can answer "nothing": a diagnostic that carries a path, a stack frame or a newline is

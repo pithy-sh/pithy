@@ -4,6 +4,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { declaredEntry, exportedTarget } from "@pithy-sh/core/src/error/unresolved";
 import { afterAll, describe, expect, test } from "vitest";
 import { entryBeside, installedBeside } from "./kitResolve";
 
@@ -69,8 +70,16 @@ describe("entryBeside", () => {
   // The two Bun 1.4.2 cannot tell apart, read from disk: the kit's own packages declare no bare entry, and
   // an unbuilt package declares one it does not carry (#709).
   test("reads the entry an installed package declares, or that it declares none", () => {
-    expect(entryBeside("@pithy-sh/core", referrer)).toBeNull();
-    expect(entryBeside("unbuilt", referrer)).toBe("dist/index.js");
+    expect(declaredEntry(entryBeside("@pithy-sh/core", referrer)?.manifest)).toBeNull();
+    expect(declaredEntry(entryBeside("unbuilt", referrer)?.manifest)).toBe("dist/index.js");
+  });
+
+  // Every deep import of an unbuilt kit package matches `./src/*` and lands in a `dist` that is not there.
+  test("reads where a deep import leads, and whether the directory it expands under is on disk", () => {
+    const core = entryBeside("@pithy-sh/core", referrer);
+    expect(exportedTarget(core?.manifest, "./src/capability")).toEqual({ target: "dist/capability.js", under: "dist" });
+    expect(core?.has("dist")).toBe(false);
+    expect(core?.has("package.json")).toBe(true);
   });
 
   test("a package that is not installed declares nothing it can be asked about", () => {
