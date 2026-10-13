@@ -79,3 +79,51 @@ describe("waitForStable", () => {
     ).rejects.toThrow(/waiting for the list to settle across 3 reads\. Last read: \["b"\]/);
   });
 });
+
+// A live test makes several waits in a row, and each one's own budget is no bound on their sum. When the sum
+// outran the test's timeout, vitest abandoned the body mid-wait: the failure named no step, and the teardown
+// that deletes the index never ran (#709). A shared deadline makes the step in progress fail by name instead.
+describe("a deadline shared across waits", () => {
+  it("cuts waitFor short at the deadline and says the shared budget ran out", async () => {
+    const started = Date.now();
+    await expect(
+      waitFor("the late upsert to be queryable", async () => false, {
+        ...fast,
+        timeoutMs: 60_000,
+        deadline: Date.now() + 20,
+      }),
+    ).rejects.toThrow(/waiting for the late upsert to be queryable.*shared deadline/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("cuts waitForStable short at the deadline, naming the step and the last read", async () => {
+    const started = Date.now();
+    await expect(
+      waitForStable(
+        "the late `stage` filter",
+        async () => ["b"],
+        (value) => value.includes("a"),
+        {
+          ...fast,
+          timeoutMs: 60_000,
+          deadline: Date.now() + 20,
+        },
+      ),
+    ).rejects.toThrow(
+      /waiting for the late `stage` filter to settle across 3 reads.*shared deadline.*Last read: \["b"\]/,
+    );
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("keeps the step's own budget when the deadline is further away", async () => {
+    await expect(
+      waitFor("index x to be addressable", async () => false, { ...fast, timeoutMs: 5, deadline: Date.now() + 60_000 }),
+    ).rejects.toThrow(/^Timed out after \d+s waiting for index x to be addressable\. Cloudflare applies/);
+  });
+
+  it("still reads once when the deadline has already passed, so a ready condition is not failed unread", async () => {
+    const reads = sequence([true]);
+    await waitFor("the thing", reads.read, { ...fast, deadline: Date.now() - 1 });
+    expect(reads.calls()).toBe(1);
+  });
+});

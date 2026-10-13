@@ -14,6 +14,12 @@
  * later with nothing else running, then both again. So {@link waitForStable} waits for {@link STABLE_READS}
  * agreeing reads in a row and hands back that snapshot, and a caller asserts against the snapshot rather
  * than a fresh read, which can disagree with the one before it.
+ *
+ * **A test that waits several times shares one deadline across them.** Each wait's own budget bounds that
+ * wait and nothing else, so a test making eight of them in a row could outrun its vitest timeout with every
+ * step inside budget. Vitest then abandoned the body mid-poll: the failure said only "Test timed out", and the
+ * teardown that deletes the index never ran (#709). Pass the same {@link SettleOptions.deadline} to every
+ * wait and the step in progress when it passes fails by name, inside the body, where the teardown still runs.
  */
 
 /** Ceiling for any one wait. Measured at 25-50s for a control-plane change, and about 30s for an upsert. */
@@ -36,6 +42,24 @@ export interface SettleOptions {
   intervalMs?: number;
   /** Agreeing reads in a row that count as settled, for {@link waitForStable}. Defaults to {@link STABLE_READS}. */
   stableReads?: number;
+  /**
+   * An absolute deadline (ms since the epoch) shared by every wait in a test. A wait gives up at whichever
+   * comes first, its own `timeoutMs` or this, and says which.
+   */
+  deadline?: number;
+}
+
+/** When a wait gives up, and the clause its timeout message ends the step name with. */
+function limitOf(options: SettleOptions, started: number): { deadline: number; why: string } {
+  const own = started + (options.timeoutMs ?? SETTLE_TIMEOUT_MS);
+  if (options.deadline !== undefined && options.deadline < own) {
+    return { deadline: options.deadline, why: " (the shared deadline for this test ran out)" };
+  }
+  return { deadline: own, why: "" };
+}
+
+function seconds(ms: number): number {
+  return Math.round(ms / 1000);
 }
 
 function pause(ms: number): Promise<void> {
@@ -47,13 +71,13 @@ function pause(ms: number): Promise<void> {
  * reader nothing; naming the step tells them whether Cloudflare was slow or something is actually broken.
  */
 export async function waitFor(what: string, ready: () => Promise<boolean>, options: SettleOptions = {}): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? SETTLE_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  const { deadline, why } = limitOf(options, started);
   for (;;) {
     if (await ready()) return;
     if (Date.now() >= deadline) {
       throw new Error(
-        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${what}. Cloudflare applies this change asynchronously — this is either a slower-than-usual apply or a real failure.`,
+        `Timed out after ${seconds(Date.now() - started)}s waiting for ${what}${why}. Cloudflare applies this change asynchronously — this is either a slower-than-usual apply or a real failure.`,
       );
     }
     await pause(options.intervalMs ?? POLL_INTERVAL_MS);
@@ -70,9 +94,9 @@ export async function waitForStable<T>(
   settled: (value: T) => boolean,
   options: SettleOptions = {},
 ): Promise<T> {
-  const timeoutMs = options.timeoutMs ?? SETTLE_TIMEOUT_MS;
+  const started = Date.now();
   const needed = options.stableReads ?? STABLE_READS;
-  const deadline = Date.now() + timeoutMs;
+  const { deadline, why } = limitOf(options, started);
   let agreed = 0;
   let last = await read();
   for (;;) {
@@ -80,7 +104,7 @@ export async function waitForStable<T>(
     if (agreed >= needed) return last;
     if (Date.now() >= deadline) {
       throw new Error(
-        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for ${what} to settle across ${needed} reads. Last read: ${JSON.stringify(last)}.`,
+        `Timed out after ${seconds(Date.now() - started)}s waiting for ${what} to settle across ${needed} reads${why}. Last read: ${JSON.stringify(last)}.`,
       );
     }
     await pause(options.intervalMs ?? POLL_INTERVAL_MS);
