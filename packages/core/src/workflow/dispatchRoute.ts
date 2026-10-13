@@ -4,6 +4,7 @@
 import { zValidator } from "@hono/zod-validator";
 import type { Context, Hono, Next } from "hono";
 import type { PithyHonoEnv } from "../capability/capability";
+import { commandName } from "../cli/command";
 import { type AmbientEnv, ambientEnv, compositionEnvironment } from "../env/ambient";
 import { ForbiddenError, PithyError } from "../error/pithyError";
 import { validationHook } from "../http/validation";
@@ -104,7 +105,7 @@ function specForBinding(registry: WorkflowRegistry, binding: string): Registered
 function refuseOutsideDev(capability: string, environment: string | undefined): ForbiddenError {
   return new ForbiddenError({
     message: `Workflow dispatch over HTTP is served only in the ${DISPATCH_ENVIRONMENT} environment.`,
-    action: `Dispatch through the cross-script ${capability} Workflow binding, or run this host under pithy dev.`,
+    action: `Dispatch through the cross-script ${capability} Workflow binding, or run this host under ${commandName("dev")}.`,
     detail: `The composition's ENVIRONMENT is ${environment ?? "unstamped"}.`,
   });
 }

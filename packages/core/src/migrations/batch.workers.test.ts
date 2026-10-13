@@ -270,7 +270,7 @@ describe("failure semantics", () => {
     // The reason has to survive batching: it is the actionable half, and `detail` is never rendered.
     expect(error.payload.message).toContain('Couldn\'t apply "0000_core_0001_halfway" on DB.');
     expect(error.payload.message).toContain("nowhere");
-    expect(error.payload.action).toBe("Fix the migration. Run pithy migrate again.");
+    expect(error.payload.action).toBe("Fix the migration, then run this again.");
   });
 
   test("earlier migrations stay applied and stay recorded — nothing crosses the boundary", async () => {

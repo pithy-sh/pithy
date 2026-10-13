@@ -3,6 +3,8 @@
 
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
+import { commandName, remedy } from "../../cli/command";
+import { type AmbientEnv, compositionEnvironment } from "../../env/ambient";
 import { PithyError } from "../../error/pithyError";
 import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
@@ -138,7 +140,7 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
     if (!verify) {
       const denial = new ControlPlaneNotConnectedError({
         message: "This deployment does not accept management-client calls.",
-        action: "Add `controlplane()` to this Worker's pithy.config.ts, then run pithy dashboard connect.",
+        action: `Add \`controlplane()\` to this Worker's pithy.config.ts, then ${connectStep(compositionEnvironment(c.env as unknown as AmbientEnv))}.`,
         detail: "no control-plane verifier on the request — the controlplane capability is not composed",
       });
       await auditDenial(c, requirement, denial);
@@ -220,4 +222,14 @@ async function auditDenial(
     },
     c.var.log,
   );
+}
+
+/**
+ * The step that connects a management client, as this deployed Worker can name it: with its own environment when
+ * it knows it, and never with a Worker — it cannot know the `apps/` directory that provisioned it (#711).
+ */
+function connectStep(env: string | undefined): string {
+  if (env === undefined)
+    return `connect one with ${commandName("dashboard connect")}, naming this environment with --env`;
+  return remedy("dashboard connect", { flags: { "--env": env } }, { runtime: true }).say((command) => `run ${command}`);
 }

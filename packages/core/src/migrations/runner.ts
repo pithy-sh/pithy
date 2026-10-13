@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Kysely, sql } from "kysely";
 import { type MigrationProvider, type MigrationResult, Migrator, NO_MIGRATIONS } from "kysely/migration";
+import { pithyCommand } from "../cli/command";
 import { causeMessage } from "../error/cause";
 import { InternalError, ValidationError } from "../error/pithyError";
 import { batchedProvider } from "./batch";
@@ -163,7 +164,7 @@ export async function runMigrations(
           // records nothing and prints `Nothing to migrate.` while the group stays lost. The honest fact is
           // what these migrations can no longer be — the group they were applied under is gone (#694).
           action:
-            "Check the database is writable. A second pithy migrate records nothing for them, so they cannot be reversed by group.",
+            "Check the database is writable. A second run records nothing for them, so they cannot be reversed by group.",
         },
         { cause },
       );
@@ -280,7 +281,7 @@ export async function reverseMigrationGroup(
     throw new InternalError({
       message: `Group "${step.group}" is not the top of ${target?.binding ?? "this database"}'s chain.`,
       detail: `${where(target)} ${position.state === "absent" ? "It records nothing under that group." : `Applied over it: ${overIt(position.above, position.ungrouped)}.`}`,
-      action: "Run pithy doctor to see where each database stands.",
+      action: `Run ${pithyCommand("doctor")} to see where each database stands.`,
     });
   }
   // What comes down is what the ledger says this group holds, never the caller's list: a step naming a
@@ -321,7 +322,7 @@ export async function reverseMigrationGroup(
         throw new InternalError({
           message: `Reversing group "${step.group}"${on(target)} would have reversed "${result.migrationName}", which is not in it.`,
           detail: `${where(target)} The group was not the top of this database's chain. Kysely steps down from the tip, so only the newest group can be reversed.`,
-          action: "Run pithy doctor to see where each database stands.",
+          action: `Run ${pithyCommand("doctor")} to see where each database stands.`,
         });
       }
       reversed.push(result);
@@ -452,7 +453,7 @@ export async function dropMigrations(
         {
           message: `Couldn't drop "${name}"${on(target)}. ${reasonOf(error)}`,
           detail: `${where(target)}${dropped.length ? ` Dropped before the failure: ${dropped.join(", ")}.` : ""}`,
-          action: "Fix the migration's down, or drop its table by hand. Run pithy remove --drop again.",
+          action: "Fix the migration's down, or drop its table by hand. Then run this again.",
         },
         { cause: error },
       );
@@ -466,7 +467,7 @@ const VOICE = {
   run: {
     failed: (key: string) => `Couldn't apply "${key}"`,
     fallback: "The migration run failed",
-    action: "Fix the migration. Run pithy migrate again.",
+    action: "Fix the migration, then run this again.",
   },
   rollback: {
     failed: (key: string) => `Couldn't roll back "${key}"`,
@@ -475,17 +476,17 @@ const VOICE = {
     // stepped a second migration back in every database that had already moved (#588). Re-running the
     // *same group* is the safe retry: each migration's group row is forgotten as it comes down, so a
     // second pass reverses what is left and nothing else. The group is on the command, not here.
-    action: "Fix the migration's down. Run pithy doctor to see where each database stands.",
+    action: `Fix the migration's down. Run ${pithyCommand("doctor")} to see where each database stands.`,
   },
   resetDown: {
     failed: (key: string) => `Couldn't roll back "${key}" during reset`,
     fallback: "The schema reset failed while rolling back",
-    action: "Fix the migration. Run pithy seed --redo again.",
+    action: "Fix the migration, then run this again.",
   },
   resetUp: {
     failed: (key: string) => `Couldn't reapply "${key}" during reset`,
     fallback: "The schema reset failed while reapplying",
-    action: "Fix the migration. Run pithy seed --redo again.",
+    action: "Fix the migration, then run this again.",
   },
 } as const;
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "../cli/command";
 import { InternalError, ValidationError } from "../error/pithyError";
 import type { WorkflowHostNameParts } from "../workflow/naming";
 import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMarker } from "./environment";
@@ -336,7 +337,7 @@ export function environmentScope(project: string, environment: string): Provisio
         throw new ValidationError({
           message: `The ${environment} Worker "${name}" is named the way a feature's Worker is.`,
           action: `Rename it in env.${environment}.name, or the Worker's top-level name, so it does not follow ${kebab(project)}- with f and a number.`,
-          detail: `${declared === undefined ? "Composed by wrangler from the deploy name" : `Declared in env.${environment}.name`}. A feature's Worker is <project>-f<issue>-<slug>-<app>, and \`pithy feature destroy\` deletes it by that exact name.`,
+          detail: `${declared === undefined ? "Composed by wrangler from the deploy name" : `Declared in env.${environment}.name`}. A feature's Worker is <project>-f<issue>-<slug>-<app>, and \`${commandName("feature destroy")}\` deletes it by that exact name.`,
         });
       }
       return name;

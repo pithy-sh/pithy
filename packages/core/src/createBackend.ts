@@ -14,6 +14,7 @@ import type {
 } from "./capability/capability";
 import { recordComposition } from "./capability/composition";
 import { validateBindings } from "./capability/validateBindings";
+import { pithyCommandOf } from "./cli/command";
 import { isControlPlaneCapability } from "./controlPlane/capability";
 import { allowedOriginSet, corsSurface, registerControlPlaneCors } from "./controlPlane/http/cors";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
@@ -135,7 +136,7 @@ export function createBackend<
       if (!present.has(dep)) {
         throw new ValidationError({
           message: `Capability "${cap.name}" requires the "${dep}" capability, which is not composed.`,
-          action: `Add ${dep}() to createBackend's capabilities (run \`pithy add ${dep}\`).`,
+          action: `Add ${dep}() to createBackend's capabilities (run \`${pithyCommandOf("add", { args: [dep], flags: { "--with-prerequisites": true } }, { runtime: true })}\`).`,
         });
       }
     }

@@ -85,7 +85,9 @@ describe("the declaration hangs off the capability", () => {
         local: () => hostEnvFindings(checkHostEnv(declaration, {}), "dev"),
       },
     });
-    expect(capability.settings?.local({ project: "acme", worker: "api", environments: [] })).toHaveLength(1);
+    expect(
+      capability.settings?.local({ project: "acme", worker: "api", workerDirectory: "api", environments: [] }),
+    ).toHaveLength(1);
     // Nothing declares an account tier by default — the tier that costs a call is opt-in.
     expect(capability.settings?.account).toBeUndefined();
   });

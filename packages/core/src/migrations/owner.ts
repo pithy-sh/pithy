@@ -101,7 +101,7 @@ async function currentOwner(db: Kysely<OwnerDatabase>): Promise<MigrationOwner |
 export function foreignOwnerRefusal(owner: string, project: string, binding: string | undefined): ConflictError {
   return new ConflictError({
     message: `${binding ?? "This database"} belongs to project "${owner}", not "${project}".`,
-    action: `Bind ${project} to its own database, or set the project name back to ${owner}. Run pithy migrate again.`,
+    action: `Bind ${project} to its own database, or set the project name back to ${owner}. Then run this again.`,
     detail: `Recorded owner "${owner}" in ${MIGRATION_OWNER_TABLE}.`,
   });
 }
@@ -161,7 +161,7 @@ export async function claimMigrationOwnership(
   if (!settled) {
     throw new ConflictError({
       message: `${options.binding ?? "This database"} could not be stamped as "${project}".`,
-      action: "Check the database is writable. Run pithy migrate again.",
+      action: "Check the database is writable, then run this again.",
       detail: `No row in ${MIGRATION_OWNER_TABLE} after the claim insert.`,
     });
   }

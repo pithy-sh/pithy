@@ -223,7 +223,7 @@ describe("runMigrations", () => {
     // The key, the database, and what the runtime actually said — all in the field that is rendered.
     // `boom` used to live in `detail` alone, which the terminal never prints (#282).
     expect(error.payload.message).toBe('Couldn\'t apply "0000_core_0002_boom" on DB. boom.');
-    expect(error.payload.action).toBe("Fix the migration. Run pithy migrate again.");
+    expect(error.payload.action).toBe("Fix the migration, then run this again.");
     // D1 applies migrations non-transactionally, so the error names what stuck.
     expect(error.payload.detail).toBe(
       'Database "app" on binding DB. Applied before the failure: "0000_core_0001_things".',
@@ -487,7 +487,7 @@ describe("runMigrations records the run's group", () => {
     // Not "run pithy migrate again to record the group": the second run has nothing pending, so it records
     // nothing and exits 0, and the operator reads that as the group having been recorded.
     expect((failure as InternalError).payload.action).toBe(
-      "Check the database is writable. A second pithy migrate records nothing for them, so they cannot be reversed by group.",
+      "Check the database is writable. A second run records nothing for them, so they cannot be reversed by group.",
     );
     // Which is the state the line has to be honest about: the schema is promoted, and nothing groups it.
     expect(await tableNames()).toEqual(["things", "widgets"]);

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommandOf } from "../cli/command";
 import { InternalError } from "../error/pithyError";
 import type { Capability } from "./capability";
 
@@ -90,7 +91,7 @@ export function composedCapability<T extends Capability>(name: string, is: (capa
       // missing-peer check names it: a capability name is a published part of this framework, and a
       // wiring fault that will not say which wire is a fault nobody can act on.
       message: `The "${name}" capability is not composed, so this job could not run.`,
-      action: `Add ${name}(...) to createBackend's capabilities (run \`pithy add ${name}\`).`,
+      action: `Add ${name}(...) to createBackend's capabilities (run \`${pithyCommandOf("add", { args: [name], flags: { "--with-prerequisites": true } }, { runtime: true })}\`).`,
       detail: `no composed capability named "${name}" carrying its seams was found.`,
     });
   }

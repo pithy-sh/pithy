@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { commandName } from "../cli/command";
 import { PithyError, ValidationError } from "../error/pithyError";
 import { NAME_SEGMENT } from "./segment";
 
@@ -144,7 +145,7 @@ export function assertValidEnvironment(name: string): void {
     throw new ValidationError({
       message: `"${name}" starts the way a feature's name does.`,
       action: "Start the environment with something other than f and a number.",
-      detail: `A feature takes the environment's slot with f<issue>, so <project>-${name}-<worker> can be a feature's Worker name exactly, and \`pithy feature destroy\` deletes that Worker.`,
+      detail: `A feature takes the environment's slot with f<issue>, so <project>-${name}-<worker> can be a feature's Worker name exactly, and \`${commandName("feature destroy")}\` deletes that Worker.`,
     });
   }
   if (name.length > MAX_ENVIRONMENT_NAME && NAME_SEGMENT.test(name)) {

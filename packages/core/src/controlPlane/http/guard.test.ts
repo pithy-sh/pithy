@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
+import { PithyError } from "../../error/pithyError";
 import { validationHook } from "../../http/validation";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connection";
@@ -161,6 +162,49 @@ describe("requireControlPlane", () => {
         status: 403,
         message: "This deployment does not accept management-client calls.",
       },
+    });
+  });
+
+  /**
+   * **The operator's half names the step this Worker can name (#711).** A deployed Worker knows its environment from
+   * its `ENVIRONMENT` var and never the `apps/` directory that provisioned it, so the action names `pithy dashboard
+   * connect` with that environment's `--env` — or says to name one, when the var is absent. It is read off the thrown
+   * error, where the operator reads it, because the wire strips it.
+   */
+  describe("the action a refusal hands the operator", () => {
+    async function refusal(env: Record<string, string>): Promise<{ status: number; action: string | undefined }> {
+      let thrown: unknown;
+      const app = makeApp({ verifier: null });
+      app.onError((error, c) => {
+        thrown = error;
+        return pithyErrorHandler(error, c);
+      });
+      const response = await app.request("/control-plane/manifest", {}, env);
+      expect(thrown).toBeInstanceOf(PithyError);
+      return { status: response.status, action: (thrown as PithyError).payload.action };
+    }
+
+    test("names the Worker's own environment with --env", async () => {
+      const { status, action } = await refusal({ ENVIRONMENT: "staging" });
+      expect(status).toBe(403);
+      expect(action).toBe(
+        "Add `controlplane()` to this Worker's pithy.config.ts, then run pithy dashboard connect --env staging.",
+      );
+    });
+
+    test("with no ENVIRONMENT var, says to name the environment rather than guess one", async () => {
+      const { status, action } = await refusal({});
+      expect(status).toBe(403);
+      expect(action).toBe(
+        "Add `controlplane()` to this Worker's pithy.config.ts, then connect one with pithy dashboard connect, naming this environment with --env.",
+      );
+    });
+
+    // Production is data here, read at run time: building the line must never throw, or the 403 becomes a 500.
+    test("in production, still a 403 naming that environment", async () => {
+      const { status, action } = await refusal({ ENVIRONMENT: "prod" });
+      expect(status).toBe(403);
+      expect(action).toContain("pithy dashboard connect --env prod");
     });
   });
 

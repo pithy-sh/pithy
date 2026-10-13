@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "../../cli/command";
 import { PithyError } from "../../error/pithyError";
 import type { MessageParams } from "../../i18n/catalog";
 
@@ -40,7 +41,9 @@ export class ControlPlaneNotConnectedError extends PithyError {
         code: "controlplane/not_connected",
         status: 403,
         message: args.message ?? "No management client is connected to this environment.",
-        action: args.action ?? "Run pithy dashboard connect --env <environment> to register one.",
+        action:
+          args.action ??
+          `Register one for this environment with ${commandName("dashboard connect")}, naming it with --env.`,
         detail: args.detail,
         params: args.params,
       },
@@ -60,7 +63,9 @@ export class ControlPlaneInvalidCredentialError extends PithyError {
         code: "controlplane/invalid_credential",
         status: 401,
         message: args.message ?? "That credential is not valid here.",
-        action: args.action ?? "Rotate the connection's key, or re-run pithy dashboard connect --update.",
+        action:
+          args.action ??
+          `Rotate the connection's key, or update this environment's connection with ${commandName("dashboard connect")} and its --update flag.`,
         detail: args.detail,
         params: args.params,
       },
@@ -77,7 +82,9 @@ export class ControlPlaneInsufficientScopeError extends PithyError {
         code: "controlplane/insufficient_scope",
         status: 403,
         message: args.message ?? "This connection is not scoped for that operation.",
-        action: args.action ?? "Re-run pithy dashboard connect --update and grant the scope this call needs.",
+        action:
+          args.action ??
+          `Update this environment's connection with ${commandName("dashboard connect")} and its --update flag, granting the scope this call needs.`,
         detail: args.detail,
         params: args.params,
       },

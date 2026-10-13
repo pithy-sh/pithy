@@ -150,6 +150,15 @@ describe("renderHostEnvProblems", () => {
     );
     expect(hostEnvProviderSentence({ kind: "config", name: "email.theme" })).toBe("Config key email.theme.");
   });
+
+  // A command only a person may run — one that touches production — is said as their decision, never as `Run` (#711).
+  test("a person's decision is said as one, after the thing it fills", () => {
+    const decision =
+      "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.";
+    expect(hostEnvProviderSentence({ kind: "secret", name: "EMAIL_SIGNING_KEY", decision })).toBe(
+      `Secret EMAIL_SIGNING_KEY, read through @pithy-sh/secrets. ${decision}`,
+    );
+  });
 });
 
 describe("requireHostEnv", () => {

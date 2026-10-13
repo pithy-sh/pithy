@@ -97,8 +97,15 @@ export interface SettingsEnvironment {
 export interface SettingsCheckContext {
   /** The root config's `name` — the leading segment of every resource this project provisions. */
   project: string;
-  /** The Worker whose `pithy.config.ts` composed this capability. */
+  /** The Worker whose `pithy.config.ts` composed this capability, by its `wrangler.jsonc` name. */
   worker: string;
+  /**
+   * That Worker's directory under `apps/` — the value `--worker` takes, and the one a refusal lists (#711).
+   *
+   * Not `worker` under another name. A scaffold deploys `apps/api` as `acme-api`, so a command a finding names
+   * for one Worker is written with this.
+   */
+  workerDirectory: string;
   /** Every environment the project declares, in declaration order. */
   environments: readonly SettingsEnvironment[];
 }

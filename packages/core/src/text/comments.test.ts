@@ -53,6 +53,25 @@ describe("blankComments", () => {
     expect(blankComments(divide).split("\n")[2]).toBe("process.env.Z;");
   });
 
+  // #711: the outer template closed at the inner backtick, and the docblock below was read as code.
+  test("a template nested in an interpolation closes nothing, so a comment after it is still a comment", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
+    const source = ['const a = `${b ? ` — ${c}` : ""}`;', "/** read `process.env` here */", "go();"].join("\n");
+    const lines = blankComments(source).split("\n");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
+    expect(lines[0]).toBe('const a = `${b ? ` — ${c}` : ""}`;');
+    expect(lines[1]?.trim()).toBe("");
+    expect(lines[2]).toBe("go();");
+  });
+
+  test("a comment inside an interpolation is a comment, and is blanked", () => {
+    const source = ["const a = `${f({", "  // run `pithy init` here", "  b: 1,", "})}`;"].join("\n");
+    const lines = blankComments(source).split("\n");
+    expect(lines[1]?.trim()).toBe("");
+    expect(lines[2]).toBe("  b: 1,");
+    expect(lines[3]).toBe("})}`;");
+  });
+
   test("every offset is where it was, so a caller may measure on one text and cut the other", () => {
     // `ui/react.test.ts` slices a screen between two markers it found in the raw file and reads the
     // blanked slice. That is only sound while blanking is character-for-character, so it is asserted

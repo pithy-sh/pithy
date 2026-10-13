@@ -59,6 +59,13 @@ export const HostEnvProvider = z
       .min(1)
       .optional()
       .describe("The `pithy` command that fills it, where one does. Rendered as the report's action line."),
+    decision: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "What fills it when only a person may run the command that does — one that touches production — said as their decision. Rendered in place of `command`.",
+      ),
   })
   .describe("What fills one field of a host worker's env, so a failure names the thing an operator changes.");
 export type HostEnvProvider = z.infer<typeof HostEnvProvider>;
@@ -170,7 +177,8 @@ export function hostEnvProviderSentence(provider: HostEnvProvider): string {
         : provider.kind === "secret"
           ? `Secret ${provider.name}, read through @pithy-sh/secrets.`
           : `Config key ${provider.name}.`;
-  return provider.command ? `${where} Run ${provider.command}.` : where;
+  if (provider.command) return `${where} Run ${provider.command}.`;
+  return provider.decision ? `${where} ${provider.decision}` : where;
 }
 
 /**

@@ -84,9 +84,19 @@ export function blankCommentsAndStrings(source: string): string {
 
 /** The one walk behind both: comments always blanked, a quoted run kept or blanked inside its delimiters. */
 function blank(source: string, strings: boolean): string {
+  return walkCode(source, 0, strings, false).out;
+}
+
+/**
+ * Walk code from `start`. Inside an interpolation (`nested`), the `}` that closes it ends the walk, and is
+ * included. A template is walked by {@link walkTemplate}, which walks each of its interpolations as code in turn
+ * — so a comment inside `${…}` is blanked like any other, and a template inside one closes nothing (#711).
+ */
+function walkCode(source: string, start: number, strings: boolean, nested: boolean): { out: string; end: number } {
   let out = "";
   let previous = "";
-  let index = 0;
+  let depth = 0;
+  let index = start;
   while (index < source.length) {
     const char = source[index] as string;
     const pair = source.slice(index, index + 2);
@@ -96,8 +106,15 @@ function blank(source: string, strings: boolean): string {
       index = stop;
       continue;
     }
-    if (char === '"' || char === "'" || char === "`") {
-      const stop = endOfQuoted(source, index, char, char !== "`");
+    if (char === "`") {
+      const walked = walkTemplate(source, index, strings);
+      out += walked.out;
+      index = walked.end;
+      previous = char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const stop = endOfQuoted(source, index, char, true);
       const run = source.slice(index, stop);
       out += strings ? blankInside(run, char) : run;
       index = stop;
@@ -111,11 +128,46 @@ function blank(source: string, strings: boolean): string {
       previous = "/";
       continue;
     }
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      if (nested && depth === 0) return { out: `${out}}`, end: index + 1 };
+      depth -= 1;
+    }
     out += char;
     if (!/\s/.test(char)) previous = char;
     index += 1;
   }
-  return out;
+  return { out, end: index };
+}
+
+/**
+ * Walk one template literal from its opening backtick. Its text is kept, or blanked whole — `${}` included — when
+ * `strings` asks; each interpolation is walked as code, so its comments are blanked and its own templates close
+ * nothing. Returns the text and the index past the closing backtick.
+ */
+function walkTemplate(source: string, start: number, strings: boolean): { out: string; end: number } {
+  let out = "`";
+  let index = start + 1;
+  while (index < source.length) {
+    const char = source[index] as string;
+    if (char === "\\") {
+      const escaped = source.slice(index, index + 2);
+      out += strings ? escaped.replace(/[^\n]/g, " ") : escaped;
+      index += 2;
+      continue;
+    }
+    if (char === "`") return { out: `${out}\``, end: index + 1 };
+    if (char === "$" && source[index + 1] === "{") {
+      const walked = walkCode(source, index + 2, strings, true);
+      const text = `\${${walked.out}`;
+      out += strings ? text.replace(/[^\n]/g, " ") : text;
+      index = walked.end;
+      continue;
+    }
+    out += strings && char !== "\n" ? " " : char;
+    index += 1;
+  }
+  return { out, end: index };
 }
 
 /** A quoted run with everything between its delimiters blanked, newlines kept. An unterminated run has no closer. */

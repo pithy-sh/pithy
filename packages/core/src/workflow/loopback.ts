@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "../cli/command";
 import { UpstreamError, UpstreamTimeoutError } from "../error/pithyError";
 import { type WorkflowDispatchRequest, workflowDispatchPath } from "./schemas";
 import type { WorkflowBinding } from "./spec";
@@ -84,7 +85,7 @@ export function loopbackWorkflowBinding(options: LoopbackWorkflowOptions): Workf
   const owner = options.capability ?? options.binding;
   const send = options.fetch ?? ((target: string, init: RequestInit) => fetch(target, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const running = `Check that the ${owner} host is running under pithy dev at ${origin}.`;
+  const running = `Check that the ${owner} host is running under ${commandName("dev")} at ${origin}.`;
 
   return {
     async create(instance?: { id?: string; params?: unknown }): Promise<unknown> {
