@@ -119,6 +119,20 @@ function restVectorStore(manager: CloudflareVectorizeManager): VectorStore {
   };
 }
 
+/**
+ * **The data test's whole budget, shared by its eight waits.** Each wait is capped at the settle budget on its
+ * own, and their sum is not: in run 38323817975 (#709) they outran this test's 300s vitest timeout together,
+ * so vitest abandoned the body mid-poll, the failure named no step, and the teardown that deletes the index
+ * never ran.
+ *
+ * Sized from what was measured. Creating an index and settling its two metadata indexes took 102s and 113s
+ * across that run and the one before it (the first test here is exactly that phase, and the second test got
+ * past it, to its first embedding, at 107s in run 38321579328). The remaining six waits — two upserts becoming
+ * queryable, two filters, a late metadata index, a late filter — then ran past the 200s left to them. Ten
+ * minutes covers both halves with room; past it, the step in progress fails by name and the teardown still runs.
+ */
+const DATA_TEST_BUDGET_MS = 600_000;
+
 describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector against live Vectorize — LIVE", () => {
   const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
   const aiManager = new CloudflareAIManager({ accountId: creds.accountId, apiToken: creds.apiToken });
@@ -204,6 +218,8 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
 
   test("embeds, upserts, filters — and a metadata index created late covers none of the vectors before it", async () => {
     const name = uniqueName("vecdat");
+    // One deadline for every wait below, so whichever step is running when it passes fails by name.
+    const budget = { deadline: Date.now() + DATA_TEST_BUDGET_MS };
     await withThrowawayResource(
       () => provisioner.createIndex(name, { dimensions: DIMENSIONS, metric: indexConfig.metric }),
       async (index) => {
@@ -217,6 +233,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         await waitFor(
           `index ${name} to be addressable`,
           async () => (await provisioner.findIndexByName(name)) !== null,
+          budget,
         );
 
         // Provision the declared metadata indexes first, before a single vector exists. `stage` is not among
@@ -229,6 +246,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           `the metadata indexes on ${name}`,
           () => provisioner.listMetadataIndexes(name),
           (entries) => entries.length === declared.length,
+          budget,
         );
 
         // One model serves writes and queries. That is the point of pinning it per index: an index built with
@@ -258,6 +276,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the first upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 3, returnMetadata: true }),
           (result) => result.count === 3,
+          budget,
         );
 
         // The decoded query response, from the real wire: a count, and matches nearest first.
@@ -273,6 +292,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           () =>
             queryVectors(store, indexConfig, probe, { topK: 10, filter: vectorFilter(DocMeta, { tenantId: "acme" }) }),
           (result) => result.count === 2,
+          budget,
         );
         expect(acme.matches.map((match) => match.id).sort()).toEqual(["apple", "train"]);
 
@@ -285,6 +305,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
               filter: vectorFilter(DocMeta, { rank: { $gte: 2 } }),
             }),
           (result) => result.count === 2,
+          budget,
         );
         expect(highRank.matches.map((match) => match.id).sort()).toEqual(["banana", "train"]);
 
@@ -295,6 +316,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           `the late \`stage\` metadata index on ${name}`,
           () => provisioner.listMetadataIndexes(name),
           (entries) => entries.some((entry) => entry.propertyName === "stage"),
+          budget,
         );
 
         // One more vector, written after the index exists, carrying the same `stage: "early"` value.
@@ -306,6 +328,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           "the late upsert to be queryable",
           () => queryVectors(store, indexConfig, probe, { topK: 10 }),
           (result) => result.count === 4,
+          budget,
         );
         expect(whole.matches.map((match) => match.id).sort()).toEqual(["apple", "apple-late", "banana", "train"]);
 
@@ -320,6 +343,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
               filter: compileFilter([{ propertyName: "stage", indexType: "string" }], { stage: "early" }),
             }),
           (result) => result.count >= 1,
+          budget,
         );
         // Only the vector written after the metadata index existed matches. No error, no warning — the filter
         // simply returns less than the corpus holds. This is the behavior the whole package is built around,
@@ -365,5 +389,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
     );
 
     expect(await provisioner.findIndexByName(name)).toBeNull();
-  });
+    // DATA_TEST_BUDGET_MS, plus a minute for the teardown: one index delete and the read that confirms it.
+    // A literal, because a test call keeps its compact shape only with a numeric literal in this position.
+  }, 660_000);
 });
