@@ -34,7 +34,7 @@ It runs there rather than in a suite hook for the reason the debris sweep does: 
 
 ## Where the values go
 
-Either a gitignored `packages/cloudflare/.dev.vars`, or plain environment variables. The file wins where both state a key. CI passes them as variables and has no file.
+Either a gitignored `packages/cloudflare/.dev.vars`, or plain environment variables. The file wins where both state a key. CI passes them as variables and has no file. A variable reaches a suite run through turbo only if `test:integration` lists it in `passThroughEnv` in `turbo.jsonc`.
 
 ```sh
 CLOUDFLARE_ACCOUNT_ID=…
@@ -57,7 +57,7 @@ describe.skipIf(!fixtureReady("turnstile-widget"))("turnstile — LIVE", () => {
 
 `fixtureReady` is the only gate. Do not read `process.env` in a live suite: a second spelling of a fixture is a fixture the report cannot see, and a suite the report cannot explain.
 
-Adding a fixture means adding an entry to `LIVE_FIXTURES` in `packages/cloudflare/src/test-utils/fixtures.ts` **and** a section here. A test fails if a fixture's `doc` points at a heading this file does not have.
+Adding a fixture means adding an entry to `LIVE_FIXTURES` in `packages/cloudflare/src/test-utils/fixtures.ts`, a section here, **and** its variables to `test:integration`'s `passThroughEnv` in `turbo.jsonc`. A test fails if a fixture's `doc` points at a heading this file does not have, and `packages/cli/src/ci/integrationBuild.test.ts` fails if a fixture's variable is not handed through.
 
 ---
 
@@ -139,7 +139,7 @@ It arms the secrets round trip — provision, write, rotate, audit, teardown —
 Every name it touches is composed under the reserved project `pithy-int-test`, so teardown can only ever address its own.
 
 ```sh
-PITHY_LIVE_DEPLOY=1 bun run --filter @pithy-sh/cli test:integration
+PITHY_LIVE_DEPLOY=1 bunx turbo run test:integration --filter=@pithy-sh/cli
 ```
 
 **Make it.** Nothing to make. Set the variable when you mean it.

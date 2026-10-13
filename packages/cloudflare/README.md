@@ -16,7 +16,7 @@ _Everything on the adopter side is on the site. `pithy.sh/docs` is canonical —
 
 ## Live integration tests
 
-Mocks prove our call *shapes*. They cannot prove the request, the response decoding, and the error handling are functionally correct against real Cloudflare — that only surfaces live. So every manager that makes real CF calls also has a `*.integration.test.ts` that creates a throwaway resource, exercises the manager against it, and tears it down. These are excluded from the default suite and run via `bun run test:integration` (the `vitest.integration.config.ts` project), gated on credentials so they skip cleanly without them.
+Mocks prove our call *shapes*. They cannot prove the request, the response decoding, and the error handling are functionally correct against real Cloudflare — that only surfaces live. So every manager that makes real CF calls also has a `*.integration.test.ts` that creates a throwaway resource, exercises the manager against it, and tears it down. These are excluded from the default suite and run via turbo's `test:integration` (the `vitest.integration.config.ts` project), gated on credentials so they skip cleanly without them. Turbo builds `@pithy-sh/core` first, because the suites import it through its `exports` map into `dist/`; the package's own `bun run test:integration` skips that build, so it fails on a fresh checkout until something has built core.
 
 Credentials come from `packages/cloudflare/.dev.vars`, with `process.env` overlaid per key for anything the file does not set (`loadCloudflareEnv`). **Nothing creates that file.** It used to be a symlink to the root's, wired by a `vars:local` task; #154 removed both, and `pithy dev` and `pithy seed` generate `apps/<worker>/.dev.vars` in an adopter's project — `apps/` is the registry, so nothing regenerates a file in a kit package. Write it, or export the variables:
 
@@ -25,10 +25,10 @@ cat > .dev.vars <<'EOF'          # a real file, in this package, git-ignored
 CLOUDFLARE_ACCOUNT_ID=…
 CLOUDFLARE_API_TOKEN=…
 EOF
-bun run test:integration         # against the account in those creds
+bunx turbo run test:integration --filter=@pithy-sh/cloudflare   # builds core first, then runs against those creds
 ```
 
-Exporting them instead works identically and is how CI runs — the workflow sets `CLOUDFLARE_*` and `SECRETS_STORE_ID` from the `E2E Integration Testing` environment with no `.dev.vars` present. Set a key in both places and the file wins.
+Exporting them instead works identically and is how CI runs — the workflow sets `CLOUDFLARE_*` and `SECRETS_STORE_ID` from the `E2E Integration Testing` environment with no `.dev.vars` present, and runs the suites through turbo, which builds first and hands a task only the variables `test:integration` lists in `passThroughEnv` (`turbo.jsonc`). Set a key in both places and the file wins.
 
 Point them at a **dedicated test account** — they create and delete real resources.
 

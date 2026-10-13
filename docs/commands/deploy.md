@@ -32,7 +32,7 @@ There is no `--worker`. Deploy ships the whole set.
 
 ## What it does
 
-`apps/` is the registry: every `apps/<name>/` holding a `wrangler.jsonc` is one deployable Worker, and deploy ships them all. It runs `wrangler deploy [--env <env>] --experimental-provision=false` in each Worker's own directory, against that Worker's own config, and lets wrangler own bundling, upload, bindings, and routes. Output is captured and summarized rather than streamed.
+`apps/` is the registry: every `apps/<name>/` holding a `wrangler.jsonc` is one deployable Worker, and deploy ships them all. It runs `wrangler deploy [--env <env>] --experimental-provision=false` in each Worker's own directory, against that Worker's own config, and lets wrangler own bundling, upload, bindings, and routes. The directory is handed to wrangler as its own `--cwd`, not left to the package runner: `npx` starts from the nearest package root, so in an npm workspace wrangler used to start there, find no `wrangler.jsonc`, and try to set the directory up as a static site. `pithy dev` starts `wrangler dev` the same way. Output is captured and summarized rather than streamed.
 
 **It says what it is on, while it is on it.** Capturing wrangler's output is the right call and it is not being reversed — but it removed the only evidence the command was alive, and this command used to print nothing whatever until every Worker had finished. So each Worker is named as it is reached, `▸ acme-api...`, and **its own summary line is printed the moment that Worker settles** rather than being held to a block at the end. The per-Worker lines moved; they are not printed twice. The migration warning now comes first, before the first upload, because it is about the schema this deploy is shipping code against.
 
