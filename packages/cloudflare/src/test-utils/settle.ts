@@ -6,8 +6,12 @@
  * by `@pithy-sh/cloudflare`'s Vectorize suite and `@pithy-sh/vector`'s, because the cloudflare suite kept a
  * 60s budget and a single confirming read of its own and failed on exactly that (#709).
  *
- * **The budget is 120s.** A Vectorize index and a metadata index each became visible 25-50s after the call
- * that made them, measured live, and an upsert became queryable in about 30s.
+ * **The budget is 120s, and 300s for a metadata index.** A Vectorize index became visible 25-50s after the
+ * call that made it, measured live, and an upsert became queryable in about 30s. A metadata index is slower:
+ * about 97s on one run of #709 and over 120s on the next, so its waits take {@link METADATA_INDEX_SETTLE_MS}.
+ *
+ * **A metadata-index wait compares names and types, never a count.** {@link metadataIndexesSettled} is the
+ * predicate; a list of the right length can still be the wrong list.
  *
  * **One confirming read proves nothing.** The metadata-index list is eventually consistent *and not
  * monotonic*: a 3-minute probe watched it report `[]` for 26s, then both properties, then one of the two 18s
@@ -24,6 +28,13 @@
 
 /** Ceiling for any one wait. Measured at 25-50s for a control-plane change, and about 30s for an upsert. */
 export const SETTLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Ceiling for a metadata-index wait, and only for that. A metadata index is the slowest change Vectorize
+ * applies: on #709 one settled in about 97s and the next was still unsettled at 120s, so the shared budget
+ * undercut exactly this wait. `pithy vector provision` waits on the same measurement.
+ */
+export const METADATA_INDEX_SETTLE_MS = 300_000;
 
 /**
  * Consecutive agreeing reads that count as settled. Three, because one confirming read can be a stale replica,
@@ -110,4 +121,19 @@ export async function waitForStable<T>(
     await pause(options.intervalMs ?? POLL_INTERVAL_MS);
     last = await read();
   }
+}
+
+/**
+ * The settle predicate for a metadata-index list: every declared index is live, under its own name and its own
+ * type. The rule `compareMetadataIndexes` applies with nothing missing and nothing mismatched, restated here
+ * because this package cannot import `@pithy-sh/vector`. A count is not enough: a list of the right length
+ * with the wrong names passed the predicate this replaced. An undeclared extra does not block it.
+ */
+export function metadataIndexesSettled(
+  declared: readonly { propertyName: string; indexType: string }[],
+): (live: readonly { propertyName: string; indexType: string }[]) => boolean {
+  return (live) => {
+    const types = new Map(live.map((entry) => [entry.propertyName, entry.indexType]));
+    return declared.every((entry) => types.get(entry.propertyName) === entry.indexType);
+  };
 }

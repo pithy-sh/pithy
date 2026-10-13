@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { SETTLE_TIMEOUT_MS, STABLE_READS, waitFor, waitForStable } from "./settle";
+import {
+  METADATA_INDEX_SETTLE_MS,
+  metadataIndexesSettled,
+  SETTLE_TIMEOUT_MS,
+  STABLE_READS,
+  waitFor,
+  waitForStable,
+} from "./settle";
 
 /** A read that answers each value in turn, then repeats the last one. Counts its calls. */
 function sequence<T>(values: readonly T[]): { read: () => Promise<T>; calls: () => number } {
@@ -26,6 +33,56 @@ describe("the settle budget", () => {
   it("is 120s and three agreeing reads", () => {
     expect(SETTLE_TIMEOUT_MS).toBe(120_000);
     expect(STABLE_READS).toBe(3);
+  });
+});
+
+describe("the metadata-index budget", () => {
+  // Measured on #709: a metadata index settled in about 97s on one run and was still unsettled at 120s on
+  // the next, so the shared 120s budget undercuts exactly the wait it was sized for.
+  it("is 300s, and longer than every other wait's", () => {
+    expect(METADATA_INDEX_SETTLE_MS).toBe(300_000);
+    expect(METADATA_INDEX_SETTLE_MS).toBeGreaterThan(SETTLE_TIMEOUT_MS);
+  });
+});
+
+describe("metadataIndexesSettled", () => {
+  const declared = [
+    { propertyName: "tenantId", indexType: "string" },
+    { propertyName: "rank", indexType: "number" },
+  ] as const;
+  const settled = metadataIndexesSettled(declared);
+
+  it("holds when every declared index is live under its own name and type", () => {
+    expect(
+      settled([
+        { propertyName: "rank", indexType: "number" },
+        { propertyName: "tenantId", indexType: "string" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("does not hold on a list of the right length with the wrong names", () => {
+    // What the length-only predicate it replaced passed: two entries, neither of them `rank`.
+    expect(
+      settled([
+        { propertyName: "tenantId", indexType: "string" },
+        { propertyName: "stage", indexType: "string" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("does not hold when a declared index is live as another type", () => {
+    expect(
+      settled([
+        { propertyName: "tenantId", indexType: "string" },
+        { propertyName: "rank", indexType: "string" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("does not hold on a partial list, and is not upset by an undeclared extra", () => {
+    expect(settled([{ propertyName: "tenantId", indexType: "string" }])).toBe(false);
+    expect(settled([...declared, { propertyName: "stage", indexType: "string" }])).toBe(true);
   });
 });
 

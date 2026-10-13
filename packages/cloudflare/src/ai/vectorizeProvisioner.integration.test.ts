@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
-import { waitForStable } from "../test-utils/settle";
+import { METADATA_INDEX_SETTLE_MS, metadataIndexesSettled, waitForStable } from "../test-utils/settle";
 import { CloudflareVectorizeProvisioner, type VectorizeMetadataIndex } from "./vectorizeProvisioner";
 
 /**
@@ -24,18 +24,21 @@ const DIMENSIONS = 32; // Vectorize requires dimensions in [32, 1536].
  * So a single confirming read proves nothing, and deleting straight after creating races the create: the
  * delete arrives first and Vectorize answers `400`/40005. Settle before asserting, and before deleting.
  *
- * The budget and the rule are `@pithy-sh/vector`'s suite's, shared through `test-utils/settle`: 120s and
- * three agreeing reads. This suite had 60s and one read of its own, and timed out on a slow apply (#709).
+ * The budget and the rule are `@pithy-sh/vector`'s suite's, shared through `test-utils/settle`: the 300s
+ * metadata-index budget, three agreeing reads, and a predicate that compares the name and the type. This
+ * suite had 60s and one read of its own, then 120s, and timed out on a slow apply both times (#709).
  */
 async function waitForMetadataIndex(
   provisioner: CloudflareVectorizeProvisioner,
   indexName: string,
-  propertyName: string,
+  declared: VectorizeMetadataIndex,
 ): Promise<VectorizeMetadataIndex> {
+  const { propertyName } = declared;
   const listed = await waitForStable(
     `metadata index ${indexName}.${propertyName}`,
     () => provisioner.listMetadataIndexes(indexName),
-    (entries) => entries.some((entry) => entry.propertyName === propertyName),
+    metadataIndexesSettled([declared]),
+    { timeoutMs: METADATA_INDEX_SETTLE_MS },
   );
   const found = listed.find((entry) => entry.propertyName === propertyName);
   if (!found) throw new Error(`unreachable: ${propertyName} settled as listed on ${indexName}`);
@@ -48,10 +51,10 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
   // back. The reclaim is now the run's own `globalSetup` sweep rather than a `beforeAll` here, so it also
   // covers `@pithy-sh/vector`'s indexes, which this suite never saw. See `test-utils/reap.ts`.
 
-  // Its own timeout, above the run's 120s default: the metadata-index wait alone may take the whole settle
+  // Its own timeout, above the run's 120s default: the metadata-index wait alone may take its whole 300s
   // budget, and the create, the reads and the deletes come on top of it.
   test("validates access, creates an index, finds it, indexes a metadata property, then deletes it", {
-    timeout: 300_000,
+    timeout: 360_000,
   }, async () => {
     const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
 
@@ -75,7 +78,10 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
         // Assert on the observation that settled, never on a fresh read. Because the list is
         // non-monotonic, re-listing here would flap back to empty often enough to fail under load — it
         // did, which is how this comment came to be written.
-        const found = await waitForMetadataIndex(provisioner, name, "tenantId");
+        const found = await waitForMetadataIndex(provisioner, name, {
+          propertyName: "tenantId",
+          indexType: "string",
+        });
 
         // The decoded shape carries the type in the lowercase spelling the create endpoint takes — live
         // returns "String", so this also pins the casing normalization.

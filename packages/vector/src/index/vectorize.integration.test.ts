@@ -5,7 +5,7 @@ import { CloudflareAIManager } from "@pithy-sh/cloudflare/src/ai/aiManager";
 import { CloudflareVectorizeManager } from "@pithy-sh/cloudflare/src/ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "@pithy-sh/cloudflare/src/ai/vectorizeProvisioner";
 import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
-import { waitFor, waitForStable } from "@pithy-sh/cloudflare/src/test-utils/settle";
+import { METADATA_INDEX_SETTLE_MS, waitFor, waitForStable } from "@pithy-sh/cloudflare/src/test-utils/settle";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { VectorIndexConfig } from "../config/config";
@@ -14,7 +14,7 @@ import { assertMetadataIndexes, compareMetadataIndexes, type MetadataIndexSource
 import { compileFilter, filterable, vectorFilter } from "./filter";
 import { queryVectors, upsertVectors, type VectorStore } from "./index";
 import { MAX_TOPK_WITH_PAYLOAD, MAX_TOPK_WITHOUT_PAYLOAD } from "./limits";
-import { metadataIndexes } from "./metadata";
+import { type MetadataIndexDescriptor, metadataIndexes } from "./metadata";
 
 /**
  * LIVE integration test — real Vectorize, real Workers AI.
@@ -129,9 +129,23 @@ function restVectorStore(manager: CloudflareVectorizeManager): VectorStore {
  * across that run and the one before it (the first test here is exactly that phase, and the second test got
  * past it, to its first embedding, at 107s in run 38321579328). The remaining six waits — two upserts becoming
  * queryable, two filters, a late metadata index, a late filter — then ran past the 200s left to them. Ten
- * minutes covers both halves with room; past it, the step in progress fails by name and the teardown still runs.
+ * minutes covered both halves until a metadata index alone was measured at about 97s and then over 120s, and
+ * its two waits took {@link METADATA_INDEX_SETTLE_MS} each. Twelve minutes leaves room for one of them to use
+ * its whole budget; past it, the step in progress fails by name and the teardown still runs.
  */
-const DATA_TEST_BUDGET_MS = 600_000;
+const DATA_TEST_BUDGET_MS = 720_000;
+
+/**
+ * The settle predicate for a metadata-index list: the drift check's own rule, with nothing missing and nothing
+ * mismatched. A count passed a list of the right length with the wrong names in it. The wait it drives takes
+ * {@link METADATA_INDEX_SETTLE_MS}, measured at about 97s and then over 120s on #709.
+ */
+function declares(declared: readonly MetadataIndexDescriptor[]) {
+  return (live: readonly { propertyName: string; indexType: string }[]): boolean => {
+    const report = compareMetadataIndexes(declared, live);
+    return report.missing.length === 0 && report.mismatched.length === 0;
+  };
+}
 
 describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector against live Vectorize — LIVE", () => {
   const provisioner = new CloudflareVectorizeProvisioner({ accountId: creds.accountId, apiToken: creds.apiToken });
@@ -169,7 +183,8 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         const live = await waitForStable(
           `the ${declared.length} metadata indexes on ${name}`,
           () => provisioner.listMetadataIndexes(name),
-          (entries) => entries.length === declared.length,
+          declares(declared),
+          { timeoutMs: METADATA_INDEX_SETTLE_MS },
         );
         expect([...live].sort((a, b) => a.propertyName.localeCompare(b.propertyName))).toEqual([
           { propertyName: "rank", indexType: "number" },
@@ -214,7 +229,9 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
 
     // Teardown landed: the index is gone from the account.
     expect(await provisioner.findIndexByName(name)).toBeNull();
-  });
+    // Above the run's 300s default: the metadata-index wait alone may take its whole 300s budget, and the
+    // create, the addressable wait and the teardown come on top of it.
+  }, 360_000);
 
   test("embeds, upserts, filters — and a metadata index created late covers none of the vectors before it", async () => {
     const name = uniqueName("vecdat");
@@ -245,8 +262,8 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         await waitForStable(
           `the metadata indexes on ${name}`,
           () => provisioner.listMetadataIndexes(name),
-          (entries) => entries.length === declared.length,
-          budget,
+          declares(declared),
+          { ...budget, timeoutMs: METADATA_INDEX_SETTLE_MS },
         );
 
         // One model serves writes and queries. That is the point of pinning it per index: an index built with
@@ -315,8 +332,8 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         await waitForStable(
           `the late \`stage\` metadata index on ${name}`,
           () => provisioner.listMetadataIndexes(name),
-          (entries) => entries.some((entry) => entry.propertyName === "stage"),
-          budget,
+          declares([...declared, { propertyName: "stage", indexType: "string" }]),
+          { ...budget, timeoutMs: METADATA_INDEX_SETTLE_MS },
         );
 
         // One more vector, written after the index exists, carrying the same `stage: "early"` value.
@@ -391,5 +408,5 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
     expect(await provisioner.findIndexByName(name)).toBeNull();
     // DATA_TEST_BUDGET_MS, plus a minute for the teardown: one index delete and the read that confirms it.
     // A literal, because a test call keeps its compact shape only with a numeric literal in this position.
-  }, 660_000);
+  }, 780_000);
 });
