@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
@@ -155,8 +156,8 @@ export function assertDeployFlags(args: { apps: boolean; kit: boolean; force: bo
   if (args.env === LOCAL_ENVIRONMENT) {
     throw new ValidationError({
       message: `${flag} has nothing to deploy in dev.`,
-      action: "Run pithy dev to run the kit's Workers locally, or pass --env staging or --env prod.",
-      detail: "A kit Worker in dev is materialized under .wrangler/pithy/hosts and run by pithy dev, never deployed.",
+      action: `Run ${pithyCommand("dev")} to run the kit's Workers locally, or pass --env staging or --env prod.`,
+      detail: `A kit Worker in dev is materialized under .wrangler/pithy/hosts and run by ${commandName("dev")}, never deployed.`,
     });
   }
 }
@@ -192,7 +193,7 @@ const NO_ENV_FOR_KIT =
  * no `dev` address and an all-skipped run failed the command — so `pithy deploy --env dev` exited 1
  * every time, while `--env dev` was documented and offered by this command's own action lines.
  */
-const KIT_IS_LOCAL_IN_DEV = "In dev the kit's Workers run locally under pithy dev, so none were deployed.";
+const KIT_IS_LOCAL_IN_DEV = `In dev the kit's Workers run locally under ${commandName("dev")}, so none were deployed.`;
 
 /** One Worker under `apps/`, as the payload lists it and as an `--events` record settles it. */
 const DeployedWorker = z
@@ -379,6 +380,7 @@ export default withContract(
                 projectDir,
                 project: requireProjectName(await loadProject(projectDir)),
                 env: env as string,
+                productionEnvironments: (await loadProject(projectDir)).seed?.productionEnvironments ?? [],
                 account,
                 force: args.force,
                 // A feature's kit Workers are named for the feature, and the branch is which feature (#643). A
@@ -490,6 +492,7 @@ async function planDeploy(options: PlanDeployOptions): Promise<void> {
         projectDir,
         project: requireProjectName(await loadProject(projectDir)),
         env: env as string,
+        productionEnvironments: (await loadProject(projectDir)).seed?.productionEnvironments ?? [],
         account,
         force: options.force,
         dryRun: true,

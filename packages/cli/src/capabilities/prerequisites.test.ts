@@ -2,14 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { type WorkerDir, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { describe, expect, test } from "vitest";
-import {
-  isRegistered,
-  missingPrerequisites,
-  prerequisiteClosure,
-  prerequisiteRefusal,
-  prerequisiteRequired,
-} from "./prerequisites";
+import { fixOf } from "../terminal/exitClass";
+import { type AddRun, addCallerOf, projectAddFacts } from "./addCommand";
+import { missingPrerequisites, prerequisiteRefusal, prerequisiteRequired } from "./prerequisites";
 
 /** The real graph, in miniature: auth ⇒ secrets + email, email ⇒ secrets, secrets ⇒ nothing. */
 const MANIFESTS = [
@@ -18,72 +15,6 @@ const MANIFESTS = [
   { name: "secrets", package: "@pithy-sh/secrets", requiredBindings: [] },
   { name: "audit", package: "@pithy-sh/audit", requiredBindings: [] },
 ].map((raw) => CapabilityManifest.parse(raw));
-
-const byName = new Map(MANIFESTS.map((manifest) => [manifest.name, manifest]));
-const manifestFor = (name: string): CapabilityManifest | undefined => byName.get(name);
-const manifest = (name: string): CapabilityManifest => byName.get(name) as CapabilityManifest;
-
-describe("prerequisiteClosure", () => {
-  test("auth on a bare worker resolves secrets before email — deepest first, because email reads a secret", () => {
-    // The order is the whole point. `pithy add email` on a worker with no secrets composed is the same
-    // defect one capability along, so a plan that added email first would fix nothing.
-    expect(prerequisiteClosure({ manifest: manifest("auth"), composed: new Set(), manifestFor })).toEqual([
-      "secrets",
-      "email",
-    ]);
-  });
-
-  test("a peer already composed is not proposed again, and neither are its own peers", () => {
-    expect(prerequisiteClosure({ manifest: manifest("auth"), composed: new Set(["email"]), manifestFor })).toEqual([
-      "secrets",
-    ]);
-    expect(
-      prerequisiteClosure({ manifest: manifest("auth"), composed: new Set(["secrets", "email"]), manifestFor }),
-    ).toEqual([]);
-  });
-
-  test("a capability that declares no peers proposes nothing", () => {
-    expect(prerequisiteClosure({ manifest: manifest("audit"), composed: new Set(), manifestFor })).toEqual([]);
-  });
-
-  test("declaration order does not decide dependency order — the graph does", () => {
-    // Same graph, peers declared the other way round. A plan that merely echoed `peerCapabilities`
-    // would compose email before the secrets it reads.
-    const flipped = CapabilityManifest.parse({
-      name: "auth",
-      package: "@pithy-sh/auth",
-      requiredBindings: [],
-      peerCapabilities: ["email", "secrets"],
-    });
-    expect(prerequisiteClosure({ manifest: flipped, composed: new Set(), manifestFor })).toEqual(["secrets", "email"]);
-  });
-
-  test("a peer whose manifest is not installed yet is named as a leaf rather than dropped", () => {
-    // Nothing can be known about a package that is not there. It is still missing, and saying so beats
-    // silence — the recursive add resolves whatever it declares once it is installed.
-    expect(
-      prerequisiteClosure({ manifest: manifest("auth"), composed: new Set(), manifestFor: () => undefined }),
-    ).toEqual(["secrets", "email"]);
-  });
-
-  test("a cycle terminates and names each capability once", () => {
-    const cyclic = new Map(
-      [
-        { name: "a", package: "@pithy-sh/a", requiredBindings: [], peerCapabilities: ["b"] },
-        { name: "b", package: "@pithy-sh/b", requiredBindings: [], peerCapabilities: ["a"] },
-      ]
-        .map((raw) => CapabilityManifest.parse(raw))
-        .map((entry) => [entry.name, entry] as const),
-    );
-    expect(
-      prerequisiteClosure({
-        manifest: cyclic.get("a") as CapabilityManifest,
-        composed: new Set(),
-        manifestFor: (name) => cyclic.get(name),
-      }),
-    ).toEqual(["b"]);
-  });
-});
 
 describe("missingPrerequisites", () => {
   test("names every composed capability whose declared peer is absent, and which peer", () => {
@@ -103,21 +34,66 @@ describe("missingPrerequisites", () => {
   });
 });
 
+/** The kit's facts for the refusals below, and the Worker they are about. */
+const factsFor = projectAddFacts(undefined);
+const board = workerDirOf({ dir: "/p/apps/board" });
+const api = workerDirOf({ dir: "/p/apps/api" });
+/** A refusal for a caller who ran `pithy add <capability>` with `run`'s flags, whose config answers `answered`. */
+const refusalFor = (
+  capability: string,
+  worker: WorkerDir,
+  missing: string[],
+  run: Omit<AddRun, "capability"> = {},
+  answered: string[] = [],
+) => ({
+  capability,
+  worker,
+  missing,
+  factsFor,
+  composed: new Set<string>(),
+  caller: addCallerOf({ capability, ...run }, answered),
+});
+
 describe("prerequisiteRefusal", () => {
   test("names the worker, the prerequisites, and the exact commands in order", () => {
-    const error = prerequisiteRefusal({ capability: "auth", worker: "board", missing: ["secrets", "email"] });
+    const error = prerequisiteRefusal(refusalFor("auth", board, ["secrets", "email"]));
     expect(error.payload.message).toBe("auth requires secrets and email, which board does not compose.");
     expect(error.payload.action).toBe(
-      "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
+      "Run `pithy add auth --worker board --with-prerequisites`, or compose them first: `pithy add secrets --worker board`, then `pithy add email --worker board`.",
     );
   });
 
   test("one prerequisite reads as one", () => {
-    const error = prerequisiteRefusal({ capability: "email", worker: "board", missing: ["secrets"] });
+    const error = prerequisiteRefusal(refusalFor("email", board, ["secrets"]));
     expect(error.payload.message).toBe("email requires secrets, which board does not compose.");
     expect(error.payload.action).toBe(
-      "Run pithy add email --with-prerequisites, or compose it first: pithy add secrets.",
+      "Run `pithy add email --worker board --with-prerequisites`, or compose it first: `pithy add secrets --worker board`.",
     );
+  });
+
+  // #711: each step of the manual sequence is a dry run when the run was one, and answers in JSON when it was asked to.
+  test("keeps a dry run's --dry-run and the caller's --json on every step it names", () => {
+    const error = prerequisiteRequired(
+      refusalFor("auth", board, ["secrets", "email"], { dryRun: true, json: true, force: true }),
+    );
+    expect(fixOf(error)).toBe("pithy add auth --worker board --with-prerequisites --force --dry-run --json");
+    expect(error.payload.action).toBe(
+      "Run `pithy add auth --worker board --with-prerequisites --force --dry-run --json`, or compose them first: `pithy add secrets --worker board --dry-run --json`, then `pithy add email --worker board --dry-run --json`.",
+    );
+  });
+
+  // #711: a rerun that dropped the run's `--set` was refused for the option the first run had answered.
+  test("carries the run's own --set into the command it names", () => {
+    const error = prerequisiteRequired(refusalFor("payments", api, ["secrets"], { setFlags: ["billingSubject=user"] }));
+    expect(fixOf(error)).toBe("pithy add payments --worker api --with-prerequisites --set billingSubject=user");
+  });
+
+  // #711: an option the Worker's config already answers is settled, so the refusal names the caller's own command
+  // and has a fix. It named one command per billing model, one contradicting the config, and gave no fix.
+  test("settles an option the Worker's config answers, and has a fix", () => {
+    const error = prerequisiteRequired(refusalFor("payments", api, ["secrets"], { json: true }, ["billingSubject"]));
+    expect(fixOf(error)).toBe("pithy add payments --worker api --with-prerequisites --json");
+    expect(error.payload.action).not.toContain("billingSubject");
   });
 });
 
@@ -127,7 +103,7 @@ describe("prerequisiteRefusal", () => {
  */
 describe("prerequisiteRequired", () => {
   test("is input/required naming --with-prerequisites, with the refusal's own words", () => {
-    const options = { capability: "auth", worker: "board", missing: ["secrets", "email"] };
+    const options = refusalFor("auth", board, ["secrets", "email"]);
     const required = prerequisiteRequired(options);
     const refused = prerequisiteRefusal(options);
     expect(required.payload.code).toBe("input/required");
@@ -138,40 +114,29 @@ describe("prerequisiteRequired", () => {
     expect(required.payload.action).toBe(refused.payload.action);
   });
 
-  test("a no is still a validation refusal, because somebody answered", () => {
-    expect(prerequisiteRefusal({ capability: "email", worker: "board", missing: ["secrets"] }).payload.code).toBe(
-      "validation/invalid_input",
+  // #711: `pithy add testers --worker api --json` named `pithy add testers --with-prerequisites`, which a
+  // two-Worker project refuses for want of the Worker the caller had already named.
+  test("its fix is the command the action leads with, naming the Worker", () => {
+    const required = prerequisiteRequired(refusalFor("testers", api, ["email"]));
+    expect(fixOf(required)).toBe("pithy add testers --worker api --with-prerequisites");
+    expect(required.payload.action?.startsWith(`Run \`${fixOf(required)}\`,`)).toBe(true);
+  });
+
+  // An option with no default is the reader's choice: each value is named, and none is the fix (#412, #711).
+  test("an option with no default names each value and withholds the fix", () => {
+    const required = prerequisiteRequired(refusalFor("payments", api, ["secrets"]));
+    expect(fixOf(required)).toBeUndefined();
+    expect(required.payload.action).toContain(
+      "`pithy add payments --worker api --with-prerequisites --set billingSubject=user`",
     );
-  });
-});
-
-describe("isRegistered", () => {
-  const source = [
-    'import { auth } from "@pithy-sh/auth/src/index";',
-    "const config = {",
-    "  capabilities: [",
-    "    auth({",
-    '      basePath: "/auth",',
-    "    }),",
-    "    audit(),",
-    "    // pithy:capabilities",
-    "  ],",
-    "};",
-  ].join("\n");
-
-  test("finds a block registration and a one-liner", () => {
-    expect(isRegistered(source, "auth")).toBe(true);
-    expect(isRegistered(source, "audit")).toBe(true);
+    expect(required.payload.action).toContain("--set billingSubject=organization");
   });
 
-  test("an import without a registration is not composed", () => {
-    // The import is what `pithy add` writes first. A config that imports a capability and never
-    // registers it composes nothing, and boot agrees.
-    expect(isRegistered('import { email } from "@pithy-sh/email/src/index";', "email")).toBe(false);
+  test("a person who said no is given no fix: they answered", () => {
+    expect(fixOf(prerequisiteRefusal(refusalFor("email", board, ["secrets"])))).toBeUndefined();
   });
 
-  test("a longer name that merely starts the same is not a match", () => {
-    expect(isRegistered(source, "auth2")).toBe(false);
-    expect(isRegistered("    myauth(),", "auth")).toBe(false);
+  test("a no is still a validation refusal, because somebody answered", () => {
+    expect(prerequisiteRefusal(refusalFor("email", board, ["secrets"])).payload.code).toBe("validation/invalid_input");
   });
 });

@@ -68,7 +68,7 @@ describe("CloudflareEmailProvisioner", () => {
 
     findDatabaseByName.mockResolvedValue(null);
     createDatabase.mockResolvedValue({ uuid: "new-db", name: suppressionDatabaseName(PROJECT) });
-    expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "new-db" });
+    expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "new-db", created: true });
     expect(events).toEqual([
       expect.objectContaining({
         action: "email/suppression_db_created",
@@ -86,7 +86,7 @@ describe("CloudflareEmailProvisioner", () => {
     events.length = 0;
     createDatabase.mockClear();
     findDatabaseByName.mockResolvedValue({ uuid: "existing-db", name: suppressionDatabaseName(PROJECT) });
-    expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "existing-db" });
+    expect(await provisioner.ensureSuppressionDatabase()).toEqual({ databaseId: "existing-db", created: false });
     expect(createDatabase).not.toHaveBeenCalled();
     expect(events).toEqual([]);
   });

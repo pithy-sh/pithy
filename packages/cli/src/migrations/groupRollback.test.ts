@@ -130,7 +130,9 @@ describe("the bare rollback is refused", () => {
     expect(refused.payload.message).toContain("The newest group is release-7");
     expect(refused.payload.message).toContain("DB holds 1000_app_0001_things");
     expect(refused.payload.message).toContain("COLLAB_DB holds 0500_multiplayer_0001_rooms");
-    expect(refused.payload.action).toBe("Reverse it with pithy migrate --rollback --group release-7.");
+    expect(refused.payload.action).toBe(
+      "Reverse it. `pithy migrate --env dev --rollback --group release-7` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
 
     // It reverses nothing: both ledgers stand exactly as the migrate left them.
     await withLocalD1(h.projectDir, "DB", async (db) => expect(await ledgerOf(db)).toEqual(["1000_app_0001_things"]));
@@ -241,7 +243,9 @@ describe("a group rollback", () => {
     const refused = await refusal(migrateProject({ ...base(), workers: whole, rollback: true, group: "release-6" }));
 
     expect(refused.payload.message).toBe("Only the group on top can be reversed. DB applied release-7 over release-6.");
-    expect(refused.payload.action).toBe("Reverse release-7 first: pithy migrate --rollback --group release-7.");
+    expect(refused.payload.action).toBe(
+      "Reverse release-7 first. `pithy migrate --env dev --rollback --group release-7` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
     // Nothing moved: both migrations are still applied.
     await withLocalD1(h.projectDir, "DB", async (db) =>
       expect(await ledgerOf(db)).toEqual(["1000_app_0001_things", "1000_app_0002_more"]),

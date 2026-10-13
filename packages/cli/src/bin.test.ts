@@ -131,7 +131,7 @@ describe("pithy init", () => {
     expect(error.code).toBe(EXIT.precondition);
     const [problem, action] = error.stderr.trim().split("\n");
     expect(problem).toContain("pithy.config.ts");
-    expect(action).toContain("Run pithy init again.");
+    expect(action).toContain("Move those aside, or pick a directory without them, then run this again.");
   });
 
   test("--json renders the error as a parseable envelope on stderr, exit 3", async () => {
@@ -148,7 +148,7 @@ describe("pithy init", () => {
         code: "core/conflict",
         status: 409,
         message: expect.stringContaining("pithy.config.ts"),
-        action: expect.stringContaining("Run pithy init again."),
+        action: expect.stringContaining("Move those aside, or pick a directory without them, then run this again."),
         exit: EXIT.precondition,
         retryable: false,
       },
@@ -172,7 +172,7 @@ describe("pithy init", () => {
         code: "core/conflict",
         status: 409,
         message: expect.stringContaining(join("apps", "edge")),
-        action: expect.stringContaining("Run pithy init again."),
+        action: expect.stringContaining("Move those aside, or pick a directory without them, then run this again."),
         exit: EXIT.precondition,
         retryable: false,
       },

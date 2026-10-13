@@ -1,11 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { turnstile as turnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import type { ArgsDef, CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
-import turnstile, { featureSitekeyNote, resolveTurnstileDeprovisionTarget, resolveTurnstileTarget } from "./turnstile";
+import turnstile, {
+  featureSitekeyNote,
+  resolveTurnstileDeprovisionTarget,
+  resolveTurnstileTarget,
+  startingOverLine,
+} from "./turnstile";
 
 /** A widget's sitekeys, blank — what the target is resolved by is which modes a Worker declares. */
 const SITEKEYS = { sitekeys: { dev: "", staging: "", prod: "" } };
@@ -158,5 +164,31 @@ describe("featureSitekeyNote", () => {
     const note = featureSitekeyNote(both, ["visible", "invisible"]);
     expect(note).toContain("visible");
     expect(note).toContain("invisible");
+  });
+});
+
+/**
+ * **Starting over names the caller's own provision to run again (#711)** — on the Worker the run wrote into, and
+ * with `--allow-shared-domain` when the caller needed it: without it, the rerun is refused by the domain guard
+ * the first run was let past.
+ */
+describe("startingOverLine", () => {
+  const worker = { dir: "/project/apps/api" };
+
+  test("the rerun keeps --allow-shared-domain when the caller passed it", () => {
+    const line = startingOverLine(
+      callerOf("turnstile provision", { json: false, worker: "api", "allow-shared-domain": true }),
+      worker,
+    );
+    expect(line).toContain("`pithy turnstile provision --worker api --allow-shared-domain` writes the secret again.");
+  });
+
+  test("the rerun names only the Worker when the caller passed nothing else", () => {
+    const line = startingOverLine(
+      callerOf("turnstile provision", { json: false, "allow-shared-domain": false }),
+      worker,
+    );
+    expect(line).toContain("`pithy turnstile provision --worker api` writes the secret again.");
+    expect(line).toContain("pithy turnstile deprovision --worker api");
   });
 });

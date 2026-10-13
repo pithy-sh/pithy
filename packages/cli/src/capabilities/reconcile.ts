@@ -12,6 +12,7 @@ import {
   renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
+import { commandName, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { type PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
@@ -30,7 +31,7 @@ import { allCapabilities, readDeclinedBindings, readPinnedBindings, type WorkerC
 import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
-import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
+import { readWranglerConfig, workerEntryPath, workerEnvironments, writeWranglerConfig } from "../project/wrangler";
 import { declaresConstant } from "./configConstants";
 import { exportsName } from "./configImports";
 import { ejectedCapabilities } from "./eject";
@@ -38,6 +39,7 @@ import { findEntitlementGap } from "./entitlementGap";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { composedManifests } from "./manifests";
 import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
+import { capabilityProvisionRemedies, remediesSentence } from "./provisionCommand";
 import { requiredOptionRefusal } from "./requiredOptions";
 
 /**
@@ -1464,6 +1466,8 @@ export interface ApplyReconcilePlanOptions {
   account: CloudflareAccountSelection | null;
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
+  /** The project's `seed.productionEnvironments`, which a refusal naming a provision says as a person's (#711). */
+  productionEnvironments?: readonly string[];
 }
 
 /** What one capability's apply changed: the bindings and config keys actually added. */
@@ -1675,9 +1679,9 @@ async function applyConfigKeys(workerDir: string, plan: ReconcilePlan): Promise<
 function requireMigrationProject(project: string | undefined): string {
   if (project === undefined) {
     throw new ValidationError({
-      message: "pithy upgrade --migrate needs a project name.",
+      message: `${commandName("upgrade")} needs a project name to migrate.`,
       action:
-        "Set `name` in pithy.config.ts, then run pithy upgrade --migrate again. It stamps each database as this project's, so another project's database is refused instead of silently merged.",
+        "Set `name` in pithy.config.ts, then run this again. The migration stamps each database as this project's, so another project's database is refused instead of silently merged.",
     });
   }
   return project;
@@ -1714,8 +1718,12 @@ function refuseUnwritableConfigKeys(plan: ReconcilePlan): void {
  * Named together for the same reason `refuseUnwritableConfigKeys` names its options together: an
  * adopter fixing this edits one file once.
  */
-function refuseUnhonorableDeclines(plan: ReconcilePlan): void {
-  const refusal = declineRefusal(plan);
+function refuseUnhonorableDeclines(
+  plan: ReconcilePlan,
+  environments: readonly string[],
+  productionEnvironments: readonly string[],
+): void {
+  const refusal = declineRefusal(plan, environments, productionEnvironments);
   if (refusal) throw refusal;
 }
 
@@ -1733,8 +1741,15 @@ function refuseUnhonorableDeclines(plan: ReconcilePlan): void {
  *
  * The config-key refusal beside it is deliberately not folded in here: it has the same shape and the
  * same defect, and moving it changes output this issue did not touch. It wants its own change.
+ *
+ * `productionEnvironments` is the project's `seed.productionEnvironments`: a provision for one of them is said as a
+ * person's decision, as `prod`'s is (#711).
  */
-export function declineRefusal(plan: ReconcilePlan): PithyError | null {
+export function declineRefusal(
+  plan: ReconcilePlan,
+  environments: readonly string[],
+  productionEnvironments: readonly string[],
+): PithyError | null {
   if (plan.declinedBindings.state === "invalid") {
     return new ValidationError({
       message: "This Worker's `declinedBindings` declaration is not valid.",
@@ -1749,7 +1764,9 @@ export function declineRefusal(plan: ReconcilePlan): PithyError | null {
     decline.state === "required"
       ? `${decline.name} (${decline.type}) — ${decline.capability} requires it, so it is never left out.`
       : `${decline.name} (${decline.type}) — this kind cannot be declined. ${undeclinableReason(decline.type)}${
-          decline.type === "durable_object" ? "" : ` Run \`pithy ${decline.capability} provision\`.`
+          decline.type === "durable_object"
+            ? ""
+            : ` ${remediesSentence(capabilityProvisionRemedies(decline.capability, workerDirOf({ dir: plan.worker }), environments, productionEnvironments))}`
         }`,
   );
   return new ValidationError({
@@ -1786,7 +1803,7 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   // Before `refuseUnwritableConfigKeys`, and in that slot for exactly that comment's reason: a decline
   // this composition cannot honor is unfixable from here, and raising it after `applyBindings` has
   // rewritten `wrangler.jsonc` would leave the Worker half-reconciled against a belief that was wrong.
-  refuseUnhonorableDeclines(plan);
+  refuseUnhonorableDeclines(plan, await workerEnvironments(workerDir), options.productionEnvironments ?? []);
   refuseUnwritableConfigKeys(plan);
 
   const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);

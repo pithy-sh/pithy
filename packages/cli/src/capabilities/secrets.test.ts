@@ -421,11 +421,9 @@ describe("resolveSecretRegistry", () => {
         return error as NotFoundError;
       }
     })();
-    // The remedy is one a person can take. No `pithy secrets` subcommand takes --worker (secrets.md), so the
-    // action names none; and one Worker's config cannot say which Worker `pithy add` should wire, so the `fix`
-    // is the project's to name (`commands/secrets.test.ts`, #697).
-    expect(failure?.payload.action).toContain("pithy add secrets");
-    expect(failure?.payload.action).not.toContain("--worker");
+    // One Worker's config cannot say which Worker `pithy add` should wire, so the command is the project's to
+    // name (`commands/secrets.test.ts`, #697), and this sentence names none rather than a placeholder (#711).
+    expect(failure?.payload.action).toBe("Add secrets({ registry }) to a Worker's pithy.config.ts capabilities.");
     expect(fixOf(failure as NotFoundError)).toBeUndefined();
   });
 

@@ -97,6 +97,12 @@ describe("the secrets provision defers, and who can create them", () => {
     const lines = pendingSecretLines(pendingSecrets(SHIPPED, mode));
     expect(commandsNamed(lines)).toEqual(["pithy secrets provision"]);
     expect(lines.join("\n")).toContain("auth-session-secret");
+    // It deploys every environment's manager, production included: a person's decision after `--env staging`, and
+    // never a remedy an agent runs as written (#711). `--json` carries the same sentence.
+    expect(lines[1]).toContain("runs against every environment, production included. That is a person's decision");
+    expect(pendingSecrets(SHIPPED, mode).remedy).toBe(
+      "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.",
+    );
   });
 
   /**

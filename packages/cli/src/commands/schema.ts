@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandNameOfPath, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type CommandDef, defineCommand } from "citty";
 import { z } from "zod";
@@ -52,16 +53,16 @@ function unknownPath(words: readonly string[], paths: readonly string[]): Valida
   const siblings = paths
     .filter((path) => (parent === "" || path.startsWith(`${parent} `)) && path.split(" ").length === depth)
     .map((path) => path.split(" ").at(-1) as string);
-  const where = parent === "" ? "`pithy`" : `\`pithy ${parent}\``;
+  const where = `\`${commandNameOfPath(prefix)}\``;
   // A leaf has nothing beneath it to list: the words past it are a value, not a command.
   const action =
     siblings.length === 0
-      ? `${where} takes no subcommand; its arguments are in \`pithy schema ${parent} --json\`.`
+      ? `${where} takes no subcommand; its arguments are in \`${pithyCommand("schema", { args: prefix as [string, ...string[]], flags: { "--json": true } })}\`.`
       : `${where} has ${siblings.join(", ")}.`;
   return new ValidationError({
-    message: `No command \`pithy ${typed}\`.`,
+    message: `No command is named \`${typed}\`.`,
     action,
-    issues: [{ path: ["command"], code: "invalid_value", message: `\`pithy ${typed}\` is not a command.` }],
+    issues: [{ path: ["command"], code: "invalid_value", message: `\`${typed}\` is not a command.` }],
   });
 }
 

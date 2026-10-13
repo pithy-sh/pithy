@@ -12,6 +12,8 @@ import {
   type PlannedSitekeys,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { allCapabilities, loadWorkerConfig, type WorkerConfig } from "../project/config";
+import { addAction } from "./addCommand";
+import { resolveAdd } from "./notComposed";
 import { locateRegistration, type ObjectProperty, objectProperties } from "./reconcile";
 
 /**
@@ -220,8 +222,11 @@ async function planSitekeys(
   if (before === undefined) {
     throw new ValidationError({
       message: `${path} does not compose turnstile.`,
-      action:
-        "Add `turnstile({ ... })` to this Worker's pithy.config.ts (run `pithy add turnstile`), or pass --worker.",
+      // A Worker lives at `apps/<name>`, so the project is two directories up.
+      action: addAction(
+        resolveAdd("turnstile", { projectDir: join(workerDir, "..", ".."), workerDir }),
+        (add) => `Add \`turnstile({ ... })\` to this Worker's pithy.config.ts (run ${add}), or pass --worker.`,
+      ),
     });
   }
   const pending = edits.filter((edit) => edit.value === null || resolvedValue(before, edit) !== edit.value);

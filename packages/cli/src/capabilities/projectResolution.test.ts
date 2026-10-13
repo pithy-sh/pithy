@@ -244,7 +244,8 @@ describe("the refusal a load failure earns", () => {
       projectDir,
     );
     expect(kind).toBe("not-installed");
-    expect(action).toContain("pithy add support");
+    // The fixture has no Worker, so no add runs yet: the line says so rather than naming one refused (#711).
+    expect(action).toContain("This project has no Worker to compose support into.");
   });
 
   // A resolved absolute path is not a specifier, and never travels in an action — `loadFailure.test.ts`

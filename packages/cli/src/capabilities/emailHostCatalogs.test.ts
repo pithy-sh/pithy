@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
@@ -9,10 +11,11 @@ import { email } from "@pithy-sh/email/src/capability";
 import { catalogsFromEnv } from "@pithy-sh/email/src/templates/messages";
 import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
 import { i18n } from "@pithy-sh/i18n/src/capability";
-import { describe, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { loadEmailCapability } from "../commands/email";
 import type { ResolvedWorker } from "../project/workerScope";
-import { KIT_ROOT } from "../test-utils/kitRoot";
+import { materializeKitPackage } from "../test-utils/linkKit";
+import { removeTempDir } from "../test-utils/tempRepo";
 import { CloudflareEmailProvisioner } from "./emailProvisioner";
 
 /**
@@ -101,9 +104,28 @@ describe("loadEmailCapability", () => {
 });
 
 describe("CloudflareEmailProvisioner.deployWorker", () => {
+  /**
+   * A project holding its own copy of `@pithy-sh/email`, never the repository's (#711).
+   *
+   * `deployWorker` writes the resolved config beside the host's worker module before it runs wrangler. From the
+   * repository's root that module is `packages/email/src/workflows/`, so every run of this file wrote
+   * `.wrangler.prod.json` into a source tree `turboInputs.test.ts` and `sourceFiles.test.ts` read in parallel.
+   * `test-utils/linkKit.ts` states the rule: the link or the write, never both.
+   */
+  let projectDir: string;
+
+  beforeAll(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), "pithy-email-host-catalogs-"));
+    await materializeKitPackage(projectDir, "email");
+  });
+
+  afterAll(async () => {
+    await removeTempDir(projectDir);
+  });
+
   function provisioner(messages: LocaleCatalogs) {
     return new CloudflareEmailProvisioner({
-      projectDir: KIT_ROOT,
+      projectDir,
       cf: {} as CloudflareClients,
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: "acme",

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { open, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor } from "../devSecrets/mode";
@@ -47,7 +48,7 @@ function unreadableAction(code: string | undefined, name: string): string {
  * having a way to get at it.
  */
 function corruptAction(registryPath: string): string {
-  return `Delete ${registryPath} and re-run pithy feature create to rebuild it.`;
+  return `Delete ${registryPath} and re-run ${commandName("feature create")} with this feature's slug and --issue to rebuild it.`;
 }
 
 /** Read a property off an unknown throwable without widening anything to `any`. */
@@ -71,7 +72,7 @@ function gitResolveAction(cause: unknown): string {
   const stderr = prop(cause, "stderr");
   const text = typeof stderr === "string" ? stderr : "";
   if (/not a git repository|this operation must be run in a work tree/i.test(text)) {
-    return "Run pithy from inside a git repository.";
+    return "Run this from inside a git repository.";
   }
   return "git rev-parse --git-common-dir failed. Run it here to see why, then re-run.";
 }
@@ -651,9 +652,9 @@ export function describeStaleAutostartRoots(stale: readonly StaleAutostartRoot[]
   const rest = stale.length - named.length;
   // `pithy doctor` already lists every root with `onDisk: false`, so the overflow has somewhere to go
   // rather than being dropped — see `doctor/portsRegistry.ts`.
-  if (rest > 0) lines.push(`And ${rest} more — pithy doctor lists every root in the registry.`);
+  if (rest > 0) lines.push(`And ${rest} more — ${commandName("doctor")} lists every root in the registry.`);
   lines.push(
-    "Nothing looks them up again. If that was this project before it moved, re-set them here with pithy dev --app <name> --disable-autostart.",
+    `Nothing looks them up again. If that was this project before it moved, re-set them here with ${commandName("dev")}, naming each Worker with --app beside --disable-autostart.`,
   );
   return lines;
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
+import { commandName, personDecision } from "@pithy-sh/core/src/cli/command";
 import { PersonRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -22,8 +23,8 @@ import { buildAudit, targetWorker } from "./add";
 export function rejectJson(json: boolean): void {
   if (json) {
     throw new PersonRequiredError({
-      message: "pithy remove is a manual command. --json is not supported.",
-      action: "Run pithy remove <capability> at a terminal.",
+      message: `${commandName("remove")} is a manual command. --json is not supported.`,
+      action: `A person runs ${commandName("remove")} at a terminal, naming the capability.`,
     });
   }
 }
@@ -37,8 +38,8 @@ export function rejectJson(json: boolean): void {
 export function rejectNoInput(forbidden: boolean, capability: string): void {
   if (!forbidden) return;
   throw new PersonRequiredError({
-    message: "pithy remove is a manual command, and this run forbids prompts.",
-    action: `Run pithy remove ${capability} at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
+    message: `${commandName("remove")} is a manual command, and this run forbids prompts.`,
+    action: `${personDecision("remove", { args: [capability] })} Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
   });
 }
 
@@ -67,11 +68,14 @@ export function dropConfirm(capability: string, env: string): () => Promise<bool
  * exit 5. Without this, a run under `--no-input` or with no terminal reached {@link dropConfirm}'s prompt
  * anyway.
  */
-export function requireDropConfirmable(capability: string, options: { drop: boolean; interactive: boolean }): void {
+export function requireDropConfirmable(
+  capability: string,
+  options: { drop: boolean; interactive: boolean; env: string },
+): void {
   if (!options.drop || options.interactive) return;
   throw new PersonRequiredError({
     message: `Dropping ${capability}'s tables needs a person to confirm it.`,
-    action: `Run pithy remove ${capability} --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
+    action: `${personDecision("remove", { args: [capability], flags: { "--drop": true, "--env": options.env } })} Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.`,
   });
 }
 
@@ -104,7 +108,7 @@ export default withContract(
         const env = requireEnvironment(args.env);
         // Who confirms a drop is settled before anything is read: a run nobody may be asked in stops here.
         const interactive = mayPrompt(false);
-        requireDropConfirmable(args.capability, { drop: args.drop, interactive });
+        requireDropConfirmable(args.capability, { drop: args.drop, interactive, env });
 
         // Which Worker to unwire. `remove` is human-only, so the prompt is available whenever one may be drawn.
         //
@@ -197,7 +201,7 @@ export default withContract(
           process.stdout.write(
             shared
               ? `${args.capability}'s D1 tables were left in place — ${result.keptFor.join(", ")} still ${result.keptFor.length === 1 ? "wires" : "wire"} it and ${result.keptFor.length === 1 ? "is" : "are"} using them. Don't drop them by hand.\n`
-              : `${args.capability}'s D1 tables were left in place — your data is safe, and a later pithy add ${args.capability} reuses them. To drop them, remove the pithy_${args.capability}_* tables by hand (pass --drop to reverse them during removal).\n`,
+              : `${args.capability}'s D1 tables were left in place — your data is safe, and composing ${args.capability} again with ${commandName("add")} reuses them. To drop them, remove the pithy_${args.capability}_* tables by hand (pass --drop to reverse them during removal).\n`,
           );
         }
         process.stdout.write(`${formatDone()}\n`);

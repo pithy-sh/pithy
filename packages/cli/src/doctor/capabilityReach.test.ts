@@ -65,7 +65,15 @@ describe("capabilityReachHealth", () => {
 
   test("a capability installed nowhere is unreachable, and every composing Worker is named", async () => {
     const health = await capabilityReachHealth(dir, [await worker("api", ["payments"])]);
-    expect(health.unreachable).toEqual([{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }]);
+    expect(health.unreachable).toEqual([
+      {
+        capability: "payments",
+        package: "@pithy-sh/payments",
+        workers: ["api"],
+        // A Worker with no config to read states no option.
+        settled: { composed: ["payments"], answered: [] },
+      },
+    ]);
     expect(health.ok).toBe(false);
   });
 
@@ -77,6 +85,27 @@ describe("capabilityReachHealth", () => {
    * the same defect wearing the other sign, so the two are pinned against each other rather than
    * separately.
    */
+  // #711: the fix names the first composing Worker's add, which `pithy add` runs over what its config already says.
+  // So the finding records what that Worker settles: what it composes, and which of the capability's required options
+  // its registration states.
+  test("an unreachable capability records what its first Worker's config already settles", async () => {
+    await install(dir, "@pithy-sh/secrets");
+    const api = await worker("api", ["secrets", "payments"]);
+    await writeFile(
+      join(api.dir, "pithy.config.ts"),
+      'export default {\n  capabilities: [\n    secrets({ registry: {} }),\n    payments({\n      billingSubject: "organization",\n    }),\n  ],\n};\n',
+    );
+    const health = await capabilityReachHealth(dir, [api, await worker("web", ["payments"])]);
+    expect(health.unreachable).toEqual([
+      {
+        capability: "payments",
+        package: "@pithy-sh/payments",
+        workers: ["api", "web"],
+        settled: { composed: ["secrets", "payments"], answered: ["billingSubject"] },
+      },
+    ]);
+  });
+
   test("what doctor calls reachable is what the resolver can find", async () => {
     const api = await worker("api", ["payments"]);
     await install(api.dir, "@pithy-sh/payments");

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { loadProject, requireProjectName } from "../project/config";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
@@ -206,7 +207,7 @@ export function selectDevMembers(members: readonly DevSetMember[], names: readon
         message: `No worker named "${name}".`,
         // `pithy dev --list`, not `pithy worker list`: the registry view names no capability host, and a
         // host's capability name is one of the three forms this accepts.
-        action: `Run pithy dev --list to see this project's dev set. Known: ${known || "none"}.`,
+        action: `Run ${pithyCommand("dev", { flags: { "--list": true } })} to see this project's dev set. Known: ${known || "none"}.`,
       });
     }
     if (matched.length > 1) {

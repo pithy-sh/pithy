@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
-import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type Caller, callerOf, personDecision, rerunCommand } from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import { type TurnstileConfig, TurnstileMode, TurnstileSitekeys } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -17,9 +18,8 @@ import { createProjectCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
 import { environmentsBuiltWithoutSitekeys } from "../capabilities/turnstileSitekeys";
-import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import {
@@ -32,7 +32,7 @@ import {
   type WorkerConfig,
 } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
-import { workerIdentity } from "../project/workerIdentity";
+import { workerDirName, workerIdentity } from "../project/workerIdentity";
 import { type ResolvedWorker, type ResolveSingleOptions, resolveSingleWorker } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -91,34 +91,6 @@ function resolveModes(config: TurnstileConfig): TurnstileMode[] {
     });
   }
   return modes;
-}
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- *
- * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
- * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
- * "I asked an account nothing claims" — the two arrive as one empty listing.
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  return { account: { accountId, confirmation }, accountId, apiToken };
 }
 
 /**
@@ -205,6 +177,18 @@ export function featureSitekeyNote(config: TurnstileConfig, modes: readonly Turn
 }
 
 /** Where each stranded var was, as an operator reads it: `TURNSTILE_SITEKEY_VISIBLE (staging)`. */
+/**
+ * **Starting over, when the production widgets already existed and their secret was left as-is.** Both commands
+ * act on the Worker this run wrote into — a project with several refuses either without `--worker` (#711) — and
+ * the provision is the caller's own run again, `--allow-shared-domain` included: without it, the rerun is refused
+ * by the domain guard this run was let past.
+ */
+export function startingOverLine(caller: Caller<"turnstile provision">, worker: { dir: string }): string {
+  const named = workerDirName(worker);
+  const reprovision = rerunCommand(caller, { flags: { "--worker": named } });
+  return `Production widgets already existed; their secret was left as-is. If the production gate returns turnstile/config, starting over is the way through. ${personDecision("turnstile deprovision", { flags: { "--worker": named } })} After it, \`${reprovision}\` writes the secret again.`;
+}
+
 function strandedLine(stranded: readonly StrandedSitekeyVar[]): string {
   return stranded.map((found) => `${found.name} (${found.environment})`).join(", ");
 }
@@ -280,7 +264,7 @@ const provision = withContract(
           ...(args.worker !== undefined ? { worker: args.worker } : {}),
         });
         const modes = resolveModes(config);
-        const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
         const productionDomain = await resolveProductionDomain(worker);
         const cf = await cloudflareClients({ accountId, apiToken });
         // The project name scopes both the widget names (`<project>-prod-turnstile-<mode>`) and the
@@ -304,10 +288,13 @@ const provision = withContract(
           audit,
         });
 
+        // The caller's own run, the one input every line naming it again is built from (#711).
+        const caller = callerOf("turnstile provision", args);
         const result = await provisionTurnstile(provisioner, {
           modes,
           productionDomain,
-          allowSharedDomain: args["allow-shared-domain"],
+          worker: workerDirName(worker),
+          caller,
         });
         const configFile = relative(projectDir, join(worker.dir, "pithy.config.ts"));
         // Said here, where an operator believes Turnstile was just enabled: the builds no sitekey can reach.
@@ -337,9 +324,7 @@ const provision = withContract(
         if (result.widgets.length > 0 && !result.productionSecretWritten) {
           // All production widgets already existed, so their secret can't be recomposed (Cloudflare never
           // returns it) and was left as-is. If it was never stored, re-running won't heal it — say so.
-          process.stdout.write(
-            "Production widgets already existed; their secret was left as-is. If the production gate returns turnstile/config, run `pithy turnstile deprovision` then provision again.\n",
-          );
+          process.stdout.write(`${startingOverLine(caller, worker)}\n`);
         }
         process.stdout.write(`Sitekeys written to ${configFile} for dev, staging and prod.\n`);
         // The sitekey is inlined when the front end is built, so a deployed bundle still carries the old one.
@@ -393,7 +378,7 @@ const deprovision = withContract(
           return;
         }
         const modes = resolveModes(config);
-        const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
         const cf = await cloudflareClients({ accountId, apiToken });
         // The project name scopes both the widget names teardown recomputes and the dispatcher's
         // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one

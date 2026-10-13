@@ -46,6 +46,11 @@ export interface EnsureSecretsStoreIdOptions {
    */
   paths: CloudflareConfigOptions;
   /**
+   * The caller's own `pithy add secrets`, as a sentence sending the operator back to run it again names it: its
+   * Worker and every flag it was given (#711), since a project with several Workers refuses it without one.
+   */
+  again: string;
+  /**
    * Seam: list the account's Secrets Stores. Defaults to the real REST call. A test passing this never
    * reaches Cloudflare — and the default is what makes "no credentials" a decision this module owns
    * rather than one every caller repeats.
@@ -56,6 +61,7 @@ export interface EnsureSecretsStoreIdOptions {
 /** The lines `pithy add secrets` prints for the store id. Empty when there was nothing worth saying. */
 export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions): Promise<string[]> {
   const paths = options.paths;
+  const again = options.again;
   // Resolved rather than read: a project that pins `cloudflare.accountId` and finds credentials for a
   // different account must get a sentence here, not the throw `cloudflareEnv` raises. Recording the store
   // id is a convenience riding on `pithy add secrets`, and a convenience that fails its command is not
@@ -76,7 +82,7 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   if (!accountId || !apiToken) {
     if (recorded) return [];
     return [
-      `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run pithy init, then pithy add secrets again.`,
+      `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run ${again} again.`,
     ];
   }
 
@@ -84,14 +90,14 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   if (stores === null) {
     if (recorded) return [];
     return [
-      `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run pithy add secrets again, or set SECRETS_STORE_ID in ${cloudflareConfigPath(paths)}.`,
+      `Could not reach Cloudflare to resolve SECRETS_STORE_ID, so it was not recorded. Run ${again} again, or set SECRETS_STORE_ID in ${cloudflareConfigPath(paths)}.`,
     ];
   }
 
   if (stores.length === 0) {
     if (recorded) return [];
     return [
-      "This account has no Secrets Store yet, so SECRETS_STORE_ID was not recorded. Create one in the Cloudflare dashboard (Secrets Store), then run pithy add secrets again.",
+      `This account has no Secrets Store yet, so SECRETS_STORE_ID was not recorded. Create one in the Cloudflare dashboard (Secrets Store), then run ${again} again.`,
     ];
   }
 

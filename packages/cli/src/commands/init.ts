@@ -3,6 +3,7 @@
 
 import { basename, join, resolve } from "node:path";
 import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
@@ -254,7 +255,7 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
 
   if (!configured) {
     process.stdout.write(
-      `${dim("Cloudflare credentials are per account, not per project — one set for every project on that account.")}\n${dim(`They are kept under ${stateDir(paths)}, never in this repository.`)}\n${dim("Press enter to skip; pithy doctor names them until they are set.")}\n\n`,
+      `${dim("Cloudflare credentials are per account, not per project — one set for every project on that account.")}\n${dim(`They are kept under ${stateDir(paths)}, never in this repository.`)}\n${dim(`Press enter to skip; ${commandName("doctor")} names them until they are set.`)}\n\n`,
     );
   }
 

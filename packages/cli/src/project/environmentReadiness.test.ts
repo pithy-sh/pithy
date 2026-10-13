@@ -4,9 +4,10 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type CommandPath, callerOf, rerunRemedy, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { describe, expect, test } from "vitest";
-import { fixOf } from "../terminal/exitClass";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { EXIT, fixOf } from "../terminal/exitClass";
 import {
   environmentOutcomes,
   environmentReadiness,
@@ -14,6 +15,7 @@ import {
   narrowReadiness,
   readyStanza,
   requireReadyEnvironments,
+  writeProvisionReport,
 } from "./environmentReadiness";
 
 /**
@@ -24,6 +26,11 @@ import {
  * failed part way through naming production (pithy-sh/pithy#512). The decision now happens once, before
  * anything is created, and the tests below are the ones that fail if it moves back.
  */
+
+/** The caller's run again, on the Worker `api`, as each provision command builds it. */
+function again(path: CommandPath, given: Readonly<Record<string, unknown>> = {}) {
+  return rerunRemedy(callerOf(path, given), { flags: { "--worker": workerDirOf({ dir: "apps/api" }) } });
+}
 
 /** A `wrangler.jsonc` with one env stanza per entry — `null` for a stanza with no `DB` id at all. */
 async function project(stanzas: Record<string, string | null>): Promise<string> {
@@ -67,7 +74,12 @@ describe("environmentReadiness", () => {
 
     expect(readiness.ready).toEqual(["staging"]);
     expect(readiness.skipped).toEqual([
-      { env: "prod", reason: "env.prod has no DB database_id.", action: "Run pithy provision --env prod." },
+      {
+        env: "prod",
+        reason: "env.prod has no DB database_id.",
+        action:
+          "`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.",
+      },
     ]);
     expect(readyStanza(readiness, "staging").appDatabaseId).toBe("db-staging");
   });
@@ -115,7 +127,12 @@ describe("environmentReadiness", () => {
 
     expect(readiness.ready).toEqual(["staging"]);
     expect(readiness.skipped).toEqual([
-      { env: "prod", reason: "env.prod has no DB database_id.", action: "Run pithy provision --env prod." },
+      {
+        env: "prod",
+        reason: "env.prod has no DB database_id.",
+        action:
+          "`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.",
+      },
     ]);
     // And the stanza is unreachable, so nothing downstream can bind a Worker to the empty string.
     expect(() => readyStanza(readiness, "prod")).toThrow();
@@ -175,12 +192,12 @@ describe("requireReadyEnvironments", () => {
       environments: ["staging", "prod"],
     });
 
-    const error = await thrown(() => requireReadyEnvironments(readiness, "pithy email provision"));
+    const error = await thrown(() => requireReadyEnvironments(readiness, again("email provision")));
     const payload = error.payload;
 
     expect(payload.message).toBe("No environment is ready — staging and prod have no DB database_id.");
     expect(payload.action).toBe(
-      "Run pithy provision --env staging to create its app database, then run pithy email provision again.",
+      "Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy email provision --worker api` again.",
     );
     // The call was right and the account is not ready: exit 3, and the command that readies the first (#697).
     expect(payload.code).toBe("core/precondition_failed");
@@ -201,8 +218,60 @@ describe("requireReadyEnvironments", () => {
       ...(productionEnvironments ? { productionEnvironments } : {}),
     });
 
-    const error = await thrown(() => requireReadyEnvironments(readiness, "pithy email provision"));
+    const error = await thrown(() => requireReadyEnvironments(readiness, again("email provision")));
     expect(error.payload.code).toBe("core/precondition_failed");
+    expect(fixOf(error)).toBeUndefined();
+    // …and the sentence does not hand an agent the bare command it would be refused (#711): it names the
+    // phrase as a person's, in the skip reason and in the refusal alike.
+    const step = `\`pithy provision --env ${env} --yes\` with its --confirm phrase, which only a person gives, runs against ${env}, a production environment. That is a person's decision, not a fix.`;
+    expect(error.payload.action).toBe(
+      `${step} Once its app database exists, run \`pithy email provision --worker api\` again.`,
+    );
+    expect(readiness.skipped[0]?.action).toBe(step);
+  });
+
+  // A remedy names every environment the fault applies to (#711): an agent that provisioned only the first ran the
+  // command again with the rest still skipped, and was never told to provision them.
+  test("several skipped environments are each named in the action, and no one command is the fix", async () => {
+    const dir = await project({ staging: null, live: null });
+    const readiness = await environmentReadiness({
+      workerDir: dir,
+      label: "wrangler.jsonc",
+      environments: ["staging", "live"],
+    });
+
+    const error = await thrown(() => requireReadyEnvironments(readiness, again("email provision", { json: true })));
+    expect(error.payload.action).toBe(
+      "Run pithy provision --env staging --yes and pithy provision --env live --yes to create their app databases, then run `pithy email provision --json --worker api` again.",
+    );
+    expect(fixOf(error)).toBeUndefined();
+  });
+
+  // Staging is an agent's to provision and production a person's: the one command an agent can run is the fix,
+  // and the action still names both.
+  test("the one provision an agent can run is the fix, beside a production one a person decides", async () => {
+    const dir = await project({ staging: null, prod: null });
+    const readiness = await environmentReadiness({
+      workerDir: dir,
+      label: "wrangler.jsonc",
+      environments: ["staging", "prod"],
+    });
+
+    const error = await thrown(() => requireReadyEnvironments(readiness, again("email provision")));
+    expect(error.payload.action).toContain("pithy provision --env staging --yes");
+    expect(error.payload.action).toContain("`pithy provision --env prod --yes` with its --confirm phrase");
+    expect(fixOf(error)).toBe("pithy provision --env staging --yes");
+  });
+
+  // `pithy testers provision --env prod`: running it again is itself a production run, a person's decision.
+  test("a run again that is a person's decision is said as one", async () => {
+    const dir = await project({ prod: null });
+    const readiness = await environmentReadiness({ workerDir: dir, label: "wrangler.jsonc", environments: ["prod"] });
+
+    const error = await thrown(() => requireReadyEnvironments(readiness, again("testers provision", { env: "prod" })));
+    expect(error.payload.action).toBe(
+      "`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once its app database exists, this run is next: `pithy testers provision --env prod --worker api` runs against prod, a production environment. That is a person's decision, not a fix.",
+    );
     expect(fixOf(error)).toBeUndefined();
   });
 
@@ -214,7 +283,72 @@ describe("requireReadyEnvironments", () => {
       environments: ["staging", "prod"],
     });
 
-    expect(() => requireReadyEnvironments(readiness, "pithy email provision")).not.toThrow();
+    expect(() => requireReadyEnvironments(readiness, again("email provision"))).not.toThrow();
+  });
+});
+
+/**
+ * **One outcome per `provision --json` run (#711).** A refusal is the error line alone, with its exit and `fix`.
+ * A run that went ahead is its report alone, and the report's `exitCode` is what the process exits with.
+ */
+describe("writeProvisionReport", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Everything the helper writes to stdout, in order. */
+  function captureStdout(): string[] {
+    const writes: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    return writes;
+  }
+
+  test("a run in which every environment skipped writes nothing, and refuses with the fix", async () => {
+    const dir = await project({ staging: null, prod: null });
+    const readiness = await environmentReadiness({
+      workerDir: dir,
+      label: "wrangler.jsonc",
+      environments: ["staging", "prod"],
+    });
+    const writes = captureStdout();
+
+    const error = await thrown(() =>
+      writeProvisionReport({ command: "media provision" }, readiness, again("media provision")),
+    );
+
+    expect(writes).toEqual([]);
+    expect(error.payload.code).toBe("core/precondition_failed");
+    expect(fixOf(error)).toBe("pithy provision --env staging --yes");
+    expect(error.payload.action).toBe(
+      "Run pithy provision --env staging --yes to create its app database. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix. Once their app databases exist, run `pithy media provision --worker api` again.",
+    );
+  });
+
+  test("a run that went ahead writes its report alone, as one line, with exitCode 0", async () => {
+    const dir = await project({ staging: "db-staging", prod: null });
+    const readiness = await environmentReadiness({
+      workerDir: dir,
+      label: "wrangler.jsonc",
+      environments: ["staging", "prod"],
+    });
+    const writes = captureStdout();
+
+    writeProvisionReport(
+      { command: "media provision", skippedEnvironments: readiness.skipped },
+      readiness,
+      again("media provision"),
+    );
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.endsWith("\n")).toBe(true);
+    expect(writes[0]?.trimEnd()).not.toContain("\n");
+    const report = JSON.parse(writes[0] ?? "") as { command: string; exitCode: number; skippedEnvironments: unknown[] };
+    expect(report.command).toBe("media provision");
+    expect(report.exitCode).toBe(EXIT.ok);
+    expect(report.skippedEnvironments).toHaveLength(1);
   });
 });
 
@@ -231,7 +365,7 @@ describe("the report", () => {
 
     expect(report).toBe(
       "  staging  email worker deployed\n" +
-        "  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.\n",
+        "  prod     skipped — env.prod has no DB database_id. `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.\n",
     );
   });
 
@@ -269,7 +403,7 @@ describe("narrowReadiness", () => {
     expect(narrowed.declared).toEqual(["prod"]);
     expect(narrowed.ready).toEqual([]);
     expect(narrowed.skipped.map((entry) => entry.env)).toEqual(["prod"]);
-    await refusal(() => requireReadyEnvironments(narrowed, "pithy testers provision"));
+    await refusal(() => requireReadyEnvironments(narrowed, again("testers provision", { env: "prod" })));
   });
 
   test("narrowing to a ready environment keeps its stanza reachable", async () => {

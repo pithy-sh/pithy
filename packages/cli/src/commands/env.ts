@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
@@ -64,7 +65,7 @@ const LOCAL = "local";
  * `not provisioned`, which is the action item. A line under every environment would be the wallpaper the
  * word was introduced to remove.
  */
-const UNGATED = "Miniflare needs no id. A bare pithy deploy refuses this stanza for having none.";
+const UNGATED = `Miniflare needs no id. A bare ${commandName("deploy")} refuses this stanza for having none.`;
 
 /**
  * Render an id-carrying value: the resource's state when it has no id, a clickable link when

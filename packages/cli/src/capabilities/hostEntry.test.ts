@@ -8,7 +8,8 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
-import { hostEntryFile, hostEntrySource } from "./hostEntry";
+import { hostEntrySource } from "./hostEntry";
+import { hostEntryFile } from "./hostFiles";
 import { hostWorkerFor, PAYMENTS_HOST_PEERS, TESTERS_HOST_PEERS } from "./hostRegistry";
 
 /**

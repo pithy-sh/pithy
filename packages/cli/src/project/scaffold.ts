@@ -5,6 +5,7 @@ import { lstatSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { commandNameOf } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_PATTERN } from "@pithy-sh/core/src/migrations/registry";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -654,9 +655,11 @@ async function templatePaths(worker: string): Promise<{ files: string[]; directo
  * Held to the same allowlist {@link templatePaths} builds the collision gate from, and that is not a
  * coincidence worth leaving to chance: a gate that refuses over a file the copy would never write is a
  * `pithy init` that cannot run in a directory it has no quarrel with.
+ *
+ * `source` is a parameter for the test (#711): what it proves needs a file the starter holds and git does not,
+ * and planting one in `templates/starter` puts it in the tree that every repository-wide suite is reading.
  */
-async function copyTemplate(targetDir: string): Promise<void> {
-  const source = templateSource();
+export async function copyTemplate(targetDir: string, source: TemplateSource = templateSource()): Promise<void> {
   const contents = await templateContents(source);
   const allowed = new Set([...contents.files, ...contents.directories]);
   await cp(source.dir, targetDir, {
@@ -710,7 +713,7 @@ export async function ensureScaffoldable(targetDir: string, worker?: string): Pr
   if (collisions.size === 0) return;
   throw new ConflictError({
     message: `${targetDir} already has ${[...collisions].sort().join(", ")}.`,
-    action: "Move those aside, or pick a directory without them. Run pithy init again.",
+    action: "Move those aside, or pick a directory without them, then run this again.",
   });
 }
 
@@ -733,7 +736,7 @@ function assertNotReserved(appName: string): void {
   if (!isReservedProjectName(appName)) return;
   throw new ValidationError({
     message: `"${RESERVED_TEST_PREFIX}" is reserved — Pithy's integration tests own that name, and their cleanup deletes everything under it.`,
-    action: "Pick a project name that doesn't start with pithy-int-. Run pithy init again.",
+    action: "Pick a project name that doesn't start with pithy-int-, then run this again.",
   });
 }
 
@@ -748,7 +751,7 @@ function assertNoFeatureMarker(appName: string): void {
   if (marker === null) return;
   throw new ValidationError({
     message: `"${appName}" carries ${marker}, the shape a feature's issue takes. A project named that can have no feature environments.`,
-    action: "Pick a project name with no f and a number as one segment. Run pithy init again.",
+    action: "Pick a project name with no f and a number as one segment, then run this again.",
     detail: `A feature name is <project>-f<issue>-<slug>--<thing>, read from the first f<digits> segment.`,
   });
 }
@@ -843,7 +846,7 @@ export function assertWorkerName(worker: string): void {
   throw new ValidationError({
     message: `"${worker}" is reserved — the ${worker} capability's own host Worker deploys under that name.`,
     action: `Pick another name, e.g. ${worker}-api.`,
-    detail: `A worker deploys as <project>-<env>-${worker}, which is byte-identical to the host Worker \`pithy ${worker} provision\` creates. Cloudflare's script namespace is account-flat, so a deploy would replace it.`,
+    detail: `A worker deploys as <project>-<env>-${worker}, which is byte-identical to the host Worker \`${commandNameOf(`${worker} provision`)}\` creates. Cloudflare's script namespace is account-flat, so a deploy would replace it.`,
   });
 }
 

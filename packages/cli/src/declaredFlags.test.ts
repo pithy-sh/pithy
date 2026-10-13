@@ -256,6 +256,15 @@ describe("refuseUndeclaredFlags", () => {
     expect(group.payload.action).toBe("`pithy token` takes only the global flags, which `pithy schema --json` lists.");
   });
 
+  // The command is named by the builder (#711), so a path the CLI does not have is refused rather than spelled, and
+  // the root — no command at all — is named as the binary.
+  test("names the command through the builder, the root included", async () => {
+    const root = (await refuseUndeclaredFlags(tree, ["--a"]).catch((e: unknown) => e)) as ValidationError;
+    expect(root.payload.action).toBe("`pithy` takes only the global flags, which `pithy schema --json` lists.");
+    const unknown: CommandDef = { meta: { name: "pithy" }, subCommands: { frobnicate: { run: () => {} } } };
+    await expect(refuseUndeclaredFlags(unknown, ["frobnicate", "--a"])).rejects.toThrow(/not a command/);
+  });
+
   test("an invocation whose flags are all declared passes", async () => {
     await expect(refuseUndeclaredFlags(tree, ["doctor", "--json"])).resolves.toBeUndefined();
   });

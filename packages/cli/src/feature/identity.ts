@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { canonicalIssue, type FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
@@ -75,7 +76,7 @@ export type BranchSource = "checkout" | "flag";
 const NOT_A_FEATURE_BRANCH: Record<BranchSource, { message: (branch: string) => string; action: string }> = {
   checkout: {
     message: (branch) => `Not on a feature branch (${branch}).`,
-    action: "Run this from inside a feature worktree, or create one with pithy feature create.",
+    action: `Run this from inside a feature worktree, or create one with ${commandName("feature create")}.`,
   },
   flag: {
     message: (branch) => `Not a feature branch (${branch}).`,

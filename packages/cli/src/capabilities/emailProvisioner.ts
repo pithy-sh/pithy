@@ -172,14 +172,14 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
    * "I asked an account nobody claims" arrive as the same empty listing, and creating on the second one
    * puts this project's opt-out list in somebody else's account.
    */
-  async ensureSuppressionDatabase(): Promise<{ databaseId: string }> {
+  async ensureSuppressionDatabase(): Promise<{ databaseId: string; created: boolean }> {
     const name = suppressionDatabaseName(this.#project);
     const existing = await findOnConfirmedAccount({
       ...this.#account,
       what: `the ${name} database`,
       find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
     });
-    if (existing) return { databaseId: existing.uuid };
+    if (existing) return { databaseId: existing.uuid, created: false };
     const db = await this.#cf.d1Provisioner().createDatabase(name);
     await this.#audit({
       environment: "global",
@@ -190,7 +190,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       resourceId: db.uuid,
       metadata: { name },
     });
-    return { databaseId: db.uuid };
+    return { databaseId: db.uuid, created: true };
   }
 
   /** Run the suppression migration against the shared D1 over REST (idempotent — applied ones skip). */

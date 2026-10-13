@@ -173,7 +173,8 @@ function transportAction(error: unknown, origin: string, timeoutMs: number): str
 /** What to tell an operator about a status the client itself returned — reachable, and refusing. */
 function statusAction(status: number): string {
   if (status === 401 || status === 403) {
-    return "Sign in again with pithy login — that credential was refused, not the request.";
+    // Every dashboard command signs in for itself, by device code: there is no separate sign-in command.
+    return "That sign-in was refused, not the request. Run the command again to sign in afresh.";
   }
   if (status === 404) return "That route is not on this management client. Check the origin with --origin.";
   if (status === 429) return "Rate limited. Wait, then run the command again.";

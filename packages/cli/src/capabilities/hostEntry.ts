@@ -54,11 +54,6 @@ export interface HostPeerSeam {
   needed(capability: Capability, siblings: readonly Capability[]): readonly HostPeer[];
 }
 
-/** The generated entry's file name for one environment, beside the config that names it. */
-export function hostEntryFile(env: string): string {
-  return `.pithy-host.${env}.ts`;
-}
-
 /**
  * Whether the project's install carries a kit module. False for a package that is absent, and for one released
  * before the module existed — which is the question this file asks of a host and of each peer.

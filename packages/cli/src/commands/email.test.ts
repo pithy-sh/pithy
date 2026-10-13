@@ -186,7 +186,7 @@ test("a project composing no email is a precondition, with pithy add email as it
     message: "The email capability is not configured.",
   });
   // No manifest under /nowhere rules prerequisites out, and email declares `secrets` anyway (`notComposed.ts`).
-  expect(fixOf(failure as never)).toBe("pithy add email --with-prerequisites");
+  expect(fixOf(failure as never)).toBe("pithy add email --worker api --with-prerequisites");
 });
 
 test("with no Worker, or several, nothing says where email goes, so there is no fix — still exit 3", async () => {

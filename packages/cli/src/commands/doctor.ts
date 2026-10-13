@@ -5,12 +5,20 @@ import { readFileSync } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { cliAtVersion, commandName, commandNameOf, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
+import { addAction } from "../capabilities/addCommand";
+import { providerExample } from "../capabilities/entitlementGap";
 import { ManifestFault } from "../capabilities/manifests";
 import { MissingPrerequisite } from "../capabilities/prerequisites";
+import {
+  capabilityProvisionRemedies,
+  capabilityProvisionRemedy,
+  remediesSentence,
+} from "../capabilities/provisionCommand";
 import {
   type BindingDeclines,
   type BuildReconcilePlanOptions,
@@ -59,13 +67,16 @@ import {
   type FeatureRatelimitIdsCheck,
 } from "../doctor/featureRatelimitIds";
 import {
+  capabilityReachPlan,
   DoctorFix,
   docsConnectFix,
   EMPTY_DEV_VARS_FIX,
   healthWithFixes,
+  prerequisitePlan,
   secretBindingFix,
   strandedTurnstileFix,
   unrenderedTurnstileFix,
+  upgradeFix,
 } from "../doctor/findingFixes";
 import {
   buildProjectHealth,
@@ -136,7 +147,7 @@ import { alreadyProvided, detectPackageManager } from "../project/packageManager
 import type { ResolvedWorker } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck, workflowDriftFix } from "../project/workflows";
 import { describeUnrepeatedKey } from "../project/wranglerInheritance";
-import { provisionFixCommand } from "../provision/provisionFix";
+import { provisionFixCommand, provisionRemedy } from "../provision/provisionFix";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -154,7 +165,7 @@ import { formatJsonLine, withErrorReporting } from "../terminal/output";
  */
 
 /** The alias-block marker `pithy alias` writes — reused here to detect an installed `p.` shortcut. */
-const ALIAS_MARKER = "# >>> pithy alias >>>";
+const ALIAS_MARKER = `# >>> ${commandName("alias")} >>>`;
 
 /**
  * Whether the `p.` alias is installed — **three states, because a boolean cannot say "I could not tell"**
@@ -1537,7 +1548,11 @@ function portsRegistryRows(check: PortsRegistryCheck, home: string): string[] {
   const width = Math.max(0, ...check.entries.map((entry) => range(entry).length));
   return check.entries.map((entry) => {
     const held = entry.own ? entry.branch : `${tildify(entry.root, home)} — ${entry.branch}`;
-    const note = !entry.onDisk ? "  ← not on disk" : entry.orphaned ? "  ← no worktree; pithy feature prune" : "";
+    const note = !entry.onDisk
+      ? "  ← not on disk"
+      : entry.orphaned
+        ? `  ← no worktree; ${pithyCommand("feature prune")}`
+        : "";
     return `${range(entry).padEnd(width)}  ${held}${note}`;
   });
 }
@@ -1556,9 +1571,9 @@ function aliasLine(alias: AliasStatus, terse: boolean, home: string): string {
     case "installed":
       return terse ? "Alias: installed" : "Alias: installed (`p.` → `pithy`)";
     case "not-installed":
-      return terse ? "Alias: not installed" : "Alias: not installed (run `pithy alias`)";
+      return terse ? "Alias: not installed" : `Alias: not installed (run \`${pithyCommand("alias")}\`)`;
     case "unknown":
-      return `Alias: unknown — can't read ${tildify(alias.rcPath ?? "your shell config", home)}. Fix that first; \`pithy alias\` reads the same file.`;
+      return `Alias: unknown — can't read ${tildify(alias.rcPath ?? "your shell config", home)}. Fix that first; \`${commandName("alias")}\` reads the same file.`;
   }
 }
 
@@ -1592,14 +1607,22 @@ interface MigrationSentence {
  * unread databases are named — the only actionable fact — and nothing derived from what the read threw
  * appears, because a D1 failure's own words name an id or a query.
  */
-function environmentMigrationLines(entry: EnvironmentMigrations): MigrationSentence[] {
+function environmentMigrationLines(
+  entry: EnvironmentMigrations,
+  productionEnvironments: readonly string[],
+): MigrationSentence[] {
   const env = entry.env;
   switch (entry.state) {
     case "not-composed":
       return [{ first: `${env}: couldn't be checked — pithy.config.ts does not compose for ${env}`, cont: [] }];
     case "not-provisioned": {
       const named = entry.unprovisioned.map((target) => `${target.binding} (${target.database})`).join(", ");
-      return [{ first: `${env}: ${named} not provisioned — run: pithy provision --env ${env}`, cont: [] }];
+      return [
+        {
+          first: `${env}: ${named} not provisioned — ${provisionRemedy(env, productionEnvironments).say((command) => `run: ${command}`)}`,
+          cont: [],
+        },
+      ];
     }
     case "skipped":
       return [
@@ -1629,7 +1652,10 @@ function environmentMigrationLines(entry: EnvironmentMigrations): MigrationSente
   const counted = ledger.state === "read" ? ledger : ledger.counted;
   const sentences: MigrationSentence[] = [];
   if (counted.pending > 0) {
-    sentences.push({ first: `${env}: ${counted.pending} pending — run: pithy migrate --env ${env}`, cont: [] });
+    sentences.push({
+      first: `${env}: ${counted.pending} pending — run: ${pithyCommand("migrate", { flags: { "--env": env } })}`,
+      cont: [],
+    });
   }
   // The other direction, and the one nothing reported until #282. It is not "N pending" with a
   // different number: nothing is pending, migrate refuses outright, and the remedy is neither `pithy
@@ -1669,10 +1695,10 @@ function hasMigrationNotes(worker: WorkerChecks): boolean {
  * label sits on the first line only; every other environment aligns beneath it, and a sentence's
  * continuation sits two columns further in.
  */
-function migrationLines(health: MigrationHealth): string[] {
+function migrationLines(health: MigrationHealth, productionEnvironments: readonly string[]): string[] {
   const lines: string[] = [];
   for (const entry of health.environments) {
-    for (const sentence of environmentMigrationLines(entry)) {
+    for (const sentence of environmentMigrationLines(entry, productionEnvironments)) {
       lines.push(healthLine(lines.length === 0 ? "migrations" : "", sentence.first));
       // Two further columns in, so a continuation reads as its environment's and not as the next one's.
       for (const text of sentence.cont) lines.push(`${HEALTH_CONT}  ${text}`);
@@ -1770,7 +1796,13 @@ function generatedValueLines(values: GeneratedValues): string[] {
   return lines;
 }
 
-function declineLines(declines: BindingDeclines): string[] {
+/** `envs` is every environment the Worker has, `dev` first — what a decline, which is about all of them, names. */
+function declineLines(
+  declines: BindingDeclines,
+  worker: WorkerDir,
+  envs: readonly string[],
+  productionEnvironments: readonly string[],
+): string[] {
   if (declines.state === "invalid") {
     return ["`declinedBindings` in pithy.config.ts cannot be read", `${HEALTH_CONT}${declines.problem}`];
   }
@@ -1799,7 +1831,7 @@ function declineLines(declines: BindingDeclines): string[] {
           `${HEALTH_CONT}${undeclinableReason(decline.type)} ${
             decline.type === "durable_object"
               ? "Remove the line."
-              : `Run \`pithy ${decline.capability} provision\`, or remove the line.`
+              : `${remediesSentence(capabilityProvisionRemedies(decline.capability, worker, envs, productionEnvironments))} Or remove the line.`
           }`,
         ];
       case "unrecognized":
@@ -1817,7 +1849,11 @@ function declineLines(declines: BindingDeclines): string[] {
   });
 }
 
-function workerHealthLines(health: WorkerChecks): string[] {
+function workerHealthLines(
+  health: WorkerChecks,
+  worker: WorkerDir,
+  productionEnvironments: readonly string[],
+): string[] {
   const lines: string[] = [];
 
   // First, and above the rest, because it is the only one that means the Worker does not start. Binding
@@ -1830,7 +1866,7 @@ function workerHealthLines(health: WorkerChecks): string[] {
       lines.push(
         healthLine(
           index === 0 ? "prereqs" : "",
-          `${entry.capability} requires ${entry.requires} — run: pithy add ${entry.requires}`,
+          `${entry.capability} requires ${entry.requires} — ${addAction(prerequisitePlan(worker, entry.requires), (add) => `run: ${add}`)}`,
         ),
       );
     });
@@ -1841,7 +1877,7 @@ function workerHealthLines(health: WorkerChecks): string[] {
     lines.push(healthLine("config", "parses against every capability schema ✓"));
   } else {
     const [first, ...rest] = health.config.drift;
-    lines.push(healthLine("config", `options missing from pithy.config.ts — run \`pithy upgrade\``));
+    lines.push(healthLine("config", `options missing from pithy.config.ts — run \`${upgradeFix(worker)}\``));
     if (first) lines.push(`${HEALTH_CONT}${first.capability}: ${first.keys.join(", ")}`);
     for (const cap of rest) lines.push(`${HEALTH_CONT}${cap.capability}: ${cap.keys.join(", ")}`);
   }
@@ -1866,13 +1902,14 @@ function workerHealthLines(health: WorkerChecks): string[] {
     // deploy this project cannot make — reported under `bindings` because it is one binding written in
     // two files (#428).
     for (const className of health.bindings.missingExports) {
-      bindingLine(`${className} not exported from this worker's entry — run \`pithy upgrade\``);
+      bindingLine(`${className} not exported from this worker's entry — run \`${upgradeFix(worker)}\``);
     }
   }
   // Declines print whether or not the checks above passed, and that is the whole point: a binding an
   // adopter deliberately left out is invisible on a green report otherwise, and the next person cannot
   // tell "chosen" from "never heard of it" (#440).
-  for (const line of declineLines(health.bindings.declinedBindings)) {
+  const envs = health.migrations.environments.map((entry) => entry.env);
+  for (const line of declineLines(health.bindings.declinedBindings, worker, envs, productionEnvironments)) {
     if (line.startsWith(HEALTH_CONT)) bindingLines.push(line);
     else bindingLine(line);
   }
@@ -1887,7 +1924,7 @@ function workerHealthLines(health: WorkerChecks): string[] {
 
   // Every environment, whether or not the check passed: `ok` is `dev`'s alone, and a deployed environment
   // behind is reported rather than gated, so it has to print on a passing Worker too (#586).
-  lines.push(...migrationLines(health.migrations));
+  lines.push(...migrationLines(health.migrations, productionEnvironments));
 
   if (health.entitlements.ok) {
     lines.push(healthLine("entitlements", "no gated route without a provider ✓"));
@@ -1896,7 +1933,7 @@ function workerHealthLines(health: WorkerChecks): string[] {
     lines.push(healthLine("entitlements", "couldn't be checked — this worker's source would not scan"));
   } else {
     // Report-only: `pithy upgrade` cannot pick a capability for the adopter, so the line names the fix.
-    lines.push(healthLine("entitlements", "gated routes, no provider — run: pithy add payments"));
+    lines.push(healthLine("entitlements", `gated routes, no provider. ${providerExample(worker)}`));
     for (const gate of health.entitlements.gap.gates) lines.push(`${HEALTH_CONT}${gate}`);
   }
 
@@ -1943,7 +1980,10 @@ function capabilityReachLines(reach: CapabilityReachHealth): string[] {
     lines.push(`${HEALTH_INDENT}  composed by ${entry.workers.join(", ")}`);
     lines.push(`${HEALTH_INDENT}  Nothing resolves it — not the project root, not any Worker's own node_modules — so`);
     lines.push(`${HEALTH_INDENT}  every command that reaches into it refuses, and every check below skips it.`);
-    lines.push(`${HEALTH_INDENT}  Run: pithy add ${entry.capability}`);
+    // The command names the first Worker composing it (#711). A capability composed by no Worker names none,
+    // and gets no line rather than a command with a placeholder in it.
+    const plan = capabilityReachPlan(entry);
+    if (plan !== null) lines.push(`${HEALTH_INDENT}  ${addAction(plan, (add) => `Run: ${add}`)}`);
   }
   for (const entry of reach.split) {
     const versions = new Set(entry.at.map((where) => where.version)).size;
@@ -1969,13 +2009,32 @@ function capabilityReachLines(reach: CapabilityReachHealth): string[] {
 }
 
 /**
+ * **The provision that makes a project-global resource, for a Worker that composes its capability (#711).** A
+ * stale stanza's own Worker is not that Worker by being stale — it may declare the binding and compose nothing
+ * that owns it, and the provision refuses it. With no composing Worker there is nothing to run, and the line
+ * says which kind of Worker it takes.
+ */
+function destinationLine(
+  entry: { capability: string; composing: readonly WorkerDir[] },
+  productionEnvironments: readonly string[],
+): string {
+  const [worker] = entry.composing;
+  if (worker === undefined) {
+    return `Make the destination if it is not there yet, with ${commandNameOf(`${entry.capability} provision`)} for a Worker that composes ${entry.capability}.`;
+  }
+  return capabilityProvisionRemedy(entry.capability, worker, undefined, productionEnvironments).say(
+    (command) => `Make the destination if it is not there yet: ${command}`,
+  );
+}
+
+/**
  * The `shared:` lines — a resource the whole project shares that its Workers do not all point at (#513).
  *
  * Above the Workers, beside `manifests:`, because no Worker owns it: the finding *is* that two stanzas
  * disagree, so attributing it to one of them would hide the half that makes it a finding. Every line names
  * the environment and the Worker it came from, which is what turns a report into an edit.
  */
-function bindingScopeLines(scope: BindingScopeHealth): string[] {
+function bindingScopeLines(scope: BindingScopeHealth, productionEnvironments: readonly string[]): string[] {
   const lines: string[] = [];
   for (const entry of scope.split) {
     lines.push(
@@ -1988,9 +2047,9 @@ function bindingScopeLines(scope: BindingScopeHealth): string[] {
       ...new Set(entry.stale.filter((stale) => stale.env !== LOCAL_ENVIRONMENT).map((stale) => stale.env)),
     ];
     if (fixable.length > 0) {
-      lines.push(...carryOverLines(entry));
+      lines.push(...carryOverLines(entry, productionEnvironments));
       lines.push(...upgradeFirstLines(entry));
-      lines.push(...repointLines(entry, fixable));
+      lines.push(...repointLines(entry, fixable, productionEnvironments));
     }
 
     // `provision` writes `config.env[<stanza>]` and `dev` is never a declared environment, so no command
@@ -2023,7 +2082,7 @@ function bindingScopeLines(scope: BindingScopeHealth): string[] {
     if (fixable.length > 0 && repointableIds(entry).length > 1) {
       lines.push(...chooseOneLines(entry));
       lines.push(...upgradeFirstLines(entry));
-      lines.push(...repointLines(entry, fixable));
+      lines.push(...repointLines(entry, fixable, productionEnvironments));
     }
     if (entry.ids.some(({ at }) => at.some((where) => where.env === LOCAL_ENVIRONMENT))) {
       lines.push(
@@ -2052,7 +2111,10 @@ function bindingScopeLines(scope: BindingScopeHealth): string[] {
  * carries the same five, and a remedy that reads a sixth field has to say so at the seam rather than
  * quietly widen.
  */
-type GlobalRemedy = Pick<SplitGlobalBinding, "kind" | "capability" | "expected" | "credential" | "binding">;
+type GlobalRemedy = Pick<
+  SplitGlobalBinding,
+  "kind" | "capability" | "expected" | "credential" | "binding" | "composing"
+>;
 
 /** Indent a remedy's sentences to the depth every line under a `shared:` finding sits at. */
 function remedy(copy: string[]): string[] {
@@ -2215,12 +2277,13 @@ function credentialLines(credential: string): string[] {
  * then creates the project-global resource itself, so the operator lands live on a resource created empty
  * seconds earlier. The command that makes it is named first, for that reason.
  */
-function carryOverLines(entry: GlobalRemedy): string[] {
+function carryOverLines(entry: GlobalRemedy, productionEnvironments: readonly string[]): string[] {
+  const destination = destinationLine(entry, productionEnvironments);
   if (entry.kind === "d1") {
     return remedy([
       `Copy the rows across first. The repoint changes which database is read, not what is in it:`,
       `every unsubscribe recorded above stops being honored, and nothing moves it for you.`,
-      `Make the destination if it is not there yet: pithy ${entry.capability} provision`,
+      destination,
       ...d1CopyIsNotADump(CARRY_OVER_URL),
       ...D1_STRICTER_ROW_WINS,
       `The old databases are left where they are.`,
@@ -2236,7 +2299,7 @@ function carryOverLines(entry: GlobalRemedy): string[] {
           `Copy the objects across first. The repoint changes which bucket the binding names, not what`,
           `is in it, and nothing moves the objects for you.`,
         ]),
-    `Make the destination if it is not there yet: pithy ${entry.capability} provision`,
+    destination,
     `Sync each old bucket into ${entry.expected} over R2's S3 endpoint — the API token cannot do it.`,
     ...(entry.credential === null ? [] : credentialLines(entry.credential)),
     `The old buckets are left where they are.`,
@@ -2270,7 +2333,7 @@ function carryOverLines(entry: GlobalRemedy): string[] {
 function chooseOneLines(entry: GlobalRemedy): string[] {
   if (entry.kind === "d1") {
     return remedy([
-      `Two databases are open and one survives. pithy provision picks it by name, not from the ids`,
+      `Two databases are open and one survives. ${commandName("provision")} picks it by name, not from the ids`,
       `above: it resolves ${entry.expected} on the account and writes that id into every stanza.`,
       `Decide from the ids which one that is, and copy the other's rows into it first.`,
       `They answer to one name, so no wrangler command can tell them apart by it. Each is reachable`,
@@ -2281,7 +2344,7 @@ function chooseOneLines(entry: GlobalRemedy): string[] {
     ]);
   }
   return remedy([
-    `Two buckets are open and one survives. pithy provision picks it by name, not from the ids`,
+    `Two buckets are open and one survives. ${commandName("provision")} picks it by name, not from the ids`,
     `above: it resolves ${entry.expected} on the account and writes that name into every stanza.`,
     `Decide from the ids which one that is, and sync the other's objects into it first, over R2's`,
     `S3 endpoint — the API token cannot do it.`,
@@ -2307,19 +2370,25 @@ function chooseOneLines(entry: GlobalRemedy): string[] {
  * per environment: it is the same act with the same arguments, and which of the two verbs applies is a
  * fact about the project rather than about the environment.
  */
-function repointLines(entry: GlobalRemedy, environments: string[]): string[] {
+function repointLines(
+  entry: GlobalRemedy,
+  environments: string[],
+  productionEnvironments: readonly string[],
+): string[] {
   const runs = environments.flatMap((env) => [
-    `${HEALTH_INDENT}  Then run: pithy provision --env ${env}`,
+    `${HEALTH_INDENT}  ${provisionRemedy(env, productionEnvironments).say((command) => `Then run: ${command}`)}`,
     ...(entry.credential === null
       ? []
-      : [`${HEALTH_INDENT}            pithy secrets update ${entry.credential} --env ${env}`]),
+      : [
+          `${HEALTH_INDENT}            ${pithyCommand("secrets update", { args: [entry.credential], flags: { "--env": env } })}`,
+        ]),
   ]);
   if (entry.credential === null) return runs;
   return [
     ...runs,
     ...remedy([
       `A project that has never signed a read has no ${entry.credential} to update. There the`,
-      `command is pithy secrets create, with the same arguments.`,
+      `command is ${commandName("secrets create")}, with the same arguments.`,
     ]),
   ];
 }
@@ -2337,13 +2406,13 @@ function repointLines(entry: GlobalRemedy, environments: string[]): string[] {
 function upgradeFirstLines(entry: { repointable: boolean; package: string }): string[] {
   if (entry.repointable) return [];
   return [
-    `Nothing installed declares this binding project-wide, so pithy provision would compose`,
+    `Nothing installed declares this binding project-wide, so ${commandName("provision")} would compose`,
     `the per-environment name again. Upgrade ${entry.package} first — its pithy.manifest.json is what`,
     `the writer reads, and this finding is keyed on the capability's own namer instead.`,
   ].map((line) => `${HEALTH_INDENT}  ${line}`);
 }
 
-function healthBlock(health: ProjectHealth): string {
+function healthBlock(health: ProjectHealth, productionEnvironments: readonly string[]): string {
   const lines = ["Project health:"];
   // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
   // whose manifest could not be read contributes no drift to any check below it, so a project full of
@@ -2373,7 +2442,7 @@ function healthBlock(health: ProjectHealth): string {
   // and it explains a disagreement that only exists *between* two of the blocks below.
   if (!health.bindingScope.ok || health.bindingScope.split.length > 0 || health.bindingScope.divergent.length > 0) {
     lines.push("  shared:");
-    lines.push(...bindingScopeLines(health.bindingScope));
+    lines.push(...bindingScopeLines(health.bindingScope, productionEnvironments));
   }
   for (const worker of health.workers) {
     // Not "healthy", and not five empty checks either. Nothing was read about this Worker, so the block
@@ -2395,7 +2464,7 @@ function healthBlock(health: ProjectHealth): string {
       continue;
     }
     lines.push(`  ${worker.worker}:`);
-    lines.push(...workerHealthLines(worker));
+    lines.push(...workerHealthLines(worker, worker.directory, productionEnvironments));
   }
   return lines.join("\n");
 }
@@ -2658,13 +2727,11 @@ function selfBindingBlock(check: SelfBindingCheck, productionEnvironments: reado
   const lines = ["Self binding:"];
   for (const entry of check.missing) lines.push(healthLine(entry.worker, describeSelfBinding(entry)));
   // One line per environment, with the command `--json` names as its `fix` (#697). A production environment
-  // is provisioned with its `--confirm` phrase, which is a person's to give, so its line names the flag.
+  // is provisioned with its `--confirm` phrase, which is a person's to give, so its line says so — the same
+  // words every provisioning sentence uses, from one builder (#711).
   for (const env of [...new Set(check.missing.map((entry) => entry.env))]) {
-    const fix = provisionFixCommand(env, productionEnvironments);
     lines.push(
-      fix === null
-        ? `${HEALTH_INDENT}Run pithy provision --env ${env} --yes with its --confirm phrase — it writes the binding with the stanza's own script name.`
-        : `${HEALTH_INDENT}Run ${fix} — it writes the binding with the stanza's own script name.`,
+      `${HEALTH_INDENT}${provisionRemedy(env, productionEnvironments).say((command) => `Run ${command} — it writes the binding with the stanza's own script name.`)}`,
     );
   }
   return lines.join("\n");
@@ -2684,7 +2751,9 @@ function workerNamesBlock(check: WorkerNameCheck): string {
     // No command is offered to fix this one, because none of them can: the directory has already moved, and
     // `pithy worker rename` refuses a destination that exists. The fix is the two edits named above. The
     // command is named anyway, for the next rename — it moves all three at once and this block stays empty.
-    lines.push(`${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.`);
+    lines.push(
+      `${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: ${commandName("worker rename")}.`,
+    );
   }
   // The clash, before the convention note, because it is the only half that is a fault: the deploy this
   // stanza describes replaces a capability's own host Worker, and nothing on the account would say so.
@@ -2693,7 +2762,9 @@ function workerNamesBlock(check: WorkerNameCheck): string {
     lines.push(healthLine(clash.env, describeReservedWorkerName(clash)));
   }
   if (check.reserved.length > 0) {
-    lines.push(`${HEALTH_INDENT}Rename that stanza, or the Worker. pithy worker rename moves all three names.`);
+    lines.push(
+      `${HEALTH_INDENT}Rename that stanza, or the Worker. ${commandName("worker rename")} moves all three names.`,
+    );
   }
   // And last, the half that is not a fault at all — see {@link WorkerNameConvention}.
   for (const note of check.convention) {
@@ -2737,13 +2808,13 @@ function outdatedAdvice(cap: CapabilityStatus): string {
   if (cap.command === null) {
     switch (cap.reason) {
       case "not-a-registry-range":
-        return `${available} — declared as ${cap.declaredAs}. Not moved by pithy upgrade.`;
+        return `${available} — declared as ${cap.declaredAs}. Not moved by ${commandName("upgrade")}.`;
       case "linked":
-        return `${available} — linked from a checkout. Not moved by pithy upgrade.`;
+        return `${available} — linked from a checkout. Not moved by ${commandName("upgrade")}.`;
       case "deprecated":
-        return `${available} — deprecated. Not moved by pithy upgrade.`;
+        return `${available} — deprecated. Not moved by ${commandName("upgrade")}.`;
       case "prerelease":
-        return `${available} — a prerelease. Not moved by pithy upgrade.`;
+        return `${available} — a prerelease. Not moved by ${commandName("upgrade")}.`;
       default:
         return `${available} — not a direct dependency`;
     }
@@ -2895,7 +2966,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
         : (() => {
             const detail = describeDevSecretsLocation(secretsFile);
             const path = tildify(secretsFile.path, home);
-            return `${path} (run \`pithy secrets edit\`)${detail ? ` — ${detail}` : ""}`;
+            return `${path} (run \`${pithyCommand("secrets edit")}\`)${detail ? ` — ${detail}` : ""}`;
           })();
 
   /**
@@ -2910,7 +2981,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   const cloudflareLine = `Cloudflare: ${describeCloudflareAccess(report.cloudflare, home)}`;
 
   // CLI version.
-  const cliLines = [`pithy ${report.cli.installed} (installed via ${report.cli.installer})`];
+  const cliLines = [`${cliAtVersion(report.cli.installed)} (installed via ${report.cli.installer})`];
   if (report.cli.state === "outdated" && report.cli.latest) {
     cliLines.push(`Update available: ${report.cli.latest}`);
     cliLines.push(`Run: ${report.cli.upgradeCommand}`);
@@ -2939,7 +3010,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     } else if (report.notifierDisabledBy === "env") {
       notifier = "disabled (PITHY_NO_UPDATE_NOTIFIER set)";
     } else {
-      notifier = "disabled (pithy doctor --enable-notifier to re-enable)";
+      notifier = `disabled (${pithyCommand("doctor", { flags: { "--enable-notifier": true } })} to re-enable)`;
     }
     // The dev-login line belongs in this block and nowhere else. It is the same question the two lines above
     // it answer — where does the CLI keep this, and what is in it — and it is here because it used not to be
@@ -2993,10 +3064,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     // and a project whose every check passes is exactly the project they are about — gating the block on
     // `ok` alone would print their output on every report except the ones they are for.
     if (!report.project.health.ok || projectHasGreenFindings(report.project.health)) {
-      blocks.push(healthBlock(report.project.health));
+      blocks.push(healthBlock(report.project.health, report.productionEnvironments));
     }
   } else {
-    blocks.push("Project: no pithy.config.ts here — run `pithy init`, or change to a project directory");
+    blocks.push(`Project: no pithy.config.ts here — run \`${pithyCommand("init")}\`, or change to a project directory`);
   }
 
   // Cloudflare credentials, on every run. See `cloudflareLine` above for why this one is not gated on
@@ -3490,6 +3561,9 @@ const WorkerHealthPayload = z
       .object({
         state: z.literal("checked").describe("The plan was built and every check ran."),
         worker: z.string().describe("The Worker's name, as `pithy worker list` shows it."),
+        directory: z
+          .string()
+          .describe("The Worker's directory under `apps/`, which `--worker` takes and every `fix` names."),
         ok: z.boolean().describe("The AND of its five checks."),
         config: z
           .object({
@@ -3545,6 +3619,7 @@ const WorkerHealthPayload = z
       .object({
         state: z.literal("unavailable").describe("The plan could not be built, so nothing is known."),
         worker: z.string().describe("The Worker's name, as `pithy worker list` shows it."),
+        directory: z.string().describe("The Worker's directory under `apps/`, which `--worker` takes."),
       })
       .describe("A Worker that could not be checked."),
   ])

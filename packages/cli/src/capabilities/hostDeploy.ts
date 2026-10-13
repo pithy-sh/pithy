@@ -15,7 +15,7 @@ import { kitImport } from "../project/kitResolve";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
 import { startStep } from "../terminal/progress";
-import { hostEntryFile } from "./hostEntry";
+import { hostConfigFile, hostEntryFile } from "./hostFiles";
 
 /**
  * **The one path a kit Worker is deployed through, and therefore the one place the gate lives.**
@@ -258,7 +258,7 @@ async function decideHostDeploy(options: HostDeployOptions): Promise<HostDeployD
           force: options.force,
         });
 
-  const configPath = join(options.dir, `.wrangler.${options.env}.json`);
+  const configPath = join(options.dir, hostConfigFile(options.env));
   const args = hostDeployArgs(configPath);
   if (verdict.deploy) {
     // **The last moment this is still recoverable, and it is ahead of the narration and the write.** After

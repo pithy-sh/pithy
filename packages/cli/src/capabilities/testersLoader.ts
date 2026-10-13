@@ -3,6 +3,7 @@
 
 import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { kitImport } from "../project/kitResolve";
 import { kitCarries } from "./hostEntry";
@@ -79,7 +80,6 @@ export function testersAuth(projectDir: string, capabilities: readonly Capabilit
   throw new ValidationError({
     message: "The composed auth is too old for testers to see who has used the app.",
     action: "Upgrade @pithy-sh/auth to the version this @pithy-sh/testers peers.",
-    detail:
-      "The composed auth capability carries no `authPeer`, so every tester would read unobservable and `pithy testers run` would record nobody observed.",
+    detail: `The composed auth capability carries no \`authPeer\`, so every tester would read unobservable and \`${commandName("testers run")}\` would record nobody observed.`,
   });
 }

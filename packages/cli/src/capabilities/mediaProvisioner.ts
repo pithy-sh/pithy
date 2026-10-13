@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -307,7 +308,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
         throw new InternalError(
           {
             message: `Could not write the media storage credentials to ${env}.`,
-            action: "Check that `pithy secrets provision` has run for this environment, then re-run.",
+            action: `Check that \`${commandName("secrets provision")}\` has run for this environment, then re-run.`,
             detail: `${name}: create failed: ${errorMessage(createError)}; update failed: ${errorMessage(updateError)}`,
           },
           { cause: createError },

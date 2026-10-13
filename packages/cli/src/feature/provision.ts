@@ -3,6 +3,7 @@
 
 import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Caller, callerOf, commandName, rerunRemedy } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import {
@@ -197,6 +198,11 @@ export interface ProvisionFeatureOptions {
    * configs are written and migrated. Omitted, no host is deployed and no app Worker is bound to one.
    */
   deployHosts?: () => Promise<KitDeployReport>;
+  /**
+   * The caller's own `pithy provision --feature` (#711), which a refusal naming the run again is built from, so it
+   * carries every flag the caller gave. Absent, {@link featureProvisionCallerOf}.
+   */
+  caller?: Caller<"provision">;
 }
 
 /**
@@ -214,8 +220,7 @@ function assertAppWorkflowsHostable(workers: readonly ProvisionWorker[]): void {
   const jobs = faults.map((fault) => fault.job).join(", ");
   throw new ValidationError({
     message: `This branch declares a Workflow nothing can run: ${jobs}.`,
-    action:
-      "Give each job a className naming the WorkflowEntrypoint subclass your Worker's main exports, in that Worker's pithy.config.ts. pithy worker sync refuses the same declaration.",
+    action: `Give each job a className naming the WorkflowEntrypoint subclass your Worker's main exports, in that Worker's pithy.config.ts. ${commandName("worker sync")} refuses the same declaration.`,
     detail: faults.map((fault) => `${fault.worker}: ${fault.job} declares no className`).join("; "),
   });
 }
@@ -234,6 +239,31 @@ function assertAppWorkflowsHostable(workers: readonly ProvisionWorker[]): void {
  * `pithy provision` stamps `"provision"` on what it prints, and a second name stamped here would be a
  * caller's own field silently overwritten by a spread.
  */
+/**
+ * **`pithy provision --feature` as a run with no command line behind it names itself (#711)** — a test, or a caller
+ * that drives {@link provisionFeature} directly. The command passes its own parsed arguments instead.
+ */
+export function featureProvisionCallerOf(): Caller<"provision"> {
+  return callerOf("provision", { feature: true });
+}
+
+/**
+ * The refusal for a feature whose kit hosts did not all deploy: what failed, and the caller's own run to repeat once
+ * it is fixed (#711) — every flag it was given, `--json` among them.
+ */
+export function featureHostsRefusal(
+  reasons: readonly string[],
+  feature: string,
+  caller: Caller<"provision"> = featureProvisionCallerOf(),
+): ValidationError {
+  const again = rerunRemedy(caller, { flags: { "--feature": true } });
+  return new ValidationError({
+    message: "Not every kit Worker this feature composes deployed, so the feature cannot run.",
+    action: `${reasons.join(" ")} Fix it, then ${again.say((line) => `run ${line} again`)}.`,
+    detail: `feature ${feature}: ${reasons.join("; ")}`,
+  });
+}
+
 export async function provisionFeature(options: ProvisionFeatureOptions): Promise<ProvisionReport> {
   const path = manifestPath(options.projectDir);
   const scope = featureScope(options.identity);
@@ -399,11 +429,11 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
       .map((capability) => `${capability}: not deployed. Nothing composed it where the kit pass looked.`),
   ];
   if (reasons.length > 0) {
-    throw new ValidationError({
-      message: "Not every kit Worker this feature composes deployed, so the feature cannot run.",
-      action: `${reasons.join(" ")} Fix it, then run pithy provision --feature again.`,
-      detail: `feature ${options.identity.project}-f${options.identity.issue}-${options.identity.slug}: ${reasons.join("; ")}`,
-    });
+    throw featureHostsRefusal(
+      reasons,
+      `${options.identity.project}-f${options.identity.issue}-${options.identity.slug}`,
+      options.caller,
+    );
   }
 
   // **The feature's `d1` secrets, created by its own manager (#643)** — `mintDeclaredSecrets`, the pass

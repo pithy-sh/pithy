@@ -71,7 +71,7 @@ describe("pithy testers, with @pithy-sh/testers not installed", () => {
         message: "The testers capability is not installed.",
         exit: EXIT.precondition,
         retryable: false,
-        fix: "pithy add testers --with-prerequisites",
+        fix: "pithy add testers --worker api --with-prerequisites",
       });
       expect(code).toBe(EXIT.precondition);
     },

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -62,7 +63,7 @@ export function parseLines(value: string | undefined): number {
   if (!/^\d+$/.test(trimmed)) {
     throw new ValidationError({
       message: `${value} is not a line count.`,
-      action: "Pass a whole number: pithy dev logs --app api -n 50.",
+      action: "Pass a whole number to --lines (-n), such as 50.",
       issues: [{ path: ["--lines"], code: "invalid_value", message: "A non-negative whole number." }],
     });
   }
@@ -113,7 +114,7 @@ export async function runDevLogs(options: DevLogsOptions): Promise<void> {
       return;
     }
     if (found.length === 0) {
-      stdout(`No session logs yet. Run pithy dev.\n${dim(`  ${dir}`)}\n`);
+      stdout(`No session logs yet. Run ${pithyCommand("dev")}.\n${dim(`  ${dir}`)}\n`);
       return;
     }
     stdout(`${formatList(listingRows(found))}\n`);
@@ -229,7 +230,7 @@ export function collectLogAppFlags(rawArgs: readonly string[]): string[] {
   if (missingValue) {
     throw new ValidationError({
       message: "--app needs a worker name.",
-      action: "Run pithy dev logs to see every worker that has a log, then name one.",
+      action: `Run ${pithyCommand("dev logs")} to see every worker that has a log, then name one.`,
     });
   }
   return found;

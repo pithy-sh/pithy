@@ -64,10 +64,10 @@ describe("a self-administering project with an unbound stanza", () => {
       }),
       "/home/u",
     );
-    const commands = text.split("\n").filter((line) => line.includes("Run pithy provision"));
+    const commands = text.split("\n").filter((line) => line.includes("pithy provision"));
     expect(commands.map((line) => line.trim())).toEqual([
       "Run pithy provision --env staging --yes — it writes the binding with the stanza's own script name.",
-      "Run pithy provision --env prod --yes with its --confirm phrase — it writes the binding with the stanza's own script name.",
+      "`pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.",
     ]);
     expect(text).not.toContain("<name>");
   });
@@ -86,7 +86,9 @@ describe("a self-administering project with an unbound stanza", () => {
       ),
       "/home/u",
     );
-    expect(text).toContain("Run pithy provision --env live --yes with its --confirm phrase");
+    expect(text).toContain(
+      "`pithy provision --env live --yes` with its --confirm phrase, which only a person gives, runs against live, a production environment.",
+    );
   });
 
   /** The consequence is a timeout in production that nobody will read as a configuration fault. */

@@ -1,13 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { access } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { type PithyError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
-import { discoverWorkers } from "../project/workers";
-import { withFix } from "../terminal/exitClass";
-import { installedManifest } from "./manifests";
-import { isRequired } from "./requiredOptions";
+import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { workerDirName } from "../project/workerIdentity";
+import { configuredWorkerDirs } from "../project/workers";
+import {
+  type AddPlan,
+  addAction,
+  addPlan,
+  addSecretsPlan,
+  composedBy,
+  projectAddFacts,
+  withAddFix,
+} from "./addCommand";
+import { KIT_ADD_FACTS } from "./kitAddFacts.generated";
 
 /**
  * **A capability the project does not compose is a precondition, not a bad call (#697).**
@@ -32,84 +38,47 @@ export interface AddFixScope {
 }
 
 /**
- * The `--worker` a `fix` names: the apps/ directory, which every `--worker` takes. `undefined` when the
- * project has one Worker and none needs naming, and `null` when no single Worker can be named honestly —
- * several Workers and a refusal about the project, which `pithy add` would refuse as ambiguous.
+ * **The `pithy add` lines for a capability this scope lacks** (`addCommand.ts`'s plan): into the Worker the
+ * refusal is about, or one command per configured Worker when it is about the project.
  */
-async function fixWorker(scope: AddFixScope): Promise<string | undefined | null> {
-  if (scope.workerDir !== undefined) return basename(scope.workerDir);
-  const dirs = scope.workerDirs ?? (await configuredWorkerDirs(scope.projectDir));
-  return dirs.length === 1 ? undefined : null;
-}
-
-/** The discovered Workers `pithy add` can wire into: the ones carrying a `pithy.config.ts`. */
-async function configuredWorkerDirs(projectDir: string): Promise<string[]> {
-  const dirs: string[] = [];
-  for (const target of await discoverWorkers(projectDir)) {
-    try {
-      await access(join(target.dir, "pithy.config.ts"));
-      dirs.push(target.dir);
-    } catch {
-      // A dev-only process, which composes nothing and is no `--worker` target.
-    }
-  }
-  return dirs;
-}
-
-/** What a `pithy add` that runs as written has to say, read rather than assumed. */
-interface AddFixParts {
-  /** The `--worker` value, or `undefined` when the project has one Worker and none is needed. */
-  worker: string | undefined;
-  /** Whether `--with-prerequisites` is needed. */
-  prerequisites: boolean;
+export function resolveAdd(capability: string, scope: AddFixScope): AddPlan {
+  const { projectDir, workerDir } = scope;
+  const dirs = workerDir !== undefined ? [workerDir] : (scope.workerDirs ?? configuredWorkerDirs(projectDir));
+  return addPlan({
+    capability,
+    workers: dirs.map((dir) => workerDirName({ dir })),
+    factsFor: projectAddFacts(projectDir),
+    composed: workerDir === undefined ? undefined : composedBy(workerDir, Object.keys(KIT_ADD_FACTS)),
+  });
 }
 
 /**
- * **The `pithy add` that composes `capability`, runnable as written with nobody to ask** — or `null` when no
- * such command exists.
+ * The refusal for a capability nothing composes: `core/precondition_failed`, exit 3, with the `pithy add` that
+ * composes it as its `fix` when exactly one runs as written.
  *
- * Each part is read, never assumed. `--worker` names the apps/ directory whenever the project has more than
- * one Worker, because without it `pithy add` asks which, and an agent cannot answer. `--with-prerequisites`
- * comes from the manifest's `peerCapabilities`, because without it a capability with prerequisites refuses
- * with `input/required`; a manifest that is not installed yet cannot rule them out, and the flag composes
- * nothing that is not missing. A required option — one the manifest states no default for — has no value
- * the kit may pick (#412), so a capability that declares one gets no `fix` at all, and its `action` says the
- * rest.
+ * `action` is written around the command rather than beside it (#711): it is handed the commands in code, so the
+ * sentence names the `fix` exactly — or, where a person must decide something first, it is that sentence instead.
  */
-async function addFixParts(capability: string, scope: AddFixScope): Promise<AddFixParts | null> {
-  const worker = await fixWorker(scope);
-  if (worker === null) return null;
-  const manifest = await installedManifest(scope.projectDir, capability);
-  if (manifest?.configOptions.some(isRequired)) return null;
-  return { worker, prerequisites: manifest === undefined || manifest.peerCapabilities.length > 0 };
-}
-
-/**
- * Attach the `pithy add` that composes `capability` to `error`, when one runs as written; hand `error` back
- * either way. Each shape is written out whole, so `ci/actionLines.test.ts` reads every command and flag.
- */
-export async function withAddFix<E extends PithyError>(error: E, capability: string, scope: AddFixScope): Promise<E> {
-  const parts = await addFixParts(capability, scope);
-  if (parts === null) return error;
-  const { worker, prerequisites } = parts;
-  if (worker !== undefined && prerequisites) {
-    return withFix(error, { fix: `pithy add ${capability} --worker ${worker} --with-prerequisites` });
-  }
-  if (worker !== undefined) return withFix(error, { fix: `pithy add ${capability} --worker ${worker}` });
-  if (prerequisites) return withFix(error, { fix: `pithy add ${capability} --with-prerequisites` });
-  return withFix(error, { fix: `pithy add ${capability}` });
-}
-
-/**
- * The refusal for a capability nothing composes: `core/precondition_failed`, exit 3, with {@link withAddFix}'s
- * `fix` when there is one.
- */
-export async function capabilityNotComposed(
+export function capabilityNotComposed(
   capability: string,
-  refusal: { message: string; action: string; detail?: string },
+  refusal: { message: string; action: (add: string) => string; detail?: string },
   scope: AddFixScope,
   cause?: unknown,
-): Promise<PreconditionFailedError> {
-  const error = new PreconditionFailedError(refusal, cause === undefined ? undefined : { cause });
-  return withAddFix(error, capability, scope);
+): PreconditionFailedError {
+  const plan = resolveAdd(capability, scope);
+  const payload = { ...refusal, action: addAction(plan, refusal.action) };
+  return withAddFix(new PreconditionFailedError(payload, cause === undefined ? undefined : { cause }), plan);
+}
+
+/**
+ * **No `SECRETS_STORE_ID` recorded, and the command that records it (#711)** — `pithy add secrets`, offered for the
+ * Workers that compose secrets already. `why` says what this run needed the store for.
+ */
+export function secretsStoreIdMissing(projectDir: string, why?: string): PreconditionFailedError {
+  const plan = addSecretsPlan(projectDir);
+  const error = new PreconditionFailedError({
+    message: "The CF Secrets Store id is missing.",
+    action: addAction(plan, (add) => `Run ${add} to record SECRETS_STORE_ID${why === undefined ? "" : ` (${why})`}.`),
+  });
+  return withAddFix(error, plan);
 }

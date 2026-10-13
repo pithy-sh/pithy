@@ -54,7 +54,7 @@ describe("checkLocalDelivery", () => {
     });
     expect(check?.live).toBe(false);
     expect(describeLocalDelivery(check ?? empty)).toContain("using the simulator");
-    expect(describeLocalDelivery(check ?? empty)).toContain("pithy init");
+    expect(describeLocalDelivery(check ?? empty)).toContain("set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN");
   });
 
   test("the simulator by config is a choice, reported as one rather than as a failure", async () => {

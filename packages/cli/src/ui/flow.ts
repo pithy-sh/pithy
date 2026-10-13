@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { readdir } from "node:fs/promises";
-import { basename, join, sep } from "node:path";
+import { join, sep } from "node:path";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
+import { commandAlternatives, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import { emptyPlan, type Plan } from "../plan/plan";
@@ -12,6 +14,7 @@ import { detectPackageManager, type PackageManager } from "../project/packageMan
 import { readOptionalFile } from "../project/readOptionalFile";
 import { withRollback } from "../project/rollback";
 import { pathExists } from "../project/scaffold";
+import { workerDirName } from "../project/workerIdentity";
 import { deriveWorkerFirst, uncoveredRoutes } from "./routeAllowlist";
 import { scaffoldFiles } from "./scaffold";
 import { PITHY_SCREEN_DIR, unstyledScreenClasses } from "./screenStyles";
@@ -59,8 +62,8 @@ export type UiScreenPrompt = (request: { screens: UiScreenSet; suggestion: boole
  * Everything below is either a path or a `--worker` value, and both are the directory. The deployed name
  * belongs in `wrangler.jsonc` and nowhere else.
  */
-function workerName(workerDir: string): string {
-  return basename(workerDir);
+function workerName(workerDir: string): WorkerDir {
+  return workerDirName({ dir: workerDir });
 }
 
 /** One entry of `pithy ui list`. */
@@ -107,8 +110,8 @@ export interface UiAddOptions {
 
 /** What `pithy ui add` did. */
 export interface UiAddReport {
-  /** The worker the front end landed in. */
-  worker: string;
+  /** The worker the front end landed in, by its `apps/` directory. */
+  worker: WorkerDir;
   /** The stub that wrote it. */
   framework: string;
   /** Whether the auth template was included. */
@@ -169,11 +172,11 @@ async function resolveScreens(
     wanted = options.prompt ? await options.prompt({ screens, suggestion: composed }) : composed;
   if (wanted && !composed) {
     const worker = workerName(options.workerDir);
-    throw await capabilityNotComposed(
+    throw capabilityNotComposed(
       screens,
       {
         message: `The ${screens} screens need the ${screens} capability, and ${worker} doesn't compose it.`,
-        action: `Run pithy add ${screens} --worker ${worker} first, or leave them out with --no-${screens}.`,
+        action: (add) => `Run ${add} first, or leave them out with --no-${screens}.`,
       },
       { projectDir: options.projectDir, workerDir: options.workerDir },
     );
@@ -227,7 +230,7 @@ async function planFiles(
   if (fresh === 0) {
     throw new ConflictError({
       message: `${worker} already has a ${current.stub} front end.`,
-      action: "Add screens by dropping files into src/routes/app/. Run pithy ui sync to re-derive its route allowlist.",
+      action: `Add screens by dropping files into src/routes/app/. Run ${pithyCommand("ui sync", { flags: { "--worker": worker } })} to re-derive its route allowlist.`,
     });
   }
   // The whole record, non-strict: the writer skips what exists and reports it, so the run says what
@@ -327,7 +330,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
   // One write, run against the project or, under `--dry-run`, against a copy of it — so the plan is this
   // write's own output and cannot describe a different one (`plan/shadow.ts`).
   const write = async (projectDir: string, workerDir: string) => {
-    const written = await scaffoldFiles({ workerDir, files: plan.files, strict: plan.strict });
+    const written = await scaffoldFiles({ workerDir, framework: stub.id, files: plan.files, strict: plan.strict });
     const assets = await wireAssets(workerDir, patterns);
     await wireManifest(workerDir, stub, packageManager);
     const pkg = await wirePackage(projectDir, workerDir, stub);
@@ -378,8 +381,8 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
 
 /** What `pithy ui sync` did. */
 export interface UiSyncReport {
-  /** The worker whose allowlist was re-derived. */
-  worker: string;
+  /** The worker whose allowlist was re-derived, by its `apps/` directory. */
+  worker: WorkerDir;
   /** The allowlist before this run. */
   before: string[];
   /** The allowlist after it. */
@@ -452,7 +455,7 @@ export async function runUiSync(options: {
   if (!current) {
     throw new NotFoundError({
       message: `${worker} has no front end.`,
-      action: `Run pithy ui add react --worker ${worker} to scaffold one.`,
+      action: `Run ${commandAlternatives(Object.keys(UI_STUBS).map((framework) => pithyCommand("ui add", { args: [framework], flags: { "--worker": worker } })))} to scaffold one.`,
     });
   }
 

@@ -154,9 +154,11 @@ test("pithy add auth on a bare project refuses non-interactively, naming the exa
       flag: "--with-prerequisites",
       message: "auth requires secrets and email, which board does not compose.",
       action:
-        "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
+        "Run `pithy add auth --worker board --with-prerequisites --json`, or compose them first: `pithy add secrets --worker board --json`, then `pithy add email --worker board --json`.",
       exit: 2,
       retryable: false,
+      // The command the action leads with, naming the Worker the caller named and keeping the --json it passed (#711).
+      fix: "pithy add auth --worker board --with-prerequisites --json",
     },
   });
 
@@ -316,8 +318,8 @@ test("pithy doctor reports a composed capability whose prerequisite is absent, a
   expect(after.project.health.workers[0]?.prerequisites).toEqual({
     ok: false,
     missing: [
-      { capability: "auth", requires: "secrets", fix: "pithy add secrets --worker replay-board --with-prerequisites" },
-      { capability: "auth", requires: "email", fix: "pithy add email --worker replay-board --with-prerequisites" },
+      { capability: "auth", requires: "secrets", fix: "pithy add secrets --worker board" },
+      { capability: "auth", requires: "email", fix: "pithy add email --worker board --with-prerequisites" },
     ],
   });
   expect(after.project.health.ok).toBe(false);

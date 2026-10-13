@@ -18,6 +18,7 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
@@ -225,7 +226,7 @@ function resolveDestination(engine: TokenEngine, profile: TokenProfile): TokenSt
   }
   throw new CloudflareNotConfiguredError({
     message: `No storage is declared for token "${profile.name}".`,
-    action: `Declare the secret ${profile.secret} (pithy secrets) as cf-secrets-store, or mint with --store dev-vars.`,
+    action: `Declare the secret ${profile.secret} (${commandName("secrets")}) as cf-secrets-store, or mint with --store dev-vars.`,
   });
 }
 
@@ -283,6 +284,7 @@ export async function mintProfileToken(
     const minted = await engine.tokens.rollToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
+      projectDir: engine.projectDir,
       env,
       secretName: profile.secret,
       storeEntryName: tokenStoreEntryName(engine.project, env, profile),
@@ -550,6 +552,7 @@ export async function rotateProfileToken(
     const minted = await engine.tokens.mintToken(name, await tokenPolicies(engine, profileName, profile, override));
     const sink = await writeTokenToSink(store, minted.value, {
       project: engine.project,
+      projectDir: engine.projectDir,
       env,
       secretName: profile.secret,
       storeEntryName: tokenStoreEntryName(engine.project, env, profile),

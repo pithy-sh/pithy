@@ -29,31 +29,26 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * - `docs/commands/add.md` carrying the action verbatim, so the documentation taught it (#488)
  * - the config-load failure naming `@pithy-sh/core` when the missing package was the capability (#480)
  *
- * ## What is checked, and what deliberately is not
+ * ## What is checked here, and what moved
  *
- * Three static analyses. **Nothing here executes a suggested command** — most of the 96 are correct,
- * several are destructive by design (`--confirm-reset`, `--confirm-production`), and the failure being
- * chased is unfollowable *guidance* rather than a broken command.
+ * **Every command a line in source names is built by `@pithy-sh/core/src/cli/command.ts` since #711**, which
+ * refuses a command the CLI does not have, a flag it does not declare, and a `fix` that is not a built command
+ * (`withFix` takes a `Command`, which nothing but the builder makes). `ci/runnableCommands.test.ts` fails on any
+ * `pithy …` spelled by hand in shipped source. So the source halves of this file's checks — command names in
+ * actions, flags in every literal, a `fix:` written as a literal so a regex could read it — are that builder's
+ * now, and were deleted rather than kept as a second, weaker answer to the same question.
  *
- * **Its population is every package, not the CLI's (#596).** Command names and `--set` offers are read from
- * every `action:` and every host-env `command:` in every package's shipped source. Flags are read from every
- * string literal there and from every command page's prose, because a remedy reaches its reader through a
- * constant as often as through its key. Planted and red: a host's remedy constant naming `--env` on
- * `pithy secrets provision`, a template literal interpolating only the environment, and a page's prose. Not
- * seen: a command name that is itself interpolated, or a citation assembled from pieces.
+ * What is left is what the builder cannot see:
  *
- * The fourth producer above is **not** covered and cannot be: an action naming the wrong package is
- * wrong about something no manifest field predicts, and checking it means the throw site carrying the
- * identity of what actually failed rather than the first name in hand. That is an error-construction
- * discipline, and it needs its own issue rather than being closed by implication here.
+ * - **The command pages.** `docs/commands/*.md` quote commands and their flags in prose, and the documentation
+ *   was #488's third producer. Each `pithy <command> --flag` a page tells a reader is held to the catalog.
+ * - **`--set` offers**, in source and on the pages, against what each manifest says `pithy add` refuses.
  *
- * **A remedy the CLI refuses is still a remedy that cannot be followed.** `@pithy-sh/email`'s settings check
- * told operators to run `pithy email provision --env <x>` and `pithy secrets provision --env <x>`, neither of
- * which declares `--env`. That was advice the CLI ignored until #594 made it advice the CLI refuses — which
- * makes the typo visible to whoever runs it, and no more followable. This gate is what keeps it out of the
- * source. What it still cannot see is the pair named above: a command whose name is interpolated
- * (`deployKit.ts`'s `pithy ${capability} provision`), which blanks to a path no command has and is skipped
- * rather than guessed at, and a citation assembled from pieces.
+ * **Nothing here executes a suggested command** — several are destructive by design, and the failure chased is
+ * unfollowable *guidance* rather than a broken command.
+ *
+ * The fourth producer above is **not** covered and cannot be: an action naming the wrong package is wrong about
+ * something no manifest field predicts. That is an error-construction discipline, and it needs its own issue.
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
@@ -71,19 +66,6 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
  * own command (`command: "secrets deprovision"`), which carries no `pithy ` and so cites nothing below.
  */
 const ACTION = /\b(?:action|command|fix):\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
-
-/**
- * `pithy <word>` where the sentence is telling you to run it.
- *
- * After `Run `, after a backtick, or at the start of the action — never mid-sentence. Measured, and it
- * is the difference between 123 matches and 96: `If no other pithy process is running, delete …` is
- * prose about a running process, and a rule that took it for a command would report a correct message
- * as wrong. A gate that cries wolf is one somebody switches off.
- */
-const IMPERATIVE = /(?:^|Run |run |`)pithy ([a-z][a-z0-9-]*)/g;
-
-/** Any string or template literal. For the flag check, which is precise enough to read every one of them. */
-const LITERAL = /(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
 
 /** `pithy <command…> --flag --flag`, for checking the flags against the command they are named on. */
 const WITH_FLAGS = /\bpithy ((?:[a-z][a-z0-9-]*)(?: [a-z][a-z0-9-]*)*)((?:\s+--[a-z][a-zA-Z0-9-]*)+)/g;
@@ -168,51 +150,10 @@ function unwritableChoices(): Map<string, Set<string>> {
   return found;
 }
 
-/**
- * Every string literal in every package's shipped source, `${…}` reduced to a placeholder — the population the
- * flag check reads.
- *
- * Wider than {@link actionStrings} on purpose. A remedy is not always written at its key: the email host's
- * `const PROVISION = "pithy email provision --env <env>"` reached `Run <command>.` through a constant, and
- * `email provision` has no `--env`. A `pithy <command> --flag` citation is exact enough that prose does not
- * trip it — measured, it found nothing but real faults across the tree — so the check reads every literal
- * rather than guessing which keys carry guidance. The command-name check stays on `action:` and `command:`:
- * over every literal it reads `pithy needs Node …` as a command called `needs`.
- */
-function literalStrings(): Guidance[] {
-  const found: Guidance[] = [];
-  for (const pkg of readdirSync(join(REPO_ROOT, "packages"))) {
-    for (const path of sourcePaths(join(REPO_ROOT, "packages", pkg, "src"), { keep: isShippedSource })) {
-      const source = readSource(path);
-      if (source === null) continue;
-      for (const match of blankComments(source).matchAll(LITERAL)) {
-        const literal = (match[1] as string).slice(1, -1).replace(/\$\{[^}]*\}/g, "<x>");
-        found.push({ where: relative(REPO_ROOT, path).split(sep).join("/"), text: literal });
-      }
-    }
-  }
-  return found;
-}
-
 const ACTIONS = actionStrings();
 const UNWRITABLE = unwritableChoices();
 
-describe("the scan matches guidance and not prose", () => {
-  /** The imperative words this file recognizes, applied to one string. */
-  const cited = (text: string): string[] => [...text.matchAll(IMPERATIVE)].map((match) => match[1] as string);
-
-  test("finds a command in each shape an action writes one", () => {
-    expect(cited("Run pithy doctor to see what is missing.")).toEqual(["doctor"]);
-    expect(cited("pithy init writes it.")).toEqual(["init"]);
-    expect(cited("Try `pithy dev` again.")).toEqual(["dev"]);
-  });
-
-  // The one that decides whether this gate is usable. Without it the rule reports a correct message.
-  test("does not take a mid-sentence mention for a command", () => {
-    expect(cited("If no other pithy process is running, delete it by hand.")).toEqual([]);
-    expect(cited("A pithy project keeps its config here.")).toEqual([]);
-  });
-
+describe("the scan reads what a page offers", () => {
   test("reads a --set offer, and ignores the trailing punctuation of a sentence", () => {
     const offers = [...`Pass --set billingSubject=user.`.matchAll(SET_OFFER)].map((m) => `${m[1]}=${m[2]}`);
     expect(offers).toEqual(["billingSubject=user"]);
@@ -228,67 +169,10 @@ describe("the scan matches guidance and not prose", () => {
   });
 });
 
-describe("every action line names something that exists", () => {
-  // The vacuity floor. An extraction that quietly found nothing satisfies all three checks below, which
-  // is the failure mode a gate over derived data has instead of a wrong answer.
-  test("there are action lines to check, and they cite commands", () => {
-    expect(ACTIONS.length).toBeGreaterThan(300);
-    const citations = ACTIONS.flatMap((one) => [...one.text.matchAll(IMPERATIVE)]);
-    expect(citations.length).toBeGreaterThan(50);
-  });
-
-  test("a fix is read like an action, so its command and flags are held to the same rule (#697)", () => {
-    const planted = 'throw withFix(error, { fix: "pithy provision --env staging --yes" });';
-    const [match] = [...planted.matchAll(ACTION)];
-    ACTION.lastIndex = 0;
-    expect(match?.[1]).toBe('"pithy provision --env staging --yes"');
-    // Few by design: every "provision this environment" remedy is written once, in `provision/provisionFix.ts`.
-    expect(ACTIONS.filter((one) => /^pithy /.test(one.text)).length).toBeGreaterThan(3);
-  });
-
+describe("every command a page tells a reader names flags that exist", () => {
   /**
-   * The scan reads a `fix:` only when its value is written at the key. A `{ fix }` shorthand, a `fix:` read
-   * off a variable, or a ternary between two commands slips past it with both commands unchecked — the one
-   * remedy an agent runs without reading. So every `withFix(` call in shipped source must be matched by a
-   * literal `fix:` in the same file: a site that needs two commands throws twice.
-   */
-  test("every withFix call writes its fix as a literal, so the scan above reads it", () => {
-    const CALL = /\bwithFix\(/g;
-    const DEFINITION = /\bfunction withFix\(/g;
-    const LITERAL_FIX = /\bfix:\s*[`"']/g;
-    const short: string[] = [];
-    let calls = 0;
-    for (const pkg of readdirSync(join(REPO_ROOT, "packages"))) {
-      for (const path of sourcePaths(join(REPO_ROOT, "packages", pkg, "src"), { keep: isShippedSource })) {
-        const code = blankComments(readSource(path) ?? "");
-        const sites = (code.match(CALL)?.length ?? 0) - (code.match(DEFINITION)?.length ?? 0);
-        calls += sites;
-        if (sites > (code.match(LITERAL_FIX)?.length ?? 0)) short.push(relative(REPO_ROOT, path).split(sep).join("/"));
-      }
-    }
-    // Few by design: every "provision this environment" remedy is written once, in `provision/provisionFix.ts`.
-    expect(calls).toBeGreaterThan(3);
-    expect(short).toEqual([]);
-  });
-
-  test("every command an action tells you to run is a command", async () => {
-    const commands = new Set((await buildDocsCatalog()).commands.map((one) => one.path.split(" ")[0] as string));
-    expect(commands.size).toBeGreaterThan(10);
-
-    const faults: string[] = [];
-    for (const { where, text } of ACTIONS) {
-      for (const match of text.matchAll(IMPERATIVE)) {
-        const name = match[1] as string;
-        if (!commands.has(name)) faults.push(`${where}: names \`pithy ${name}\`, which is not a command — "${text}"`);
-      }
-    }
-    expect(faults).toEqual([]);
-  });
-
-  /**
-   * Over every literal in shipped source and every command page's prose. **Not seen:** a citation whose
-   * command name is interpolated (`` `pithy ${capability} provision --env` `` reduces to `pithy <x>`, which
-   * names no command), and one assembled from pieces (`["pithy secrets provision", "--env"].join(" ")`).
+   * Over every command page's prose. Source is the builder's: a command line there is built, and the builder
+   * refuses a flag its command does not declare (`runnableCommands.test.ts`).
    */
   test("every flag an action names exists on the command it names it on", async () => {
     const catalog = await buildDocsCatalog();
@@ -297,7 +181,7 @@ describe("every action line names something that exists", () => {
 
     const faults: string[] = [];
     let pairs = 0;
-    for (const { where, text } of [...literalStrings(), ...commandDocs()]) {
+    for (const { where, text } of commandDocs()) {
       for (const match of text.matchAll(WITH_FLAGS)) {
         // The longest catalog path this citation starts with: `pithy add secrets --json` is the `add`
         // command with an argument, and `pithy token mint --json` is a two-word command.

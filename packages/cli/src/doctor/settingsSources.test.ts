@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { composeFor } from "../project/composeFor";
 import { settingsAccountConnection, settingsEnvironments } from "./settingsSources";
@@ -81,6 +82,7 @@ describe("reaching the account", () => {
 
   test("offline skips it before anything resolves", async () => {
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: true,
@@ -94,6 +96,7 @@ describe("reaching the account", () => {
 
   test("no credentials is its own reason — a project not set up yet is not an unreachable one", async () => {
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: false,
@@ -109,6 +112,7 @@ describe("reaching the account", () => {
     const findZoneForHostname = vi.fn(async (hostname: string) => (hostname === "acme.dev" ? { id: "z" } : null));
     const secretProbe = vi.fn(async () => true);
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: false,
@@ -140,6 +144,7 @@ describe("reaching the account", () => {
     const exists = vi.fn(async (name: string) => name === "acme-prod-email-link-signing-key");
     const stores: string[] = [];
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: false,
@@ -165,6 +170,7 @@ describe("reaching the account", () => {
 
   test("with no store id recorded, a store question is not answered at all", async () => {
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: false,
@@ -176,11 +182,16 @@ describe("reaching the account", () => {
     if (answer.state !== "reachable") throw new Error("expected reachable");
     // `false` would report every entry missing on a machine that simply never recorded the id. A refusal is
     // the runner's `unchecked`, which is the truth.
-    await expect(answer.reader.storeEntry("acme-prod-email-link-signing-key")).rejects.toThrow();
+    const refusal = await answer.reader.storeEntry("acme-prod-email-link-signing-key").catch((error: unknown) => error);
+    // …and its action never names an add that would be refused: this fixture has no Worker to name (#711).
+    expect((refusal as PithyError).payload.action).toBe(
+      "This project has no Worker to compose secrets into. Name one and create it with pithy worker add, then compose secrets into it.",
+    );
   });
 
   test("a secret asked about an environment no manager owns is not a claim", async () => {
     const answer = await settingsAccountConnection({
+      projectDir: dir,
       account: null,
       project: "acme",
       offline: false,

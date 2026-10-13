@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdirSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "comment-json";
 import { defaultWorkerDev, parseWorkerManifest, WORKER_MANIFEST_FILE, type WorkerDev } from "./workerManifest";
@@ -27,12 +28,54 @@ interface NamedWrangler {
 }
 
 /** True if `dir` holds a file named `file`. */
-async function hasFile(dir: string, file: string): Promise<boolean> {
+function hasFile(dir: string, file: string): boolean {
   try {
-    return (await stat(join(dir, file))).isFile();
+    return statSync(join(dir, file)).isFile();
   } catch {
     return false;
   }
+}
+
+/** One directory under `apps/` that discovery counts as a Worker, and whether it holds a `wrangler.jsonc`. */
+interface WorkerDirectory {
+  /** The directory. */
+  dir: string;
+  /** Its name under `apps/`, which is what `--worker` takes. */
+  entry: string;
+  /** Whether it holds a `wrangler.jsonc`. */
+  hasWrangler: boolean;
+}
+
+/**
+ * **The discovery rule, once**: every `apps/<name>/` holding a `pithy.worker.jsonc` or a `wrangler.jsonc`, by
+ * directory name. Synchronous, so a classifier building a sentence inside a `catch` reads the same set
+ * {@link discoverWorkers} does, by the same test (#711).
+ */
+function workerDirectories(projectDir: string): WorkerDirectory[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(join(projectDir, "apps"));
+  } catch {
+    return [];
+  }
+  const found: WorkerDirectory[] = [];
+  for (const entry of [...entries].sort()) {
+    const dir = join(projectDir, "apps", entry);
+    const hasWrangler = hasFile(dir, "wrangler.jsonc");
+    if (hasWrangler || hasFile(dir, WORKER_MANIFEST_FILE)) found.push({ dir, entry, hasWrangler });
+  }
+  return found;
+}
+
+/**
+ * **The Workers `pithy add --worker` can wire into**, by directory, sorted by its name: discovered, and carrying a
+ * `pithy.config.ts`. A dev-only process composes nothing and is no `--worker` target. Every sentence that offers
+ * one command per Worker reads its Workers here.
+ */
+export function configuredWorkerDirs(projectDir: string): string[] {
+  return workerDirectories(projectDir)
+    .filter((found) => hasFile(found.dir, "pithy.config.ts"))
+    .map((found) => found.dir);
 }
 
 /** The Worker's name from its `wrangler.jsonc`, falling back to `fallback` if unreadable or unnamed. */
@@ -68,19 +111,9 @@ async function toTarget(dir: string, fallbackName: string, hasWrangler: boolean)
  * way — no hand-kept list, and nothing special-cases the project root.
  */
 export async function discoverWorkers(projectDir: string): Promise<WorkerTarget[]> {
-  let entries: string[] = [];
-  try {
-    entries = await readdir(join(projectDir, "apps"));
-  } catch {
-    entries = [];
-  }
-
   const workers: WorkerTarget[] = [];
-  for (const entry of entries) {
-    const dir = join(projectDir, "apps", entry);
-    const hasManifest = await hasFile(dir, WORKER_MANIFEST_FILE);
-    const hasWrangler = await hasFile(dir, "wrangler.jsonc");
-    if (hasManifest || hasWrangler) workers.push(await toTarget(dir, entry, hasWrangler));
+  for (const found of workerDirectories(projectDir)) {
+    workers.push(await toTarget(found.dir, found.entry, found.hasWrangler));
   }
   return workers.sort((a, b) => a.name.localeCompare(b.name));
 }

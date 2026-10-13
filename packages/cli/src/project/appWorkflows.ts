@@ -326,7 +326,7 @@ export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOption
     if (problems.length > 0) {
       throw new InternalError({
         message: `wrangler.jsonc would not load with the ${target} bindings.`,
-        action: `Fix the ${target} bindings in ${workerDir}/wrangler.jsonc by hand, then run pithy worker sync again.`,
+        action: `Fix the ${target} bindings in ${workerDir}/wrangler.jsonc by hand, then run this again.`,
         detail: problems.join("; "),
       });
     }

@@ -13,6 +13,7 @@ import {
   renderConfigOptionLine,
   renderConfigSeamLine,
 } from "@pithy-sh/core/src/capability/manifest";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import {
   appendBinding,
@@ -24,6 +25,7 @@ import {
 } from "../project/bindingEntries";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
+import { addAgain, addCallerOf } from "./addCommand";
 import { optionValue } from "./configConstants";
 import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
 import { type ResolvedSeam, seamNote, seamsFor, writeSeamModule } from "./configSeams";
@@ -45,6 +47,11 @@ export interface AddCapabilityOptions {
   manifest: CapabilityManifest;
   /** Per-option overrides; an unset option renders its manifest default. */
   configValues?: Record<string, ConfigValue>;
+  /**
+   * The caller's own `pithy add`, as a refusal here names it for running again — every `--set` and flag the run
+   * was given (#711). Rebuilt from the capability and the Worker alone where the caller has none to give.
+   */
+  again?: string;
   /**
    * The project name, resolved by the caller from the root `pithy.config.ts` (`requireProjectName`) and
    * passed as a plain string. It is the first segment of every name proposed here.
@@ -145,7 +152,8 @@ function wiredBindings(manifest: CapabilityManifest): BindingSpec[] {
  *
  * Over {@link wiredBindings}, so a class is exported exactly when it is bound.
  */
-async function updateEntry({ workerDir, manifest }: AddCapabilityOptions): Promise<void> {
+async function updateEntry(options: AddCapabilityOptions): Promise<void> {
+  const { workerDir, manifest } = options;
   const exports = durableObjectExports(wiredBindings(manifest));
   if (exports.length === 0) return;
 
@@ -164,13 +172,23 @@ async function updateEntry({ workerDir, manifest }: AddCapabilityOptions): Promi
           : `${path} is missing — this Worker's wrangler.jsonc names it as main.`,
       action:
         path === null
-          ? `Give ${wrangler} a main naming this Worker's entry, then run pithy add ${manifest.name} again.`
-          : `Restore that file, then run pithy add ${manifest.name} again.`,
+          ? `Give ${wrangler} a main naming this Worker's entry, then run ${again(options)} again.`
+          : `Restore that file, then run ${again(options)} again.`,
       detail: `${manifest.name} binds ${classes}, which wrangler resolves against the Worker's entry.`,
     });
   }
   const written = withDurableObjectExports(source, exports);
   if (written !== source) await writeFile(path, written);
+}
+
+/**
+ * The `pithy add` a refusal here sends the caller back to: the caller's own, as the flow built it, or the same
+ * capability on the same Worker where it gave none (`addCommand.ts`'s {@link addAgain}).
+ */
+function again(options: AddCapabilityOptions): string {
+  return (
+    options.again ?? addAgain(addCallerOf({ capability: options.manifest.name }, []), { workerDir: options.workerDir })
+  );
 }
 
 /** Escape a capability name for use inside a `RegExp` (names are simple, but be safe). */
@@ -235,15 +253,21 @@ function renderRegistration(
  * a second binding of one name gives a config that never loads, and quietly composing theirs would hand a
  * capability a resolver nobody meant it to have.
  */
-function seamImport(source: string, seam: ResolvedSeam, capability: string, path: string): string | undefined {
+function seamImport(
+  source: string,
+  seam: ResolvedSeam,
+  capability: string,
+  path: string,
+  rerun: string,
+): string | undefined {
   const { binding, specifier, module } = CONFIG_SEAMS[seam.seam];
   const existing = findNamedImport(source, binding);
   if (existing === undefined) return renderCapabilityImport(binding, specifier);
   if (existing.specifier === specifier) return undefined;
   throw new ConflictError({
     message: `${path} already imports ${binding} from "${existing.specifier}".`,
-    action: `Rename that import, then run pithy add ${capability} again.`,
-    detail: `${capability} takes ${binding} as its ${seam.option} seam and pithy add writes it to ${module}; wiring it would have composed ${existing.specifier} instead.`,
+    action: `Rename that import, then run ${rerun} again.`,
+    detail: `${capability} takes ${binding} as its ${seam.option} seam and ${commandName("add")} writes it to ${module}; wiring it would have composed ${existing.specifier} instead.`,
   });
 }
 
@@ -257,7 +281,9 @@ function seamImport(source: string, seam: ResolvedSeam, capability: string, path
  * would add an import to a config that already composes payments some other way, and would report a
  * scaffold beside a resolver somebody had finished.
  */
-async function updateConfig({ workerDir, manifest, configValues }: AddCapabilityOptions): Promise<ResolvedSeam[]> {
+async function updateConfig(options: AddCapabilityOptions): Promise<ResolvedSeam[]> {
+  const { workerDir, manifest, configValues } = options;
+  const rerun = again(options);
   const path = join(workerDir, "pithy.config.ts");
   let source = await readFile(path, "utf8");
 
@@ -265,7 +291,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   if (markerLine === undefined) {
     throw new InternalError({
       message: `${path} has no "${MARKER}" marker.`,
-      action: "Restore the managed-region marker inside capabilities: []. Run pithy add again.",
+      action: `Restore the managed-region marker inside capabilities: []. Run ${rerun} again.`,
     });
   }
 
@@ -281,7 +307,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   // Ahead of the capability's own import so the two land in the order a reader expects, and ahead of the
   // write so a seam whose binding is taken leaves the file untouched rather than half-wired.
   for (const seam of seams) {
-    const statement = seamImport(source, seam, manifest.name, path);
+    const statement = seamImport(source, seam, manifest.name, path, rerun);
     if (statement !== undefined) source = `${statement}\n${source}`;
   }
 
@@ -301,7 +327,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
   } else if (origin === "foreign") {
     throw new ConflictError({
       message: `${path} already imports ${manifest.name} from "${existing.specifier}".`,
-      action: `Rename that import, then run pithy add ${manifest.name} again.`,
+      action: `Rename that import, then run ${rerun} again.`,
       detail: `Wiring ${manifest.name}() would have composed ${existing.specifier} as the capability.`,
     });
   } else if (origin === "unresolvable") {
@@ -311,7 +337,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
     // correct, and a command that silently repoints imports is one nobody can predict.
     throw new ConflictError({
       message: `${path} imports ${manifest.name} from "${existing.specifier}", which resolves to nothing.`,
-      action: `Point that import at "${capabilityImportSpecifier(manifest.package)}", then run pithy add ${manifest.name} again.`,
+      action: `Point that import at "${capabilityImportSpecifier(manifest.package)}", then run ${rerun} again.`,
       detail: `${manifest.package} exports ./src/* only, so the bare specifier has no entry point.`,
     });
   }

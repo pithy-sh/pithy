@@ -808,10 +808,10 @@ function commandsIn(line: string): NamedCommand[] {
 describe("the lines themselves", () => {
   test("a provisionable group is one sentence naming the one command that creates every entry on it", async () => {
     const lines = await report(await bareWorker());
-    expect(lines.filter((line) => line.includes("Run pithy secrets provision —"))).toEqual(
+    expect(lines.filter((line) => line.includes("It creates the store entries and writes the stanza."))).toEqual(
       ENVIRONMENTS.map(
         (env) =>
-          `board env.${env} binds no CFS_ENV_MINT, CFS_GLOBAL_MINT, SECRETS_ENCRYPTION_KEYS. Run pithy secrets provision — it creates the store entries and writes the stanza.`,
+          `board env.${env} binds no CFS_ENV_MINT, CFS_GLOBAL_MINT, SECRETS_ENCRYPTION_KEYS. \`pithy secrets provision\` runs against every environment, production included. That is a person's decision, not a fix. It creates the store entries and writes the stanza.`,
       ),
     );
   });
@@ -819,7 +819,7 @@ describe("the lines themselves", () => {
   test("a supplied environment-scoped group names one create per secret, each with its --env", async () => {
     const lines = await report(await bareWorker());
     expect(lines.filter((line) => line.startsWith("board env.staging binds no CFS_ENV_BOOTSTRAP"))).toEqual([
-      "board env.staging binds no CFS_ENV_BOOTSTRAP, CFS_ENV_SUPPLIED. Run pithy secrets create CFS_ENV_BOOTSTRAP --env staging, pithy secrets create CFS_ENV_SUPPLIED --env staging to supply their values, then pithy secrets provision to write the stanza.",
+      "board env.staging binds no CFS_ENV_BOOTSTRAP, CFS_ENV_SUPPLIED. Run pithy secrets create CFS_ENV_BOOTSTRAP --env staging, pithy secrets create CFS_ENV_SUPPLIED --env staging to supply their values. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     ]);
   });
 
@@ -833,7 +833,7 @@ describe("the lines themselves", () => {
   test("a supplied global group is one sentence, one command, and no --env", async () => {
     const lines = await report(await bareWorker());
     expect(lines.filter((line) => line.includes("CFS_GLOBAL_BOOTSTRAP"))).toEqual([
-      "board env.staging, env.prod bind no CFS_GLOBAL_BOOTSTRAP, CFS_GLOBAL_SUPPLIED. Run pithy secrets create CFS_GLOBAL_BOOTSTRAP, pithy secrets create CFS_GLOBAL_SUPPLIED to supply their values, then pithy secrets provision to write every stanza.",
+      "board env.staging, env.prod bind no CFS_GLOBAL_BOOTSTRAP, CFS_GLOBAL_SUPPLIED. Run pithy secrets create CFS_GLOBAL_BOOTSTRAP, pithy secrets create CFS_GLOBAL_SUPPLIED to supply their values. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes every stanza.",
     ]);
   });
 
@@ -844,7 +844,7 @@ describe("the lines themselves", () => {
     });
     const target = await bareWorker(registry as SecretRegistry);
     expect((await report(target))[0]).toBe(
-      "board env.staging binds no CFS_ENV_SUPPLIED. Run pithy secrets create CFS_ENV_SUPPLIED --env staging to supply its value, then pithy secrets provision to write the stanza.",
+      "board env.staging binds no CFS_ENV_SUPPLIED. Run pithy secrets create CFS_ENV_SUPPLIED --env staging to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     );
   });
 

@@ -10,6 +10,7 @@ import {
 } from "../capabilities/reconcile";
 import type { ProjectLedger } from "../migrations/run";
 import { checkedWorker } from "../test-utils/doctorHarness";
+import { dirOf } from "../test-utils/workerDir";
 import { type BuildPlan, buildProjectHealth, defaultBuildPlan, type ProjectHealthOptions } from "./health";
 
 /** A plan builder keyed by Worker, so health is tested without touching a project on disk. */
@@ -513,7 +514,7 @@ describe("buildProjectHealth — per Worker", () => {
       buildPlan: build,
     });
 
-    expect(health.workers[0]).toEqual({ state: "unavailable", worker: "api" });
+    expect(health.workers[0]).toEqual({ state: "unavailable", worker: "api", directory: "api" });
     // The sibling kept all five checks.
     expect(checkedWorker(health, 1)).toMatchObject({ state: "checked", worker: "collab", ok: true });
     // And the sick Worker is not a Worker that passed: there is no `ok` on it to read as true, and no
@@ -614,6 +615,7 @@ describe("buildProjectHealth — project-global bindings", () => {
         credential: null,
         stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
         repointable: true,
+        composing: [dirOf("api")],
       },
     ],
   };
@@ -678,7 +680,7 @@ describe("buildProjectHealth — capability resolution", () => {
   const unreachable = {
     ok: false,
     reachable: ["auth"],
-    unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+    unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: [dirOf("api")] }],
     split: [],
   };
 

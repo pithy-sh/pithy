@@ -228,7 +228,7 @@ describe("worker list", () => {
     const { out, err } = await runList(false);
 
     expect(err).toContain("Autostart answers are recorded for a checkout at /gone/app, which is gone: replay-board.");
-    expect(err).toContain("pithy dev --app <name> --disable-autostart");
+    expect(err).toContain("re-set them here with pithy dev, naming each Worker with --app beside --disable-autostart");
     // The listing itself is unchanged: the orphaned answer is under another key, so nothing was said here.
     expect(out).toContain("replay-board");
     expect(out).toContain("autostart");

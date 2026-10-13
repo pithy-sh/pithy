@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { parseArgs } from "node:util";
+import { commandNameOfPath, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ArgsDef, CommandDef } from "citty";
 import { readBooleanToken } from "./booleanToken";
@@ -210,14 +211,14 @@ export async function undeclaredFlags(root: CommandDef, argv: readonly string[])
 export async function refuseUndeclaredFlags(root: CommandDef, argv: readonly string[]): Promise<void> {
   const found = await undeclaredFlags(root, argv);
   if (found === null) return;
-  const command = `\`${["pithy", ...found.path].join(" ")}\``;
+  const command = `\`${commandNameOfPath(found.path)}\``;
   const plural = found.undeclared.length > 1;
   throw new ValidationError({
     message: `Unknown flag${plural ? "s" : ""}: ${found.undeclared.join(", ")}.`,
     // A command with none of its own still takes the global ones, so "no flags" would be wrong (#697).
     action:
       found.declared.length === 0
-        ? `${command} takes only the global flags, which \`pithy schema --json\` lists.`
+        ? `${command} takes only the global flags, which \`${pithyCommand("schema", { args: [], flags: { "--json": true } })}\` lists.`
         : `${command} takes ${found.declared.join(", ")}.`,
     issues: found.undeclared.map((flag) => ({
       path: [flag],

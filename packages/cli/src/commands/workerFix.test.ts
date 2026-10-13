@@ -5,13 +5,15 @@ import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { email } from "@pithy-sh/email/src/index";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { buildDocsCatalog } from "../docs/catalog";
-import { scopedSettingsFix } from "../doctor/settingsSources";
+import { doctorSettingsCheck } from "../doctor/settingsSources";
 import { scaffoldProject } from "../project/scaffold";
 import { resolveSingleWorker } from "../project/workerScope";
 import { secretsDatabaseMissing, suppressionDatabaseMissing } from "../provision/missingDatabase";
 import { withProvisionFix } from "../provision/provisionFix";
+import { supplyStoreEntryCommand } from "../provision/secretEntryRemedy";
 import { fixOf } from "../terminal/exitClass";
 import { recorder } from "../test-utils/cloudflareRecorder";
 import { linkKitPackages } from "../test-utils/linkKit";
@@ -121,21 +123,39 @@ describe("a fix runs as written in a project with two Workers", () => {
     expect(await resolvesTo(fix as string)).toBe(join(dir, "apps", "web"));
   });
 
-  test("a missing suppression database, no Worker known: no fix, since a bare one is refused here", () => {
-    expect(fixFrom(suppressionDatabaseMissing("acme-global-email-suppressions", "why."))).toBeUndefined();
-  });
-
-  test("email's settings finding names the Worker it was found in; one from an unknown Worker names none", async () => {
-    const fix = scopedSettingsFix("pithy email provision", join(dir, "apps", "api"));
-    expect(fix).toBe("pithy email provision --worker api");
-    expect(await resolvesTo(fix as string)).toBe(join(dir, "apps", "api"));
-    expect(scopedSettingsFix("pithy email provision", undefined)).toBeUndefined();
+  test("email's settings finding, through doctor, names the Worker by its directory and not its deployed name", async () => {
+    // `apps/web` deploys as `acme-web`. Doctor holds the Worker by that name; `--worker` is offered the directory.
+    const check = await doctorSettingsCheck({
+      projectDir: dir,
+      workers: [
+        {
+          name: "acme-web",
+          dir: join(dir, "apps", "web"),
+          capabilities: [email({ fromAddress: "hello@acme.dev", baseUrl: "not a url" })],
+        },
+      ],
+      account: null,
+      offline: true,
+    });
+    const finding = check?.findings.find((entry) => entry.setting === "BASE_URL");
+    expect(finding?.worker).toBe("acme-web");
+    expect(finding?.fix).toBe("pithy email provision --worker web");
+    expect(finding?.action).toContain("Run pithy email provision --worker web.");
+    expect((await parsed(finding?.fix as string)).path).toBe("email provision");
+    expect(await resolvesTo(finding?.fix as string)).toBe(join(dir, "apps", "web"));
   });
 
   test("a fix for a command that spans every Worker is left as it is, and takes no --worker", async () => {
-    expect(scopedSettingsFix("pithy secrets provision", join(dir, "apps", "api"))).toBe("pithy secrets provision");
-    const fix = fixFrom(secretsDatabaseMissing("staging", "acme-staging-secrets", "why."));
-    expect(fix).toBe("pithy secrets provision");
+    // A missing secrets database has no fix any more: the provision that creates it runs against every
+    // environment, production included, a person's decision (#711). A store entry's supply is the same shape.
+    expect(fixFrom(secretsDatabaseMissing("staging", "acme-staging-secrets", "why."))).toBeUndefined();
+    const fix = supplyStoreEntryCommand({
+      secret: "STRIPE_KEY",
+      scope: "environment",
+      env: "staging",
+      provisionable: false,
+    });
+    expect(fix).toBe("pithy secrets create STRIPE_KEY --env staging");
     const { path } = await parsed(fix as string);
     const declared = (await buildDocsCatalog()).commands.find((command) => command.path === path)?.flags;
     expect(declared).not.toContain("--worker");

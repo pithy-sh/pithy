@@ -3,6 +3,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { assertWorkerName, ensureEmptyTarget, environmentWorkerName, kitRange, workerNamespace } from "./scaffold";
@@ -72,7 +73,7 @@ function workerFiles(name: string, project: string, environments: readonly strin
   },
 
   // The deployed version of this Worker, injected by Cloudflare. It is what puts a build id on every
-  // log record and audit event, and what \`pithy deploy\` reads back to prove this Worker is the one
+  // log record and audit event, and what \`${commandName("deploy")}\` reads back to prove this Worker is the one
   // answering at your domain. Every environment repeats it below, and must: an env.<name> stanza does
   // NOT inherit version_metadata from the top level.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
@@ -95,16 +96,16 @@ ${envStanzas}
 `;
 
   const manifest = `{
-  // How \`pithy dev\` runs this worker locally. This file is yours; wrangler.jsonc stays wrangler's.
+  // How \`${commandName("dev")}\` runs this worker locally. This file is yours; wrangler.jsonc stays wrangler's.
   "dev": {
     // Every worker autostarts. To keep one out of your local dev set, run
-    //   pithy dev --app <name> --disable-autostart
+    //   ${pithyCommand("dev", { flags: { "--app": name, "--disable-autostart": true } })}
     // It is per branch and per machine, so it is yours and not the team's.
     // Regex marking "ready" in this worker's output.
     "readySignal": "Ready on https?://"
     // "preferredPort": 8787   // a hint only — the feature's reserved port block is authoritative.
     // "command": ["bun", "run", "dev"]   // set this for a non-Worker process (e.g. a Vite frontend).
-    //   {port} in any element of command becomes this worker's pinned port. pithy dev spawns with no
+    //   {port} in any element of command becomes this worker's pinned port. ${commandName("dev")} spawns with no
     //   shell, so an env var like $PORT on the argv would stay a literal.
   }
 }
@@ -210,7 +211,7 @@ import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { originFor } from "@pithy-sh/core/src/naming/domains";
 
 // Where this Worker answers, per environment. Declare it once here and the \`routes\` entry and
-// \`vars.BASE_URL\` in wrangler.jsonc are generated from it — \`pithy worker add\` fills this in when you
+// \`vars.BASE_URL\` in wrangler.jsonc are generated from it — \`${commandName("worker add")}\` fills this in when you
 // name a domain. \`dev\` is absent on purpose: local runs on the port your feature pinned.
 const DOMAINS = {
   // staging: { pattern: "staging.${name}.example.com", zone: "example.com" },
@@ -242,7 +243,7 @@ const app = defineCapability({
 const config = {
   domains: DOMAINS,
   // Library capabilities this Worker composes, in order.
-  // \`pithy add <capability> --worker ${name}\` registers them here.
+  // \`${commandName("add")}\`, naming a capability and --worker ${name}, registers them here.
   capabilities: [
     // pithy:capabilities (managed region — do not remove this marker)
   ],

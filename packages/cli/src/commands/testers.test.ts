@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import type { CommandDef } from "citty";
@@ -51,6 +54,11 @@ vi.mock("../capabilities/testersLoader", async () => ({
     listCohorts: async () => [COHORT],
     resolveCohortRef: async () => COHORT,
     listSnapshots: async () => [],
+    findMemberByEmail: async () => undefined,
+    inviteMember: async (_deps: unknown, input: { email: string }) => ({
+      member: { id: `m-${input.email}`, email: input.email },
+      created: true,
+    }),
     toCohortView: () => ({ name: COHORT.name, members: [] }),
     readCohort: async (...args: unknown[]) => {
       roster.readCohortCalls.push(args);
@@ -73,7 +81,7 @@ vi.mock("../project/workerScope", async (importOriginal) => ({
   resolveWorkers: async () => [
     {
       name: "api",
-      dir: "/does/not/exist",
+      dir: "/does/not/exist/apps/api",
       capabilities: [
         ...(project.composesTesters ? [{ name: "testers", testersConfig: { activeWithinDays: 7 } }] : []),
         ...project.siblings,
@@ -145,7 +153,7 @@ describe("pithy testers", () => {
         message: "The testers capability is not configured.",
         exit: 3,
         // testers declares `email`, so the add composes it too, with nobody to ask (#697).
-        fix: "pithy add testers --with-prerequisites",
+        fix: "pithy add testers --worker api --with-prerequisites",
       });
     } finally {
       project.composesTesters = true;
@@ -352,5 +360,49 @@ describe("the read commands and the pass see through the project's auth", () => 
     const error = await failure("list", { json: true, env: "dev" });
     expect(error.message).toBe("The composed auth is too old for testers to see who has used the app.");
     expect(roster.readCohortCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * **The page quotes the lines the command prints (#711).** `docs/commands/testers.md` kept three in the form they had
+ * before their commands were rebuilt — a roster read with no `--env`, which reads `dev`'s whatever the reader was on,
+ * and a pass named with no cohort and no environment. Each case runs the command and finds its words on the page.
+ */
+describe("docs/commands/testers.md quotes what the commands print", () => {
+  const page = readFileSync(
+    resolve(import.meta.dirname, "..", "..", "..", "..", "docs", "commands", "testers.md"),
+    "utf8",
+  );
+
+  beforeEach(() => {
+    project.siblings = [];
+  });
+
+  test.each([
+    ["create", { json: true, env: "dev" }],
+    ["remove", { json: true, env: "dev", cohort: COHORT.name, email: "nobody@example.com" }],
+  ])("%s's refusal", async (name, args) => {
+    const error = (await failure(name, args)) as { message: string; action?: string };
+    expect(page).toContain(`${error.message}\n${error.action}`);
+  });
+
+  test("invite's closing line", async () => {
+    const lines: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      await subcommand("invite").run?.({
+        args: { env: "dev", json: false, cohort: COHORT.name, email: ["sam@example.com", "pat@example.com"] },
+        rawArgs: [],
+      } as never);
+    } finally {
+      stdout.mockRestore();
+    }
+    const printed = stripVTControlCharacters(lines.join(""));
+    const next = printed.split("\n").find((line) => line.startsWith("Run "));
+    expect(next).toBeDefined();
+    expect(page).toContain(`${next}`);
   });
 });

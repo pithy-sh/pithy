@@ -1,13 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callerOf, rerunCommand } from "@pithy-sh/core/src/cli/command";
 import { isErrorCode } from "@pithy-sh/core/src/error/extend";
-import {
-  PithyError,
-  PreconditionFailedError,
-  UpstreamError,
-  ValidationError,
-} from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, PithyError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -27,6 +23,7 @@ import { canonicalGlobalEnvironment, type ManagedEnvironment, managedEnvironment
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createProjectCliAudit } from "../audit/cliAudit";
+import { addAction, withAddFix } from "../capabilities/addCommand";
 import {
   MintedSecret,
   mintDeclaredSecrets,
@@ -34,7 +31,7 @@ import {
   mintReportLines,
   storeSecretMinter,
 } from "../capabilities/mintSecrets";
-import { withAddFix } from "../capabilities/notComposed";
+import { resolveAdd } from "../capabilities/notComposed";
 import {
   EXIT_ROLLED_NOT_RECORDED,
   planSecretRotation,
@@ -73,9 +70,9 @@ import {
   verificationOutcome,
   verificationReportLines,
 } from "../capabilities/verifySecrets";
-import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials, type StoreNeed } from "../cloudflare/commandCredentials";
+import { cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
@@ -146,8 +143,21 @@ export async function mergedProjectSecrets(
   if (!first) {
     // No Worker composes `secrets`: the project is missing what every subcommand depends on, and `pithy add
     // secrets` is the step — named for this project's Workers, runnable as written, or not at all (#697).
+    // The sentence names the command the `fix` carries, from one builder (#711), and one command per Worker
+    // where no single Worker can be named.
     if (absent instanceof PithyError && isErrorCode(absent.payload, "core/not_found")) {
-      throw await withAddFix(absent, "secrets", { projectDir, workerDirs: workers.map((worker) => worker.dir) });
+      const add = resolveAdd("secrets", { projectDir, workerDirs: workers.map((worker) => worker.dir) });
+      const refusal = new NotFoundError(
+        {
+          message: absent.payload.message,
+          action: addAction(
+            add,
+            (run) => `Add secrets({ registry }) to a Worker's pithy.config.ts capabilities (run ${run}).`,
+          ),
+        },
+        { cause: absent },
+      );
+      throw withAddFix(refusal, add);
     }
     throw absent;
   }
@@ -223,7 +233,7 @@ const DRY_RUN_DISPATCHER: SecretRotationDispatcher = {
 async function buildDispatcher(
   projectDir: string,
 ): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder & SecretStoreVerifier> {
-  const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+  const { accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
 }
@@ -289,9 +299,14 @@ async function buildRotationDispatcher(projectDir: string): Promise<SecretRotati
  */
 async function requireRotationPreconditions(projectDir: string, backend: SecretBackend | undefined): Promise<void> {
   const account = await projectCloudflareAccount(projectDir);
-  loadCloudflareCreds(account);
+  commandCredentials(account);
   requireProjectName(await loadProject(projectDir));
-  if (backend === "cf-secrets-store") loadCloudflareCreds(account, { requireStore: true });
+  if (backend === "cf-secrets-store") commandCredentials(account, secretsStoreNeed(projectDir));
+}
+
+/** What every secrets command that writes the store needs it for, as the refusal for a missing id says. */
+function secretsStoreNeed(projectDir: string): StoreNeed {
+  return { projectDir, why: "create a Secrets Store in the Cloudflare dashboard" };
 }
 
 /** The per-backend writers, over one project resolution — the routing table both dispatchers share. */
@@ -305,7 +320,7 @@ async function writeRoutes(
     d1: manager,
     "cf-secrets-store": storeSecretWriter({
       store: async () => {
-        const { accountId, apiToken, storeId } = loadCloudflareCreds(account, { requireStore: true });
+        const { accountId, apiToken, storeId } = commandCredentials(account, secretsStoreNeed(projectDir));
         return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
       },
       // Provisioning's own namer, so an operator's value lands at the address `secretsStoreBindings` will
@@ -313,36 +328,6 @@ async function writeRoutes(
       scope: (env) => environmentScope(project, env),
     }),
   };
-}
-
-/** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
-function loadCloudflareCreds(
-  account: CloudflareAccountSelection | null,
-  options: { requireStore?: boolean } = {},
-): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-  storeId: string;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const storeId = vars.SECRETS_STORE_ID ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  if (options.requireStore && !storeId) {
-    throw new PreconditionFailedError({
-      message: "The CF Secrets Store id is missing.",
-      action: "Run pithy add secrets to record SECRETS_STORE_ID (create a Secrets Store in the Cloudflare dashboard).",
-    });
-  }
-  return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
 /**
@@ -382,11 +367,13 @@ async function readValue(
   mode: "create" | "update",
   entry: SecretRegistryEntry | undefined,
   branches: readonly string[] | undefined,
-  json: boolean,
+  args: { name: string; env?: string; json: boolean },
 ): Promise<string> {
+  const json = args.json;
   const value = await readSecretValue({
     name,
     mode,
+    rerun: rerunCommand(callerOf(`secrets ${mode}`, args), { args: [name] }),
     entry,
     branches,
     canPrompt: canPrompt(json),
@@ -465,9 +452,7 @@ async function write(
   const backend = args.backend === undefined ? undefined : requireBackend(args.backend);
   checkWriteIsCoherent(registry, mode, args.name, env, environments, backend);
   const value =
-    mode === "delete"
-      ? undefined
-      : await readValue(args.name, mode, registry[args.name], branches[args.name], args.json);
+    mode === "delete" ? undefined : await readValue(args.name, mode, registry[args.name], branches[args.name], args);
   const dispatcher = await buildWriteDispatcher(projectDir);
   const audit = await buildAudit(projectDir, auditOrigin(env, environments));
 
@@ -1088,9 +1073,10 @@ async function storeSweep(
   environments: DeclaredEnvironments | readonly string[],
 ): Promise<Pick<VerificationReport, "sweep" | "notSwept">> {
   try {
-    const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
-      requireStore: true,
-    });
+    const { accountId, apiToken, storeId } = commandCredentials(
+      await projectCloudflareAccount(projectDir),
+      secretsStoreNeed(projectDir),
+    );
     const project = requireProjectName(await loadProject(projectDir));
     const managed = managedEnvironments(environments);
     const { registry, complete } = await mergedProjectSecrets(projectDir);
@@ -1128,11 +1114,9 @@ const provision = withContract(
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
-        const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+        const { account, accountId, apiToken, storeId } = commandCredentials(
           await projectCloudflareAccount(projectDir),
-          {
-            requireStore: true,
-          },
+          secretsStoreNeed(projectDir),
         );
         // Never `resolveProjectName`: every Secrets Store entry and the manager's token name derive from
         // this, and deprovision has to recompute them exactly. A guessed name would name resources
@@ -1284,11 +1268,9 @@ const deprovision = withContract(
         // lists what could be named. `deprovisionSecrets` resolves it again — it is the one that deletes.
         const environment = requireTeardownEnvironment(args.env, declared);
         const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
-        const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+        const { account, accountId, apiToken, storeId } = commandCredentials(
           await projectCloudflareAccount(projectDir),
-          {
-            requireStore: true,
-          },
+          secretsStoreNeed(projectDir),
         );
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareSecretsDeprovisioner({

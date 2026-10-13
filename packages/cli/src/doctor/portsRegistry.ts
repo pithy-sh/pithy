@@ -3,6 +3,7 @@
 
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { portsRegistryPath, readPortsRegistry, registryRootExists, registryRootFor } from "../feature/ports";
 import { findOrphanedFeatureBlocks } from "../feature/prune";
@@ -279,7 +280,7 @@ export function describePortsRegistry(check: PortsRegistryCheck): string | null 
     return `${check.stray} is left over and nothing reads it — delete it`;
   }
   if (!check.present) {
-    return "no file yet; the first pithy dev or feature create writes it";
+    return `no file yet; the first ${commandName("dev")} or ${commandName("feature create")} writes it`;
   }
   return null;
 }

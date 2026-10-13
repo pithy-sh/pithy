@@ -130,7 +130,7 @@ describe("pithy provision reports what it left out", () => {
       return true;
     }) as typeof process.stdout.write;
     try {
-      writeReport(report, { json, seeded: false, pending: { names: [], remedy: null }, registry: {} });
+      writeReport(report, { json, seeded: false, pending: { names: [], remedy: null, sentence: null }, registry: {} });
     } finally {
       process.stdout.write = original;
     }
@@ -321,7 +321,7 @@ describe("pithy provision narrates the run it is doing", () => {
   ].join(",")}\n`;
 
   test("--json is one line, unchanged, whether or not the human run streams", () => {
-    const pending = { names: [], remedy: null };
+    const pending = { names: [], remedy: null, sentence: null };
     const registry = {};
     const streamed = captured(() =>
       writeReport(full, { json: true, seeded: false, pending, registry, streamed: true }),
@@ -339,7 +339,7 @@ describe("pithy provision narrates the run it is doing", () => {
    * line to carrying what it is handed, last, and to the published payload.
    */
   test("--json carries next only when the run hands it one", async () => {
-    const pending = { names: [], remedy: null };
+    const pending = { names: [], remedy: null, sentence: null };
     const next = provisionNext({ env: "staging", undeployed: ["board-staging"] });
     const line = captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {}, next }));
     expect(line).toBe(
@@ -359,7 +359,9 @@ describe("pithy provision narrates the run it is doing", () => {
 
   /** Held to the schema `pithy schema provision` publishes (#697): a declared run, and a feature's extras. */
   test("--json conforms to its published payload", async () => {
-    const pending = { names: ["link-key"], remedy: "pithy secrets provision" };
+    const decision =
+      "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.";
+    const pending = { names: ["link-key"], remedy: decision, sentence: decision };
     await expectConforms("provision", () =>
       captured(() => writeReport(full, { json: true, seeded: false, pending, registry: {} })),
     );
@@ -382,7 +384,12 @@ describe("pithy provision narrates the run it is doing", () => {
     };
     await expectConforms("provision", () =>
       captured(() =>
-        writeReport(feature, { json: true, seeded: true, pending: { names: [], remedy: null }, registry: {} }),
+        writeReport(feature, {
+          json: true,
+          seeded: true,
+          pending: { names: [], remedy: null, sentence: null },
+          registry: {},
+        }),
       ),
     );
   });
@@ -401,7 +408,7 @@ describe("pithy provision narrates the run it is doing", () => {
       ...full,
       manifestFaults: [{ package: "@pithy-sh/email", reason: "requiredBindings[1].scope: not a known scope" }],
     };
-    const options = { seeded: false, pending: { names: [], remedy: null }, registry: {} };
+    const options = { seeded: false, pending: { names: [], remedy: null, sentence: null }, registry: {} };
 
     /** Capture stderr, where a defect in somebody else's package belongs — never the operator's summary. */
     function capturedErr(act: () => void): string {
@@ -499,7 +506,7 @@ describe("pithy provision narrates the run it is doing", () => {
    * and stays exactly where it was.
    */
   test("the summary does not repeat what already streamed, and loses nothing else", () => {
-    const pending = { names: [], remedy: null };
+    const pending = { names: [], remedy: null, sentence: null };
     const registry = {};
     const streamed = captured(() =>
       writeReport(full, { json: false, seeded: false, pending, registry, streamed: true }),

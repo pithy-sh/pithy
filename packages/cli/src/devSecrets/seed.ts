@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { resolve } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { migrateDevSecrets, mintMissingDevSecrets, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
@@ -186,7 +187,6 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     const handle = await openStore({
       projectDir,
       workerDir: target.dir,
-      worker: target.name,
       ...(options.paths !== undefined ? { paths: options.paths } : {}),
     });
     if (!handle.ready) {
@@ -303,8 +303,7 @@ function assertLocalDevStore(projectDir: string, worker: string, persistPath: st
   if (persistPath !== undefined && resolve(persistPath) === resolve(expected)) return;
   throw new ConflictError({
     message: `Refusing to seed dev secrets for ${worker}: that is not this project's local dev store.`,
-    action:
-      "Dev secrets are local only. A deployed environment gets its secrets from pithy secrets provision and pithy secrets set, one at a time.",
+    action: `Dev secrets are local only. A deployed environment gets its secrets from ${commandName("secrets provision")} and ${commandName("secrets create")}, one at a time.`,
     detail: `expected the local dev store at '${expected}'; the handle named ${persistPath === undefined ? "no path at all" : `'${persistPath}'`}`,
   });
 }

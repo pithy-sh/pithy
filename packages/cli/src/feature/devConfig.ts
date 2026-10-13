@@ -3,6 +3,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
@@ -137,7 +138,7 @@ export async function writeDevConfig(path: string, config: DevConfig): Promise<v
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
       message: "The feature dev config is invalid.",
-      action: "Re-run pithy feature create to rebuild .dev.config.json.",
+      action: `Rebuild .dev.config.json by re-running ${commandName("feature create")} with this feature's slug and --issue.`,
     });
   }
   await writeFileAtomic(path, `${JSON.stringify(parsed.data, null, 2)}\n`);
@@ -185,7 +186,7 @@ export async function readDevConfig(path: string): Promise<DevConfig | null> {
   } catch (cause) {
     throw new InternalError({
       message: "The feature dev config is corrupt.",
-      action: "Delete .dev.config.json and re-run pithy feature create.",
+      action: `Delete .dev.config.json and re-run ${commandName("feature create")} with this feature's slug and --issue.`,
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
@@ -194,7 +195,7 @@ export async function readDevConfig(path: string): Promise<DevConfig | null> {
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
       message: "The feature dev config is invalid.",
-      action: "Delete .dev.config.json and re-run pithy feature create.",
+      action: `Delete .dev.config.json and re-run ${commandName("feature create")} with this feature's slug and --issue.`,
     });
   }
   return parsed.data;

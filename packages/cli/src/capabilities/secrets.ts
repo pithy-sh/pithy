@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
@@ -56,11 +57,12 @@ const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
 export function resolveSecretRegistry(config: WorkerConfig): SecretRegistry {
   const capabilities = allCapabilities(config);
   if (!capabilities.some(isSecretsCapability)) {
-    // Exit 3 already, as `core/not_found`. No `fix` here: one Worker's config cannot say which Worker `pithy add
-    // secrets` should wire, so the caller that holds the project names it (`commands/secrets.ts`, #697).
+    // Exit 3 already, as `core/not_found`. No `fix`, and no command: one Worker's config cannot say which Worker
+    // `pithy add secrets` should wire, so the caller that holds the project names it (`commands/secrets.ts`,
+    // #697), one command per Worker where there are several (#711).
     throw new NotFoundError({
       message: "The secrets capability isn't enabled in this worker.",
-      action: "Add secrets({ registry }) to a Worker's pithy.config.ts capabilities (run `pithy add secrets`).",
+      action: "Add secrets({ registry }) to a Worker's pithy.config.ts capabilities.",
     });
   }
   return aggregateSecretRegistries(capabilities);
@@ -166,8 +168,7 @@ export function assertNotTheMasterKey(mode: SecretWriteCommand["mode"], name: st
   if (name !== MASTER_KEY_BINDING) return;
   throw new ValidationError({
     message: `Secret '${name}' is the master key every other secret is sealed under.`,
-    action:
-      "Run pithy secrets provision, which creates it when it is absent. Replacing it makes every secret in that environment unreadable.",
+    action: `${remedy("secrets provision").say((command) => `Run ${command}.`)} It creates the key when it is absent. Replacing it makes every secret in that environment unreadable.`,
     detail: `${mode} '${name}': refused — the master key is created by provisioning, never written by hand`,
   });
 }
@@ -423,7 +424,7 @@ export function secretListRows(
 export function hiddenNote(hidden: number): string {
   if (hidden === 0) return "";
   const s = hidden === 1 ? "" : "s";
-  return `\n\n${hidden} secret${s} this configuration will never read ${hidden === 1 ? "is" : "are"} not listed. pithy secrets ls --all shows ${hidden === 1 ? "it" : "them"}, and why.`;
+  return `\n\n${hidden} secret${s} this configuration will never read ${hidden === 1 ? "is" : "are"} not listed. ${pithyCommand("secrets ls", { flags: { "--all": true } })} shows ${hidden === 1 ? "it" : "them"}, and why.`;
 }
 
 export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[], hidden = 0): string {
@@ -433,8 +434,8 @@ export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[], hid
   // is not there reads as a bug in the tool rather than a caveat about the answer (#552).
   const risk =
     hidden > 0
-      ? "A secret only those environments need may be among the ones not listed. Run pithy doctor."
-      : "A secret only those environments need may be marked not applicable above. Run pithy doctor.";
+      ? `A secret only those environments need may be among the ones not listed. Run ${pithyCommand("doctor")}.`
+      : `A secret only those environments need may be marked not applicable above. Run ${pithyCommand("doctor")}.`;
   return ["", ...unresolvedLines(unresolved), risk].join("\n");
 }
 

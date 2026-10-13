@@ -11,6 +11,7 @@ import { buildDocsCatalog } from "../docs/catalog";
 import { formatJsonLine } from "../terminal/output";
 import { cleanPlanFor, doctorHarness, ledgerStubPer, planStub } from "../test-utils/doctorHarness";
 import { contractAt, expectConforms } from "../test-utils/payloadContract";
+import { dirOf } from "../test-utils/workerDir";
 import { type DoctorFailure, DoctorFailures, doctorFailures } from "./failures";
 import type { ProjectHealth } from "./health";
 
@@ -127,14 +128,14 @@ describe("each gating check is one entry, with its fix", () => {
         state: "drifted",
         drift: [
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "prod",
             fault: "unserved-origin",
             origin: "https://app.acme.dev",
             source: "declaration",
           },
-          { worker: "api", env: "staging", fault: "workers-dev-open", origin: "https://staging.acme.dev" },
-          { worker: "api", env: "live", fault: "no-origin", origin: null },
+          { worker: dirOf("api"), env: "staging", fault: "workers-dev-open", origin: "https://staging.acme.dev" },
+          { worker: dirOf("api"), env: "live", fault: "no-origin", origin: null },
         ],
       }),
     });
@@ -150,7 +151,7 @@ describe("each gating check is one entry, with its fix", () => {
         state: "drifted",
         drift: [
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "prod",
             fault: "unsynced-stanza",
             declared: { workflows: [], crons: ["0 4 * * *"] },
@@ -167,8 +168,8 @@ describe("each gating check is one entry, with its fix", () => {
       checkSupportSearchTriggers: async () => ({
         state: "findings",
         environments: [
-          { env: "prod", worker: "api", state: "drift", triggers: "none" },
-          { env: "staging", worker: "api", state: "ok" },
+          { env: "prod", worker: "api", directory: dirOf("api"), state: "drift", triggers: "none" },
+          { env: "staging", worker: "api", directory: dirOf("api"), state: "ok" },
         ],
       }),
     });
@@ -183,7 +184,9 @@ describe("each gating check is one entry, with its fix", () => {
     const report = await healthyWith({
       checkSupportSearchTriggers: async () => ({
         state: "findings",
-        environments: [{ env: "staging", worker: "api", state: "orphaned-triggers", triggers: "all" }],
+        environments: [
+          { env: "staging", worker: "api", directory: dirOf("api"), state: "orphaned-triggers", triggers: "all" },
+        ],
       }),
     });
     const failures = failuresOf(report);
@@ -200,8 +203,8 @@ describe("each gating check is one entry, with its fix", () => {
       checkSupportSearchTriggers: async () => ({
         state: "findings",
         environments: [
-          { env: "staging", worker: "api", state: "ok" },
-          { env: "prod", worker: "api", state: "unreadable" },
+          { env: "staging", worker: "api", directory: dirOf("api"), state: "ok" },
+          { env: "prod", worker: "api", directory: dirOf("api"), state: "unreadable" },
         ],
       }),
     });
@@ -220,7 +223,7 @@ describe("each gating check is one entry, with its fix", () => {
       checkWorkerNames: async () => ({
         state: "drifted",
         mismatches: [],
-        reserved: [{ worker: "api", env: "prod", name: "acme-prod-mcp", capability: "mcp" }],
+        reserved: [{ worker: dirOf("api"), env: "prod", name: "acme-prod-mcp", capability: "mcp" }],
         convention: [],
       }),
     });
@@ -411,6 +414,16 @@ describe("project health, one entry per failing check", () => {
     });
     expect(failuresOf(report).map((failure) => failure.fix)).toEqual([null]);
   });
+
+  // #711: the example it offers runs as written in a project with several Workers, as the text report's does.
+  test("a gated route's example provider is the one the text report names, for this Worker", async () => {
+    const report = await healthyWith({
+      buildPlan: planStub(plan({ entitlements: { state: "read", gates: ["src/routes/pro.ts"] } })),
+    });
+    expect(failuresOf(report).map((failure) => failure.detail)).toEqual([
+      "api: routes gate on an entitlement nothing composed resolves: src/routes/pro.ts. Compose a provider, such as `pithy add payments --worker api --with-prerequisites --set billingSubject=user` or `pithy add payments --worker api --with-prerequisites --set billingSubject=organization`.",
+    ]);
+  });
 });
 
 describe("project health, the branches a plan does not reach", () => {
@@ -420,7 +433,7 @@ describe("project health, the branches a plan does not reach", () => {
         ok: false,
         reachable: [],
         unreachable: [
-          { capability: "email", package: "@pithy-sh/email", workers: ["api", "web"] },
+          { capability: "email", package: "@pithy-sh/email", workers: [dirOf("api"), dirOf("web")] },
           { capability: "media", package: "@pithy-sh/media", workers: [] },
         ],
         split: [],
@@ -428,7 +441,7 @@ describe("project health, the branches a plan does not reach", () => {
     });
     const failures = failuresOf(report);
     expect(checksAndFixes(failures)).toEqual([
-      { check: "project", fix: "pithy add email --worker api" },
+      { check: "project", fix: "pithy add email --worker api --with-prerequisites" },
       { check: "project", fix: null },
     ]);
     expect(failures[0]?.detail).toBe("email is composed by api, web, and @pithy-sh/email is not installed.");
@@ -462,6 +475,7 @@ describe("project health, the branches a plan does not reach", () => {
             credential: null,
             repointable: true,
             package: "@pithy-sh/email",
+            composing: [dirOf("api")],
             stale: [
               { worker: "api", env: "dev", name: "acme-dev-email-suppressions" },
               { worker: "api", env: "staging", name: "acme-staging-email-suppressions" },
@@ -484,6 +498,7 @@ describe("project health, the branches a plan does not reach", () => {
       credential: null,
       repointable: true,
       package: "@pithy-sh/email",
+      composing: [dirOf("api")],
       ids,
     });
     const two = withHealth(await healthyWith(), {
@@ -799,14 +814,14 @@ describe("every finding in every block carries fix", () => {
       readCapabilityReach: async () => ({
         ok: false,
         reachable: [],
-        unreachable: [{ capability: "email", package: "@pithy-sh/email", workers: ["api"] }],
+        unreachable: [{ capability: "email", package: "@pithy-sh/email", workers: [dirOf("api")] }],
         split: [
           {
             capability: "auth",
             package: "@pithy-sh/auth",
             at: [
-              { worker: "api", version: "0.9.0" },
-              { worker: "web", version: "0.8.0" },
+              { worker: dirOf("api"), version: "0.9.0" },
+              { worker: dirOf("web"), version: "0.8.0" },
             ],
           },
         ],
@@ -819,7 +834,7 @@ describe("every finding in every block carries fix", () => {
             name: "old-staging-db",
             project: "old",
             kind: "d1",
-            worker: "api",
+            worker: dirOf("api"),
             env: "staging",
             binding: "DB",
             provisioned: null,
@@ -851,26 +866,26 @@ describe("every finding in every block carries fix", () => {
       checkTurnstileSitekeys: async () => ({
         state: "findings",
         unrendered: [
-          { worker: "web", environment: "staging", slot: true },
-          { worker: "web", environment: "qa", slot: false },
+          { worker: dirOf("web"), environment: "staging", slot: true },
+          { worker: dirOf("web"), environment: "qa", slot: false },
         ],
         stranded: [
           {
-            worker: "web",
+            worker: dirOf("web"),
             name: "TURNSTILE_SITEKEY_STAGING",
             environment: "staging",
             file: "/p/apps/web/wrangler.jsonc",
-            removedBy: "web",
+            removedBy: dirOf("web"),
           },
         ],
       }),
       checkSupportSearchTriggers: async () => ({
         state: "findings",
-        environments: [{ env: "prod", worker: "api", state: "drift", triggers: "none" }],
+        environments: [{ env: "prod", worker: "api", directory: dirOf("api"), state: "drift", triggers: "none" }],
       }),
       checkEnvironmentInheritance: async () => ({
         state: "unrepeated",
-        unrepeated: [{ worker: "api", env: "staging", key: "vars", carries: ["APP_NAME"] }],
+        unrepeated: [{ worker: dirOf("api"), env: "staging", key: "vars", carries: ["APP_NAME"] }],
       }),
       checkEnvironmentConfigs: async () => ({
         unresolved: [{ environment: "prod", reason: "Set email({ baseUrl }) for prod." }],
@@ -879,7 +894,7 @@ describe("every finding in every block carries fix", () => {
         state: "drifted",
         drift: [
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "prod",
             fault: "unserved-origin",
             origin: "https://app.acme.dev",
@@ -891,7 +906,7 @@ describe("every finding in every block carries fix", () => {
         state: "drifted",
         drift: [
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "prod",
             fault: "unsynced-stanza",
             declared: { workflows: [], crons: ["0 4 * * *"] },
@@ -903,7 +918,7 @@ describe("every finding in every block carries fix", () => {
         state: "unbound",
         missing: [
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "staging",
             secret: "SESSION_SECRET",
             binding: "SESSION_SECRET",
@@ -912,7 +927,7 @@ describe("every finding in every block carries fix", () => {
             entry: "pithy-app-staging-session-secret",
           },
           {
-            worker: "api",
+            worker: dirOf("api"),
             env: "staging",
             secret: "STRIPE_KEY",
             binding: "STRIPE_KEY",
@@ -958,6 +973,7 @@ describe("every finding in every block carries fix", () => {
       credential: null,
       repointable: true,
       package: "@pithy-sh/email",
+      composing: [dirOf("api")],
     };
     const health = report.project?.health;
     if (health === undefined) throw new Error("planted: the harness report has no project");
@@ -1023,11 +1039,12 @@ describe("every finding in every block carries fix", () => {
     const payload = renderDoctorJson(await everywhere());
     const fixesAt = (path: string) => (at(payload, path) as { fix: string | null }[]).map((entry) => entry.fix);
     expect(fixesAt("secretBindings.missing")).toEqual([
-      "pithy secrets provision",
+      // A value the kit composes is minted by a provision of every environment, production included: no fix (#711).
+      null,
       "pithy secrets create STRIPE_KEY --env staging",
     ]);
     expect(fixesAt("docsMcp.clients")).toEqual(["pithy docs connect --client cursor"]);
-    expect(fixesAt("devVars.empty")).toEqual(["pithy seed"]);
+    expect(fixesAt("devVars.empty")).toEqual(["pithy seed --env dev"]);
     expect(fixesAt("turnstileSitekeys.unrendered")).toEqual(["pithy turnstile provision --worker web", null]);
     expect(fixesAt("turnstileSitekeys.stranded")).toEqual(["pithy turnstile provision --worker web"]);
     expect(fixesAt("settings.findings")).toEqual([null]);

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { TurnstileClientProjection } from "@pithy-sh/turnstile/src/client/projection";
@@ -21,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { uiBuildEnvironment } from "../project/deploy";
 import { scaffoldProject } from "../project/scaffold";
 import { linkKitPackages } from "../test-utils/linkKit";
+import { dirOf } from "../test-utils/workerDir";
 import { addCapability } from "./add";
 import { CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 import { environmentsBuiltWithoutSitekeys } from "./turnstileSitekeys";
@@ -167,7 +169,12 @@ beforeAll(async () => {
     environments: DECLARED,
     notes: () => {},
   });
-  fixture.result = await provisionTurnstile(provisioner, { modes: ["visible"], productionDomain: "app.example.com" });
+  fixture.result = await provisionTurnstile(provisioner, {
+    modes: ["visible"],
+    productionDomain: "app.example.com",
+    worker: dirOf("web"),
+    caller: callerOf("turnstile provision", {}),
+  });
 }, 120_000);
 
 afterAll(async () => {

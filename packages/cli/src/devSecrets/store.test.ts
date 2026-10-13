@@ -75,7 +75,7 @@ async function migrateLocalSecrets(): Promise<void> {
 describe("openDevSecretsStore", () => {
   test("a Worker with no SECRETS binding is not an error — it names the command that adds one", async () => {
     await writeFile(join(workerDir, "wrangler.jsonc"), '{ "d1_databases": [] }');
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board" });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir });
     expect(handle.ready).toBe(false);
     expect(handle.ready === false && handle.reason).toContain("pithy add secrets --worker board");
   });
@@ -198,7 +198,7 @@ describe("a stated master key that will not read", () => {
     await namedProject();
     await withSecretsBinding();
     const file = await state(value);
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
     if (handle.ready) throw new Error("expected the store to refuse to open");
     return { reason: handle.reason, file };
@@ -222,7 +222,7 @@ describe("a stated master key that will not read", () => {
     const file = await state({ currentVersion: "1", versions: { "1": "x" } });
     await chmod(file, 0o000);
     try {
-      const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+      const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
       await handle.dispose();
       expect(handle.ready).toBe(false);
       expect(handle.ready === false && handle.reason).toContain(file);
@@ -235,18 +235,18 @@ describe("a stated master key that will not read", () => {
   test("a named project with no file at all is the one state 'not recorded' is true of", async () => {
     await namedProject();
     await withSecretsBinding();
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
     expect(handle.ready).toBe(false);
     expect(handle.ready === false && handle.reason).toBe(
-      `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets --worker board.`,
+      `No ${MASTER_KEY_BINDING} recorded. Run \`pithy add secrets --worker board\`.`,
     );
   });
 
   test("a nameless project says so — the file is resolved from the name, so there is no file", async () => {
     await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
     await withSecretsBinding();
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
     expect(handle.ready).toBe(false);
     expect(handle.ready === false && handle.reason).toContain(MASTER_KEY_BINDING);
@@ -255,7 +255,7 @@ describe("a stated master key that will not read", () => {
 
   test("no project at all says that, and not that a key is missing from a file nobody located", async () => {
     await withSecretsBinding();
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
     expect(handle.ready).toBe(false);
     expect(handle.ready === false && handle.reason).toContain("No pithy.config.ts here");
@@ -267,7 +267,7 @@ describe("a stated master key that will not read", () => {
     await migrateLocalSecrets();
     // The payload its binding receives, stated verbatim (#323).
     await state(await initialMasterKeyConfig());
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     try {
       expect(handle.ready).toBe(true);
     } finally {
@@ -283,7 +283,7 @@ describe("a stated master key that will not read", () => {
     await withSecretsBinding();
     await migrateLocalSecrets();
     await state({ currentVersion: "1", versions: { "1": await initialMasterKeyConfig() } });
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     try {
       expect(handle.ready).toBe(true);
     } finally {
@@ -328,7 +328,7 @@ describe("a stated master key that will not read, beside an older home that hold
     await withOlderKey();
     const file = await statedInFile({ currentVersion: "1", versions: { "1": "a2V5LW1hdGVyaWFs" } });
 
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
 
     expect(handle.ready).toBe(false);
@@ -346,7 +346,7 @@ describe("a stated master key that will not read, beside an older home that hold
     await mkdir(dirname(file), { recursive: true, mode: 0o700 });
     await writeFile(file, "{ this is not JSONC", { mode: 0o600 });
 
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     await handle.dispose();
 
     expect(handle.ready).toBe(false);
@@ -359,7 +359,7 @@ describe("a stated master key that will not read, beside an older home that hold
     await withOlderKey();
     await writeFile(join(dir, "pithy.config.ts"), "export default {};\n");
 
-    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, paths: paths() });
     try {
       expect(handle.ready).toBe(true);
     } finally {

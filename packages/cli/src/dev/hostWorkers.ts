@@ -4,11 +4,13 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { composeCapabilities } from "../capabilities/compose";
-import { hostEntryFile, hostEntrySource } from "../capabilities/hostEntry";
+import { hostEntrySource } from "../capabilities/hostEntry";
+import { hostEntryFile } from "../capabilities/hostFiles";
 import {
   HOST_WORKERS,
   type HostDeliveryIdentity,
@@ -228,7 +230,7 @@ export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): 
     if (taken.has(spec.capability)) {
       throw new ValidationError({
         message: `A Worker in apps/ is named "${spec.capability}", which is also the ${spec.capability} capability's host.`,
-        action: `Rename that Worker with pithy worker add, or move it, so ${spec.capability.toUpperCase()}_ORIGIN names one process.`,
+        action: `Rename that Worker with ${commandName("worker rename")}, or move it, so ${spec.capability.toUpperCase()}_ORIGIN names one process.`,
         detail: "Sibling addresses are keyed by worker name; two workers sharing one would publish one address.",
       });
     }

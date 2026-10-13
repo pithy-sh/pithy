@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import type { Caller, WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { type AddPlan, addAction, addPlan, withAddFix } from "./addCommand";
+import type { AddFacts } from "./kitAddFacts";
 
 /**
  * **A capability's prerequisites are declared in its manifest, and every command reads them from there.**
@@ -40,73 +43,6 @@ export const MissingPrerequisite = z
 export type MissingPrerequisite = z.infer<typeof MissingPrerequisite>;
 
 /**
- * Whether a Worker's `pithy.config.ts` **registers** a capability — the call, not the import.
- *
- * The call is what composes, so the call is what is asked about. A config that imports `email` and never
- * writes `email()` composes nothing, and `createBackend` agrees. Anchored to the start of a line and to
- * the whole name, so `myauth(` is not `auth(` — the same rule `pithy add`'s idempotency check uses, and
- * it reads the source rather than importing it: the config this is asked about is frequently one that
- * cannot boot.
- */
-export function isRegistered(source: string, name: string): boolean {
-  return new RegExp(`^[ \\t]*${escapeRegExp(name)}[ \\t]*\\(`, "m").test(source);
-}
-
-/** Escape a capability name for use inside a `RegExp` (names are bare identifiers, but be safe). */
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** What {@link prerequisiteClosure} needs: the capability being added, what is already composed, and the manifests. */
-export interface PrerequisiteClosureOptions {
-  /** The manifest of the capability being added — the root of the walk. */
-  manifest: CapabilityManifest;
-  /** The capability names this Worker already composes. A peer in here is satisfied and never proposed. */
-  composed: ReadonlySet<string>;
-  /**
-   * A peer's manifest, or `undefined` when its package is not installed yet.
-   *
-   * Undefined is a real answer and not a failure: a peer nobody has installed is still missing, and
-   * naming it beats silence. It is walked no deeper, because there is nothing there to read — the add
-   * that composes it resolves its own peers once its package is on disk.
-   */
-  manifestFor: (name: string) => CapabilityManifest | undefined;
-}
-
-/**
- * The prerequisites one capability needs and this Worker lacks, **deepest first**.
- *
- * Order is the point, which is why this is a graph walk and not a filter over `peerCapabilities`.
- * `auth` declares `secrets` and `email`; `email` declares `secrets`; and `pithy add email` into a
- * Worker with no secrets composed is the same defect one capability along. Post-order DFS puts a
- * capability after everything it reads, whatever order its manifest happens to list them in.
- *
- * Cycles terminate. Nothing in the kit declares one, and a manifest is somebody else's file.
- */
-export function prerequisiteClosure(options: PrerequisiteClosureOptions): string[] {
-  const { composed, manifestFor } = options;
-  const order: string[] = [];
-  const resolved = new Set<string>();
-  // Everything currently on the walk, root included — a peer already being resolved above is what a
-  // cycle looks like from in here, and re-entering it is what would not terminate.
-  const walking = new Set<string>([options.manifest.name]);
-
-  const visit = (manifest: CapabilityManifest): void => {
-    for (const peer of manifest.peerCapabilities) {
-      if (composed.has(peer) || resolved.has(peer) || walking.has(peer)) continue;
-      walking.add(peer);
-      const peerManifest = manifestFor(peer);
-      if (peerManifest) visit(peerManifest);
-      walking.delete(peer);
-      resolved.add(peer);
-      order.push(peer);
-    }
-  };
-  visit(options.manifest);
-  return order;
-}
-
-/**
  * Every prerequisite a Worker's composed set declares and does not satisfy — `pithy doctor`'s check.
  *
  * Scoped to the composed set on purpose. Manifests resolve once from the project root, so they describe
@@ -139,23 +75,53 @@ function andList(names: readonly string[]): string {
 export interface PrerequisiteRefusalOptions {
   /** The capability the adopter asked for. */
   capability: string;
-  /** The Worker it was to be wired into — the one whose config lacks the peers. */
-  worker: string;
-  /** The missing prerequisites, deepest first, as {@link prerequisiteClosure} ordered them. */
+  /** The Worker it was to be wired into — the one whose config lacks the peers — by `apps/` directory. */
+  worker: WorkerDir;
+  /** The missing prerequisites, deepest first, as `prerequisiteClosure` ordered them. */
   missing: readonly string[];
+  /** Each capability's manifest facts, so every command carries the options it needs (`addCommand.ts`). */
+  factsFor: (name: string) => AddFacts | undefined;
+  /** What the Worker composes already. */
+  composed: ReadonlySet<string>;
+  /**
+   * The caller's own run (#711): every flag and `--set` it was given, and every option its Worker's config answers,
+   * which the command it names carries — and the mode (`--dry-run`, `--json`) each step on the way carries.
+   */
+  caller: Caller<"add">;
+}
+
+/** The one-command answer: the capability, on that Worker, with its prerequisites and the run's own flags. */
+function oneCommand(options: PrerequisiteRefusalOptions): AddPlan {
+  const { capability, worker, factsFor, composed, caller } = options;
+  return addPlan({ capability, workers: [worker], factsFor, composed, caller });
+}
+
+/**
+ * The manual sequence, deepest first: each prerequisite's own add, on the Worker, with what composed before it.
+ * Every step a plan of its own, so a prerequisite with an option to decide says so.
+ */
+function sequence(options: PrerequisiteRefusalOptions): string {
+  const { worker, missing, factsFor, caller } = options;
+  const composed = new Set(options.composed);
+  const steps: string[] = [];
+  for (const name of missing) {
+    steps.push(addAction(addPlan({ capability: name, workers: [worker], factsFor, composed, caller }), (add) => add));
+    composed.add(name);
+  }
+  return steps.length > 1 ? `${steps.slice(0, -1).join(", ")}, then ${steps.at(-1)}` : steps.join("");
 }
 
 /** The two lines both refusals say: what is missing, and the commands that compose it, in order. */
 function prerequisiteLines(options: PrerequisiteRefusalOptions): { message: string; action: string; detail: string } {
   const { capability, worker, missing } = options;
-  const commands = missing.map((name) => `pithy add ${name}`);
-  const sequence =
-    commands.length > 1
-      ? `${commands.slice(0, -1).join(", ")}, then ${commands[commands.length - 1]}`
-      : commands.join("");
+  // Every command names the Worker (#711), and every one is built from the manifests, so an option the kit
+  // cannot default is named as the choice it is rather than left for the command to be refused over.
   return {
     message: `${capability} requires ${andList(missing)}, which ${worker} does not compose.`,
-    action: `Run pithy add ${capability} --with-prerequisites, or compose ${missing.length === 1 ? "it" : "them"} first: ${sequence}.`,
+    action: addAction(
+      oneCommand(options),
+      (add) => `Run ${add}, or compose ${missing.length === 1 ? "it" : "them"} first: ${sequence(options)}.`,
+    ),
     detail: `${capability}'s manifest declares peerCapabilities ${JSON.stringify(missing)}; createBackend refuses to assemble without them.`,
   };
 }
@@ -176,7 +142,13 @@ export function prerequisiteRefusal(options: PrerequisiteRefusalOptions): Valida
  * The same words for a run that could not ask: `input/required`, naming `--with-prerequisites` (#697).
  * Kept apart from {@link prerequisiteRefusal} because "nobody was asked" and "somebody said no" are
  * different facts, and an agent reading the code should be able to tell which one it got.
+ *
+ * Its `fix` is the one-command answer the action leads with, from the same plan (#711) — when that command
+ * runs as written, with nothing in it left to choose.
  */
 export function prerequisiteRequired(options: PrerequisiteRefusalOptions): InputRequiredError {
-  return new InputRequiredError({ ...prerequisiteLines(options), flag: "--with-prerequisites" });
+  return withAddFix(
+    new InputRequiredError({ ...prerequisiteLines(options), flag: "--with-prerequisites" }),
+    oneCommand(options),
+  );
 }

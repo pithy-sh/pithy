@@ -91,7 +91,11 @@ describe("the integration suites run on a build", () => {
       ...Object.values(LIVE_FIXTURES).flatMap((fixture) => fixture.keys),
     ]);
     for (const path of sourcePaths(join(REPO_ROOT, "packages"), { keep: (name) => name.endsWith(".ts") })) {
-      if (!path.endsWith(".integration.test.ts") && !path.includes(`${sep}test-utils${sep}`)) continue;
+      // A live suite reads what it says and what the helpers it imports say. A unit test that sits beside those
+      // helpers in test-utils/ is neither: it runs in `test`, never in `test:integration`.
+      const liveSuite = path.endsWith(".integration.test.ts");
+      const helper = path.includes(`${sep}test-utils${sep}`) && !path.endsWith(".test.ts");
+      if (!liveSuite && !helper) continue;
       const text = readSource(path) ?? "";
       for (const match of text.matchAll(/process\.env(?:\.([A-Z][A-Z0-9_]*)|\[["']([A-Z][A-Z0-9_]*)["']\])/g)) {
         read.add((match[1] ?? match[2]) as string);

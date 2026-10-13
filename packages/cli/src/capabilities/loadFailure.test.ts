@@ -25,7 +25,8 @@ describe("classifyCapabilityLoadFailure", () => {
     const { kind, message, action } = classifyCapabilityLoadFailure("payments", "@pithy-sh/payments", cause);
     expect(kind).toBe("not-installed");
     expect(message).toBe("The payments capability is not installed.");
-    expect(action).toContain("pithy add payments");
+    // No project in hand, so no Worker to name: the command, and what the reader names on it (#711).
+    expect(action).toBe("Run `pithy add` for payments with its Worker's --worker, then re-run this command.");
   });
 
   test("Bun's ResolveMessage, read by its fields: the capability is still recognized as absent", () => {
@@ -38,7 +39,7 @@ describe("classifyCapabilityLoadFailure", () => {
     };
     const { kind, action } = classifyCapabilityLoadFailure("vector", "@pithy-sh/vector", cause);
     expect(kind).toBe("not-installed");
-    expect(action).toContain("pithy add vector");
+    expect(action).toContain("`pithy add` for vector");
   });
 
   // The whole of #217, one level down the graph: the capability IS installed, and one of its own
@@ -200,7 +201,7 @@ describe("classifyCapabilityLoadFailure", () => {
     const { kind, action } = classifyCapabilityLoadFailure("testers", "@pithy-sh/testers", cause);
     expect(kind).toBe("unresolved-import");
     // Both remedies, neither asserted — the classifier cannot tell which package failed.
-    expect(action).toMatch(/pithy add testers/);
+    expect(action).toMatch(/`pithy add` for testers/);
     expect(action).toMatch(/bun install/i);
   });
 
@@ -292,7 +293,8 @@ describe("capabilityLoadError", () => {
   test("the capability package is derived from the target, so a deep subpath still classifies", async () => {
     const error = await capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", missingTesters);
     expect(error.payload.message).toBe("The testers capability is not installed.");
-    expect(error.payload.action).toContain("pithy add testers");
+    // No project in hand: the command, and the flag the reader supplies.
+    expect(error.payload.action).toContain("`pithy add` for testers");
   });
 
   // A capability the project never installed is one it does not compose: the call was right, the project is
@@ -314,7 +316,8 @@ describe("capabilityLoadError", () => {
       const error = await capabilityLoadError("testers", "@pithy-sh/testers", missingTesters, dir);
       expect(error.payload.code).toBe("core/precondition_failed");
       expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
-      expect(fixOf(error)).toBe("pithy add testers --with-prerequisites");
+      // Named for the one Worker, by directory: a bare add is refused wherever there are several (#711).
+      expect(fixOf(error)).toBe("pithy add testers --worker api --with-prerequisites");
       expect(error.cause).toBe(missingTesters);
     });
 
@@ -327,10 +330,62 @@ describe("capabilityLoadError", () => {
       expect(fixOf(error)).toBeUndefined();
     });
 
-    test("the synchronous form is the same class, with no fix", () => {
-      const error = capabilityLoadErrorNow("testers", "@pithy-sh/testers", missingTesters, dir);
-      expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
-      expect(fixOf(error)).toBeUndefined();
+    // One builder for both (#711): the plan is read synchronously, so the form a generated host entry uses names
+    // the same fix the awaited one does, and the action and the fix cannot disagree.
+    test("the synchronous form is the same refusal, fix included", async () => {
+      const now = capabilityLoadErrorNow("testers", "@pithy-sh/testers", missingTesters, dir);
+      const later = await capabilityLoadError("testers", "@pithy-sh/testers", missingTesters, dir);
+      expect(exitCodeOf(now.payload)).toBe(EXIT.precondition);
+      expect(fixOf(now)).toBe(fixOf(later));
+      expect(now.payload.action).toBe(later.payload.action);
+    });
+
+    // A project with several Workers refuses a bare `pithy add`, so each sentence names one command per Worker (#711).
+    describe("in a project with two Workers, every sentence names one runnable add per Worker", () => {
+      const perWorker =
+        "`pithy add testers --worker admin --with-prerequisites` or `pithy add testers --worker api --with-prerequisites`";
+      beforeEach(async () => {
+        await mkdir(join(dir, "apps", "admin"), { recursive: true });
+        await writeFile(join(dir, "apps", "admin", "wrangler.jsonc"), JSON.stringify({ name: "demo-admin" }));
+        await writeFile(join(dir, "apps", "admin", "pithy.config.ts"), "export default {};\n");
+      });
+
+      test("not installed", () => {
+        const { kind, action } = classifyCapabilityLoadFailure("testers", "@pithy-sh/testers", missingTesters, dir);
+        expect(kind).toBe("not-installed");
+        expect(action).toBe(`Run ${perWorker}, then re-run this command.`);
+      });
+
+      test("not installed, as the refusal both loaders throw", async () => {
+        const later = await capabilityLoadError("testers", "@pithy-sh/testers", missingTesters, dir);
+        expect(later.payload.action).toBe(`Run ${perWorker}, then re-run this command.`);
+        const now = capabilityLoadErrorNow("testers", "@pithy-sh/testers", missingTesters, dir);
+        expect(now.payload.action).toBe(`Run ${perWorker}, then re-run this command.`);
+      });
+
+      test("an unresolved import with no nameable specifier", () => {
+        const cause = new Error("Failed to resolve module");
+        const { kind, action } = classifyCapabilityLoadFailure("testers", "@pithy-sh/testers", cause, dir);
+        expect(kind).toBe("unresolved-import");
+        expect(action).toBe(
+          `An import did not resolve. Run ${perWorker} if it is not installed, or bun install if it is.`,
+        );
+      });
+    });
+
+    // A bare `pithy add testers` is refused in a project with several Workers, so with none to read the line names
+    // the command and the flag the reader supplies, never a command that may not run (#711).
+    test("with no project in hand, the command and the --worker the reader names", () => {
+      const { action } = classifyCapabilityLoadFailure("testers", "@pithy-sh/testers", missingTesters);
+      expect(action).toBe("Run `pithy add` for testers with its Worker's --worker, then re-run this command.");
+      const unresolved = classifyCapabilityLoadFailure(
+        "testers",
+        "@pithy-sh/testers",
+        new Error("Failed to resolve module"),
+      );
+      expect(unresolved.action).toBe(
+        "An import did not resolve. Run `pithy add` for testers with its Worker's --worker if it is not installed, or bun install if it is.",
+      );
     });
 
     test("every other kind stays a usage error", async () => {

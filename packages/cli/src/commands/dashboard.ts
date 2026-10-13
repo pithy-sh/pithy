@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
@@ -31,11 +32,17 @@ import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
 import { type ResolvedOrigin, repointsOrigin, resolveDashboardOrigin } from "../dashboard/origin";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
-import { composedForGrant, describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
+import {
+  composedForGrant,
+  connectSentence,
+  describeConnectTarget,
+  resolveConnectTarget,
+} from "../dashboard/resolveTarget";
 import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { workerDirName } from "../project/workerIdentity";
 import { projectCapabilities } from "../project/workerScope";
 import { isProductionEnv } from "../seed/safety";
 import { canceled, EXIT } from "../terminal/exitClass";
@@ -131,7 +138,17 @@ export function parsePublicKey(raw: string, keyId: string | undefined): { keyId:
 }
 
 /** Render a connect run. `connected` and `registered` finish; `needs_reconnect` deliberately does not. */
-export function formatConnectReport(report: ConnectReport, options: { json: boolean }): string {
+export function formatConnectReport(
+  report: ConnectReport,
+  options: {
+    json: boolean;
+    /**
+     * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
+     * when this report prints one, since it reads every Worker's config (#711).
+     */
+    connect: string;
+  },
+): string {
   if (options.json) return `${formatJsonLine({ command: "dashboard.connect", ...report })}\n`;
 
   const rows: Row[] = [
@@ -149,7 +166,7 @@ export function formatConnectReport(report: ConnectReport, options: { json: bool
       `Registered ${report.environment}, but the management client did not answer.`,
       report.detail ?? "Nothing answered at that origin.",
       block(rows).trimEnd(),
-      `Prove it when it is reachable: pithy dashboard status --env ${report.environment} --verify.`,
+      `Prove it when it is reachable: ${pithyCommand("dashboard status", { flags: { "--env": report.environment, "--verify": true } })}.`,
       "",
     ].join("\n");
   }
@@ -160,7 +177,7 @@ export function formatConnectReport(report: ConnectReport, options: { json: bool
       `Registered ${report.environment}, but the signed ping didn't get through.`,
       report.detail ?? "The worker didn't answer.",
       block(rows).trimEnd(),
-      `Check the worker URL, then run pithy dashboard connect --env ${report.environment} --update --worker-url <url>.`,
+      `Check the worker URL, then run ${options.connect}.`,
       "",
     ].join("\n");
   }
@@ -211,12 +228,22 @@ export function formatDisconnectReport(report: DisconnectReport, options: { json
 }
 
 /** Render the registration state, keys and ages included. */
-export function formatStatusReport(report: StatusReport, options: { json: boolean }): string {
+export function formatStatusReport(
+  report: StatusReport,
+  options: {
+    json: boolean;
+    /**
+     * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
+     * when this report prints one, since it reads every Worker's config (#711).
+     */
+    connect: string;
+  },
+): string {
   if (options.json) return `${formatJsonLine({ command: "dashboard.status", ...report })}\n`;
   if (!report.connected) {
     return [
       `Nothing connected to ${report.environment}.`,
-      `Run pithy dashboard connect --env ${report.environment} to register a management client.`,
+      `Run ${options.connect} to register a management client.`,
       "",
     ].join("\n");
   }
@@ -496,20 +523,33 @@ export interface RevokeKeyReport {
   connection: ControlPlaneConnection | null;
 }
 
+/** Whether a revocation left the connection with no live key, so every management call is now denied. */
+function leftNothingLive(report: RevokeKeyReport): boolean {
+  return (report.connection?.keys ?? []).every((key) => key.revokedAt !== null || key.validUntil !== null);
+}
+
 /** Render a key revocation, and say plainly when it left the connection with nothing live. */
-export function formatRevokeKeyReport(report: RevokeKeyReport, options: { json: boolean }): string {
+export function formatRevokeKeyReport(
+  report: RevokeKeyReport,
+  options: {
+    json: boolean;
+    /**
+     * The `pithy dashboard connect` the human line names, in code — `connectSentence`, asked by the caller only
+     * when this report prints one, since it reads every Worker's config (#711).
+     */
+    connect: string;
+  },
+): string {
   if (options.json) return `${formatJsonLine({ command: "dashboard.revoke-key", ...report })}\n`;
   if (!report.revoked) {
-    return `No key ${report.keyId} on ${report.environment}.\nRun pithy dashboard status --env ${report.environment} to list the keys.\n`;
+    return `No key ${report.keyId} on ${report.environment}.\nRun ${pithyCommand("dashboard status", { flags: { "--env": report.environment } })} to list the keys.\n`;
   }
 
   // Revoking the last live key is allowed — a leaked key comes out whether or not it was the only one —
   // but it leaves the connection denying every call, and that must be said rather than discovered.
-  const live = (report.connection?.keys ?? []).filter((key) => key.revokedAt === null && key.validUntil === null);
-  const stranded =
-    live.length === 0
-      ? `That was the last live key, so ${report.environment} now denies every management call.\nRun pithy dashboard connect --env ${report.environment} to register a new one.\n`
-      : "";
+  const stranded = leftNothingLive(report)
+    ? `That was the last live key, so ${report.environment} now denies every management call.\nRun ${options.connect} to register a new one.\n`
+    : "";
   return `Revoked ${report.keyId} on ${report.environment}.\n${stranded}${formatDone()}\n`;
 }
 
@@ -847,6 +887,12 @@ const connect = withContract(
             registry,
             project,
             environment: args.env,
+            connect: () =>
+              connectSentence({
+                projectDir,
+                environment: args.env,
+                worker: target === null ? args.worker : workerDirName(target.worker),
+              }),
             isProduction,
             ...(workerUrl === undefined ? {} : { workerUrl }),
             ...(target === null ? {} : { basePath: target.basePath }),
@@ -861,7 +907,12 @@ const connect = withContract(
             ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
           });
         });
-        process.stdout.write(formatConnectReport(report, { json: args.json }));
+        // The re-point line, asked for only when it prints (#711).
+        const connect =
+          !args.json && report.status === "needs_reconnect"
+            ? await connectSentence({ projectDir, environment: args.env, update: true })
+            : "";
+        process.stdout.write(formatConnectReport(report, { json: args.json, connect }));
       }),
   }),
   {
@@ -908,6 +959,7 @@ const rotate = withContract(
             registry,
             client: (await clientFor(registry, args)).client,
             environment: args.env,
+            connect: () => connectSentence({ projectDir: process.cwd(), environment: args.env, worker: args.worker }),
             authorize: authorizeFor(args),
           }),
         );
@@ -981,7 +1033,12 @@ const revokeKey = withContract(
           const updated = await registry.revokeKey(args["key-id"], new Date());
           return { environment: args.env, keyId: args["key-id"], revoked: updated !== null, connection: updated };
         });
-        process.stdout.write(formatRevokeKeyReport(report, { json: args.json }));
+        // The reconnect line, asked for only when it prints: the last live key went (#711).
+        const connect =
+          !args.json && report.revoked && leftNothingLive(report)
+            ? await connectSentence({ projectDir: process.cwd(), environment: args.env, worker: args.worker })
+            : "";
+        process.stdout.write(formatRevokeKeyReport(report, { json: args.json, connect }));
       }),
   }),
   { ...DASHBOARD, payload: DashboardRevokeKeyPayload, idempotent: true },
@@ -1018,7 +1075,12 @@ const status = withContract(
                 }),
           });
         });
-        process.stdout.write(formatStatusReport(report, { json: args.json }));
+        // The connect line, asked for only when it prints: nothing is connected (#711).
+        const connect =
+          !args.json && !report.connected
+            ? await connectSentence({ projectDir: process.cwd(), environment: args.env, worker: args.worker })
+            : "";
+        process.stdout.write(formatStatusReport(report, { json: args.json, connect }));
       }),
   }),
   // Reads. `--verify --origin <other>` re-points the row's management origin, which is the one write.

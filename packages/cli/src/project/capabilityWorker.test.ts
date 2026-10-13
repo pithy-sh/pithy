@@ -77,8 +77,8 @@ describe("resolveCapabilityWorker", () => {
       code: "core/precondition_failed",
       message: "docs does not compose the vector capability.",
     });
-    // No manifest is installed under /proj, so nothing rules prerequisites out (`notComposed.test.ts`).
-    expect(fixOf(failure)).toBe("pithy add vector --worker docs --with-prerequisites");
+    // No manifest is installed under /proj, so the kit's own says what vector needs: nothing first (#711).
+    expect(fixOf(failure)).toBe("pithy add vector --worker docs");
   });
 
   test("the fix and the action name the apps/ directory, never the deployed script name", async () => {
@@ -86,7 +86,7 @@ describe("resolveCapabilityWorker", () => {
     const failure = (await resolveCapabilityWorker({ ...only, name: "vector", is: isVector }).catch(
       (error: unknown) => error,
     )) as PithyError;
-    expect(fixOf(failure)).toBe("pithy add vector --worker docs --with-prerequisites");
+    expect(fixOf(failure)).toBe("pithy add vector --worker docs");
     expect(failure.payload.action).toContain("pithy add vector --worker docs");
     expect(failure.payload.action).not.toContain("demo-docs");
   });

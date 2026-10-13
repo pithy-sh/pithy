@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Command, pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
 import type { SecretScope } from "@pithy-sh/secrets/src/registry";
 
 /**
@@ -81,7 +82,7 @@ export function storeEntryRemedy(entries: readonly MissingStoreEntry[]): string 
  * `ensureMasterKey` mints. One command creates every one of them and writes the stanza in the same pass,
  * so there is nothing to compose per entry and it is a constant.
  */
-const PROVISION_REMEDY = "Run pithy secrets provision — it creates the store entries and writes the stanza.";
+const PROVISION_REMEDY = `${remedy("secrets provision").say((command) => `Run ${command}.`)} It creates the store entries and writes the stanza.`;
 
 /**
  * The command that puts an operator's value into one missing entry.
@@ -89,9 +90,11 @@ const PROVISION_REMEDY = "Run pithy secrets provision — it creates the store e
  * `--env` for an `environment` secret, which has one entry per environment; nothing for a `global` one,
  * which has exactly one entry and refuses to be narrowed.
  */
-export function supplyStoreEntryCommand(entry: MissingStoreEntry): string {
-  const env = entry.scope === "global" ? "" : ` --env ${entry.env}`;
-  return `pithy secrets create ${entry.secret}${env}`;
+export function supplyStoreEntryCommand(entry: MissingStoreEntry): Command {
+  return pithyCommand("secrets create", {
+    args: [entry.secret],
+    ...(entry.scope === "global" ? {} : { flags: { "--env": entry.env } }),
+  });
 }
 
 /**
@@ -109,7 +112,8 @@ export function supplyStoreEntryCommand(entry: MissingStoreEntry): string {
 export function supplyStoreEntriesRemedy(entries: readonly MissingStoreEntry[]): string {
   const commands = [...new Set(entries.map(supplyStoreEntryCommand))];
   const values = commands.length === 1 ? "its value" : "their values";
-  return `Run ${commands.join(", ")} to supply ${values}, then pithy secrets provision to write ${stanzas(entries)}.`;
+  // The provision that writes the stanza runs against every environment, production included (#711).
+  return `Run ${commands.join(", ")} to supply ${values}. ${remedy("secrets provision").say((command) => `Then run ${command}.`)} It writes ${stanzas(entries)}.`;
 }
 
 /**

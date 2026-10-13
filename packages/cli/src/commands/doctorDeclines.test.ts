@@ -87,8 +87,35 @@ describe("a decline that cannot be honored", () => {
     ]);
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain("SUPPORT_CLASSIFY (workflow) declined in pithy.config.ts, and this kind cannot be declined");
-    expect(text).toContain("Absent means not provisioned. Run `pithy support provision`, or remove the line.");
+    expect(text).toContain(
+      "Absent means not provisioned. Run `pithy support provision --worker api`. Or remove the line.",
+    );
     expect(report.project?.health.ok).toBe(false);
+  });
+
+  // `vector provision` acts on one environment and defaults to dev, so one command without `--env` would provision
+  // dev and leave every deployed stanza without the Workflow. Doctor is about every environment, so it names each
+  // (#711).
+  test("a Workflow whose provision acts on one environment names it for each environment", async () => {
+    const report = await reportWith([
+      {
+        state: "undeclinable",
+        name: "VECTOR_REPROCESS",
+        type: "workflow",
+        capability: "vector",
+        reason: "no reprocess",
+      },
+    ]);
+    const envs = report.project?.health.workers.flatMap((worker) =>
+      worker.state === "checked" ? worker.migrations.environments.map((entry) => entry.env) : [],
+    );
+    expect(envs?.length).toBeGreaterThan(1);
+    expect(envs).toEqual(["dev", "staging", "prod"]);
+    const text = renderDoctorText(report, "/home/u").replace(/\n\s+/g, " ");
+    // Each environment that is not production is a command; prod is a person's decision, said as one (#711).
+    expect(text).toContain(
+      "Absent means not provisioned. Run `pithy vector provision --worker api --env dev` and `pithy vector provision --worker api --env staging`. `pithy vector provision --worker api --env prod` runs against prod, a production environment. That is a person's decision, not a fix. Or remove the line.",
+    );
   });
 
   test("a Durable Object gets the reason that is true of it, and no command that does not exist", async () => {

@@ -100,7 +100,7 @@ describe("schemaDocument", () => {
     expect(refused).toBeInstanceOf(PithyError);
     const { payload } = refused as PithyError;
     expect(payload.code).toBe("validation/invalid_input");
-    expect(payload.message).toBe("No command `pithy token mnt`.");
+    expect(payload.message).toBe("No command is named `token mnt`.");
     expect(payload.action).toBe("`pithy token` has mint.");
 
     const top = (await schemaDocument(tree, ["nonsense"]).catch((error: unknown) => error)) as PithyError;
@@ -113,7 +113,7 @@ describe("schemaDocument", () => {
       (error: unknown) => error,
     )) as PithyError;
     expect(underMint).toBeInstanceOf(PithyError);
-    expect(underMint.payload.message).toBe("No command `pithy token mint extra`.");
+    expect(underMint.payload.message).toBe("No command is named `token mint extra`.");
     expect(underMint.payload.action).toBe(
       "`pithy token mint` takes no subcommand; its arguments are in `pithy schema token mint --json`.",
     );

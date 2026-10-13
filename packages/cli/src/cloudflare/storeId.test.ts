@@ -48,7 +48,11 @@ describe("ensureSecretsStoreId", () => {
   test("records the account's one store, and says where it put it", async () => {
     const listStores = vi.fn(async () => [store("store-abc", "default")]);
 
-    const notes = await ensureSecretsStoreId({ paths: paths(CREDENTIALS), listStores });
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
+      paths: paths(CREDENTIALS),
+      listStores,
+    });
 
     expect(cloudflareEnv(paths(CREDENTIALS)).SECRETS_STORE_ID).toBe("store-abc");
     expect(notes.join(" ")).toContain("Recorded SECRETS_STORE_ID");
@@ -59,6 +63,7 @@ describe("ensureSecretsStoreId", () => {
   test("the file it writes is owner-only, in an owner-only directory", async () => {
     const nested = join(dir, "deeper");
     await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: {
         platform: "linux",
         homedir: "/home/nobody",
@@ -74,7 +79,11 @@ describe("ensureSecretsStoreId", () => {
   test("the credential pair already in the file survives — this is a merge, not a rewrite", async () => {
     await config(CREDENTIALS);
 
-    await ensureSecretsStoreId({ paths: paths(), listStores: async () => [store("store-abc", "default")] });
+    await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
+      paths: paths(),
+      listStores: async () => [store("store-abc", "default")],
+    });
 
     expect(cloudflareEnv(paths())).toEqual({ ...CREDENTIALS, SECRETS_STORE_ID: "store-abc" });
   });
@@ -83,7 +92,11 @@ describe("ensureSecretsStoreId", () => {
     await config({ ...CREDENTIALS, SECRETS_STORE_ID: "store-abc" });
 
     expect(
-      await ensureSecretsStoreId({ paths: paths(), listStores: async () => [store("store-abc", "default")] }),
+      await ensureSecretsStoreId({
+        again: "`pithy add secrets --worker api`",
+        paths: paths(),
+        listStores: async () => [store("store-abc", "default")],
+      }),
     ).toEqual([]);
   });
 
@@ -93,6 +106,7 @@ describe("ensureSecretsStoreId", () => {
     await config({ ...CREDENTIALS, SECRETS_STORE_ID: "store-deliberate" });
 
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: paths(),
       listStores: async () => [store("store-abc", "default")],
     });
@@ -107,6 +121,7 @@ describe("ensureSecretsStoreId", () => {
     // One store per account is the rule that makes an automatic write defensible. Two means somebody
     // made a second, and guessing which holds their production secrets is not a choice a tool makes.
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: paths(CREDENTIALS),
       listStores: async () => [store("store-a", "default"), store("store-b", "staging")],
     });
@@ -117,15 +132,22 @@ describe("ensureSecretsStoreId", () => {
   });
 
   test("an account with no store yet is told to create one", async () => {
-    const notes = await ensureSecretsStoreId({ paths: paths(CREDENTIALS), listStores: async () => [] });
+    const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
+      paths: paths(CREDENTIALS),
+      listStores: async () => [],
+    });
 
     expect(notes.join(" ")).toContain("no Secrets Store yet");
-    expect(notes.join(" ")).toContain("pithy add secrets again");
+    expect(notes.join(" ")).toContain(
+      "This account has no Secrets Store yet, so SECRETS_STORE_ID was not recorded. Create one in the Cloudflare dashboard (Secrets Store), then run `pithy add secrets --worker api` again.",
+    );
     expect(cloudflareEnv(paths(CREDENTIALS)).SECRETS_STORE_ID).toBeUndefined();
   });
 
   test("a listing that fails is a sentence, never a throw — add must still finish its real job", async () => {
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: paths(CREDENTIALS),
       listStores: async () => {
         throw new Error("network down");
@@ -139,22 +161,33 @@ describe("ensureSecretsStoreId", () => {
   test("no credentials asks nothing at all, and says what would supply them", async () => {
     const listStores = vi.fn(async () => [store("store-abc", "default")]);
 
-    const notes = await ensureSecretsStoreId({ paths: paths(), listStores });
+    const notes = await ensureSecretsStoreId({ again: "`pithy add secrets --worker api`", paths: paths(), listStores });
 
     expect(listStores).not.toHaveBeenCalled();
-    expect(notes.join(" ")).toContain("pithy init");
+    // Not `pithy init`, which is refused inside a project for the files it would write (#711).
+    expect(notes.join(" ")).toBe(
+      "SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run `pithy add secrets --worker api` again.",
+    );
+    expect(notes.join(" ")).not.toContain("pithy init");
   });
 
   test("no credentials and an id already recorded is silent — there is nothing left to do", async () => {
     await config({ SECRETS_STORE_ID: "store-abc" });
 
-    expect(await ensureSecretsStoreId({ paths: paths(), listStores: async () => [] })).toEqual([]);
+    expect(
+      await ensureSecretsStoreId({
+        again: "`pithy add secrets --worker api`",
+        paths: paths(),
+        listStores: async () => [],
+      }),
+    ).toEqual([]);
   });
 
   test("an id supplied by the environment counts as recorded — CI has no file", async () => {
     const listStores = vi.fn(async () => [store("store-abc", "default")]);
 
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: paths({ ...CREDENTIALS, SECRETS_STORE_ID: "store-abc" }),
       listStores,
     });
@@ -175,6 +208,7 @@ describe("ensureSecretsStoreId, for a project that names its account", () => {
     await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify(CREDENTIALS), { mode: 0o600 });
     await config({ CLOUDFLARE_ACCOUNT_ID: "other-acct", CLOUDFLARE_API_TOKEN: "other-tok" });
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: { ...paths(), account: { accountName: "leed" } },
       listStores: async () => [store("store-leed", "leed-store")],
     });
@@ -193,6 +227,7 @@ describe("ensureSecretsStoreId, for a project that names its account", () => {
     const listStores = vi.fn(async () => [store("store-abc", "default")]);
 
     const notes = await ensureSecretsStoreId({
+      again: "`pithy add secrets --worker api`",
       paths: { ...paths(), account: { accountId: "acct-1" } },
       listStores,
     });

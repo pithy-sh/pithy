@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { featureMarkerInProjectName } from "@pithy-sh/core/src/naming/feature";
@@ -581,7 +582,7 @@ function describeNameAgreement(check: ProjectNameCheck): string {
     case "unconfigured":
       return "not set (add `name` to pithy.config.ts — every resource name derives from it)";
     case "invalid":
-      return `${projectNameProblem(check.project ?? "")} Nothing can be provisioned until it changes — pithy add, migrate, secrets, and token all refuse it.`;
+      return `${projectNameProblem(check.project ?? "")} Nothing can be provisioned until it changes — ${commandName("add")}, ${commandName("migrate")}, ${commandName("secrets")} and ${commandName("token")} all refuse it.`;
     case "could-not-check":
       return "could not read every worker's wrangler.jsonc — nothing to compare the name against";
     // Says only what the files say: every name this project declares belongs to another project. It does
@@ -603,7 +604,7 @@ function describeNameAgreement(check: ProjectNameCheck): string {
     case "orphaned": {
       const count = check.misnamed.filter((entry) => entry.owner === entry.project).length;
       const subject = count === 1 ? "1 resource is" : `${count} resources are`;
-      return `${subject} stamped "${formerProjects(check)}" by pithy migrate, not ${check.project} — ${check.project} will never find ${count === 1 ? "it" : "them"} again; rename the project back, or move the data onto resources ${check.project} owns`;
+      return `${subject} stamped "${formerProjects(check)}" by ${commandName("migrate")}, not ${check.project} — ${check.project} will never find ${count === 1 ? "it" : "them"} again; rename the project back, or move the data onto resources ${check.project} owns`;
     }
   }
 }

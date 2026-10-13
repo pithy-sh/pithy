@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
+import { callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -18,7 +18,7 @@ import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -28,11 +28,14 @@ import {
   environmentOutcomes,
   environmentReadiness,
   formatEnvironmentOutcomes,
+  ProvisionReportExitCode,
   readyStanza,
   requireReadyEnvironments,
   SkippedEnvironment,
+  writeProvisionReport,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
+import { workerDirName } from "../project/workerIdentity";
 import { secretsDatabaseMissing } from "../provision/missingDatabase";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -59,43 +62,6 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
   // single value is true for the run; each event states the environment it acted on.
   return createProjectCliAudit({ projectDir, accountId, apiToken });
-}
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- *
- * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
- * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
- * "I asked an account nothing claims" — the two arrive as one empty listing.
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-  storeId: string;
-  r2Raw: string | undefined;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const storeId = vars.SECRETS_STORE_ID ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  if (!storeId) {
-    throw new PreconditionFailedError({
-      message: "The CF Secrets Store id is missing.",
-      action: "Run pithy add secrets to record SECRETS_STORE_ID (the media worker decrypts its credentials from it).",
-    });
-  }
-  return { account: { accountId, confirmation }, accountId, apiToken, storeId, r2Raw: vars.R2_CREDENTIALS };
 }
 
 /**
@@ -175,6 +141,7 @@ const MediaProvisionPayload = z
       )
       .describe("Every environment provisioned, in declaration order."),
     skippedEnvironments: Skipped,
+    exitCode: ProvisionReportExitCode,
   })
   .describe("What `pithy media provision` provisioned.");
 
@@ -233,8 +200,9 @@ const provision = withContract(
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
         const { provisionMedia } = await loadMedia(projectDir);
-        const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
+        const { account, accountId, apiToken, storeId, r2Raw } = commandCredentials(
           await projectCloudflareAccount(projectDir),
+          { projectDir, why: "the media worker decrypts its credentials from it" },
         );
         const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
         // One resolution for the config and the app database the media host is deployed against: that
@@ -282,13 +250,23 @@ const provision = withContract(
         const result = await provisionMedia(provisioner, readiness.ready);
         const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
 
+        // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
+        // resolved when none was named (#711).
+        const again = rerunRemedy(callerOf("media provision", args), {
+          flags: { "--worker": workerDirName(appWorker) },
+          productionEnvironments: readiness.productionEnvironments,
+        });
         if (args.json) {
-          // Written before the refusal below, so a run in which everything skipped still carries the
-          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-          process.stdout.write(
-            `${formatJsonLine({ command: "media provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          writeProvisionReport(
+            {
+              command: "media provision",
+              ...result,
+              skippedEnvironments: readiness.skipped,
+            },
+            readiness,
+            again,
           );
-          requireReadyEnvironments(readiness, "pithy media provision");
           return;
         }
         process.stdout.write(
@@ -300,7 +278,7 @@ const provision = withContract(
             }),
           ),
         );
-        requireReadyEnvironments(readiness, "pithy media provision");
+        requireReadyEnvironments(readiness, again);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -356,7 +334,10 @@ const deprovision = withContract(
         const env = requireTeardownEnvironment(args.env, declared);
         const target = { environment: env, declared };
         const { deprovisionMedia } = await loadMedia(projectDir);
-        const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken, r2Raw } = commandCredentials(await projectCloudflareAccount(projectDir), {
+          projectDir,
+          why: "the media worker decrypts its credentials from it",
+        });
         // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
         // without it, so discovering it is missing at the bucket step would leave the media workers gone
         // and the bucket standing — a half-torn-down environment for a mistake we can catch here.

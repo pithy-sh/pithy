@@ -29,10 +29,12 @@ describe("deliveryPreflight", () => {
     expect(result.lines.join(" ")).toContain("by config");
   });
 
-  test("no Cloudflare login falls back to the simulator, with the command that fixes it", () => {
+  // What fixes it is a pair of variables: `pithy init` is refused inside a project (#711).
+  test("no Cloudflare login falls back to the simulator, with what fixes it", () => {
     const result = deliveryPreflight({ ...live, cloudflare: { accountId: null, hasToken: false, mismatch: null } });
     expect(result.live).toBe(false);
-    expect(result.lines.join("\n")).toContain("pithy init");
+    expect(result.lines.join("\n")).toContain("set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN");
+    expect(result.lines.join("\n")).not.toContain("pithy init");
   });
 
   test("half a pair is no login — an account with no token cannot send, and says so", () => {

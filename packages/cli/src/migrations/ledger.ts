@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { MIGRATION_TABLE } from "@pithy-sh/core/src/migrations/bookkeeping";
 import { readMigrationLedger } from "@pithy-sh/core/src/migrations/runner";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
 import type { DatabaseGroup, MigrationDriver } from "./run";
 
@@ -79,7 +81,7 @@ export function describeUndeclared(entries: readonly UndeclaredMigration[]): str
 export function undeclaredRemedy(env: string): string {
   const opening = "Nothing migrates until the ledger and the declaration agree.";
   return env === "dev"
-    ? `${opening} This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run pithy migrate --env dev again.`
+    ? `${opening} This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run ${pithyCommand("migrate", { flags: { "--env": LOCAL_ENVIRONMENT } })} again.`
     : `${opening} ${env} holds real rows, so don't reset it: restore the migration to this project, or delete its row from ${MIGRATION_TABLE} if the schema it created is meant to stay.`;
 }
 

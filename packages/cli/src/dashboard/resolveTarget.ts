@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandAlternatives, commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { isControlPlaneCapability } from "@pithy-sh/core/src/controlPlane/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { capabilityNotComposed } from "../capabilities/notComposed";
-import { resolveSingleWorkerFor } from "../project/composeFor";
+import { resolveSingleWorkerFor, resolveWorkersFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
 import { describeAddressSource, readAddressStanza, resolveWorkerAddress } from "../project/workerAddress";
+import { workerDirName } from "../project/workerIdentity";
 import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
+import { discoverWorkers, type WorkerTarget } from "../project/workers";
 
 /**
  * What `pithy dashboard connect` is registering: which Worker, at what address, with the seam mounted
@@ -95,10 +98,19 @@ async function resolveSeamWorker(options: ConnectWorkerOptions): Promise<{ worke
     // `capabilityWorker.ts`'s rule (#697): a Worker named with --worker is a call another --worker fixes, exit 2;
     // the Worker the project resolved to on its own lacks what connect depends on, exit 3, and adding it is the step.
     if (options.worker !== undefined) throw new ValidationError(refusal);
-    throw await capabilityNotComposed("controlplane", refusal, {
-      projectDir: options.projectDir,
-      workerDir: worker.dir,
-    });
+    throw capabilityNotComposed(
+      "controlplane",
+      {
+        ...refusal,
+        // The `pithy add` the `fix` carries, named in the sentence too, so the two cannot disagree (#711).
+        action: (add) =>
+          `Add \`controlplane()\` to that Worker's pithy.config.ts (run ${add}), deploy, then run connect again.`,
+      },
+      {
+        projectDir: options.projectDir,
+        workerDir: worker.dir,
+      },
+    );
   }
   return { worker, basePath };
 }
@@ -189,4 +201,67 @@ export async function composedForGrant(
 /** The line shown before registering, so an operator sees the address and where it came from. */
 export function describeConnectTarget(target: ConnectTarget): string {
   return `${target.worker.name} → ${target.workerUrl}${target.basePath} (${target.source})`;
+}
+
+/**
+ * **`pithy dashboard connect` as a sentence names it, in code, runnable as written (#711).**
+ *
+ * `connect` acts on one Worker, so every command names one, by its `apps/` directory. **The Worker the run
+ * already settled on comes first**: a run that resolved one, or was narrowed with `--worker`, names that Worker
+ * alone — offering every seam Worker as an equal alternative sent the reader to Workers this run was never
+ * about. Otherwise each Worker that composes the seam for this environment gets one command, the reader's
+ * choice; a project whose composition cannot be read, or where nothing composes the seam yet, names every
+ * Worker, each of which runs and says what it lacks.
+ *
+ * `update` is a re-point, which needs the new address only the reader has, so it names the command and the flag
+ * the reader supplies rather than a placeholder nobody can run.
+ *
+ * **How many Workers there are is discovery's answer, not composition's.** Resolving drops a Worker whose
+ * config is missing and throws on one that will not load. A dev-only process (no `wrangler.jsonc`) is not a
+ * Worker `connect` can target, so it is not counted.
+ *
+ * Asked only on a path that prints it, because answering reads every Worker's config.
+ */
+export async function connectSentence(
+  options: Omit<ConnectWorkerOptions, "worker"> & {
+    update?: boolean;
+    /** The Worker this run resolved, or the `--worker` it was narrowed with. */
+    worker?: string | undefined;
+  },
+): Promise<string> {
+  const env = options.environment;
+  if (options.update) {
+    return `\`${commandName("dashboard connect")}\` with --env ${env}, --worker, --update and the new --worker-url`;
+  }
+  const discover = options.discoverWorkers ?? discoverWorkers;
+  const discovered = (await discover(options.projectDir).catch(() => [] as WorkerTarget[])).filter(
+    (target) => target.hasWrangler !== false,
+  );
+  const settled =
+    options.worker === undefined
+      ? undefined
+      : (discovered.find((target) => workerDirName(target) === options.worker) ??
+        discovered.find((target) => target.name === options.worker));
+  const resolved = await resolveWorkersFor(env, {
+    projectDir: options.projectDir,
+    discoverWorkers: async () => discovered,
+    ...(options.loadConfig === undefined ? {} : { loadConfig: options.loadConfig }),
+  }).catch(() => null);
+  const every = [...new Set([...discovered, ...(resolved ?? [])].map(workerDirName))].sort();
+  // Composition narrows the list only when it read every Worker: one it could not read may be the one with the seam.
+  const complete =
+    resolved !== null && every.every((name) => resolved.some((worker) => workerDirName(worker) === name));
+  const seam = complete
+    ? resolved
+        .filter((worker) => composedBasePath(worker) !== null)
+        .map(workerDirName)
+        .sort()
+    : [];
+  const named = settled !== undefined ? [workerDirName(settled)] : seam.length > 0 ? seam : every;
+  if (named.length === 0) {
+    return `\`${commandName("dashboard connect")}\` with --env ${env}, once this project has a Worker that composes controlplane()`;
+  }
+  return commandAlternatives(
+    named.map((worker) => pithyCommand("dashboard connect", { flags: { "--env": env, "--worker": worker } })),
+  );
 }

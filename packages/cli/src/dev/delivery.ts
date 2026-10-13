@@ -247,7 +247,7 @@ export function deliveryPreflight(options: DeliveryPreflightOptions): DeliveryPr
       live: false,
       lines: [
         "Email: no Cloudflare credentials, so real delivery is not possible here — using the simulator.",
-        "  run: pithy init, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+        "  set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for real delivery",
       ],
     };
   }

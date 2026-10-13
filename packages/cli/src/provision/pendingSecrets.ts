@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand, type Remedy, remedy } from "@pithy-sh/core/src/cli/command";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { managerMintedSecrets } from "../capabilities/mintSecrets";
 import type { ProvisionMode } from "./mode";
@@ -37,12 +38,16 @@ export interface PendingSecrets {
    */
   names: string[];
   /**
-   * The command that creates them, or `null` when no command does.
+   * What creates them, or `null` when nothing does: the command to run, or — for one that runs against production —
+   * a person's decision, said as one sentence (#711). `pithy secrets provision` deploys every declared environment's
+   * manager, production included, so after `--env staging` it is never a command an agent runs as written.
    *
-   * A string rather than a boolean so the run prints the command it has instead of composing one, and so
-   * a pipeline reading `--json` branches on the same value the sentence is built from.
+   * A string rather than a boolean so the run prints what it has instead of composing it, and so a pipeline reading
+   * `--json` branches on the same value the sentence is built from.
    */
   remedy: string | null;
+  /** The human line about it — `Run … to create them.`, or the decision — or `null` when nothing creates them. */
+  sentence: string | null;
 }
 
 /**
@@ -52,9 +57,12 @@ export interface PendingSecrets {
  * inheriting whichever branch happened to come first — which is precisely how `--feature` came to be
  * told `--env`'s answer. `null` is a mode where nothing does, written down rather than left out.
  */
-const PENDING_SECRET_REMEDY: Record<ProvisionMode["kind"], string | null> = {
-  environment: "pithy secrets provision",
-  feature: "pithy provision --feature with SECRETS_STORE_ID set",
+const PENDING_SECRET_REMEDY: Record<ProvisionMode["kind"], Remedy | null> = {
+  environment: remedy("secrets provision"),
+  feature: {
+    fix: undefined,
+    say: (wrap) => wrap(`${pithyCommand("provision", { flags: { "--feature": true } })} with SECRETS_STORE_ID set`),
+  },
 };
 
 /**
@@ -64,7 +72,12 @@ const PENDING_SECRET_REMEDY: Record<ProvisionMode["kind"], string | null> = {
  * adds an arbitrary `d1` secret tomorrow is named here without a list being maintained.
  */
 export function pendingSecrets(registry: SecretRegistry, mode: ProvisionMode): PendingSecrets {
-  return { names: managerMintedSecrets(registry), remedy: PENDING_SECRET_REMEDY[mode.kind] };
+  const creates = PENDING_SECRET_REMEDY[mode.kind];
+  return {
+    names: managerMintedSecrets(registry),
+    remedy: creates?.say((command) => command) ?? null,
+    sentence: creates?.say((command) => `Run ${command} to create them.`) ?? null,
+  };
 }
 
 /**
@@ -79,8 +92,7 @@ export function pendingSecretLines(pending: PendingSecrets): string[] {
   if (pending.names.length === 0) return [];
   return [
     `${pending.names.join(", ")}: not created here — they need a deployed manager.`,
-    pending.remedy === null
-      ? "A branch gets no manager, and no command creates these for one. This environment comes up without them."
-      : `Run ${pending.remedy} to create them.`,
+    pending.sentence ??
+      "A branch gets no manager, and no command creates these for one. This environment comes up without them.",
   ];
 }

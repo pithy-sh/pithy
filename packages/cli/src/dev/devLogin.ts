@@ -4,6 +4,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import {
   DEV_LOGIN_CLAIM_PARAM,
   DEV_LOGIN_PATH,
@@ -84,8 +86,9 @@ export interface DevLoginKeyAction {
 }
 
 /** The two refusals that are about the artifact rather than about this run. Said by the keypress and the selection alike. */
-const NOT_SEEDED = "No dev login is seeded. Run pithy seed, then press l again.";
-const ALL_EXPIRED = "The seeded dev login has expired. Run pithy seed to mint a fresh one.";
+const SEED = pithyCommand("seed", { flags: { "--env": LOCAL_ENVIRONMENT } });
+const NOT_SEEDED = `No dev login is seeded. Run ${SEED}, then press l again.`;
+const ALL_EXPIRED = `The seeded dev login has expired. Run ${SEED} to mint a fresh one.`;
 
 /**
  * How many identities a one-key numbered choice can carry: the digits `1`–`9`.

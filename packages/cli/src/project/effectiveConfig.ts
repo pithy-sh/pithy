@@ -54,6 +54,7 @@
  */
 
 import { dirname, isAbsolute, join, parse as parsePath, resolve } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { parse } from "comment-json";
@@ -156,7 +157,7 @@ export function assertCreatesNoResources(args: readonly string[]): void {
   if (statements.length === 1 && statements[0] === NO_PROVISION_ARG) return;
   throw new InternalError({
     message: "This deploy could create Cloudflare resources, so nothing was deployed.",
-    action: `Deploy with ${NO_PROVISION_ARG} and nothing else about provisioning. Creating resources is pithy provision's job.`,
+    action: `Deploy with ${NO_PROVISION_ARG} and nothing else about provisioning. Creating resources is the job of ${commandName("provision")}.`,
     detail: `wrangler creates any binding's resource it cannot find unless provisioning is off. The argv was: ${args.join(" ")}.`,
   });
 }

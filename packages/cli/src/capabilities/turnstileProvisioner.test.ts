@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -20,6 +21,7 @@ import { readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVa
 import { readDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { linkKitPackages } from "../test-utils/linkKit";
+import { dirOf } from "../test-utils/workerDir";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 
 /** A fake CloudflareClients exposing only the turnstile methods the (de)provisioner touches. */
@@ -847,6 +849,8 @@ export default {
       const error = await provisionTurnstile(provisioner, {
         modes: ["visible"],
         productionDomain: "app.example.com",
+        worker: dirOf("web"),
+        caller: callerOf("turnstile provision", {}),
       }).catch((thrown: unknown) => thrown);
 
       expect(error).toBeInstanceOf(ValidationError);
@@ -863,7 +867,12 @@ export default {
     const before = await files();
 
     await expect(
-      provisionTurnstile(provisioner, { modes: ["visible"], productionDomain: "app.example.com" }),
+      provisionTurnstile(provisioner, {
+        modes: ["visible"],
+        productionDomain: "app.example.com",
+        worker: dirOf("web"),
+        caller: callerOf("turnstile provision", {}),
+      }),
     ).rejects.toThrow(/widgets\.visible\.sitekeys\.prod/);
 
     expect(fake.addTurnstile).not.toHaveBeenCalled();
@@ -880,6 +889,8 @@ export default {
     const result = await provisionTurnstile(provisioner, {
       modes: ["visible"],
       productionDomain: "app.example.com",
+      worker: dirOf("web"),
+      caller: callerOf("turnstile provision", {}),
     });
 
     expect(fake.addTurnstile).not.toHaveBeenCalled();

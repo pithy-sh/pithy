@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { causeMessage, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { packageLoadFailure, type UnresolvedImport, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { entryBeside, installedBeside, packageInstalledFrom } from "../project/kitResolve";
-import { capabilityNotComposed } from "./notComposed";
+import { addAction } from "./addCommand";
+import { capabilityNotComposed, resolveAdd } from "./notComposed";
 
 /**
  * Why an optional capability would not load — and therefore what may be said about it (#217).
@@ -90,6 +92,24 @@ function isParseError(cause: unknown): boolean {
 }
 
 /**
+ * What a capability that is not installed asks for: the `pithy add` that installs it, then the same run again.
+ * `add` is already in code — one command, or one per Worker (`notComposed.ts`).
+ */
+function notInstalledAction(add: string): string {
+  return `Run ${add}, then re-run this command.`;
+}
+
+/**
+ * The `pithy add` a classification names, wrapped by `wrap`: `addCommand.ts`'s plan, which reads the project's
+ * Workers and the kit's manifest, so it names one command per Worker with every flag each needs (#711). With no
+ * project in hand there is no Worker to name, and the line says which command composes it.
+ */
+function addWords(capability: string, projectDir: string | undefined, wrap: (add: string) => string): string {
+  if (projectDir === undefined) return wrap(`\`${commandName("add")}\` for ${capability} with its Worker's --worker`);
+  return addAction(resolveAdd(capability, { projectDir }), wrap);
+}
+
+/**
  * Choose a capability loader's refusal **from** the failure rather than asserting one over it (#217).
  *
  * @param capability the name `pithy add <name>` takes — `payments`, `vector`, `storage`.
@@ -157,14 +177,14 @@ export function classifyCapabilityLoadFailure(
       `The ${capability} capability is installed and will not load.`,
       reason
         ? `${pkg} threw while loading: ${reason}. Fix that, or report it to its maintainer.`
-        : `${pkg} threw while loading. Run \`pithy doctor\` to see what the project resolves.`,
+        : `${pkg} threw while loading. Run \`${pithyCommand("doctor")}\` to see what the project resolves.`,
     );
   }
 
   return failure(
     "unknown",
     `The ${capability} capability could not be loaded.`,
-    `Run \`pithy doctor\` to check what the project resolves, then re-run this command.`,
+    `Run \`${pithyCommand("doctor")}\` to check what the project resolves, then re-run this command.`,
   );
 }
 
@@ -202,14 +222,18 @@ function unresolvedFailure(
     return failure(
       "not-installed",
       `The ${capability} capability is not installed.`,
-      `Run \`pithy add ${capability}\`, then re-run this command.`,
+      addWords(capability, projectDir, notInstalledAction),
     );
   }
   if (kind === "unnamed") {
     return failure(
       "unresolved-import",
       `The ${capability} capability could not be loaded.`,
-      `An import did not resolve. Run \`pithy add ${capability}\` if it is not installed, or bun install if it is.`,
+      addWords(
+        capability,
+        projectDir,
+        (add) => `An import did not resolve. Run ${add} if it is not installed, or bun install if it is.`,
+      ),
     );
   }
   if (unresolved.installHelps) {
@@ -242,16 +266,13 @@ export async function capabilityLoadError(
   cause: unknown,
   projectDir?: string,
 ): Promise<PithyError> {
-  const failure = classifyCapabilityLoadFailure(capability, target, cause, projectDir);
-  if (failure.kind !== "not-installed" || projectDir === undefined) return refusalFor(failure, cause);
-  const { message, action, detail } = failure;
-  return capabilityNotComposed(capability, { message, action, detail }, { projectDir }, cause);
+  return capabilityLoadErrorNow(capability, target, cause, projectDir);
 }
 
 /**
- * {@link capabilityLoadError} for a caller that cannot wait: a synchronous resolution, such as a generated
- * host entry. The same classes; a `not-installed` refusal names no `fix`, because naming one reads the
- * project's Workers and manifest, and its `action` already says `pithy add`.
+ * {@link capabilityLoadError} for a caller that cannot wait: a synchronous resolution, such as a generated host
+ * entry. The same refusal, `fix` included: the `pithy add` it names is read from the project's Workers and the
+ * manifests synchronously (#711), so the two cannot disagree.
  */
 export function capabilityLoadErrorNow(
   capability: string,
@@ -259,7 +280,10 @@ export function capabilityLoadErrorNow(
   cause: unknown,
   projectDir?: string,
 ): PithyError {
-  return refusalFor(classifyCapabilityLoadFailure(capability, target, cause, projectDir), cause);
+  const failure = classifyCapabilityLoadFailure(capability, target, cause, projectDir);
+  if (failure.kind !== "not-installed" || projectDir === undefined) return refusalFor(failure, cause);
+  const { message, detail } = failure;
+  return capabilityNotComposed(capability, { message, action: notInstalledAction, detail }, { projectDir }, cause);
 }
 
 /** The error around a classified failure: exit 3 for a capability that is not there, exit 2 otherwise. */

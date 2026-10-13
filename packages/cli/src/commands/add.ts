@@ -10,6 +10,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
+import { addListCommand } from "../capabilities/addCommand";
 import { addFollowUp, readyEnvironments } from "../capabilities/addFollowUp";
 import { buildCatalogListing, CATALOG } from "../capabilities/catalog";
 import { EjectResult } from "../capabilities/eject";
@@ -403,7 +404,7 @@ export default withContract(
         if (!args.capability) {
           throw new ValidationError({
             message: "Name a capability to add.",
-            action: "Run pithy add --list to see what's available.",
+            action: `Run ${addListCommand()} to see what's available.`,
           });
         }
 
@@ -434,6 +435,9 @@ export default withContract(
           withPrerequisites: args["with-prerequisites"],
           eject: args.eject,
           force: args.force,
+          json: args.json,
+          // The project's own production names, so a provision a note names for one is said as a person's decision.
+          productionEnvironments: (await loadProject(projectDir).catch(() => null))?.seed?.productionEnvironments ?? [],
         };
 
         if (args["dry-run"]) {
@@ -450,9 +454,7 @@ export default withContract(
         // Only `--json` carries `next`, so only `--json` reads it (#697).
         const ready = args.json ? await readyEnvironments({ projectDir }).catch(() => []) : [];
         // The project's own production names, so a step whose provision needs a person's phrase is not one.
-        const productionEnvironments = args.json
-          ? ((await loadProject(projectDir).catch(() => null))?.seed?.productionEnvironments ?? [])
-          : [];
+        const productionEnvironments = options.productionEnvironments;
 
         const result = await runAdd({
           ...options,

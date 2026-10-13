@@ -117,6 +117,8 @@ describe("bindingScopeHealth", () => {
         // The installed manifest declares the binding project-wide, so `pithy provision --env <env>` is
         // a command that actually clears this.
         repointable: true,
+        // Every Worker composing the capability, by directory: the ones a per-Worker remedy may name (#711).
+        composing: ["api"],
       },
     ]);
   });
@@ -164,6 +166,8 @@ describe("bindingScopeHealth", () => {
           { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
         ],
         repointable: true,
+        // Every Worker composing the capability, by directory: the ones a per-Worker remedy may name (#711).
+        composing: ["api"],
       },
     ]);
   });
@@ -287,6 +291,8 @@ describe("bindingScopeHealth", () => {
         credential: "support-r2-credentials",
         stale: [{ worker: "api", env: "staging", name: "acme-staging-support-bucket" }],
         repointable: true,
+        // Every Worker composing the capability, by directory: the ones a per-Worker remedy may name (#711).
+        composing: ["api"],
       },
     ]);
     // No `id` is ever read off an `r2_buckets` entry, so the divergence half has nothing to say about a

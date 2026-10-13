@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { GroupPosition } from "@pithy-sh/core/src/migrations/groups";
 import { isDownRefusal } from "@pithy-sh/core/src/migrations/retained";
@@ -16,6 +17,9 @@ import {
 } from "./groups";
 
 const APPLIED = new Date("2026-10-03T19:52:47.611Z");
+
+/** The caller every refusal here answers: `pithy migrate --env staging --rollback`. */
+const STAGING = callerOf("migrate", { env: "staging", rollback: true });
 
 /** A group that is the top of its database's chain — the one position that can be reversed. */
 const onTop = (migrations: string[]): GroupPosition => ({ state: "top", migrations: [...migrations].reverse() });
@@ -61,38 +65,100 @@ describe("requireMigrationGroup", () => {
 
 describe("noGroupRefusal", () => {
   test("names the newest group, what it holds per database, and the command that reverses it", () => {
-    const refusal = noGroupRefusal([
-      {
-        binding: "DB",
-        group: { group: "2026-10-03T19:52:47.611Z", appliedAt: APPLIED, migrations: ["2000_app_0003_release_notes"] },
-        position: onTop(["2000_app_0003_release_notes"]),
-      },
-      {
-        binding: "EMAIL_SUPPRESSIONS",
-        group: { group: "2026-10-03T19:52:47.611Z", appliedAt: APPLIED, migrations: ["0100_email_0002_reasons"] },
-        position: onTop(["0100_email_0002_reasons"]),
-      },
-    ]);
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "2026-10-03T19:52:47.611Z", appliedAt: APPLIED, migrations: ["2000_app_0003_release_notes"] },
+          position: onTop(["2000_app_0003_release_notes"]),
+        },
+        {
+          binding: "EMAIL_SUPPRESSIONS",
+          group: { group: "2026-10-03T19:52:47.611Z", appliedAt: APPLIED, migrations: ["0100_email_0002_reasons"] },
+          position: onTop(["0100_email_0002_reasons"]),
+        },
+      ],
+      STAGING,
+    );
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. The newest group is 2026-10-03T19:52:47.611Z, applied 2026-10-03 19:52 UTC: DB holds 2000_app_0003_release_notes, EMAIL_SUPPRESSIONS holds 0100_email_0002_reasons.",
     );
-    expect(refusal.payload.action).toBe("Reverse it with pithy migrate --rollback --group 2026-10-03T19:52:47.611Z.");
+    expect(refusal.payload.action).toBe(
+      "Reverse it. `pithy migrate --env staging --rollback --group 2026-10-03T19:52:47.611Z` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
+  });
+
+  // #711: the rollback a refusal names is the caller's own run, from its context. It was built from --env alone, so a
+  // run narrowed to one Worker was told to reverse the group in every Worker's database.
+  test("the rollback it names keeps the caller's own scope and flags", () => {
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0003"] },
+          position: onTop(["2000_app_0003"]),
+        },
+      ],
+      callerOf("migrate", { env: "staging", worker: "api", rollback: true, json: true, "confirm-rollback": "yes" }),
+    );
+    expect(refusal.payload.action).toBe(
+      "Reverse it. `pithy migrate --env staging --worker api --rollback --json --group release-7` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
+  });
+
+  // #711: `--binding DB` alone matches every Worker's DB; the line names the Worker whose database it is about.
+  test("one database at a time names the Worker that database belongs to", () => {
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          workers: ["api"],
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0003"] },
+          position: onTop(["2000_app_0003"]),
+        },
+        {
+          binding: "COLLAB_DB",
+          workers: ["web"],
+          group: { group: "release-6", appliedAt: APPLIED, migrations: ["0500_mp_0002"] },
+          position: onTop(["0500_mp_0002"]),
+        },
+      ],
+      callerOf("migrate", { env: "staging", rollback: true }),
+    );
+    expect(refusal.payload.action).toContain(
+      "`pithy migrate --env staging --rollback --group release-7 --binding DB --worker api`",
+    );
+  });
+
+  test("buriedGroupRefusal names the caller's own run too", () => {
+    const refusal = buriedGroupRefusal(
+      callerOf("migrate", { env: "staging", worker: "api", rollback: true }),
+      "DB",
+      "release-6",
+      ["release-7"],
+      [],
+      "release-7",
+    );
+    expect(refusal.payload.action).toContain("`pithy migrate --env staging --worker api --rollback --group release-7`");
   });
 
   test("names each database's own newest group when they disagree, rather than choosing one", () => {
-    const refusal = noGroupRefusal([
-      {
-        binding: "DB",
-        group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0003"] },
-        position: onTop(["2000_app_0003"]),
-      },
-      {
-        binding: "COLLAB_DB",
-        group: { group: "release-6", appliedAt: new Date("2026-10-01T08:00:00.000Z"), migrations: ["0500_mp_0002"] },
-        position: onTop(["0500_mp_0002"]),
-      },
-    ]);
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0003"] },
+          position: onTop(["2000_app_0003"]),
+        },
+        {
+          binding: "COLLAB_DB",
+          group: { group: "release-6", appliedAt: new Date("2026-10-01T08:00:00.000Z"), migrations: ["0500_mp_0002"] },
+          position: onTop(["0500_mp_0002"]),
+        },
+      ],
+      STAGING,
+    );
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. These databases hold different newest groups: DB's is release-7, applied 2026-10-03 19:52 UTC (2000_app_0003); COLLAB_DB's is release-6, applied 2026-10-01 08:00 UTC (0500_mp_0002).",
@@ -100,18 +166,18 @@ describe("noGroupRefusal", () => {
     // One command per database, because there is no single group to name and inventing one is how the
     // wrong thing gets reversed.
     expect(refusal.payload.action).toBe(
-      "Reverse one database at a time: pithy migrate --rollback --group release-7 --binding DB.",
+      "Reverse one database at a time. `pithy migrate --env staging --rollback --group release-7 --binding DB` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
     );
   });
 
   test("says so when nothing in scope records a group at all", () => {
-    const refusal = noGroupRefusal([{ binding: "DB" }, { binding: "COLLAB_DB" }]);
+    const refusal = noGroupRefusal([{ binding: "DB" }, { binding: "COLLAB_DB" }], STAGING);
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. No database in scope records one: DB, COLLAB_DB.",
     );
     expect(refusal.payload.action).toBe(
-      "Nothing here records which run applied a migration. Run pithy migrate to record a group, then reverse that group by name.",
+      "Nothing here records which run applied a migration. Run pithy migrate --env staging to record a group, then reverse that group by name.",
     );
   });
 
@@ -121,13 +187,16 @@ describe("noGroupRefusal", () => {
     // `hotfix` is inside it — so each buries the other and neither can be reversed. Printing
     // `--rollback --group release-7` here handed over a command whose refusal named `hotfix`, whose refusal
     // named `release-7` back.
-    const refusal = noGroupRefusal([
-      {
-        binding: "DB",
-        group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001", "2000_app_0003"] },
-        position: { state: "buried", above: ["hotfix"], ungrouped: [] },
-      },
-    ]);
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001", "2000_app_0003"] },
+          position: { state: "buried", above: ["hotfix"], ungrouped: [] },
+        },
+      ],
+      STAGING,
+    );
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. No group holds the newest migrations: DB's newest is release-7, applied 2026-10-03 19:52 UTC, with hotfix applied over it.",
@@ -139,30 +208,38 @@ describe("noGroupRefusal", () => {
   });
 
   test("names the group that is the contiguous tip, when the newest group is not it", () => {
-    const refusal = noGroupRefusal([
-      {
-        binding: "DB",
-        group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001"] },
-        position: { state: "buried", above: ["hotfix"], ungrouped: [], top: "hotfix" },
-      },
-    ]);
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001"] },
+          position: { state: "buried", above: ["hotfix"], ungrouped: [], top: "hotfix" },
+        },
+      ],
+      STAGING,
+    );
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. The newest group recorded is not the one on top: DB's newest is release-7, applied 2026-10-03 19:52 UTC, with hotfix applied over it.",
     );
-    expect(refusal.payload.action).toBe("Reverse the group on top: pithy migrate --rollback --group hotfix.");
+    expect(refusal.payload.action).toBe(
+      "Reverse the group on top. `pithy migrate --env staging --rollback --group hotfix` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
   });
 
   test("names an applied migration no group claims, rather than a group it would not reverse", () => {
     // What a `pithy seed --redo` leaves when a migration was pending: the reset reapplies it under no
     // group, and no group rollback can step past it.
-    const refusal = noGroupRefusal([
-      {
-        binding: "DB",
-        group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001"] },
-        position: { state: "buried", above: [], ungrouped: ["2000_app_0002_notes"] },
-      },
-    ]);
+    const refusal = noGroupRefusal(
+      [
+        {
+          binding: "DB",
+          group: { group: "release-7", appliedAt: APPLIED, migrations: ["2000_app_0001"] },
+          position: { state: "buried", above: [], ungrouped: ["2000_app_0002_notes"] },
+        },
+      ],
+      STAGING,
+    );
 
     expect(refusal.payload.message).toBe(
       "Refusing to roll back without a group. No group holds the newest migrations: DB's newest is release-7, applied 2026-10-03 19:52 UTC, with 2000_app_0002_notes (ungrouped) applied over it.",
@@ -193,26 +270,30 @@ describe("sharedGroupRefusal", () => {
 
 describe("buriedGroupRefusal", () => {
   test("states the rule and names the group that is actually on top", () => {
-    const refusal = buriedGroupRefusal("DB", "release-6", ["release-7"], [], "release-7");
+    const refusal = buriedGroupRefusal(STAGING, "DB", "release-6", ["release-7"], [], "release-7");
 
     expect(refusal.payload.message).toBe("Only the group on top can be reversed. DB applied release-7 over release-6.");
-    expect(refusal.payload.action).toBe("Reverse release-7 first: pithy migrate --rollback --group release-7.");
+    expect(refusal.payload.action).toBe(
+      "Reverse release-7 first. `pithy migrate --env staging --rollback --group release-7` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
     expect(refusal.payload.detail).toBe(
       "Kysely steps down from the tip, so reversing release-6 would reverse release-7 with it. Nothing was reversed.",
     );
   });
 
   test("names every group between it and the tip", () => {
-    const refusal = buriedGroupRefusal("DB", "release-5", ["release-7", "release-6"], [], "release-7");
+    const refusal = buriedGroupRefusal(STAGING, "DB", "release-5", ["release-7", "release-6"], [], "release-7");
 
     expect(refusal.payload.message).toBe(
       "Only the group on top can be reversed. DB applied release-7, release-6 over release-5.",
     );
-    expect(refusal.payload.action).toBe("Reverse release-7 first: pithy migrate --rollback --group release-7.");
+    expect(refusal.payload.action).toBe(
+      "Reverse release-7 first. `pithy migrate --env staging --rollback --group release-7` with its --confirm-rollback phrase, which only a person gives, deletes the schema a migration group applied. That is a person's decision, not a fix.",
+    );
   });
 
   test("names a migration no group claims as what buries it, and that nothing records it", () => {
-    const refusal = buriedGroupRefusal("DB", "release-7", [], ["2000_app_0002_notes"]);
+    const refusal = buriedGroupRefusal(STAGING, "DB", "release-7", [], ["2000_app_0002_notes"]);
 
     expect(refusal.payload.message).toBe(
       "Only the group on top can be reversed. DB applied 2000_app_0002_notes (ungrouped) over release-7. Nothing records which run applied 2000_app_0002_notes.",
@@ -224,7 +305,7 @@ describe("buriedGroupRefusal", () => {
   });
 
   test("prints no command when the group over it is buried in its turn", () => {
-    const refusal = buriedGroupRefusal("DB", "release-7", ["hotfix"], []);
+    const refusal = buriedGroupRefusal(STAGING, "DB", "release-7", ["hotfix"], []);
 
     expect(refusal.payload.action).not.toContain("--group hotfix");
     expect(refusal.payload.action).toContain("Run pithy doctor");

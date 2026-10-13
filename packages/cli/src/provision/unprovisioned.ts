@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
 import { parse } from "comment-json";
 import { NO_PROVISION_ARG, stanzaOf, wranglerEnvironment } from "../project/effectiveConfig";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { discoverWorkers } from "../project/workers";
 import { wranglerConfigPath } from "./featureConfig";
-import { withProvisionFix } from "./provisionFix";
+import { provisionRemedy, withProvisionFix } from "./provisionFix";
 
 /**
  * **Which of the bindings a deploy would ship still have no resource behind them.**
@@ -161,12 +162,11 @@ export function describeUnprovisioned(missing: readonly UnprovisionedBinding[]):
  * that do have resources, rather than to a provisioning command that would refuse `dev` — or worse, one
  * that would not.
  */
-function remedy(env: string | undefined): string {
+function remedy(env: string | undefined, productionEnvironments?: readonly string[]): string {
   if (env === undefined || env === LOCAL_ENVIRONMENT) {
-    return "The top-level stanza is dev's, which runs under pithy dev and has no Cloudflare resources. Deploy --env staging or --env prod.";
+    return `The top-level stanza is dev's, which runs under ${commandName("dev")} and has no Cloudflare resources. Deploy --env staging or --env prod.`;
   }
-  if (env === FEATURE_ENVIRONMENT) return "Run pithy provision --feature, then deploy.";
-  return `Run pithy provision --env ${env} --yes, then deploy.`;
+  return provisionRemedy(env, productionEnvironments).say((command) => `Run ${command}, then deploy.`);
 }
 
 /**
@@ -194,7 +194,7 @@ export async function assertEnvironmentProvisioned(
   const stanza = env === undefined ? "The top-level stanza" : env;
   const refusal = {
     message: `${stanza} declares bindings with no Cloudflare resource behind them: ${describeUnprovisioned(missing)}.`,
-    action: remedy(env),
+    action: remedy(env, productionEnvironments),
     detail: `A deploy runs wrangler with ${NO_PROVISION_ARG}, so a binding with no id fails inside wrangler rather than creating a resource.`,
   };
   if (env === undefined || env === LOCAL_ENVIRONMENT) throw new ValidationError(refusal);

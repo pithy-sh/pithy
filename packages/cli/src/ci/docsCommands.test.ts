@@ -84,6 +84,20 @@ describe("commands named in docs", () => {
     expect(wrong).toEqual([]);
   });
 
+  // No remedy names `pithy init` inside an existing project (#711): `init` refuses to scaffold over one, so an Errors
+  // entry sending a reader there sends them to a second refusal. Only `init`'s own page may offer it.
+  test("no command page's Errors section offers `pithy init` as the fix", () => {
+    const offered: string[] = [];
+    for (const [file, markdown] of docFiles(join(REPO_ROOT, "docs", "commands"))) {
+      if (file === "init.md") continue;
+      const errors = markdown.split(/^## /m).find((section) => section.startsWith("Errors\n"));
+      for (const line of errors?.split("\n") ?? []) {
+        if (/\b(?:run|with|use)\s+`pithy init`/i.test(line)) offered.push(`docs/commands/${file}: ${line}`);
+      }
+    }
+    expect(offered).toEqual([]);
+  });
+
   // The floor. A reader that found no commands, or no docs, reports every page clean — which is the one
   // result this test must never produce quietly. `secrets create` is asserted by name because it is the
   // spelling #503 was wrong about, so a walk that silently stopped returning subcommands fails here.

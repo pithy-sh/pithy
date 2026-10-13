@@ -9,6 +9,7 @@ import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { z } from "zod";
+import { type AddPlan, addAction } from "../capabilities/addCommand";
 import {
   deployHostWorker,
   type HostDeployOptions,
@@ -19,6 +20,8 @@ import {
 } from "../capabilities/hostDeploy";
 import { hostEntrySource } from "../capabilities/hostEntry";
 import { hostTemplatePath, readHostTemplate as readHostTemplateDefault } from "../capabilities/hostRegistry";
+import { resolveAdd } from "../capabilities/notComposed";
+import { capabilityProvisionRemedy } from "../capabilities/provisionCommand";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
@@ -29,12 +32,14 @@ import {
   featureOwnedIds,
 } from "../feature/hosts";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { provisionRemedy } from "../provision/provisionFix";
 import { cloudflareProvisioners } from "../provision/resources";
 import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains, type WorkerConfig } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
 import { type AddressStanza, inheritAddressKeys, resolveWorkerAddress } from "./workerAddress";
+import { workerDirName } from "./workerIdentity";
 import { discoverWorkers, type WorkerTarget } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -134,6 +139,11 @@ export interface DeployKitOptions {
   project: string;
   /** The environment being deployed. Required: a kit Worker is per environment, always. */
   env: string;
+  /**
+   * The project's `seed.productionEnvironments`, beyond `prod`: a skip naming a provision for one of them names it
+   * as a person's decision, never a command to run (#711).
+   */
+  productionEnvironments?: readonly string[];
   /** The account the project belongs to. Stated by the caller, never defaulted (#206). */
   account: CloudflareAccountSelection | null;
   /** Ship every kit Worker regardless of its stamp. */
@@ -433,11 +443,13 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
  * the hosts that bind it: email, media, storage, payments and secrets ask; support, testers and vector
  * hold no credential at all and deploy unaffected.
  */
-const REQUIRED_VARS: Record<string, (capability: string) => string> = {
-  SECRETS_STORE_ID: (capability) =>
-    `SECRETS_STORE_ID is not set, so ${capability}'s Worker would deploy unable to read its master key. Run pithy add secrets on this machine, or export SECRETS_STORE_ID for this run.`,
-  CLOUDFLARE_ACCOUNT_ID: (capability) =>
-    `CLOUDFLARE_ACCOUNT_ID is not set, so ${capability}'s Worker would deploy naming no account to manage. Export CLOUDFLARE_ACCOUNT_ID for this run, or record it with pithy add secrets.`,
+const REQUIRED_VARS: Record<string, (capability: string, recordWith: AddPlan) => string> = {
+  // The Worker that composes the capability composes `secrets` too, as every host that asks for the store
+  // declares it, so `pithy add secrets` on that Worker is the one that records it (#711).
+  SECRETS_STORE_ID: (capability, recordWith) =>
+    `SECRETS_STORE_ID is not set, so ${capability}'s Worker would deploy unable to read its master key. ${addAction(recordWith, (add) => `Run ${add} on this machine, or export SECRETS_STORE_ID for this run.`)}`,
+  CLOUDFLARE_ACCOUNT_ID: (capability, recordWith) =>
+    `CLOUDFLARE_ACCOUNT_ID is not set, so ${capability}'s Worker would deploy naming no account to manage. ${addAction(recordWith, (add) => `Export CLOUDFLARE_ACCOUNT_ID for this run, or record it with ${add}.`)}`,
 };
 
 /** The default stamp reader: the account's Workers REST client, loaded only once a run needs it. */
@@ -459,6 +471,8 @@ function readinessReason(input: {
   missingIds: readonly { kind: "database" | "namespace"; binding: string }[];
   missingVars: readonly string[];
   capability: string;
+  /** The `pithy add secrets` that records the account's values, on the Worker that composes it (#711). */
+  recordWith: AddPlan;
   env: string;
   provision: string;
 }): string | undefined {
@@ -471,7 +485,7 @@ function readinessReason(input: {
     .map((one) => `${one.bindings.join(", ")} ${one.kind}`);
   if (clauses.length > 0) reasons.push(`${input.env} has no ${clauses.join(" and no ")} yet. ${input.provision}`);
   for (const name of [...new Set(input.missingVars)].sort()) {
-    reasons.push(REQUIRED_VARS[name]?.(input.capability) ?? `${name} is not set.`);
+    reasons.push(REQUIRED_VARS[name]?.(input.capability, input.recordWith) ?? `${name} is not set.`);
   }
   return reasons.length > 0 ? reasons.join(" ") : undefined;
 }
@@ -494,12 +508,21 @@ async function deployOneKitWorker(input: {
 }): Promise<KitWorkerDeploy | { planned: PlannedKitUpload }> {
   const { host, options } = input;
   const capability = host.capability;
-  // No `--env`. A capability's provision spans every declared environment and none of the ones that host a
-  // kit Worker declares the flag, which the CLI refuses (#594) — a skip naming it names a fix that fails.
-  const provision =
-    options.env === FEATURE_ENVIRONMENT ? "Run pithy provision --feature." : `Run pithy ${capability} provision.`;
-
   if (!input.source) return skipped(capability, `No Worker in apps/ composes ${capability} any more.`);
+  // The builder names `--env` only for a provision that declares it: most span every environment and would refuse
+  // the flag (#594), while `vector provision` acts on one and defaults to dev, so a staging skip that left it out
+  // named a provision of dev that never clears the skip (#711). And the Worker that composes it, by name: in a
+  // project with several, a bare provision is refused (#711).
+  const remedy =
+    options.env === FEATURE_ENVIRONMENT
+      ? provisionRemedy(FEATURE_ENVIRONMENT)
+      : capabilityProvisionRemedy(
+          capability,
+          workerDirName(input.source),
+          options.env,
+          options.productionEnvironments ?? [],
+        );
+  const provision = remedy.say((command) => `Run ${command}.`);
   const baseUrl = await baseUrlFor(input.source, options.env, input.stanza);
   if (baseUrl === null) {
     return skipped(
@@ -573,7 +596,14 @@ async function deployOneKitWorker(input: {
       };
     }
   }
-  const shortfall = readinessReason({ missingIds, missingVars, capability, env: options.env, provision });
+  const shortfall = readinessReason({
+    missingIds,
+    missingVars,
+    capability,
+    recordWith: resolveAdd("secrets", { projectDir: options.projectDir, workerDir: input.source.dir }),
+    env: options.env,
+    provision,
+  });
   if (shortfall) return skipped(capability, shortfall);
 
   try {

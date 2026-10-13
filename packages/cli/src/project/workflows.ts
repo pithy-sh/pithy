@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Command, commandName, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { messageOf, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { isSourceEnvironment } from "../provision/featureConfig";
 import { withFix } from "../terminal/exitClass";
@@ -15,6 +15,7 @@ import {
 } from "./appWorkflows";
 import { composeFor } from "./composeFor";
 import { loadProject, loadProjectEnvironments, requireProjectName } from "./config";
+import { workerDirName } from "./workerIdentity";
 import { discoverWorkers } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -77,7 +78,7 @@ export type WorkflowFault =
 /** One Worker-and-environment whose declaration and stanza are not the same table. */
 export interface WorkflowDrift {
   /** The Worker's `apps/<name>` directory. */
-  worker: string;
+  worker: WorkerDir;
   /** The environment. */
   env: string;
   /** Which fault this is. */
@@ -170,7 +171,7 @@ export async function workflowDrift(
     if (target.hasWrangler === false) continue;
     const config = (await readOptionalWranglerConfig(target.dir).catch(() => null)) as WorkflowConfig | null;
     if (!config) continue;
-    const worker = basename(target.dir);
+    const worker = workerDirName(target);
     for (const env of environments) {
       const app = await workerApp(target.dir, env);
       if (!app) continue;
@@ -217,10 +218,12 @@ function summarize(plan: AppWorkflowPlan): string {
  * carries more than the declaration.
  */
 export function describeWorkflowDrift(drift: WorkflowDrift): string {
-  if (drift.fault === "unwritable-declaration") {
-    return `${drift.worker} declares a job nothing can bind in ${drift.env}: ${drift.reason} Fix workflows in the Worker's pithy.config.ts — pithy worker sync would refuse it the same way.`;
+  // The command the `fix` carries, from the same builder (#711), or none where no command writes it.
+  const sync = workflowSync(drift);
+  if (sync === null) {
+    return `${drift.worker} declares a job nothing can bind in ${drift.env}: ${drift.reason} Fix workflows in the Worker's pithy.config.ts — ${commandName("worker sync")} would refuse it the same way.`;
   }
-  return `${drift.worker} declares ${summarize(drift.declared)} for ${drift.env}, and env.${drift.env} binds ${summarize(drift.bound)}. Run pithy worker sync to write the declaration into wrangler.jsonc.`;
+  return `${drift.worker} declares ${summarize(drift.declared)} for ${drift.env}, and env.${drift.env} binds ${summarize(drift.bound)}. Run ${sync} to write the declaration into wrangler.jsonc.`;
 }
 
 /**
@@ -228,24 +231,21 @@ export function describeWorkflowDrift(drift: WorkflowDrift): string {
  * {@link describeWorkflowDrift} takes: `pithy worker sync` writes an unsynced stanza, and a declaration it
  * cannot reduce is the config's to fix.
  */
-export function workflowDriftFix(drift: WorkflowDrift): string | null {
-  return workflowSync(drift)?.fix ?? null;
+export function workflowDriftFix(drift: WorkflowDrift): Command | null {
+  return workflowSync(drift);
 }
 
-/**
- * {@link workflowDriftFix}, as the remedy `withFix` takes — so doctor's `fix` and the deploy refusal's are one
- * literal, and `ci/actionLines.test.ts` reads it where it is written.
- */
-function workflowSync(drift: WorkflowDrift): { fix: string } | null {
+/** {@link workflowDriftFix}'s command, for doctor's `fix` and the deploy refusal's alike, so the two are one. */
+function workflowSync(drift: WorkflowDrift): Command | null {
   if (drift.fault === "unwritable-declaration") return null;
-  return { fix: `pithy worker sync --worker ${drift.worker} --env ${drift.env}` };
+  return pithyCommand("worker sync", { flags: { "--worker": drift.worker, "--env": drift.env } });
 }
 
 /** The throw-site context behind each fault — why this one is worth a refusal. */
 function workflowDetail(fault: WorkflowFault): string {
   return fault === "unwritable-declaration"
     ? "hostWorkflowsFor refuses a job it cannot name, so there is no stanza any command could write for this environment."
-    : "A declared Workflow and the binding that runs it are two halves of one fact in two files, and only pithy worker sync writes the second — so a cron nothing bound never fires, and nothing anywhere reports it.";
+    : `A declared Workflow and the binding that runs it are two halves of one fact in two files, and only ${commandName("worker sync")} writes the second — so a cron nothing bound never fires, and nothing anywhere reports it.`;
 }
 
 /**

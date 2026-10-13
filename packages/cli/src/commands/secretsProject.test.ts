@@ -52,13 +52,18 @@ describe("mergedProjectSecrets with no Worker composing secrets", () => {
   test("the only Worker: exit 3, and pithy add secrets", async () => {
     const error = await refusal(bare("api"));
     expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
-    expect(fixOf(error)).toBe("pithy add secrets");
-    expect(error.payload.action).not.toContain("--worker");
+    expect(fixOf(error)).toBe("pithy add secrets --worker api");
+    // The sentence names the command the fix carries, from one builder (#711).
+    expect(error.payload.action).toContain(`run \`${fixOf(error)}\``);
   });
 
   test("several Workers: still exit 3, and no Worker to name, so no fix", async () => {
     const error = await refusal(bare("api", "web"));
     expect(exitCodeOf(error.payload)).toBe(EXIT.precondition);
     expect(fixOf(error)).toBeUndefined();
+    // The sentence still names what to run: one command per Worker, each runnable as written (#711).
+    expect(error.payload.action).toContain(
+      "(run `pithy add secrets --worker api` or `pithy add secrets --worker web`).",
+    );
   });
 });

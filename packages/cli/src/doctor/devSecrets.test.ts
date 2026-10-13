@@ -19,6 +19,7 @@ import { z } from "zod";
 import { devSecretsFile } from "../devSecrets/location";
 import type { DevSecretsTarget } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
+import { dirOf } from "../test-utils/workerDir";
 import {
   checkDevSecrets,
   checkDevSecretsLocation,
@@ -382,9 +383,24 @@ describe("devSecretsHealthy", () => {
   test("a master key nobody has minted yet is named with the command that mints it", () => {
     // Not "issued by somebody else, fine to leave until you need it" — that is the one sentence that
     // sends an adopter past the thing actually stopping their local `SECRETS` store from opening.
+    // With no Worker read there is none to name, so the line says what comes first rather than naming an add
+    // a project with several Workers refuses (#711). The named case is the test below.
     const lines = describeDevSecrets({ ...clean, bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"] }).join("\n");
-    expect(lines).toContain("pithy add secrets");
+    expect(lines).toContain(
+      "No dev value for SECRETS_ENCRYPTION_KEYS. This project has no Worker to compose secrets into.",
+    );
     expect(lines).not.toContain("issued by somebody else");
+  });
+
+  // #711: the command names a Worker that composes secrets, so it runs as written in a project with several.
+  test("the command names a Worker composing secrets, never a placeholder", () => {
+    const lines = describeDevSecrets({
+      ...clean,
+      bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"],
+      secretsWorker: dirOf("api"),
+    }).join("\n");
+    expect(lines).toContain("Run `pithy add secrets --worker api` — it mints one into");
+    expect(lines).not.toContain("<name>");
   });
 
   test("a missing secret is not a fault — four unset OAuth pairs must not drag every report verbose", () => {

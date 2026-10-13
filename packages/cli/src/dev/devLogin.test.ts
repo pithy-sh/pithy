@@ -281,13 +281,13 @@ describe("devLoginKeyAction", () => {
   test("names pithy seed rather than opening a URL that 404s", () => {
     const action = devLoginKeyAction(undefined, NOW, [API]);
     expect(action.url).toBeUndefined();
-    expect(action.lines).toEqual(["No dev login is seeded. Run pithy seed, then press l again."]);
+    expect(action.lines).toEqual(["No dev login is seeded. Run pithy seed --env dev, then press l again."]);
   });
 
   test("treats an expired login as no login, and says how to mint a fresh one", () => {
     const action = devLoginKeyAction(login({ expiresAt: new Date("2026-08-05T00:00:00.000Z") }), NOW, [API]);
     expect(action.url).toBeUndefined();
-    expect(action.lines).toEqual(["The seeded dev login has expired. Run pithy seed to mint a fresh one."]);
+    expect(action.lines).toEqual(["The seeded dev login has expired. Run pithy seed --env dev to mint a fresh one."]);
   });
 
   test("opens nothing when no running worker composes auth", () => {
@@ -471,14 +471,14 @@ describe("selectDevLogin", () => {
   test("names pithy seed when every claim has expired, rather than listing nobody", () => {
     const all = many(2, { "example-1": { expiresAt: EXPIRED }, "example-2": { expiresAt: EXPIRED } });
     expect(selectDevLogin(all, NOW2, "example-1")).toEqual({
-      lines: ["The seeded dev login has expired. Run pithy seed to mint a fresh one."],
+      lines: ["The seeded dev login has expired. Run pithy seed --env dev to mint a fresh one."],
     });
   });
 
   test("says so rather than listing nobody when the seed wrote nothing", () => {
     const refused = selectDevLogin(undefined, NOW2, "example-1");
     expect(refused.login).toBeUndefined();
-    expect(refused.lines).toEqual(["No dev login is seeded. Run pithy seed, then press l again."]);
+    expect(refused.lines).toEqual(["No dev login is seeded. Run pithy seed --env dev, then press l again."]);
   });
 
   test("names no claim in any refusal, for any record", () => {

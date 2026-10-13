@@ -81,7 +81,9 @@ describe("rejectNoInput", () => {
     const payload = (thrown as PithyError).payload;
     expect(payload).toMatchObject({ code: "core/person_required" });
     expect(payload.message).toBe("pithy remove is a manual command, and this run forbids prompts.");
-    expect(payload.action).toBe("Run pithy remove auth at a terminal, without --no-input or PITHY_NONINTERACTIVE.");
+    expect(payload.action).toBe(
+      "`pithy remove auth` deletes a capability's wiring. That is a person's decision, not a fix. Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.",
+    );
   });
 
   test("without the switch it does nothing", () => {
@@ -132,14 +134,14 @@ describe("remove under the switch", () => {
  */
 describe("requireDropConfirmable", () => {
   test("a run that may prompt, or one not dropping, passes", () => {
-    expect(() => requireDropConfirmable("auth", { drop: true, interactive: true })).not.toThrow();
-    expect(() => requireDropConfirmable("auth", { drop: false, interactive: false })).not.toThrow();
+    expect(() => requireDropConfirmable("auth", { drop: true, interactive: true, env: "dev" })).not.toThrow();
+    expect(() => requireDropConfirmable("auth", { drop: false, interactive: false, env: "dev" })).not.toThrow();
   });
 
   test("--drop where nobody may be asked needs a person, because no flag answers it", () => {
     let thrown: unknown;
     try {
-      requireDropConfirmable("auth", { drop: true, interactive: false });
+      requireDropConfirmable("auth", { drop: true, interactive: false, env: "dev" });
     } catch (error) {
       thrown = error;
     }
@@ -148,7 +150,7 @@ describe("requireDropConfirmable", () => {
     expect(payload).toMatchObject({ code: "core/person_required" });
     expect(payload.message).toBe("Dropping auth's tables needs a person to confirm it.");
     expect(payload.action).toBe(
-      "Run pithy remove auth --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.",
+      "`pithy remove auth --drop --env dev` deletes a capability's wiring and a capability's tables. That is a person's decision, not a fix. Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.",
     );
   });
 });

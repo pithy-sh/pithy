@@ -3,11 +3,13 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { VectorConfig } from "@pithy-sh/vector/src/config/config";
 import { filterable } from "@pithy-sh/vector/src/index/filter";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { KIT_ROOT } from "../test-utils/kitRoot";
+import { dirOf } from "../test-utils/workerDir";
 import {
   CloudflareVectorProvisioner,
   METADATA_POLL_INTERVAL_MS,
@@ -90,8 +92,10 @@ function provisioner(
   cf: CloudflareClients,
   workflows: CloudflareWorkflowsClient,
   clock: ReturnType<typeof virtualClock> = virtualClock(),
+  target?: { worker: WorkerDir; env: string; productionEnvironments?: readonly string[] },
 ) {
   return new CloudflareVectorProvisioner({
+    ...(target === undefined ? {} : { target: { productionEnvironments: [], ...target } }),
     projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
@@ -270,14 +274,15 @@ describe("ensureMetadataIndexes", () => {
     fake.listMetadataIndexes.mockResolvedValue([]);
     const clock = virtualClock();
 
-    const thrown = await provisioner(fake.cf, fakeWorkflows().client, clock)
+    const thrown = await provisioner(fake.cf, fakeWorkflows().client, clock, { worker: dirOf("api"), env: "dev" })
       .ensureMetadataIndexes("pithy-vector-docs-dev", declared)
       .catch((error: unknown) => error);
 
     expect(thrown).toMatchObject({
       payload: {
         message: "The metadata indexes on `pithy-vector-docs-dev` were accepted but are not live yet.",
-        action: "Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.",
+        action:
+          "Re-run `pithy vector provision --worker api --env dev` in a minute. Do not write vectors until it reports them ready.",
         detail: "waited 300s for ownerId",
       },
     });
@@ -342,6 +347,88 @@ describe("ensureMetadataIndexes", () => {
     );
     expect(report.extra).toEqual([{ propertyName: "legacy", indexType: "string" }]);
   });
+});
+
+/**
+ * **Every command a refusal names runs as written (#711).** The Worker and environment are this run's, so the
+ * command runs in a project with several Workers. A reset of anything but `dev` takes the `--confirm-reset`
+ * phrase, which is a person's to give, so the sentence says so rather than naming a run an agent is refused.
+ * A feature's indexes are its own provisioning's: a feature run names that, and no rebuild, since none exists for one index.
+ */
+describe("the commands a refusal names", () => {
+  const live = { name: "pithy-vector-docs-staging", config: { dimensions: 384, metric: "cosine" as const } };
+  const action = async (target?: { worker: WorkerDir; env: string; productionEnvironments?: readonly string[] }) => {
+    const fake = fakeCf();
+    fake.findIndexByName.mockResolvedValue(live);
+    const error = await provisioner(fake.cf, fakeWorkflows().client, undefined, target)
+      .ensureIndex(live.name, { dimensions: 768, metric: "cosine" })
+      .catch((caught: unknown) => caught);
+    return (error as { payload: { action: string } }).payload.action;
+  };
+
+  test("a reset of a deployed environment names the Worker and the person's phrase", async () => {
+    expect(await action({ worker: dirOf("api"), env: "staging" })).toContain(
+      "Dimensions and metric are fixed when an index is created. Change the config back. Rebuilding it from the document corpus is the other way: `pithy vector reset --worker api --env staging` with its --confirm-reset phrase, which only a person gives, deletes every vector in the index. That is a person's decision, not a fix.",
+    );
+  });
+
+  test("a reset of dev needs no phrase", async () => {
+    expect(await action({ worker: dirOf("api"), env: "dev" })).toContain(
+      "Dimensions and metric are fixed when an index is created. Change the config back. Rebuilding it from the document corpus is the other way: `pithy vector reset --worker api --env dev` deletes every vector in the index. That is a person's decision, not a fix.",
+    );
+  });
+
+  /**
+   * No command rebuilds one index of a feature. `pithy feature destroy` takes every resource the feature owns and
+   * prunes its worktree, and `pithy provision --feature` runs only from inside that worktree, so naming the pair
+   * sends an agent to wipe the feature for one index and then a command it can no longer run.
+   */
+  test("a feature run names no rebuild, only the config change", async () => {
+    const said = await action();
+    expect(said).toBe("Dimensions and metric are fixed when an index is created. Change the config back.");
+    expect(said).not.toContain("pithy");
+  });
+
+  test("a feature's metadata type refusal names no rebuild either", async () => {
+    const fake = fakeCf();
+    fake.listMetadataIndexes.mockResolvedValue([{ propertyName: "ownerId", indexType: "number" }]);
+    const error = await provisioner(fake.cf, fakeWorkflows().client)
+      .ensureMetadataIndexes("pithy-vector-docs-feature", declared)
+      .catch((caught: unknown) => caught);
+    expect((error as { payload: { action: string } }).payload.action).toBe(
+      "A metadata index's type is fixed. Change the field's type back in the index's metadata schema.",
+    );
+  });
+
+  test("an index not live yet names this run's provision again", async () => {
+    const fake = fakeCf();
+    fake.listMetadataIndexes.mockResolvedValue([]);
+    const error = await provisioner(fake.cf, fakeWorkflows().client, undefined, {
+      worker: dirOf("api"),
+      env: "staging",
+    })
+      .ensureMetadataIndexes("pithy-vector-docs-staging", declared)
+      .catch((caught: unknown) => caught);
+    expect((error as { payload: { action: string } }).payload.action).toBe(
+      "Re-run `pithy vector provision --worker api --env staging` in a minute. Do not write vectors until it reports them ready.",
+    );
+  });
+});
+
+// #711: the project's own production environment is a person's decision too, not only `prod` and `production`.
+test("an index not live yet in the project's own production environment names no provision to run", async () => {
+  const fake = fakeCf();
+  fake.listMetadataIndexes.mockResolvedValue([]);
+  const error = await provisioner(fake.cf, fakeWorkflows().client, undefined, {
+    worker: dirOf("api"),
+    env: "live",
+    productionEnvironments: ["live"],
+  })
+    .ensureMetadataIndexes("pithy-vector-docs-live", declared)
+    .catch((caught: unknown) => caught);
+  expect((error as { payload: { action: string } }).payload.action).toContain(
+    "`pithy vector provision --worker api --env live` runs against live, a production environment. That is a person's decision, not a fix.",
+  );
 });
 
 describe("deleteIndex", () => {

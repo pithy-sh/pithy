@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -21,7 +22,7 @@ import {
 import { capabilityNotComposed } from "../capabilities/notComposed";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import {
@@ -39,12 +40,15 @@ import {
   environmentOutcomes,
   environmentReadiness,
   formatEnvironmentOutcomes,
+  ProvisionReportExitCode,
   readyStanza,
   requireReadyEnvironments,
   SkippedEnvironment,
+  writeProvisionReport,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
 import { resolveWorkerAddress } from "../project/workerAddress";
+import { workerDirName } from "../project/workerIdentity";
 import {
   composedProjectCapabilities,
   type ResolvedWorker,
@@ -97,52 +101,16 @@ export async function loadEmailCapability(
   const workers = await resolve({ projectDir });
   const cap = (await composedProjectCapabilities(workers)).find(isEmailCapability);
   if (!cap) {
-    throw await capabilityNotComposed(
+    throw capabilityNotComposed(
       "email",
       {
         message: "The email capability is not configured.",
-        action: "Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).",
+        action: (add) => `Add \`email({ ... })\` to a worker's pithy.config.ts (run ${add}).`,
       },
       { projectDir, workerDirs: workers.map((worker) => worker.dir) },
     );
   }
   return cap;
-}
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- *
- * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
- * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
- * "I asked an account nothing claims" — the two arrive as one empty listing.
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-  storeId: string;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const storeId = vars.SECRETS_STORE_ID ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  if (!storeId) {
-    throw new PreconditionFailedError({
-      message: "The CF Secrets Store id is missing.",
-      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).",
-    });
-  }
-  return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
 /**
@@ -274,6 +242,7 @@ const EmailProvisionPayload = z
       })
       .describe("The inbound routing rule."),
     skippedEnvironments: Skipped,
+    exitCode: ProvisionReportExitCode,
   })
   .describe("What `pithy email provision` provisioned.");
 
@@ -340,8 +309,9 @@ const provision = withContract(
         // The project's own environment set (#241): what this command fans out across, rather than a
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
-        const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+        const { account, accountId, apiToken, storeId } = commandCredentials(
           await projectCloudflareAccount(projectDir),
+          { projectDir, why: "the email worker binds its link-signing key from it" },
         );
         const emailCapability = await loadEmailCapability(projectDir);
         const appWorker = await resolveSingleWorker({
@@ -378,20 +348,42 @@ const provision = withContract(
         // The ready list, not the declaration. The suppression database is project-global and is created
         // whatever else skips — it must not wait for prod — and every skipped environment simply never
         // reaches `deployWorker`, so the orchestrator needs no notion of a skip.
-        const result = await provisionEmail(provisioner, readiness.ready);
+        // Whether the database is new to this run is what the run says it did, not a field of its report.
+        const { suppressionDatabaseCreated, ...result } = await provisionEmail(provisioner, readiness.ready);
+
+        // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
+        // resolved when none was named (#711).
+        const again = rerunRemedy(callerOf("email provision", args), {
+          flags: { "--worker": workerDirName(appWorker) },
+          productionEnvironments: readiness.productionEnvironments,
+        });
+        // What the run did before any environment could refuse it: the suppression database is project-global and
+        // is created, or found, and migrated whatever else skipped. A refusal that left it out would say nothing
+        // happened; one that said it created a database an earlier run made would say what did not (#711).
+        const did = [
+          suppressionDatabaseCreated
+            ? `It created and migrated the project's suppression database (${result.suppressionDatabaseId}), which every environment shares.`
+            : `It reused the project's suppression database (${result.suppressionDatabaseId}), which every environment shares, and applied any migration it lacked.`,
+        ];
 
         if (args.json) {
-          // Written before the refusal below, so a run in which everything skipped still carries the
-          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-          process.stdout.write(
-            `${formatJsonLine({ command: "email provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          // One outcome (#711): the error line alone when no environment was provisioned — naming what the run
+          // did all the same — or this report alone.
+          writeProvisionReport(
+            {
+              command: "email provision",
+              ...result,
+              skippedEnvironments: readiness.skipped,
+            },
+            readiness,
+            again,
+            did,
           );
-          requireReadyEnvironments(readiness, "pithy email provision");
           return;
         }
         process.stdout.write("Suppression database ready.\n");
         process.stdout.write(formatEnvironmentOutcomes(environmentOutcomes(readiness, () => "email worker deployed")));
-        requireReadyEnvironments(readiness, "pithy email provision");
+        requireReadyEnvironments(readiness, again, did);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -441,7 +433,10 @@ const deprovision = withContract(
         // is the one that deletes.
         const declared = loadProjectEnvironments(config);
         const env = requireTeardownEnvironment(args.env, declared);
-        const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir), {
+          projectDir,
+          why: "the email worker binds its link-signing key from it",
+        });
         const cf = await cloudflareClients({ accountId, apiToken });
         const deprovisioner = new CloudflareEmailDeprovisioner({
           account,
@@ -502,7 +497,10 @@ const test = withContract(
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
-        const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir), {
+          projectDir,
+          why: "the email worker binds its link-signing key from it",
+        });
         const { fromAddress, fromName, baseUrl, theme } = (await loadEmailCapability(projectDir)).emailConfig;
         const payload = samplePayloads[args.template];
         if (!payload) {

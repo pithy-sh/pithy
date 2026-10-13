@@ -3,6 +3,7 @@
 
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { type ControlPlaneAuditAction, ControlPlaneAuditActions } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import { ControlPlaneConnection, type RegisteredKey } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys, appendKey as appendRegisteredKey } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
@@ -168,7 +169,7 @@ function refuseWhileSomethingCanSign(connection: ControlPlaneConnection, now: Da
   if (live.length === 0) return;
   throw new ControlPlaneKeyConflictError({
     message: "That connection already has a live key.",
-    action: `Register the successor through the worker: POST ${connection.workerUrl}${connection.basePath}/keys, signed with ${live[0]?.keyId}. That is what pithy dashboard rotate does.`,
+    action: `Register the successor through the worker: POST ${connection.workerUrl}${connection.basePath}/keys, signed with ${live[0]?.keyId}. That is what ${commandName("dashboard rotate")} does.`,
     detail,
   });
 }

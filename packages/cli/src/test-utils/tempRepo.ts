@@ -43,3 +43,18 @@ export const GIT_NO_MAINTENANCE = ["-c", "gc.auto=0", "-c", "maintenance.auto=fa
 export async function removeTempDir(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
+
+/** The variables that name a repository, its work tree or its index in place of the directory git runs in. */
+const REPOSITORY_POINTERS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]);
+
+/**
+ * The environment a git command on a scratch repository runs in: this process's, less what would point git
+ * at another repository.
+ *
+ * Under a git hook `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` are set, and they win over `cwd` and
+ * `-C`. A question asked of a scratch repository would then be answered by this one, and its `init` would
+ * reinitialize this one.
+ */
+export function scratchGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !REPOSITORY_POINTERS.has(name)));
+}

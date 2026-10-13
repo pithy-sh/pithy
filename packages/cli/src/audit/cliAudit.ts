@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { parse } from "comment-json";
 import { cloudflareClients } from "../cloudflare/clients";
 import { projectCapabilitySetFor } from "../project/composeFor";
@@ -107,7 +108,7 @@ function unrecordable(reason: string): CliAuditEmit {
       // The set's own diagnosis, which names the worker. Inventing one here is how the absent-config case
       // came to be reported as "a config will not load", pointing at a file that does not exist (#454).
       reason,
-      action_required: "Fix it — pithy doctor names the fault — and re-run to record this event.",
+      action_required: `Fix it — ${commandName("doctor")} names the fault — and re-run to record this event.`,
     });
   };
 }

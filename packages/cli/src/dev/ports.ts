@@ -40,7 +40,7 @@ export async function verifyPinnedPort(name: string, port: number, bind: TryBind
   if (freeV4 && freeV6) return;
   throw new ConflictError({
     message: `Port ${port} for worker "${name}" is already in use.`,
-    action: "Stop whatever is holding it, then run pithy dev again.",
+    action: "Stop whatever is holding it, then run this again.",
     detail: `free on 127.0.0.1=${freeV4}, ::1=${freeV6}`,
   });
 }

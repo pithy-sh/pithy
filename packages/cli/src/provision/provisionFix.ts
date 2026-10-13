@@ -1,48 +1,41 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Command, type Remedy, remedy } from "@pithy-sh/core/src/cli/command";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { isProductionEnv } from "../seed/safety";
 import { withFix } from "../terminal/exitClass";
 
 /**
- * Attach the provisioning command that rights an unprovisioned `env` as the refusal's `fix` (#697), or
- * none when no command can.
+ * **The remedy for an unprovisioned environment (#697, #711)**, decided by the builder rather than by each site.
  *
  * - **A feature** is brought up by `pithy provision --feature`; `pithy provision` refuses `--env feature`.
- * - **A production environment gets no `fix`.** Provisioning one needs the `--confirm` phrase on top of
+ * - **A production environment is a person's decision.** Provisioning one needs the `--confirm` phrase on top of
  *   `--yes`, and the phrase is a person's to give: `pithy provision --env prod --yes` ends
- *   `core/person_required`, exit 5. A `fix` is runnable as written (`docs/CLI.md` §3.3), so the refusal
- *   keeps its action line, for the person, and names no command for an agent to run.
+ *   `core/person_required`, exit 5. So it carries no `fix`, and the line names the command as a person's
+ *   decision, never spelling the phrase — written into a line an agent reads, it would be a confirmation nobody
+ *   gave.
  * - **Anything else** is `pithy provision --env <env> --yes`.
  *
- * `productionEnvironments` is the project's `seed.productionEnvironments`, where the caller has it;
- * `prod` and `production` are production without it.
+ * `productionEnvironments` is the project's `seed.productionEnvironments`, where the caller has it; `prod` and
+ * `production` are production without it.
  */
+export function provisionRemedy(env: string, productionEnvironments: readonly string[] = []): Remedy {
+  if (env === FEATURE_ENVIRONMENT) return remedy("provision", { flags: { "--feature": true } });
+  return remedy("provision", { flags: { "--env": env, "--yes": true } }, { productionEnvironments });
+}
+
+/** Attach {@link provisionRemedy}'s `fix` to `error`, when it has one, and hand the same error back. */
 export function withProvisionFix<E extends PithyError>(
   error: E,
   env: string,
   productionEnvironments: readonly string[] = [],
 ): E {
-  const remedy = provisionRemedy(env, productionEnvironments);
-  return remedy === null ? error : withFix(error, remedy);
+  const { fix } = provisionRemedy(env, productionEnvironments);
+  return fix === undefined ? error : withFix(error, fix);
 }
 
-/**
- * The provisioning command {@link withProvisionFix} attaches, as a bare string, or `null` where it attaches
- * none — for a report that names a remedy without throwing one, `pithy doctor`'s failing checks (#697).
- */
-export function provisionFixCommand(env: string, productionEnvironments: readonly string[] = []): string | null {
-  return provisionRemedy(env, productionEnvironments)?.fix ?? null;
-}
-
-/**
- * The one place the rule is written, for both of the above. Each `fix` is written at its key, so
- * `ci/actionLines.test.ts` reads both commands and their flags against the real tree.
- */
-function provisionRemedy(env: string, productionEnvironments: readonly string[]): { fix: string } | null {
-  if (env === FEATURE_ENVIRONMENT) return { fix: "pithy provision --feature" };
-  if (isProductionEnv(env, productionEnvironments)) return null;
-  return { fix: `pithy provision --env ${env} --yes` };
+/** {@link provisionRemedy}'s `fix`, or `null` — for a report that names a remedy without throwing one. */
+export function provisionFixCommand(env: string, productionEnvironments: readonly string[] = []): Command | null {
+  return provisionRemedy(env, productionEnvironments).fix ?? null;
 }

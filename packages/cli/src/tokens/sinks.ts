@@ -3,6 +3,7 @@
 
 import { CloudflareNotConfiguredError } from "@pithy-sh/cloudflare/src/client/errors";
 import type { TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { addAction, addSecretsPlan } from "../capabilities/addCommand";
 import type { StatePathOptions } from "../notifier/state";
 import { writeMintedToken } from "./mintedTokens";
 
@@ -29,6 +30,8 @@ export interface SinkContext {
    * the checkout (#182).
    */
   project: string;
+  /** The project root, read only by a refusal naming which Workers `pithy add secrets` runs in (#711). */
+  projectDir: string;
   env: string;
   /**
    * The `.dev.vars` variable key — a local environment-variable name, never project-scoped. This is
@@ -74,7 +77,11 @@ export async function writeTokenToSink(store: TokenStore, value: string, context
       if (!context.putSecret) {
         throw new CloudflareNotConfiguredError({
           message: "No CF Secrets Store is configured for the secrets-store store.",
-          action: "Run pithy add secrets to record SECRETS_STORE_ID, or mint with --store dev-vars.",
+          // Minting into .dev.vars needs no Worker, so it stays on offer when no `pithy add` can run yet.
+          action: ((plan) =>
+            plan.decide === undefined
+              ? addAction(plan, (add) => `Run ${add} to record SECRETS_STORE_ID, or mint with --store dev-vars.`)
+              : `${plan.decide} Or mint with --store dev-vars.`)(addSecretsPlan(context.projectDir)),
         });
       }
       await context.putSecret(context.storeEntryName, value);

@@ -3,6 +3,7 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { parseSemver } from "@pithy-sh/core/src/semver/semver";
 import { compareVersions, parseVersion } from "../notifier/version";
 import type { PackageManager } from "../project/packageManager";
@@ -214,9 +215,9 @@ export interface PackageFacts {
 }
 
 /** The command that moves every managed range to wherever `latest` is. */
-export const PACKAGES_COMMAND = "pithy upgrade --packages";
+export const PACKAGES_COMMAND = pithyCommand("upgrade", { flags: { "--packages": true } });
 /** The command that moves them across a boundary. */
-export const PACKAGES_LATEST_COMMAND = "pithy upgrade --packages --latest";
+export const PACKAGES_LATEST_COMMAND = pithyCommand("upgrade", { flags: { "--packages": true, "--latest": true } });
 
 /**
  * **The command that actually clears doctor's line for one package, or `null` when none does.**

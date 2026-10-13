@@ -3,6 +3,7 @@
 
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -44,7 +45,7 @@ const defaultInstall: WorkspaceInstall = async (projectDir) => {
       // The worker is rolled back, so "run the install by hand" would point at a workspace that no
       // longer has the package in it. The retry is the command itself.
       message: `${pm} install failed, so the worker was not added.`,
-      action: `Fix the install, then run pithy worker add again — or pass --skip-install and run ${pm} install later.`,
+      action: `Fix the install, then run this again — or pass --skip-install and run ${pm} install later.`,
       detail: cause instanceof Error ? cause.message : String(cause),
     });
   }
@@ -400,7 +401,7 @@ export async function removeWorker(options: RemoveWorkerOptions): Promise<Remove
     // The call's mistake (exit 2): nothing to run first, only a different name to pass.
     throw new ValidationError({
       message: `No worker named "${options.name}" under apps/.`,
-      action: "Run pithy worker list to see the workers this project has.",
+      action: `Run ${pithyCommand("worker list")} to see the workers this project has.`,
     });
   }
 
@@ -588,7 +589,7 @@ export async function renameWorker(options: RenameWorkerOptions): Promise<Rename
     // The call's mistake (exit 2): nothing to run first, only a different name to pass.
     throw new ValidationError({
       message: `No worker named "${options.from}" under apps/.`,
-      action: "Run pithy worker list to see the workers this project has.",
+      action: `Run ${pithyCommand("worker list")} to see the workers this project has.`,
     });
   }
 

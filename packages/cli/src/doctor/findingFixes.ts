@@ -1,11 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
+import { type AddPlan, addPlan, projectAddFacts } from "../capabilities/addCommand";
+import type { McpClientId } from "../mcp/clients";
 import { establishedPending } from "../migrations/pendingCount";
 import { provisionFixCommand } from "../provision/provisionFix";
 import { supplyStoreEntryCommand } from "../provision/secretEntryRemedy";
+import type { UnreachableCapability } from "./capabilityReach";
 import type { EnvironmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
 import type { MissingSecretBinding } from "./secretBindings";
@@ -38,9 +42,9 @@ export const DoctorFix = z
   );
 export type DoctorFix = z.infer<typeof DoctorFix>;
 
-/** `pithy upgrade --worker <worker>`: what writes a missing binding, option, or entry export. */
-export function upgradeFix(worker: string): string {
-  return `pithy upgrade --worker ${worker}`;
+/** `pithy upgrade` for one Worker: what writes a missing binding, option, or entry export. */
+export function upgradeFix(worker: WorkerDir): Command {
+  return pithyCommand("upgrade", { flags: { "--worker": worker } });
 }
 
 /**
@@ -48,17 +52,44 @@ export function upgradeFix(worker: string): string {
  * peer may declare some this Worker lacks too (`testers` → `email` → `secrets`), and `pithy add` with nobody to
  * ask refuses over them. The flag composes only what is missing, so it is right whether or not anything is.
  */
-export function prerequisiteFix(worker: string, requires: string): string {
-  return `pithy add ${requires} --worker ${worker} --with-prerequisites`;
+export function prerequisitePlan(worker: WorkerDir, requires: string, projectDir?: string): AddPlan {
+  return addPlan({ capability: requires, workers: [worker], factsFor: projectAddFacts(projectDir) });
+}
+
+/** {@link prerequisitePlan}'s `fix`: the one command, when nothing in it is a person's choice. */
+export function prerequisiteFix(worker: WorkerDir, requires: string, projectDir?: string): Command | null {
+  return prerequisitePlan(worker, requires, projectDir).fix ?? null;
 }
 
 /**
  * A capability composed and installed nowhere: `pithy add` for the first Worker composing it. Re-running it
  * is safe on the half already done. No Worker composing it is no Worker to name.
+ *
+ * With `--with-prerequisites` (#711), on `addCommand`'s rule: the package is installed nowhere, so no manifest
+ * can rule its prerequisites out, and without the flag `pithy add` with nobody to ask refuses over any it has.
  */
-export function capabilityReachFix(entry: { capability: string; workers: readonly string[] }): string | null {
+export function capabilityReachPlan(entry: ReachEntry, projectDir?: string): AddPlan | null {
   const [worker] = entry.workers;
-  return worker === undefined ? null : `pithy add ${entry.capability} --worker ${worker}`;
+  if (worker === undefined) return null;
+  // What that Worker's config already settles (#711): a prerequisite it composes is not missing, and an option its
+  // registration states is not a choice — `pithy add` skips it, so naming one per value asks the reader to pick
+  // what the config has already decided, and leaves an agent no fix.
+  return addPlan({
+    capability: entry.capability,
+    workers: [worker],
+    factsFor: projectAddFacts(projectDir),
+    ...(entry.settled === undefined
+      ? {}
+      : { composed: new Set(entry.settled.composed), answered: new Set(entry.settled.answered) }),
+  });
+}
+
+/** What {@link capabilityReachPlan} reads of an unreachable capability. */
+type ReachEntry = Pick<UnreachableCapability, "capability" | "workers" | "settled">;
+
+/** {@link capabilityReachPlan}'s `fix`, where it has one. */
+export function capabilityReachFix(entry: ReachEntry, projectDir?: string): Command | null {
+  return capabilityReachPlan(entry, projectDir)?.fix ?? null;
 }
 
 /**
@@ -68,42 +99,47 @@ export function capabilityReachFix(entry: { capability: string; workers: readonl
  * provision is a person's (`provisionFixCommand`). An undeclared migration is a local wipe or a person's
  * judgment, and every other state established nothing, so each is `null`.
  */
-export function migrationFix(entry: EnvironmentMigrations, productionEnvironments: readonly string[]): string | null {
+export function migrationFix(entry: EnvironmentMigrations, productionEnvironments: readonly string[]): Command | null {
   if (entry.state === "not-provisioned") return provisionFixCommand(entry.env, productionEnvironments);
   if (entry.state !== "checked") return null;
-  return (establishedPending(entry.ledger) ?? 0) > 0 ? `pithy migrate --env ${entry.env}` : null;
+  return (establishedPending(entry.ledger) ?? 0) > 0
+    ? pithyCommand("migrate", { flags: { "--env": entry.env } })
+    : null;
 }
 
 /**
- * An unbound Secrets Store secret. **A value the kit composes** is `pithy secrets provision`, which mints the
- * entry and writes the stanza in one pass. **A value only the operator has** is supplied first, with the
- * `pithy secrets create` its sentence names; the provision that binds it is the step after.
+ * An unbound Secrets Store secret. **A value the kit composes** has no `fix`: `pithy secrets provision` mints it, and
+ * runs against every environment, production included — a person's decision, never the fix for one environment's
+ * binding (#711). **A value only the operator has** is supplied first, with the `pithy secrets create` its sentence
+ * names; the provision that binds it is the step after.
  */
-export function secretBindingFix(entry: MissingSecretBinding): string {
-  return entry.provisionable ? "pithy secrets provision" : supplyStoreEntryCommand(entry);
+export function secretBindingFix(entry: MissingSecretBinding): Command | null {
+  return entry.provisionable ? null : supplyStoreEntryCommand(entry);
 }
 
 /** An AI client detected here with no docs-server entry. */
-export function docsConnectFix(client: string): string {
-  return `pithy docs connect --client ${client}`;
+export function docsConnectFix(client: McpClientId): Command {
+  return pithyCommand("docs connect", { flags: { "--client": client } });
 }
 
 /** A Worker whose generated `.dev.vars` holds nothing: seeding `dev` writes its values. */
-export const EMPTY_DEV_VARS_FIX = "pithy seed";
+export const EMPTY_DEV_VARS_FIX = pithyCommand("seed", { flags: { "--env": LOCAL_ENVIRONMENT } });
 
 /**
  * A build that renders no Turnstile widget. Only a blank sitekey in an environment `pithy turnstile provision`
  * writes is its to fill. A feature's blank is the config's to remove, and an environment no sitekey reaches
  * is not a blank at all.
  */
-export function unrenderedTurnstileFix(found: UnrenderedTurnstile): string | null {
+export function unrenderedTurnstileFix(found: UnrenderedTurnstile): Command | null {
   if (!found.slot || found.environment === FEATURE_ENVIRONMENT) return null;
-  return `pithy turnstile provision --worker ${found.worker}`;
+  return pithyCommand("turnstile provision", { flags: { "--worker": found.worker } });
 }
 
 /** A sitekey var nothing reads: the provision that writes it into `pithy.config.ts` removes it, where one does. */
-export function strandedTurnstileFix(found: StrandedSitekeyVarFinding): string | null {
-  return found.removedBy === null ? null : `pithy turnstile provision --worker ${found.removedBy}`;
+export function strandedTurnstileFix(found: StrandedSitekeyVarFinding): Command | null {
+  return found.removedBy === null
+    ? null
+    : pithyCommand("turnstile provision", { flags: { "--worker": found.removedBy } });
 }
 
 /**
@@ -137,12 +173,16 @@ export function healthWithFixes(health: ProjectHealth, productionEnvironments: r
     },
     capabilityReach: {
       ...health.capabilityReach,
-      unreachable: health.capabilityReach.unreachable.map((entry) => ({ ...entry, fix: capabilityReachFix(entry) })),
+      // What the Worker settles is read for the fix, and is not part of the report.
+      unreachable: health.capabilityReach.unreachable.map(({ settled, ...entry }) => ({
+        ...entry,
+        fix: capabilityReachFix({ ...entry, settled }),
+      })),
       split: health.capabilityReach.split.map((entry) => ({ ...entry, ...none })),
     },
     workers: health.workers.map((worker) => {
       if (worker.state !== "checked") return worker;
-      const name = worker.worker;
+      const name = worker.directory;
       return {
         ...worker,
         prerequisites: {

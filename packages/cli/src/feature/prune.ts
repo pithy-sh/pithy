@@ -3,6 +3,7 @@
 
 import { lstat, readdir } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
+import { personDecision, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { emptyPlan, type Plan } from "../plan/plan";
@@ -270,15 +271,14 @@ export async function findOrphanedFeatureBlocks(options: {
   if (holdings.shared) {
     throw new InternalError({
       message: "This checkout is in a bare repository or a submodule, whose registry key other repositories can share.",
-      action:
-        "Free these blocks with pithy feature destroy from each feature's worktree. Prune cannot judge blocks other repositories may hold.",
+      action: `Free these blocks from each feature's worktree, where tearing the feature down releases them. ${personDecision("feature destroy", {})} Prune cannot judge blocks other repositories may hold.`,
       detail: `The registry key is ${holdings.root}, the directory holding this repository's git dir.`,
     });
   }
   if (holdings.root !== options.root) {
     throw new InternalError({
       message: "This repository is not the checkout the registry key names.",
-      action: "Run pithy feature prune from the checkout whose blocks it should free.",
+      action: `Run ${pithyCommand("feature prune")} from the checkout whose blocks it should free.`,
       detail: `This repository's key is ${holdings.root}; the registry key is ${options.root}.`,
     });
   }

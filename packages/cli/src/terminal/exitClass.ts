@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Command } from "@pithy-sh/core/src/cli/command";
 import type { KitErrorCode } from "@pithy-sh/core/src/error/payload";
-import { InternalError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { BROKEN_PIPE } from "./brokenPipe";
 
@@ -247,27 +248,19 @@ export function exitCodeOf(payload: { readonly code: string }): number {
 }
 
 /** The remedies attached by {@link withFix}, held beside the error so its payload stays core's shape. */
-const FIXES = new WeakMap<PithyError, string>();
-
-/** What every `fix` starts with: it is run, not read. */
-const FIX_PREFIX = "pithy ";
+const FIXES = new WeakMap<PithyError, Command>();
 
 /**
  * Attach the command that rights this failure, and hand the same error back so a throw site stays one
- * expression: `throw withFix(new PreconditionFailedError({ … }), { fix: "pithy provision --env staging --yes" })`.
+ * expression: `throw withFix(new PreconditionFailedError({ … }), provisionFix)`.
  *
  * **Only where the cause is known** (`docs/CONVENTIONS.md`): a `catch` that could be looking at anything
- * names no remedy. A `fix` is a whole `pithy` command an agent can run as written, so it is refused here
- * when it is prose — that belongs in `action`.
+ * names no remedy. A `fix` is a whole `pithy` command an agent runs as written, so it takes a {@link Command}:
+ * the one thing `@pithy-sh/core/src/cli/command.ts` makes, and only from a line that runs (#711). Prose cannot
+ * be a `fix`, and neither can a command that destroys something — that builder makes neither.
  */
-export function withFix<E extends PithyError>(error: E, remedy: { fix: string }): E {
-  if (!remedy.fix.startsWith(FIX_PREFIX)) {
-    throw new InternalError({
-      message: "A fix must be a pithy command.",
-      detail: `Got: ${remedy.fix}`,
-    });
-  }
-  FIXES.set(error, remedy.fix);
+export function withFix<E extends PithyError>(error: E, fix: Command): E {
+  FIXES.set(error, fix);
   return error;
 }
 
@@ -275,7 +268,7 @@ export function withFix<E extends PithyError>(error: E, remedy: { fix: string })
  * The remedy attached to `error`, if any. **Never for a person's step**: exit 5 exists so an agent stops,
  * and a runnable command beside it — the confirmation phrase, spelled out — would be an invitation not to.
  */
-export function fixOf(error: PithyError): string | undefined {
+export function fixOf(error: PithyError): Command | undefined {
   if (exitClassOf(error.payload) === "person") return undefined;
   return FIXES.get(error);
 }

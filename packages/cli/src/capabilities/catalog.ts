@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
+
 /**
  * The built-in discovery catalog — the capabilities `pithy add --list` shows
  * before anything is installed. Hand-maintained as capabilities ship; the full
@@ -48,6 +51,17 @@ export function capabilityPackageDir(name: string): string {
   return capabilityPackageName(name).slice(`${CAPABILITY_SCOPE}/`.length);
 }
 
+/** The file that makes a package a capability. */
+export const MANIFEST_FILE = "pithy.manifest.json";
+
+/**
+ * Where a capability's manifest sits in a project, installed or not. The directory comes from the catalog's
+ * `package`, not from the name: `controlplane` ships inside `@pithy-sh/core`.
+ */
+export function installedManifestPath(projectDir: string, name: string): string {
+  return join(projectDir, "node_modules", CAPABILITY_SCOPE, capabilityPackageDir(name), MANIFEST_FILE);
+}
+
 /**
  * Packages that host more than the one capability named after them, and must therefore never be
  * uninstalled when that capability is removed.
@@ -93,8 +107,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   {
     name: "storage",
     package: "@pithy-sh/storage",
-    whenToEnable:
-      "Put your users' files in your own R2, behind one ObjectStore seam any capability can hold — multipart uploads for the large ones, Range, ETag, and Content-Disposition streaming for the rest, per-owner scoping, byte quotas, server-side copy, revocable share links, and a daily workflow that reconciles orphaned rows and orphaned objects in both directions. Uploaded bytes are treated as untrusted on the way out: nosniff and a locked-down CSP on every object response, and an active type (HTML, SVG, anything +xml, script) served as an attachment whatever was stored — so a user's file cannot execute on your origin. Keys are server-derived and opaque, so a client can never name an object or guess the one beside it; you supply a logical path, and that path is stored, indexed, and listable. It takes no position on what the bytes are — no transcoding, no thumbnails, no AI. That is @pithy-sh/media, which already presigns through this ObjectStore against its own bucket and credential name, and inherits none of these tables or routes for doing so. `pithy add storage` writes the bindings and touches no Cloudflare account; `pithy storage provision` creates the bucket. Objects belong to an authenticated owner, so add auth too.",
+    whenToEnable: `Put your users' files in your own R2, behind one ObjectStore seam any capability can hold — multipart uploads for the large ones, Range, ETag, and Content-Disposition streaming for the rest, per-owner scoping, byte quotas, server-side copy, revocable share links, and a daily workflow that reconciles orphaned rows and orphaned objects in both directions. Uploaded bytes are treated as untrusted on the way out: nosniff and a locked-down CSP on every object response, and an active type (HTML, SVG, anything +xml, script) served as an attachment whatever was stored — so a user's file cannot execute on your origin. Keys are server-derived and opaque, so a client can never name an object or guess the one beside it; you supply a logical path, and that path is stored, indexed, and listable. It takes no position on what the bytes are — no transcoding, no thumbnails, no AI. That is @pithy-sh/media, which already presigns through this ObjectStore against its own bucket and credential name, and inherits none of these tables or routes for doing so. Adding it writes the bindings and touches no Cloudflare account; \`${commandName("storage provision")}\` creates the bucket. Objects belong to an authenticated owner, so add auth too.`,
   },
   {
     name: "media",
@@ -135,8 +148,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   {
     name: "vector",
     package: "@pithy-sh/vector",
-    whenToEnable:
-      "Semantic search over your own Vectorize index, with the metadata half taken seriously. Vectorize returns partial results — silently — when you filter on a field whose metadata index was created after the vectors were written, and it stops at ten metadata indexes per index. Both fail quietly, in production. So filterable fields are a schema decision here: declare them once, and the package provisions the metadata indexes from that schema, types every filter against it, refuses a filter on a field the schema does not mark, and reconciles the live index against the config on every `pithy vector provision` — waiting for each metadata index to go live before anything writes a vector. `provision` records what it observed, and the Worker refuses to boot when the config declares a filterable field that record does not have, so a schema edited and deployed without re-provisioning fails naming the field rather than returning short results. Embeddings come from Workers AI, the model is pinned per index for writes and queries alike, and `pithy vector reprocess` re-embeds what a model change left behind. Documents live in your own D1; chunking stays yours. Pairs with @pithy-sh/media, whose extracted text and transcripts are the obvious thing to embed.",
+    whenToEnable: `Semantic search over your own Vectorize index, with the metadata half taken seriously. Vectorize returns partial results — silently — when you filter on a field whose metadata index was created after the vectors were written, and it stops at ten metadata indexes per index. Both fail quietly, in production. So filterable fields are a schema decision here: declare them once, and the package provisions the metadata indexes from that schema, types every filter against it, refuses a filter on a field the schema does not mark, and reconciles the live index against the config on every \`${commandName("vector provision")}\` — waiting for each metadata index to go live before anything writes a vector. \`provision\` records what it observed, and the Worker refuses to boot when the config declares a filterable field that record does not have, so a schema edited and deployed without re-provisioning fails naming the field rather than returning short results. Embeddings come from Workers AI, the model is pinned per index for writes and queries alike, and \`${commandName("vector reprocess")}\` re-embeds what a model change left behind. Documents live in your own D1; chunking stays yours. Pairs with @pithy-sh/media, whose extracted text and transcripts are the obvious thing to embed.`,
   },
   {
     name: "payments",
@@ -165,8 +177,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   {
     name: "controlplane",
     package: "@pithy-sh/core",
-    whenToEnable:
-      "Let a management client — the Pithy dashboard, or one you write yourself — reach into your own Worker, with no data plane in between. Present and denying by default: with no connection registered every route answers 403, and there is no backdoor to open. `pithy dashboard connect --env prod` grants exactly the operations you name, per environment, so a staging credential can never touch production. The credential is asymmetric — the client holds a private key, you hold and can revoke the public one — so nothing secret of yours ever leaves your infrastructure and a breach on their side is not a breach on yours. Rotation is append, prove, then expire, never replace, so a rotation that fails leaves the old key working instead of locking anyone out; revocation is a row you delete, immediate and needing nothing from them. Every call carries a signed 60-second single-scope token bound to a digest of its own body, is checked for replay, and lands in your audit trail under its own actor kind, so what the dashboard did is answerable separately from what your users did. Capabilities contribute their own admin routes behind it — payments puts manual entitlement grant and revoke here — so adding one adds its management surface with nothing to wire. It ships inside @pithy-sh/core, so it is already installed; adding it composes it, and connecting a client is the deliberate second step.",
+    whenToEnable: `Let a management client — the Pithy dashboard, or one you write yourself — reach into your own Worker, with no data plane in between. Present and denying by default: with no connection registered every route answers 403, and there is no backdoor to open. \`${commandName("dashboard connect")}\` grants exactly the operations you name, per environment, so a staging credential can never touch production. The credential is asymmetric — the client holds a private key, you hold and can revoke the public one — so nothing secret of yours ever leaves your infrastructure and a breach on their side is not a breach on yours. Rotation is append, prove, then expire, never replace, so a rotation that fails leaves the old key working instead of locking anyone out; revocation is a row you delete, immediate and needing nothing from them. Every call carries a signed 60-second single-scope token bound to a digest of its own body, is checked for replay, and lands in your audit trail under its own actor kind, so what the dashboard did is answerable separately from what your users did. Capabilities contribute their own admin routes behind it — payments puts manual entitlement grant and revoke here — so adding one adds its management surface with nothing to wire. It ships inside @pithy-sh/core, so it is already installed; adding it composes it, and connecting a client is the deliberate second step.`,
   },
 ];
 

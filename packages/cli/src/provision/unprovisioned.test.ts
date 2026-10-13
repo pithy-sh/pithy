@@ -136,6 +136,10 @@ describe("unprovisionedBindings", () => {
     );
     expect((failure as PithyError).payload.code).toBe("core/precondition_failed");
     expect(fixOf(failure as PithyError)).toBeUndefined();
+    // The sentence names the phrase as a person's, not a bare command an agent would be refused (#711).
+    expect((failure as PithyError).payload.action).toBe(
+      `\`pithy provision --env ${env} --yes\` with its --confirm phrase, which only a person gives, runs against ${env}, a production environment. That is a person's decision, not a fix.`,
+    );
   });
 
   test("lets a provisioned deploy through", async () => {

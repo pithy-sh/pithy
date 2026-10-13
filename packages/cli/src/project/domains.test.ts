@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { fixOf } from "../terminal/exitClass";
+import { dirOf } from "../test-utils/workerDir";
 import { applyDomains } from "./applyDomains";
 import { composeFor } from "./composeFor";
 import { assertOriginsDeclared, checkOrigins, describeOriginDrift, originDrift, originDriftFix } from "./domains";
@@ -70,7 +71,7 @@ describe("originDrift", () => {
     );
     expect(await originDrift(dir, ["prod"])).toEqual([
       {
-        worker: "board",
+        worker: dirOf("board"),
         env: "prod",
         fault: "unserved-origin",
         origin: "https://app.example.com",
@@ -141,7 +142,7 @@ describe("originDrift", () => {
     );
     expect(await originDrift(dir, ["prod"])).toEqual([
       {
-        worker: "board",
+        worker: dirOf("board"),
         env: "prod",
         fault: "unserved-origin",
         origin: "https://app.example.com",
@@ -166,7 +167,7 @@ describe("originDrift", () => {
     });
     expect(await originDrift(dir, ["staging"])).toEqual([
       {
-        worker: "board",
+        worker: dirOf("board"),
         env: "staging",
         fault: "unserved-origin",
         origin: "https://replay-board.acme.workers.dev",
@@ -183,7 +184,7 @@ describe("originDrift", () => {
       { prod: APP },
     );
     expect(await originDrift(dir, ["prod"])).toEqual([
-      { worker: "board", env: "prod", fault: "workers-dev-open", origin: "https://app.example.com" },
+      { worker: dirOf("board"), env: "prod", fault: "workers-dev-open", origin: "https://app.example.com" },
     ]);
   });
 
@@ -210,7 +211,7 @@ describe("originDrift", () => {
   test("an environment with no domain, no route and no BASE_URL has no origin at all", async () => {
     await worker("board", { env: { staging: { d1_databases: [{ binding: "DB", database_id: "uuid" }] } } });
     expect(await originDrift(dir, ["staging"])).toEqual([
-      { worker: "board", env: "staging", fault: "no-origin", origin: null },
+      { worker: dirOf("board"), env: "staging", fault: "no-origin", origin: null },
     ]);
   });
 
@@ -237,7 +238,7 @@ describe("originDrift", () => {
   test("a hand-written route resolves the origin, and workers.dev is still a second one", async () => {
     await worker("board", { env: { prod: { routes: [{ pattern: "api.example.com", custom_domain: true }] } } });
     expect(await originDrift(dir, ["prod"])).toEqual([
-      { worker: "board", env: "prod", fault: "workers-dev-open", origin: "https://api.example.com" },
+      { worker: dirOf("board"), env: "prod", fault: "workers-dev-open", origin: "https://api.example.com" },
     ]);
   });
 
@@ -264,7 +265,7 @@ describe("originDrift", () => {
     const workerDir = await worker("board", { env: { prod: { routes: ["api.example.com"] } } });
     await writeFile(join(workerDir, "pithy.config.ts"), 'import x from "@nope/nothing";\nexport default { app: x };\n');
     expect(await originDrift(dir, ["prod"])).toEqual([
-      { worker: "board", env: "prod", fault: "workers-dev-open", origin: "https://api.example.com" },
+      { worker: dirOf("board"), env: "prod", fault: "workers-dev-open", origin: "https://api.example.com" },
     ]);
   });
 
@@ -272,7 +273,7 @@ describe("originDrift", () => {
     await worker("board", { env: { prod: { workers_dev: false, routes: [APP_ROUTE] } } }, { prod: APP });
     expect(await originDrift(dir, ["prod"])).toEqual([]);
     expect(await originDrift(dir, ["staging"])).toEqual([
-      { worker: "board", env: "staging", fault: "no-origin", origin: null },
+      { worker: dirOf("board"), env: "staging", fault: "no-origin", origin: null },
     ]);
   });
 });
@@ -336,7 +337,7 @@ describe("checkOrigins", () => {
     await worker("board", { env: { prod: { workers_dev: false, routes: [APP_ROUTE] } } }, { prod: APP });
     const check = await checkOrigins(dir);
     expect(check.state).toBe("drifted");
-    expect(check.drift).toEqual([{ worker: "board", env: "staging", fault: "no-origin", origin: null }]);
+    expect(check.drift).toEqual([{ worker: dirOf("board"), env: "staging", fault: "no-origin", origin: null }]);
   });
 
   test("a project whose config will not read establishes nothing", async () => {
@@ -353,14 +354,14 @@ describe("checkOrigins", () => {
 
   test("each fault carries its own sentence, and the three remedies differ", async () => {
     const open = describeOriginDrift({
-      worker: "board",
+      worker: dirOf("board"),
       env: "prod",
       fault: "workers-dev-open",
       origin: "https://app.example.com",
     });
-    const none = describeOriginDrift({ worker: "board", env: "staging", fault: "no-origin", origin: null });
+    const none = describeOriginDrift({ worker: dirOf("board"), env: "staging", fault: "no-origin", origin: null });
     const unserved = describeOriginDrift({
-      worker: "board",
+      worker: dirOf("board"),
       env: "prod",
       fault: "unserved-origin",
       origin: "https://app.example.com",
@@ -383,7 +384,7 @@ describe("checkOrigins", () => {
    */
   test("only an unserved origin a declaration names has a command that rights it", () => {
     const unserved = {
-      worker: "board",
+      worker: dirOf("board"),
       env: "prod",
       fault: "unserved-origin",
       origin: "https://app.example.com",
@@ -391,14 +392,14 @@ describe("checkOrigins", () => {
     expect(originDriftFix({ ...unserved, source: "declaration" })).toBe("pithy worker sync --worker board --env prod");
     expect(originDriftFix({ ...unserved, source: "var" })).toBeNull();
     expect(originDriftFix({ ...unserved, origin: "https://board.acme.workers.dev", source: "declaration" })).toBeNull();
-    expect(originDriftFix({ worker: "board", env: "staging", fault: "no-origin", origin: null })).toBeNull();
+    expect(originDriftFix({ worker: dirOf("board"), env: "staging", fault: "no-origin", origin: null })).toBeNull();
     expect(originDriftFix({ ...unserved, fault: "workers-dev-open" })).toBeNull();
   });
 
   /** A hand-set `vars.BASE_URL` is not generated from anything, so `worker sync` cannot write its route. */
   test("an unserved origin nobody declared is told to write the route, not to run a command", () => {
     const unserved = describeOriginDrift({
-      worker: "board",
+      worker: dirOf("board"),
       env: "live",
       fault: "unserved-origin",
       origin: "https://live.example.com",

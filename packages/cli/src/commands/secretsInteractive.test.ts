@@ -101,6 +101,8 @@ try {
   const value = await readSecretValue({
     name: "GOOGLE_CLIENT_SECRET",
     mode: "create",
+    // The caller's run, as \`pithy secrets\` builds it with \`rerunCommand\` (#711): the line a refusal pipes into.
+    rerun: "pithy secrets create GOOGLE_CLIENT_SECRET",
     entry: undefined,
     branches: undefined,
     canPrompt: canPrompt(json),

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { buildDevConfig, type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import { type DevMemberKind, type DevSetOptions, devMemberLabel, resolveDevSet, selectDevMembers } from "./devSet";
 
@@ -71,7 +72,7 @@ export interface ListDevOptions extends DevSetOptions {
 }
 
 /** The line a project with no pinned ports gets, so a row of dashes is never left to be interpreted. */
-const NO_CONFIG_NOTE = "No .dev.config.json yet, so no port is pinned. The first pithy dev assigns them.";
+const NO_CONFIG_NOTE = `No .dev.config.json yet, so no port is pinned. The first ${commandName("dev")} assigns them.`;
 
 /**
  * The set a run right now would start, and the port each member would hold.

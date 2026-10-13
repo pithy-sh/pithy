@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Command, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type {
@@ -215,9 +216,9 @@ function documentationOf(entry: SecretRegistryEntry): string | undefined {
   return entry.rotation !== undefined && entry.rotation.kind !== "local" ? entry.rotation.documentation : undefined;
 }
 
-/** `pithy secrets update <NAME> --env <env>` — the command that records a value a human obtained. */
-function updateCommand(name: string, env: ManagedEnvironment | undefined): string {
-  return `pithy secrets update ${name}${env === undefined ? "" : ` --env ${env}`}`;
+/** The `pithy secrets update` that records a value a human obtained, for the environment it is about. */
+function updateCommand(name: string, env: ManagedEnvironment | undefined): Command {
+  return pithyCommand("secrets update", { args: [name], ...(env === undefined ? {} : { flags: { "--env": env } }) });
 }
 
 /**

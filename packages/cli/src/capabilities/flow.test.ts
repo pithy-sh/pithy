@@ -14,6 +14,7 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import type { DatabaseRun } from "../migrations/run";
 import { installPackage } from "../project/packageManager";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
+import { fixOf } from "../terminal/exitClass";
 import { coerceSetFlags, collectSetFlags, isHandWritten, runAdd } from "./flow";
 
 const optionManifest = CapabilityManifest.parse({
@@ -300,6 +301,22 @@ describe("runAdd", () => {
     expect(config).toContain('billingSubject: "organization",');
     // The option that does have a default still takes it — nothing about the other options moved.
     expect(config).toContain('basePath: "/payments",');
+  });
+
+  // #711: a free-text option's value is the caller's, and the line naming the run again quotes it. A builder that read
+  // `<hi@acme.io>` as a placeholder turned this run into `core/internal` after it had installed the package.
+  test("a free-text value with angle brackets in it is a value, and the add finishes", async () => {
+    await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "auth",
+      setFlags: ["basePath=/auth <hi@acme.io>"],
+      install: installManifest(optionManifest),
+      migrate: async () => noMigrations,
+    });
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('basePath: "/auth <hi@acme.io>",');
   });
 
   test("--set billingSubject=nonsense is refused before anything is installed into the config", async () => {
@@ -659,14 +676,111 @@ describe("runAdd prerequisites", () => {
       code: "input/required",
       flag: "--with-prerequisites",
       message: `auth requires secrets and email, which ${DEFAULT_WORKER} does not compose.`,
-      action:
-        "Run pithy add auth --with-prerequisites, or compose them first: pithy add secrets, then pithy add email.",
+      action: `Run \`pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites\`, or compose them first: \`pithy add secrets --worker ${DEFAULT_WORKER}\`, then \`pithy add email --worker ${DEFAULT_WORKER}\`.`,
     });
+    // #711: its `fix` is the command the action leads with, naming the Worker the caller was wiring, so a
+    // project with several Workers runs it as written.
+    expect(fixOf(error as PithyError)).toBe(`pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites`);
 
     // Refused before anything was wired. An install happened — that is how the manifest was readable at
     // all — but the config is untouched, so the adopter is not left with half of what they asked for.
     const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
     expect(config).not.toMatch(/^\s*auth\(/m);
+  });
+
+  // The refusal's fix is the caller's own run with the flag it lacked (#711): an --eject or a --force it dropped is a
+  // fix that composes from the package what the caller asked to eject, and a dry run's fix that drops --dry-run
+  // writes what the caller asked only to see.
+  test.each([
+    [{ eject: true }, "--eject"],
+    [{ eject: true, force: true }, "--eject --force"],
+    [{ dryRun: true }, "--dry-run"],
+    // An agent that asked for one JSON document gets one from the fix it runs, too.
+    [{ json: true }, "--json"],
+    [{ dryRun: true, json: true }, "--dry-run --json"],
+  ])("a refusal of %o names the caller's own flags in its fix and its action", async (flags, carried) => {
+    const error = await runAdd({ ...base(), ...flags }).catch((thrown: unknown) => thrown);
+    const fix = `pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites ${carried}`;
+    expect(fixOf(error as PithyError)).toBe(fix);
+    expect((error as PithyError).payload.action?.startsWith(`Run \`${fix}\`,`)).toBe(true);
+  });
+
+  // #711: the refusal names the caller's `--set` again, and a value a builder read as a placeholder made building
+  // it throw — `core/internal` where the caller should get the `input/required` that names the flag.
+  test("a --set value shaped like a placeholder is quoted in the refusal, which stays input/required", async () => {
+    const error = await runAdd({ ...base(), setFlags: ["fromName=Acme <hi@acme.io>"] }).catch(
+      (thrown: unknown) => thrown,
+    );
+    expect((error as PithyError).payload.code).toBe("input/required");
+    expect(fixOf(error as PithyError)).toBe(
+      `pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites --set 'fromName=Acme <hi@acme.io>'`,
+    );
+  });
+
+  // A refusal raised inside a composed prerequisite names the caller's own run again, from its context (#711): the
+  // nested add named itself — `pithy add secrets` — and dropped the caller's --json and --set, so an agent that ran
+  // it got human text and composed only secrets, with auth and email still missing and nothing saying so.
+  test("a refusal inside a composed prerequisite names the caller's own run, every flag and --set", async () => {
+    const config = join(worker, "pithy.config.ts");
+    const source = await readFile(config, "utf8");
+    await writeFile(
+      config,
+      source
+        .split("\n")
+        .filter((line) => !line.includes("pithy:capabilities"))
+        .join("\n"),
+    );
+    const error = await runAdd({ ...base(), withPrerequisites: true, json: true, setFlags: ["x=y"] }).catch(
+      (thrown: unknown) => thrown,
+    );
+    const action = (error as PithyError).payload.action ?? "";
+    expect(action).toContain(
+      `Run \`pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites --set x=y --json\` again.`,
+    );
+    expect(action).not.toContain("pithy add secrets");
+  });
+
+  // An option the Worker's config already answers is settled for every line naming the run (#711): the prerequisite
+  // refusal named one command per billing model, one contradicting the config, and gave no fix at all.
+  test("the prerequisite refusal settles an option the Worker's config already answers, and has a fix", async () => {
+    const payments = {
+      name: "payments",
+      package: "@pithy-sh/payments",
+      requiredBindings: [],
+      peerCapabilities: ["secrets"],
+      configOptions: [{ key: "billingSubject", describe: "Who pays.", choices: ["user", "organization"] }],
+    };
+    const config = join(worker, "pithy.config.ts");
+    const source = await readFile(config, "utf8");
+    await writeFile(
+      config,
+      source.replace(
+        /^(\s*)\/\/ pithy:capabilities.*$/m,
+        (line, indent: string) => `${line}\n${indent}payments({ billingSubject: "organization" }),`,
+      ),
+    );
+    const error = await runAdd({
+      ...base(),
+      capability: "payments",
+      json: true,
+      install: async ({ projectDir, pkg }: { projectDir: string; pkg: string }) => {
+        const name = pkg.replace("@pithy-sh/", "");
+        const pkgDir = join(projectDir, "node_modules", "@pithy-sh", name);
+        await mkdir(pkgDir, { recursive: true });
+        await writeFile(
+          join(pkgDir, "pithy.manifest.json"),
+          JSON.stringify(name === "payments" ? payments : GRAPH[name]),
+        );
+        return { packageManager: "bun" as const };
+      },
+    }).catch((thrown: unknown) => thrown);
+    expect((error as PithyError).payload, JSON.stringify((error as PithyError).payload)).toMatchObject({
+      code: "input/required",
+    });
+    expect(fixOf(error as PithyError)).toBe(
+      `pithy add payments --worker ${DEFAULT_WORKER} --with-prerequisites --json`,
+    );
+    expect((error as PithyError).payload.action).not.toContain("billingSubject");
   });
 
   test("--with-prerequisites composes them, deepest first, and reports what it composed", async () => {
@@ -679,6 +793,26 @@ describe("runAdd prerequisites", () => {
     }
   });
 
+  // A composed prerequisite's own notes name its own add again (#711): only `pithy add secrets` reaches the bootstrap
+  // that records SECRETS_STORE_ID or mints a master key. The caller's `pithy add auth` rerun finds secrets composed,
+  // never adds it again, and leaves the fault its note reported exactly where it was.
+  test("a composed prerequisite's notes name its own add, with the run's mode flags", async () => {
+    const seen: Record<string, string> = {};
+    await runAdd({
+      ...base(),
+      withPrerequisites: true,
+      json: true,
+      dryRun: true,
+      bootstrap: async ({ manifest, again }) => {
+        seen[manifest.name] = again ?? "";
+        return [];
+      },
+    });
+    expect(seen.secrets).toBe(`\`pithy add secrets --worker ${DEFAULT_WORKER} --dry-run --json\``);
+    expect(seen.email).toBe(`\`pithy add email --worker ${DEFAULT_WORKER} --dry-run --json\``);
+    expect(seen.auth).toBe(`\`pithy add auth --worker ${DEFAULT_WORKER} --with-prerequisites --dry-run --json\``);
+  });
+
   test("a human is asked once, for the whole cascade — not once per capability", async () => {
     // `email` needs `secrets` too. One intent is one question: the answer is carried down, and a nested
     // add that re-asked would turn `pithy add auth` into an interrogation.
@@ -687,7 +821,16 @@ describe("runAdd prerequisites", () => {
 
     expect(result.prerequisites).toEqual(["secrets", "email"]);
     expect(ask).toHaveBeenCalledTimes(1);
-    expect(ask).toHaveBeenCalledWith({ capability: "auth", worker: DEFAULT_WORKER, missing: ["secrets", "email"] });
+    // The question carries what the refusal it stands in for would name: the Worker by directory, and what
+    // the add reads to build that refusal's commands (#711).
+    expect(ask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capability: "auth",
+        worker: DEFAULT_WORKER,
+        missing: ["secrets", "email"],
+        caller: expect.objectContaining({ set: {} }),
+      }),
+    );
   });
 
   test("declining is a refusal, not a partial add", async () => {

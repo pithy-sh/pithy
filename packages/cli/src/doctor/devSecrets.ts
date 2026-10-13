@@ -4,6 +4,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { commandName, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { type DevSecretsFile, ENVELOPE_SHAPE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
@@ -15,10 +16,12 @@ import {
   isStoreBound,
   type SecretRegistryEntry,
 } from "@pithy-sh/secrets/src/registry";
+import { addAction, addPlan, projectAddFacts } from "../capabilities/addCommand";
 import { projectSecretApplicability } from "../capabilities/secretApplicability";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
+import { workerDirName } from "../project/workerIdentity";
 import { isCloudflareEnvKey } from "./devVars";
 
 /**
@@ -156,6 +159,12 @@ export interface DevSecretsCheck {
    * the identical line back. That is a dead end, and the remedy for it is {@link bootstrapUnmintable}.
    */
   bootstrapMissing: string[];
+  /**
+   * The Worker `pithy add secrets` is named for when {@link bootstrapMissing} sends the reader there, by its
+   * apps/ directory: the first composing `secrets`, since any one of them mints into the same file (#711).
+   * Absent where no Worker was read; the sentence then names none.
+   */
+  secretsWorker?: WorkerDir;
   /**
    * Declared **bootstrap** secrets, other than the master key, with no value and nothing that mints one.
    *
@@ -388,6 +397,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     // what this project can reach either.
     inapplicable: unreadable ? [] : [...unreachable].sort((left, right) => left.name.localeCompare(right.name)),
     bootstrapMissing: unreadable ? [] : [...bootstrapMissing].sort(),
+    ...(targets[0] === undefined ? {} : { secretsWorker: workerDirName(targets[0]) }),
     bootstrapUnmintable: unreadable ? [] : [...bootstrapUnmintable].sort(),
     // And nothing about a stated value's shape either: a file that will not parse stated nothing.
     malformed: unreadable ? [] : malformed,
@@ -439,6 +449,16 @@ export function devSecretsHealthy(check: DevSecretsCheck): boolean {
 }
 
 /**
+ * The `pithy add secrets` that mints the master key, wrapped by `wrap`: named for a Worker composing secrets
+ * (#711), or — with no Worker read — what a person must do instead.
+ */
+function mintWords(check: DevSecretsCheck, wrap: (add: string) => string): string {
+  const worker = check.secretsWorker;
+  const workers = worker === undefined ? [] : [worker];
+  return addAction(addPlan({ capability: "secrets", workers, factsFor: projectAddFacts(undefined) }), wrap);
+}
+
+/**
  * The lines the report prints for this check, or none at all when there is nothing to say. Silence is
  * the healthy answer: a project with its secrets in the right file does not need a line telling it so.
  */
@@ -462,7 +482,7 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
   }
   if (check.bootstrapMissing.length > 0) {
     lines.push(
-      `No dev value for ${check.bootstrapMissing.join(", ")}. Run pithy add secrets — it mints one into ${check.path}. Until then the local SECRETS store cannot be opened.`,
+      `No dev value for ${check.bootstrapMissing.join(", ")}. ${mintWords(check, (add) => `Run ${add} — it mints one into ${check.path}.`)} Until then the local SECRETS store cannot be opened.`,
     );
   }
   // Its own line, because its remedy is its own. `pithy add secrets` mints the master key and every
@@ -472,7 +492,7 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
   if (check.bootstrapUnmintable.length > 0) {
     const it = check.bootstrapUnmintable.length === 1 ? "it" : "them";
     lines.push(
-      `No dev value for ${check.bootstrapUnmintable.join(", ")}. Nothing mints ${it}, and ${it === "it" ? "it is" : "they are"} read straight from the binding before the store opens. Run pithy secrets edit, and write ${it} into ${check.path}.`,
+      `No dev value for ${check.bootstrapUnmintable.join(", ")}. Nothing mints ${it}, and ${it === "it" ? "it is" : "they are"} read straight from the binding before the store opens. Run ${pithyCommand("secrets edit")}, and write ${it} into ${check.path}.`,
     );
   }
   if (check.missing.length > 0) {
@@ -504,7 +524,7 @@ function describeMisplaced(name: string, state: MisplacedDevSecretState, path: s
     case "duplicate":
       return `${where} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
     case "unmoved":
-      return `${where} is in .dev.vars, which dev no longer reads. Run pithy secrets edit, and write it into ${path} as ${ENVELOPE_SHAPE}.`;
+      return `${where} is in .dev.vars, which dev no longer reads. Run ${pithyCommand("secrets edit")}, and write it into ${path} as ${ENVELOPE_SHAPE}.`;
   }
 }
 
@@ -583,7 +603,7 @@ async function siblingsWithSecrets(configDir: string, ours: string): Promise<str
  */
 export function describeDevSecretsLocation(check: DevSecretsLocationCheck): string | null {
   if (check.present) return null;
-  if (check.orphans.length === 0) return "no file yet; pithy add mints one when a capability needs it";
+  if (check.orphans.length === 0) return `no file yet; ${commandName("add")} mints one when a capability needs it`;
   // Named rather than diagnosed. This cannot tell a rename from two unrelated projects on one machine,
   // and guessing which would be worse than listing what is there and letting the reader recognize it.
   return `no file yet; secrets exist for ${check.orphans.join(", ")} — a renamed project leaves its old name here`;

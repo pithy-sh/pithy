@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
@@ -309,6 +310,8 @@ export default withContract(
           project,
           account,
           env,
+          // The caller's own run, the one input a refusal naming it again is built from (#711).
+          caller: callerOf("migrate", args),
           ...(args.worker !== undefined ? { worker: args.worker } : {}),
           ...(args.binding !== undefined ? { binding: args.binding } : {}),
           ...(group !== undefined ? { group } : {}),

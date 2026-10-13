@@ -14,7 +14,9 @@ import { secretsDatabaseMissing, suppressionDatabaseMissing } from "./missingDat
  * and one command readies it. That command rides as `fix`, for an agent to run as written.
  */
 describe("secretsDatabaseMissing", () => {
-  test("is a precondition whose fix is pithy secrets provision", () => {
+  // The provision that creates it runs against every environment, production included: a person's decision, never
+  // the fix for one environment's database (#711).
+  test("is a precondition whose remedy is the secrets provision, said as a person's decision, with no fix", () => {
     const error = secretsDatabaseMissing(
       "staging",
       "acme-staging-secrets",
@@ -25,9 +27,9 @@ describe("secretsDatabaseMissing", () => {
     expect(exitCodeOf(error.payload)).toBe(3);
     expect(error.payload.message).toBe("The staging secrets database (acme-staging-secrets) does not exist.");
     expect(error.payload.action).toBe(
-      "Run `pithy secrets provision` first — the media worker reads its credentials from it.",
+      "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It creates this database — the media worker reads its credentials from it.",
     );
-    expect(fixOf(error)).toBe("pithy secrets provision");
+    expect(fixOf(error)).toBeUndefined();
   });
 });
 
@@ -48,12 +50,5 @@ describe("suppressionDatabaseMissing", () => {
       "Run `pithy email provision --worker api` first — the daily pass reads it to reconcile bounced addresses.",
     );
     expect(fixOf(error)).toBe("pithy email provision --worker api");
-  });
-
-  /** With several Workers a bare `pithy email provision` is refused, so with no Worker to name there is no `fix` (#697). */
-  test("with no Worker known, the action says what to run and there is no fix", () => {
-    const error = suppressionDatabaseMissing("acme-global-email-suppression", "why.");
-    expect(error.payload.action).toBe("Run `pithy email provision` first — why.");
-    expect(fixOf(error)).toBeUndefined();
   });
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CreateSecretOutcome } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { personDecision } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -307,7 +308,7 @@ export async function mintDeclaredSecrets(options: {
         // it is stated plainly with its cost rather than offered second as the safer-looking option.
         throw new ConflictError({
           message: `Secret '${name}' is global, and only some environments have it.`,
-          action: `Its value cannot be copied to ${absent.join(", ")} — it is sealed under a master key no command can read. Remove it everywhere with pithy secrets rm ${name}, then run this again. That destroys a live key: everything signed by the value ${present.join(", ")} holds stops verifying.`,
+          action: `Its value cannot be copied to ${absent.join(", ")} — it is sealed under a master key no command can read. The one way through is to remove it everywhere and run this again. ${personDecision("secrets rm", { args: [name] })} It destroys a live key: everything signed by the value ${present.join(", ")} holds stops verifying.`,
           detail: `global secret '${name}': present in ${present.join(", ")}, absent in ${absent.join(", ")}`,
         });
       }

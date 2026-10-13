@@ -3,6 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify, stripVTControlCharacters } from "node:util";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, messageOf, NotFoundError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
@@ -445,7 +446,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
   if (workers.length === 0) {
     throw new NotFoundError({
       message: "No deployable workers here.",
-      action: "Every worker lives in apps/<name> with its own wrangler.jsonc. Run pithy worker add <name>.",
+      action: `Every worker lives in apps/<name> with its own wrangler.jsonc. Name one and create it with ${commandName("worker add")}.`,
     });
   }
 
@@ -677,7 +678,7 @@ export function deployVerificationFailed(deploys: readonly WorkerDeploy[]): bool
 export function pendingWarning(pending: number | undefined, env: string): string | undefined {
   if (!pending || pending <= 0) return undefined;
   const plural = pending === 1 ? "" : "s";
-  return `${pending} migration${plural} unapplied for ${env}. Deploy does not migrate — run pithy migrate --env ${env}.`;
+  return `${pending} migration${plural} unapplied for ${env}. Deploy does not migrate — run ${pithyCommand("migrate", { flags: { "--env": env } })}.`;
 }
 
 /**

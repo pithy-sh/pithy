@@ -3,6 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { z } from "zod";
@@ -44,8 +45,7 @@ export const WorkerDev = z
      */
     autostart: z
       .never({
-        error:
-          "dev.autostart was removed — every worker autostarts. Delete the key; to keep one out of your local dev set run `pithy dev --app <name> --disable-autostart`, which is per branch and per machine and is not committed.",
+        error: `dev.autostart was removed — every worker autostarts. Delete the key; to keep one out of your local dev set run \`${commandName("dev")}\` with --app and its name beside --disable-autostart, which is per branch and per machine and is not committed.`,
       })
       .optional(),
     readySignal: z

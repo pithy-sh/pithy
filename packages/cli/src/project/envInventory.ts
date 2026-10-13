@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { relative } from "node:path";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
@@ -310,7 +311,7 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
   if (targets.length === 0) {
     throw new NotFoundError({
       message: "No workers here.",
-      action: "Every worker lives in apps/<name> with its own wrangler.jsonc. Run pithy init to start a project.",
+      action: `Every worker lives in apps/<name> with its own wrangler.jsonc. Name one and create it with ${commandName("worker add")}.`,
     });
   }
 
@@ -322,7 +323,7 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
     // The call's mistake (exit 2): nothing to run first, only a different `--worker` to pass.
     throw new ValidationError({
       message: `No worker named "${options.worker}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
+      action: `Run ${pithyCommand("worker list")} to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
     });
   }
 

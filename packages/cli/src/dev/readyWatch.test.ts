@@ -74,7 +74,7 @@ describe("stillWaitingLines", () => {
     expect(first[1]).toContain("keeps running, so nothing else reports it");
     expect(first.join(" ")).not.toContain("wrangler");
     // The action names the restart, because a wrangler dev whose first build failed never rebuilds.
-    expect(first[2]).toContain("run pithy dev again");
+    expect(first[2]).toContain("Fix it and start pithy dev again, as you ran it.");
     // The repeat is one short line — it is there to be found in scrollback, not read again.
     expect(stillWaitingLines(["support"], false)).toEqual(["Still waiting on: support."]);
   });

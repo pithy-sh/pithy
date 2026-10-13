@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { SEARCH_OBJECTS, SEARCH_TRIGGERS, searchIndexState } from "@pithy-sh/support/src/store/searchIndex";
 import { describe, expect, test, vi } from "vitest";
+import { dirOf } from "../test-utils/workerDir";
 import {
   checkSupportSearchTriggers,
   describeSupportSearchTriggers,
@@ -103,6 +104,7 @@ describe("checkSupportSearchTriggers", () => {
     expect(check.environments.find((entry) => entry.env === "prod")).toEqual({
       env: "prod",
       worker: "api",
+      directory: "api",
       state: "drift",
       triggers: "none",
     });
@@ -248,13 +250,25 @@ describe("checkSupportSearchTriggers", () => {
 describe("supportSearchFix", () => {
   test("drift and orphaned triggers are the provision, for the Worker read", () => {
     const fix = "pithy support provision --worker api";
-    expect(supportSearchFix({ env: "prod", worker: "api", state: "drift", triggers: "none" })).toBe(fix);
-    expect(supportSearchFix({ env: "prod", worker: "api", state: "orphaned-triggers", triggers: "all" })).toBe(fix);
+    expect(
+      supportSearchFix({ env: "prod", worker: "api", directory: dirOf("api"), state: "drift", triggers: "none" }),
+    ).toBe(fix);
+    expect(
+      supportSearchFix({
+        env: "prod",
+        worker: "api",
+        directory: dirOf("api"),
+        state: "orphaned-triggers",
+        triggers: "all",
+      }),
+    ).toBe(fix);
   });
 
   test("an answer that fails nothing names nothing", () => {
-    expect(supportSearchFix({ env: "prod", worker: "api", state: "ok" })).toBeNull();
-    expect(supportSearchFix({ env: "prod", worker: "api", state: "not-provisioned" })).toBeNull();
-    expect(supportSearchFix({ env: "prod", worker: "api", state: "unreadable" })).toBeNull();
+    expect(supportSearchFix({ env: "prod", worker: "api", directory: dirOf("api"), state: "ok" })).toBeNull();
+    expect(
+      supportSearchFix({ env: "prod", worker: "api", directory: dirOf("api"), state: "not-provisioned" }),
+    ).toBeNull();
+    expect(supportSearchFix({ env: "prod", worker: "api", directory: dirOf("api"), state: "unreadable" })).toBeNull();
   });
 });

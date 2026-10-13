@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { personDecision, type Remedy, remedy, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -14,6 +15,7 @@ import { kitSource } from "../project/kitSource";
 import type { FeatureIndexes } from "../provision/resources";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 import { capabilityLoadError } from "./loadFailure";
+import { capabilityProvisionRemedy } from "./provisionCommand";
 
 /**
  * The live vector provisioner — the Cloudflare + wrangler implementation behind `@pithy-sh/vector`'s
@@ -131,6 +133,12 @@ export interface CloudflareVectorProvisionerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** The clock the metadata-index budget is measured on, in ms. Injected so a test can run the budget out. */
   now?: () => number;
+  /**
+   * The Worker (by its apps/ directory) and environment this run acts on, which every command a refusal names
+   * carries so it runs as written in a project with several Workers (#711). Absent for a feature's indexes,
+   * whose refusals name the feature's own provisioning and no rebuild.
+   */
+  target?: { worker: WorkerDir; env: string; productionEnvironments: readonly string[] };
 }
 
 /**
@@ -154,6 +162,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   readonly #workflows: CloudflareWorkflowsClient;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #now: () => number;
+  readonly #target: { worker: WorkerDir; env: string; productionEnvironments: readonly string[] } | undefined;
 
   constructor(options: CloudflareVectorProvisionerOptions) {
     this.#projectDir = options.projectDir;
@@ -164,8 +173,28 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     this.#config = options.config;
     this.#resolveEnv = options.resolveEnv;
     this.#workflows = options.workflows;
+    this.#target = options.target;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#now = options.now ?? Date.now;
+  }
+
+  /**
+   * The rebuild a shape refusal offers beside changing the config back (#711). A reset deletes every vector in the
+   * index, so it is a person's decision, said as one — never a remedy an agent runs for one mis-shaped index. A
+   * feature's index has no rebuild of its own: tearing the feature down takes every resource it owns and its
+   * worktree with them, which is far more than the fault, so a feature is offered no command at all.
+   */
+  #orReset(): string {
+    if (this.#target === undefined) return "";
+    const { worker, env } = this.#target;
+    return ` Rebuilding it from the document corpus is the other way: ${personDecision("vector reset", { flags: { "--worker": worker, "--env": env } })}`;
+  }
+
+  /** The provisioning run to repeat: this run's, for its Worker and environment, or a feature's own. */
+  #provision(): Remedy {
+    if (this.#target === undefined) return remedy("provision", { flags: { "--feature": true } });
+    const { worker, env, productionEnvironments } = this.#target;
+    return capabilityProvisionRemedy("vector", worker, env, productionEnvironments);
   }
 
   /** Require Vectorize access and a workers.dev subdomain — Cloudflare needs one to deploy a Workflow host. */
@@ -191,8 +220,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       if (existing.config.dimensions !== shape.dimensions || existing.config.metric !== shape.metric) {
         throw new ValidationError({
           message: `The \`${indexName}\` index already exists with a different shape.`,
-          action:
-            "Dimensions and metric are fixed when an index is created. Change the config back, or run `pithy vector reset` to rebuild the index from the document corpus.",
+          action: `Dimensions and metric are fixed when an index is created. Change the config back.${this.#orReset()}`,
           detail: `live ${existing.config.dimensions}/${existing.config.metric}, config ${shape.dimensions}/${shape.metric}`,
         });
       }
@@ -227,8 +255,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     if (before.mismatched.length > 0) {
       throw new ValidationError({
         message: `A metadata index on \`${indexName}\` was created with a different type.`,
-        action:
-          "A metadata index's type is fixed. Change the field's type back in the index's metadata schema, or run `pithy vector reset` to rebuild the index.",
+        action: `A metadata index's type is fixed. Change the field's type back in the index's metadata schema.${this.#orReset()}`,
         detail: before.mismatched
           .map((entry) => `${entry.propertyName}: declared ${entry.declared}, indexed as ${entry.live}`)
           .join("; "),
@@ -258,7 +285,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       if (this.#now() - started >= METADATA_SETTLE_BUDGET_MS) {
         throw new InternalError({
           message: `The metadata indexes on \`${indexName}\` were accepted but are not live yet.`,
-          action: "Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.",
+          action: `${this.#provision().say((command) => `Re-run \`${command}\` in a minute.`)} Do not write vectors until it reports them ready.`,
           detail: `waited ${Math.round((this.#now() - started) / 1000)}s for ${pending(last, declared)}`,
         });
       }

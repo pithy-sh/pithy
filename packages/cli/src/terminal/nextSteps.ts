@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { z } from "zod";
 import { provisionFixCommand } from "../provision/provisionFix";
 
@@ -62,7 +63,7 @@ function listed(names: readonly string[]): string {
 
 /** The step that applies `env`'s pending migrations. */
 function migrateStep(env: string, why: string): NextStep {
-  return { command: `pithy migrate --env ${env}`, why };
+  return { command: pithyCommand("migrate", { flags: { "--env": env } }), why };
 }
 
 /**
@@ -93,7 +94,7 @@ export function provisionNext(facts: {
   if (undeployed.length === 0) return undefined;
   return [
     {
-      command: `pithy deploy --env ${facts.env}`,
+      command: pithyCommand("deploy", { flags: { "--env": facts.env } }),
       why: `${listed(undeployed)} ${be(undeployed.length)} not deployed in ${facts.env}.`,
     },
   ];

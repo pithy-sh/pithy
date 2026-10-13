@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import {
@@ -82,8 +83,7 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
   if (options.worktreePath === options.mainRoot) {
     throw new ValidationError({
       message: "Refusing to sync the main checkout as if it were a feature worktree.",
-      action:
-        "Run pithy feature sync from inside the feature's worktree (.worktrees/<issue>-<slug>), not the main checkout.",
+      action: `Run ${pithyCommand("feature sync")} from inside the feature's worktree (.worktrees/<issue>-<slug>), not the main checkout.`,
       detail: `worktreePath (${options.worktreePath}) is the main repository root.`,
     });
   }

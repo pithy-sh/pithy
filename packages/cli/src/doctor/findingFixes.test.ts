@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { dirOf } from "../test-utils/workerDir";
 import type { EnvironmentMigrations } from "./environmentMigrations";
 import {
   capabilityReachFix,
@@ -86,8 +87,10 @@ describe("secretBindingFix", () => {
     ...overrides,
   });
 
-  test("a value the kit composes is the provision, which mints it and writes the stanza", () => {
-    expect(secretBindingFix(missing({ provisionable: true }))).toBe("pithy secrets provision");
+  // The provision that mints it runs against every environment, production included: a person's decision, never
+  // the fix for one environment's binding (#711).
+  test("a value the kit composes has no fix: its provision runs against production", () => {
+    expect(secretBindingFix(missing({ provisionable: true }))).toBeNull();
   });
 
   test("a value only the operator has is supplied first, per environment or once for a global one", () => {
@@ -98,19 +101,26 @@ describe("secretBindingFix", () => {
 
 describe("the Turnstile fixes", () => {
   test("a blank sitekey in an environment provision writes is its to fill", () => {
-    expect(unrenderedTurnstileFix({ worker: "web", environment: "staging", slot: true })).toBe(
+    expect(unrenderedTurnstileFix({ worker: dirOf("web"), environment: "staging", slot: true })).toBe(
       "pithy turnstile provision --worker web",
     );
   });
 
   test("a feature's blank and an environment no sitekey reaches are not", () => {
-    expect(unrenderedTurnstileFix({ worker: "web", environment: "feature", slot: true })).toBeNull();
-    expect(unrenderedTurnstileFix({ worker: "web", environment: "qa", slot: false })).toBeNull();
+    expect(unrenderedTurnstileFix({ worker: dirOf("web"), environment: "feature", slot: true })).toBeNull();
+    expect(unrenderedTurnstileFix({ worker: dirOf("web"), environment: "qa", slot: false })).toBeNull();
   });
 
   test("a stranded var names the provision that removes it, and none where nothing does", () => {
-    const stranded = { worker: "web", name: "TURNSTILE_SITEKEY_STAGING", environment: "staging", file: "/p/w.jsonc" };
-    expect(strandedTurnstileFix({ ...stranded, removedBy: "web" })).toBe("pithy turnstile provision --worker web");
+    const stranded = {
+      worker: dirOf("web"),
+      name: "TURNSTILE_SITEKEY_STAGING",
+      environment: "staging",
+      file: "/p/w.jsonc",
+    };
+    expect(strandedTurnstileFix({ ...stranded, removedBy: dirOf("web") })).toBe(
+      "pithy turnstile provision --worker web",
+    );
     expect(strandedTurnstileFix({ ...stranded, worker: null, removedBy: null })).toBeNull();
   });
 });
@@ -127,12 +137,49 @@ describe("the rest", () => {
    * only what is missing, so it is right whether or not there is any.
    */
   test("a missing prerequisite names an add that composes what that peer needs as well", () => {
-    expect(prerequisiteFix("api", "email")).toBe("pithy add email --worker api --with-prerequisites");
+    expect(prerequisiteFix(dirOf("api"), "email")).toBe("pithy add email --worker api --with-prerequisites");
   });
 
   test("a capability installed nowhere names add for the first Worker composing it, and none with no Worker", () => {
-    expect(capabilityReachFix({ capability: "email", workers: ["api", "web"] })).toBe("pithy add email --worker api");
+    expect(capabilityReachFix({ capability: "email", workers: [dirOf("api"), dirOf("web")] })).toBe(
+      "pithy add email --worker api --with-prerequisites",
+    );
     expect(capabilityReachFix({ capability: "email", workers: [] })).toBeNull();
+  });
+
+  // #711: payments' billingSubject has no default, so with nothing known the line is a choice and carries no fix. A
+  // Worker whose config already composes payments with it set needs no choice: `pithy add` skips what is stated.
+  test("a capability installed nowhere, on a Worker whose config settles its options, names the add that runs", () => {
+    const settled = { composed: ["secrets", "payments"], answered: ["billingSubject"] };
+    expect(capabilityReachFix({ capability: "payments", workers: [dirOf("api")], settled })).toBe(
+      "pithy add payments --worker api",
+    );
+    expect(capabilityReachFix({ capability: "payments", workers: [dirOf("api")] })).toBeNull();
+  });
+
+  test("what the Worker settles is read for the fix, and not reported", () => {
+    const settled = { composed: ["secrets", "payments"], answered: ["billingSubject"] };
+    const health = {
+      ok: false,
+      workers: [],
+      manifests: { ok: true, faults: [] },
+      bindingScope: { ok: true, split: [], divergent: [] },
+      capabilityReach: {
+        ok: false,
+        reachable: [],
+        unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: [dirOf("api")], settled }],
+        split: [],
+      },
+    } as unknown as ProjectHealth;
+    const json = healthWithFixes(health, []) as { capabilityReach: { unreachable: Record<string, unknown>[] } };
+    expect(json.capabilityReach.unreachable).toEqual([
+      {
+        capability: "payments",
+        package: "@pithy-sh/payments",
+        workers: ["api"],
+        fix: "pithy add payments --worker api",
+      },
+    ]);
   });
 
   test("the schema takes a command or null, and refuses an empty string", () => {
@@ -146,6 +193,7 @@ describe("healthWithFixes", () => {
   const worker = {
     state: "checked",
     worker: "api",
+    directory: dirOf("api"),
     ok: false,
     config: { ok: false, drift: [{ capability: "media", keys: ["bucket"] }] },
     bindings: {
@@ -168,13 +216,13 @@ describe("healthWithFixes", () => {
   } as WorkerHealth;
   const health: ProjectHealth = {
     ok: false,
-    workers: [worker, { state: "unavailable", worker: "web" }],
+    workers: [worker, { state: "unavailable", worker: "web", directory: dirOf("web") }],
     manifests: { ok: false, faults: [{ package: "@pithy-sh/audit", reason: "Unexpected token." }] },
     bindingScope: { ok: true, partial: false, split: [], divergent: [] },
     capabilityReach: {
       ok: false,
       reachable: [],
-      unreachable: [{ capability: "email", package: "@pithy-sh/email", workers: ["api"] }],
+      unreachable: [{ capability: "email", package: "@pithy-sh/email", workers: [dirOf("api")] }],
       split: [],
     },
   };
@@ -214,8 +262,10 @@ describe("healthWithFixes", () => {
 
   test("the project-wide findings carry theirs, and a Worker nobody checked is passed through", () => {
     expect(projected.manifests.faults.map((fault) => fault.fix)).toEqual([null]);
-    expect(projected.capabilityReach.unreachable.map((entry) => entry.fix)).toEqual(["pithy add email --worker api"]);
-    expect(web).toEqual({ state: "unavailable", worker: "web" });
+    expect(projected.capabilityReach.unreachable.map((entry) => entry.fix)).toEqual([
+      "pithy add email --worker api --with-prerequisites",
+    ]);
+    expect(web).toEqual({ state: "unavailable", worker: "web", directory: "web" });
   });
 
   test("the health it was handed is not changed: upgrade reads the same object", () => {
@@ -230,6 +280,7 @@ describe("healthWithFixes, on the findings whose remedy is an edit or a decision
     ({
       state: "checked",
       worker: "api",
+      directory: dirOf("api"),
       ok: false,
       config: { ok: true, drift: [] },
       bindings: {

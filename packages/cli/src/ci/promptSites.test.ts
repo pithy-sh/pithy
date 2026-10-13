@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -257,7 +258,7 @@ const REQUIRED: readonly {
     prompt: "dropConfirm",
     flag: null,
     person: true,
-    run: (interactive) => requireDropConfirmable("auth", { drop: true, interactive }),
+    run: (interactive) => requireDropConfirmable("auth", { drop: true, interactive, env: "dev" }),
   },
   {
     site: "commands/dashboard.ts",
@@ -297,6 +298,7 @@ const REQUIRED: readonly {
       readSecretValue({
         name: "API_KEY",
         mode: "create",
+        rerun: pithyCommandOf("secrets create", { args: ["API_KEY"] }),
         // `secrets` asks the seam's output half, as the command does.
         canPrompt: canPrompt(false),
         stdin: {

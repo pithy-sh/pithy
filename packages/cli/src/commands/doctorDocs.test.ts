@@ -21,6 +21,7 @@ import {
   zsh,
 } from "../test-utils/doctorHarness";
 import { asCommand, expectConforms } from "../test-utils/payloadContract";
+import { dirOf } from "../test-utils/workerDir";
 import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDoctorText } from "./doctor";
 
 /**
@@ -640,7 +641,7 @@ describe("docs/commands/doctor.md", () => {
     report.project.health = {
       ok: false,
       workers: [
-        { state: "unavailable", worker: "api" },
+        { state: "unavailable", worker: "api", directory: dirOf("api") },
         ...report.project.health.workers.filter((worker) => worker.worker === "collab"),
       ],
       manifests: { ok: true, faults: [] },
@@ -710,7 +711,7 @@ describe("docs/commands/doctor.md", () => {
       capabilityReach: {
         ok: false,
         reachable: ["auth"],
-        unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+        unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: [dirOf("api")] }],
         split: [],
       },
     };
@@ -803,6 +804,7 @@ describe("docs/commands/doctor.md", () => {
             expected: "acme-global-email-suppressions",
             credential: null,
             repointable: true,
+            composing: [dirOf("api")],
             stale: [
               { worker: "api", env: "dev", name: "acme-dev-email-suppressions" },
               { worker: "api", env: "staging", name: "acme-staging-email-suppressions" },
@@ -855,6 +857,7 @@ describe("docs/commands/doctor.md", () => {
             expected: "acme-global-email-suppressions",
             credential: null,
             repointable: true,
+            composing: [dirOf("api")],
             ids: [
               { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
               { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
@@ -915,6 +918,7 @@ describe("docs/commands/doctor.md", () => {
             expected: "acme-global-email-suppressions",
             credential: null,
             repointable: true,
+            composing: [dirOf("api")],
             stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
           },
         ],
@@ -927,6 +931,7 @@ describe("docs/commands/doctor.md", () => {
             expected: "acme-global-email-suppressions",
             credential: null,
             repointable: true,
+            composing: [dirOf("api")],
             ids: [
               { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
               { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
@@ -1095,7 +1100,7 @@ describe("docs/commands/doctor.md", () => {
             capability: "email",
             lines: [
               "Email: no Cloudflare credentials, so real delivery is not possible here — using the simulator.",
-              "  run: pithy init, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+              "  set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for real delivery",
             ],
           }),
         }),
@@ -1143,10 +1148,14 @@ function rendererBlockLabels(source: string): string[] {
  * renderer's return value is opaque by construction. Extracting any of them needs the type checker rather
  * than a scan, and that is the honest edge of this gate: `keys` is a floor, never a contract, and a caller
  * that treated an empty one as a clean pass would be reporting on a file it could not read.
+ *
+ * A `provision --json` report is written through `writeProvisionReport({ … }, readiness, rerun)` rather than
+ * `formatJsonLine`, so it writes one outcome (#711). Its first argument is the payload literal, and it is a
+ * site like any other: moving a report behind the helper must not take its page out of this gate.
  */
 function payloadKeys(source: string): { keys: string[]; spreadSites: number; unparsedSites: number } {
   const keys = new Set<string>();
-  const sites = [...source.matchAll(/formatJsonLine\(\{([^{}]*)\}/g)];
+  const sites = [...source.matchAll(/(?:formatJsonLine|writeProvisionReport)\(\s*\{([^{}]*)\}/g)];
   for (const site of sites) {
     for (const part of (site[1] ?? "").split(",")) {
       const name = /^([A-Za-z_$][\w$]*)\s*(?::|$)/.exec(part.trim());
@@ -1156,7 +1165,7 @@ function payloadKeys(source: string): { keys: string[]; spreadSites: number; unp
   return {
     keys: [...keys].sort(),
     spreadSites: sites.filter((site) => (site[1] ?? "").includes("...")).length,
-    unparsedSites: [...source.matchAll(/formatJsonLine\(/g)].length - sites.length,
+    unparsedSites: [...source.matchAll(/(?:formatJsonLine|writeProvisionReport)\(/g)].length - sites.length,
   };
 }
 
@@ -1626,6 +1635,8 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "vector",
   ],
   environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
+  // The status a `provision --json` report's run exits with, on the one outcome that run writes (#711).
+  exitCode: ["email", "media", "payments", "storage", "support", "testers"],
   from: ["email", "worker"],
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way
   // says what it wrote, and this is the flag that says the report beside it is truncated (#324, #380).
@@ -1727,6 +1738,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   domains: "object",
   dryRun: "boolean",
   env: "string",
+  exitCode: "number",
   from: "string",
   interrupted: "boolean",
   manifestFaults: "unknown[]",

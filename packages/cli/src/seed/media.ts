@@ -79,7 +79,7 @@ export const nodeMediaFs: MediaFs = {
         new ConflictError(
           {
             message: `Can't read the media sidecar ${path}.`,
-            action: "Fix the file's permissions, or move it aside, and run pithy seed again.",
+            action: "Fix the file's permissions, or move it aside, and run this again.",
             detail: `${code ?? "unknown error"} while reading ${path}`,
           },
           { cause },

@@ -4,6 +4,7 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import {
   InputRequiredError,
   messageOf,
@@ -61,12 +62,12 @@ async function noWorkers(projectDir: string): Promise<never> {
   } catch {
     throw new NotFoundError({
       message: "No pithy.config.ts here.",
-      action: "Run from a Pithy project. pithy init creates one.",
+      action: `Run from a Pithy project. ${pithyCommand("init")} creates one.`,
     });
   }
   throw new NotFoundError({
     message: "No workers here.",
-    action: "Every worker lives in apps/<name>. Run pithy worker add <name> to create one.",
+    action: `Every worker lives in apps/<name>. Name one and create it with ${commandName("worker add")}.`,
   });
 }
 
@@ -157,7 +158,7 @@ export async function resolveWorkersReporting(
 function everyWorkerUnreadable(skipped: readonly SkippedWorker[]): never {
   throw new NotFoundError({
     message: "Every worker here is missing its pithy.config.ts.",
-    action: `Restore it, or run pithy worker add to rewrite one. Missing: ${skipped.map((s) => s.name).join(", ")}.`,
+    action: `Restore it, or rewrite one with ${commandName("worker add")} and its name. Missing: ${skipped.map((s) => s.name).join(", ")}.`,
   });
 }
 
@@ -253,13 +254,16 @@ export async function resolveWorkerSet(options: ResolveOptions): Promise<WorkerS
 
 /** Find a Worker by the name `pithy worker list` shows, or by its `apps/<dir>` basename. */
 function pick(targets: WorkerTarget[], name: string): WorkerTarget {
-  const found = targets.find((target) => target.name === name || target.dir.endsWith(`/${name}`));
+  // The directory first: it is what `--worker` is documented to take, and a Worker whose deployed name happens
+  // to be another Worker's directory must not answer for it.
+  const found =
+    targets.find((target) => workerDirName(target) === name) ?? targets.find((target) => target.name === name);
   if (!found) {
     // A name that matches nothing is the call's mistake (exit 2), as an unknown `--client` is: there is no
     // command to run first, only a different name to pass.
     throw new ValidationError({
       message: `No worker named "${name}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
+      action: `Run ${pithyCommand("worker list")} to see this project's workers. Known: ${targets.map(workerDirName).join(", ")}.`,
     });
   }
   return found;

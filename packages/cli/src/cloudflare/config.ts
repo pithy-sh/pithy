@@ -516,8 +516,8 @@ export function cloudflareCredentials(options: CloudflareConfigOptions): Cloudfl
   if (!accountId || !apiToken) {
     throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
-      action:
-        "Run pithy init to store this account's credentials, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment.",
+      // No command (#711): `pithy init` records credentials only as it scaffolds a new project, and is refused here.
+      action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment, or in ${cloudflareConfigPath(options)}, then run this again.`,
       detail: `resolved from ${cloudflareConfigPath(options)}; missing ${CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => !vars[key]).join(", ")}`,
     });
   }

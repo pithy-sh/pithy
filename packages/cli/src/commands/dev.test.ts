@@ -315,7 +315,7 @@ describe("pithy dev --list", () => {
   test("a project with no workers says so, and names the command that adds one", async () => {
     await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
 
-    expect(await run(false)).toContain("No workers. Run pithy worker add <name>, or pithy init.");
+    expect(await run(false)).toContain("No workers. Name one and create it with pithy worker add.");
   });
 
   test("returns rather than exiting, so the process is the caller's again", async () => {

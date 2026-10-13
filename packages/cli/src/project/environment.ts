@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assertValidEnvironment,
@@ -119,8 +120,7 @@ export const TEARDOWN_ENV_ARG = {
 } as const;
 
 /** What a teardown says to `--env dev`: there is nothing on Cloudflare to tear down, and where dev does run. */
-const TEARDOWN_DEV_ACTION =
-  "This tears down what a Cloudflare account holds, and dev is local-only. Run `pithy dev` instead.";
+const TEARDOWN_DEV_ACTION = `This tears down what a Cloudflare account holds, and dev is local-only. Run \`${pithyCommand("dev")}\` instead.`;
 
 /**
  * The `--env` of a teardown, at the CLI edge: **the one environment a `deprovision` acts on (#591).**
@@ -162,9 +162,10 @@ export function requireTeardownEnvironment(
  * declared the environment yet.
  */
 function refusalAction(value: string, environments: readonly string[]): string {
-  if (value === "dev") return "This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead.";
+  if (value === "dev")
+    return `This deploys to a Cloudflare account, and dev is local-only. Run \`${pithyCommand("dev")}\` instead.`;
   if (value === FEATURE_ENVIRONMENT) {
-    return "A branch's environment is never declared. Run `pithy provision --feature` from inside its worktree.";
+    return `A branch's environment is never declared. Run \`${pithyCommand("provision", { flags: { "--feature": true } })}\` from inside its worktree.`;
   }
   return `Declare it in \`environments\` in the root pithy.config.ts, or pass one this project has: --env ${environments[0]}`;
 }

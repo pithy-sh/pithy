@@ -49,6 +49,8 @@ async function filtersFor(changed: readonly string[]): Promise<string[]> {
 const RECORD: Record<string, string> = {
   ".": "The repo root. `project/atomic.test.ts`'s rename and recursive-delete tripwires walk every source file in the tree, and the docs tests hold `README.md` and `docs/` to the CLI's real output.",
   "docs/CLI.md": "`terminal/styleDocs.test.ts` holds the documented styles to the ones the terminal module exports.",
+  "docs/commands/testers.md":
+    "`commands/testers.test.ts` runs the testers refusals and notes the page quotes, and finds each on the page (#711): a quoted line that kept its old form named a roster read with no `--env`, which reads `dev`'s whatever environment the reader was on.",
   "docs/FIXTURES.md":
     "`@pithy-sh/cloudflare`'s `test-utils/fixtures.test.ts` holds every live fixture to the section its skip message cites. A skip line naming a document nobody wrote is worse than no line at all, so the citation is a gate rather than a convention — and it only means anything if editing the document re-runs it (#106).",
   "node_modules/.bin/biome":

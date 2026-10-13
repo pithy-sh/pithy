@@ -3,6 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { writeFileAtomic } from "../project/atomic";
@@ -233,7 +234,7 @@ export async function wirePackage(projectDir: string, workerDir: string, stub: U
   if (raw === null) {
     throw new NotFoundError({
       message: `No package.json in ${workerDir}.`,
-      action: "Every worker under apps/ needs a package.json. pithy worker add creates one.",
+      action: `Every worker under apps/ needs a package.json. ${commandName("worker add")} creates one.`,
     });
   }
 

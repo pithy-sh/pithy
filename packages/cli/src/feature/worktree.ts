@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { devStatePath } from "../dev/state";
 
@@ -108,7 +109,7 @@ export async function mainRepoRoot(git: GitRunner = defaultGit): Promise<string>
   if (!path) {
     throw new InternalError({
       message: "Could not resolve the main repository root.",
-      action: "Run pithy feature from inside a git repository.",
+      action: `Run ${commandName("feature")} from inside a git repository.`,
     });
   }
   return canonicalRepoPath(path);
@@ -240,9 +241,9 @@ export async function createWorktree(options: {
     throw new ConflictError({
       message: `${names.wtPath} already exists and is not empty.`,
       action:
-        "Teardown removes the directory, so something else left this one: a 'pithy dev' session that was " +
+        `Teardown removes the directory, so something else left this one: a ${commandName("dev")} session that was ` +
         "running when the feature was destroyed, or a tree made by hand. Remove it yourself " +
-        `(rm -r ${names.wtPath}) and re-run 'pithy feature create'.`,
+        `(rm -r ${names.wtPath}), then run this again.`,
       detail: `git worktree add would fail: ${names.wtPath} is an unregistered, non-empty directory.`,
     });
   }

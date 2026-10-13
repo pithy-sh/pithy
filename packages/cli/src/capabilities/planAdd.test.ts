@@ -132,7 +132,7 @@ describe("planAdd", () => {
     expect(payload.code).toBe("core/precondition_failed");
     expect(payload.message).toContain("@pithy-sh/auth is not installed");
     expect(payload.action).toContain("npm install @pithy-sh/auth");
-    expect(payload.action).toContain("pithy add auth --dry-run");
+    expect(payload.action).toContain("pithy add auth --worker api --with-prerequisites --dry-run");
     expect(await snapshotTree(dir)).toEqual(before);
   });
 

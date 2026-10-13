@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type {
   SettingsAccountReader,
+  SettingsCheckContext,
   SettingsEnvironment,
   SettingsFinding,
 } from "@pithy-sh/core/src/capability/settings";
@@ -45,10 +46,12 @@ import type {
  * are what change anything.
  */
 
-/** One Worker's name and the capabilities its own `pithy.config.ts` composes. */
+/** One Worker's name, its directory, and the capabilities its own `pithy.config.ts` composes. */
 export interface SettingsScope {
-  /** The Worker, as `apps/<name>` and the health block name it. */
+  /** The Worker by its `wrangler.jsonc` name, as the health block and every finding name it. */
   name: string;
+  /** Its directory under `apps/`, which is what `--worker` takes. A scaffold makes it differ from `name` (#711). */
+  directory: string;
   /** Its composed capability instances, app capability included. */
   capabilities: readonly Capability[];
 }
@@ -145,11 +148,11 @@ export interface CapabilitySettingsOptions {
 }
 
 /** Every composed capability that declares a check, flattened with the Worker it came from. */
-function declared(workers: readonly SettingsScope[]): { worker: string; capability: Capability }[] {
-  const found: { worker: string; capability: Capability }[] = [];
+function declared(workers: readonly SettingsScope[]): { worker: string; directory: string; capability: Capability }[] {
+  const found: { worker: string; directory: string; capability: Capability }[] = [];
   for (const worker of workers) {
     for (const capability of worker.capabilities) {
-      if (capability.settings) found.push({ worker: worker.name, capability });
+      if (capability.settings) found.push({ worker: worker.name, directory: worker.directory, capability });
     }
   }
   return found;
@@ -181,12 +184,17 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
     ? await connectQuietly(options.connect)
     : { state: "skipped", reason: "not-declared" };
 
-  for (const { worker, capability } of entries) {
+  for (const { worker, directory, capability } of entries) {
     const settings = capability.settings;
     if (!settings) continue;
-    let context: { project: string; worker: string; environments: readonly SettingsEnvironment[] };
+    let context: SettingsCheckContext;
     try {
-      context = { project: options.project, worker, environments: await options.environments(worker) };
+      context = {
+        project: options.project,
+        worker,
+        workerDirectory: directory,
+        environments: await options.environments(worker),
+      };
     } catch {
       // Nothing was checked against nothing: without the declared set there is no environment to judge a
       // per-environment value in, and a check run against an empty list would report a clean pass.

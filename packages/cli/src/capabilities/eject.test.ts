@@ -331,6 +331,42 @@ describe("ejectCapability", () => {
     ).rejects.toThrow(PithyError);
   });
 
+  // The add it names runs as written with nobody to ask: without `--with-prerequisites`, an add whose peers are
+  // not composed is refused `input/required` (#711). Nothing is installed to rule them out, so it carries the flag.
+  test("a package neither installed nor in the kit names no add, and says what to check", async () => {
+    const error = await eject({ capability: "ghost", package: "@pithy-sh/ghost" }).catch((caught: unknown) => caught);
+    expect((error as PithyError).payload.action).toBe(
+      "No capability named ghost is installed or in the kit. Check the name against pithy add --list.",
+    );
+  });
+
+  test("a config that does not import the package names the add that runs as written", async () => {
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      "export default {\n  capabilities: [\n    // pithy:capabilities\n  ],\n};\n",
+    );
+    const error = await eject().catch((caught: unknown) => caught);
+    expect((error as PithyError).payload.action).toBe(
+      "Run `pithy add turnstile --worker api --with-prerequisites` first, then eject.",
+    );
+  });
+
+  test("an installed manifest that declares no peers names the add without --with-prerequisites", async () => {
+    const manifest = CapabilityManifest.parse({
+      name: "turnstile",
+      package: "@pithy-sh/turnstile",
+      requiredBindings: [],
+    });
+    expect(manifest.peerCapabilities).toEqual([]);
+    await writeFile(join(dir, "node_modules/@pithy-sh/turnstile/pithy.manifest.json"), JSON.stringify(manifest));
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      "export default {\n  capabilities: [\n    // pithy:capabilities\n  ],\n};\n",
+    );
+    const error = await eject().catch((caught: unknown) => caught);
+    expect((error as PithyError).payload.action).toBe("Run `pithy add turnstile --worker api` first, then eject.");
+  });
+
   test("a malformed package.json fails as a PithyError, not a raw parse error", async () => {
     await writeFile(join(dir, "node_modules", "@pithy-sh", "turnstile", "package.json"), "{ not json");
     await expect(eject()).rejects.toThrow(PithyError);

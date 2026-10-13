@@ -257,13 +257,14 @@ describe("a thrown error is never a Promise", () => {
 
   test("the scan sees the builders this rule exists for, and the sites that await them", () => {
     expect(modules.length).toBeGreaterThan(300);
-    for (const name of ["capabilityLoadError", "capabilityNotComposed", "withAddFix"]) {
-      expect(promising.all).toContain(name);
-    }
-    // The plain wrapper this scan was blind to: not `async`, and its call is a Promise all the same.
-    expect(promising.byModule.get("commands/testers.ts")).toContain("testersNotComposed");
+    expect(promising.all).toContain("capabilityLoadError");
+    // `capabilityNotComposed` reads the project synchronously since #711, so it builds an error rather than a
+    // Promise — and the scan, which reads declarations rather than a list, no longer counts it or its wrappers.
+    expect(promising.all).not.toContain("capabilityNotComposed");
+    expect(promising.byModule.get("commands/testers.ts") ?? []).not.toContain("testersNotComposed");
     const awaited = modules.reduce((sum, module) => sum + (module.code.match(/\bthrow\s+await\b/g)?.length ?? 0), 0);
-    expect(awaited).toBeGreaterThan(20);
+    // A floor, not a count: four `throw await capabilityNotComposed(…)` became plain throws when it went sync (#711).
+    expect(awaited).toBeGreaterThan(15);
   });
 
   describe("a planted defect is caught", () => {

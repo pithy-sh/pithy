@@ -849,7 +849,9 @@ describe("describeStaleAutostartRoots", () => {
     expect(lines[0]).toBe(
       "Autostart answers are recorded for a checkout at /gone/app, which is gone: media, payments.",
     );
-    expect(lines[1]).toContain("pithy dev --app <name> --disable-autostart");
+    expect(lines[1]).toContain(
+      "re-set them here with pithy dev, naming each Worker with --app beside --disable-autostart",
+    );
   });
 
   // The registry is machine-wide (#435), so a root that is gone may be another project's deleted clone

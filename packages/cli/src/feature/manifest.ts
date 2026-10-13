@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { join } from "node:path";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
@@ -110,7 +111,7 @@ export async function readManifest(path: string): Promise<FeatureManifest | null
   } catch (err) {
     throw new InternalError({
       message: "The feature manifest is corrupt.",
-      action: "Delete .pithy-feature.json and re-run pithy provision --feature.",
+      action: `Delete .pithy-feature.json and re-run ${pithyCommand("provision", { flags: { "--feature": true } })}.`,
       detail: err instanceof Error ? err.message : String(err),
     });
   }
@@ -119,7 +120,7 @@ export async function readManifest(path: string): Promise<FeatureManifest | null
   if (!result.success) {
     throw fromZodError(result.error, {
       message: "The feature manifest is corrupt.",
-      action: "Delete .pithy-feature.json and re-run pithy provision --feature.",
+      action: `Delete .pithy-feature.json and re-run ${pithyCommand("provision", { flags: { "--feature": true } })}.`,
     });
   }
   return result.data;

@@ -7,6 +7,7 @@ import { join, sep } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { callerOf } from "@pithy-sh/core/src/cli/command";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -31,7 +32,7 @@ import {
   type ResourceProvisioners,
 } from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
-import { deletedBeforeFailure, deprovisionFeature, provisionFeature } from "./provision";
+import { deletedBeforeFailure, deprovisionFeature, featureHostsRefusal, provisionFeature } from "./provision";
 
 /** An in-memory provisioner over a name→id map, mirroring the real find/create/delete semantics. */
 function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner & { creates: number } {
@@ -1975,6 +1976,29 @@ describe("a feature deployment serves a request (#650)", () => {
     expect(res.status).toBe(500);
     expect(await res.text()).toMatch(
       /Missing required bindings: workflow:CONNECTION_ROTATION, workflow:ROTATION_SWEEP/,
+    );
+  });
+});
+
+/**
+ * **The run a feature's host refusal names again is the caller's own (#711).** It named `pithy provision --feature`
+ * spelled at the site, which dropped the `--json` an agent's call had asked for.
+ */
+describe("featureHostsRefusal", () => {
+  test("names the caller's own run again, every flag carried", () => {
+    const refusal = featureHostsRefusal(
+      ["email: not deployed."],
+      "acme-f1-x",
+      callerOf("provision", { feature: true, json: true }),
+    );
+    expect(refusal.payload.action).toBe(
+      "email: not deployed. Fix it, then run `pithy provision --feature --json` again.",
+    );
+  });
+
+  test("names the feature provision where no command line is behind the run", () => {
+    expect(featureHostsRefusal(["email: not deployed."], "acme-f1-x").payload.action).toBe(
+      "email: not deployed. Fix it, then run `pithy provision --feature` again.",
     );
   });
 });

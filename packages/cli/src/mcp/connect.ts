@@ -8,7 +8,7 @@ import { writeFileAtomic } from "../project/atomic";
 import { lstatAsProject } from "../project/linkView";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
-import { MCP_CLIENTS, type McpClient, type Scope, scopesOf } from "./clients";
+import { MCP_CLIENTS, type McpClient, type McpClientId, type Scope, scopesOf } from "./clients";
 import type { DocumentWriter, MergeOutcome, RemoveOutcome } from "./document";
 import type { HomeOptions } from "./home";
 import { resolveUnder } from "./home";
@@ -111,7 +111,7 @@ export interface ScopeStatus {
 /** What `pithy docs status` reports about one client. */
 export interface ClientStatus {
   /** The registry id. */
-  readonly client: string;
+  readonly client: McpClientId;
   /** The tool's own name. */
   readonly label: string;
   /** Whether this tool looks installed for this operator. */

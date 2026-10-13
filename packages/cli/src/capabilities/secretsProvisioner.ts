@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
@@ -229,7 +230,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
       if (roll >= MAX_TOKEN_ROLLS) {
         throw new UpstreamError({
           message: "The secrets manager's token kept being rolled by another run.",
-          action: "Wait for the other pithy secrets provision to finish, then run this again.",
+          action: `Wait for the other ${commandName("secrets provision")} to finish, then run this again.`,
           detail: `${managerCfApiTokenName(this.#project)}: rolled ${roll} times, and each value was revoked before this run could keep it`,
         });
       }

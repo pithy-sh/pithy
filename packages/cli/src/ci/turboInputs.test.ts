@@ -2,11 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { GIT_NO_MAINTENANCE, removeTempDir, scratchGitEnv } from "../test-utils/tempRepo";
+import { copyEntryOnce } from "../test-utils/treeCopy";
 import { isTestFile, sourcePaths } from "./sourceFiles";
 
 /**
@@ -98,10 +112,13 @@ type Plan = { tasks: { taskId: string; directory: string; command: string; input
 /** What turbo reports as the command of a task a package does not define. */
 const NO_SCRIPT = "<NONEXISTENT>";
 
-/** A path relative to the repo root, in POSIX form. */
-function fromRoot(path: string): string {
-  return relative(REPO_ROOT, path).split(sep).join("/");
+/** A path relative to `root` — the repository unless a copy of it is named — in POSIX form. */
+function fromRoot(path: string, root: string = REPO_ROOT): string {
+  return relative(root, path).split(sep).join("/");
 }
+
+/** Every `git` and `turbo` here runs on the tree it is pointed at, whatever repository a hook names. */
+const GIT_ENV = scratchGitEnv();
 
 /** Every cross-package read in this tree, grouped by the package whose suite makes it. */
 async function registered(): Promise<Map<string, string[]>> {
@@ -137,16 +154,20 @@ async function registered(): Promise<Map<string, string[]>> {
  * measured the wrong task and failed with 2,016 files it was never going to find. The bug reads as the
  * gate working, which is the dangerous direction for it to fail in.
  */
-async function planned(task: string): Promise<Map<string, Set<string>>> {
-  const { stdout } = await run(TURBO, ["run", task, "--dry=json"], { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 });
+async function planned(task: string, root: string = REPO_ROOT): Promise<Map<string, Set<string>>> {
+  const { stdout } = await run(TURBO, ["run", task, "--dry=json"], {
+    cwd: root,
+    env: GIT_ENV,
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const plan = JSON.parse(stdout) as Plan;
   const keys = new Map<string, Set<string>>();
   for (const entry of plan.tasks) {
     if (entry.command === NO_SCRIPT) continue;
     if (!entry.taskId.endsWith(`#${task}`)) continue;
-    const dir = resolve(REPO_ROOT, entry.directory);
+    const dir = resolve(root, entry.directory);
     const name = entry.taskId.slice(0, entry.taskId.lastIndexOf("#"));
-    keys.set(name, new Set(Object.keys(entry.inputs).map((key) => fromRoot(resolve(dir, key)))));
+    keys.set(name, new Set(Object.keys(entry.inputs).map((key) => fromRoot(resolve(dir, key), root))));
   }
   return keys;
 }
@@ -176,13 +197,14 @@ function tracked(target: string): string[] {
  * matched by an ignore rule is tracked, and tracked is what turbo hashes, so the default behavior —
  * untracked matches only — is the one wanted here.
  */
-function ignoreRules(paths: readonly string[]): Map<string, string> {
+function ignoreRules(paths: readonly string[], root: string = REPO_ROOT): Map<string, string> {
   const rules = new Map<string, string>();
   if (paths.length === 0) return rules;
   let stdout: string;
   try {
     stdout = execFileSync("git", ["check-ignore", "-v", "--stdin"], {
-      cwd: REPO_ROOT,
+      cwd: root,
+      env: GIT_ENV,
       input: `${paths.join("\n")}\n`,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024,
@@ -357,13 +379,13 @@ function probeRoot(path: string): string | undefined {
  * repository's one secrets file on any machine that has run `pithy dev`, and a symlink is not a file this
  * ever wrote.
  */
-function sweep(paths: readonly string[]): void {
+function sweep(paths: readonly string[], tree: string): void {
   for (const root of new Set(paths.map(probeRoot))) {
-    if (root !== undefined) rmSync(join(REPO_ROOT, root), { recursive: true, force: true });
+    if (root !== undefined) rmSync(join(tree, root), { recursive: true, force: true });
   }
   for (const path of paths) {
     if (probeRoot(path) !== undefined) continue;
-    const full = join(REPO_ROOT, path);
+    const full = join(tree, path);
     try {
       if (!lstatSync(full).isFile() || readFileSync(full, "utf8") !== SENTINEL) continue;
     } catch {
@@ -374,9 +396,9 @@ function sweep(paths: readonly string[]): void {
 }
 
 /** Every level of `directory` that was not already there, outermost first. */
-function makeDirs(directory: string, made: string[]): void {
-  let current = REPO_ROOT;
-  for (const part of relative(REPO_ROOT, directory).split(sep).filter(Boolean)) {
+function makeDirs(directory: string, made: string[], tree: string): void {
+  let current = tree;
+  for (const part of relative(tree, directory).split(sep).filter(Boolean)) {
     current = join(current, part);
     try {
       mkdirSync(current);
@@ -405,13 +427,13 @@ function makeDirs(directory: string, made: string[]): void {
  * concurrent task's output deleted underneath it. `rmdir` on a directory somebody else has since written
  * to fails, which is the right answer, so the failure is swallowed and the directory stays.
  */
-function plant(paths: readonly string[]): () => void {
-  sweep(paths);
+function plant(paths: readonly string[], tree: string): () => void {
+  sweep(paths, tree);
   const files: string[] = [];
   const dirs: string[] = [];
   for (const path of paths) {
-    const full = join(REPO_ROOT, path);
-    makeDirs(dirname(full), dirs);
+    const full = join(tree, path);
+    makeDirs(dirname(full), dirs, tree);
     try {
       writeFileSync(full, SENTINEL, { flag: "wx" });
     } catch (cause) {
@@ -430,6 +452,39 @@ function plant(paths: readonly string[]): () => void {
       }
     }
   };
+}
+
+/**
+ * **A copy of this working tree, in a git repository of its own, for the probes to be planted in (#711).**
+ *
+ * They used to be planted in this repository. `reached.md` is untracked and unignored by design, so
+ * `fileModes.test.ts` and `sourceFiles.test.ts`, listing what git carries from a worker running beside this
+ * one, could name it and then find it gone — and the package artifacts landed in `packages/core`, where
+ * `@pithy-sh/core#test` writes its own. A gate that fails on a run nobody changed gets muted.
+ *
+ * The copy holds every file git carries here, tracked or written, and every ignore file git consults, so
+ * turbo plans it with the keys it plans this tree with. `node_modules` is linked rather than copied: it is
+ * where the workspace's turbo lives, and every rule ignores it.
+ */
+function copyOfTree(): string {
+  const copy = mkdtempSync(join(tmpdir(), "pithy-turbo-inputs-"));
+  const listing = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
+    cwd: REPO_ROOT,
+    env: GIT_ENV,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // One read per path and no check before it (#711): a file another suite removes between git's listing and the
+  // copy is either read whole through its open descriptor or found already gone and passed over — deleted here
+  // and not yet staged, git still lists it, and there is nothing to copy.
+  for (const path of new Set([...listing.split(String.fromCharCode(0)).filter(Boolean), ...ignoreFiles()])) {
+    copyEntryOnce(join(REPO_ROOT, path), join(copy, path));
+  }
+  symlinkSync(join(REPO_ROOT, "node_modules"), join(copy, "node_modules"), "junction");
+  const git = (...args: string[]) => execFileSync("git", [...GIT_NO_MAINTENANCE, ...args], { cwd: copy, env: GIT_ENV });
+  git("init", "-q");
+  git("add", "-A");
+  return copy;
 }
 
 /**
@@ -581,6 +636,15 @@ describe("a task named for one package still depends on the builds it reads", ()
 });
 
 describe("a gate is keyed on what it reads", () => {
+  /** Where the probes go: a copy, never this repository, which suites beside this one are reading (#711). */
+  let scratch: string;
+  beforeAll(() => {
+    scratch = copyOfTree();
+  });
+  afterAll(async () => {
+    await removeTempDir(scratch);
+  });
+
   test("every cross-package read the register finds is hashed by that package's test tasks", async () => {
     const targets = await registered();
     const named = new Set([...targets.values()].flat());
@@ -656,9 +720,9 @@ describe("a gate is keyed on what it reads", () => {
     expect(probes.size, "two rules materialize to one path, so one of them is unexercised").toBe(stated.length);
 
     const artifacts = [...probes.keys(), ...PACKAGE_ARTIFACTS];
-    const remove = plant([...artifacts, REACHED]);
+    const remove = plant([...artifacts, REACHED], scratch);
     try {
-      const rules = ignoreRules([...artifacts, REACHED]);
+      const rules = ignoreRules([...artifacts, REACHED], scratch);
 
       // Coverage, and it is exact rather than sampled: each probe was invented for one rule, and git has
       // to name *that* rule as the one deciding it. A probe git ignores for some other reason proves
@@ -677,7 +741,7 @@ describe("a gate is keyed on what it reads", () => {
       expect(rules.has(REACHED), `${REACHED} has to be a file git would carry`).toBe(false);
 
       for (const task of TEST_TASKS) {
-        for (const [name, key] of await planned(task)) {
+        for (const [name, key] of await planned(task, scratch)) {
           expect(
             artifacts.filter((path) => key.has(path)),
             `${name}'s key for ${task} holds these`,
@@ -690,14 +754,14 @@ describe("a gate is keyed on what it reads", () => {
       // otherwise report the same empty list as a key that excludes every artifact correctly.
       for (const task of TEST_TASKS) {
         for (const name of ["@pithy-sh/cli", "@pithy-sh/ui-react"]) {
-          const key = (await planned(task)).get(name);
+          const key = (await planned(task, scratch)).get(name);
           if (key === undefined) continue;
           expect(key.has(REACHED), `${name}'s key for ${task} never reached ${PROBE}/`).toBe(true);
         }
       }
       // And the same for the subject the package-level artifacts sit in.
       for (const task of TEST_TASKS) {
-        const key = (await planned(task)).get("@pithy-sh/browser-scopes");
+        const key = (await planned(task, scratch)).get("@pithy-sh/browser-scopes");
         if (key === undefined) continue;
         expect(
           key.has("packages/core/package.json"),
@@ -716,14 +780,14 @@ describe("a gate is keyed on what it reads", () => {
     // `reached.md`, which this file requires git *not* to ignore, one `git add -A` from a commit and
     // hashed into all four whole-tree keys until then.
     const residue = `${PROBE}/killed/probe`;
-    mkdirSync(join(REPO_ROOT, PROBE, "killed"), { recursive: true });
-    writeFileSync(join(REPO_ROOT, residue), SENTINEL);
+    mkdirSync(join(scratch, PROBE, "killed"), { recursive: true });
+    writeFileSync(join(scratch, residue), SENTINEL);
     try {
-      plant([residue])();
-      expect(existsSync(join(REPO_ROOT, residue)), `${residue} outlived the run that planted it`).toBe(false);
-      expect(existsSync(join(REPO_ROOT, PROBE)), `${PROBE}/ outlived the run that planted it`).toBe(false);
+      plant([residue], scratch)();
+      expect(existsSync(join(scratch, residue)), `${residue} outlived the run that planted it`).toBe(false);
+      expect(existsSync(join(scratch, PROBE)), `${PROBE}/ outlived the run that planted it`).toBe(false);
     } finally {
-      rmSync(join(REPO_ROOT, PROBE), { recursive: true, force: true });
+      rmSync(join(scratch, PROBE), { recursive: true, force: true });
     }
   });
 
@@ -732,17 +796,18 @@ describe("a gate is keyed on what it reads", () => {
     // and under `bun run test` every task runs at once, with `@pithy-sh/core#test` writing
     // `packages/core/.turbo/turbo-test.log` while this file runs inside `@pithy-sh/cli#test`. On a clean
     // checkout the two race for the `mkdir`, and a recursive undo of the directory this test won took a
-    // concurrent task's output with it.
+    // concurrent task's output with it. The probes are planted in a copy now (#711), and the undo still
+    // takes only what it wrote, so a copy that gains a concurrent writer does not bring the bug back.
     const mine = `${PROBE}/shared/probe`;
     const theirs = `${PROBE}/shared/turbo-test.log`;
-    const remove = plant([mine]);
+    const remove = plant([mine], scratch);
     try {
-      writeFileSync(join(REPO_ROOT, theirs), "written by the task next door\n");
+      writeFileSync(join(scratch, theirs), "written by the task next door\n");
       remove();
-      expect(existsSync(join(REPO_ROOT, mine)), `${mine} was this test's to remove`).toBe(false);
-      expect(existsSync(join(REPO_ROOT, theirs)), `${theirs} was not`).toBe(true);
+      expect(existsSync(join(scratch, mine)), `${mine} was this test's to remove`).toBe(false);
+      expect(existsSync(join(scratch, theirs)), `${theirs} was not`).toBe(true);
     } finally {
-      rmSync(join(REPO_ROOT, PROBE), { recursive: true, force: true });
+      rmSync(join(scratch, PROBE), { recursive: true, force: true });
     }
   });
 
@@ -795,6 +860,8 @@ describe("a gate is keyed on what it reads", () => {
     const PACKAGE_SCOPED: Record<string, string> = {
       "envStanzaWriters.test.ts":
         "It sweeps `packages/cli/src` for modules that write an `env.<name>` stanza into a wrangler config, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that edits an adopter's `wrangler.jsonc`. Turbo's default inputs are already exactly right for it.",
+      "callerValues.test.ts":
+        "It drives the builders `@pithy-sh/cli` reaches at run time with values a caller can pass, through `packages/core`'s built `dist` and this package's own source. It reads no file outside its own package — its inputs are imports — so turbo's default inputs and the `^build` dependency are already exactly right for it.",
       "jsoncWriters.test.ts":
         "It sweeps `packages/cli/src` for modules that write JSONC, which is inside its own package. Turbo's default inputs are already exactly right for it.",
       "environmentSkips.test.ts":

@@ -10,9 +10,10 @@ import { alreadyProvided, detectPackageManager, installArgs, type PackageManager
 import { readFileOutcome, readOptionalFile } from "../project/readOptionalFile";
 import { workerIdentity } from "../project/workerIdentity";
 import { planBootstrapAdd } from "./addBootstrap";
+import { addAgain } from "./addCommand";
 import { CATALOG } from "./catalog";
 import { ejectCapability } from "./eject";
-import { type AddResult, type RunAddOptions, runAdd } from "./flow";
+import { type AddResult, addRunCaller, type RunAddOptions, runAdd } from "./flow";
 
 /**
  * **`pithy add --dry-run`: the real add, in a copy of the project (#697).**
@@ -68,12 +69,15 @@ async function declareAtRoot(shadowRoot: string, version: string, pkg: string): 
   await writeFile(path, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
-/** The refusal for a capability whose manifest is not on disk to plan from. */
-function notInstalled(pkg: string, packageManager: PackageManager): PreconditionFailedError {
+/**
+ * The refusal for a capability whose manifest is not on disk to plan from. `again` is the caller's own dry run,
+ * every flag and `--set` it was given carried over (#711), so running it again plans what was asked.
+ */
+function notInstalled(pkg: string, packageManager: PackageManager, again: string): PreconditionFailedError {
   const capability = CATALOG.find((entry) => entry.package === pkg)?.name ?? pkg;
   return new PreconditionFailedError({
     message: `${pkg} is not installed, so there is no manifest to plan ${capability} from.`,
-    action: `Install it with ${[packageManager, ...installArgs(packageManager, pkg)].join(" ")}, then run pithy add ${capability} --dry-run again.`,
+    action: `Install it with ${[packageManager, ...installArgs(packageManager, pkg)].join(" ")}, then run ${again} again.`,
   });
 }
 
@@ -118,12 +122,15 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
   const { result, files, notes } = await inShadow(projectDir, async (shadow) => {
     const added = await runAdd({
       ...options,
+      dryRun: true,
       projectDir: shadow.root,
       workerDir: shadow.at(workerDir),
       worker,
       install: async ({ pkg }) => {
         const version = await installedVersion(projectDir, pkg);
-        if (version === null) throw notInstalled(pkg, packageManager);
+        if (version === null) {
+          throw notInstalled(pkg, packageManager, addAgain(addRunCaller({ ...options, dryRun: true }), options));
+        }
         if (!(await alreadyProvided(projectDir, pkg))) {
           installs.push(pkg);
           await declareAtRoot(shadow.root, version, pkg);
@@ -141,8 +148,13 @@ export async function planAdd(options: RunAddOptions): Promise<AddPlan> {
             promoted.push(...dependencies);
           },
         }),
-      bootstrap: async ({ manifest }) => {
-        const planned = await planBootstrapAdd({ projectDir, manifest });
+      bootstrap: async ({ manifest, worker: named }) => {
+        const planned = await planBootstrapAdd({
+          projectDir,
+          manifest,
+          worker: named,
+          productionEnvironments: options.productionEnvironments ?? [],
+        });
         secrets.push(...planned.secrets);
         for (const step of planned.steps) steps.add(step);
         return planned.notes;

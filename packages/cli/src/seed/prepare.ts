@@ -3,6 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isPublicHostname } from "@pithy-sh/core/src/naming/domains";
 import { SEED_ARTIFACT_DIR } from "@pithy-sh/core/src/seed/devLogin";
@@ -182,8 +183,7 @@ function refuseOutsideDev(env: string, path: string): (name: string) => Promise<
   return async (name: string) => {
     throw new ConflictError({
       message: `Refusing to read the dev secret "${name}" while seeding ${env}.`,
-      action:
-        "Dev secrets are local only. Mark this set dev-only, or set the value for that environment with pithy secrets set.",
+      action: `Dev secrets are local only. Mark this set dev-only, or set the value for that environment with ${commandName("secrets create")}.`,
       detail: `devSecretReader refused ${path} for env "${env}"; only "${LOCAL_ENVIRONMENT}" resolves secrets from the dev secrets file`,
     });
   };

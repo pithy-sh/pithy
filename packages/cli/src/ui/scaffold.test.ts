@@ -20,6 +20,7 @@ describe("scaffoldFiles", () => {
   test("writes the record, creating parent directories", async () => {
     const result = await scaffoldFiles({
       workerDir: dir,
+      framework: "react",
       files: { "index.html": "<!doctype html>\n", "src/routes/app/home.tsx": 'export const path = "/";\n' },
     });
     expect(result.written).toEqual(["index.html", "src/routes/app/home.tsx"]);
@@ -35,6 +36,7 @@ describe("scaffoldFiles", () => {
     try {
       await scaffoldFiles({
         workerDir: dir,
+        framework: "react",
         files: {
           "index.html": "theirs\n",
           "src/client.tsx": "theirs\n",
@@ -56,6 +58,21 @@ describe("scaffoldFiles", () => {
     expect(await readdir(join(dir, "src"))).toEqual(["client.tsx"]);
   });
 
+  test("a collision names the command to repeat as it runs — the framework asked for, never a placeholder (#711)", async () => {
+    const workerDir = join(dir, "apps", "api");
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(join(workerDir, "index.html"), "mine\n");
+
+    try {
+      await scaffoldFiles({ workerDir, framework: "react", files: { "index.html": "theirs\n" } });
+      expect.unreachable("expected a collision to throw");
+    } catch (error) {
+      const action = (error as PithyError).payload.action;
+      expect(action).toContain("then run pithy ui add react --worker api again.");
+      expect(action).not.toContain("<");
+    }
+  });
+
   test("refuses a symlinked directory on the way to a file, and writes nothing through it", async () => {
     // `exists()` here was `access`, which follows the link and answers about the destination — so a link at
     // `apps/<worker>/src` read as "src/client.tsx is missing", cleared the gate, and `pithy ui add react`
@@ -65,7 +82,11 @@ describe("scaffoldFiles", () => {
     await symlink(outside, join(dir, "src"));
 
     await expect(
-      scaffoldFiles({ workerDir: dir, files: { "index.html": "<!doctype html>\n", "src/client.tsx": "theirs\n" } }),
+      scaffoldFiles({
+        workerDir: dir,
+        framework: "react",
+        files: { "index.html": "<!doctype html>\n", "src/client.tsx": "theirs\n" },
+      }),
     ).rejects.toThrow(PithyError);
 
     expect(await readdir(outside)).toEqual([]);
@@ -81,7 +102,7 @@ describe("scaffoldFiles", () => {
     await symlink(outside, join(dir, "src"));
 
     await expect(
-      scaffoldFiles({ workerDir: dir, files: { "src/styles.css": "body {}\n" }, strict: false }),
+      scaffoldFiles({ workerDir: dir, framework: "react", files: { "src/styles.css": "body {}\n" }, strict: false }),
     ).rejects.toThrow(PithyError);
     expect(await readdir(outside)).toEqual([]);
   });
@@ -90,6 +111,7 @@ describe("scaffoldFiles", () => {
     await writeFile(join(dir, "index.html"), "mine\n");
     const result = await scaffoldFiles({
       workerDir: dir,
+      framework: "react",
       files: { "index.html": "theirs\n", "src/styles.css": "body {}\n" },
       strict: false,
     });

@@ -4,6 +4,7 @@
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { devLogBranch, devLogFileName, parseDevLogFileName } from "./devLogPath";
 import type { DevLogRecord } from "./devLogRecord";
@@ -168,7 +169,7 @@ export async function readDevLogs(args: {
 export function missingLog(args: { dir: string; branch: string; worker: string }): NotFoundError {
   return new NotFoundError({
     message: `No session log for ${args.worker} on ${args.branch}.`,
-    action: "Run pithy dev logs to see every branch and worker that has one.",
+    action: `Run ${pithyCommand("dev logs")} to see every branch and worker that has one.`,
     detail: `Looked for ${join(args.dir, devLogFileName(args.branch, args.worker))}.`,
   });
 }

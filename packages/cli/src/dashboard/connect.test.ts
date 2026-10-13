@@ -128,10 +128,14 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
   };
 }
 
+/** The `pithy dashboard connect` a refusal names, as `connectSentence` answers it for a two-Worker project. */
+const CONNECT = "`pithy dashboard connect --env prod --worker api`";
+
 /** The shared arguments of a dashboard-path connect. */
 const base = {
   project: "acme",
   environment: "prod",
+  connect: async () => CONNECT,
   workerUrl: "https://api.example.com",
   basePath: "/control-plane",
   now: () => NOW,
@@ -374,6 +378,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
       registry,
       project: "acme",
       environment: "prod",
+      connect: async () => CONNECT,
       update: true,
       workerUrl: "https://new.example.com",
       basePath: "/admin",
@@ -401,6 +406,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
         registry,
         project: "acme",
         environment: "prod",
+        connect: async () => CONNECT,
         update: true,
         workerUrl: "https://new.example.com",
         client: fakeClient({
@@ -426,6 +432,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
       registry,
       project: "acme",
       environment: "prod",
+      connect: async () => CONNECT,
       update: true,
       scopes: ["manifest:read"],
       client: fakeClient({
@@ -691,6 +698,11 @@ describe("connectDashboard — the offline path", () => {
 
     expect((error as PithyError).payload.code).toBe("core/conflict");
     expect(registry.current()?.keys[0]?.publicKey.x).toBe(JWK.x);
+    // #711: revoking is destructive, and `revoke-key` defaults to dev, so the remedy is a person's decision that names
+    // the environment this run was about and the key it collided on — never a bare command to run.
+    expect((error as PithyError).payload.action).toBe(
+      `Register the new key under a new id, or revoke this one first: \`pithy dashboard revoke-key --env ${base.environment} --key-id key_1\` deletes a signing key the dashboard holds. That is a person's decision, not a fix.`,
+    );
   });
 
   test("appends when nothing is live, because then nothing could have signed a registration", async () => {
@@ -757,6 +769,7 @@ describe("rotateDashboardKey", () => {
       registry,
       client: rotatingClient(registry),
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
       now: () => NOW,
     });
@@ -783,6 +796,7 @@ describe("rotateDashboardKey", () => {
       registry,
       client,
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
       now: () => NOW,
     });
@@ -804,6 +818,7 @@ describe("rotateDashboardKey", () => {
       registry,
       client,
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
       now: () => NOW,
     }).catch((caught: unknown) => caught);
@@ -826,6 +841,7 @@ describe("rotateDashboardKey", () => {
       registry,
       client,
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
       now: () => NOW,
     });
@@ -846,6 +862,7 @@ describe("rotateDashboardKey", () => {
       registry,
       client: fakeClient({ rotateKey: rotate }),
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
       now: () => NOW,
     }).catch((caught: unknown) => caught);
@@ -861,6 +878,7 @@ describe("rotateDashboardKey", () => {
       registry: fakeRegistry(),
       client: fakeClient(),
       environment: "prod",
+      connect: async () => CONNECT,
       authorize: async () => "ct_1",
     }).catch((caught: unknown) => caught);
     expect((error as PithyError).payload.code).toBe("controlplane/not_connected");

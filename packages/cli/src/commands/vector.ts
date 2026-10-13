@@ -8,12 +8,13 @@ import { z } from "zod";
 import { createRemoteCliAudit } from "../audit/cliAudit";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
+import { workerDirName } from "../project/workerIdentity";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { stanzaFor } from "../project/wranglerInheritance";
@@ -35,25 +36,6 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * rather than re-implemented. `--yes` does not unlock it: `--yes` means "yes, this is not dev", and it was
  * designed to authorize additive writes. A reset deletes every vector in an index.
  */
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): { accountId: string; apiToken: string } {
-  const vars = cloudflareEnv({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  return { accountId, apiToken };
-}
 
 /** The `wrangler.jsonc` slice the app database id is read from. */
 interface WranglerAppConfig {
@@ -130,7 +112,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   const projectConfig = await loadProject(projectDir);
   const project = requireProjectName(projectConfig);
   const productionEnvironments = projectConfig.seed?.productionEnvironments;
-  const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+  const { accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
   // One resolution for the config and every write: the indexes provisioned are the ones the Worker they are
   // recorded in declares (#590 review). They used to come from the first Worker composing vector.
   const { isVectorCapability } = await loadVector(projectDir);
@@ -160,6 +142,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
       resolveEnv: async (requested) =>
         requested === env ? readiness : requireAppDatabaseId(appWorker, requested, productionEnvironments),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
+      target: { worker: workerDirName(appWorker), env, productionEnvironments: productionEnvironments ?? [] },
     }),
     accountId,
     apiToken,

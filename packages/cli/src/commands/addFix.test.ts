@@ -81,7 +81,7 @@ async function fixFrom(call: Promise<unknown>): Promise<string> {
 }
 
 /** A refusal builder's error, thrown, so it reads like every other emitter's. */
-async function thrown(error: Promise<PithyError>): Promise<never> {
+async function thrown(error: PithyError | Promise<PithyError>): Promise<never> {
   throw await error;
 }
 
@@ -98,7 +98,7 @@ async function exitOf(fix: string): Promise<number> {
     return true;
   });
   try {
-    await runCaptured("add", [...args, "--dry-run", "--json"]);
+    await runCaptured("add", [...args.filter((arg) => arg !== "--dry-run" && arg !== "--json"), "--dry-run", "--json"]);
   } catch (error) {
     if (exited.mock.calls.length === 0) throw error;
   }
@@ -110,9 +110,9 @@ async function exitOf(fix: string): Promise<number> {
 describe("every pithy add fix runs as written", () => {
   test("one Worker, a capability with prerequisites the project does not compose", async () => {
     const fix = await fixFrom(
-      thrown(capabilityNotComposed("email", { message: "m", action: "a" }, { projectDir: dir })),
+      thrown(capabilityNotComposed("email", { message: "m", action: () => "a" }, { projectDir: dir })),
     );
-    expect(fix).toBe("pithy add email --with-prerequisites");
+    expect(fix).toBe("pithy add email --worker api --with-prerequisites");
     expect(await exitOf(fix)).toBe(0);
   });
 
@@ -132,7 +132,7 @@ describe("every pithy add fix runs as written", () => {
 
   test("one Worker, no secrets composed anywhere", async () => {
     const fix = await fixFrom(mergedProjectSecrets(dir));
-    expect(fix).toBe("pithy add secrets");
+    expect(fix).toBe("pithy add secrets --worker api");
     expect(await exitOf(fix)).toBe(0);
   });
 
@@ -148,7 +148,7 @@ describe("every pithy add fix runs as written", () => {
       thrown(
         capabilityNotComposed(
           "turnstile",
-          { message: "m", action: "a" },
+          { message: "m", action: () => "a" },
           { projectDir: dir, workerDir: join(dir, "apps", "web") },
         ),
       ),
@@ -157,9 +157,35 @@ describe("every pithy add fix runs as written", () => {
     expect(await exitOf(fix)).toBe(0);
   });
 
+  // #711: `pithy add <capability> --worker <w> --json` with prerequisites missing named a bare
+  // `pithy add <capability> --with-prerequisites`, which a two-Worker project refuses for want of the Worker.
+  test("two Workers: a missing prerequisite's fix names the Worker the caller named, and runs", async () => {
+    await secondWorker();
+    const errors: string[] = [];
+    const written = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      errors.push(String(chunk));
+      return true;
+    });
+    const exited = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${String(code)}`);
+    });
+    await runCaptured("add", ["email", "--worker", "web", "--dry-run", "--json"]).catch(() => undefined);
+    expect(exited).toHaveBeenCalledWith(2);
+    const line = JSON.parse(errors.join("").trim()) as { error: { code: string; action: string; fix?: string } };
+    written.mockRestore();
+    exited.mockRestore();
+
+    expect(line.error.code).toBe("input/required");
+    // A dry run's fix is a dry run too (#711): the caller asked to write nothing, and so does the command it names. And
+    // it answers in JSON, as the caller's own call asked to.
+    expect(line.error.fix).toBe("pithy add email --worker web --with-prerequisites --dry-run --json");
+    expect(line.error.action.startsWith(`Run \`${line.error.fix}\`,`)).toBe(true);
+    expect(await exitOf(line.error.fix as string)).toBe(0);
+  });
+
   test("two Workers and a refusal about the project: no single Worker can be named, so no fix", async () => {
     await secondWorker();
-    const error = await capabilityNotComposed("email", { message: "m", action: "a" }, { projectDir: dir });
+    const error = await capabilityNotComposed("email", { message: "m", action: () => "a" }, { projectDir: dir });
     expect(fixOf(error)).toBeUndefined();
   });
 });

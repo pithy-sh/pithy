@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -14,7 +14,7 @@ import { ledger } from "@pithy-sh/ledger/src/capability";
 import { media } from "@pithy-sh/media/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
 import { testers } from "@pithy-sh/testers/src/capability";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { readHostTemplate } from "../capabilities/hostRegistry";
 import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
@@ -105,9 +105,33 @@ async function writeApp(
   return dir;
 }
 
+/**
+ * One copy of `email` and `media` for the whole file, which every case's project links to.
+ *
+ * Copies, never the repository's own packages: a deploy writes each host's resolved config beside its worker
+ * module, and through a link to `packages/email` that is `packages/email/src/workflows/` — a file appearing and
+ * vanishing in a tree `turboInputs.test.ts` and `sourceFiles.test.ts` read while this runs (#711). The note on
+ * `payments` below is the same rule. Made once rather than per case because the cases run in turn, and a copy
+ * per case doubled this file's time.
+ */
+let kitCopies: string;
+
+beforeAll(async () => {
+  kitCopies = await mkdtemp(join(tmpdir(), "pithy-deploy-kit-copies-"));
+  await materializeKitPackage(kitCopies, "email");
+  await materializeKitPackage(kitCopies, "media");
+});
+
+afterAll(async () => {
+  await rm(kitCopies, { recursive: true, force: true });
+});
+
 beforeEach(async () => {
   projectDir = await mkdtemp(join(tmpdir(), "pithy-deploy-kit-"));
-  await linkKitPackages(projectDir, ["email", "media"]);
+  const scope = join(projectDir, "node_modules", "@pithy-sh");
+  await mkdir(scope, { recursive: true });
+  for (const name of ["email", "media"])
+    await symlink(join(kitCopies, "node_modules", "@pithy-sh", name), join(scope, name));
   deployed = [];
   // **The account's Secrets Store id, which every host that binds the store now requires.** Unset by
   // `vitest.shared`'s `NO_ACCOUNT` for every unit test, so a case that wants a deploy has to say so —
@@ -267,7 +291,7 @@ describe("deployKitWorkers", () => {
         capability: "email",
         worker: null,
         outcome: "skipped",
-        reason: "prod has no EMAIL_SUPPRESSIONS, SECRETS database yet. Run pithy email provision.",
+        reason: "prod has no EMAIL_SUPPRESSIONS, SECRETS database yet. Run pithy email provision --worker api.",
       });
       expect(deployed).toEqual([]);
     });
@@ -312,7 +336,7 @@ describe("deployKitWorkers", () => {
         worker: null,
         outcome: "skipped",
         reason:
-          "SECRETS_STORE_ID is not set, so email's Worker would deploy unable to read its master key. Run pithy add secrets on this machine, or export SECRETS_STORE_ID for this run.",
+          "SECRETS_STORE_ID is not set, so email's Worker would deploy unable to read its master key. Run `pithy add secrets --worker api` on this machine, or export SECRETS_STORE_ID for this run.",
       });
       expect(deployed).toEqual([]);
       // And it fails the command, because a run that skipped every kit Worker shipped none of them.
@@ -332,7 +356,7 @@ describe("deployKitWorkers", () => {
         capability: "media",
         worker: null,
         outcome: "skipped",
-        reason: "prod has no MEDIA namespace yet. Run pithy media provision.",
+        reason: "prod has no MEDIA namespace yet. Run pithy media provision --worker api.",
       });
       expect(deployed).toEqual([]);
     });
@@ -469,7 +493,7 @@ describe("deployKitWorkers", () => {
 
       expect(report.workers).toEqual([]);
       expect(report.problems).toEqual([
-        'A Worker in apps/ is named "email", which is also the email capability\'s host. Rename that Worker with pithy worker add, or move it, so EMAIL_ORIGIN names one process.',
+        'A Worker in apps/ is named "email", which is also the email capability\'s host. Rename that Worker with pithy worker rename, or move it, so EMAIL_ORIGIN names one process.',
       ]);
       expect(kitDeployFailed(report)).toBe(true);
     });
@@ -622,9 +646,9 @@ describe("summarizeKitDeploy", () => {
         capability: "email",
         worker: null,
         outcome: "skipped",
-        reason: "Run pithy email provision.",
+        reason: "Run pithy email provision --worker api.",
       }),
-    ).toBe("email: skipped. Run pithy email provision.");
+    ).toBe("email: skipped. Run pithy email provision --worker api.");
   });
 
   // Color is off for every unit test (`vitest.shared`), so this asserts the sentence rather than the

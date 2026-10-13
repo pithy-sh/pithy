@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { GLOBAL_SCOPE, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { composedManifests } from "../capabilities/manifests";
@@ -9,6 +10,7 @@ import { supportBucketName } from "../capabilities/supportProvisioner";
 import { loadProject, requireProjectName } from "../project/config";
 import { isPlaceholder } from "../project/envInventory";
 import { kitImport } from "../project/kitResolve";
+import { workerDirName } from "../project/workerIdentity";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 
@@ -201,6 +203,12 @@ interface Repointable {
   repointable: boolean;
   /** The package to upgrade when it is not — named because that is the whole of the extra step. */
   package: string;
+  /**
+   * Every Worker composing the capability that owns the resource, by `apps/` directory — the Workers its
+   * provision accepts, and so the only ones a remedy may name it for (#711). A stanza's Worker is not one of
+   * them by being stale: it may declare the binding and compose nothing that owns it.
+   */
+  composing: WorkerDir[];
 }
 
 /** One project-global binding whose stanzas do not all name the project's single resource. */
@@ -341,6 +349,8 @@ interface ProjectWiring {
   resources: BoundResource[];
   /** What the installed manifests say about naming those bindings — the remedy's input, not the finding's. */
   namings: DeclaredNamings;
+  /** Each composed capability's Workers, by `apps/` directory, in discovery order. */
+  composing: ReadonlyMap<string, WorkerDir[]>;
   /** True when some Worker's config, or the Worker set itself, would not read. */
   unreadable: boolean;
 }
@@ -368,13 +378,15 @@ async function projectWiring(projectDir: string): Promise<ProjectWiring> {
     // `discoverWorkers` throws on a `pithy.worker.jsonc` that will not parse — correct for `dev` and
     // `deploy`, and exactly wrong here: `doctor` exists to work in the broken project. Same treatment
     // `declaredResources` gives it.
-    return { resources: [], namings: new Map(), unreadable: true };
+    return { resources: [], namings: new Map(), composing: new Map(), unreadable: true };
   }
   const resources: BoundResource[] = [];
   const namings = new Map<string, BindingNamingFields>();
+  const composing = new Map<string, WorkerDir[]>();
   let unreadable = false;
   for (const worker of workers) {
     for (const manifest of (await composedManifests(projectDir, worker.dir)).manifests) {
+      composing.set(manifest.name, [...(composing.get(manifest.name) ?? []), workerDirName(worker)]);
       for (const spec of manifest.requiredBindings) {
         if (bindings.has(spec.name)) namings.set(spec.name, { scope: spec.scope, resource: spec.resource });
       }
@@ -393,7 +405,7 @@ async function projectWiring(projectDir: string): Promise<ProjectWiring> {
       resources.push(...stanzaResources(stanza, worker.name, env).filter((entry) => bindings.has(entry.binding)));
     }
   }
-  return { resources, namings, unreadable };
+  return { resources, namings, composing, unreadable };
 }
 
 /**
@@ -483,7 +495,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
   const project = await projectNameFor(projectDir);
   if (project === null) return { ok: true, split: [], divergent: [], partial: false };
 
-  const { resources, namings, unreadable } = await projectWiring(projectDir);
+  const { resources, namings, composing, unreadable } = await projectWiring(projectDir);
   const split: SplitGlobalBinding[] = [];
   const divergent: DivergentGlobalBinding[] = [];
   let partial = unreadable;
@@ -518,6 +530,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
         credential: global.credential,
         stale,
         repointable,
+        composing: composing.get(global.capability) ?? [],
       });
     }
 
@@ -540,6 +553,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
         credential: global.credential,
         ids: [...byId].map(([id, at]) => ({ id, at })),
         repointable,
+        composing: composing.get(global.capability) ?? [],
       });
     }
   }

@@ -4,6 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import { dirname, join, parse } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { ConflictError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
@@ -212,7 +213,7 @@ async function commit(path: string, edited: string, original: string | null): Pr
   if ((current ?? null) !== (original ?? null)) {
     throw new ConflictError({
       message: `${path} changed while you were editing, so nothing was written.`,
-      action: "Another command wrote it — pithy add or pithy dev. Merge the two by hand.",
+      action: `Another command wrote it — ${commandName("add")} or ${commandName("dev")}. Merge the two by hand.`,
       detail: `dev secrets file '${path}' differs from the content the edit started from`,
     });
   }

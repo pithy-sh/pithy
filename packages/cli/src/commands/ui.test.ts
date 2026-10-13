@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import type { CommandDef } from "citty";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { main } from "../main";
@@ -9,9 +10,10 @@ import type { UiAddReport, UiSyncReport } from "../ui/flow";
 import ui from "./ui";
 
 /** What the stubbed `runUiSync` answers. Rewritten per test; the command is the subject, not the flow. */
+// `vi.hoisted` runs before any import is bound, so the Worker is cast to its brand here rather than built.
 const stub = vi.hoisted(() => ({
   report: {
-    worker: "board",
+    worker: "board" as WorkerDir,
     before: [],
     after: [],
     changed: false,
@@ -20,7 +22,7 @@ const stub = vi.hoisted(() => ({
     notFoundHandling: "single-page-application",
   } as UiSyncReport,
   add: {
-    worker: "board",
+    worker: "board" as WorkerDir,
     framework: "react",
     auth: true,
     payments: false,

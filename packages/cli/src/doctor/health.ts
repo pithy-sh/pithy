@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
 import type { MissingPrerequisite } from "../capabilities/prerequisites";
@@ -16,6 +17,7 @@ import {
   type ReconcilePlan,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { workerDirName } from "../project/workerIdentity";
 import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
 import { type CapabilityReachHealth, type ComposedWorker, capabilityReachHealth } from "./capabilityReach";
 import {
@@ -180,6 +182,11 @@ export type WorkerHealth =
       state: "checked";
       /** The Worker's name, as `pithy worker list` shows it. */
       worker: string;
+      /**
+       * The Worker's `apps/` directory: what `--worker` takes, and what every command a finding names carries
+       * (#711). Not {@link worker}, which is the deployed name and which `--worker` does not resolve first.
+       */
+      directory: WorkerDir;
       /** The AND of the five checks below. */
       ok: boolean;
     } & WorkerChecks)
@@ -188,6 +195,8 @@ export type WorkerHealth =
       state: "unavailable";
       /** The Worker's name, as `pithy worker list` shows it. */
       worker: string;
+      /** The Worker's `apps/` directory: what `--worker` takes. */
+      directory: WorkerDir;
     };
 
 /**
@@ -399,7 +408,13 @@ function migrationHealth(environments: EnvironmentMigrations[]): MigrationHealth
 }
 
 /** Project one Worker's reconcile plan, and its per-environment migration answers, into its five checks. */
-function healthFromPlan(worker: string, plan: ReconcilePlan, migrations: MigrationHealth): WorkerHealth {
+function healthFromPlan(
+  target: { name: string; dir: string },
+  plan: ReconcilePlan,
+  migrations: MigrationHealth,
+): WorkerHealth {
+  const worker = target.name;
+  const directory = workerDirName(target);
   const drift = plan.perCapability
     .filter((cap) => cap.missingConfigKeys.length > 0)
     .map((cap) => ({ capability: cap.name, keys: cap.missingConfigKeys.map((key) => key.key) }));
@@ -437,6 +452,7 @@ function healthFromPlan(worker: string, plan: ReconcilePlan, migrations: Migrati
   return {
     state: "checked",
     worker,
+    directory,
     ok: config.ok && bindings.ok && migrations.ok && entitlements.ok && prerequisites.ok,
     config,
     bindings,
@@ -568,8 +584,8 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     }
     workers.push(
       plan === null
-        ? { state: "unavailable", worker: worker.name }
-        : healthFromPlan(worker.name, plan, migrationHealth(answers)),
+        ? { state: "unavailable", worker: worker.name, directory: workerDirName(worker) }
+        : healthFromPlan(worker, plan, migrationHealth(answers)),
     );
     const succeeded: WorkerComposition[] = [];
     for (const env of environments) {

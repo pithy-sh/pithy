@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -438,7 +439,9 @@ const connectCommand = withContract(
             return;
           }
           emit("No AI clients detected here.");
-          emit("Run `pithy docs connect --print` for the snippet to add by hand.");
+          emit(
+            `Run \`${pithyCommand("docs connect", { flags: { "--print": true } })}\` for the snippet to add by hand.`,
+          );
           return;
         }
 

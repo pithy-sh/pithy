@@ -5,6 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { callerOf, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { declineRefusal, type ReconcileApplied, type ReconcilePlan } from "../capabilities/reconcile";
@@ -17,6 +18,7 @@ import { doctorHarness } from "../test-utils/doctorHarness";
 import { fakeInstall, fakePackument, fakeRegistry } from "../test-utils/fakeInstall";
 import { expectConforms } from "../test-utils/payloadContract";
 import { templateTarball } from "../test-utils/templateTarball";
+import { dirOf } from "../test-utils/workerDir";
 import { readManifestDocument, writeManifestDocument } from "../ui/workerUi";
 import { buildDoctorReport, installedCapabilityVersions, renderDoctorText } from "./doctor";
 import upgrade, {
@@ -100,7 +102,9 @@ describe("plan rendering", () => {
     const lines = __test.planLines(plan);
     expect(lines).toContain("auth: add 1 binding, 1 config key.");
     expect(lines).toContain("billing: ejected. Skipped.");
-    expect(lines).toContain("3 migrations pending. Run pithy upgrade --migrate, or pithy migrate --env dev.");
+    expect(lines).toContain(
+      "3 migrations pending. Run pithy upgrade --worker api --env dev --migrate, or pithy migrate --worker api --env dev.",
+    );
     // A capability with no drift produces no line.
     expect(lines.some((line) => line.startsWith("quiet:"))).toBe(false);
   });
@@ -163,7 +167,9 @@ describe("applied rendering", () => {
     const lines = __test.appliedLines(applied, plan);
     expect(lines).toContain("auth: added 1 binding, 1 config key.");
     expect(lines).toContain("billing: ejected. Skipped.");
-    expect(lines).toContain("3 migrations pending. Run pithy upgrade --migrate, or pithy migrate --env dev.");
+    expect(lines).toContain(
+      "3 migrations pending. Run pithy upgrade --worker api --env dev --migrate, or pithy migrate --worker api --env dev.",
+    );
   });
 
   test("reports a completed migration run instead of a pending note", () => {
@@ -212,7 +218,7 @@ describe("worker grouping", () => {
       "api:",
       "  auth: add 1 binding, 1 config key.",
       "  billing: ejected. Skipped.",
-      "  3 migrations pending. Run pithy upgrade --migrate, or pithy migrate --env dev.",
+      "  3 migrations pending. Run pithy upgrade --worker api --env dev --migrate, or pithy migrate --worker api --env dev.",
       "collab:",
       "  Nothing to upgrade.",
     ]);
@@ -669,6 +675,26 @@ describe("runUpgrade — a worker that will not reconcile", () => {
     expect(failed && "applied" in failed).toBe(false);
   });
 
+  // The rerun an unapplied Worker names is the caller's own run, from its context (#711): it was rebuilt from the
+  // Worker, the environment and --migrate, and dropped the --json an agent's call had asked for.
+  test("an unapplied Worker's rerun is the caller's own run, --json included", async () => {
+    const run = await runUpgrade({
+      ...base,
+      dryRun: false,
+      migrate: true,
+      projectDir: dir,
+      caller: callerOf("upgrade", { env: "dev", migrate: true, json: true }),
+      runMigrate: async ({ worker }) => {
+        if (worker === "collab") throw new Error("planted: this worker's migrations will not run");
+        return [];
+      },
+    });
+    const failed = run.workers[1];
+    expect(failed?.state === "unapplied" && failed.again).toBe(
+      "pithy upgrade --env dev --migrate --json --worker collab",
+    );
+  });
+
   test("either failure still fails the run — the gate does not weaken, it stops taking the report with it", async () => {
     // Both ledgers read. A stub rather than the real read, because the Workers here are a double over a
     // scaffold with nothing installed: the real read discovers the rest of the project beside them, and a
@@ -697,7 +723,12 @@ describe("runUpgrade — a worker that will not reconcile", () => {
     ]);
     expect(plans).not.toContain("Nothing to upgrade.");
 
-    const partial = __test.workerLines({ state: "unapplied", worker: "collab", plan: { ...plan, worker: "collab" } });
+    const partial = __test.workerLines({
+      state: "unapplied",
+      worker: "collab",
+      plan: { ...plan, worker: "collab" },
+      again: pithyCommand("upgrade", { flags: { "--worker": dirOf("collab"), "--env": "dev" } }),
+    });
     expect(partial[0]).toBe("Upgrade failed partway. Its wiring may hold part of the plan below.");
     expect(partial[1]).toBe("Check it, then re-run: pithy upgrade --worker collab --env dev.");
   });
@@ -774,7 +805,7 @@ describe("declined bindings", () => {
       state: "read",
       declines: [{ state: "required", name: "DB", type: "d1", capability: "auth", reason: "own database" }],
     });
-    const refusal = declineRefusal(built);
+    const refusal = declineRefusal(built, ["dev", "staging", "prod"], []);
     expect(refusal).not.toBeNull();
     const lines = __test.workerLines({
       state: "refused",
@@ -846,12 +877,83 @@ describe("a refused decline in both tenses", () => {
   test("the plan itself carries the refusal, so both paths read one fact", () => {
     // Neither tense recomputes anything: the refusal is a function of the plan, and the plan is built
     // once. That is what makes "they agree" structural rather than a pair of code paths kept in step.
-    expect(declineRefusal(refusing)).not.toBeNull();
-    expect(declineRefusal({ ...refusing, declinedBindings: { state: "read", declines: [] } })).toBeNull();
+    expect(declineRefusal(refusing, ["dev", "staging", "prod"], [])).not.toBeNull();
+    expect(declineRefusal({ ...refusing, declinedBindings: { state: "read", declines: [] } }, ["dev"], [])).toBeNull();
+  });
+
+  // `vector provision` acts on one environment and defaults to dev, and an undeclinable binding is provisioned in
+  // every environment the Worker has: so the line names one command per environment, production as the person's
+  // decision it is — never only the `dev` the plan happened to count migrations in (#711).
+  test("a declined Workflow whose provision acts on one environment names every environment the Worker has", () => {
+    const refusal = declineRefusal(
+      {
+        ...refusing,
+        env: "dev",
+        declinedBindings: {
+          state: "read",
+          declines: [
+            { state: "undeclinable", name: "VECTOR_REPROCESS", type: "workflow", capability: "vector", reason: "none" },
+          ],
+        },
+      },
+      ["dev", "staging", "prod"],
+      [],
+    );
+    expect(refusal?.payload.action).toContain(
+      "Run `pithy vector provision --worker api --env dev` and `pithy vector provision --worker api --env staging`.",
+    );
+    expect(refusal?.payload.action).toMatch(
+      /`pithy vector provision --worker api --env prod` runs against prod, a production environment\./,
+    );
+  });
+
+  // #711: the project's own production environment is a person's decision as well, never a routine provision.
+  test("an environment the project calls production is a person's decision in the refusal", () => {
+    const refusal = declineRefusal(
+      {
+        ...refusing,
+        declinedBindings: {
+          state: "read",
+          declines: [
+            { state: "undeclinable", name: "VECTOR_REPROCESS", type: "workflow", capability: "vector", reason: "none" },
+          ],
+        },
+      },
+      ["dev", "staging", "live"],
+      ["live"],
+    );
+    expect(refusal?.payload.action).toContain(
+      "Run `pithy vector provision --worker api --env dev` and `pithy vector provision --worker api --env staging`.",
+    );
+    expect(refusal?.payload.action).toContain(
+      "`pithy vector provision --worker api --env live` runs against live, a production environment.",
+    );
+  });
+
+  // `testers provision` with no `--env` covers every environment, and refuses `--env dev`: one command, no `--env`.
+  // Bare, `testers provision` runs against production too (#711), so it is named per deployed environment: staging
+  // as a command, prod as a person's decision.
+  test("a declined Workflow whose provision spans every environment names each deployed one, prod as a decision", () => {
+    const refusal = declineRefusal(
+      {
+        ...refusing,
+        declinedBindings: {
+          state: "read",
+          declines: [
+            { state: "undeclinable", name: "TESTERS_DAILY", type: "workflow", capability: "testers", reason: "none" },
+          ],
+        },
+      },
+      ["dev", "staging", "prod"],
+      [],
+    );
+    expect(refusal?.payload.action).toContain(
+      "Run `pithy testers provision --worker api --env staging`. `pithy testers provision --worker api --env prod` runs against prod, a production environment. That is a person's decision, not a fix.",
+    );
   });
 
   test("a refused Worker fails the exit whether or not anything was written", () => {
-    const refusal = declineRefusal(refusing);
+    const refusal = declineRefusal(refusing, ["dev", "staging", "prod"], []);
     // biome-ignore lint/style/noNonNullAssertion: asserted non-null in the case above.
     const result = { state: "refused" as const, worker: "api", plan: refusing, refusal: refusal!.payload };
     expect(upgradeIncomplete({ workers: [result], manifestFaults: [] })).toBe(true);
@@ -1596,7 +1698,7 @@ describe("planUpgrade", () => {
     const pending = runOf({ ledger: { state: "read", pending: 1, undeclared: [] } });
     // The sentence `docs/commands/upgrade.md` shows, word for word.
     expect((await planUpgrade(root, pending, false)).notes).toEqual([
-      "board: 1 migration pending on dev. pithy upgrade --migrate applies them.",
+      "board: 1 migration pending on dev. pithy upgrade --worker board --env dev --migrate applies them.",
     ]);
     expect((await planUpgrade(root, pending, true)).notes).toEqual(["board: then applies 1 migration pending on dev."]);
   });
@@ -1611,7 +1713,7 @@ describe("planUpgrade", () => {
       },
     });
     expect((await planUpgrade(root, partial, false)).notes).toEqual([
-      "board: 2 migrations pending on staging. pithy upgrade --migrate applies them.",
+      "board: 2 migrations pending on staging. pithy upgrade --worker board --env staging --migrate applies them.",
     ]);
   });
 
@@ -1743,7 +1845,12 @@ describe("upgradeFollowUp", () => {
   test("an unplanned, unapplied or refused Worker beside a behind one fails the run, so neither is a step", () => {
     const others: UpgradeWorkerResult[] = [
       { state: "unplanned", worker: "web" },
-      { state: "unapplied", worker: "web", plan },
+      {
+        state: "unapplied",
+        worker: "web",
+        plan,
+        again: pithyCommand("upgrade", { flags: { "--worker": dirOf("web") } }),
+      },
     ];
     for (const other of others) {
       const run: UpgradeRun = { workers: [worker("api", 2), other], manifestFaults: [] };
@@ -1757,7 +1864,7 @@ describe("upgradeFollowUp", () => {
         declines: [{ state: "required", name: "DB", type: "d1", capability: "auth", reason: "own database" }],
       },
     };
-    const refusal = declineRefusal(refusing);
+    const refusal = declineRefusal(refusing, ["dev", "staging", "prod"], []);
     if (refusal === null) throw new Error("planted: a required decline is refused");
     const refused: UpgradeRun = {
       workers: [worker("api", 2), { state: "refused", worker: "web", plan: refusing, refusal: refusal.payload }],
@@ -1791,8 +1898,52 @@ describe("upgradeFollowUp", () => {
       manifestFaults: [],
       packages: packagesMoving(["@pithy-sh/cli"], false),
     };
-    expect(commands(run)).toEqual(["bun x pithy upgrade"]);
+    expect(commands(run)).toEqual(["bun x pithy upgrade --env staging"]);
     // A move that left the reconcile but did not touch the CLI is not this case: nothing is deferred.
     expect(upgradeFollowUp({ ...run, packages: packagesMoving(["@pithy-sh/auth"], false) }, options)).toBeUndefined();
+  });
+
+  /**
+   * **The rerun is the caller's own run, less the package move it already made (#711).** `--env`, `--worker` and
+   * `--migrate` each change what the reconcile acts on, so the line that hands the reconcile to the new CLI
+   * carries every one the caller gave; `--packages` and `--latest` did their work in this run, and a rerun that
+   * repeated them would move the packages again. `--worker` cannot reach here beside `--packages` today
+   * (`validateUpgradeFlags`), and the rerun would carry it the day it could.
+   */
+  test("the reconcile it leaves to the new CLI keeps the caller's --env, --worker and --migrate", () => {
+    const run: UpgradeRun = { workers: [], manifestFaults: [], packages: packagesMoving(["@pithy-sh/cli"], false) };
+    const given = {
+      env: "staging",
+      worker: "api",
+      migrate: true,
+      packages: true,
+      latest: true,
+      "dry-run": false,
+      json: false,
+    };
+    const rerun = "bun x pithy upgrade --env staging --worker api --migrate";
+    expect(upgradeText(run, false, callerOf("upgrade", given))).toContain(
+      `@pithy-sh/cli moved to 0.9.0. Run ${rerun} to reconcile with it.`,
+    );
+    expect(
+      upgradeFollowUp(run, { ...options, migrate: true, caller: callerOf("upgrade", given) })?.map(
+        (step) => step.command,
+      ),
+    ).toEqual([rerun]);
+  });
+
+  test("the reconcile it leaves to the new CLI names no flag the caller did not need", () => {
+    const run: UpgradeRun = { workers: [], manifestFaults: [], packages: packagesMoving(["@pithy-sh/cli"], false) };
+    const given = { env: "dev", migrate: false, packages: true, latest: false, "dry-run": false, json: false };
+    expect(upgradeText(run, false, callerOf("upgrade", given))).toContain(
+      "@pithy-sh/cli moved to 0.9.0. Run bun x pithy upgrade to reconcile with it.",
+    );
+    expect(
+      upgradeFollowUp(run, { ...options, env: "dev", caller: callerOf("upgrade", given) })?.map((step) => step.command),
+    ).toEqual(["bun x pithy upgrade"]);
+    // A named environment is carried on its own: it is where the reconcile writes a missing binding.
+    expect(upgradeText(run, false, callerOf("upgrade", { ...given, env: "staging" }))).toContain(
+      "@pithy-sh/cli moved to 0.9.0. Run bun x pithy upgrade --env staging to reconcile with it.",
+    );
   });
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { personDecision } from "@pithy-sh/core/src/cli/command";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
@@ -148,6 +149,12 @@ export async function authorizeDashboard(client: DashboardClient, options: Autho
 export interface ConnectDashboardOptions {
   /** The adopter's registration store for this environment. */
   registry: ConnectionRegistry;
+  /**
+   * The `pithy dashboard connect` a refusal here names, in code (`resolveTarget.ts`'s `connectSentence`), asked
+   * only when one is thrown. A seam because the answer reads every Worker's config, and naming the Worker is
+   * what makes the command run in a project with several (#711).
+   */
+  connect: () => Promise<string>;
   /** The project's stable name, from the root `pithy.config.ts`. */
   project: string;
   /** The environment being connected. */
@@ -254,8 +261,9 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   if (!client) {
     throw new ValidationError({
       message: "Nothing to connect with.",
+      // A caller that handed neither a client nor a key: the call is incomplete, and the remedy is what to pass.
       action:
-        "Run pithy dashboard connect to use the dashboard, or pass --public-key and --issuer to register your own key.",
+        "Pass a dashboard client to connect through the dashboard, or --public-key and --issuer to register your own key.",
     });
   }
 
@@ -265,7 +273,7 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
   if (options.update) {
     if (!existing) {
       throw new ControlPlaneNotConnectedError({
-        action: "Connect this environment first: pithy dashboard connect --env <environment>.",
+        action: `Connect this environment first: ${await options.connect()}.`,
         detail: `--update with no connection registered for ${options.environment}`,
       });
     }
@@ -405,7 +413,7 @@ async function connectOffline(
   if (existing.issuer !== offline.issuer) {
     throw new ConflictError({
       message: "This environment is already connected to a different issuer.",
-      action: `Run pithy dashboard disconnect --env ${options.environment} first, then connect again.`,
+      action: `Disconnecting first is the way to connect again. ${personDecision("dashboard disconnect", { flags: { "--env": options.environment } })}`,
       detail: `registered issuer ${existing.issuer}, offered ${offline.issuer}`,
     });
   }
@@ -419,7 +427,9 @@ async function connectOffline(
     // trusts — a trust change disguised as a re-registration, and the loudest possible one to refuse.
     throw new ConflictError({
       message: "That key id is already registered with different key material.",
-      action: "Register the new key under a new id, or revoke this one first: pithy dashboard revoke-key.",
+      // Revoking is destructive and `revoke-key` defaults to dev, so the line names the environment and the key, as a
+      // person's decision (#711).
+      action: `Register the new key under a new id, or revoke this one first: ${personDecision("dashboard revoke-key", { flags: { "--env": options.environment, "--key-id": offline.keyId } })}`,
       detail: `keyId ${offline.keyId} is registered on connection ${existing.id} with a different public key`,
     });
   }
@@ -473,6 +483,12 @@ export interface RotateDashboardKeyOptions {
   client: DashboardClient;
   /** The environment being rotated. */
   environment: string;
+  /**
+   * The `pithy dashboard connect` a refusal here names, in code (`resolveTarget.ts`'s `connectSentence`), asked
+   * only when one is thrown. A seam because the answer reads every Worker's config, and naming the Worker is
+   * what makes the command run in a project with several (#711).
+   */
+  connect: () => Promise<string>;
   /** The device-code flow (default: {@link authorizeDashboard}). */
   authorize?: Authorize;
   /** The clock. */
@@ -529,7 +545,7 @@ export async function rotateDashboardKey(options: RotateDashboardKeyOptions): Pr
   const connection = await options.registry.read();
   if (!connection) {
     throw new ControlPlaneNotConnectedError({
-      action: `Connect this environment first: pithy dashboard connect --env ${options.environment}.`,
+      action: `Connect this environment first: ${await options.connect()}.`,
       detail: `rotate with no connection registered for ${options.environment}`,
     });
   }
@@ -541,7 +557,7 @@ export async function rotateDashboardKey(options: RotateDashboardKeyOptions): Pr
   if (previousKeyIds.length === 0) {
     throw new ConflictError({
       message: "This connection has no live key, so nothing can sign a rotation.",
-      action: `Register a new one: pithy dashboard connect --env ${options.environment}.`,
+      action: `Register a new one: ${await options.connect()}.`,
       detail: `connection ${connection.id} has no key live at ${now.toISOString()}`,
     });
   }

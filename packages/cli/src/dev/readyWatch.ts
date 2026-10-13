@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { dim } from "../terminal/style";
 
 /**
@@ -76,7 +77,9 @@ export function stillWaitingLines(waiting: readonly string[], first: boolean): s
   return [
     line,
     dim("  A worker that never becomes ready keeps running, so nothing else reports it."),
-    dim("  Each one's own output above says why. Fix it and run pithy dev again."),
+    // The restart, because a wrangler dev whose first build failed never rebuilds — with the caller's own flags,
+    // which this line cannot see, so it names the command and leaves them to the reader (#711).
+    dim(`  Each one's own output above says why. Fix it and start ${commandName("dev")} again, as you ran it.`),
   ];
 }
 

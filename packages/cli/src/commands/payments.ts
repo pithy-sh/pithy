@@ -3,12 +3,8 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import {
-  fromZodError,
-  InternalError,
-  PreconditionFailedError,
-  ValidationError,
-} from "@pithy-sh/core/src/error/pithyError";
+import { callerOf, pithyCommand, rerunRemedy } from "@pithy-sh/core/src/cli/command";
+import { fromZodError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -24,7 +20,7 @@ import {
 } from "../capabilities/paymentsProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { DRY_RUN_ARG, emptyPlan, type Plan, PlanKey } from "../plan/plan";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
@@ -36,10 +32,13 @@ import {
   environmentOutcomes,
   environmentReadiness,
   formatEnvironmentOutcomes,
+  ProvisionReportExitCode,
   readyStanza,
   requireReadyEnvironments,
   SkippedEnvironment,
+  writeProvisionReport,
 } from "../project/environmentReadiness";
+import { workerDirName } from "../project/workerIdentity";
 import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { secretsDatabaseMissing } from "../provision/missingDatabase";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -84,11 +83,11 @@ async function loadProjectPaymentsConfig(projectDir: string) {
   const workers = await resolveWorkers({ projectDir });
   const capability = projectCapabilities(workers).find(isPaymentsCapability);
   if (!capability) {
-    throw await capabilityNotComposed(
+    throw capabilityNotComposed(
       "payments",
       {
         message: "The payments capability is not configured.",
-        action: "Add `payments({ rails: { ... }, products: { ... } })` to pithy.config.ts (run `pithy add payments`).",
+        action: (add) => `Add \`payments({ rails: { ... }, products: { ... } })\` to pithy.config.ts (run ${add}).`,
       },
       { projectDir, workerDirs: workers.map((worker) => worker.dir) },
     );
@@ -101,43 +100,6 @@ async function loadProjectPaymentsConfig(projectDir: string) {
  * Worker — the config is that Worker's own. `project` for a run that writes into none.
  */
 type PaymentsSource = { kind: "worker"; worker?: string } | { kind: "project" };
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- *
- * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
- * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
- * "I asked an account nothing claims" — the two arrive as one empty listing.
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-  storeId: string;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const storeId = vars.SECRETS_STORE_ID ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  if (!storeId) {
-    throw new PreconditionFailedError({
-      message: "The CF Secrets Store id is missing.",
-      action:
-        "Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).",
-    });
-  }
-  return { account: { accountId, confirmation }, accountId, apiToken, storeId };
-}
 
 /**
  * Resolve the per-environment resources the reconcile worker binds: the app `DB` id, already read and
@@ -205,7 +167,10 @@ async function buildProvisioner(projectDir: string, source: PaymentsSource) {
   const project = requireProjectName(config);
   // The project's own environment set, read once here and carried, so provisioning and `--env` agree.
   const environments = loadProjectEnvironments(config);
-  const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+  const { account, accountId, apiToken, storeId } = commandCredentials(await projectCloudflareAccount(projectDir), {
+    projectDir,
+    why: "the reconcile worker decrypts the rails' credentials from it",
+  });
   // A run that writes into a Worker reads the catalog off **that** Worker, in the same resolution that names
   // it — the reconcile worker is deployed with the catalog of the Worker whose stanza gets its binding, never
   // a sibling's (#590 review). `reconcile` resolves no Worker: it dispatches into an already-deployed
@@ -290,6 +255,7 @@ const PaymentsProvisionPayload = z
       .array(z.string().describe("An environment."))
       .describe("The environments whose reconcile Worker was deployed."),
     skippedEnvironments: Skipped,
+    exitCode: ProvisionReportExitCode,
   })
   .describe("What `pithy payments provision` provisioned.");
 
@@ -375,13 +341,23 @@ const provision = withContract(
           });
         }
 
+        // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
+        // resolved when none was named (#711).
+        const again = rerunRemedy(callerOf("payments provision", args), {
+          flags: { "--worker": workerDirName(appWorker) },
+          productionEnvironments: readiness.productionEnvironments,
+        });
         if (args.json) {
-          // Written before the refusal below, so a run in which everything skipped still carries the
-          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-          process.stdout.write(
-            `${formatJsonLine({ command: "payments provision", environments, skippedEnvironments: readiness.skipped })}\n`,
+          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          writeProvisionReport(
+            {
+              command: "payments provision",
+              environments,
+              skippedEnvironments: readiness.skipped,
+            },
+            readiness,
+            again,
           );
-          requireReadyEnvironments(readiness, "pithy payments provision");
           return;
         }
         process.stdout.write(
@@ -389,9 +365,9 @@ const provision = withContract(
             environmentOutcomes(readiness, () => "reconcile worker deployed, PAYMENTS_RECONCILE bound"),
           ),
         );
-        requireReadyEnvironments(readiness, "pithy payments provision");
+        requireReadyEnvironments(readiness, again);
         process.stdout.write(
-          "Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.\n",
+          `Set each rail's credentials with \`${pithyCommand("secrets update", { args: ["payments-provider-credentials"] })}\` — nothing can mint them.\n`,
         );
         process.stdout.write(`${formatDone()}\n`);
       }),

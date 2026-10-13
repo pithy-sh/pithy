@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { PreflightSecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
@@ -177,7 +178,7 @@ async function assertEntryWritable(store: SecretsStore, request: SecretWriteRequ
   if (request.mode === "create" && present) {
     throw new SecretAlreadyExistsError({
       message: `Secret '${request.name}' already exists.`,
-      action: `Use pithy secrets update ${request.name} to replace it.`,
+      action: `Use ${pithyCommand("secrets update", { args: [request.name], flags: { "--env": request.env } })} to replace it.`,
       detail: `create '${request.name}': store entry '${entry}' is already present`,
     });
   }

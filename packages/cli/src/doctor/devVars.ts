@@ -5,6 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { cloudflareConfigPath } from "../cloudflare/config";
 import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVars";
@@ -384,12 +385,12 @@ export function describeDevVars(check: DevVarsCheck): string[] {
   if (check.devJsonSecrets.length > 0) {
     const home = check.devConfigPath === null ? "this machine's dev config" : check.devConfigPath;
     lines.push(
-      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy secrets edit to put it there, then delete the copy.`,
+      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run ${pithyCommand("secrets edit")} to put it there, then delete the copy.`,
     );
   }
   for (const { worker, file } of check.empty) {
     lines.push(
-      `${worker} has no dev values: ${file} was generated with none. That Worker starts with none of its bindings. Run pithy seed.`,
+      `${worker} has no dev values: ${file} was generated with none. That Worker starts with none of its bindings. Run ${pithyCommand("seed", { flags: { "--env": LOCAL_ENVIRONMENT } })}.`,
     );
   }
   for (const entry of check.root) {

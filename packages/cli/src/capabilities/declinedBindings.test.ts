@@ -388,7 +388,7 @@ describe("resolution reads both sources of truth", () => {
     const decline = plan.declinedBindings.state === "read" ? plan.declinedBindings.declines[0] : undefined;
     expect(decline?.state).toBe("required");
     // And it is refused at the write, rather than quietly leaving the Worker a binding short.
-    expect(declineRefusal(plan)).not.toBeNull();
+    expect(declineRefusal(plan, ["dev", "staging", "prod"], [])).not.toBeNull();
   });
 
   test("a manifest-optional binding the instance also declares optionally is still honored", async () => {

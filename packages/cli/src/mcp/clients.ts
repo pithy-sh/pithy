@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { COMMANDS } from "@pithy-sh/core/src/cli/commandCatalog.generated";
 import type { BasedPath } from "./home";
 
 /**
@@ -52,9 +53,12 @@ export type ClientTransport = "native" | "mcp-remote";
 export type Scope = "project" | "user";
 
 /** One client, and everything that makes writing its configuration different from writing anybody else's. */
+/** A client `pithy docs connect --client` takes: one of the choices its parser declares, as the catalog projects them. */
+export type McpClientId = (typeof COMMANDS)["docs connect"]["flags"]["--client"]["enum"][number];
+
 export interface McpClient {
   /** The `--client` value, and the key `pithy docs status` reports under. */
-  readonly id: string;
+  readonly id: McpClientId;
   /** The tool's own name, for a human-readable line. */
   readonly label: string;
   /** The file syntax. Decides which writer merges the entry. */

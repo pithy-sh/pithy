@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { callerOf, rerunRemedy } from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -13,9 +14,8 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
-import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -25,11 +25,14 @@ import {
   environmentOutcomes,
   environmentReadiness,
   formatEnvironmentOutcomes,
+  ProvisionReportExitCode,
   readyStanza,
   requireReadyEnvironments,
   SkippedEnvironment,
+  writeProvisionReport,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
+import { workerDirName } from "../project/workerIdentity";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -62,37 +65,6 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
   // single value is true for the run; each event states the environment it acted on.
   return createProjectCliAudit({ projectDir, accountId, apiToken, ...(worker !== undefined ? { worker } : {}) });
-}
-
-/**
- * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
- *
- * The account is a parameter rather than an ambient, so this cannot resolve before something has
- * established which account the project is for (#206).
- *
- * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
- * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
- * "I asked an account nothing claims" — the two arrive as one empty listing.
- */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
-  account: ConfirmedAccount;
-  accountId: string;
-  apiToken: string;
-  r2Raw: string | undefined;
-} {
-  const vars = cloudflareEnv({ account });
-  const confirmation = cloudflareAccountConfirmation({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
-  // No Secrets Store id, unlike email and media: the classification worker binds `DB` and `AI` and holds
-  // no credential to decrypt.
-  return { account: { accountId, confirmation }, accountId, apiToken, r2Raw: vars.R2_CREDENTIALS };
 }
 
 /**
@@ -168,6 +140,7 @@ const SupportProvisionPayload = z
       })
       .describe("The inbound routing rule."),
     skippedEnvironments: Skipped,
+    exitCode: ProvisionReportExitCode,
   })
   .describe("What `pithy support provision` provisioned.");
 
@@ -222,7 +195,7 @@ const provision = withContract(
         // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
         const environments = loadProjectEnvironments(config);
         const { provisionSupport } = await loadSupport(projectDir);
-        const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken } = commandCredentials(await projectCloudflareAccount(projectDir));
         // One resolution for the config and the app database the classification hosts are deployed against:
         // that Worker's own support capability, never a sibling's (#590 review).
         const { isSupportCapability } = await loadSupport(projectDir);
@@ -259,13 +232,30 @@ const provision = withContract(
         const result = await provisionSupport(provisioner, readiness.ready);
         const search = new Map(result.search.map((entry) => [entry.env, entry]));
 
+        // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
+        // resolved when none was named (#711).
+        const again = rerunRemedy(callerOf("support provision", args), {
+          flags: { "--worker": workerDirName(appWorker) },
+          productionEnvironments: readiness.productionEnvironments,
+        });
+        // What the run did before any environment could refuse it: the bucket is project-global and is created
+        // whatever else skipped. A refusal that left a bucket this run made out would say nothing happened. One an
+        // earlier run made is not this run's doing, and is not claimed.
+        const did = result.bucket.created
+          ? [`It created the project's support bucket (${result.bucket.bucket}), which every environment shares.`]
+          : [];
         if (args.json) {
-          // Written before the refusal below, so a run in which everything skipped still carries the
-          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-          process.stdout.write(
-            `${formatJsonLine({ command: "support provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          writeProvisionReport(
+            {
+              command: "support provision",
+              ...result,
+              skippedEnvironments: readiness.skipped,
+            },
+            readiness,
+            again,
+            did,
           );
-          requireReadyEnvironments(readiness, "pithy support provision");
           return;
         }
         process.stdout.write(
@@ -293,7 +283,7 @@ const provision = withContract(
             }),
           ),
         );
-        requireReadyEnvironments(readiness, "pithy support provision");
+        requireReadyEnvironments(readiness, again, did);
         // Say what happened to the index. It is DDL on the adopter's app database, and a provisioning
         // command that silently creates or drops a table is one an operator cannot audit by reading its
         // output. The per-environment lines above carry a create or a drop; silence there means it already
@@ -379,7 +369,7 @@ const deprovision = withContract(
         const declared = loadProjectEnvironments(config);
         const env = requireTeardownEnvironment(args.env, declared);
         const { deprovisionSupport } = await loadSupport(projectDir);
-        const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+        const { account, accountId, apiToken, r2Raw } = commandCredentials(await projectCloudflareAccount(projectDir));
         // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
         // without it, so discovering it is missing at the bucket step would leave the workers gone and the
         // bucket standing — a half-torn-down inbox for a mistake we can catch here.

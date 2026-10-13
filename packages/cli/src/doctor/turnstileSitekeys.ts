@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { access } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
@@ -18,6 +20,7 @@ import type { StatePathOptions } from "../notifier/state";
 import { envStanzas, type WranglerStanza } from "../project/bindingEntries";
 import { resolveWorkersFor } from "../project/composeFor";
 import { projectEnvironments } from "../project/config";
+import { workerDirName } from "../project/workerIdentity";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 import { featureConfigPath } from "../provision/featureConfig";
@@ -81,8 +84,8 @@ export type TurnstileSitekeysState = "ok" | "could-not-check" | "findings";
 
 /** One `TURNSTILE_SITEKEY_*` var nothing reads. */
 export interface StrandedSitekeyVarFinding {
-  /** The Worker whose `wrangler.jsonc` holds it, or `null` for the project's `dev.json` and root `.dev.vars`. */
-  worker: string | null;
+  /** The Worker whose `wrangler.jsonc` holds it, by `apps/` directory, or `null` for `dev.json` and root `.dev.vars`. */
+  worker: WorkerDir | null;
   /** The var's name. */
   name: string;
   /** The stanza it is set in — `dev` for the top level and for `dev.json`. */
@@ -93,13 +96,13 @@ export interface StrandedSitekeyVarFinding {
    * The Worker `pithy turnstile provision --worker <name>` clears it for, or `null` when no command does: a
    * Worker that composes no turnstile, which provision refuses, and the project root's `.dev.vars`.
    */
-  removedBy: string | null;
+  removedBy: WorkerDir | null;
 }
 
 /** One environment a Worker's front end renders no Turnstile widget in. */
 export interface UnrenderedTurnstile {
   /** The Worker's `apps/<name>` directory name. */
-  worker: string;
+  worker: WorkerDir;
   /** The environment a build for which renders no widget. */
   environment: string;
   /**
@@ -120,7 +123,7 @@ export interface TurnstileSitekeysCheck {
 type StrandedRead = Omit<StrandedSitekeyVarFinding, "removedBy">;
 
 /** Every stranded var in one Worker's `wrangler.jsonc`, in stanza order. */
-function strandedInWrangler(worker: string, file: string, config: unknown): StrandedRead[] {
+function strandedInWrangler(worker: WorkerDir, file: string, config: unknown): StrandedRead[] {
   const found: StrandedRead[] = [];
   if (config === null || typeof config !== "object") return found;
   for (const { env, stanza } of envStanzas(config as WranglerStanza)) {
@@ -195,11 +198,11 @@ export async function checkTurnstileSitekeys(
   const read: StrandedRead[] = [];
   const unrendered: UnrenderedTurnstile[] = [];
   /** The Workers composing turnstile — the only targets `pithy turnstile provision` accepts. */
-  const composing: string[] = [];
+  const composing: WorkerDir[] = [];
   let unreadable = false;
 
   for (const target of workers) {
-    const worker = basename(target.dir);
+    const worker = workerDirName(target);
     if (target.hasWrangler !== false) {
       const file = join(target.dir, "wrangler.jsonc");
       try {
@@ -265,7 +268,7 @@ export async function checkTurnstileSitekeys(
  * command reaches. It edits its target's `wrangler.jsonc` and the project's `dev.json`, and it accepts only a
  * target that composes turnstile.
  */
-function removedBy(found: StrandedRead, rootDevVars: string, composing: readonly string[]): string | null {
+function removedBy(found: StrandedRead, rootDevVars: string, composing: readonly WorkerDir[]): WorkerDir | null {
   if (found.file === rootDevVars) return null;
   if (found.worker === null) return composing[0] ?? null;
   return composing.includes(found.worker) ? found.worker : null;
@@ -295,7 +298,7 @@ export function describeTurnstileSitekeys(check: TurnstileSitekeysCheck): string
     const unreachable = mine.filter((found) => !found.slot).map((found) => found.environment);
     if (blank.length > 0) {
       lines.push(
-        `${worker}: no widget renders in ${listed(blank.map((found) => found.environment))}, so sign-in there is blocked. Run pithy turnstile provision --worker ${worker}, then redeploy.`,
+        `${worker}: no widget renders in ${listed(blank.map((found) => found.environment))}, so sign-in there is blocked. Run ${pithyCommand("turnstile provision", { flags: { "--worker": worker } })}, then redeploy.`,
       );
     }
     if (blankFeature) {
@@ -318,7 +321,7 @@ export function describeTurnstileSitekeys(check: TurnstileSitekeysCheck): string
     lines.push(
       remover === null
         ? `${file}: ${names}. Nothing reads ${them}: the build reads the sitekey from pithy.config.ts. No pithy command edits this file for ${them}, so delete ${them} by hand.`
-        : `${file}: ${names}. Nothing reads ${them}: the build reads the sitekey from pithy.config.ts. pithy turnstile provision --worker ${remover} writes it there and removes ${here.length === 1 ? "this" : "these"}.`,
+        : `${file}: ${names}. Nothing reads ${them}: the build reads the sitekey from pithy.config.ts. ${pithyCommand("turnstile provision", { flags: { "--worker": remover } })} writes it there and removes ${here.length === 1 ? "this" : "these"}.`,
     );
   }
   return lines;

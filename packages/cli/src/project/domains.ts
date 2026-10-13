@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
+import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { DOMAIN_ENVIRONMENTS, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isSourceEnvironment } from "../provision/featureConfig";
@@ -14,6 +14,7 @@ import {
   type WorkerAddress,
   type WorkerAddressSource,
 } from "./workerAddress";
+import { workerDirName } from "./workerIdentity";
 import { discoverWorkers } from "./workers";
 import { readOptionalWranglerConfig } from "./wrangler";
 
@@ -102,7 +103,7 @@ export type OriginFault =
 /** One Worker-and-environment whose named and served origins do not line up. */
 export interface OriginDrift {
   /** The Worker's `apps/<name>` directory. */
-  worker: string;
+  worker: WorkerDir;
   /** The environment. */
   env: string;
   /** Which fault this is. */
@@ -264,7 +265,7 @@ export async function originDrift(projectDir: string, environments: readonly str
     if (target.hasWrangler === false) continue;
     const config = (await readOptionalWranglerConfig(target.dir).catch(() => null)) as OriginWrangler | null;
     if (!config) continue;
-    const worker = basename(target.dir);
+    const worker = workerDirName(target);
     for (const env of environments) {
       const { domains, loaded } = await workerDomains(target.dir, env);
       const stanza = config.env?.[env];
@@ -310,18 +311,15 @@ export function describeOriginDrift(drift: OriginDrift): string {
  * The branch {@link routeRemedy} takes: only an origin a `domains` declaration names, off `workers.dev`, is one
  * `pithy worker sync` writes the route for. Every other fault is a line in `wrangler.jsonc` or a declaration.
  */
-export function originDriftFix(drift: OriginDrift): string | null {
-  return originSync(drift)?.fix ?? null;
+export function originDriftFix(drift: OriginDrift): Command | null {
+  return originSync(drift);
 }
 
-/**
- * {@link originDriftFix}, as the remedy `withFix` takes — so doctor's `fix` and the deploy refusal's are one
- * literal, and `ci/actionLines.test.ts` reads it where it is written.
- */
-function originSync(drift: OriginDrift): { fix: string } | null {
+/** {@link originDriftFix}'s command, for doctor's `fix` and the deploy refusal's alike, so the two are one. */
+function originSync(drift: OriginDrift): Command | null {
   if (drift.fault !== "unserved-origin" || drift.source !== "declaration") return null;
   if (isWorkersDevHost(hostnameOf(drift.origin))) return null;
-  return { fix: `pithy worker sync --worker ${drift.worker} --env ${drift.env}` };
+  return pithyCommand("worker sync", { flags: { "--worker": drift.worker, "--env": drift.env } });
 }
 
 /** The hostname a route pattern would have to carry, from the origin this reported. */
@@ -347,9 +345,10 @@ function routeRemedy(drift: OriginDrift): string {
   if (isWorkersDevHost(hostname)) {
     return `That host is the workers.dev subdomain and "workers_dev": false closed it. Set it back to true in env.${drift.env} of its wrangler.jsonc, or name an origin you do serve.`;
   }
-  if (drift.source === "declaration") {
-    return `Run pithy worker sync to write the route from the domains declaration.`;
-  }
+  // The command the refusal's `fix` carries, from the same builder (#711): the bare `pithy worker sync` it
+  // named before is refused in a project with several Workers.
+  const sync = originSync(drift);
+  if (sync !== null) return `Run ${sync} to write the route from the domains declaration.`;
   return `Add a routes entry for ${hostname} to env.${drift.env} in its wrangler.jsonc.`;
 }
 

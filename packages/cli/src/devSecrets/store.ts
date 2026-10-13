@@ -5,11 +5,15 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { type DevSecretsStore, devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
+import { addAction } from "../capabilities/addCommand";
+import { resolveAdd } from "../capabilities/notComposed";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveStoreIds } from "../seed/drivers";
 import { readBootstrapVars } from "./bootstrapVars";
@@ -98,8 +102,6 @@ export interface OpenDevSecretsStoreOptions {
   projectDir: string;
   /** The Worker's directory — its `wrangler.jsonc` declares the `SECRETS` binding and its database id. */
   workerDir: string;
-  /** The Worker's name, for the reason text. Defaults to naming no Worker. */
-  worker?: string;
   /**
    * **Unsayable on purpose (#159).** There is no environment here, and there must not be one: this opens
    * the project's own Miniflare-backed store and nothing else. `never` means a caller that tries to pass
@@ -113,12 +115,16 @@ export interface OpenDevSecretsStoreOptions {
 /** Open the local secrets store for one Worker, or say why there is none to open. */
 export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): Promise<DevSecretsStoreHandle> {
   const noop = { dispose: async () => {} };
-  const scope = options.worker ? ` --worker ${options.worker}` : "";
+  // Always the Worker: in a project with several, a bare `pithy add secrets` is refused for want of one (#711).
 
   const ids = await resolveStoreIds({ workerDir: options.workerDir, env: "dev" });
   const databaseId = ids.d1.get(SECRETS_D1_BINDING);
   if (!databaseId) {
-    return { ready: false, reason: `No ${SECRETS_D1_BINDING} D1 binding. Run pithy add secrets${scope}.`, ...noop };
+    return {
+      ready: false,
+      reason: `No ${SECRETS_D1_BINDING} D1 binding. ${composeSecrets(options.projectDir, options.workerDir)}`,
+      ...noop,
+    };
   }
 
   // The dev secrets file, which is what the Worker's generated `.dev.vars` is built from (#179) —
@@ -149,7 +155,9 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     // The sentence for a project with no file to state anything, and only then the absent one. "Not
     // recorded" is a claim about the file, and it may only be made when the file makes no claim (#323) —
     // which includes there being no file to make one.
-    const reason = stated.unlocatable ?? `No ${MASTER_KEY_BINDING} recorded. Run pithy add secrets${scope}.`;
+    const reason =
+      stated.unlocatable ??
+      `No ${MASTER_KEY_BINDING} recorded. ${composeSecrets(options.projectDir, options.workerDir)}`;
     return { ready: false, reason, ...noop };
   }
 
@@ -188,7 +196,11 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
     await store.listNames();
   } catch {
     await dispose();
-    return { ready: false, reason: "The local SECRETS database is not migrated. Run pithy migrate.", ...noop };
+    return {
+      ready: false,
+      reason: `The local SECRETS database is not migrated. Run ${pithyCommand("migrate", { flags: { "--env": LOCAL_ENVIRONMENT } })}.`,
+      ...noop,
+    };
   }
   return { ready: true, store, persistPath, dispose };
 }
@@ -262,4 +274,12 @@ async function statedMasterKey(projectDir: string, paths: StatePathOptions): Pro
   } catch (error) {
     return { unreadable: sentenceOf(error) };
   }
+}
+
+/**
+ * The `pithy add secrets` that wires the store into this Worker, by its `apps/` directory — never the deployed
+ * name a caller may hold (#711).
+ */
+function composeSecrets(projectDir: string, workerDir: string): string {
+  return addAction(resolveAdd("secrets", { projectDir, workerDir }), (add) => `Run ${add}.`);
 }

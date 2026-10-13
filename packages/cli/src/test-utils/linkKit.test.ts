@@ -5,8 +5,7 @@ import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { hostConfigFile } from "../capabilities/hostDeploy";
-import { hostEntryFile } from "../capabilities/hostEntry";
+import { hostConfigFile, hostEntryFile } from "../capabilities/hostFiles";
 import { copyKitPackage, isDeployTransient } from "./linkKit";
 
 /**

@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Caller, callerOf, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import {
   InternalError,
@@ -132,6 +133,12 @@ export interface MigrationFanOutOptions {
   binding?: string;
   /** Test seam: build the remote D1 for a binding instead of the default REST-backed client. */
   remoteD1?: RemoteD1Factory;
+  /**
+   * The caller's own `pithy migrate` (#711), the one input a refusal naming it again — a rollback of a named group —
+   * is built from, so the line keeps every flag and the scope the caller gave. `pithy migrate` passes its parsed
+   * arguments; absent, it is {@link migrateCallerOf} these options, for a caller with no command line behind it.
+   */
+  caller?: Caller<"migrate">;
   /**
    * The project's `seed.productionEnvironments`. Read only to decide whether an unprovisioned refusal can
    * name a `fix`: provisioning production needs a person's `--confirm` phrase, so it gets none.
@@ -395,14 +402,14 @@ function buildPlan(worker: WorkerScope): WorkerPlanEntry[] {
     if (!group) {
       throw new InternalError({
         message: `Database "${database}" has migrations but no capability declares it.`,
-        action: "Declare the database (binding and tables) in a capability. Run pithy migrate again.",
+        action: "Declare the database (binding and tables) in a capability, then run this again.",
       });
     }
     const owner = bindingOwner.get(group.binding);
     if (owner) {
       throw new InternalError({
         message: `Databases "${owner}" and "${database}" are both bound to "${group.binding}".`,
-        action: "Give each database its own binding. Run pithy migrate again.",
+        action: "Give each database its own binding, then run this again.",
       });
     }
     bindingOwner.set(group.binding, database);
@@ -466,7 +473,7 @@ async function mergeGroup(
       if (sameMigrations(prior.set, set)) continue;
       throw new InternalError({
         message: `Workers "${prior.worker}" and "${entry.worker}" both migrate "${binding}" under the "${set.namespace}" namespace, with different migrations.`,
-        action: "Rename one capability, or bind the workers to different databases. Run pithy migrate again.",
+        action: "Rename one capability, or bind the workers to different databases, then run this again.",
       });
     }
   }
@@ -509,7 +516,7 @@ async function buildGroups(workers: WorkerScope[], env: string, scope: Set<strin
       if (!scope.has(worker.name)) continue;
       throw new ValidationError({
         message: `${worker.name}: wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to ${worker.name}'s wrangler.jsonc with its D1 bindings. Run pithy migrate --env ${env} again.`,
+        action: `Add the ${env} environment to ${worker.name}'s wrangler.jsonc with its D1 bindings, then run this again.`,
       });
     }
     const local = idsFor(config.d1_databases);
@@ -630,7 +637,7 @@ async function remoteDriver(
     if (!group.databaseId) {
       const refusal = new PreconditionFailedError({
         message: `wrangler.jsonc env.${env} has no database_id for the "${group.binding}" binding.`,
-        action: `Provision the ${env} D1 and set its id on ${group.binding}. Run pithy migrate --env ${env} again.`,
+        action: `Provision the ${env} D1 and set its id on ${group.binding}, then run this again.`,
       });
       throw withProvisionFix(refusal, env, productionEnvironments);
     }
@@ -663,6 +670,8 @@ interface RunContext {
   project?: string;
   /** The one binding the run is narrowed to, when the caller named one. */
   binding?: string;
+  /** The caller's own run, which a refusal naming it again is built from (#711). */
+  caller: Caller<"migrate">;
   /**
    * The bindings a capability drop is confined to: its own databases. Set by {@link dropCapabilityTables}
    * alone, whose in-scope Worker composes more than the capability it drops — so without this every other
@@ -706,14 +715,15 @@ export async function resolveWorkerScopes(options: {
     });
   }
   if (options.worker === undefined) return options.workers;
-  const found = options.workers.filter(
-    (candidate) => candidate.name === options.worker || candidate.dir.endsWith(`/${options.worker}`),
-  );
+  // The directory first, as `pick` reads it: a Worker whose deployed name is another's directory must not
+  // answer for it.
+  const byDir = options.workers.filter((candidate) => workerDirName(candidate) === options.worker);
+  const found = byDir.length > 0 ? byDir : options.workers.filter((candidate) => candidate.name === options.worker);
   if (found.length === 0) {
     // The call's mistake (exit 2): nothing to run first, only a different `--worker` to pass.
     throw new ValidationError({
       message: `No worker named "${options.worker}".`,
-      action: `Run pithy worker list to see this project's workers. Known: ${options.workers.map(workerDirName).join(", ")}.`,
+      action: `Run ${pithyCommand("worker list")} to see this project's workers. Known: ${options.workers.map(workerDirName).join(", ")}.`,
     });
   }
   return found;
@@ -993,6 +1003,11 @@ async function preflight(
         databases: groups,
         kept,
         requested: pass.group.requested,
+        caller: context.caller,
+        workerDir: (name) => {
+          const scope = context.groupWorkers.find((one) => one.name === name);
+          return scope === undefined ? name : workerDirName(scope);
+        },
       })
     : undefined;
   if (pass.reverses) {
@@ -1218,6 +1233,24 @@ async function discoverNeighbors(projectDir: string, env: string, named: string)
  * built from) and the run's own scope (what is reported, and which databases are visited). The scope is
  * always the caller's set narrowed by `--worker`, so an unknown name still fails naming the same Workers.
  */
+/**
+ * **`pithy migrate --rollback` as a run with no command line behind it names itself (#711)** — a test, or a caller
+ * that drives {@link migrateProject} directly: its environment, and the Worker and binding it was narrowed to. The
+ * command passes its own parsed arguments instead, so every flag the caller gave carries.
+ */
+export function migrateCallerOf(options: {
+  readonly env: string;
+  readonly worker?: string | undefined;
+  readonly binding?: string | undefined;
+}): Caller<"migrate"> {
+  return callerOf("migrate", {
+    env: options.env,
+    rollback: true,
+    ...(options.worker === undefined ? {} : { worker: options.worker }),
+    ...(options.binding === undefined ? {} : { binding: options.binding }),
+  });
+}
+
 async function contextFor(
   options: MigrationFanOutOptions & { project?: string; destroyRetained?: number },
 ): Promise<RunContext> {
@@ -1235,6 +1268,7 @@ async function contextFor(
     env: options.env,
     ...(options.project !== undefined ? { project: options.project } : {}),
     ...(options.binding !== undefined ? { binding: options.binding } : {}),
+    caller: options.caller ?? migrateCallerOf(options),
     ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
     ...(options.productionEnvironments ? { productionEnvironments: options.productionEnvironments } : {}),
@@ -1696,6 +1730,8 @@ export async function dropCapabilityTables(options: DropCapabilityOptions): Prom
     account: options.account,
     env: options.env,
     project: options.project,
+    // A drop reverses no named group, so no refusal it raises names a rollback; the context is its own run's.
+    caller: migrateCallerOf({ env: options.env }),
     ...(options.destroyRetained !== undefined ? { destroyRetained: options.destroyRetained } : {}),
     ...(options.remoteD1 ? { remoteD1: options.remoteD1 } : {}),
   };

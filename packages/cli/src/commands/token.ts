@@ -10,6 +10,7 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { type Command, commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
@@ -43,6 +44,11 @@ import {
   type TokenResult,
 } from "../tokens/engine";
 import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
+
+/** The rotation that replaces one profile's token in one environment. */
+function rotateCommand(profile: string, env: string): Command {
+  return pithyCommand("token rotate", { args: [profile], flags: { "--env": env } });
+}
 
 // `resolveAppDatabaseId` used to be this file's own copy of the app-database lookup, before
 // `createCliAudit` centralized it. Re-exported under its original name — same behavior, same
@@ -157,7 +163,7 @@ export function deadTokenNotice(result: TokenResult): string | null {
   if (result.status === undefined || result.status === "active") return null;
   return (
     `${result.profile}: the token this rolled is ${result.status}, so Cloudflare will refuse the value it just wrote.\n` +
-    `Re-enable it on the account, or replace it: pithy token rotate ${result.profile} --env ${result.env}\n`
+    `Re-enable it on the account, or replace it: ${rotateCommand(result.profile, result.env)}\n`
   );
 }
 
@@ -228,7 +234,7 @@ export function tokenProfiles(workers: WorkerSet): Record<string, TokenProfile> 
   throw new ValidationError({
     message: "This project's capability set is unknown, so token permissions cannot be derived.",
     action:
-      `${workers.unknown} Fix it — pithy doctor names the fault — and re-run. Token permissions come from ` +
+      `${workers.unknown} Fix it — ${commandName("doctor")} names the fault — and re-run. Token permissions come from ` +
       "the composed capabilities, so minting from a partial set narrows what CI can do.",
   });
 }
@@ -312,7 +318,7 @@ export function routeScopeNotice(tokens: readonly TokenListItem[], env: string):
     return (
       `${overridden.map((token) => token.profile).join(", ")}: cannot attach this project's declared route, and re-minting will not change that.\n` +
       `tokens.overrides["${profile}"].permissions in pithy.config.ts replaces the profile's set, and the route grant goes with it.\n` +
-      `Remove that override — or its permissions key — then run: pithy token rotate ${profile} --env ${env}\n`
+      `Remove that override — or its permissions key — then run: ${rotateCommand(profile, env)}\n`
     );
   }
   const inactive = tokens.filter((token) => token.routeScope === "inactive");
@@ -320,7 +326,7 @@ export function routeScopeNotice(tokens: readonly TokenListItem[], env: string):
     const profile = inactive[0]?.profile ?? CI_SYSTEM_PROFILE;
     return (
       `${inactive.map((token) => token.profile).join(", ")}: disabled or expired, so Cloudflare refuses it whatever it is scoped to.\n` +
-      `Re-enable it on the account, or replace it: pithy token rotate ${profile} --env ${env}\n`
+      `Re-enable it on the account, or replace it: ${rotateCommand(profile, env)}\n`
     );
   }
   const stale = tokens.filter((token) => token.routeScope === "stale");
@@ -332,7 +338,7 @@ export function routeScopeNotice(tokens: readonly TokenListItem[], env: string):
     // produces exactly this token seconds ago, and a diagnosis that guesses at history is then false.
     `${stale.map((token) => token.profile).join(", ")}: does not carry the route grant this project's declared domains need, so a deploy cannot attach its route.\n` +
     `A mint only rolls the value. Rotate replaces the token — new value, old one deleted — with the current scope.\n` +
-    `Run: pithy token rotate ${profile} --env ${env}\n`
+    `Run: ${rotateCommand(profile, env)}\n`
   );
 }
 

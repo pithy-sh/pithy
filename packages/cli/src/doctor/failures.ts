@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Command, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
+import { providerExample } from "../capabilities/entitlementGap";
 import { undeclinableReason } from "../capabilities/reconcile";
 import type { DoctorReport } from "../commands/doctor";
 import { describeUndeclared } from "../migrations/ledger";
@@ -100,29 +102,29 @@ function sentence(text: string): string {
  * Worker whose `ok` is false and that matched none of them still gets an entry, so the list cannot be short
  * of the gate it replaces.
  */
-function workerFailures(worker: string, checks: WorkerChecks & { ok: boolean }): DoctorFailure[] {
+function workerFailures(worker: string, directory: WorkerDir, checks: WorkerChecks & { ok: boolean }): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
-  const add = (detail: string, fix: string | null) =>
+  const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: `${worker}: ${sentence(detail)}`, fix });
 
   // Composing a declared peer is not a choice: the Worker does not boot without it.
   for (const entry of checks.prerequisites.missing) {
     add(
       `${entry.capability} requires ${entry.requires}, so this Worker will not boot`,
-      prerequisiteFix(worker, entry.requires),
+      prerequisiteFix(directory, entry.requires),
     );
   }
   for (const drift of checks.config.drift) {
-    add(`pithy.config.ts is missing ${drift.capability} options: ${drift.keys.join(", ")}`, upgradeFix(worker));
+    add(`pithy.config.ts is missing ${drift.capability} options: ${drift.keys.join(", ")}`, upgradeFix(directory));
   }
   for (const binding of checks.bindings.missing) {
     add(
       `${binding.name} (${binding.type}) is missing from wrangler.jsonc in ${binding.envs.join(", ")}`,
-      upgradeFix(worker),
+      upgradeFix(directory),
     );
   }
   for (const className of checks.bindings.missingExports) {
-    add(`${className} is not exported from this Worker's entry, and wrangler.jsonc binds it`, upgradeFix(worker));
+    add(`${className} is not exported from this Worker's entry, and wrangler.jsonc binds it`, upgradeFix(directory));
   }
   // A decline is the adopter's own line in pithy.config.ts. Every refusal of one is an edit to it.
   const declines = checks.bindings.declinedBindings;
@@ -144,17 +146,19 @@ function workerFailures(worker: string, checks: WorkerChecks & { ok: boolean }):
     }
   }
   failures.push(...devMigrationFailures(worker, checks));
-  // Which capability resolves an entitlement is the adopter's decision, so no command is named for it.
+  // Which capability resolves an entitlement is the adopter's decision, so no `fix` is named for it. The example
+  // the sentence offers is the text report's, from the same builder, so it runs as written (#711).
   const gap = checks.entitlements.gap;
   if (gap.state === "unavailable") {
     add("its source would not scan for entitlement gates, so none was checked", null);
   } else if (gap.gates.length > 0) {
     add(
-      `routes gate on an entitlement nothing composed resolves: ${gap.gates.join(", ")}. Compose a provider, such as pithy add payments`,
+      `routes gate on an entitlement nothing composed resolves: ${gap.gates.join(", ")}. ${providerExample(directory)}`,
       null,
     );
   }
-  if (!checks.ok && failures.length === 0) add("one of its checks failed. Run pithy doctor for the lines", null);
+  if (!checks.ok && failures.length === 0)
+    add(`one of its checks failed. Run ${pithyCommand("doctor")} for the lines`, null);
   return failures;
 }
 
@@ -162,7 +166,7 @@ function workerFailures(worker: string, checks: WorkerChecks & { ok: boolean }):
 function devMigrationFailures(worker: string, checks: WorkerChecks): DoctorFailure[] {
   if (checks.migrations.ok) return [];
   const failures: DoctorFailure[] = [];
-  const add = (detail: string, fix: string | null) =>
+  const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: `${worker}: ${sentence(detail)}`, fix });
   const local = checks.migrations.environments.find((entry) => entry.env === LOCAL_ENVIRONMENT);
   if (local?.state !== "checked" || local.ledger.state === "unavailable") {
@@ -183,7 +187,7 @@ function devMigrationFailures(worker: string, checks: WorkerChecks): DoctorFailu
 /** The project health block's failures: the project-wide checks, then each Worker's. */
 function healthFailures(health: ProjectHealth): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
-  const add = (detail: string, fix: string | null) =>
+  const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: sentence(detail), fix });
 
   // Someone else's package: reinstalling it is the remedy, and that is the package manager's.
@@ -225,9 +229,10 @@ function healthFailures(health: ProjectHealth): DoctorFailure[] {
       add(`${worker.worker} could not be checked: its pithy.config.ts or wrangler.jsonc would not read`, null);
       continue;
     }
-    failures.push(...workerFailures(worker.worker, worker));
+    failures.push(...workerFailures(worker.worker, worker.directory, worker));
   }
-  if (!health.ok && failures.length === 0) add("project health failed. Run pithy doctor for the lines", null);
+  if (!health.ok && failures.length === 0)
+    add(`project health failed. Run ${pithyCommand("doctor")} for the lines`, null);
   return failures;
 }
 
@@ -238,7 +243,7 @@ function healthFailures(health: ProjectHealth): DoctorFailure[] {
  */
 export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
-  const add = (check: DoctorCheck, detail: string, fix: string | null) =>
+  const add = (check: DoctorCheck, detail: string, fix: Command | null) =>
     failures.push({ check, detail: sentence(detail), fix });
 
   // A config that would not load: dependencies not installed, or a syntax error. The package manager's, or an edit.
@@ -379,7 +384,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     }
     // The state gates whatever it carries, so a `findings` with no answer this names still gets its entry.
     if (failures.length === before)
-      add("supportSearchTriggers", "Support search has findings. Run pithy doctor for the lines", null);
+      add("supportSearchTriggers", `Support search has findings. Run ${pithyCommand("doctor")} for the lines`, null);
   }
 
   // And once more, on a file rather than a config. A `dev.json` that will not parse or names no user is a fault
@@ -399,8 +404,10 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
   // nobody reached contributes no findings, so a run that skipped it cannot fail here. `could-not-check` and
   // `unchecked` establish nothing and never reach this line.
   // The `fix` is the capability's own, where its check named one; an older capability's finding carries none.
+  // It arrives through the capability's `SettingsFinding` schema as a string, so it is the one `fix` here no type
+  // holds to the builder: the capability built it with its own, and `failures.test.ts` runs it against the tree.
   for (const finding of report.settings?.findings ?? []) {
-    add("settings", describeSettingsFinding(finding), finding.fix ?? null);
+    failures.push({ check: "settings", detail: sentence(describeSettingsFinding(finding)), fix: finding.fix ?? null });
   }
 
   if (report.project && !report.project.health.ok) failures.push(...healthFailures(report.project.health));

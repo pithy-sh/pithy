@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type Caller, pithyCommand, rerunRemedy } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   type GroupPosition,
@@ -58,7 +59,11 @@ export function requireMigrationGroup(value: string | undefined): string | undef
  * and not the position is the bug this shape exists to prevent: it printed `--rollback --group <newest>` for
  * a group the next command refuses as buried, and both refusals then pointed at each other (#694).
  */
-export type NewestGroup = { binding: string } & (
+export type NewestGroup = {
+  binding: string;
+  /** The Workers that bind this database, by name, when the read knows: what narrows a line to it. */
+  workers?: readonly string[];
+} & (
   | {
       /** Nothing here is grouped — a database last migrated by an older kit. */
       group?: undefined;
@@ -98,6 +103,32 @@ function blocking(entry: GroupedDatabase): string {
 }
 
 /**
+ * **A rollback, said as the person's decision it is (#711)**: it reverses the schema a group applied, so it is
+ * never a remedy an agent runs as written, and its `--confirm-rollback` phrase is the person's to give.
+ *
+ * It is the caller's own run, from its context, with the group named — so it keeps every flag the caller gave, and
+ * above all its scope: a rollback narrowed by `--worker` or `--binding` names one narrowed the same way, never one
+ * that reverses the group in a database the refused run never touched. `database` narrows it to one database where
+ * the caller's scope held several that disagree, by binding and, when the caller named no Worker, by Worker.
+ */
+function rollback(caller: Caller<"migrate">, group: string, database?: NewestGroup): string {
+  const worker = typeof caller.given.worker === "string" ? undefined : database?.workers?.[0];
+  return rerunRemedy(caller, {
+    flags: {
+      "--rollback": true,
+      "--group": group,
+      ...(database === undefined ? {} : { "--binding": database.binding }),
+      ...(worker === undefined ? {} : { "--worker": worker }),
+    },
+  }).say((line) => line);
+}
+
+/** The environment the caller's run named. */
+function envOf(caller: Caller<"migrate">): string {
+  return typeof caller.given.env === "string" ? caller.given.env : "dev";
+}
+
+/**
  * **The refusal for `pithy migrate --rollback` with no `--group`** — the breaking change, and the point
  * of the issue.
  *
@@ -111,14 +142,14 @@ function blocking(entry: GroupedDatabase): string {
  * after another run, or an ungrouped migration at the tip, leaves nothing reversible as a group; the
  * refusal names what buries it and points at `pithy doctor` rather than at a command that refuses.
  */
-export function noGroupRefusal(newest: readonly NewestGroup[]): ValidationError {
+export function noGroupRefusal(newest: readonly NewestGroup[], caller: Caller<"migrate">): ValidationError {
   const opening = "Refusing to roll back without a group.";
+  const env = envOf(caller);
   const grouped = newest.filter((entry): entry is GroupedDatabase => entry.group !== undefined);
   if (grouped.length === 0) {
     return new ValidationError({
       message: `${opening} No database in scope records one: ${newest.map((entry) => entry.binding).join(", ")}.`,
-      action:
-        "Nothing here records which run applied a migration. Run pithy migrate to record a group, then reverse that group by name.",
+      action: `Nothing here records which run applied a migration. Run ${pithyCommand("migrate", { flags: { "--env": env } })} to record a group, then reverse that group by name.`,
     });
   }
 
@@ -140,8 +171,8 @@ export function noGroupRefusal(newest: readonly NewestGroup[]): ValidationError 
         ? `${opening} The newest group recorded is not the one on top: ${named}.`
         : `${opening} No group holds the newest migrations: ${named}.`,
       action: onTop
-        ? `Reverse the group on top: pithy migrate --rollback --group ${onTop}.`
-        : "Only a group holding the newest migrations can be reversed, and none here does. Run pithy doctor to see where each database stands.",
+        ? `Reverse the group on top. ${rollback(caller, onTop)}`
+        : `Only a group holding the newest migrations can be reversed, and none here does. Run ${pithyCommand("doctor")} to see where each database stands.`,
       detail: "Kysely steps down from the tip, so a group with anything over it cannot come down alone.",
     });
   }
@@ -151,7 +182,7 @@ export function noGroupRefusal(newest: readonly NewestGroup[]): ValidationError 
   if (agreed && first) {
     return new ValidationError({
       message: `${opening} The newest group is ${first.group.group}, applied ${appliedLabel(first.group.appliedAt)}: ${grouped.map(holding).join(", ")}.`,
-      action: `Reverse it with pithy migrate --rollback --group ${first.group.group}.`,
+      action: `Reverse it. ${rollback(caller, first.group.group)}`,
     });
   }
   const named = grouped
@@ -162,7 +193,10 @@ export function noGroupRefusal(newest: readonly NewestGroup[]): ValidationError 
     .join("; ");
   return new ValidationError({
     message: `${opening} These databases hold different newest groups: ${named}.`,
-    action: `Reverse one database at a time: pithy migrate --rollback --group ${first?.group.group} --binding ${first?.binding}.`,
+    action:
+      first === undefined
+        ? `Reverse one database at a time, naming each with --binding.`
+        : `Reverse one database at a time. ${rollback(caller, first.group.group, first)}`,
   });
 }
 
@@ -178,6 +212,7 @@ export function noGroupRefusal(newest: readonly NewestGroup[]): ValidationError 
  * whose own refusal names the group the operator started from (#694).
  */
 export function buriedGroupRefusal(
+  caller: Caller<"migrate">,
   binding: string,
   group: string,
   above: readonly string[],
@@ -191,8 +226,8 @@ export function buriedGroupRefusal(
     // Only a group that *is* the contiguous tip is named: suggesting a group buried in its turn sends the
     // operator in a circle, and after a group was extended over another one neither is on top (#694).
     action: onTop
-      ? `Reverse ${onTop} first: pithy migrate --rollback --group ${onTop}.`
-      : "Only a group holding the newest migrations can be reversed, and none here does. Run pithy doctor to see where each database stands.",
+      ? `Reverse ${onTop} first. ${rollback(caller, onTop)}`
+      : `Only a group holding the newest migrations can be reversed, and none here does. Run ${pithyCommand("doctor")} to see where each database stands.`,
     detail: `Kysely steps down from the tip, so reversing ${group} would reverse ${over} with it. Nothing was reversed.`,
   });
 }
@@ -269,6 +304,10 @@ export interface GroupRollbackPlanOptions {
   kept: readonly DatabaseGroup[];
   /** The group the caller named, or `undefined` when they named none. */
   requested: string | undefined;
+  /** The caller's own `pithy migrate --rollback` (#711), which every rollback a refusal names is built from. */
+  caller: Caller<"migrate">;
+  /** A Worker's `apps/` directory, by the name a database's entries carry — how `--worker` names it. */
+  workerDir?: (name: string) => string;
 }
 
 /**
@@ -292,7 +331,7 @@ export async function planGroupRollback(
   options: GroupRollbackPlanOptions,
 ): Promise<Map<DatabaseGroup, MigrationGroupStep>> {
   if (options.requested === undefined) {
-    throw noGroupRefusal(await newestGroups(options.driver, options.databases));
+    throw noGroupRefusal(await newestGroups(options.driver, options.databases, options.workerDir), options.caller);
   }
   const requested = options.requested;
 
@@ -309,7 +348,14 @@ export async function planGroupRollback(
   for (const database of options.databases) {
     const position = await readGroupPosition(options.driver.database(database), requested);
     if (position.state === "buried") {
-      throw buriedGroupRefusal(database.binding, requested, position.above, position.ungrouped, position.top);
+      throw buriedGroupRefusal(
+        options.caller,
+        database.binding,
+        requested,
+        position.above,
+        position.ungrouped,
+        position.top,
+      );
     }
     if (position.state === "top") {
       await assertEveryMigrationReverses(database, requested, position.migrations);
@@ -347,15 +393,20 @@ async function assertEveryMigrationReverses(
  * cannot answer it: a group extended after another run is the newest by that order and buried in the
  * ledger. A database with nothing grouped contributes neither (#694).
  */
-async function newestGroups(driver: MigrationDriver, databases: readonly DatabaseGroup[]): Promise<NewestGroup[]> {
+async function newestGroups(
+  driver: MigrationDriver,
+  databases: readonly DatabaseGroup[],
+  workerDir: (name: string) => string = (name) => name,
+): Promise<NewestGroup[]> {
   const newest: NewestGroup[] = [];
   for (const database of databases) {
     const d1 = driver.database(database);
     const last = (await readMigrationGroups(d1)).at(-1);
+    const workers = [...new Set(database.entries.map((entry) => workerDir(entry.worker)))];
     newest.push(
       last
-        ? { binding: database.binding, group: last, position: await readGroupPosition(d1, last.group) }
-        : { binding: database.binding },
+        ? { binding: database.binding, workers, group: last, position: await readGroupPosition(d1, last.group) }
+        : { binding: database.binding, workers },
     );
   }
   return newest;

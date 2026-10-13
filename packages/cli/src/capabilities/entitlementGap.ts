@@ -3,8 +3,10 @@
 
 import { join, relative, sep } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { gateCallSites } from "@pithy-sh/core/src/entitlement/gateScan";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
+import { addAction, addPlan, projectAddFacts } from "./addCommand";
 
 /**
  * The entitlement composition check — the CLI half of the entitlement seam.
@@ -67,4 +69,16 @@ export function entitlementProvider(capabilities: readonly Capability[]): string
 export async function findEntitlementGap(workerDir: string, capabilities: readonly Capability[]): Promise<string[]> {
   if (entitlementProvider(capabilities) !== null) return [];
   return entitlementGates(workerDir);
+}
+
+/**
+ * **The provider an entitlement gate needs, as an example** — `payments`, composed into this Worker with every
+ * option it cannot default named as the choice it is (#711): `billingSubject` is the adopter's, so the line names
+ * one command per value and none of them is a `fix`. Which capability resolves an entitlement is the adopter's
+ * decision too, which is why it is an example. One builder for `pithy doctor`'s report, its `--json` failure and
+ * `pithy dev`'s notice, so the three cannot disagree. A whole sentence, period included.
+ */
+export function providerExample(worker: WorkerDir, projectDir?: string): string {
+  const plan = addPlan({ capability: "payments", workers: [worker], factsFor: projectAddFacts(projectDir) });
+  return addAction(plan, (add) => `Compose a provider, such as ${add}.`);
 }

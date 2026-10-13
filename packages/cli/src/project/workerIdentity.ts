@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename } from "node:path";
+import { type WorkerDir, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { z } from "zod";
 import type { WorkerTarget } from "./workers";
 
@@ -58,6 +59,6 @@ export function workerIdentity(target: Pick<WorkerTarget, "name" | "dir">): Work
  * apps/ directory (#697). The deployed script name resolves too, but it is not what a remedy names — a Worker
  * whose `wrangler.jsonc` says `demo-api` is still `apps/api`.
  */
-export function workerDirName(worker: { dir: string }): string {
-  return basename(worker.dir);
+export function workerDirName(worker: { dir: string }): WorkerDir {
+  return workerDirOf(worker);
 }

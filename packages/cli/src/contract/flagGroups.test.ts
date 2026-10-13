@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { refuseEventsFlag } from "../declaredFlags";
 import { main } from "../main";
 import { planGroupRollback } from "../migrations/groups";
+import { migrateCallerOf } from "../migrations/run";
 import { EXIT, exitCodeOf } from "../terminal/exitClass";
 import { commandAt } from "../test-utils/payloadContract";
 import { contractOf, type FlagGroup } from "./commandContract";
@@ -129,6 +130,7 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
       databases: [],
       kept: [],
       requested: undefined,
+      caller: migrateCallerOf({ env: "dev" }),
     }).catch((error: unknown) => error as { payload: { code: string; message: string } });
     const payload = (refused as { payload: { code: string; message: string } }).payload;
     return { exit: exitCodeOf(payload), message: payload.message };

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -72,7 +73,7 @@ export function collectAppFlags(rawArgs: string[]): string[] {
   if (missingValue) {
     throw new ValidationError({
       message: "--app needs a worker name.",
-      action: "Run pithy dev --list to see this project's dev set, then name one: pithy dev --app <name>.",
+      action: `Run ${pithyCommand("dev", { flags: { "--list": true } })} to see this project's dev set, then name one with --app.`,
     });
   }
   return found;
@@ -101,7 +102,7 @@ async function printDevSet(projectDir: string, apps: string[], json: boolean): P
 
   for (const note of notes) process.stderr.write(`${note}\n`);
   if (members.length === 0) {
-    process.stdout.write("No workers. Run pithy worker add <name>, or pithy init.\n");
+    process.stdout.write(`No workers. Name one and create it with ${commandName("worker add")}.\n`);
     return;
   }
   const rows = devListingRows(listing).map((row) => ({ name: row.name, description: dim(row.description) }));
@@ -154,7 +155,7 @@ export function autostartIntent(flags: { disable: boolean; enable: boolean; apps
   if (flags.apps.length === 0) {
     throw new ValidationError({
       message: `Name the workers to ${enabled ? "enable" : "disable"}.`,
-      action: `pithy dev --app <name> ${enabled ? "--enable-autostart" : "--disable-autostart"}`,
+      action: `Name each worker with --app, beside ${enabled ? "--enable-autostart" : "--disable-autostart"}. ${pithyCommand("dev", { flags: { "--list": true } })} lists them.`,
     });
   }
   return { enabled };

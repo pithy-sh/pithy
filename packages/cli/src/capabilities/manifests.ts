@@ -7,12 +7,13 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, messageOf, NotFoundError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { readFileOutcome } from "../project/readOptionalFile";
-import { type CatalogEntry, capabilityPackageDir } from "./catalog";
+import { addAction, addListCommand } from "./addCommand";
+import { type CatalogEntry, capabilityPackageDir, installedManifestPath, MANIFEST_FILE } from "./catalog";
+import { resolveAdd } from "./notComposed";
 
 /** Every capability ships under this npm scope; the CLI resolves them by name. */
 const SCOPE = "@pithy-sh";
 /** The manifest file each capability package ships at its root (strict JSON). */
-const MANIFEST_FILE = "pithy.manifest.json";
 
 /**
  * Where a capability's manifest lands once installed into the project.
@@ -23,7 +24,7 @@ const MANIFEST_FILE = "pithy.manifest.json";
  * lives means the exception is stated once (see {@link CatalogEntry.package}) rather than mirrored here.
  */
 function manifestPath(projectDir: string, name: string): string {
-  return join(projectDir, "node_modules", SCOPE, capabilityPackageDir(name), MANIFEST_FILE);
+  return installedManifestPath(projectDir, name);
 }
 
 /**
@@ -115,9 +116,11 @@ export async function loadManifest(name: string, projectDir: string): Promise<Ca
 async function absenceRefusal(name: string, projectDir: string): Promise<PithyError> {
   const pkg = `${SCOPE}/${capabilityPackageDir(name)}`;
   if (!(await isInstalled(projectDir, name))) {
+    // Nothing here says which Worker, so a project with several gets one command per Worker (#711), each with
+    // whatever the manifest — the kit's, until the package is installed — says it needs.
     return new NotFoundError({
       message: `No capability named "${name}" is installed.`,
-      action: `Run pithy add ${name} to install it.`,
+      action: addAction(resolveAdd(name, { projectDir }), (add) => `Run ${add} to install it.`),
     });
   }
   // `core/not_found`, the same code the other branch answers — the classification was never the bug and
@@ -127,7 +130,7 @@ async function absenceRefusal(name: string, projectDir: string): Promise<PithyEr
   // unable to tell an ordinary mistake from a Pithy defect.
   return new NotFoundError({
     message: `${pkg} is installed and ships no ${MANIFEST_FILE}, so there is no capability named "${name}" to wire.`,
-    action: `Check the name against pithy add --list. If ${pkg} is meant to be a capability, report the missing ${MANIFEST_FILE} to its maintainer.`,
+    action: `Check the name against ${addListCommand()}. If ${pkg} is meant to be a capability, report the missing ${MANIFEST_FILE} to its maintainer.`,
     detail: `${manifestPath(projectDir, name)} does not exist, but the package directory does`,
   });
 }

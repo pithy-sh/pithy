@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommandOf } from "@pithy-sh/core/src/cli/command";
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
@@ -131,6 +132,11 @@ const NEVER_ASKED: SecretPrompter = {
   },
 };
 
+/** The caller's own command, as a refusal names it to run again with the value piped in. */
+function rerunFor(mode: "create" | "update", name: string) {
+  return pithyCommandOf(`secrets ${mode}`, { args: [name] });
+}
+
 describe("piped stdin", () => {
   test("takes one whole document, byte for byte, whatever the secret's shape is", async () => {
     const document = JSON.stringify({ stripe: { secretKey: "sk_live_1", webhookSecret: "whsec_1" } });
@@ -138,6 +144,7 @@ describe("piped stdin", () => {
       await readSecretValue({
         name: "payments-provider-credentials",
         mode: "create",
+        rerun: rerunFor("create", "payments-provider-credentials"),
         entry: CREDENTIALS,
         branches: ["stripe", "paddle"],
         canPrompt: false,
@@ -153,6 +160,7 @@ describe("piped stdin", () => {
       await readSecretValue({
         name: "auth-google-credentials",
         mode: "update",
+        rerun: rerunFor("update", "auth-google-credentials"),
         entry: CREDENTIALS,
         branches: ["stripe"],
         canPrompt: false,
@@ -169,6 +177,7 @@ describe("one configured branch", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["paddle"],
       canPrompt: true,
@@ -191,6 +200,7 @@ describe("several configured branches", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe", "paddle"],
       canPrompt: true,
@@ -213,6 +223,7 @@ describe("several configured branches", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe", "paddle"],
       canPrompt: true,
@@ -231,6 +242,7 @@ describe("several configured branches", () => {
     await readSecretValue({
       name: "payments-provider-credentials",
       mode: "update",
+      rerun: rerunFor("update", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe", "paddle"],
       canPrompt: true,
@@ -259,6 +271,7 @@ describe("what an update warns about", () => {
     await readSecretValue({
       name: "payments-provider-credentials",
       mode: "update",
+      rerun: rerunFor("update", "payments-provider-credentials"),
       entry,
       branches,
       canPrompt: true,
@@ -300,6 +313,7 @@ describe("what an update warns about", () => {
     await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["paddle"],
       canPrompt: true,
@@ -345,6 +359,7 @@ describe("a value that spans lines", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: WITH_PEM,
       branches: ["apple"],
       canPrompt: true,
@@ -382,6 +397,7 @@ describe("a value that spans lines", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: unmarked,
       branches: ["stripe"],
       canPrompt: true,
@@ -412,6 +428,7 @@ describe("a value that spans lines", () => {
         readSecretValue({
           name: "payments-provider-credentials",
           mode: "create",
+          rerun: rerunFor("create", "payments-provider-credentials"),
           entry: CREDENTIALS,
           branches: ["stripe"],
           canPrompt: true,
@@ -440,6 +457,7 @@ describe("a value that spans lines", () => {
         readSecretValue({
           name: "payments-provider-credentials",
           mode: "create",
+          rerun: rerunFor("create", "payments-provider-credentials"),
           entry: CREDENTIALS,
           branches: ["stripe"],
           canPrompt: true,
@@ -464,6 +482,7 @@ describe("a value that spans lines", () => {
       readSecretValue({
         name: "payments-provider-credentials",
         mode: "create",
+        rerun: rerunFor("create", "payments-provider-credentials"),
         entry: CREDENTIALS,
         branches: ["stripe"],
         canPrompt: true,
@@ -483,6 +502,7 @@ describe("a value that spans lines", () => {
     const thrown = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe"],
       canPrompt: true,
@@ -502,6 +522,7 @@ describe("the assembled value", () => {
     const value = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe"],
       canPrompt: true,
@@ -520,6 +541,7 @@ describe("the fallback", () => {
     const value = await readSecretValue({
       name: "opaque-secret",
       mode: "create",
+      rerun: rerunFor("create", "opaque-secret"),
       entry: OPAQUE,
       branches: undefined,
       canPrompt: true,
@@ -535,6 +557,7 @@ describe("the fallback", () => {
     await readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: undefined,
       canPrompt: true,
@@ -550,6 +573,7 @@ describe("the fallback", () => {
     await readSecretValue({
       name: "not-declared",
       mode: "create",
+      rerun: rerunFor("create", "not-declared"),
       entry: undefined,
       canPrompt: true,
       stdin: terminal(),
@@ -566,6 +590,7 @@ describe("canceling", () => {
       await readSecretValue({
         name: "payments-provider-credentials",
         mode: "create",
+        rerun: rerunFor("create", "payments-provider-credentials"),
         entry: CREDENTIALS,
         branches: ["stripe"],
         canPrompt: true,
@@ -605,6 +630,7 @@ describe("the truncated-paste trap", () => {
     readSecretValue({
       name: "payments-provider-credentials",
       mode: "create",
+      rerun: rerunFor("create", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe"],
       canPrompt: true,
@@ -667,6 +693,7 @@ describe("the two questions", () => {
         await readSecretValue({
           name: "GOOGLE_CLIENT_SECRET",
           mode: "create",
+          rerun: rerunFor("create", "GOOGLE_CLIENT_SECRET"),
           entry: undefined,
           canPrompt,
           stdin: piped("sk_live_1\n"),
@@ -680,6 +707,7 @@ describe("the two questions", () => {
     const thrown = await readSecretValue({
       name: "GOOGLE_CLIENT_SECRET",
       mode: "create",
+      rerun: rerunFor("create", "GOOGLE_CLIENT_SECRET"),
       entry: undefined,
       canPrompt: false,
       stdin: terminal(),
@@ -697,6 +725,7 @@ describe("the two questions", () => {
       await readSecretValue({
         name: "GOOGLE_CLIENT_SECRET",
         mode: "create",
+        rerun: rerunFor("create", "GOOGLE_CLIENT_SECRET"),
         entry: undefined,
         canPrompt: true,
         stdin: terminal(),
@@ -711,6 +740,7 @@ describe("the two questions", () => {
       readSecretValue({
         name: "payments-provider-credentials",
         mode: "update",
+        rerun: rerunFor("update", "payments-provider-credentials"),
         entry: CREDENTIALS,
         branches: ["stripe", "paddle"],
         canPrompt: false,
@@ -724,6 +754,7 @@ describe("the two questions", () => {
     const thrown = await readSecretValue({
       name: "payments-provider-credentials",
       mode: "update",
+      rerun: rerunFor("update", "payments-provider-credentials"),
       entry: CREDENTIALS,
       branches: ["stripe", "paddle"],
       canPrompt: false,

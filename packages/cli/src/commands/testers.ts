@@ -4,7 +4,16 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  type Command,
+  type CommandPath,
+  callerOf,
+  commandAlternatives,
+  commandName,
+  pithyCommand,
+  rerunRemedy,
+} from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -21,7 +30,7 @@ import { loadTesters, testersAuth } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
-import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { commandCredentials } from "../cloudflare/commandCredentials";
 import { withContract } from "../contract/commandContract";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -32,11 +41,14 @@ import {
   environmentReadiness,
   formatEnvironmentOutcomes,
   narrowReadiness,
+  ProvisionReportExitCode,
   readyStanza,
   requireReadyEnvironments,
   SkippedEnvironment,
+  writeProvisionReport,
 } from "../project/environmentReadiness";
 import { kitImport } from "../project/kitResolve";
+import { workerDirName } from "../project/workerIdentity";
 import {
   composedProjectCapabilities,
   projectCapabilities,
@@ -49,6 +61,11 @@ import { openSeedDriver } from "../seed/drivers";
 import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim, saffron } from "../terminal/style";
+
+/** The daily pass for one cohort, now, in the environment the run was about. */
+function passFor(cohort: string, env: string): Command {
+  return pithyCommand("testers run", { flags: { "--cohort": cohort, "--env": env } });
+}
 
 /**
  * The sending identity the deployed daily-pass host is stamped with. Referenced by type only, the way
@@ -88,11 +105,11 @@ const ESTIMATE_NOTE = [
  * `undefined` reaching a database query — which fails as a 404 for a cohort nobody named. Failing here
  * says what is missing instead.
  */
-function required(value: string | undefined, name: string, example: string): string {
+function required(value: string | undefined, name: string, path: CommandPath): string {
   if (value === undefined || value.trim() === "") {
     throw new ValidationError({
       message: `Missing ${name}.`,
-      action: `Pass it: ${example}`,
+      action: `Pass ${name} to ${commandName(path)}, first.`,
     });
   }
   return value;
@@ -187,7 +204,7 @@ function testersNotComposed(projectDir: string, workers: readonly { dir: string 
     "testers",
     {
       message: "The testers capability is not configured.",
-      action: "Add `testers({ baseUrl: '...' })` to pithy.config.ts (run `pithy add testers`).",
+      action: (add) => `Add \`testers({ baseUrl: '...' })\` to pithy.config.ts (run ${add}).`,
     },
     { projectDir, workerDirs: workers.map((worker) => worker.dir) },
   );
@@ -205,12 +222,8 @@ async function openTesters(requested: string) {
   // Capabilities live per Worker; the roster is one project-wide thing, so the first Worker composing
   // testers supplies both the config and the database binding.
   const worker = workers.find((entry) => entry.capabilities?.some(isTestersCapability)) ?? workers[0];
-  if (!worker) {
-    throw new ValidationError({
-      message: "No Worker composes the testers capability.",
-      action: "Run `pithy add testers --worker <name>` first.",
-    });
-  }
+  // No Worker at all is the same refusal as none composing testers, with the same `pithy add` (#711).
+  if (!worker) throw await testersNotComposed(projectDir, workers);
 
   // The account this project belongs to, before the driver resolves a credential. For any env but
   // `dev` this driver is a REST client writing into a real D1 and a real R2, and `openSeedDriver`'s own
@@ -382,18 +395,9 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // The project's own environment set (#241), carried rather than assumed.
   const environments = loadProjectEnvironments(config);
   const selection = await projectCloudflareAccount(projectDir);
-  const vars = cloudflareEnv({ account: selection });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  // What vouches for that id (#378). The host teardown reads a missing Worker as "already gone", and an
-  // account nothing claims answers exactly that way about a host that is still running.
-  const account: ConfirmedAccount = { accountId, confirmation: cloudflareAccountConfirmation({ account: selection }) };
-  if (!accountId || !apiToken) {
-    throw new PreconditionFailedError({
-      message: "Cloudflare credentials are missing.",
-      action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
-    });
-  }
+  // What vouches for the id (#378) rides with it: the host teardown reads a missing Worker as "already gone", and
+  // an account nothing claims answers exactly that way about a host that is still running.
+  const { account, accountId, apiToken } = commandCredentials(selection);
 
   const workers = await resolveWorkers({ projectDir });
   // Assembled, for the same reason the enqueue seam above is: the catalogs stamped into the deployed
@@ -635,6 +639,7 @@ const TestersProvisionPayload = z
       .array(SkippedEnvironment)
       .describe("One entry per declared environment nothing was provisioned for."),
     sends: z.boolean().describe("Whether an email capability is composed. `false` records the day and sends nothing."),
+    exitCode: ProvisionReportExitCode,
   })
   .describe("What `pithy testers provision` provisioned.");
 
@@ -804,13 +809,25 @@ const provision = withContract(
 
         const deployed = new Map(results.map((entry) => [entry.env, entry.worker]));
 
+        // The caller's own run, as the refusal names it to run again: every flag it was given, the environment it
+        // was narrowed to among them, and the Worker it resolved when none was named (#711).
+        const rerun = rerunRemedy(callerOf("testers provision", args), {
+          flags: { "--worker": workerDirName(appWorker) },
+          productionEnvironments: readiness.productionEnvironments,
+        });
+
         if (args.json) {
-          // Written before the refusal below, so a run in which everything skipped still carries the
-          // per-environment structure on stdout beside the `{"error":…}` line on stderr.
-          process.stdout.write(
-            `${formatJsonLine({ command: "testers provision", results, skippedEnvironments: readiness.skipped, sends: email !== undefined })}\n`,
+          // One outcome (#711): the error line alone when nothing was provisioned, or this report alone.
+          writeProvisionReport(
+            {
+              command: "testers provision",
+              results,
+              skippedEnvironments: readiness.skipped,
+              sends: email !== undefined,
+            },
+            readiness,
+            rerun,
           );
-          requireReadyEnvironments(readiness, "pithy testers provision");
           return;
         }
         process.stdout.write(
@@ -818,8 +835,9 @@ const provision = withContract(
             environmentOutcomes(readiness, (env) => `${deployed.get(env)} deployed, TESTERS_DAILY bound`),
           ),
         );
-        requireReadyEnvironments(readiness, "pithy testers provision");
-        process.stdout.write(dim("The pass runs daily at 05:00 UTC. `pithy testers run` runs one now.\n"));
+        requireReadyEnvironments(readiness, rerun);
+        const runNow = readiness.ready.map((env) => pithyCommand("testers run", { flags: { "--env": env } }));
+        process.stdout.write(dim(`The pass runs daily at 05:00 UTC. ${commandAlternatives(runNow)} runs one now.\n`));
         if (!email) {
           // Said here rather than discovered on the first silent morning.
           process.stdout.write(
@@ -898,7 +916,7 @@ const create = withContract(
             { db, now: new Date(), newId: () => crypto.randomUUID() },
             {
               name: boundedName(
-                required(args.name, "a cohort name", "pithy testers create closed-test"),
+                required(args.name, "a cohort name", "testers create"),
                 config.maxNameLength,
                 "cohort name",
               ),
@@ -1006,10 +1024,7 @@ const invite = withContract(
       withErrorReporting(args.json, async () => {
         const { db, config, driver, modules } = await openTesters(args.env);
         try {
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers status closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers status"));
           const emails = (Array.isArray(args.email) ? args.email : [args.email]).map(String);
           const invited = [];
           for (const email of emails) {
@@ -1029,7 +1044,7 @@ const invite = withContract(
             return;
           }
           process.stdout.write(`${invited.length} added to ${cohort.name}.\n`);
-          process.stdout.write(dim("Run `pithy testers run` to ask them whether they will test.\n"));
+          process.stdout.write(dim(`Run \`${passFor(cohort.name, args.env)}\` to ask them whether they will test.\n`));
           process.stdout.write(`${formatDone()}\n`);
         } finally {
           await driver.dispose();
@@ -1062,10 +1077,7 @@ const pending = withContract(
       withErrorReporting(args.json, async () => {
         const { db, driver, modules } = await openTesters(args.env);
         try {
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers pending closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers pending"));
           // The one step Pithy cannot do for you: the Play Developer API has no way to add an address to
           // an email list, so this prints the addresses and you paste them into the console. Until that is
           // done the store link answers `App not available`, which is why the second email waits.
@@ -1083,7 +1095,7 @@ const pending = withContract(
           for (const member of waiting) process.stdout.write(`${member.email}\n`);
           process.stdout.write(
             dim(
-              `\nAdd these to the tester list in the console, then run \`pithy testers run\` to send them the link.\n`,
+              `\nAdd these to the tester list in the console, then run \`${passFor(cohort.name, args.env)}\` to send them the link.\n`,
             ),
           );
           process.stdout.write(`${formatDone()}\n`);
@@ -1108,10 +1120,7 @@ const roster = withContract(
         const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
         try {
           const now = new Date();
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers status closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers status"));
           const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
           const view = modules.toCohortView(
             reading,
@@ -1168,10 +1177,7 @@ const status = withContract(
         const { db, d1, config, driver, modules, auth } = await openTesters(args.env);
         try {
           const now = new Date();
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers status closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers status"));
           const reading = await modules.readCohort(db, d1, cohort, config, now, readerLog(args.json), auth);
           const days = wholeNumber(args["trend-days"], "--trend-days", 30);
           const snapshots = await modules.listSnapshots(db, cohort.id, days);
@@ -1237,15 +1243,12 @@ const remove = withContract(
       withErrorReporting(args.json, async () => {
         const { db, driver, modules } = await openTesters(args.env);
         try {
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers status closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers status"));
           const member = await modules.findMemberByEmail(db, cohort.id, String(args.email));
           if (!member) {
             throw new ValidationError({
               message: "That address is not on this cohort.",
-              action: `Run \`pithy testers roster ${cohort.name}\` to see who is.`,
+              action: `Run \`${pithyCommand("testers roster", { args: [cohort.name], flags: { "--env": args.env } })}\` to see who is.`,
             });
           }
           const removed = await modules.removeMember(
@@ -1281,10 +1284,7 @@ const close = withContract(
       withErrorReporting(args.json, async () => {
         const { db, driver, modules } = await openTesters(args.env);
         try {
-          const cohort = await modules.resolveCohortRef(
-            db,
-            required(args.cohort, "a cohort", "pithy testers close closed-test"),
-          );
+          const cohort = await modules.resolveCohortRef(db, required(args.cohort, "a cohort", "testers close"));
           const closed = await modules.closeCohort(
             { db, now: new Date(), newId: () => crypto.randomUUID() },
             cohort.id,

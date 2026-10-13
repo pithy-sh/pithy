@@ -7,6 +7,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { commandName, commandNameOf, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
@@ -26,6 +27,9 @@ import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
 import type { StatePathOptions } from "../notifier/state";
 import type { PlanSecret } from "../plan/plan";
+import { workerEnvironments } from "../project/wrangler";
+import { addAgain, addCallerOf } from "./addCommand";
+import { capabilityProvisionRemedies, remediesSentence } from "./provisionCommand";
 
 export interface AddBootstrapOptions {
   /**
@@ -61,6 +65,22 @@ export interface AddBootstrapOptions {
    * compiler is the only reviewer that can tell them apart.
    */
   account: CloudflareAccountSelection | null;
+  /**
+   * The Worker being wired, by its apps/ directory. A note that sends the operator back to `pithy add`, or on to
+   * a provision, names it, because a project with several Workers refuses the command without one (#711).
+   */
+  worker: WorkerDir;
+  /**
+   * This capability's own `pithy add`, as a note sending the operator back to run it again names it, every flag and
+   * `--set` carried (#711) — never an outer run that composed it as a prerequisite, whose rerun finds it composed and
+   * never reaches this bootstrap. Rebuilt from the capability and the Worker where the caller has none to give.
+   */
+  again?: string;
+  /**
+   * The project's `seed.productionEnvironments`, read by the command (`runAdd` never loads the root config). A
+   * provision note says one of them as a person's decision, as it does `prod` (#711). Omitted, the project names none.
+   */
+  productionEnvironments?: readonly string[];
 }
 
 /**
@@ -83,21 +103,30 @@ export async function bootstrapAdd({
   ensureStoreId,
   paths,
   account,
+  worker,
+  again: given,
+  productionEnvironments = [],
 }: AddBootstrapOptions): Promise<string[]> {
+  const again =
+    given ??
+    addAgain(addCallerOf({ capability: manifest.name }, []), {
+      workerDir: join(projectDir, "apps", worker),
+      projectDir,
+    });
   const notes: string[] = [];
   // The account's Secrets Store id, resolved once and recorded in `<config>/cloudflare.json` — the one
   // moment in its life anything asks Cloudflare where the store is (#182). Before the bindings loop,
   // because the sentence it may print ("no credentials yet") is the same one that explains why the
   // provisioning notes below are the next step. Never fatal: see {@link ensureSecretsStoreId}.
   if (manifest.name === SECRETS_CAPABILITY) {
-    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)({ paths: { ...paths, account } })));
+    notes.push(...(await (ensureStoreId ?? ensureSecretsStoreId)({ paths: { ...paths, account }, again })));
   }
   for (const binding of manifest.requiredBindings) {
     // Optional bindings are skipped for the same reason `validateBindings` skips them: nothing refuses
     // a request over one, so a note would send the adopter provisioning what their app never asks for.
     if (binding.optional || !isProvisionedBinding(binding.type)) continue;
-    if (isMasterKey(manifest, binding)) notes.push(...(await ensureDevMasterKey(projectDir)));
-    else notes.push(provisionNote(manifest.name, binding));
+    if (isMasterKey(manifest, binding)) notes.push(...(await ensureDevMasterKey(projectDir, again)));
+    else notes.push(await provisionNote(projectDir, manifest.name, binding, worker, productionEnvironments));
   }
   notes.push(...(await ensureDevSecrets(projectDir, manifest.devSecrets)));
   // Last, and over the whole project rather than this capability: the value just minted has to reach the
@@ -139,7 +168,9 @@ export interface BootstrapPlan {
 export async function planBootstrapAdd({
   projectDir,
   manifest,
-}: Pick<AddBootstrapOptions, "projectDir" | "manifest">): Promise<BootstrapPlan> {
+  worker,
+  productionEnvironments = [],
+}: Pick<AddBootstrapOptions, "projectDir" | "manifest" | "worker" | "productionEnvironments">): Promise<BootstrapPlan> {
   const plan: BootstrapPlan = { secrets: [], notes: [], steps: [] };
   if (manifest.name === SECRETS_CAPABILITY) {
     plan.steps.push(
@@ -151,7 +182,7 @@ export async function planBootstrapAdd({
   for (const binding of manifest.requiredBindings) {
     if (binding.optional || !isProvisionedBinding(binding.type)) continue;
     if (!isMasterKey(manifest, binding)) {
-      plan.notes.push(provisionNote(manifest.name, binding));
+      plan.notes.push(await provisionNote(projectDir, manifest.name, binding, worker, productionEnvironments));
       continue;
     }
     if (stated[MASTER_KEY_BINDING]) continue;
@@ -181,11 +212,23 @@ function isMasterKey(manifest: CapabilityManifest, binding: BindingSpec): boolea
 }
 
 /**
- * What a binding needs that only provisioning can supply. `pithy <capability> provision` is the command
- * in every case — each capability that owns provisioned resources subcommands its own name.
+ * What a binding needs that only provisioning can supply: the capability's own provision, for this Worker, and
+ * for each environment its `wrangler.jsonc` declares where the command acts on one (#711). A provision named
+ * bare is refused in a project with several Workers, and `vector provision` with no `--env` provisions `dev`.
  */
-function provisionNote(capability: string, binding: BindingSpec): string {
-  return `${binding.name} is created by pithy ${capability} provision. Nothing local stands in for it.`;
+async function provisionNote(
+  projectDir: string,
+  capability: string,
+  binding: BindingSpec,
+  worker: WorkerDir,
+  productionEnvironments: readonly string[],
+): Promise<string> {
+  const environments = await workerEnvironments(join(projectDir, "apps", worker));
+  const remedies = capabilityProvisionRemedies(capability, worker, environments, productionEnvironments);
+  const steps = remediesSentence(remedies);
+  return steps.length > 0
+    ? `${binding.name} is created by provisioning, and nothing local stands in for it. ${steps}`
+    : `${binding.name} is created by provisioning each environment with ${commandNameOf(`${capability} provision`)} and its --env, and nothing local stands in for it.`;
 }
 
 /**
@@ -207,7 +250,7 @@ function provisionNote(capability: string, binding: BindingSpec): string {
  * into the bootstrap store as it stands, and the project keeps reading what it already wrote. Their file
  * is not rewritten — nothing here ever rewrites an adopter's `.dev.vars`.
  */
-async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
+async function ensureDevMasterKey(projectDir: string, again: string): Promise<string[]> {
   const path = await resolveDevSecretsFile(projectDir);
   if ((await readDevSecrets(path))[MASTER_KEY_BINDING]) {
     return [`${MASTER_KEY_BINDING} is already in ${path}. Left as it is — a new key orphans every stored secret.`];
@@ -232,7 +275,7 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
   if (config === null) {
     return [
       `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was adopted.`,
-      `Put a valid one in ${path}, or delete it and run pithy add secrets again to mint a new one — a new key orphans every secret the old one encrypted.`,
+      `Put a valid one in ${path}, or delete it and run ${again} again to mint a new one — a new key orphans every secret the old one encrypted.`,
     ];
   }
   const wrote = await writeDevSecrets(path, { [MASTER_KEY_BINDING]: initialDevSecret(masterKeyRegistryEntry, config) });
@@ -244,7 +287,7 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
   }
   return [
     `Minted a dev master key as ${MASTER_KEY_BINDING}, into ${path}. Local only, and it reaches each Worker's generated .dev.vars.`,
-    "Deployed environments get theirs from pithy secrets provision.",
+    `Deployed environments get theirs from ${commandName("secrets provision")}.`,
   ];
 }
 
@@ -318,7 +361,7 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
     minted[secret.name] = initialDevSecret({}, mintSecretValue(secret.devValue));
     notes.push(
       `Minted a dev ${secret.name} into ${path}. Local only.`,
-      `Deployed environments need pithy secrets create ${secret.name}.`,
+      `Deployed environments need ${pithyCommand("secrets create", { args: [secret.name] })}.`,
     );
     const stranded = inDevVars[secret.name];
     if (stranded !== undefined && stranded !== "") {

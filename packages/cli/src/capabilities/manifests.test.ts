@@ -76,10 +76,24 @@ describe("loadManifest", () => {
   });
 
   test("an uninstalled capability fails with its name and how to add it", async () => {
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "demo-api" }));
+    await writeFile(join(dir, "apps", "api", "pithy.config.ts"), "export default {};\n");
     const error = await loadManifest("auth", dir).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(PithyError);
     expect((error as PithyError).message).toContain("auth");
-    expect((error as PithyError).payload.action).toContain("pithy add auth");
+    // The kit's own manifest says auth brings prerequisites, and the Worker is named by directory (#711).
+    expect((error as PithyError).payload.action).toBe(
+      "Run `pithy add auth --worker api --with-prerequisites` to install it.",
+    );
+  });
+
+  // With no Worker to add it to, no `pithy add` runs: the line says what comes first (#711).
+  test("an uninstalled capability in a project with no Worker says to create one first", async () => {
+    const error = (await loadManifest("auth", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error.payload.action).toBe(
+      "This project has no Worker to compose auth into. Name one and create it with pithy worker add, then compose auth into it.",
+    );
   });
 
   /**
@@ -126,8 +140,24 @@ describe("loadManifest", () => {
   test("and an uninstalled one still gets the install instruction, which is the right answer for it", async () => {
     // The two branches are one line apart, so the second is asserted beside the first: narrowing the
     // absent case must not cost the adopter who really did type a name they never installed.
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "demo-api" }));
+    await writeFile(join(dir, "apps", "api", "pithy.config.ts"), "export default {};\n");
     const error = (await loadManifest("storage", dir).catch((thrown: unknown) => thrown)) as PithyError;
-    expect(error.payload.action).toContain("pithy add storage");
+    expect(error.payload.action).toContain("pithy add storage --worker api");
+  });
+
+  // A project with several Workers refuses a bare `pithy add`, so the sentence names one command per Worker (#711).
+  test("an uninstalled capability in a two-Worker project names one runnable add per Worker", async () => {
+    for (const worker of ["web", "api"]) {
+      await mkdir(join(dir, "apps", worker), { recursive: true });
+      await writeFile(join(dir, "apps", worker, "wrangler.jsonc"), JSON.stringify({ name: `demo-${worker}` }));
+      await writeFile(join(dir, "apps", worker, "pithy.config.ts"), "export default {};\n");
+    }
+    const error = (await loadManifest("storage", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error.payload.action).toBe(
+      "Run `pithy add storage --worker api --with-prerequisites` or `pithy add storage --worker web --with-prerequisites` to install it.",
+    );
   });
 
   test("a malformed manifest fails validation", async () => {

@@ -9,6 +9,7 @@ import { promoteDependencies } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
 import { workerEntryPath } from "../project/wrangler";
+import { addAction } from "./addCommand";
 import {
   capabilityImportSpecifier,
   findNamedImport,
@@ -17,6 +18,7 @@ import {
   isInside,
   namedReexports,
 } from "./configImports";
+import { resolveAdd } from "./notComposed";
 
 /**
  * The directory an ejected capability's source is copied into, relative to the Worker's
@@ -179,7 +181,7 @@ async function promotableDependencies(projectDir: string, pkg: string): Promise<
  * import could not be ejected at all, and `pithy add` would not put the canonical line back, so there
  * was no way out through the CLI.
  */
-async function repointImport(workerDir: string, pkg: string, capability: string): Promise<void> {
+async function repointImport(projectDir: string, workerDir: string, pkg: string, capability: string): Promise<void> {
   const path = join(workerDir, "pithy.config.ts");
   const source = await readFile(path, "utf8");
   // Derived from the file being written, like the entry's is. For the config the answer is
@@ -198,9 +200,10 @@ async function repointImport(workerDir: string, pkg: string, capability: string)
     );
     return;
   }
+  // The add that composes it into this Worker, with whatever its manifest says it needs (#711).
   throw new NotFoundError({
     message: `${path} doesn't import ${pkg}.`,
-    action: `Run pithy add ${capability} first, then eject.`,
+    action: addAction(resolveAdd(capability, { projectDir, workerDir }), (add) => `Run ${add} first, then eject.`),
   });
 }
 
@@ -295,7 +298,8 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   if (!(await pathExists(source))) {
     throw new NotFoundError({
       message: `${pkg} is not installed (no ${pkg}/src to eject).`,
-      action: `Run pithy add ${capability} first.`,
+      // The kit's manifest says what the add needs while the package is absent (#711).
+      action: addAction(resolveAdd(capability, { projectDir, workerDir }), (add) => `Run ${add} first.`),
     });
   }
 
@@ -327,7 +331,7 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   // cannot fork, and a refusal raised between the two would leave the config naming the fork while the
   // entry still named the package. Same reasoning as the copy/promote/repoint order above.
   const entry = await planEntryExports(workerDir, pkg, capability);
-  await repointImport(workerDir, pkg, capability);
+  await repointImport(projectDir, workerDir, pkg, capability);
   if (entry) await writeFile(entry.path, entry.written);
 
   return { capability, path: `${EJECT_DIR}/${capability}`, promotedDependencies, forced: Boolean(alreadyEjected) };

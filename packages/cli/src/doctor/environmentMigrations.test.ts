@@ -267,7 +267,7 @@ describe("doctor reports each environment's migrations from that environment", (
     expect(lines).toEqual([
       "    migrations   dev: 1 pending — run: pithy migrate --env dev",
       "                 staging: 2 pending — run: pithy migrate --env staging",
-      "                 prod: DB (app) not provisioned — run: pithy provision --env prod",
+      "                 prod: DB (app) not provisioned — `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.",
       "                 qa: couldn't be checked — pithy.config.ts does not compose for qa",
     ]);
     // Stated as the rule, over whatever lines there are: a command on an environment's line names that
@@ -305,7 +305,7 @@ describe("doctor reports each environment's migrations from that environment", (
     expect(migrationLines(renderDoctorText(report, "/home/u"))).toEqual([
       "    migrations   dev: 1 pending — run: pithy migrate --env dev",
       "                 staging: skipped — offline, so no database was read",
-      "                 prod: DB (app) not provisioned — run: pithy provision --env prod",
+      "                 prod: DB (app) not provisioned — `pithy provision --env prod --yes` with its --confirm phrase, which only a person gives, runs against prod, a production environment. That is a person's decision, not a fix.",
       "                 qa: couldn't be checked — pithy.config.ts does not compose for qa",
     ]);
   });

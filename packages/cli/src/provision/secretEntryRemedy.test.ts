@@ -191,7 +191,7 @@ function provisionLines(registry: SecretRegistry, env: string): string[] {
     return true;
   }) as typeof process.stdout.write;
   try {
-    writeReport(report, { json: false, seeded: false, pending: { names: [], remedy: null }, registry });
+    writeReport(report, { json: false, seeded: false, pending: { names: [], remedy: null, sentence: null }, registry });
   } finally {
     process.stdout.write = original;
   }
@@ -209,7 +209,7 @@ function commands(lines: readonly string[]): string[] {
 }
 
 /**
- * The remedy **sentence** each line carries — everything from `Run` on, which is the part
+ * The remedy **sentence** each line carries — everything from `Run`, or the provision's decision, on, which is the part
  * `storeEntryRemedy` owns. The head before it is each report's own subject and legitimately differs;
  * this is the half that must be byte-identical, and comparing the commands alone would let a second
  * renderer that happens to name the same commands pass.
@@ -217,8 +217,11 @@ function commands(lines: readonly string[]): string[] {
 function remedies(lines: readonly string[]): string[] {
   const found = new Set<string>();
   for (const line of lines) {
-    const at = line.indexOf("Run pithy secrets ");
-    if (at >= 0) found.add(line.slice(at));
+    // A run to supply a value, or the provision said as a person's decision (#711): it runs against production.
+    const starts = [line.indexOf("Run pithy secrets "), line.indexOf("`pithy secrets provision` runs")].filter(
+      (at) => at >= 0,
+    );
+    if (starts.length > 0) found.add(line.slice(Math.min(...starts)));
   }
   return [...found].sort();
 }
@@ -339,13 +342,13 @@ describe("both reports answer the same way, for every cell", () => {
 describe("storeEntryRemedy", () => {
   test("a value the kit composes is answered with the one command that composes it", () => {
     expect(storeEntryRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: true }])).toBe(
-      "Run pithy secrets provision — it creates the store entries and writes the stanza.",
+      "`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It creates the store entries and writes the stanza.",
     );
   });
 
   test("a value only the operator holds is answered with the create that supplies it", () => {
     expect(storeEntryRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: false }])).toBe(
-      "Run pithy secrets create FOO --env staging to supply its value, then pithy secrets provision to write the stanza.",
+      "Run pithy secrets create FOO --env staging to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     );
   });
 
@@ -361,7 +364,7 @@ describe("storeEntryRemedy", () => {
         { secret: "BAR", scope: "environment", env: "staging", provisionable: false },
       ]),
     ).toBe(
-      "Run pithy secrets create BAR --env staging to supply its value, then pithy secrets provision to write the stanza.",
+      "Run pithy secrets create BAR --env staging to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     );
   });
 });
@@ -397,7 +400,7 @@ describe("supplyStoreEntriesRemedy", () => {
     expect(
       supplyStoreEntriesRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: false }]),
     ).toBe(
-      "Run pithy secrets create FOO --env staging to supply its value, then pithy secrets provision to write the stanza.",
+      "Run pithy secrets create FOO --env staging to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     );
   });
 
@@ -411,7 +414,9 @@ describe("supplyStoreEntriesRemedy", () => {
         { secret: "FOO", scope: "global", env: "staging", provisionable: false },
         { secret: "FOO", scope: "global", env: "prod", provisionable: false },
       ]),
-    ).toBe("Run pithy secrets create FOO to supply its value, then pithy secrets provision to write every stanza.");
+    ).toBe(
+      "Run pithy secrets create FOO to supply its value. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes every stanza.",
+    );
   });
 
   test("several entries in one stanza are several commands and one provision", () => {
@@ -421,7 +426,7 @@ describe("supplyStoreEntriesRemedy", () => {
         { secret: "BAR", scope: "environment", env: "staging", provisionable: false },
       ]),
     ).toBe(
-      "Run pithy secrets create FOO --env staging, pithy secrets create BAR --env staging to supply their values, then pithy secrets provision to write the stanza.",
+      "Run pithy secrets create FOO --env staging, pithy secrets create BAR --env staging to supply their values. `pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix. It writes the stanza.",
     );
   });
 });

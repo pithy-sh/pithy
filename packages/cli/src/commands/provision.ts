@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Caller, callerOf } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope, featureScope, type ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -259,6 +260,8 @@ export interface ProvisionRunOptions {
   seed: boolean;
   /** `--json`. */
   json: boolean;
+  /** The caller's own run, the one input a line naming it again is built from (#711). */
+  caller?: Caller<"provision">;
   /** `--events`: with `--json`, a progress record per step before the report (#697). */
   events?: boolean;
   /** `--dry-run`: plan the run, and create, write and migrate nothing. */
@@ -774,6 +777,7 @@ async function provisionBranch(
       seed: true,
       run: async (seams) =>
         provisionFeature({
+          ...(options.caller === undefined ? {} : { caller: options.caller }),
           projectDir: seams.projectDir,
           capabilities,
           ...(seams.store ? { store: seams.store } : {}),
@@ -819,6 +823,7 @@ async function provisionBranch(
   const infrastructure = store ? await featureSecretsInfrastructure(account, identity, audit) : null;
   const indexes = await featureIndexSeam(projectDir, account, identity.project);
   const report = await provisionFeature({
+    ...(options.caller === undefined ? {} : { caller: options.caller }),
     projectDir,
     capabilities,
     ...(store ? { store } : {}),
@@ -1006,7 +1011,12 @@ const ProvisionPayload = z
     pendingSecrets: z
       .array(z.string().describe("A secret's name."))
       .describe("The `d1` secrets this run declares and did not create."),
-    pendingSecretsRemedy: z.string().nullable().describe("The command that does create them."),
+    pendingSecretsRemedy: z
+      .string()
+      .nullable()
+      .describe(
+        "What does create them: the command, or — for `pithy secrets provision`, which runs against every environment, production included — a person's decision said as one sentence.",
+      ),
     dryRun: z
       .boolean()
       .describe(
@@ -1045,6 +1055,7 @@ export default withContract(
         args.json,
         () =>
           runProvision({
+            caller: callerOf("provision", args),
             env: args.env,
             feature: args.feature,
             yes: args.yes,

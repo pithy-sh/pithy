@@ -8,6 +8,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import {
@@ -887,7 +888,7 @@ export async function loadWorkerConfig(workerDir: string, options?: LoadWorkerCo
     () => {
       throw new NotFoundError({
         message: `No pithy.config.ts in ${workerDir}.`,
-        action: "Every worker under apps/ needs one. pithy worker add creates it.",
+        action: `Every worker under apps/ needs one. ${commandName("worker add")} creates it.`,
       });
     },
     options?.fresh === true,
@@ -910,7 +911,7 @@ export async function loadProject(projectDir: string): Promise<ProjectConfig> {
   const value = await importConfig(path, () => {
     throw new NotFoundError({
       message: "No pithy.config.ts here.",
-      action: "Run from a Pithy project. pithy init creates one.",
+      action: `Run from a Pithy project. ${pithyCommand("init")} creates one.`,
     });
   });
   if (!isProjectConfig(value)) {
@@ -993,8 +994,7 @@ export function requireProjectName(config: ProjectConfig): string {
     // The call is right and the project is missing its name: a precondition, exit 3 (#697). An edit fixes it.
     throw new PreconditionFailedError({
       message: "pithy.config.ts has no `name`.",
-      action:
-        "Set `name` in pithy.config.ts. Every feature resource name — and pithy feature destroy's ability to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.",
+      action: `Set \`name\` in pithy.config.ts. Every feature resource name — and the ability of ${commandName("feature destroy")} to find and delete it later — derives from this name, so it must stay stable across machines and checkouts.`,
     });
   }
   assertValidProjectName(config.name);

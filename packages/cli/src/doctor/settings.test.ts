@@ -54,8 +54,8 @@ describe("one Worker composed for several environments", () => {
     const check = await checkCapabilitySettings(
       options({
         workers: [
-          { name: "api", capabilities: [capability("email", { local: dev })] },
-          { name: "api", capabilities: [capability("email", { local: prod })] },
+          { name: "api", directory: "api", capabilities: [capability("email", { local: dev })] },
+          { name: "api", directory: "api", capabilities: [capability("email", { local: prod })] },
         ],
       }),
     );
@@ -72,7 +72,7 @@ describe("one Worker composed for several environments", () => {
 describe("discovery", () => {
   test("a capability that declares no check is skipped in silence", async () => {
     const check = await checkCapabilitySettings(
-      options({ workers: [{ name: "api", capabilities: [capability("auth"), capability("core")] }] }),
+      options({ workers: [{ name: "api", directory: "api", capabilities: [capability("auth"), capability("core")] }] }),
     );
     // `null`, not an empty pass: the question does not arise, which is a different fact from "nothing wrong".
     expect(check).toBeNull();
@@ -81,7 +81,7 @@ describe("discovery", () => {
   test("it keys on the capability instance, so a package with no manifest is still checked", async () => {
     const local = vi.fn(() => []);
     const check = await checkCapabilitySettings(
-      options({ workers: [{ name: "api", capabilities: [capability("rating", { local })] }] }),
+      options({ workers: [{ name: "api", directory: "api", capabilities: [capability("rating", { local })] }] }),
     );
     expect(local).toHaveBeenCalledTimes(1);
     expect(check?.checked).toEqual([{ worker: "api", capability: "rating" }]);
@@ -93,6 +93,7 @@ describe("discovery", () => {
         workers: [
           {
             name: "api",
+            directory: "api",
             capabilities: [
               capability("email", {
                 local: () => [{ setting: "BASE_URL", environment: "prod", problem: "Not a URL.", action: "Fix it." }],
@@ -101,6 +102,7 @@ describe("discovery", () => {
           },
           {
             name: "collab",
+            directory: "collab",
             capabilities: [
               capability("email", {
                 local: () => [{ setting: "fromAddress", environment: null, problem: "No domain.", action: "Fix it." }],
@@ -121,9 +123,17 @@ describe("the local tier", () => {
   test("is handed the project, the Worker, and every declared environment", async () => {
     const local = vi.fn(() => []);
     await checkCapabilitySettings(
-      options({ workers: [{ name: "api", capabilities: [capability("email", { local })] }] }),
+      options({ workers: [{ name: "api", directory: "api", capabilities: [capability("email", { local })] }] }),
     );
-    expect(local).toHaveBeenCalledWith({ project: "acme", worker: "api", environments });
+    expect(local).toHaveBeenCalledWith({ project: "acme", worker: "api", workerDirectory: "api", environments });
+  });
+
+  test("is handed the Worker's apps/ directory apart from its name, which a scaffold makes differ (#711)", async () => {
+    const local = vi.fn(() => []);
+    await checkCapabilitySettings(
+      options({ workers: [{ name: "acme-api", directory: "api", capabilities: [capability("email", { local })] }] }),
+    );
+    expect(local).toHaveBeenCalledWith({ project: "acme", worker: "acme-api", workerDirectory: "api", environments });
   });
 
   test("a finding makes the whole check a fault", async () => {
@@ -132,6 +142,7 @@ describe("the local tier", () => {
         workers: [
           {
             name: "api",
+            directory: "api",
             capabilities: [
               capability("email", {
                 local: () => [
@@ -158,6 +169,7 @@ describe("the local tier", () => {
         workers: [
           {
             name: "api",
+            directory: "api",
             capabilities: [
               capability("email", {
                 local: () => {
@@ -178,7 +190,13 @@ describe("the local tier", () => {
 describe("the account tier, three outcomes", () => {
   const withAccount = (account: CapabilitySettings["account"]): CapabilitySettingsOptions =>
     options({
-      workers: [{ name: "api", capabilities: [capability("email", { local: () => [], ...(account && { account }) })] }],
+      workers: [
+        {
+          name: "api",
+          directory: "api",
+          capabilities: [capability("email", { local: () => [], ...(account && { account }) })],
+        },
+      ],
     });
 
   test("reachable and passing: the tier ran, nothing is wrong", async () => {
@@ -233,7 +251,10 @@ describe("the account tier, three outcomes", () => {
   test("nothing connects when no composed capability declares an account tier", async () => {
     const connect = vi.fn(async () => reachable);
     const check = await checkCapabilitySettings(
-      options({ workers: [{ name: "api", capabilities: [capability("email", { local: () => [] })] }], connect }),
+      options({
+        workers: [{ name: "api", directory: "api", capabilities: [capability("email", { local: () => [] })] }],
+        connect,
+      }),
     );
     expect(connect).not.toHaveBeenCalled();
     // Not "checked" either — a tier nothing asked for is skipped, with the reason saying so.
@@ -253,8 +274,8 @@ describe("the environments seam", () => {
       options({
         environments: resolve,
         workers: [
-          { name: "api", capabilities: [capability("email", { local })] },
-          { name: "collab", capabilities: [capability("email", { local })] },
+          { name: "api", directory: "api", capabilities: [capability("email", { local })] },
+          { name: "collab", directory: "collab", capabilities: [capability("email", { local })] },
         ],
       }),
     );
@@ -270,7 +291,7 @@ describe("the environments seam", () => {
         environments: async () => {
           throw new Error("pithy.config.ts would not load");
         },
-        workers: [{ name: "api", capabilities: [capability("email", { local: () => [] })] }],
+        workers: [{ name: "api", directory: "api", capabilities: [capability("email", { local: () => [] })] }],
       }),
     );
     expect(check?.unchecked).toEqual([{ worker: "api", capability: "email", tier: "local" }]);

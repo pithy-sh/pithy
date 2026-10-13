@@ -3,6 +3,15 @@
 
 import { join, relative, sep } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import {
+  type Caller,
+  type Command,
+  callerOf,
+  pithyCommand,
+  rerunCommand,
+  viaPackageManager,
+  workerDirOf,
+} from "@pithy-sh/core/src/cli/command";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError } from "@pithy-sh/core/src/error/terminal";
@@ -29,9 +38,10 @@ import { agentsLine, InstructionsFile, syncAgentsBlock } from "../project/agentI
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
-import { execArgs, type InstallRunner } from "../project/packageManager";
+import type { InstallRunner } from "../project/packageManager";
 import { pathExists } from "../project/scaffold";
-import { workerEntryPath } from "../project/wrangler";
+import { workerDirName } from "../project/workerIdentity";
+import { workerEntryPath, workerEnvironments } from "../project/wrangler";
 import { EXIT } from "../terminal/exitClass";
 import { NextKey, type NextStep, upgradeNext } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -85,6 +95,12 @@ export interface UpgradeRunOptions {
   /** Run each Worker's pending migrations after reconciling it. */
   migrate: boolean;
   /**
+   * The caller's own `pithy upgrade` (#711), the one input a line naming this run again is built from, so it carries
+   * every flag the caller gave — `--json` among them. The command passes its parsed arguments; absent, it is
+   * {@link upgradeCallerOf} these options, for a caller with no command line behind it.
+   */
+  caller?: Caller<"upgrade">;
+  /**
    * Worker-set resolver seam; defaults to {@link resolveWorkersFor} for `env`. The Workers are composed for
    * the environment the plan counts migrations in and `--migrate` applies them to — composed for none, a
    * config whose migrations differ by environment planned against the wrong set (#595).
@@ -92,6 +108,11 @@ export interface UpgradeRunOptions {
   resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<UpgradeWorker[]>;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
+  /**
+   * The project's `seed.productionEnvironments`. Read from the root config after the package step when omitted, so a
+   * refusal naming a provision says one of them as a person's decision (#711).
+   */
+  productionEnvironments?: readonly string[];
   /** Test seam: run migrations without a real Miniflare/D1 run. */
   runMigrate?: RunMigrate;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
@@ -153,6 +174,11 @@ export type UpgradeWorkerResult =
       worker: string;
       /** What the run set out to do. What of it landed is not established — that is the whole of this state. */
       plan: ReconcilePlan;
+      /**
+       * This run, for this Worker, as the line names it to run again: its environment, its `--migrate`, and the
+       * Worker by its `apps/` directory (#711) — never the deployed name `worker` carries.
+       */
+      again: Command;
     }
   | {
       /**
@@ -225,6 +251,18 @@ async function proposalProject(projectDir: string): Promise<string | undefined> 
     return requireProjectName(await loadProject(projectDir));
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The project's `seed.productionEnvironments`, or none where the root config cannot be read — the same reading, and
+ * the same fallback, as {@link proposalProject}.
+ */
+async function projectProductionEnvironments(projectDir: string): Promise<readonly string[]> {
+  try {
+    return (await loadProject(projectDir)).seed?.productionEnvironments ?? [];
+  } catch {
+    return [];
   }
 }
 
@@ -333,7 +371,7 @@ export async function planUpgrade(projectDir: string, run: UpgradeRun, migrate: 
       plan.notes.push(
         migrate
           ? `${worker.worker}: then applies ${migrations} pending on ${worker.env}.`
-          : `${worker.worker}: ${migrations} pending on ${worker.env}. pithy upgrade --migrate applies them.`,
+          : `${worker.worker}: ${migrations} pending on ${worker.env}. ${pithyCommand("upgrade", { flags: { "--worker": workerDirOf({ dir: worker.worker }), "--env": worker.env, "--migrate": true } })} applies them.`,
       );
     }
   }
@@ -351,6 +389,8 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
   });
   const project = options.dryRun ? undefined : await proposalProject(options.projectDir);
+  const productionEnvironments =
+    options.productionEnvironments ?? (await projectProductionEnvironments(options.projectDir));
 
   const results: UpgradeWorkerResult[] = [];
   for (const worker of workers) {
@@ -382,7 +422,9 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
     // the refusal is the thing that stops it — so a `--dry-run` that printed "Nothing to upgrade." and
     // exited 0 where the real run exits 1 is the one report that must never disagree with the run it
     // describes. Nothing is written on either path, so refusing costs the dry run nothing.
-    const refusal = declineRefusal(plan);
+    // Every environment the Worker provisions for: an undeclinable binding is created by a provision, and one
+    // that acts on a single environment is named once for each (#711).
+    const refusal = declineRefusal(plan, await workerEnvironments(worker.dir), productionEnvironments);
     if (refusal) {
       results.push({ state: "refused", worker: worker.name, plan, refusal: refusal.payload });
       continue;
@@ -403,11 +445,16 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
         ...(project === undefined ? {} : { project }),
         capabilities: worker.capabilities,
         ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
+        productionEnvironments,
       });
     } catch {
       // Its own entry, and a different one from `unplanned`: this Worker's files have been opened for
       // writing. What landed of the plan is exactly what this run cannot say.
-      results.push({ state: "unapplied", worker: worker.name, plan });
+      // The caller's own run, from its context, narrowed to this Worker (#711).
+      const again = rerunCommand(options.caller ?? upgradeCallerOf(options), {
+        flags: { "--worker": workerDirName(worker), "--packages": undefined, "--latest": undefined },
+      });
+      results.push({ state: "unapplied", worker: worker.name, plan, again });
       continue;
     }
     results.push({ state: "reconciled", worker: worker.name, plan, applied });
@@ -502,7 +549,10 @@ function ledgerLines(plan: ReconcilePlan): string[] {
   const lines: string[] = [];
   if (counted.pending > 0) {
     const pending = count(counted.pending, "migration");
-    lines.push(`${pending} pending. Run pithy upgrade --migrate, or pithy migrate --env ${plan.env}.`);
+    const worker = workerDirOf({ dir: plan.worker });
+    const upgrade = pithyCommand("upgrade", { flags: { "--worker": worker, "--env": plan.env, "--migrate": true } });
+    const migrate = pithyCommand("migrate", { flags: { "--worker": worker, "--env": plan.env } });
+    lines.push(`${pending} pending. Run ${upgrade}, or ${migrate}.`);
   }
   if (ledger.state === "partial") {
     const named = ledger.unreadable.map((entry) => `${entry.binding} (${entry.database})`).join(", ");
@@ -637,7 +687,7 @@ function workerLines(result: UpgradeWorkerResult): string[] {
   if (result.state === "unapplied") {
     return [
       "Upgrade failed partway. Its wiring may hold part of the plan below.",
-      `Check it, then re-run: pithy upgrade --worker ${result.worker} --env ${result.plan.env}.`,
+      `Check it, then re-run: ${result.again}.`,
       ...planLines(result.plan),
     ];
   }
@@ -741,17 +791,46 @@ function sectionLines(section: TemplateSection, noted: boolean): string[] {
   return lines;
 }
 
-/** The project's own CLI's `upgrade`, through its package manager — a bare `pithy` may be the old, global one. */
-function reconcileCommand(packages: PackagesReport): string {
-  const { command, args } = execArgs(packages.packageManager, "pithy", ["upgrade"]);
-  return [command, ...args].join(" ");
+/**
+ * **`pithy upgrade` as a run with no command line behind it names itself (#711)** — a test, or a caller that drives
+ * {@link runUpgrade} directly: its environment, its Worker, `--migrate` and a dry run. The command passes its own
+ * parsed arguments instead, so every flag the caller gave carries.
+ */
+export function upgradeCallerOf(options: {
+  readonly env: string;
+  readonly migrate: boolean;
+  readonly worker?: string | undefined;
+  readonly dryRun?: boolean | undefined;
+}): Caller<"upgrade"> {
+  return callerOf("upgrade", {
+    env: options.env,
+    migrate: options.migrate,
+    ...(options.worker === undefined ? {} : { worker: options.worker }),
+    ...(options.dryRun === true ? { "dry-run": true } : {}),
+  });
+}
+
+/**
+ * The project's own CLI's `upgrade`, through its package manager — a bare `pithy` may be the old, global one — and
+ * the caller's own run (#711): its `--env`, `--worker` and `--migrate` each change what the reconcile acts on.
+ * Less `--packages` and `--latest`, which did their work in this run, and would move the packages again.
+ */
+function reconcileCommand(packages: PackagesReport, caller: Caller<"upgrade">): string {
+  return viaPackageManager(
+    packages.packageManager,
+    rerunCommand(caller, { flags: { "--packages": undefined, "--latest": undefined } }),
+  );
 }
 
 /**
  * The whole text report, closing line included. The package blocks sit above the Workers, because they
  * happened first and the reconcile read their result.
  */
-export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
+export function upgradeText(
+  run: UpgradeRun,
+  dryRun: boolean,
+  caller: Caller<"upgrade"> = upgradeCallerOf({ env: "dev", migrate: false }),
+): string[] {
   const lines: string[] = [];
   if (run.packages) lines.push(...packageLines(run.packages, dryRun), ...templateLines(run.packages));
   // Project-wide, so above the Workers like the manifest faults. Silent when the block was already current.
@@ -762,7 +841,9 @@ export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
   if (run.packages && !run.packages.reconciled && cli) {
     // The project's own CLI, through its package manager: a bare `pithy` may be a global one, which is the
     // old CLI this line exists to get past.
-    lines.push(`@pithy-sh/cli moved to ${cli.target}. Run ${reconcileCommand(run.packages)} to reconcile with it.`);
+    lines.push(
+      `@pithy-sh/cli moved to ${cli.target}. Run ${reconcileCommand(run.packages, caller)} to reconcile with it.`,
+    );
   }
   lines.push(dryRun ? "Dry run. Nothing written." : formatDone());
   return lines;
@@ -778,7 +859,7 @@ export function upgradeText(run: UpgradeRun, dryRun: boolean): string[] {
  */
 export function upgradeFollowUp(
   run: UpgradeRun,
-  options: { env: string; dryRun: boolean; migrate: boolean },
+  options: { env: string; dryRun: boolean; migrate: boolean; caller?: Caller<"upgrade"> },
 ): NextStep[] | undefined {
   let pending = 0;
   for (const result of run.workers) {
@@ -787,11 +868,12 @@ export function upgradeFollowUp(
   const packages = run.packages;
   const deferred =
     packages !== undefined && !packages.reconciled && packages.moves.some((move) => move.name === "@pithy-sh/cli");
+  const { caller = upgradeCallerOf(options), ...facts } = options;
   return upgradeNext({
-    ...options,
+    ...facts,
     failed: upgradeFailed(run),
     pending,
-    ...(deferred ? { reconcileWith: reconcileCommand(packages) } : {}),
+    ...(deferred ? { reconcileWith: reconcileCommand(packages, caller) } : {}),
   });
 }
 
@@ -800,7 +882,13 @@ export function upgradeFollowUp(
  * `undefined`, so a run without the flag carries no `packages` key at all. `agents` rides on every run but
  * the one whose `--packages` moved `@pithy-sh/cli`, for the same reason, and so does `next`.
  */
-export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean, migrate = false): string {
+export function upgradeJsonLine(
+  run: UpgradeRun,
+  env: string,
+  dryRun: boolean,
+  migrate = false,
+  caller: Caller<"upgrade"> = upgradeCallerOf({ env, migrate }),
+): string {
   // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
   // is no entry here whose absent fields could be read as empty ones.
   const workers = run.workers.map((result) =>
@@ -815,7 +903,7 @@ export function upgradeJsonLine(run: UpgradeRun, env: string, dryRun: boolean, m
             { state: result.state, worker: result.worker, plan: result.plan, ...operatorError(result.refusal) }
           : { state: result.state, worker: result.worker },
   );
-  const next = upgradeFollowUp(run, { env, dryRun, migrate });
+  const next = upgradeFollowUp(run, { env, dryRun, migrate, caller });
   return formatJsonLine({
     command: "upgrade",
     env,
@@ -891,8 +979,11 @@ export default withContract(
         });
         const dryRun = args["dry-run"];
         const projectDir = process.cwd();
+        // The caller's own run, the one input every line naming it again is built from (#711).
+        const caller = callerOf("upgrade", args);
         const run = await runUpgrade({
           projectDir,
+          caller,
           env,
           account: await projectCloudflareAccount(projectDir),
           ...(args.worker ? { worker: args.worker } : {}),
@@ -906,11 +997,11 @@ export default withContract(
         if (upgradeFailed(run)) process.exitCode = EXIT.failed;
 
         if (args.json) {
-          process.stdout.write(`${upgradeJsonLine(run, env, dryRun, args.migrate)}\n`);
+          process.stdout.write(`${upgradeJsonLine(run, env, dryRun, args.migrate, caller)}\n`);
           return;
         }
 
-        for (const line of upgradeText(run, dryRun)) process.stdout.write(`${line}\n`);
+        for (const line of upgradeText(run, dryRun, caller)) process.stdout.write(`${line}\n`);
       }),
   }),
   {

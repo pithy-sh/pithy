@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
+import { copyEntryOnce, copyTreeOnce } from "../test-utils/treeCopy";
 
 const run = promisify(execFile);
 
@@ -85,9 +86,9 @@ async function dirtyCheckout(root: string): Promise<string> {
     await cp(join(REPO, "templates", "starter", file), to);
   }
   await cp(join(REPO, ".gitignore"), join(root, ".gitignore"));
-  for (const entry of ["src", "scripts", "LICENSE"]) {
-    await cp(join(CLI_DIR, entry), join(cli, entry), { recursive: true });
-  }
+  // The live `packages/cli`, which other suites write into while this one runs: copied as it is read (#711).
+  for (const entry of ["src", "scripts"]) copyTreeOnce(join(CLI_DIR, entry), join(cli, entry));
+  copyEntryOnce(join(CLI_DIR, "LICENSE"), join(cli, "LICENSE"));
   const manifest = JSON.parse(await readFile(join(CLI_DIR, "package.json"), "utf8")) as {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { HttpError } from "@pithy-sh/core/src/error/http";
 import {
   ConflictError,
@@ -207,7 +208,10 @@ describe("formatErrorJson: what to do next (#697)", () => {
 
   /** The rule lives in `fixOf` alone (`exitClass.test.ts` pins it); the line writes what the funnel hands it. */
   test("a person's step carries no fix, because fixOf hands the line none", () => {
-    const error = withFix(new PersonRequiredError({ message: "Ask." }), { fix: "pithy provision --env prod --yes" });
+    const error = withFix(
+      new PersonRequiredError({ message: "Ask." }),
+      pithyCommand("provision", { flags: { "--env": "staging", "--yes": true } }),
+    );
     const line = JSON.parse(formatErrorJson(error.payload, fixOf(error))).error;
     expect(line).toMatchObject({ exit: 5, retryable: false });
     expect("fix" in line).toBe(false);
@@ -270,9 +274,10 @@ describe("withErrorReporting", () => {
   test("with json, the line carries the fix the throw site attached", async () => {
     const written = captureStderr();
     await withErrorReporting(true, async () => {
-      throw withFix(new PreconditionFailedError({ message: "Not provisioned." }), {
-        fix: "pithy provision --env staging --yes",
-      });
+      throw withFix(
+        new PreconditionFailedError({ message: "Not provisioned." }),
+        pithyCommand("provision", { flags: { "--env": "staging", "--yes": true } }),
+      );
     });
     expect(JSON.parse(written.join("").trim()).error.fix).toBe("pithy provision --env staging --yes");
   });
@@ -280,9 +285,10 @@ describe("withErrorReporting", () => {
   test("the text path stays two lines — a fix is for the --json reader, and the action line already says it", async () => {
     const written = captureStderr();
     await withErrorReporting(false, async () => {
-      throw withFix(new PreconditionFailedError({ message: "Not provisioned.", action: "Run provision." }), {
-        fix: "pithy provision --env staging --yes",
-      });
+      throw withFix(
+        new PreconditionFailedError({ message: "Not provisioned.", action: "Run provision." }),
+        pithyCommand("provision", { flags: { "--env": "staging", "--yes": true } }),
+      );
     });
     expect(written.join("")).toBe("Not provisioned.\nRun provision.\n");
   });

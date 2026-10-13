@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import type { TurnstileSitekeysCheck } from "../doctor/turnstileSitekeys";
 import { doctorHarness } from "../test-utils/doctorHarness";
+import { dirOf } from "../test-utils/workerDir";
 import { buildDoctorReport, doctorExitCode, renderDoctorJson, renderDoctorText } from "./doctor";
 
 /**
@@ -18,17 +19,17 @@ const finding: TurnstileSitekeysCheck = {
   state: "findings",
   stranded: [
     {
-      worker: "board",
+      worker: dirOf("board"),
       name: "TURNSTILE_SITEKEY_VISIBLE",
       environment: "prod",
       file: "/p/apps/board/wrangler.jsonc",
-      removedBy: "board",
+      removedBy: dirOf("board"),
     },
   ],
   unrendered: [
-    { worker: "board", environment: "staging", slot: true },
-    { worker: "board", environment: "prod", slot: true },
-    { worker: "board", environment: "live", slot: false },
+    { worker: dirOf("board"), environment: "staging", slot: true },
+    { worker: dirOf("board"), environment: "prod", slot: true },
+    { worker: dirOf("board"), environment: "live", slot: false },
   ],
 };
 

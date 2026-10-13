@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { Command } from "@pithy-sh/core/src/cli/command";
 import { InputRequiredError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assembleSecretValue,
@@ -88,6 +89,12 @@ export interface ReadSecretValueOptions {
   /** Whether an update is being written — an update replaces the whole secret, which the operator is told. */
   mode: "create" | "update";
   /**
+   * The caller's own command, as a refusal names it to run again with the value piped in: every flag the run
+   * was given, `--env` included (#711). A remedy that dropped the `--env` an operator typed would write the
+   * value into every environment instead of one.
+   */
+  rerun: Command;
+  /**
    * **May interactive UI be rendered?** `mayDraw` (`terminal/inputMode.ts`), and nothing about stdin: a
    * prompt is drawn on stdout, and `--json` promises a caller one parseable line. It is never *is there
    * a document* — that is {@link stdin}'s `isTTY`, and conflating the two is what made a redirected
@@ -137,13 +144,12 @@ function documentIsPiped(stdin: SecretValueStdin): boolean {
  * takes whatever arrived before EOF. Neither is a value anyone chose, so neither is written.
  *
  * The action names the one way in that works from here, which is the same way CI and agents already
- * supply a value. `--env` is deliberately not in it: this refusal does not know the flags the command was
- * given, and a remedy that drops one an operator typed is worse than one that shows the shape.
+ * supply a value: the caller's own command, every flag it was given carried over (#711).
  */
 function refuseWithNoWayToAsk(options: ReadSecretValueOptions): never {
   throw new InputRequiredError({
     message: `No value was piped for '${options.name}', and this run cannot prompt for one — stdout is not a terminal, --json was passed, or prompts are forbidden.`,
-    action: `Pipe the value in: printf '%s' "$VALUE" | pithy secrets ${options.mode} ${options.name}`,
+    action: `Pipe the value in: printf '%s' "$VALUE" | ${options.rerun}`,
     detail: `readSecretValue('${options.name}'): stdin is a TTY and canPrompt is false (--json, --no-input, PITHY_NONINTERACTIVE, or stdout is not a terminal)`,
     // No flag carries a secret: a value on the command line lands in shell history and `ps`.
     flag: null,
@@ -207,7 +213,7 @@ function refuseTruncatedPaste(field: SecretPromptField, answer: string, options:
   throw new SecretInvalidValueError({
     // The field's name, never a character of its value.
     message: `The answer for ${fieldKey(field)} is one line of a PEM, and a masked prompt reads one line — the rest of the paste was dropped.`,
-    action: `Pipe the whole document instead: printf '%s' "$JSON" | pithy secrets ${options.mode} ${options.name}`,
+    action: `Pipe the whole document instead: printf '%s' "$JSON" | ${options.rerun}`,
     detail: `${fieldKey(field)} of '${options.name}' was answered with a PEM delimiter line at a single-line prompt`,
   });
 }

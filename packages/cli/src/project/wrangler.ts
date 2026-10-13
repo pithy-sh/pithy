@@ -4,12 +4,14 @@
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import {
   ConflictError,
   InternalError,
   NotFoundError,
   PreconditionFailedError,
 } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { parse } from "comment-json";
 import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
 import type { CloudflareAccountSelection, CloudflareCredentials } from "../cloudflare/config";
@@ -56,12 +58,25 @@ export async function readOptionalWranglerConfig(projectDir: string): Promise<un
  * A directory with no `wrangler.jsonc` is a `PithyError` naming the file rather than node's own `ENOENT`
  * escaping into a command's output. Caller casts the shape.
  */
+/**
+ * **The environments a Worker provisions for**, as a line naming a per-environment command lists them (#711):
+ * local `dev` first, then each deployed stanza in its `wrangler.jsonc`. A feature's stanza is left out: a feature
+ * is provisioned with its branch, never by name.
+ */
+export async function workerEnvironments(workerDir: string): Promise<string[]> {
+  const config = (await readOptionalWranglerConfig(workerDir)) as { env?: Record<string, unknown> } | null;
+  const deployed = Object.keys(config?.env ?? {}).filter(
+    (env) => env !== FEATURE_ENVIRONMENT && env !== LOCAL_ENVIRONMENT,
+  );
+  return [LOCAL_ENVIRONMENT, ...deployed];
+}
+
 export async function readWranglerConfig(projectDir: string): Promise<unknown> {
   const config = await readOptionalWranglerConfig(projectDir);
   if (config === null) {
     throw new NotFoundError({
       message: `No wrangler.jsonc at ${join(projectDir, "wrangler.jsonc")}.`,
-      action: "Every worker lives in apps/<name> with its own wrangler.jsonc. Run pithy worker list to see them.",
+      action: `Every worker lives in apps/<name> with its own wrangler.jsonc. Run ${pithyCommand("worker list")} to see them.`,
     });
   }
   return config;
@@ -224,8 +239,7 @@ export function refusesTheRun(error: unknown): error is WranglerCredentialsError
 }
 
 /** The action line of {@link WranglerCredentialsError}. */
-const CREDENTIAL_ACTION =
-  "Cloudflare refused the credentials. Run pithy doctor to see whether the token or the account is wrong.";
+const CREDENTIAL_ACTION = `Cloudflare refused the credentials. Run ${pithyCommand("doctor")} to see whether the token or the account is wrong.`;
 
 /** The child's environment, from whichever of the two things the caller holds. See {@link WranglerAccount}. */
 function wranglerChildEnv(account: WranglerAccount): Record<string, string> {

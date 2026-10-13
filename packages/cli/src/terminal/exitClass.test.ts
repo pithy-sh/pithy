@@ -3,13 +3,13 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ErrorPayload, KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import {
   ConflictError,
   InputRequiredError,
   NotFoundError,
   PersonRequiredError,
-  PithyError,
   PreconditionFailedError,
   UpstreamError,
   UpstreamTimeoutError,
@@ -117,7 +117,7 @@ describe("exitClassOf / exitCodeOf", () => {
 describe("fix: a runnable remedy, carried beside the error rather than inside its payload", () => {
   test("withFix attaches it and returns the same error, so a throw site stays one expression", () => {
     const error = new PreconditionFailedError({ message: "Not provisioned." });
-    expect(withFix(error, { fix: "pithy provision --env staging --yes" })).toBe(error);
+    expect(withFix(error, pithyCommand("provision", { flags: { "--env": "staging", "--yes": true } }))).toBe(error);
     expect(fixOf(error)).toBe("pithy provision --env staging --yes");
   });
 
@@ -126,12 +126,18 @@ describe("fix: a runnable remedy, carried beside the error rather than inside it
   });
 
   test("a person's step never carries one — the phrase stays out of an agent's reach", () => {
-    const error = withFix(new PersonRequiredError(), { fix: "pithy provision --env prod --confirm x" });
+    const error = withFix(
+      new PersonRequiredError(),
+      pithyCommand("provision", { flags: { "--env": "staging", "--yes": true } }),
+    );
     expect(fixOf(error)).toBeUndefined();
   });
 
-  test("a fix must be a pithy command, because an agent runs it as one", () => {
-    expect(() => withFix(new PreconditionFailedError(), { fix: "Run provision first." })).toThrow(PithyError);
+  // A fix is a `Command`, which only the builder makes, so prose cannot be one: the compiler refuses it (#711).
+  test("a fix must be a built command, because an agent runs it as one", () => {
+    // @ts-expect-error Prose is a string, and a string is not a Command.
+    const prose: Parameters<typeof withFix>[1] = "Run provision first.";
+    expect(typeof prose).toBe("string");
   });
 });
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename, relative } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { DEV_VARS_LOCAL, readLocalOverrides } from "../devSecrets/generate";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { discoverWorkers } from "../project/workers";
@@ -279,7 +280,7 @@ function describeShadowedBinding({ key, file, bindings, moveTo }: ShadowedBindin
     top === bindings.length
       ? "wrangler dev ignores the value: the binding wins."
       : top === 0
-        ? "pithy dev runs the top level, which has no such binding, so in dev the Worker reads this string instead."
+        ? `${commandName("dev")} runs the top level, which has no such binding, so in dev the Worker reads this string instead.`
         : "wrangler dev ignores the value where the binding is at the top level, and hands the string over where it is not.";
   const readers = moveTo.map((path) => basename(path.slice(0, -DEV_VARS_LOCAL.length - 1)));
   const advice =

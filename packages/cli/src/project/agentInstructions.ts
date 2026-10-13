@@ -3,6 +3,7 @@
 
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { z } from "zod";
 import { exitCodes } from "../contract/describe";
 import type { MergeResult } from "../mcp/document";
@@ -11,6 +12,9 @@ import { JSON_MODE_ENV } from "../terminal/jsonMode";
 import { writeFileAtomic } from "./atomic";
 import { lstatAsProject } from "./linkView";
 import { readFileOutcome } from "./readOptionalFile";
+
+/** The command that describes every other, as the block names it. */
+const SCHEMA = pithyCommand("schema", { args: [], flags: { "--json": true } });
 
 /**
  * **What an agent working in a Pithy project is told, and where (#697).**
@@ -46,7 +50,7 @@ export const CLAUDE_FILE = "CLAUDE.md";
 const OPEN_PREFIX = "<!-- pithy:begin";
 
 /** The line the block opens on. An HTML comment, so a rendered `AGENTS.md` shows nothing of it. */
-export const BLOCK_OPEN = `${OPEN_PREFIX} — pithy upgrade rewrites this block. Edit outside it. -->`;
+export const BLOCK_OPEN = `${OPEN_PREFIX} — ${commandName("upgrade")} rewrites this block. Edit outside it. -->`;
 
 /** The line the block closes on. */
 export const BLOCK_CLOSE = "<!-- pithy:end -->";
@@ -86,15 +90,15 @@ const PROSE = [
   "",
   "This project is built on Pithy. Drive it through the `pithy` CLI.",
   "",
-  "- Run `pithy schema --json` for every command, flag and `--json` payload the installed version takes, or `pithy schema <command> --json` for one.",
+  `- Run \`${SCHEMA}\` for every command, flag and \`--json\` payload the installed version takes, or name one command after \`schema\` for that one.`,
   `- Set \`${JSON_MODE_ENV}=compact\` so every \`--json\` document is one line, at a terminal or not.`,
   `- Set \`${NONINTERACTIVE_ENV}=1\` so no prompt waits on you. A question with no default fails \`input/required\` and names the flag that answers it.`,
   "- Run a command that changes anything with `--dry-run` first, where it takes one, and show a person the plan.",
-  "- `pithy remove` and every typed confirmation phrase belong to a person. Exit 5 means stop and ask. Never try variations.",
+  `- \`${commandName("remove")}\` and every typed confirmation phrase belong to a person. Exit 5 means stop and ask. Never try variations.`,
   "",
   "Each failure exits by kind, so test for non-zero, not `1`. Under `--json` a failure is one `error` line on stderr, carrying `exit`, `retryable`, and `fix` when a command fixes it.",
   "",
-  "The exception is a report. `pithy doctor`, `pithy deploy`, `pithy upgrade` and `pithy ui sync` write their report on stdout and no `error` line when they find something: read the report. Each exits 1, except that a `pithy deploy` whose failed Worker row carries `exit` exits with the first such row's `exit`.",
+  `The exception is a report. \`${commandName("doctor")}\`, \`${commandName("deploy")}\`, \`${commandName("upgrade")}\` and \`${commandName("ui sync")}\` write their report on stdout and no \`error\` line when they find something: read the report. Each exits 1, except that a \`${commandName("deploy")}\` whose failed Worker row carries \`exit\` exits with the first such row's \`exit\`.`,
   "",
   "| Exit | Meaning | Do |",
   "|---|---|---|",
@@ -151,7 +155,7 @@ function linesOf(document: string): Line[] {
 function refusedMarkers(why: string): MergeResult {
   return {
     state: "refused",
-    reason: `${AGENTS_FILE} has ${why}. Fix the markers, or delete them, and run pithy upgrade.`,
+    reason: `${AGENTS_FILE} has ${why}. Fix the markers, or delete them, and run ${pithyCommand("upgrade")}.`,
   };
 }
 

@@ -66,7 +66,7 @@ describe("pithy schema, with the real binary", () => {
     expect(code).toBe(EXIT.usage);
     expect(stdout).toBe("");
     expect(JSON.parse(stderr)).toMatchObject({
-      error: { code: "validation/invalid_input", message: "No command `pithy token mnt`.", exit: 2 },
+      error: { code: "validation/invalid_input", message: "No command is named `token mnt`.", exit: 2 },
     });
   }, 60_000);
 

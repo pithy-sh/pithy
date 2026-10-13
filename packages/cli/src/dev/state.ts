@@ -4,6 +4,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { fromZodError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
@@ -82,7 +83,7 @@ export async function writeDevState(path: string, state: DevState): Promise<void
       message: `.dev-state.json cannot be written. ${parsed.error.issues
         .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
         .join(" ")}`,
-      action: `Stop this pithy dev session and start it again — ${path} is generated, and a fresh run rewrites it.`,
+      action: `Stop this ${commandName("dev")} session and start it again — ${path} is generated, and a fresh run rewrites it.`,
     });
   }
   await writeFileAtomic(path, `${JSON.stringify(parsed.data, null, 2)}\n`);

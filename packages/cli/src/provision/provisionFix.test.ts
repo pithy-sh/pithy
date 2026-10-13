@@ -4,7 +4,7 @@
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { fixOf } from "../terminal/exitClass";
-import { provisionFixCommand, withProvisionFix } from "./provisionFix";
+import { provisionFixCommand, provisionRemedy, withProvisionFix } from "./provisionFix";
 
 /**
  * **A `fix` is runnable as written, so a production environment gets none (#697).**
@@ -61,5 +61,28 @@ describe("provisionFixCommand", () => {
     ["qa", ["live"]],
   ] as const)("agrees with the fix the refusal carries, for %s", (env, production) => {
     expect(provisionFixCommand(env, production) ?? undefined).toBe(fixOf(withProvisionFix(refusal(), env, production)));
+  });
+});
+
+/**
+ * What a sentence names for provisioning (#711): an action line, a skip reason, a doctor line. The `fix` where
+ * there is one, so the two cannot disagree. Production has no `fix`, because `pithy provision --env prod --yes`
+ * run as written ends `core/person_required`, exit 5 — so the sentence says it is a person's decision, and that
+ * the `--confirm` phrase is theirs to give, rather than offering a command an agent would be refused.
+ */
+describe("provisionRemedy", () => {
+  test.each(["staging", "feature", "qa"])("says the fix for %s", (env) => {
+    expect(provisionRemedy(env).say((command) => `Run ${command}.`)).toBe(`Run ${provisionFixCommand(env)}.`);
+  });
+
+  test.each([
+    ["prod", []],
+    ["production", []],
+    ["live", ["live"]],
+  ] as const)("says production environment %s is a person's decision, with no fix", (env, production) => {
+    expect(provisionRemedy(env, production).say((command) => `Run ${command}.`)).toBe(
+      `\`pithy provision --env ${env} --yes\` with its --confirm phrase, which only a person gives, runs against ${env}, a production environment. That is a person's decision, not a fix.`,
+    );
+    expect(provisionFixCommand(env, production)).toBeNull();
   });
 });

@@ -38,6 +38,7 @@ describe("writeTokenToSink", () => {
   test("ephemeral writes nothing and reports it", async () => {
     const target = await writeTokenToSink("ephemeral", "secret-value", {
       project: "replay",
+      projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
       storeEntryName: "acme-staging-cf-token-ci-system",
@@ -50,6 +51,7 @@ describe("writeTokenToSink", () => {
   test("dev-vars records the token under its environment, outside the project", async () => {
     const target = await writeTokenToSink("dev-vars", "v1", {
       project: "replay",
+      projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
       // Deliberately different from the variable key: a dev-vars write must ignore it entirely.
@@ -62,6 +64,7 @@ describe("writeTokenToSink", () => {
     // A second write replaces the value in place, and nothing else in the document moves.
     await writeTokenToSink("dev-vars", "v2", {
       project: "replay",
+      projectDir: dir,
       env: "dev",
       secretName: "CF_TOKEN_CI_SYSTEM",
       storeEntryName: "acme-dev-cf-token-ci-system",
@@ -69,6 +72,7 @@ describe("writeTokenToSink", () => {
     });
     await writeTokenToSink("dev-vars", "v3", {
       project: "replay",
+      projectDir: dir,
       env: "staging",
       secretName: "CF_TOKEN_CI_SYSTEM",
       storeEntryName: "acme-staging-cf-token-ci-system",
@@ -89,6 +93,7 @@ describe("writeTokenToSink", () => {
     for (const env of ["dev", "staging", "production"]) {
       await writeTokenToSink("dev-vars", `live-${env}-token`, {
         project: "replay",
+        projectDir: dir,
         env,
         secretName: "CLOUDFLARE_API_TOKEN",
         storeEntryName: `replay-${env}-cloudflare-api-token`,
@@ -110,6 +115,7 @@ describe("writeTokenToSink", () => {
     // for an environment with no file yet left a live production credential at 0664.
     await writeTokenToSink("dev-vars", "live-prod-token", {
       project: "replay",
+      projectDir: dir,
       env: "production",
       secretName: "CLOUDFLARE_API_TOKEN",
       storeEntryName: "replay-production-cloudflare-api-token",
@@ -125,6 +131,7 @@ describe("writeTokenToSink", () => {
     const putSecret = vi.fn(async () => {});
     const target = await writeTokenToSink("secrets-store", "sv", {
       project: "replay",
+      projectDir: dir,
       env: "prod",
       secretName: "SECRETS_MANAGER_CF_API_TOKEN",
       storeEntryName: "acme-global-secrets-manager-cf-api-token",
@@ -138,14 +145,19 @@ describe("writeTokenToSink", () => {
   });
 
   test("secrets-store without a configured store fails with an actionable error", async () => {
-    await expect(
-      writeTokenToSink("secrets-store", "sv", {
-        project: "replay",
-        env: "prod",
-        secretName: "X",
-        storeEntryName: "acme-prod-x",
-        paths: paths(),
-      }),
-    ).rejects.toThrow(PithyError);
+    const refusal = await writeTokenToSink("secrets-store", "sv", {
+      project: "replay",
+      projectDir: dir,
+      env: "prod",
+      secretName: "X",
+      storeEntryName: "acme-prod-x",
+      paths: paths(),
+    }).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(PithyError);
+    // No Worker to compose secrets into, so no `pithy add` runs yet: the line says so, and the store that
+    // needs no Worker stays on offer (#711).
+    expect((refusal as PithyError).payload.action).toBe(
+      "This project has no Worker to compose secrets into. Name one and create it with pithy worker add, then compose secrets into it. Or mint with --store dev-vars.",
+    );
   });
 });

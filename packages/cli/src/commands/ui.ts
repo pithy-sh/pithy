@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
 import { DRY_RUN_ARG, PlanKey, planText } from "../plan/plan";
 import { unpublishedKitNotice } from "../project/scaffold";
-import { WorkerIdentity, workerIdentity } from "../project/workerIdentity";
+import { WorkerIdentity, workerDirName, workerIdentity } from "../project/workerIdentity";
 import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { NextKey, uiAddNext } from "../terminal/nextSteps";
@@ -197,7 +198,9 @@ const add = withContract(
           process.stdout.write("Define them in src/styles.css, or restore src/pithy-screens.css.\n");
           // Said here because this line used to be the only time anyone was told (#401). It printed once,
           // did not affect the exit, and `pithy ui sync` never asked again.
-          process.stdout.write("pithy ui sync --check asks this again, and fails on it.\n");
+          process.stdout.write(
+            `${pithyCommand("ui sync", { flags: { "--worker": workerDirName(target), "--check": true } })} asks this again, and fails on it.\n`,
+          );
         }
         process.stdout.write(`Worker-first: ${report.runWorkerFirst.join(", ")}.\n`);
         // Before the install line, because it is the instruction that would otherwise be wrong. While the
@@ -205,11 +208,13 @@ const add = withContract(
         // and the build then fails on a Vite plugin nothing declared. `pithy init` says this; so does
         // `pithy worker add`; the wording is decided once, in `unpublishedKitNotice`.
         for (const line of unpublishedKitNotice() ?? []) process.stdout.write(`${dim(line)}\n`);
-        process.stdout.write(`Install the packages: ${report.packageManager} install. Then pithy dev.\n`);
+        process.stdout.write(`Install the packages: ${report.packageManager} install. Then ${pithyCommand("dev")}.\n`);
         // Naming `pithy add` alone was the whole failure: it read as "capabilities change this list",
         // and the routes an adopter writes themselves change it too, with no command in the loop.
         process.stdout.write("That list covers the routes mounted now. Mount another — your own included —\n");
-        process.stdout.write("and run pithy ui sync. Gate it in CI with pithy ui sync --check.\n");
+        const sync = pithyCommand("ui sync", { flags: { "--worker": workerDirName(target) } });
+        const check = pithyCommand("ui sync", { flags: { "--worker": workerDirName(target), "--check": true } });
+        process.stdout.write(`and run ${sync}. Gate it in CI with ${check}.\n`);
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -277,7 +282,7 @@ const sync = withContract(
           if (report.uncovered.length > 0) {
             process.stdout.write(`${report.worker}: the SPA shell is answering these, not the worker.\n`);
             for (const route of report.uncovered) process.stdout.write(`  ${route}\n`);
-            process.stdout.write(`Run pithy ui sync --worker ${report.worker}.\n`);
+            process.stdout.write(`Run ${pithyCommand("ui sync", { flags: { "--worker": report.worker } })}.\n`);
           }
           if (report.unstyled.length > 0) {
             process.stdout.write(`${report.worker}: these screens render classes nothing here defines.\n`);

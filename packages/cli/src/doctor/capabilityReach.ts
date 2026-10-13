@@ -3,8 +3,12 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { CATALOG } from "../capabilities/catalog";
+import { kitAddFacts } from "../capabilities/kitAddFacts";
+import { locateRegistration } from "../capabilities/reconcile";
 import { packageDirFrom, packageInstalledFrom } from "../project/kitResolve";
+import { workerDirName } from "../project/workerIdentity";
 
 /**
  * **Whether a capability the project composes is one the CLI can actually reach (#533).**
@@ -96,8 +100,18 @@ export interface UnreachableCapability {
   capability: string;
   /** The npm package that carries it — the catalog's, never `@pithy-sh/<name>` interpolated. */
   package: string;
-  /** Every Worker composing it, in report order. The Workers whose configs still load. */
-  workers: string[];
+  /**
+   * Every Worker composing it, by `apps/` directory — what `--worker` takes — in report order. The Workers whose
+   * configs still load.
+   */
+  workers: WorkerDir[];
+  /**
+   * What the first of {@link UnreachableCapability.workers} already settles, read from its config when the check ran:
+   * the capabilities it composes, and which of this one's required options its registration states. The `pithy add`
+   * a line names for it runs over both, so neither is named as missing or as a choice (#711). Read for that line,
+   * never reported; absent where nothing was read.
+   */
+  settled?: { readonly composed: readonly string[]; readonly answered: readonly string[] };
 }
 
 /** One composed capability whose composing Workers do not all resolve the same version of it (#539). */
@@ -213,6 +227,27 @@ function splitAcross(capability: string, pkg: string, at: readonly ComposedWorke
 }
 
 /**
+ * What one Worker's config settles for `capability`: what it composes, and which of the capability's required options
+ * — the kit's, since nothing installed can say — its registration states. The same reading `runAdd` makes before it
+ * asks for an option (`locateRegistration`'s `statesKey`), so the line and the add cannot disagree. A config that
+ * cannot be read states nothing.
+ */
+function settledBy(worker: ComposedWorker, capability: string): NonNullable<UnreachableCapability["settled"]> {
+  let source = "";
+  try {
+    source = readFileSync(join(worker.dir, "pithy.config.ts"), "utf8");
+  } catch {
+    source = "";
+  }
+  const location = locateRegistration(source, capability);
+  const keys = (kitAddFacts(capability)?.requiredOptions ?? []).map((option) => option.key);
+  return {
+    composed: (worker.capabilities ?? []).map((one) => one.name),
+    answered: keys.filter((key) => location?.statesKey(key) ?? false),
+  };
+}
+
+/**
  * Compare what this project composes against what the CLI can resolve for it.
  *
  * Never throws — a diagnostic has to work in the broken project it exists to diagnose — and answers a
@@ -239,7 +274,12 @@ export async function capabilityReachHealth(
       if (skew !== null) split.push(skew);
       continue;
     }
-    unreachable.push({ capability, package: pkg, workers: at.map((worker) => worker.name) });
+    unreachable.push({
+      capability,
+      package: pkg,
+      workers: at.map((worker) => workerDirName(worker)),
+      ...(at[0] === undefined ? {} : { settled: settledBy(at[0], capability) }),
+    });
   }
 
   // `split` is deliberately not counted. See the `#539` section above: nothing refuses this state, and a

@@ -220,7 +220,7 @@ function resolveLocal<T>(cache: Map<string, T>, binding: string, kind: string): 
   if (!handle) {
     throw new ValidationError({
       message: `wrangler.jsonc declares no ${kind} binding "${binding}".`,
-      action: `Add the "${binding}" ${kind} binding to wrangler.jsonc. Run pithy seed again.`,
+      action: `Add the "${binding}" ${kind} binding to wrangler.jsonc, then run this again.`,
     });
   }
   return handle;
@@ -296,7 +296,7 @@ function remoteId(
   if (value) return value;
   const refusal = new PreconditionFailedError({
     message: `wrangler.jsonc env.${env} has no ${idField} for the "${binding}" ${kind} binding.`,
-    action: `Provision the ${env} ${kind} and set its ${idField} on ${binding}. Run pithy seed --env ${env} again.`,
+    action: `Provision the ${env} ${kind} and set its ${idField} on ${binding}, then run this again.`,
   });
   throw withProvisionFix(refusal, env, productionEnvironments);
 }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
@@ -10,8 +11,8 @@ import { detectShell } from "../platform/shell";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /** Marker comments that delimit the block `--remove` finds and deletes. Universal `#` comment syntax. */
-const MARKER_OPEN = "# >>> pithy alias >>>";
-const MARKER_CLOSE = "# <<< pithy alias <<<";
+const MARKER_OPEN = `# >>> ${commandName("alias")} >>>`;
+const MARKER_CLOSE = `# <<< ${commandName("alias")} <<<`;
 
 /** What we print for an unknown shell, and the `alias` key in that JSON — the plain POSIX form. */
 const DEFAULT_ALIAS = "alias p.='pithy'";
@@ -152,7 +153,7 @@ export async function aliasStatus(opts: AliasOptions = {}): Promise<void> {
     return;
   }
   if (installed) emit(`Installed in ${shell.rcPath}`);
-  else emit("Not installed. Run `pithy alias` to install.");
+  else emit(`Not installed. Run \`${pithyCommand("alias")}\` to install.`);
 }
 
 /**

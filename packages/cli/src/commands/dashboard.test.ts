@@ -30,6 +30,9 @@ import dashboard, {
   parsePublicKey,
 } from "./dashboard";
 
+/** The `pithy dashboard connect` a line names, as `connectSentence` answers it for a two-Worker project. */
+const CONNECT = "`pithy dashboard connect --env prod --worker api`";
+
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
 
 /** A composed capability with an admin surface — one read and one write, which is what a grant decides. */
@@ -151,7 +154,7 @@ describe("formatConnectReport", () => {
   };
 
   test("--json is one line, carrying the dotted command name", () => {
-    const line = formatConnectReport(connected, { json: true });
+    const line = formatConnectReport(connected, { json: true, connect: CONNECT });
     expect(line.endsWith("\n")).toBe(true);
     expect(JSON.parse(line)).toMatchObject({
       command: "dashboard.connect",
@@ -161,7 +164,7 @@ describe("formatConnectReport", () => {
   });
 
   test("connected ends with Done.", () => {
-    const out = formatConnectReport(connected, { json: false });
+    const out = formatConnectReport(connected, { json: false, connect: CONNECT });
     expect(out).toContain("Connected prod.");
     expect(out).toContain("key_1");
     expect(out.trimEnd().endsWith("Done.")).toBe(true);
@@ -170,20 +173,23 @@ describe("formatConnectReport", () => {
   test("needs_reconnect never says Done. — the connection is registered, not working", () => {
     const out = formatConnectReport(
       { ...connected, status: "needs_reconnect", detail: "404 from the worker" },
-      { json: false },
+      { json: false, connect: CONNECT },
     );
     expect(out).toContain("404 from the worker");
     expect(out).not.toContain("Done.");
   });
 
   test("the offline path says plainly that nothing proved the key", () => {
-    const out = formatConnectReport({ ...connected, status: "registered", keyId: "own_1" }, { json: false });
+    const out = formatConnectReport(
+      { ...connected, status: "registered", keyId: "own_1" },
+      { json: false, connect: CONNECT },
+    );
     expect(out).toContain("Registered prod.");
     expect(out.toLowerCase()).toContain("prove");
   });
 
   test("--update reads as a re-point, not a fresh connection", () => {
-    const out = formatConnectReport({ ...connected, updated: true, keyId: null }, { json: false });
+    const out = formatConnectReport({ ...connected, updated: true, keyId: null }, { json: false, connect: CONNECT });
     expect(out).toContain("Re-pointed prod.");
   });
 });
@@ -256,6 +262,74 @@ describe("formatDisconnectReport", () => {
   });
 });
 
+describe("formatRevokeKeyReport", () => {
+  /** A key as the connection holds it: live unless revoked or given an end. */
+  const key = (keyId: string, end: { validUntil?: Date; revokedAt?: Date } = {}) => ({
+    keyId,
+    publicKey: JWK,
+    validFrom: new Date("2026-01-01T00:00:00Z"),
+    validUntil: end.validUntil ?? null,
+    revokedAt: end.revokedAt ?? null,
+  });
+  /** The connection the revocation left, with these keys. */
+  const left = (keys: ReturnType<typeof key>[]) => ({
+    environment: "prod",
+    keyId: "key_1",
+    revoked: true,
+    connection: {
+      id: "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31",
+      environment: "prod",
+      issuer: "https://app.pithy.sh",
+      workerUrl: "https://api.example.com",
+      basePath: "/control-plane",
+      managementOrigin: null,
+      scopes: ["manifest:read"],
+      keys,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-02-01T00:00:00Z"),
+    },
+  });
+  const revokedAt = new Date("2026-02-01T00:00:00Z");
+
+  test("revoking the only key says the environment now denies every call, and names connect to recover (#711)", () => {
+    const out = formatRevokeKeyReport(left([key("key_1", { revokedAt })]), { json: false, connect: CONNECT });
+    expect(out).toContain("Revoked key_1 on prod.");
+    expect(out).toContain("That was the last live key, so prod now denies every management call.");
+    expect(out).toContain(`Run ${CONNECT} to register a new one.`);
+    expect(out.trimEnd().endsWith("Done.")).toBe(true);
+  });
+
+  test("a key given an end counts as not live, so revoking the other one still strands the connection", () => {
+    const out = formatRevokeKeyReport(
+      left([key("key_1", { revokedAt }), key("key_0", { validUntil: new Date("2026-03-01T00:00:00Z") })]),
+      { json: false, connect: CONNECT },
+    );
+    expect(out).toContain("That was the last live key");
+    expect(out).toContain(`Run ${CONNECT} to register a new one.`);
+  });
+
+  test("a connection that still holds a live key gets no warning, and no connect line", () => {
+    const out = formatRevokeKeyReport(left([key("key_1", { revokedAt }), key("key_2")]), {
+      json: false,
+      // The caller asks for the sentence only when the report prints one, so here it has none to give.
+      connect: "",
+    });
+    expect(out).toContain("Revoked key_1 on prod.");
+    expect(out).not.toContain("last live key");
+    expect(out).not.toContain("Run ");
+    expect(out.trimEnd().endsWith("Done.")).toBe(true);
+  });
+
+  test("an id no key answers to is not a revocation, and points at status", () => {
+    const out = formatRevokeKeyReport(
+      { environment: "prod", keyId: "nope", revoked: false, connection: null },
+      { json: false, connect: "" },
+    );
+    expect(out).toContain("No key nope on prod.");
+    expect(out).toContain("Run pithy dashboard status --env prod to list the keys.");
+  });
+});
+
 describe("formatStatusReport", () => {
   const report = {
     environment: "prod",
@@ -286,13 +360,13 @@ describe("formatStatusReport", () => {
   };
 
   test("--json carries the dotted command name and the whole report", () => {
-    const parsed = JSON.parse(formatStatusReport(report, { json: true }));
+    const parsed = JSON.parse(formatStatusReport(report, { json: true, connect: CONNECT }));
     expect(parsed).toMatchObject({ command: "dashboard.status", connected: true });
     expect(parsed.keys).toHaveLength(2);
   });
 
   test("lists every key with its age and whether it is live", () => {
-    const out = formatStatusReport(report, { json: false });
+    const out = formatStatusReport(report, { json: false, connect: CONNECT });
     expect(out).toContain("key_1");
     expect(out).toContain("210 days");
     expect(out).toContain("expired");
@@ -310,10 +384,11 @@ describe("formatStatusReport", () => {
         keys: [],
         status: "unverified",
       },
-      { json: false },
+      { json: false, connect: CONNECT },
     );
     expect(out).toContain("Nothing connected to staging.");
-    expect(out).toContain("pithy dashboard connect");
+    // The command the caller resolved, verbatim: a placeholder Worker would be refused where it is pasted (#711).
+    expect(out).toContain(`Run ${CONNECT} to register a management client.`);
   });
 });
 
@@ -708,11 +783,11 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       status: "connected" as const,
       updated: false,
     };
-    await expectConforms("dashboard connect", () => formatConnectReport(report, { json: true }));
+    await expectConforms("dashboard connect", () => formatConnectReport(report, { json: true, connect: CONNECT }));
     await expectConforms("dashboard connect", () =>
       formatConnectReport(
         { ...report, status: "unreachable", detail: "Nothing answered.", keyId: null, updated: true },
-        { json: true },
+        { json: true, connect: CONNECT },
       ),
     );
   });
@@ -764,10 +839,16 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       updatedAt: new Date("2026-02-01T00:00:00Z"),
     };
     await expectConforms("dashboard revoke-key", () =>
-      formatRevokeKeyReport({ environment: "prod", keyId: "key_1", revoked: true, connection }, { json: true }),
+      formatRevokeKeyReport(
+        { environment: "prod", keyId: "key_1", revoked: true, connection },
+        { json: true, connect: CONNECT },
+      ),
     );
     await expectConforms("dashboard revoke-key", () =>
-      formatRevokeKeyReport({ environment: "prod", keyId: "nope", revoked: false, connection: null }, { json: true }),
+      formatRevokeKeyReport(
+        { environment: "prod", keyId: "nope", revoked: false, connection: null },
+        { json: true, connect: CONNECT },
+      ),
     );
   });
 
@@ -793,7 +874,7 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
           ],
           status: "unverified",
         },
-        { json: true },
+        { json: true, connect: CONNECT },
       ),
     );
     await expectConforms("dashboard status", () =>
@@ -809,7 +890,7 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
           status: "unreachable",
           detail: "Nothing answered.",
         },
-        { json: true },
+        { json: true, connect: CONNECT },
       ),
     );
   });

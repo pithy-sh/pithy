@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { cp, mkdir, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { hostConfigFile, hostEntryFile } from "../capabilities/hostFiles";
+import { copyTreeOnce } from "./treeCopy";
 
 /** This repository's root — where `packages/<name>` lives. */
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
@@ -49,6 +51,43 @@ export async function linkKitPackages(projectDir: string, packages: readonly str
   }
 }
 
+/** A deploy's two names for one environment, with the environment as a wildcard: built from the real names. */
+function transientPattern(name: (env: string) => string): RegExp {
+  const [head, tail] = name("\0").split("\0") as [string, string];
+  const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${literal(head)}[^./\\\\]+${literal(tail)}$`);
+}
+
+const DEPLOY_TRANSIENTS = [transientPattern(hostConfigFile), transientPattern(hostEntryFile)];
+
+/**
+ * **A file a kit deploy writes beside the worker module and removes in a `finally`** — its resolved config and
+ * its generated entry. Never part of a package, so a copy of one has no business reading it.
+ */
+export function isDeployTransient(name: string): boolean {
+  return DEPLOY_TRANSIENTS.some((pattern) => pattern.test(name));
+}
+
+/**
+ * **Copy a kit package, tolerating whatever vanishes while it is copied (#711).**
+ *
+ * A kit deploy in one suite writes `.wrangler.<env>.json` and `.pithy-host.<env>.ts` beside a host's worker module
+ * and removes them when it is done. A suite copying the same package with `fs.cp` listed the directory, then
+ * `lstat`ed each entry, so a file removed between the two failed the copy with `ENOENT` — `doctor/bindingScope.test.ts`
+ * did, on a run nobody changed. The copy is {@link copyTreeOnce}'s, which passes over any entry gone by the time it
+ * is read; a deploy's own files are passed over by name as well, since they are never part of a package. Every deploy
+ * in this suite now writes into a fixture's own copy (`linkKitCopies`), never into `packages/`.
+ *
+ * `listed` is the test's hook into the moment between a directory's listing and the reads. Nothing else passes it.
+ */
+export async function copyKitPackage(
+  source: string,
+  target: string,
+  listed?: (directory: string) => void,
+): Promise<void> {
+  copyTreeOnce(source, target, { skip: isDeployTransient, ...(listed === undefined ? {} : { listed }) });
+}
+
 /**
  * Replace a linked package with a real copy, so a fixture may overwrite files inside it.
  *
@@ -69,7 +108,7 @@ export async function materializeKitPackage(projectDir: string, name: string): P
   // `rm` on a symlink removes the link, never what it points at — which is the whole point of doing this
   // before the copy rather than copying over the top of a live link.
   await rm(target, { recursive: true, force: true });
-  await cp(source, target, { recursive: true, dereference: false });
+  await copyKitPackage(source, target);
   await symlink(join(REPO_ROOT, "node_modules"), join(target, "node_modules")).catch(() => {
     // The package ships its own `node_modules`, or the link is already there. Either way it can resolve.
   });
@@ -107,7 +146,7 @@ export async function linkKitCopies(projectDir: string, packages: readonly strin
   await mkdir(scope, { recursive: true });
   for (const name of packages) {
     const copy = join(projectDir, ".kit", name);
-    await cp(await realpath(join(REPO_ROOT, "packages", name)), copy, { recursive: true, dereference: false });
+    await copyKitPackage(await realpath(join(REPO_ROOT, "packages", name)), copy);
     await rm(join(copy, "node_modules", "@pithy-sh"), { recursive: true, force: true });
     await rm(join(scope, name), { recursive: true, force: true });
     await symlink(copy, join(scope, name));

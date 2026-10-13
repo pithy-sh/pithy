@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { CapabilityManifest, ConfigOption } from "@pithy-sh/core/src/capability/manifest";
+import { type Caller, commandName, settledBy } from "@pithy-sh/core/src/cli/command";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -13,13 +15,15 @@ import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
-import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
+import { type WorkerIdentity, workerDirName, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
 import { type AddBootstrapOptions, bootstrapAdd } from "./addBootstrap";
+import { addAgain, addCallerOf, composedBy, projectAddFacts } from "./addCommand";
 import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { availableManifests, loadManifest } from "./manifests";
-import { isRegistered, prerequisiteClosure, prerequisiteRefusal, prerequisiteRequired } from "./prerequisites";
+import { prerequisiteClosure } from "./prerequisiteClosure";
+import { prerequisiteRefusal, prerequisiteRequired } from "./prerequisites";
 import { locateRegistration } from "./reconcile";
 import { requiredOptionRefusal, unsettledOptions } from "./requiredOptions";
 
@@ -45,7 +49,7 @@ export function coerceConfigValue(option: ConfigOption, raw: string, capability:
   if (isHandWritten(option)) {
     throw new ValidationError({
       message: `${capability} option "${option.key}" is not settable from the command line.`,
-      action: `Edit ${option.key} in the worker's pithy.config.ts — pithy add scaffolds it empty.`,
+      action: `Edit ${option.key} in the worker's pithy.config.ts — ${commandName("add")} scaffolds it empty.`,
       detail: `${option.key} takes an object or an array; --set and the prompt both carry strings.`,
     });
   }
@@ -65,7 +69,7 @@ export function coerceConfigValue(option: ConfigOption, raw: string, capability:
       throw new ValidationError({
         message: `${capability} cannot be added with "${option.key}" set to "${raw}".`,
         action: needsCode,
-        detail: `${option.key}="${raw}" composes only alongside code pithy add cannot write, so writing it would leave a config this project cannot load.`,
+        detail: `${option.key}="${raw}" composes only alongside code ${commandName("add")} cannot write, so writing it would leave a config this project cannot load.`,
       });
     }
     if (option.choices.includes(raw)) return raw;
@@ -284,6 +288,21 @@ export interface RunAddOptions {
   eject?: boolean;
   /** With `eject`, overwrite an existing local copy (`--force`). */
   force?: boolean;
+  /**
+   * This run is a plan (`pithy add --dry-run`, which {@link planAdd} runs in a shadow): a line naming it again
+   * carries `--dry-run`, so the command a refusal hands back writes nothing either.
+   */
+  dryRun?: boolean;
+  /**
+   * The caller asked for one JSON document (`--json`): a line naming this run again carries it, so the fix an agent
+   * runs answers the way its own call did (#711).
+   */
+  json?: boolean;
+  /**
+   * The project's `seed.productionEnvironments`, read by the command. A provision a note names for one of them is a
+   * person's decision, as `prod` is (#711). Omitted, the project names none beyond `prod` and `production`.
+   */
+  productionEnvironments?: readonly string[];
   /** Override the eject step (tests inject a stub). */
   ejectStep?: EjectStep;
   /**
@@ -304,6 +323,13 @@ export interface RunAddOptions {
   withPrerequisites?: boolean;
   /** Ask a human whether to compose the missing prerequisites. Omitted in non-interactive / `--json` runs. */
   askPrerequisites?: PrerequisitePrompt;
+  /**
+   * **The run every line naming this one again names (#711)** — set by a prerequisite's nested add to its outer
+   * run, so a refusal raised while composing `secrets` for `pithy add auth --json` sends the caller back to their
+   * own `pithy add auth … --json`, not to an add of `secrets` that drops their flags and composes only it. Absent,
+   * it is this run's own context ({@link addRunCaller}).
+   */
+  caller?: Caller<"add">;
 }
 
 export interface AddResult extends WorkerIdentity {
@@ -341,37 +367,72 @@ export interface AddResult extends WorkerIdentity {
 }
 
 /**
- * The kit capabilities a Worker's `pithy.config.ts` composes: installed under the project root, **and**
- * registered in this Worker's file.
- *
- * Both halves, for the reason `reconcile.ts` states — one install at the root is shared by every Worker,
- * so "installed" describes the project and only the config says what this Worker is made of.
- *
- * The source is read, never imported. The config this is asked about is routinely one that cannot boot —
- * that is the whole subject — and a capability whose package is half-installed would turn a question
- * about composition into a module-resolution failure.
- */
-async function composedCapabilities(installed: readonly CapabilityManifest[], workerDir: string): Promise<Set<string>> {
-  const read = await readFileOutcome(join(workerDir, "pithy.config.ts"));
-  const source = read.state === "read" ? read.text : "";
-  return new Set(installed.filter((manifest) => isRegistered(source, manifest.name)).map((manifest) => manifest.name));
-}
-
-/**
- * The prerequisites this Worker lacks for the capability being added, deepest first.
+ * The prerequisites this Worker lacks for the capability being added, deepest first, and what it composes.
  *
  * A peer's manifest is read when its package is already on disk — every capability's peers are its own
  * npm dependencies, so installing `@pithy-sh/auth` brings `@pithy-sh/email` and `@pithy-sh/secrets` with
  * it — and treated as a leaf when it is not. Either way the answer is complete enough to act on: each
  * prerequisite is composed by a full `runAdd` of its own, which resolves *its* peers against a tree that
  * now has them.
+ *
+ * What the Worker composes is its config's registrations of the installed capabilities — the source is read,
+ * never imported, because the config this is asked about is routinely one that cannot boot.
  */
-async function missingFor(projectDir: string, workerDir: string, manifest: CapabilityManifest): Promise<string[]> {
-  if (manifest.peerCapabilities.length === 0) return [];
+async function missingFor(
+  projectDir: string,
+  workerDir: string,
+  manifest: CapabilityManifest,
+): Promise<{ missing: string[]; composed: Set<string> }> {
+  if (manifest.peerCapabilities.length === 0) return { missing: [], composed: new Set() };
   const { manifests } = await availableManifests(projectDir);
-  const composed = await composedCapabilities(manifests, workerDir);
+  const composed = composedBy(
+    workerDir,
+    manifests.map((found) => found.name),
+  );
   const byName = new Map(manifests.map((found) => [found.name, found]));
-  return prerequisiteClosure({ manifest, composed, manifestFor: (name) => byName.get(name) });
+  return { missing: prerequisiteClosure({ manifest, composed, manifestFor: (name) => byName.get(name) }), composed };
+}
+
+/**
+ * **This run of `pithy add`, as its own context (#711)** — the one input every line naming it again is built from:
+ * the caller's own when a nested add was handed one, else this run's flags, its `--set`, and the options its
+ * Worker's config already states for the capability (`keys` are the options to ask about; the kit's facts when the
+ * manifest is not read yet). Read before the run writes, so what the config answered is what the caller relied on.
+ */
+export function addRunCaller(
+  options: Pick<
+    RunAddOptions,
+    | "capability"
+    | "projectDir"
+    | "workerDir"
+    | "setFlags"
+    | "withPrerequisites"
+    | "eject"
+    | "force"
+    | "dryRun"
+    | "json"
+    | "caller"
+  >,
+  keys: readonly string[] = projectAddFacts(options.projectDir)(options.capability)?.requiredOptions.map(
+    (option) => option.key,
+  ) ?? [],
+): Caller<"add"> {
+  return options.caller ?? addCallerOf(options, statedKeys(options.workerDir, options.capability, keys));
+}
+
+/**
+ * The keys of `keys` a Worker's `pithy.config.ts` states for `capability` — read synchronously, as `pithy add`'s own
+ * check reads them ({@link answeredConfigKeys}). None when the config cannot be read or does not compose it yet.
+ */
+function statedKeys(workerDir: string, capability: string, keys: readonly string[]): string[] {
+  let source: string;
+  try {
+    source = readFileSync(join(workerDir, "pithy.config.ts"), "utf8");
+  } catch {
+    return [];
+  }
+  const location = locateRegistration(source, capability);
+  return location === null ? [] : keys.filter((key) => location.statesKey(key));
 }
 
 /** What composing a capability's prerequisites produced — merged into the result the adopter reads. */
@@ -401,19 +462,28 @@ interface ComposedPrerequisites {
  * interview about three; `pithy add email --set …` re-runs against the same registration afterwards.
  */
 async function composePrerequisites(
-  options: RunAddOptions & { worker: string; manifest: CapabilityManifest },
+  options: RunAddOptions & { worker: string; manifest: CapabilityManifest; caller: Caller<"add"> },
 ): Promise<ComposedPrerequisites> {
   const { projectDir, workerDir, worker, manifest } = options;
   const empty: ComposedPrerequisites = { names: [], notes: [], kvNamespaces: [] };
 
-  const missing = await missingFor(projectDir, workerDir, manifest);
+  const { missing, composed: alreadyComposed } = await missingFor(projectDir, workerDir, manifest);
   if (missing.length === 0) return empty;
 
   // Named by its `apps/` directory, never by its deployed script name: every command in the sentence
   // takes `--worker <dir>`, and a refusal that names `replay-board` sends the adopter to a flag value
   // that does not resolve.
-  const named = workerIdentity({ name: worker, dir: workerDir }).worker;
-  const refusal = { capability: manifest.name, worker: named, missing };
+  const refusal = {
+    capability: manifest.name,
+    worker: workerDirName({ dir: workerDir }),
+    missing,
+    factsFor: projectAddFacts(projectDir),
+    composed: alreadyComposed,
+    // The caller's own run (#711): a fix that dropped --eject composes from the package what the caller asked to
+    // eject, one that dropped a dry run's --dry-run writes what the caller asked only to see, and one that ignored
+    // what the Worker's config answers names a choice the config already made.
+    caller: options.caller,
+  };
   if (options.withPrerequisites !== true) {
     // Nobody to ask is `input/required` (#697); somebody asked who said no is a refusal of its own.
     if (options.askPrerequisites === undefined) throw prerequisiteRequired(refusal);
@@ -430,10 +500,19 @@ async function composePrerequisites(
       account: options.account,
       capability: name,
       withPrerequisites: true,
+      // A refusal inside it sends the caller back to their own run, not to this one (#711).
+      caller: options.caller,
+      // The run's mode, which a note naming this add again carries: its own rerun is a dry run that answers in JSON
+      // when the caller's was (#711).
+      ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+      ...(options.json === undefined ? {} : { json: options.json }),
       ...(options.install === undefined ? {} : { install: options.install }),
       ...(options.migrate === undefined ? {} : { migrate: options.migrate }),
       ...(options.audit === undefined ? {} : { audit: options.audit }),
       ...(options.bootstrap === undefined ? {} : { bootstrap: options.bootstrap }),
+      ...(options.productionEnvironments === undefined
+        ? {}
+        : { productionEnvironments: options.productionEnvironments }),
     });
     composed.names.push(...result.prerequisites, result.capability);
     composed.notes.push(...result.notes);
@@ -499,7 +578,14 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     // Before a byte of this capability's wiring is written: what it composes against, and whether this
     // Worker has it. Refusing here leaves an installed package and nothing else — a config half-wired
     // around an absent peer is the state #273 is about.
-    const prerequisites = await composePrerequisites({ ...options, worker, manifest });
+    // This run as its context, read before anything is written (#711): the one input every line naming it again
+    // is built from, whatever raises it — the prerequisite refusal, a nested add, `add.ts`, the bootstrap's notes.
+    const caller = addRunCaller(
+      options,
+      manifest.configOptions.map((option) => option.key),
+    );
+
+    const prerequisites = await composePrerequisites({ ...options, worker, manifest, caller });
 
     // What the Worker's own config already states for this capability, read once. A key present in the
     // registration is a settled question whatever this run was given.
@@ -524,11 +610,28 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     );
     if (unsettled.length > 0) throw requiredOptionRefusal({ capability: manifest.name, missing: unsettled });
 
+    // This run, as a line names it to run again: every option it settled, by `--set` or by a prompt, so the rerun is
+    // asked nothing this run was not (#711). A refusal stops the caller's run, so it names the caller's — a nested
+    // add's caller is the outer run, whose options are not this capability's. A note names this capability's own add,
+    // a nested one included: its notes — the store id to record, the master key to mint — are righted only by a run
+    // that reaches this bootstrap, and the caller's rerun finds this capability composed and never adds it again.
+    const settled = Object.fromEntries(Object.entries(configValues).map(([key, value]) => [key, String(value)]));
+    const own =
+      options.caller === undefined
+        ? caller
+        : addRunCaller(
+            { ...options, caller: undefined, withPrerequisites: undefined },
+            manifest.configOptions.map((option) => option.key),
+          );
+    const where = { workerDir, projectDir };
+    const ownAgain = addAgain(settledBy(own, settled), where);
+    const again = options.caller === undefined ? ownAgain : addAgain(caller, where);
     const { kvNamespaces, notes: wired } = await addCapability({
       workerDir,
       manifest,
       configValues,
       project: options.project,
+      again,
     });
 
     // Eject before migrating: eject repoints the config import to the local copy and promotes the
@@ -555,7 +658,14 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     // Last, after every step that can fail: a dev key is minted only into a project the add finished
     // on. It is absent-only anyway, so an earlier failure costs a re-run rather than a stranded value.
-    const bootstrapped = await (options.bootstrap ?? bootstrapAdd)({ projectDir, manifest, account: options.account });
+    const bootstrapped = await (options.bootstrap ?? bootstrapAdd)({
+      projectDir,
+      manifest,
+      account: options.account,
+      worker: workerDirName({ dir: workerDir }),
+      again: ownAgain,
+      productionEnvironments: options.productionEnvironments ?? [],
+    });
 
     await audit({
       action: "capability/added",

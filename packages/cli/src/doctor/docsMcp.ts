@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import type { McpClientId } from "../mcp/clients";
 import { type McpOptions, status } from "../mcp/connect";
 import { docsConnectFix } from "./findingFixes";
 
@@ -37,13 +39,13 @@ export interface DocsMcpCheck {
 /** One detected client with no docs-server entry anywhere. */
 export interface DocsMcpClient {
   /** The id `pithy docs connect --client` takes. */
-  readonly client: string;
+  readonly client: McpClientId;
   /** The name a person knows it by. */
   readonly label: string;
 }
 
 /** The remedy line printed under the findings. */
-export const DOCS_MCP_ACTION = "Each line is one command. `pithy docs status` shows where each one would land.";
+export const DOCS_MCP_ACTION = `Each line is one command. \`${pithyCommand("docs status")}\` shows where each one would land.`;
 
 /** Read every detected client's configuration and report the ones with no entry. */
 export async function checkDocsMcp(projectDir: string, options?: McpOptions): Promise<DocsMcpCheck> {

@@ -131,6 +131,14 @@ export function isShippedSource(name: string): boolean {
   return name.endsWith(".ts") && !name.endsWith(".test.ts") && !name.endsWith(".d.ts");
 }
 
+/**
+ * {@link isShippedSource}, or a `.tsx` that is not a test: every module that ships, React and Ink included. For a
+ * gate that reads what the code says rather than what it imports — a `.tsx` says its words as JSX too.
+ */
+export function isShippedModule(name: string): boolean {
+  return isShippedSource(name) || (name.endsWith(".tsx") && !name.endsWith(".test.tsx"));
+}
+
 /** A test file, in every spelling this repository uses — `x.test.ts` and `x.workers.test.ts` alike. */
 export function isTestFile(name: string): boolean {
   return name.endsWith(".test.ts");

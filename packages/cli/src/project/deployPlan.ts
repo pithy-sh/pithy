@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { emptyPlan, type Plan, type PlanMigration, type PlanResource } from "../plan/plan";
 import { EXIT } from "../terminal/exitClass";
@@ -64,7 +65,7 @@ function pendingNote(env: string | undefined, pending: PendingRead): string | un
   if (pending.state === "skipped" || pending.migrations.length === 0) return undefined;
   const count = pending.migrations.length;
   const names = pending.migrations.map((migration) => migration.name).join(", ");
-  return `${count} migration${count === 1 ? "" : "s"} unapplied for ${env}: ${names}. Deploy does not migrate — run pithy migrate --env ${env}.`;
+  return `${count} migration${count === 1 ? "" : "s"} unapplied for ${env}: ${names}. Deploy does not migrate — ${env === undefined ? `migrate with ${commandName("migrate")} and its --env` : `run ${pithyCommand("migrate", { flags: { "--env": env } })}`}.`;
 }
 
 /** The plan `pithy deploy --dry-run --json` carries under `plan`. */

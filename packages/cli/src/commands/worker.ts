@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
@@ -193,7 +194,9 @@ const add = withContract(
         } else if (report.reconciled) {
           process.stdout.write("Reconciled the feature's ports. This worker took none.\n");
         } else {
-          process.stdout.write("Ports are assigned when you run pithy feature create or sync.\n");
+          process.stdout.write(
+            `Ports are assigned when you run ${commandName("feature create")} or ${commandName("feature sync")}.\n`,
+          );
         }
         // The worker's `src/index.ts` imports `@pithy-sh/core` and, while the scope is unpublished, its
         // `package.json` declares no range for it — so this said "Done." over a worker that cannot resolve
@@ -232,7 +235,7 @@ const list = withContract(
           return;
         }
         if (workers.length === 0) {
-          process.stdout.write("No workers. Run pithy worker add <name>, or pithy init.\n");
+          process.stdout.write(`No workers. Name one and create it with ${commandName("worker add")}.\n`);
           return;
         }
         const rows = workers.map((worker) => {

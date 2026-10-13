@@ -70,6 +70,36 @@ describe("migrateProject", () => {
     expect(exitCodeOf((refusal as PithyError).payload)).toBe(EXIT.usage);
   });
 
+  // `--worker` names a Worker by its `apps/` directory first, and by its deployed name only when no directory
+  // matches (#711). A deployed name that is another Worker's directory must not drag that Worker into the scope: the
+  // rollback line names this scope, and reversing a group in a database the caller never named is the fault.
+  describe("--worker against Workers whose deployed names differ from their directories", () => {
+    const workers = [
+      { name: "api", dir: "/p/apps/web", capabilities: [] },
+      { name: "acme-api", dir: "/p/apps/api", capabilities: [] },
+    ];
+    const scope = (worker: string) =>
+      resolveWorkerScopes({ projectDir: "/p", env: "dev", worker, workers }).then((found) =>
+        found.map((one) => one.dir),
+      );
+
+    test("the directory wins over another Worker's deployed name", async () => {
+      expect(await scope("api")).toEqual(["/p/apps/api"]);
+    });
+
+    test("a deployed name answers when no directory matches", async () => {
+      expect(await scope("acme-api")).toEqual(["/p/apps/api"]);
+    });
+
+    test("a name that is neither is refused, listing the directories", async () => {
+      const refusal = await scope("ghost").catch((error: unknown) => error);
+      expect((refusal as PithyError).payload).toMatchObject({
+        code: "validation/invalid_input",
+        action: expect.stringContaining("Known: web, api."),
+      });
+    });
+  });
+
   test("runs, persists, and rolls back against local D1", async () => {
     const workers = [h.api([appCapability()])];
 

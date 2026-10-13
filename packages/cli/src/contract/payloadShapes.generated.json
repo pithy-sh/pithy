@@ -488,6 +488,7 @@
         "$.project.health.workers[]": "object",
         "$.project.health.workers[]<state=\"checked\">.state": "\"checked\"",
         "$.project.health.workers[]<state=\"checked\">.worker": "string",
+        "$.project.health.workers[]<state=\"checked\">.directory": "string",
         "$.project.health.workers[]<state=\"checked\">.ok": "boolean",
         "$.project.health.workers[]<state=\"checked\">.config": "object",
         "$.project.health.workers[]<state=\"checked\">.config.ok": "boolean",
@@ -558,6 +559,7 @@
         "$.project.health.workers[]<state=\"checked\">.prerequisites.missing[].fix": "null | string",
         "$.project.health.workers[]<state=\"unavailable\">.state": "\"unavailable\"",
         "$.project.health.workers[]<state=\"unavailable\">.worker": "string",
+        "$.project.health.workers[]<state=\"unavailable\">.directory": "string",
         "$.project.health.manifests": "object",
         "$.project.health.manifests.ok": "boolean",
         "$.project.health.manifests.faults": "array",
@@ -823,7 +825,8 @@
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
-        "$.skippedEnvironments[].action": "string"
+        "$.skippedEnvironments[].action": "string",
+        "$.exitCode": "integer"
       }
     },
     "email test": {
@@ -1040,7 +1043,8 @@
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
-        "$.skippedEnvironments[].action": "string"
+        "$.skippedEnvironments[].action": "string",
+        "$.exitCode": "integer"
       }
     },
     "migrate": {
@@ -1131,7 +1135,8 @@
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
-        "$.skippedEnvironments[].action": "string"
+        "$.skippedEnvironments[].action": "string",
+        "$.exitCode": "integer"
       }
     },
     "payments reconcile": {
@@ -1795,7 +1800,8 @@
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
-        "$.skippedEnvironments[].action": "string"
+        "$.skippedEnvironments[].action": "string",
+        "$.exitCode": "integer"
       }
     },
     "support deprovision": {
@@ -1832,7 +1838,8 @@
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
-        "$.skippedEnvironments[].action": "string"
+        "$.skippedEnvironments[].action": "string",
+        "$.exitCode": "integer"
       }
     },
     "testers close": {
@@ -1937,7 +1944,8 @@
         "$.skippedEnvironments[].env": "string",
         "$.skippedEnvironments[].reason": "string",
         "$.skippedEnvironments[].action": "string",
-        "$.sends": "boolean"
+        "$.sends": "boolean",
+        "$.exitCode": "integer"
       }
     },
     "testers remove": {

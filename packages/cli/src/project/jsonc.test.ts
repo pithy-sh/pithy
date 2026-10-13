@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { copyTreeOnce } from "../test-utils/treeCopy";
 import { formatJsonc, JSONC_LINE_WIDTH, writeJsonc } from "./jsonc";
 import { resolveTemplateSource } from "./scaffold";
 
@@ -31,7 +32,7 @@ beforeAll(async () => {
   // The starter's Biome, so the corpus is judged by the config an adopter actually gets — with the Grit
   // plugins it names beside it, or it refuses to load at all.
   await writeFile(join(dir, "biome.jsonc"), await readFile(join(STARTER, "biome.template.jsonc")));
-  await cp(join(STARTER, "plugins"), join(dir, "plugins"), { recursive: true });
+  copyTreeOnce(join(STARTER, "plugins"), join(dir, "plugins"));
 });
 
 afterAll(async () => {

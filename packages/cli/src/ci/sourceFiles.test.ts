@@ -7,7 +7,8 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { isShippedSource, isTestFile, readSource, sourceFiles, sourcePaths } from "./sourceFiles";
+import { GIT_NO_MAINTENANCE, scratchGitEnv } from "../test-utils/tempRepo";
+import { isShippedModule, isShippedSource, isTestFile, readSource, sourceFiles, sourcePaths } from "./sourceFiles";
 
 let root: string;
 beforeEach(async () => {
@@ -287,6 +288,16 @@ describe("the predicates a caller picks between", () => {
     expect(isShippedSource("wrangler.jsonc")).toBe(false);
   });
 
+  // A gate that reads what the code says reads a `.tsx` too: `pithy dev`'s footer is Ink, and i18n ships React (#711).
+  test("a shipped module is shipped source or a `.tsx` that is not a test", () => {
+    expect(isShippedModule("scaffold.ts")).toBe(true);
+    expect(isShippedModule("app.tsx")).toBe(true);
+    expect(isShippedModule("app.test.tsx")).toBe(false);
+    expect(isShippedModule("scaffold.test.ts")).toBe(false);
+    expect(isShippedModule("globals.d.ts")).toBe(false);
+    expect(isShippedModule("wrangler.jsonc")).toBe(false);
+  });
+
   test("a test file is a `.test.ts`, whatever else its name carries", () => {
     expect(isTestFile("scaffold.test.ts")).toBe(true);
     expect(isTestFile("worker.workers.test.ts")).toBe(true);
@@ -363,6 +374,10 @@ describe("no module writes its own walk over a directory tree", () => {
     "packages/cli/src/test-utils/treeSnapshot.ts": {
       walk: "walk",
       why: "The before-and-after a dry run is held to (#697), so it has to see every write a command could make: a dotted file, a symlink by where it points, an empty directory, anything under `node_modules` or `dist`. The primitive skips every one of those by design, which is right for a source gate and is exactly the blindness this assertion cannot have.",
+    },
+    "packages/cli/src/test-utils/treeCopy.ts": {
+      walk: "copyTreeOnce",
+      why: "A test's copy of a live package (#711), which has to take what the primitive skips by design — `node_modules`, whose links a copied package resolves its dependencies through, dotted files, symlinks reproduced by where they point — and must tolerate an entry another suite removes between the listing and the read, which is the whole reason it exists. A source walk would copy a package that cannot load.",
     },
     "tooling/build/src/stampDeclarations.ts": {
       walk: "declarations",
@@ -659,10 +674,14 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 /** The byte, never a literal one. It is also what `git ls-files -z` separates paths with. */
 const NUL = String.fromCharCode(0);
 
-/** One `git ls-files` listing. `-z` because a path may hold anything but this byte and a slash. */
-function lsFiles(...flags: string[]): string[] {
+/** Every `git` here runs on `root`, whatever repository a hook that ran this suite points at. */
+const GIT_ENV = scratchGitEnv();
+
+/** One `git ls-files` listing of `root`. `-z` because a path may hold anything but this byte and a slash. */
+function lsFiles(root: string, ...flags: string[]): string[] {
   const listing = execFileSync("git", ["ls-files", "-z", ...flags], {
-    cwd: REPO_ROOT,
+    cwd: root,
+    env: GIT_ENV,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -687,8 +706,8 @@ function lsFiles(...flags: string[]): string[] {
  * silently reaches nothing passes every rule written under it (#185). A second copy of this function
  * would be a second thing to keep in step with what git actually sees.
  */
-function tracked(): string[] {
-  return [...new Set([...lsFiles(), ...lsFiles("--others", "--exclude-standard")])];
+function tracked(root: string = REPO_ROOT): string[] {
+  return [...new Set([...lsFiles(root), ...lsFiles(root, "--others", "--exclude-standard")])];
 }
 
 /**
@@ -752,13 +771,24 @@ describe("no file this repository commits is binary to git", () => {
     // The gate used to read git's index alone, which made it one run late by construction: a new file is
     // invisible until something stages it, and the pre-commit hook runs Biome rather than this suite. So
     // the first scan that could see a file was the one after the commit that tracked it.
-    const written = join(REPO_ROOT, "packages", "cli", "src", "ci", `untracked-probe-${process.pid}.ts`);
-    await writeFile(written, "export const probe = 1;\n");
-    try {
-      expect(tracked()).toContain(relative(REPO_ROOT, written).split(sep).join("/"));
-    } finally {
-      await rm(written, { force: true });
-    }
+    //
+    // **A scratch repository, never this one (#711).** The probe used to be written into
+    // `packages/cli/src/ci/`, where every suite that walks the source tree could see it appear and vanish
+    // mid-run, and a gate that fails on a run nobody changed gets muted. The listing is the same function
+    // either way; only its root differs.
+    const git = (...args: string[]) =>
+      execFileSync("git", [...GIT_NO_MAINTENANCE, ...args], { cwd: root, env: GIT_ENV });
+    git("init", "-q");
+    await file("staged.ts");
+    git("add", "staged.ts");
+    await file("written.ts");
+    await file(".gitignore", "ignored.ts\n");
+    await file("ignored.ts");
+
+    // The index alone misses the file nobody added: the defect this listing exists to close.
+    expect(lsFiles(root)).toEqual(["staged.ts"]);
+    // The listing sees it, and still nothing the ignore file covers.
+    expect([...tracked(root)].sort()).toEqual([".gitignore", "staged.ts", "written.ts"]);
   });
 
   test("and nothing .gitignore covers, so a scaffolded fixture is not a finding", () => {

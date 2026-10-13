@@ -388,6 +388,9 @@ describe("httpDashboardClient — refusals name the failure they had", () => {
     await expect(client.startDeviceAuthorization()).rejects.toSatisfy((error: PithyError) => {
       expect(error.payload.action).not.toMatch(/--origin/);
       expect(error.payload.action).toMatch(/sign in|token|credential/i);
+      // The CLI has no `login`: each dashboard command signs in for itself, so running it again signs in afresh.
+      expect(error.payload.action).not.toMatch(/pithy login/);
+      expect(error.payload.action).toMatch(/run the command again/i);
       return true;
     });
   });
