@@ -32,7 +32,7 @@ pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] 
 
 ## What it does
 
-`provision` creates each index the config declares, or reuses one that already exists, and creates every metadata index the index's schema marks filterable. It returns only once each declared metadata index is actually live — waiting out Cloudflare's asynchronous apply — because the very next step deploys the Worker that writes vectors, and a write landing before an index exists is permanently unfilterable. Then it deploys the prebuilt reprocess Worker for that environment and writes two things into the app's `wrangler.jsonc`: the `VECTOR_PROVISIONED` var recording what it observed, and this environment's `vectorize` and `workflows` bindings. `pithy add vector` cannot write those bindings — wrangler requires an `index_name` on one and a `name` plus `class_name` on the other, and all three are provisioning outputs.
+`provision` creates each index the config declares, or reuses one that already exists, and creates every metadata index the index's schema marks filterable. It returns only once each declared metadata index is actually live — listed under its own name and type on three reads in a row, which can take Vectorize up to five minutes — because the very next step deploys the Worker that writes vectors, and a write landing before an index exists is permanently unfilterable. Then it deploys the prebuilt reprocess Worker for that environment and writes two things into the app's `wrangler.jsonc`: the `VECTOR_PROVISIONED` var recording what it observed, and this environment's `vectorize` and `workflows` bindings. `pithy add vector` cannot write those bindings — wrangler requires an `index_name` on one and a `name` plus `class_name` on the other, and all three are provisioning outputs.
 
 The `VECTOR_PROVISIONED` var is what the Worker compares its declarations against at boot, refusing to serve on drift. That check is the only way an adopter who edits a metadata schema and deploys without re-provisioning hears about it, because Vectorize answers such a filter with partial results and no error. The var is written last, and only on success, so it never claims more than provisioning got done.
 
@@ -165,6 +165,13 @@ Pick one of: docs, notes.
 **A malformed `--filter`.** `--filter is not valid JSON.` or `--filter must be a JSON object.` — an array and a bare scalar are both refused.
 
 **The project has no name.** An index is found by name and reused, so the name must be identical on every run, and it is never guessed: a wrong one adopts another project's corpus. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
+
+**A metadata index is accepted but not live yet.** Five minutes passed without three agreeing reads. Vectorize applies a metadata index asynchronously, and this one has not landed yet. Write no vectors, and re-run `provision`. It creates nothing twice, and it waits again.
+
+```
+The metadata indexes on `acme-staging-vector-docs` were accepted but are not live yet.
+Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.
+```
 
 **The Workflow did not finish.** `reset` and `reprocess` wait on dispatched instances and raise a `cloudflare/*` error when one ends `errored` or `terminated`, or is still running at the poll cap.
 

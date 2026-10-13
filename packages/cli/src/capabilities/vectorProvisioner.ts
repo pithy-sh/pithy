@@ -28,7 +28,8 @@ import { capabilityLoadError } from "./loadFailure";
  * **Vectorize is eventually consistent, and this file never assumes otherwise.** Creating an index or a
  * metadata index is *accepted*, not applied. Where the ordering matters — a metadata index must exist before
  * any vector is written, or that vector is permanently unfilterable — the provisioner polls the list endpoint
- * with a bounded retry rather than reading back what it just wrote.
+ * until several reads in a row agree, inside a budget sized from measured latency, rather than reading back
+ * what it just wrote.
  */
 
 type VectorProvisionModule = typeof import("@pithy-sh/vector/src/provision/provisionVector");
@@ -86,9 +87,22 @@ async function vectorWorkerDir(projectDir: string): Promise<string> {
 /** Resolve the app database id for an environment — where the document corpus lives. */
 export type ResolveVectorEnv = (env: string) => Promise<{ appDatabaseId: string }>;
 
-/** How long to wait for an accepted metadata index to become visible, and how often to look. */
-const METADATA_POLL_ATTEMPTS = 10;
-const METADATA_POLL_INTERVAL_MS = 1_000;
+/**
+ * How long to wait for an accepted metadata index to become live. Sized from measurement, not chosen: on #709 a
+ * metadata index settled in about 97s on one run and was still unsettled at 120s on the next. The ten
+ * one-second polls this replaced gave up on both. The kit's own live suites wait on the same number.
+ */
+export const METADATA_SETTLE_BUDGET_MS = 300_000;
+
+/**
+ * Consecutive agreeing reads that count as live. The metadata-index list is eventually consistent and not
+ * monotonic: a live probe watched it report an index, then drop it 18s later with nothing else running, then
+ * report it again. So one read that shows an index proves nothing.
+ */
+export const METADATA_STABLE_READS = 3;
+
+/** How often to look. Vectorize applies a metadata index in tens of seconds, so a tighter loop only burns quota. */
+export const METADATA_POLL_INTERVAL_MS = 2_000;
 
 export interface CloudflareVectorProvisionerOptions {
   /**
@@ -115,6 +129,17 @@ export interface CloudflareVectorProvisionerOptions {
   workflows: CloudflareWorkflowsClient;
   /** Sleep between metadata-index polls. Injected so tests run with no real delay. */
   sleep?: (ms: number) => Promise<void>;
+  /** The clock the metadata-index budget is measured on, in ms. Injected so a test can run the budget out. */
+  now?: () => number;
+}
+
+/**
+ * The metadata indexes a wait was still on when it ran out. The last read's missing and mis-typed ones, or every
+ * declared one when that read happened to list them all, short of the agreeing reads that make it live.
+ */
+function pending(last: MetadataIndexReport, declared: readonly MetadataIndexDescriptor[]): string {
+  const unsettled = [...last.missing, ...last.mismatched];
+  return (unsettled.length > 0 ? unsettled : declared).map((entry) => entry.propertyName).join(", ");
 }
 
 /** The live {@link VectorProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
@@ -128,6 +153,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   readonly #resolveEnv: ResolveVectorEnv;
   readonly #workflows: CloudflareWorkflowsClient;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #now: () => number;
 
   constructor(options: CloudflareVectorProvisionerOptions) {
     this.#projectDir = options.projectDir;
@@ -139,6 +165,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     this.#resolveEnv = options.resolveEnv;
     this.#workflows = options.workflows;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#now = options.now ?? Date.now;
   }
 
   /** Require Vectorize access and a workers.dev subdomain — Cloudflare needs one to deploy a Workflow host. */
@@ -176,12 +203,16 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   }
 
   /**
-   * Create every declared metadata index that is missing, then wait until each one is visible.
+   * Create every declared metadata index that is missing, then wait until each one is live.
    *
    * The wait is the point. Cloudflare applies a metadata index asynchronously, and a vector written before it
    * lands is never covered by it — silently, with no error and no way back but a full re-embed. Returning
    * before the index is live would put the caller's very next step (deploying the worker that writes vectors)
    * inside that window.
+   *
+   * Live means {@link METADATA_STABLE_READS} reads in a row that list every declared index under its own name
+   * and type, inside {@link METADATA_SETTLE_BUDGET_MS}. A re-run confirms the same way, because a re-run is
+   * what the not-live-yet error asks for, and its answer is what the operator writes vectors on.
    */
   async ensureMetadataIndexes(
     indexName: string,
@@ -189,8 +220,10 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   ): Promise<MetadataIndexReport> {
     const { compareMetadataIndexes } = await loadVector(this.#projectDir);
     const provisioner = this.#cf.vectorizeProvisioner();
+    const read = async () => compareMetadataIndexes(declared, await provisioner.listMetadataIndexes(indexName));
+    const live = (report: MetadataIndexReport) => report.missing.length === 0 && report.mismatched.length === 0;
 
-    const before = compareMetadataIndexes(declared, await provisioner.listMetadataIndexes(indexName));
+    const before = await read();
     if (before.mismatched.length > 0) {
       throw new ValidationError({
         message: `A metadata index on \`${indexName}\` was created with a different type.`,
@@ -201,25 +234,39 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
           .join("; "),
       });
     }
-    if (before.missing.length === 0) return before;
 
     for (const descriptor of before.missing) {
-      await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
+      try {
+        await provisioner.createMetadataIndex(indexName, descriptor.propertyName, descriptor.indexType);
+      } catch (error) {
+        // The list can miss an index that exists, so a re-run can ask for one the last run's create already
+        // made. Cloudflare's answer to that is not something this code matches on: an index listed under its
+        // own name and type right after the refusal is that earlier create, and the wait below confirms it.
+        // Anything else is Cloudflare's refusal, and it stands.
+        const now = await provisioner.listMetadataIndexes(indexName);
+        const landed = now.some(
+          (entry) => entry.propertyName === descriptor.propertyName && entry.indexType === descriptor.indexType,
+        );
+        if (!landed) throw error;
+      }
     }
 
-    for (let attempt = 0; attempt < METADATA_POLL_ATTEMPTS; attempt += 1) {
+    const started = this.#now();
+    let last = before;
+    let agreed = live(before) ? 1 : 0;
+    while (agreed < METADATA_STABLE_READS) {
+      if (this.#now() - started >= METADATA_SETTLE_BUDGET_MS) {
+        throw new InternalError({
+          message: `The metadata indexes on \`${indexName}\` were accepted but are not live yet.`,
+          action: "Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.",
+          detail: `waited ${Math.round((this.#now() - started) / 1000)}s for ${pending(last, declared)}`,
+        });
+      }
       await this.#sleep(METADATA_POLL_INTERVAL_MS);
-      const now = compareMetadataIndexes(declared, await provisioner.listMetadataIndexes(indexName));
-      if (now.missing.length === 0) return { ...now, missing: [...before.missing] };
+      last = await read();
+      agreed = live(last) ? agreed + 1 : 0;
     }
-
-    throw new InternalError({
-      message: `The metadata indexes on \`${indexName}\` were accepted but are not live yet.`,
-      action: "Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.",
-      detail: `waited ${(METADATA_POLL_ATTEMPTS * METADATA_POLL_INTERVAL_MS) / 1000}s for ${before.missing
-        .map((entry) => entry.propertyName)
-        .join(", ")}`,
-    });
+    return { ...last, missing: [...before.missing] };
   }
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
