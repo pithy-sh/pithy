@@ -109,23 +109,25 @@ describe.skipIf(!creds.hasCreds)("CloudflareAccountTokensManager — LIVE mint +
  * - `GET /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list. **Zone-scoped**, and
  *   the call that actually failed: `No access to the specified resource`, because the minted token
  *   carried one account-scoped policy and Cloudflare publishes the Workers Routes groups at zone scope.
- * - `PUT /accounts/<id>/workers/domains` — the custom domain itself. The **endpoint** is account-scoped;
- *   the **grant is not**. Cloudflare's authorization page is explicit: "To add, update, or remove Routes
- *   or Custom Domains, you need `Editor` access to the Worker and `Workers Routes Write` permission for
- *   every affected zone", and "API tokens need *Zone* > *Workers Routes* > *Write*, scoped to each
- *   affected zone" (https://developers.cloudflare.com/workers/authorization/workers/).
+ * - `PUT /accounts/<id>/workers/domains` — the custom domain itself. **Account-scoped, endpoint and grant
+ *   both, measured.** Cloudflare's authorization page says otherwise — "API tokens need *Zone* > *Workers
+ *   Routes* > *Write*, scoped to each affected zone" (https://developers.cloudflare.com/workers/authorization/workers/)
+ *   — and this suite asserted that, until its first live run (integration.yml run 38323817975, #709) watched
+ *   the account-only token attach the domain. The API reference's "Accepted Permissions: Workers Scripts
+ *   Write" was the accurate one.
  *
- * So one zone-scoped grant unblocks both calls, and both are exercised here — each with the old shape
- * asserted refused. An earlier round of this suite read the API reference's "Accepted Permissions:
- * Workers Scripts Write" as the whole answer, concluded the domain write needed nothing new, and dropped
- * its negative control. A custom-domain regression would have passed green.
+ * So the zone-scoped grant is what the **route** calls need, and it is still needed: the old shape is
+ * refused on both the zone's route read and its route write, and wrangler makes the read on every deploy
+ * of a declared domain. The custom domain needs nothing the old shape lacked, so there is no negative
+ * control for it — only the new shape's attach, which proves the added zone policy costs the domain call
+ * nothing.
  *
  * Three facts decide whether the fix is a fix, and **not one of them is knowable locally**: whether the
  * group is named "Workers Routes Write" in this account's catalog, whether Cloudflare accepts an account
  * policy and a zone policy on one token, and whether the resulting credential can make the calls. So
  * both token shapes are minted — the token as it was, and the token as it is — and each is pointed at the
- * zone read. **The old shape must be refused**: a suite that only proved the new one works would pass
- * just as happily against a token scoped to every zone on the account.
+ * zone's routes. **The old shape must be refused there**: a suite that only proved the new one works would
+ * pass just as happily against a token scoped to every zone on the account.
  *
  * **Teardown runs unconditionally and finds what it deletes.** Every step is independently caught, the
  * route is looked up by its pattern rather than by an id captured after the assertions, and the custom
@@ -201,7 +203,7 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         return body.result?.[0]?.id ?? null;
       });
 
-    test("the zone-scoped token reads the zone's routes and attaches the domain; the token it replaces cannot", async () => {
+    test("the zone-scoped token reads and writes the zone's routes and attaches the domain; the token it replaces cannot touch the routes", async () => {
       // Resolved by name against the account's own list — the same lookup `resolveRouteZones` makes from
       // a Worker's declared `domains`, so a fixture naming a zone this account does not hold fails here
       // exactly as a mint would.
@@ -224,10 +226,12 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
       // A teardown that asks only "is it there?" cannot tell a propagation lag from a deletion, so a
       // list that has not caught up answers `absent` and the run exits clean over a live route or a
       // live DNS record. Tracking the write's *success* fixed that for the happy path and left the
-      // worst case open: the two negative controls are calls that must be refused, so when the
-      // regression they exist to catch actually happens the write lands, no success is recorded, and
-      // teardown shrugs. Attempted, not succeeded, is the flag that covers both — an object that was
-      // never created only costs the teardown a lookup that says so.
+      // worst case open: the route write's negative control is a call that must be refused, so when the
+      // regression it exists to catch actually happens the write lands, no success is recorded, and
+      // teardown shrugs. And the old shape's custom-domain attach, asserted refused until #709 measured
+      // it, landed exactly that way, so the case is not hypothetical. Attempted, not succeeded, is the
+      // flag that covers both — an object that was never created only costs the teardown a lookup that
+      // says so.
       let routeAttempted = false;
       let domainAttempted = false;
       try {
@@ -254,17 +258,12 @@ describe.skipIf(!creds.hasCreds || !fixtureReady("workers-route-zone"))(
         expect(written.state, `route ${pattern} never settled`).toBe("found");
         expect(written.state === "found" ? written.value.script : null).toBe(script);
 
-        // 3. The custom domain. The endpoint is account-scoped, and the grant is **not**: Cloudflare's
-        //    own authorization page says "To add, update, or remove Routes or Custom Domains, you need
-        //    Editor access to the Worker and Workers Routes Write permission for every affected zone",
-        //    and "API tokens need Zone > Workers Routes > Write, scoped to each affected zone"
-        //    (https://developers.cloudflare.com/workers/authorization/workers/). So the old shape must
-        //    be refused here too — an earlier round of this suite omitted that control on a wrong
-        //    reading of the API reference, and a custom-domain regression would have passed green.
+        // 3. The custom domain, under the new shape. No negative control, because there is nothing to
+        //    refuse: the first live run of this suite (#709) watched the account-only token attach it, so
+        //    `PUT /accounts/<id>/workers/domains` is granted at account scope whatever Cloudflare's
+        //    authorization page says. What is left to prove is that the token `ci-system` now mints —
+        //    account policy plus zone policy on one credential — still makes the call a deploy makes.
         domainAttempted = true;
-        const refused = await attachCustomDomain(before.value, hostname, script, zone.id);
-        expect(refused.ok, "the account-only token attached a custom domain").toBe(false);
-
         const attached = await attachCustomDomain(after.value, hostname, script, zone.id);
         expect(attached.ok, `PUT /accounts/<id>/workers/domains answered ${attached.status}`).toBe(true);
         expect((await settledCustomDomain(hostname)).state).toBe("found");

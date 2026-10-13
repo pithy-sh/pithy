@@ -62,16 +62,16 @@ ciPermissions: ["kv:write"]
 
 ### Your declared domains, and the route CI attaches
 
-A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls** — addressed to two different scopes, and needing the same one grant:
+A Worker that declares `domains` answers on a custom domain, and deploying one is **two calls**, addressed to two different scopes — and only one of them needs a grant the account policy lacks:
 
 | Call | Endpoint scope | Grant |
 |---|---|---|
 | `GET`/`POST /zones/<zone>/workers/routes` — wrangler reconciles the zone's route list | zone | **Workers Routes Write**, on that zone |
-| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | **Workers Routes Write**, on that zone |
+| `PUT /accounts/<id>/workers/domains` — the custom domain itself | account | none beyond the account policy — Workers Scripts Write, already in `ci-system`'s base |
 
-**The endpoint's scope and the grant's scope are different things, and only the second one matters here.** Cloudflare's [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/) is explicit: *"To add, update, or remove Routes or Custom Domains, you need `Editor` access to the Worker and `Workers Routes Write` permission for every affected zone"*, and *"API tokens need Zone > Workers Routes > Write, scoped to each affected zone."* The custom-domain call is addressed to an account path and still needs the zone grant.
+**This is measured, and it disagrees with Cloudflare's own page.** [Workers roles and permissions](https://developers.cloudflare.com/workers/authorization/workers/) says *"API tokens need Zone > Workers Routes > Write, scoped to each affected zone"* for routes and custom domains alike. The live suite (`accountTokensManager.integration.test.ts`, #709) watched a token carrying only the account policy attach a custom domain, and watched the same token refused on the zone's route list — so the route call is the one the zone grant is for, and it is the call every deploy of a declared domain makes.
 
-So one zone-scoped grant unblocks both calls. A minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all — which is why every deploy of a declared domain failed.
+So one zone-scoped grant unblocks the deploy. A minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all — which is why every deploy of a declared domain failed.
 
 So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
 
