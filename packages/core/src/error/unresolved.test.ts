@@ -184,6 +184,97 @@ describe("unresolvedImport", () => {
     });
   });
 
+  // The must-fix of #709's first review: a bare name went straight to "not installed", ahead of the probe.
+  // Bun 1.4.2 says `Cannot find package 'pkg'` for an installed package with no entry at its bare name —
+  // an `exports` map with no ".", which is every @pithy-sh/* package, or a `main` naming a missing file.
+  describe("an installed package with no entry at its bare name", () => {
+    const NO_ENTRY =
+      "The installed nodot has no entry to import by its bare name. Import one of its paths, or check the version of nodot you have — installing dependencies will not help.";
+
+    test("Bun: the probe finds it, so it is the package's entry, never an install", () => {
+      const seen: string[][] = [];
+      const installed = (pkg: string, referrer: string) => {
+        seen.push([pkg, referrer]);
+        return pkg === "nodot";
+      };
+      const found = unresolvedImport(bun("nodot", "Cannot find package 'nodot'"), { installed });
+      expect(found).toEqual({
+        kind: "package-subpath",
+        package: "nodot",
+        shown: "nodot",
+        installHelps: false,
+        remedy: NO_ENTRY,
+      });
+      expect(seen).toEqual([["nodot", CONFIG]]);
+    });
+
+    test("Bun: the probe does not find it, so it is absent and installing is the remedy", () => {
+      const found = unresolvedImport(bun("nodot", "Cannot find package 'nodot'"), { installed: has() });
+      expect(found?.kind).toBe("package");
+      expect(found?.installHelps).toBe(true);
+    });
+
+    test("with no probe, or no referrer to probe from, a bare name is taken as absent", () => {
+      const noProbe = unresolvedImport(bun("nodot", "Cannot find package 'nodot'"));
+      const noReferrer = unresolvedImport(
+        { name: "ResolveMessage", message: "Cannot find package 'nodot'", specifier: "nodot" },
+        { installed: has("nodot") },
+      );
+      for (const found of [noProbe, noReferrer]) expect(found?.kind).toBe("package");
+    });
+
+    test('Node: an exports map with no "." names the package, and reads the same as Bun', () => {
+      const found = unresolvedImport(
+        node(
+          `No "exports" main defined in /p/node_modules/nodot/package.json imported from ${CONFIG}`,
+          undefined,
+          "ERR_PACKAGE_PATH_NOT_EXPORTED",
+        ),
+      );
+      expect(found).toEqual({
+        kind: "package-subpath",
+        package: "nodot",
+        shown: "nodot",
+        installHelps: false,
+        remedy: NO_ENTRY,
+      });
+    });
+
+    test("Node: the same sentence with no code is still recognized, and a scoped package is named whole", () => {
+      const found = unresolvedImport({
+        message: 'No "exports" main defined in /p/node_modules/@pithy-sh/core/package.json',
+      });
+      expect(found?.kind).toBe("package-subpath");
+      expect(found?.package).toBe("@pithy-sh/core");
+      expect(found?.shown).toBe("@pithy-sh/core");
+    });
+
+    test("Node: a main naming a missing file is the bare name, not the file", () => {
+      const found = unresolvedImport(
+        node(`Cannot find package '/p/node_modules/nodot/missing.js' imported from ${CONFIG}`),
+        { relativeTo: ROOT },
+      );
+      expect(found).toEqual({
+        kind: "package-subpath",
+        package: "nodot",
+        shown: "nodot",
+        installHelps: false,
+        remedy: NO_ENTRY,
+      });
+    });
+
+    test("a dependency importing it by its bare name names both, and never an install", () => {
+      const referrer = "/p/node_modules/deppkg/index.js";
+      const found = unresolvedImport(bun("nodot", "Cannot find package 'nodot'", referrer), {
+        installed: has("nodot"),
+      });
+      expect(found?.owner).toBe("deppkg");
+      expect(found?.remedy).toBe(
+        'deppkg imports "nodot", which the installed nodot does not provide. Bring deppkg and nodot to matching versions, or report this to its maintainer — installing dependencies will not help.',
+      );
+    });
+  });
+
   describe("a deep import nothing can decide", () => {
     test("with no probe, or no referrer to probe from, both remedies and neither asserted", () => {
       const noProbe = unresolvedImport(bun("fakepkg/src/nope", "Cannot find package 'fakepkg'"));

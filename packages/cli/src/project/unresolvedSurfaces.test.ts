@@ -26,7 +26,8 @@ import { classifyConfigLoadFailure } from "./config";
  * **The shapes are measured, and measured again on every run.** {@link SHAPES} is what Bun 1.4.2 and Node
  * 22.23.3 threw importing the tree {@link stage} builds (Node 24.21.0 throws the same). The last describe
  * spawns both runtimes against that tree and asserts they still throw exactly that, so a runtime that
- * changes a shape fails here rather than quietly changing a remedy.
+ * changes a shape fails here rather than quietly changing a remedy. `noDot` and `mainMissing` were added after
+ * review and measured on Bun 1.4.2 and Node 24.21.0; CI's Node 22 floor job re-checks them there.
  *
  * Staged in the OS temp directory: a tree under this repository walks up into the workspace's own
  * `node_modules`, where every package is installed, and the probe would find them.
@@ -39,6 +40,8 @@ const IMPORTS = {
   subpath: "fakepkg/src/nope",
   scopedSubpath: "@sc/pk/src/nope",
   unexported: "expkg/hidden.js",
+  noDot: "nodot",
+  mainMissing: "nomain",
   builtin: "node:nope",
   builtinSubpath: "node:fs/promsies",
   bunScheme: "bun:nope",
@@ -65,6 +68,9 @@ const TREE: Record<string, string> = {
   "node_modules/expkg/package.json": '{"name":"expkg","type":"module","exports":{".":"./index.js"}}',
   "node_modules/expkg/index.js": "export default 1;",
   "node_modules/expkg/hidden.js": "export default 1;",
+  "node_modules/nodot/package.json": '{"name":"nodot","type":"module","exports":{"./x.js":"./x.js"}}',
+  "node_modules/nodot/x.js": "export default 1;",
+  "node_modules/nomain/package.json": '{"name":"nomain","type":"module","main":"missing.js"}',
   "node_modules/relpkg/package.json": '{"name":"relpkg","type":"module","main":"index.js"}',
   "node_modules/relpkg/index.js": 'import "./missing.js";',
   "node_modules/hashpkg/package.json":
@@ -138,6 +144,24 @@ const SHAPES: Record<Case, { bun: Shape; node: Shape }> = {
       "Error",
       "ERR_PACKAGE_PATH_NOT_EXPORTED",
       `Package subpath './hidden.js' is not defined by "exports" in ${R}/node_modules/expkg/package.json imported from ${R}/case-unexported.js`,
+    ),
+  },
+  noDot: {
+    // Bun 1.4.2 says of an installed package with no "." export what it says of an absent one.
+    bun: bun(NF, "Cannot find package 'nodot'", "nodot", `${R}/case-noDot.js`),
+    node: node(
+      "Error",
+      "ERR_PACKAGE_PATH_NOT_EXPORTED",
+      `No "exports" main defined in ${R}/node_modules/nodot/package.json imported from ${R}/case-noDot.js`,
+    ),
+  },
+  mainMissing: {
+    bun: bun(NF, "Cannot find package 'nomain'", "nomain", `${R}/case-mainMissing.js`),
+    // Node names the package by the path its `main` points to, and sets no `url`.
+    node: node(
+      "Error",
+      NF,
+      `Cannot find package '${R}/node_modules/nomain/missing.js' imported from ${R}/case-mainMissing.js`,
     ),
   },
   builtin: {
@@ -237,6 +261,8 @@ const REMEDIES: Record<Case, string | { bun: string; node: string }> = {
   subpath: `"fakepkg/src/nope" is not something the installed fakepkg provides. Check the version of fakepkg you have, or correct that import — ${NO_INSTALL}`,
   scopedSubpath: `"@sc/pk/src/nope" is not something the installed @sc/pk provides. Check the version of @sc/pk you have, or correct that import — ${NO_INSTALL}`,
   unexported: `"expkg/hidden.js" is not something the installed expkg provides. Check the version of expkg you have, or correct that import — ${NO_INSTALL}`,
+  noDot: `The installed nodot has no entry to import by its bare name. Import one of its paths, or check the version of nodot you have — ${NO_INSTALL}`,
+  mainMissing: `The installed nomain has no entry to import by its bare name. Import one of its paths, or check the version of nomain you have — ${NO_INSTALL}`,
   builtin: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   builtinSubpath: `"node:fs/promsies" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   bunScheme: {

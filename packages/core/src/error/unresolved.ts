@@ -33,6 +33,8 @@ import { causeMessage, prop, rootCause } from "./cause";
  * | `bun:nope` | `Cannot find package 'nope'` — the scheme is dropped | `ERR_UNSUPPORTED_ESM_URL_SCHEME` |
  * | the adopter's file | the import as written, `referrer` | the resolved `url` |
  * | `#internal` | `Cannot find package '#internal'` | `ERR_PACKAGE_IMPORT_NOT_DEFINED` |
+ * | installed package, `exports` with no `"."` | `Cannot find package 'pkg'` — the sentence for an absent one | `No "exports" main defined in …/pkg/package.json` |
+ * | installed package, `main` names a missing file | the same sentence again | `Cannot find package '…/node_modules/pkg/<main>'` |
  * | a `file:` URL | converted to a path | the resolved `url` |
  * | a package's own relative import | the import as written, `referrer` in the package | the resolved `url` |
  *
@@ -40,6 +42,12 @@ import { causeMessage, prop, rootCause } from "./cause";
  * written in. Both are read to one path before anything is decided, so a remedy does not depend on the
  * runtime it was read on. Where Bun says less than Node — an unexported subpath reads as a missing one —
  * the two share a remedy, which is the only way to keep them agreeing.
+ *
+ * **A bare name is asked of the probe too.** Bun 1.4.2 says `Cannot find package 'pkg'` for a package that
+ * is installed and has no entry to import by its bare name — every `@pithy-sh/*` package, whose `exports`
+ * map has no `"."` — exactly as it says it for one that is absent. Taken at face value, that told an
+ * adopter to install what was installed. So a bare name the probe finds is an installed package with no
+ * usable entry, named by the package, and Node's two sentences for the same tree read to the same remedy.
  *
  * **Bun 1.4.2 cannot be told from an absent package for `bun:nope`.** It drops the scheme and reports a
  * package called `nope`, with nothing left in the cause to say otherwise. That one reads as an absent
@@ -56,7 +64,10 @@ import { causeMessage, prop, rootCause } from "./cause";
 export type UnresolvedImportKind =
   /** A package that is not installed. Installing is the remedy. */
   | "package"
-  /** An installed package asked for a path it does not have, or does not export. Installing changes nothing. */
+  /**
+   * An installed package asked for a path it does not have, or does not export — or asked by its bare name
+   * when it has no entry there. Installing changes nothing.
+   */
   | "package-subpath"
   /** An installed package's own relative import of its own file. Its maintainer's, never an install. */
   | "package-file"
@@ -154,7 +165,7 @@ const CODES = new Set([
 
 /** The same, said in prose by something that sets no code: Vite's module runner, and older loaders. */
 const SENTENCE =
-  /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url |No such built-in module: |is not defined by "exports"|Package import specifier /;
+  /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url |No such built-in module: |is not defined by "exports"|No "exports" main defined in |Package import specifier /;
 
 /**
  * Classify an import that would not resolve, or answer `undefined` when `cause` is not one.
@@ -218,7 +229,10 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
     const scheme = /Received protocol '([a-z][a-z0-9+.-]*:)'/i.exec(message)?.[1];
     return scheme === undefined ? { kind: "builtin" } : { kind: "builtin", shown: scheme };
   }
-  if (code === "ERR_PACKAGE_PATH_NOT_EXPORTED" || /is not defined by "exports"/.test(message)) {
+  if (
+    code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ||
+    /is not defined by "exports"|No "exports" main defined in /.test(message)
+  ) {
     return unexported(cause, message);
   }
 
@@ -238,13 +252,22 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
     if (referrer === undefined) return { kind: "local-file", shown: specifier };
     return atPath(joinPath(parentOf(referrer), specifier), referrer, options.relativeTo, specifier);
   }
-  if (ABSOLUTE.test(specifier)) return atPath(specifier, referrer, options.relativeTo);
+  if (ABSOLUTE.test(specifier)) {
+    // Node's sentence for a bare import whose `main` names a missing file: the *package* could not be
+    // found, at the path its `main` points to. What was imported was the package's bare name.
+    const entry = /^Cannot find package '/.test(message) ? packageAt(specifier) : undefined;
+    if (entry !== undefined) return { kind: "package-subpath", package: entry.name, shown: entry.name };
+    return atPath(specifier, referrer, options.relativeTo);
+  }
 
-  // A bare name alone is the package itself. With a path after it, only the filesystem can say.
+  // A bare name is the package itself, and Bun says the same of one installed with no entry as of one
+  // absent. With no probe, it is taken as absent; with a path after it and no probe, nothing can say.
   const pkg = packageOf(specifier);
-  if (pkg === specifier) return { kind: "package", package: pkg, shown: pkg };
+  const bare = pkg === specifier;
   if (options.installed === undefined || referrer === undefined) {
-    return { kind: "undetermined", package: pkg, shown: specifier };
+    return bare
+      ? { kind: "package", package: pkg, shown: pkg }
+      : { kind: "undetermined", package: pkg, shown: specifier };
   }
   return options.installed(pkg, referrer)
     ? { kind: "package-subpath", package: pkg, shown: specifier }
@@ -254,13 +277,17 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
 /**
  * An installed package that does not export the path. The loader's field is the import as written where
  * there is one; Node's sentence names the subpath and the package's `package.json`, from which the
- * package — never the path — is taken.
+ * package — never the path — is taken. An `exports` map with no `"."` is the bare name unexported, and
+ * Node's sentence for it names only the `package.json`.
  */
 function unexported(cause: unknown, message: string): Located {
   const field = prop(cause, "specifier");
   if (typeof field === "string" && field.length > 0 && !ABSOLUTE.test(field) && !field.startsWith(".")) {
     return { kind: "package-subpath", package: packageOf(field), shown: field };
   }
+  const main = /No "exports" main defined in (.+?)[\\/]package\.json/.exec(message)?.[1];
+  const entry = main === undefined ? undefined : packageAt(`${main}/package.json`);
+  if (entry !== undefined) return { kind: "package-subpath", package: entry.name, shown: entry.name };
   const match = /Package subpath '([^']+)' is not defined by "exports" in (.+?)[\\/]package\.json/.exec(message);
   const at = match?.[2] === undefined ? undefined : packageAt(`${match[2]}/package.json`);
   if (match?.[1] === undefined || at === undefined) return { kind: "package-subpath" };
@@ -401,6 +428,9 @@ function remedy(found: Located, owner: string | undefined): string {
     case "package-subpath":
       if (shown === undefined || pkg === undefined) {
         return `An import asks an installed package for a path it does not provide. Check the version you have, or correct that import — ${NO_INSTALL}`;
+      }
+      if (shown === pkg && (owner === undefined || owner === pkg)) {
+        return `The installed ${pkg} has no entry to import by its bare name. Import one of its paths, or check the version of ${pkg} you have — ${NO_INSTALL}`;
       }
       return owner === undefined || owner === pkg
         ? `"${shown}" is not something the installed ${pkg} provides. Check the version of ${pkg} you have, or correct that import — ${NO_INSTALL}`
