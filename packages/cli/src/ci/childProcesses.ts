@@ -792,7 +792,10 @@ export function childProcessReport(
             if (opened === null) continue;
             seamCalls.push({
               primitive: seam,
-              executable: firstArgument(text, at + local.length + opened[0].length - 1),
+              // Read from the code as written: `text` has its strings blanked, which keeps every offset
+              // and loses every literal, so `execCommand("pwsh", …)` would read as `"    "` — never
+              // bounded, and invisible to the browser reservation (#708).
+              executable: firstArgument(module.code, at + local.length + opened[0].length - 1),
               offset: at,
             });
           }

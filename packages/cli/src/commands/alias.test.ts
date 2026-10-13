@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { AskProfile } from "../platform/shell";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import { aliasStatus, handleHiddenFlags, installAlias, removeAlias } from "./alias";
 
@@ -177,8 +178,15 @@ describe("aliasStatus", () => {
  */
 describe("the PowerShell alias set", () => {
   const PW7 = "Microsoft.PowerShell_profile.ps1";
+  /**
+   * No PowerShell to ask (#708), so each edition takes its platform default: a CI host may have `pwsh`
+   * on PATH, and these cases are about the set, not about what that host's PowerShell answers.
+   */
+  const noPowerShell: AskProfile = async () => {
+    throw new Error("not on PATH");
+  };
   /** The Windows platform seam: the two-profile set is a win32 fact, proven from any CI host. */
-  const WIN = { platform: "win32" as const };
+  const WIN = { platform: "win32" as const, askProfile: noPowerShell };
   let pw7Path: string;
   let pw51Path: string;
 
@@ -202,12 +210,30 @@ describe("the PowerShell alias set", () => {
     }
   });
 
-  test("off Windows, pwsh gets the 7 profile alone — no 5.1 file for an edition that is not here", async () => {
+  test("off Windows, pwsh gets one profile, in ~/.config/powershell where it loads it — no 5.1 file", async () => {
     // The platform seam, not the host: this proves the non-win32 shape from any CI box, and on a
-    // Windows host `process.platform` would genuinely include the 5.1 profile.
-    await installAlias({ platform: "linux" });
-    expect(await readFile(pw7Path, "utf8")).toContain(OPEN);
+    // Windows host `process.platform` would genuinely include the 5.1 profile. `pwsh` on macOS and
+    // Linux loads `~/.config/powershell`, never `~/Documents/PowerShell` (#708).
+    await installAlias({ platform: "linux", askProfile: noPowerShell });
+    expect(await readFile(join(home, ".config", "powershell", PW7), "utf8")).toContain(OPEN);
+    await expect(readFile(pw7Path, "utf8")).rejects.toThrow();
     await expect(readFile(pw51Path, "utf8")).rejects.toThrow();
+  });
+
+  test("the block goes where PowerShell says its profile is, and status and remove read the same file", async () => {
+    // #708: a redirected Documents. `$PROFILE` names the real folder, so the guessed one stays untouched.
+    const reported = join(home, "OneDrive", "Documents", "PowerShell", PW7);
+    const asked = { platform: "linux" as const, askProfile: async () => `${reported}\n` };
+    await installAlias(asked);
+    expect(await readFile(reported, "utf8")).toContain(OPEN);
+    await expect(readFile(pw7Path, "utf8")).rejects.toThrow();
+
+    const status = captureStdout();
+    await aliasStatus(asked);
+    expect(status.join("")).toBe(`Installed in ${reported}\n`);
+
+    await removeAlias(asked);
+    expect(await readFile(reported, "utf8")).not.toContain(OPEN);
   });
 
   test("idempotence is set-wide: a block in one profile counts as installed and is not duplicated", async () => {

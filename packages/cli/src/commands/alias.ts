@@ -7,7 +7,7 @@ import { defineCommand } from "citty";
 import { z } from "zod";
 import { withContract } from "../contract/commandContract";
 import { appendToRcFile, readRcFile, removeFromRcFile } from "../platform/rc";
-import { aliasRcPaths, detectShell } from "../platform/shell";
+import { type AskProfile, aliasRcPaths, detectShell } from "../platform/shell";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /** Marker comments that delimit the block `--remove` finds and deletes. Universal `#` comment syntax. */
@@ -29,6 +29,8 @@ export interface AliasOptions {
    * prove both shapes of the set through this seam.
    */
   platform?: NodeJS.Platform;
+  /** Seam: asks a PowerShell edition for `$PROFILE` (#708), defaulting to running it. */
+  askProfile?: AskProfile;
 }
 
 /** What an alias payload says was being attempted — the discriminant every one of them leads with. */
@@ -85,7 +87,7 @@ function alreadyInstalled(contents: string): boolean {
  * tops up the members that lack it.
  */
 export async function installAlias(opts: AliasOptions = {}): Promise<void> {
-  const shell = await detectShell({ platform: opts.platform });
+  const shell = await detectShell({ platform: opts.platform, askProfile: opts.askProfile });
   if (!shell) {
     logManualInstructions("install", opts);
     return;
@@ -151,7 +153,7 @@ export async function installAlias(opts: AliasOptions = {}): Promise<void> {
 
 /** Remove the alias block. Prints `No Pithy alias installed.` and exits 0 when there is nothing to remove. */
 export async function removeAlias(opts: AliasOptions = {}): Promise<void> {
-  const shell = await detectShell({ platform: opts.platform });
+  const shell = await detectShell({ platform: opts.platform, askProfile: opts.askProfile });
   if (!shell) {
     logManualInstructions("remove", opts);
     return;
@@ -181,7 +183,7 @@ export async function removeAlias(opts: AliasOptions = {}): Promise<void> {
 
 /** Report whether the alias is installed. Prints `Unable to detect shell.` for an unknown shell. */
 export async function aliasStatus(opts: AliasOptions = {}): Promise<void> {
-  const shell = await detectShell({ platform: opts.platform });
+  const shell = await detectShell({ platform: opts.platform, askProfile: opts.askProfile });
   if (!shell) {
     if (opts.json) {
       emitJson("status", { installed: false, shell: null, rcPath: null });

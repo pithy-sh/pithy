@@ -34,9 +34,21 @@ Two characters, ending in the brand mark: `p.` — `p. init`, `p. add auth`, `p.
 | zsh | `~/.zshrc` | `alias p.='pithy'` |
 | fish | `~/.config/fish/config.fish` | `alias p. pithy` |
 | nushell | `~/.config/nushell/config.nu` | `alias p. = pithy` |
-| PowerShell | `~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`, and on Windows also `~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1` | `function p. { pithy @args }` |
+| PowerShell | The `$PROFILE` PowerShell itself reports: PowerShell 7 (`pwsh`)'s, and on Windows also Windows PowerShell 5.1's | `function p. { pithy @args }` |
 
-PowerShell gets a function rather than an alias because `Set-Alias` rejects a `.` in a name. On Windows its rc file is a set of two: PowerShell 7 (`pwsh`) loads the first profile and Windows PowerShell 5.1, which ships with Windows, loads the second, and no file loads in both. So the block goes into both, and a family that is not installed holds an inert block until it is. pwsh on macOS or Linux has one profile. macOS bash prefers `.bash_profile` — the platform convention — and falls back to `.bashrc` only when it is absent.
+PowerShell gets a function rather than an alias because `Set-Alias` rejects a `.` in a name. On Windows its rc file is a set of two: PowerShell 7 (`pwsh`) loads one profile and Windows PowerShell 5.1, which ships with Windows, loads another, and no file loads in both. So the block goes into both, and a family that is not installed holds an inert block until it is. pwsh on macOS or Linux has one profile.
+
+**Where each profile lives is PowerShell's answer, not a guess.** `Documents` may be redirected — OneDrive does it — and `$PROFILE` follows it, so `pithy alias`, `--status`, `--remove` and `pithy doctor` each ask every edition for its own `$PROFILE`: `pwsh -NoLogo -NoProfile -NonInteractive -Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $PROFILE"`, with a 10-second timeout and no shell. On Windows, 5.1 is run from its System32 path, and `pwsh` only when `PATH` resolves it to an executable. An edition that cannot be run, exits non-zero, times out, or prints anything other than exactly one absolute `.ps1` path (on Windows, a drive or UNC path) falls back to its platform default:
+
+| Edition | Fallback |
+|---|---|
+| PowerShell 7 on Windows | `~\Documents\PowerShell\Microsoft.PowerShell_profile.ps1` |
+| Windows PowerShell 5.1 | `~\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1` |
+| `pwsh` on macOS and Linux | `~/.config/powershell/Microsoft.PowerShell_profile.ps1` |
+
+A block an earlier version wrote to a guessed path that is not the one PowerShell reports — `~/Documents/PowerShell/…` on macOS or Linux, or an un-redirected `Documents` — stays where it is. It is inert, `--status` does not read it, and `--remove` does not delete it; remove it by hand if you want it gone.
+
+macOS bash prefers `.bash_profile` — the platform convention — and falls back to `.bashrc` only when it is absent.
 
 **Write a delimited block**, never a bare line.
 

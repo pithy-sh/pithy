@@ -297,7 +297,7 @@ The installer detects the user's shell and writes the appropriate syntax to the 
 | bash | `basename "$SHELL"` ends with `bash` | `~/.bashrc` (or `~/.bash_profile` on macOS) | `alias p.='pithy'` |
 | zsh | ends with `zsh` | `~/.zshrc` | `alias p.='pithy'` |
 | fish | ends with `fish` | `~/.config/fish/config.fish` | `alias p. pithy` |
-| PowerShell | platform = Windows + `$PSVersionTable` | `$PROFILE` of **every PowerShell family on the machine** — `~/Documents/PowerShell/…` (pwsh 7) and `~/Documents/WindowsPowerShell/…` (5.1, which ships with Windows; no file loads in both) | `function p. { pithy @args }` (Set-Alias rejects `.` in names) |
+| PowerShell | platform = Windows, or `basename "$SHELL"` ends with `pwsh` or `powershell` | `$PROFILE` of **every PowerShell family on the machine**, as each edition reports it — pwsh 7, and on Windows also 5.1 (which ships with Windows; no file loads in both). An edition that cannot answer falls back to its default: `~/Documents/PowerShell/…` and `~/Documents/WindowsPowerShell/…` on Windows, `~/.config/powershell/…` on macOS and Linux | `function p. { pithy @args }` (Set-Alias rejects `.` in names) |
 | nushell | `basename "$SHELL"` ends with `nu` | `~/.config/nushell/config.nu` | `alias p. = pithy` |
 
 **Unknown or unsupported shells:** Print the alias line and instruct the user to add it manually. Never silently fail; never write to an unrecognized rc file.

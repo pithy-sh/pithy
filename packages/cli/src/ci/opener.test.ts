@@ -104,6 +104,8 @@ const BROWSER_COMMANDS: ReadonlySet<string> = new Set([
  */
 const NOT_OPENER: Readonly<Record<string, ReadonlySet<string>>> = {
   "dev/ports.ts": new Set(["WindowsPowerShell/v1.0/powershell"]),
+  // Asks each PowerShell edition for `$PROFILE`, with fixed argv; it opens nothing (#708).
+  "platform/shell.ts": new Set(["pwsh", "WindowsPowerShell/v1.0/powershell"]),
 };
 
 /**
@@ -136,6 +138,10 @@ const SPAWNS: Readonly<Record<string, string>> = {
     "The one editor launcher. The command is `$VISUAL`, `$EDITOR`, or the platform default.",
   'platform/killTree.ts systemExecutable("taskkill"':
     "Ends the worker tree a dev session spawned. A kill, not an opener; the helper names the system copy, the literal names the binary.",
+  'platform/shell.ts "pwsh"':
+    "Asks PowerShell 7 for `$PROFILE`, so `pithy alias` writes the file it loads. A query, not an opener; resolved on PATH, never by a bare name on Windows.",
+  'platform/shell.ts systemExecutable("WindowsPowerShell/v1.0/powershell"':
+    "Asks Windows PowerShell 5.1 for `$PROFILE`, from its System32 path. A query, not an opener.",
   "project/deploy.ts command": "Runs wrangler to deploy, through the project's own package manager.",
   "project/packageManager.ts command": "Runs the adopter's package manager — the command is which one they use.",
   'project/templateFiles.ts "git"': "Reads a template's tracked files, so a scaffold copies what git knows.",

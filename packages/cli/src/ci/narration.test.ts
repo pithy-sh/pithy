@@ -56,7 +56,8 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  * git's metadata, the process table, a short kill — judged at the call site, so the same `execFile` with
  * `"npm"` beside it is held. Those four are bounded everywhere because each is a single-purpose tool. An
  * interpreter is bounded only in a module named for it, with the reason (`ChildProcessPolicy`'s docblock
- * states the rule): PowerShell in `dev/ports.ts`, for its two CIM queries. And a streams-on spawn in one of
+ * states the rule): PowerShell in `dev/ports.ts`, for its two CIM queries, and in `platform/shell.ts`, for
+ * its `$PROFILE` query. And a streams-on spawn in one of
  * three named modules — the editor that owns the terminal, the browser opener that detaches, and the dev
  * orchestrator that pipes each worker's streams to the terminal and the session log — is not captured.
  * Streams-on means the `spawn` primitive, and its #698 spelling through the shared command spawner,
@@ -146,6 +147,16 @@ const POLICY: ChildProcessPolicy = {
         ],
       ]),
     ],
+    [
+      resolve(CLI_SRC, "platform", "shell.ts"),
+      new Map([
+        ["pwsh", "One `$PROFILE` query to PowerShell 7, with fixed argv, `-NoProfile` and a ten-second timeout."],
+        [
+          "WindowsPowerShell/v1.0/powershell",
+          "One `$PROFILE` query to Windows PowerShell 5.1, with fixed argv, `-NoProfile` and a ten-second timeout.",
+        ],
+      ]),
+    ],
   ]),
   uncapturedModules: new Set(
     ["platform/browser.ts", "platform/editor.ts", "dev/orchestrator.ts"].map((path) => resolve(CLI_SRC, path)),
@@ -217,6 +228,7 @@ describe("a long command narrates itself", () => {
       "packages/cli/src/platform/browser.ts",
       "packages/cli/src/platform/editor.ts",
       "packages/cli/src/platform/killTree.ts",
+      "packages/cli/src/platform/shell.ts",
       "packages/cli/src/project/deploy.ts",
       "packages/cli/src/project/packageManager.ts",
       "packages/cli/src/project/templateFiles.ts",

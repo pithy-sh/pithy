@@ -213,6 +213,28 @@ describe("what the walk cannot follow is reported, not skipped", () => {
   }
 });
 
+describe("a call through the shared command spawner", () => {
+  const SPAWNER = "platform/command.ts";
+  const spawner =
+    'import { execFile } from "node:child_process";\nexport async function execCommand(command: string, args: string[]) {\n  return execFile(command, args);\n}\n';
+  const SEAMED: ChildProcessPolicy = { ...POLICY, commandSpawner: `${ROOT}/${SPAWNER}` };
+  const caller = (executable: string) =>
+    `import { execCommand } from "../platform/command";\nexport async function probe() {\n  await execCommand(${executable}, ["--version"]);\n}\n`;
+  const command = 'import { probe } from "../tools/probe";\nexport default function run() {\n  probe();\n}\n';
+
+  test("is recorded with its executable as written, quotes and letters both", () => {
+    const report = walk({ [SPAWNER]: spawner, "tools/probe.ts": caller('"git"'), "commands/add.ts": command }, SEAMED);
+    expect(report.calls.get(`${ROOT}/tools/probe.ts`)?.map((call) => call.executable)).toEqual(['"git"']);
+  });
+
+  test("is bounded when that executable is, and held when it is not", () => {
+    const bounded = walk({ [SPAWNER]: spawner, "tools/probe.ts": caller('"git"'), "commands/add.ts": command }, SEAMED);
+    expect(silentCommands(bounded)).toEqual([]);
+    const held = walk({ [SPAWNER]: spawner, "tools/probe.ts": caller('"npm"'), "commands/add.ts": command }, SEAMED);
+    expect(silentCommands(held)).toEqual(["commands/add.ts#run"]);
+  });
+});
+
 describe("an interpreter is bounded only in the module that names it", () => {
   const POWERSHELL = 'systemExecutable("WindowsPowerShell/v1.0/powershell")';
   const query = `import { execFile } from "node:child_process";\nexport function holders() {\n  execFile(${POWERSHELL}, ["-NoProfile"]);\n}\n`;

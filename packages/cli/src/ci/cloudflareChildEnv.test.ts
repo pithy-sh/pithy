@@ -86,6 +86,8 @@ const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
   "feature/worktree.ts": "runs `git worktree` to create and prune a feature's checkout.",
   "plan/shadow.ts": "runs `git check-ignore` to ask whether a build-output directory is one the repository ignores.",
   "platform/browser.ts": "runs the platform's browser opener on a URL the operator was just shown.",
+  "platform/shell.ts":
+    "runs PowerShell to ask it for `$PROFILE`, so `pithy alias` writes the profile PowerShell loads.",
   "platform/killTree.ts":
     "runs `taskkill` to end the process tree of a dev session's worker — no Cloudflare credentials in sight.",
   "platform/command.ts":
