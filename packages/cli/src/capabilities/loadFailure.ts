@@ -5,7 +5,7 @@ import { causeMessage, prop, rootCause, safeReason } from "@pithy-sh/core/src/er
 import { type PithyError, PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type UnresolvedImport, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { packageOf } from "@pithy-sh/core/src/naming/packageName";
-import { installedBeside, packageInstalledFrom } from "../project/kitResolve";
+import { entryBeside, installedBeside, packageInstalledFrom } from "../project/kitResolve";
 import { capabilityNotComposed } from "./notComposed";
 
 /**
@@ -122,6 +122,7 @@ export function classifyCapabilityLoadFailure(
   // What stays here is the one fact core cannot know: which package this loader was loading.
   const unresolved = unresolvedImport(cause, {
     installed: installedBeside,
+    entry: entryBeside,
     relativeTo: projectDir,
     loader: "@pithy-sh/cli",
   });
@@ -204,8 +205,9 @@ function unresolvedFailure(
   if (unresolved.installHelps) {
     return failure("dependency-unresolved", `The ${capability} capability could not be loaded.`, remedy);
   }
-  // A path an installed package does not have, or does not export, is an install that is incomplete.
-  const incomplete = kind === "package-subpath" || kind === "package-file";
+  // A path an installed package does not have, or does not export, or an entry it names and does not
+  // carry, is an install that is incomplete.
+  const incomplete = kind === "package-subpath" || kind === "package-entry" || kind === "package-file";
   const message = incomplete
     ? `The ${capability} capability is installed but incomplete.`
     : `The ${capability} capability is installed and will not load.`;

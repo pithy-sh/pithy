@@ -8,8 +8,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
-import { classifyWorkerConfigFailure } from "@pithy-sh/vite/src/workerConfig";
-import { afterAll, describe, expect, test } from "vitest";
+import { loadWorkerConfig } from "@pithy-sh/vite/src/workerConfig";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { sourceFiles } from "../ci/sourceFiles";
 import { classifyConfigLoadFailure } from "./config";
@@ -20,14 +20,21 @@ import { classifyConfigLoadFailure } from "./config";
  * The CLI's config loader, its capability loaders and the vite plugin each refuse a module that will not
  * resolve. Each used to keep its own rules for the parts core did not decide, and three review rounds each
  * found one of them giving advice the other two had stopped giving. The rules are core's now
- * (`@pithy-sh/core/src/error/unresolved`), and this file is what keeps them there: every kind, in the
- * shape each runtime really throws it, through all three surfaces, and the same sentence out of each.
+ * (`@pithy-sh/core/src/error/unresolved`), and this file is what keeps them there.
  *
- * **The shapes are measured, and measured again on every run.** {@link SHAPES} is what Bun 1.4.2 and Node
- * 22.23.3 threw importing the tree {@link stage} builds (Node 24.21.0 throws the same). The last describe
- * spawns both runtimes against that tree and asserts they still throw exactly that, so a runtime that
- * changes a shape fails here rather than quietly changing a remedy. `noDot` and `mainMissing` were added after
- * review and measured on Bun 1.4.2 and Node 24.21.0; CI's Node 22 floor job re-checks them there.
+ * **Every cause here is thrown by the loader that surface really uses, on every run.** Nothing is
+ * recorded. The second review round found the vite plugin blaming an adopter's config for `@pithy-sh/core`
+ * and an unbuilt package told to "import one of its paths", both because this file once fed every surface
+ * hand-recorded Bun and Node shapes — and the vite plugin never sees either. It loads through Vite's
+ * `runnerImport`, which throws its own. So each case is staged on disk and imported for real:
+ *
+ * - **Bun** — a Bun child imports the case and hands what it threw, as thrown, to both CLI classifiers.
+ *   That is what the shipped `bin` does: it runs on Bun, and its loaders are a plain `import()`.
+ * - **Node** — a child of whichever Node runs this suite (24 here, 22 in CI's floor job) imports the case
+ *   and hands back every string the error carries, which the two CLI classifiers then read. Vitest's own
+ *   module runner sits between a test and a native `import()`, which is why it is a child.
+ * - **Vite** — `loadWorkerConfig`, the plugin's real loader, in this process: `runnerImport`, its
+ *   classifier, and the refusal it throws.
  *
  * Staged in the OS temp directory: a tree under this repository walks up into the workspace's own
  * `node_modules`, where every package is installed, and the probe would find them.
@@ -41,7 +48,11 @@ const IMPORTS = {
   scopedSubpath: "@sc/pk/src/nope",
   unexported: "expkg/hidden.js",
   noDot: "nodot",
+  conditionsOnly: "condonly",
+  noEntry: "noentry",
   mainMissing: "nomain",
+  mainDirectory: "maindir",
+  exportsMissing: "exmiss",
   builtin: "node:nope",
   builtinSubpath: "node:fs/promsies",
   bunScheme: "bun:nope",
@@ -53,11 +64,22 @@ const IMPORTS = {
   relativeInPackage: "relpkg",
   dependencyAbsent: "deppkg",
   dependencyBuiltin: "builtinpkg",
+  dependencyEntryMissing: "entrydep",
 } as const;
 
 type Case = keyof typeof IMPORTS;
+const CASES = Object.keys(IMPORTS) as Case[];
 
-/** The tree every shape was measured against. `<root>` is the directory it is staged in. */
+/**
+ * The tree every case is imported from. `<root>` is the directory it is staged in.
+ *
+ * Every way an installed package's bare name can fail is here, because each runtime words them
+ * differently and Bun words them all as an absent package: an `exports` map with no `"."`, one whose `"."`
+ * matches no condition an ESM import uses, no `exports` and no `main` with no `index.js`, and three that
+ * **declare** an entry whose file is missing — `main` to a file, `main` to a directory, and `exports` —
+ * which is an unbuilt package or a broken install. A `"type"` that does not match the code is not here:
+ * it is a `ReferenceError` or `SyntaxError` from inside the package, not a resolution failure.
+ */
 const TREE: Record<string, string> = {
   "package.json": '{"name":"proj","type":"module"}',
   "src/.keep": "",
@@ -70,7 +92,15 @@ const TREE: Record<string, string> = {
   "node_modules/expkg/hidden.js": "export default 1;",
   "node_modules/nodot/package.json": '{"name":"nodot","type":"module","exports":{"./x.js":"./x.js"}}',
   "node_modules/nodot/x.js": "export default 1;",
+  "node_modules/condonly/package.json":
+    '{"name":"condonly","type":"module","exports":{".":{"browser":"./b.js","require":"./c.cjs"}}}',
+  "node_modules/condonly/b.js": "export default 1;",
+  "node_modules/condonly/c.cjs": "module.exports = 1;",
+  "node_modules/noentry/package.json": '{"name":"noentry","type":"module"}',
   "node_modules/nomain/package.json": '{"name":"nomain","type":"module","main":"missing.js"}',
+  "node_modules/maindir/package.json": '{"name":"maindir","type":"module","main":"lib"}',
+  "node_modules/maindir/lib/.keep": "",
+  "node_modules/exmiss/package.json": '{"name":"exmiss","type":"module","exports":{".":"./dist/index.js"}}',
   "node_modules/relpkg/package.json": '{"name":"relpkg","type":"module","main":"index.js"}',
   "node_modules/relpkg/index.js": 'import "./missing.js";',
   "node_modules/hashpkg/package.json":
@@ -80,194 +110,57 @@ const TREE: Record<string, string> = {
   "node_modules/deppkg/index.js": 'import "absentdep/src/x";',
   "node_modules/builtinpkg/package.json": '{"name":"builtinpkg","type":"module","main":"index.js"}',
   "node_modules/builtinpkg/index.js": 'import "node:nope";',
-};
-
-/** The fields a classifier reads, as the runtime set them. `<root>` stands for the staged directory. */
-interface Shape {
-  name: string;
-  code: string;
-  message: string;
-  specifier?: string;
-  referrer?: string;
-  url?: string;
-}
-
-/**
- * A Bun 1.4.2 `ResolveMessage`. Every case carries the import as written and the file it is in; the
- * sentence names that file too, except for a missing builtin, whose sentence stops at the specifier.
- */
-function bun(code: string, sentence: string, specifier: string, referrer: string): Shape {
-  const message = code === BUILTIN ? sentence : `${sentence} imported from ${referrer}`;
-  return { name: "ResolveMessage", code, message, specifier, referrer };
-}
-
-/** Node 22's error: a code, a sentence, and the resolved `url` for a module it found the path of. */
-function node(name: string, code: string, message: string, url?: string): Shape {
-  return url === undefined ? { name, code, message } : { name, code, message, url };
-}
-
-const NF = "ERR_MODULE_NOT_FOUND";
-const BUILTIN = "ERR_UNKNOWN_BUILTIN_MODULE";
-const R = "<root>";
-
-/** What each runtime threw, verbatim but for the staged directory. */
-const SHAPES: Record<Case, { bun: Shape; node: Shape }> = {
-  absent: {
-    bun: bun(NF, "Cannot find package 'absentpkg'", "absentpkg", `${R}/case-absent.js`),
-    node: node("Error", NF, `Cannot find package 'absentpkg' imported from ${R}/case-absent.js`),
-  },
-  absentDeep: {
-    bun: bun(NF, "Cannot find package 'absentpkg'", "absentpkg/src/x", `${R}/case-absentDeep.js`),
-    node: node("Error", NF, `Cannot find package 'absentpkg' imported from ${R}/case-absentDeep.js`),
-  },
-  subpath: {
-    bun: bun(NF, "Cannot find package 'fakepkg'", "fakepkg/src/nope", `${R}/case-subpath.js`),
-    node: node(
-      "Error",
-      NF,
-      `Cannot find module '${R}/node_modules/fakepkg/src/nope' imported from ${R}/case-subpath.js`,
-      `file://${R}/node_modules/fakepkg/src/nope`,
-    ),
-  },
-  scopedSubpath: {
-    bun: bun(NF, "Cannot find package '@sc/pk'", "@sc/pk/src/nope", `${R}/case-scopedSubpath.js`),
-    node: node(
-      "Error",
-      NF,
-      `Cannot find module '${R}/node_modules/@sc/pk/src/nope' imported from ${R}/case-scopedSubpath.js`,
-      `file://${R}/node_modules/@sc/pk/src/nope`,
-    ),
-  },
-  unexported: {
-    bun: bun(NF, "Cannot find package 'expkg'", "expkg/hidden.js", `${R}/case-unexported.js`),
-    node: node(
-      "Error",
-      "ERR_PACKAGE_PATH_NOT_EXPORTED",
-      `Package subpath './hidden.js' is not defined by "exports" in ${R}/node_modules/expkg/package.json imported from ${R}/case-unexported.js`,
-    ),
-  },
-  noDot: {
-    // Bun 1.4.2 says of an installed package with no "." export what it says of an absent one.
-    bun: bun(NF, "Cannot find package 'nodot'", "nodot", `${R}/case-noDot.js`),
-    node: node(
-      "Error",
-      "ERR_PACKAGE_PATH_NOT_EXPORTED",
-      `No "exports" main defined in ${R}/node_modules/nodot/package.json imported from ${R}/case-noDot.js`,
-    ),
-  },
-  mainMissing: {
-    bun: bun(NF, "Cannot find package 'nomain'", "nomain", `${R}/case-mainMissing.js`),
-    // Node names the package by the path its `main` points to, and sets no `url`.
-    node: node(
-      "Error",
-      NF,
-      `Cannot find package '${R}/node_modules/nomain/missing.js' imported from ${R}/case-mainMissing.js`,
-    ),
-  },
-  builtin: {
-    bun: bun(BUILTIN, "No such built-in module: node:nope", "node:nope", `${R}/case-builtin.js`),
-    node: node("Error", BUILTIN, "No such built-in module: node:nope"),
-  },
-  builtinSubpath: {
-    bun: bun(BUILTIN, "No such built-in module: node:fs/promsies", "node:fs/promsies", `${R}/case-builtinSubpath.js`),
-    node: node("Error", BUILTIN, "No such built-in module: node:fs/promsies"),
-  },
-  bunScheme: {
-    // Bun 1.4.2 drops the scheme: what it reports is a package called `nope`.
-    bun: bun(NF, "Cannot find package 'nope'", "nope", `${R}/case-bunScheme.js`),
-    node: node(
-      "Error",
-      "ERR_UNSUPPORTED_ESM_URL_SCHEME",
-      "Only URLs with a scheme in: file, data, and node are supported by the default ESM loader. Received protocol 'bun:'",
-    ),
-  },
-  local: {
-    bun: bun(NF, "Cannot find module './src/x.js'", "./src/x.js", `${R}/case-local.js`),
-    node: node(
-      "Error",
-      NF,
-      `Cannot find module '${R}/src/x.js' imported from ${R}/case-local.js`,
-      `file://${R}/src/x.js`,
-    ),
-  },
-  directory: {
-    bun: bun(NF, "Cannot find module './src'", "./src", `${R}/case-directory.js`),
-    node: node(
-      "Error",
-      "ERR_UNSUPPORTED_DIR_IMPORT",
-      `Directory import '${R}/src' is not supported resolving ES modules imported from ${R}/case-directory.js`,
-      `file://${R}/src`,
-    ),
-  },
-  fileUrl: {
-    // Bun 1.4.2 converts the URL to a path before it reaches the field.
-    bun: bun(NF, `Cannot find module '${R}/src/y.js'`, `${R}/src/y.js`, `${R}/case-fileUrl.js`),
-    node: node(
-      "Error",
-      NF,
-      `Cannot find module '${R}/src/y.js' imported from ${R}/case-fileUrl.js`,
-      `file://${R}/src/y.js`,
-    ),
-  },
-  hash: {
-    bun: bun(NF, "Cannot find package '#internal'", "#internal", `${R}/case-hash.js`),
-    node: node(
-      "TypeError",
-      "ERR_PACKAGE_IMPORT_NOT_DEFINED",
-      `Package import specifier "#internal" is not defined in package ${R}/package.json imported from ${R}/case-hash.js`,
-    ),
-  },
-  hashInPackage: {
-    bun: bun(NF, "Cannot find package '#internal'", "#internal", `${R}/node_modules/hashpkg/index.js`),
-    node: node(
-      "TypeError",
-      "ERR_PACKAGE_IMPORT_NOT_DEFINED",
-      `Package import specifier "#internal" is not defined in package ${R}/node_modules/hashpkg/package.json imported from ${R}/node_modules/hashpkg/index.js`,
-    ),
-  },
-  relativeInPackage: {
-    bun: bun(NF, "Cannot find module './missing.js'", "./missing.js", `${R}/node_modules/relpkg/index.js`),
-    node: node(
-      "Error",
-      NF,
-      `Cannot find module '${R}/node_modules/relpkg/missing.js' imported from ${R}/node_modules/relpkg/index.js`,
-      `file://${R}/node_modules/relpkg/missing.js`,
-    ),
-  },
-  dependencyAbsent: {
-    bun: bun(NF, "Cannot find package 'absentdep'", "absentdep/src/x", `${R}/node_modules/deppkg/index.js`),
-    node: node("Error", NF, `Cannot find package 'absentdep' imported from ${R}/node_modules/deppkg/index.js`),
-  },
-  dependencyBuiltin: {
-    bun: bun(BUILTIN, "No such built-in module: node:nope", "node:nope", `${R}/node_modules/builtinpkg/index.js`),
-    node: node("Error", BUILTIN, "No such built-in module: node:nope"),
-  },
+  "node_modules/entrydep/package.json": '{"name":"entrydep","type":"module","main":"index.js"}',
+  "node_modules/entrydep/index.js": 'import "exmiss";',
 };
 
 const INSTALL = "Install the project's dependencies (bun install)";
 const NO_INSTALL = "installing dependencies will not help.";
 
+/** An installed package with nothing to import by its bare name. */
+const noEntry = (pkg: string) =>
+  `The installed ${pkg} has no entry to import by its bare name. Import one of its paths, or check the version of ${pkg} you have — ${NO_INSTALL}`;
+
+/** An installed package whose package.json names an entry that is not on disk. */
+const entryMissing = (pkg: string) =>
+  `The installed ${pkg} names an entry that is not there, so it is unbuilt or its install is broken. Rebuild ${pkg}, or remove it and install it again.`;
+
+/** Where a cause came from: the runtime and loader that threw it. */
+type Source = "bun" | "node" | "vite";
+const SOURCES: Source[] = ["bun", "node", "vite"];
+const SOURCE_NAME: Record<Source, string> = {
+  bun: "Bun's import()",
+  node: "Node's import()",
+  vite: "Vite's runnerImport",
+};
+
 /**
- * The remedy for each case — one sentence for both runtimes, except where one of them says less.
+ * The remedy for each case — **one sentence, whichever runtime threw it and whichever surface read it**,
+ * except where a runtime withholds the fact the sentence needs.
  *
- * Two do. Node 22 names no importer for a missing builtin, so a dependency's `node:nope` cannot be laid at
- * the dependency's door on Node, and Bun 1.4.2 reports `bun:nope` as a package called `nope`, so on Bun it
- * cannot be told from an absent package. Each is the runtime withholding the fact, and each is pinned here
- * so that a runtime that starts handing it over shows up as a failure to update, not a silent change.
+ * Two do, and each is pinned here so a runtime that starts handing the fact over shows up as a row to
+ * update, not a silent change. Node names no importer for a missing builtin, so a dependency's
+ * `node:nope` cannot be laid at the dependency's door — and Vite hands a dependency's imports to Node, so
+ * the plugin cannot either. Bun 1.4.2 reports `bun:nope` as a package called `nope`, so on Bun it cannot be
+ * told from an absent package.
  */
-const REMEDIES: Record<Case, string | { bun: string; node: string }> = {
+const REMEDIES: Record<Case, string | ({ default: string } & Partial<Record<Source, string>>)> = {
   absent: `"absentpkg" is not installed. ${INSTALL}, or correct that import.`,
   absentDeep: `"absentpkg" is not installed. ${INSTALL}, or correct that import.`,
   subpath: `"fakepkg/src/nope" is not something the installed fakepkg provides. Check the version of fakepkg you have, or correct that import — ${NO_INSTALL}`,
   scopedSubpath: `"@sc/pk/src/nope" is not something the installed @sc/pk provides. Check the version of @sc/pk you have, or correct that import — ${NO_INSTALL}`,
   unexported: `"expkg/hidden.js" is not something the installed expkg provides. Check the version of expkg you have, or correct that import — ${NO_INSTALL}`,
-  noDot: `The installed nodot has no entry to import by its bare name. Import one of its paths, or check the version of nodot you have — ${NO_INSTALL}`,
-  mainMissing: `The installed nomain has no entry to import by its bare name. Import one of its paths, or check the version of nomain you have — ${NO_INSTALL}`,
+  noDot: noEntry("nodot"),
+  conditionsOnly: noEntry("condonly"),
+  noEntry: noEntry("noentry"),
+  mainMissing: entryMissing("nomain"),
+  mainDirectory: entryMissing("maindir"),
+  exportsMissing: entryMissing("exmiss"),
   builtin: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   builtinSubpath: `"node:fs/promsies" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   bunScheme: {
+    default: `"bun:" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
     bun: `"nope" is not installed. ${INSTALL}, or correct that import.`,
-    node: `"bun:" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   },
   local: `Nothing at "./src/x.js". Create that file or correct the import — ${NO_INSTALL}`,
   directory: `Nothing at "./src". Create that file or correct the import — ${NO_INSTALL}`,
@@ -277,10 +170,17 @@ const REMEDIES: Record<Case, string | { bun: string; node: string }> = {
   relativeInPackage: `relpkg is missing its own file "relpkg/missing.js". Report this to its maintainer — ${NO_INSTALL}`,
   dependencyAbsent: `deppkg imports "absentdep", which is not installed. ${INSTALL}. If it is still missing, deppkg does not declare it — report that to its maintainer.`,
   dependencyBuiltin: {
-    bun: `builtinpkg imports "node:nope", which this runtime does not provide. Run it on a runtime that has that module, or report this to its maintainer — ${NO_INSTALL}`,
+    default: `builtinpkg imports "node:nope", which this runtime does not provide. Run it on a runtime that has that module, or report this to its maintainer — ${NO_INSTALL}`,
     node: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
+    vite: `"node:nope" is not a module this runtime provides. Correct that import — ${NO_INSTALL}`,
   },
+  dependencyEntryMissing: `entrydep imports "exmiss", and ${entryMissing("exmiss").replace("The installed exmiss", "the installed exmiss")}`,
 };
+
+function remedyFor(name: Case, source: Source): string {
+  const expected = REMEDIES[name];
+  return typeof expected === "string" ? expected : (expected[source] ?? expected.default);
+}
 
 /** Stage {@link TREE} and one case file per import in a fresh directory, and return its real path. */
 function stage(): string {
@@ -290,43 +190,162 @@ function stage(): string {
     writeFileSync(join(root, path), text);
   }
   for (const [name, specifier] of Object.entries(IMPORTS)) {
-    writeFileSync(join(root, `case-${name}.js`), `import ${JSON.stringify(specifier.replace(R, root))};\n`);
+    writeFileSync(join(root, `case-${name}.js`), `import ${JSON.stringify(specifier.replace("<root>", root))};\n`);
   }
   return root;
 }
 
-/** A recorded shape, with the staged directory put back where it was measured. */
-function placed(shape: Shape, root: string): Shape {
-  return JSON.parse(JSON.stringify(shape).replaceAll(R, root)) as Shape;
+const root = stage();
+/** The child scripts live beside the tree, never in it, so nothing they are walks into a probe. */
+const scripts = realpathSync(mkdtempSync(join(tmpdir(), "pithy-unresolved-scripts-")));
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
+  rmSync(scripts, { recursive: true, force: true });
+});
+
+/** What one surface said: its kind and its `action`. */
+interface Said {
+  kind: string;
+  action: string;
 }
 
-const root = stage();
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+/** What every surface said for one case, by surface name. */
+type Verdicts = Record<string, Said>;
 
-/** All three surfaces, each told the same project. The capability loader is loading something else. */
-function surfaces(cause: unknown): Record<string, { kind: string; action: string }> {
+const CONFIG_SURFACE = "pithy.config.ts (CLI)";
+const CAPABILITY_SURFACE = "a capability loader (CLI)";
+const VITE_SURFACE = "the vite plugin";
+
+/** The two CLI classifiers, each told the same project. The capability loader is loading something else. */
+function cliSurfaces(cause: unknown): Verdicts {
   return {
-    "pithy.config.ts (CLI)": classifyConfigLoadFailure(cause, root),
-    "a capability loader (CLI)": classifyCapabilityLoadFailure(
-      "payments",
-      "@pithy-sh/payments/src/capability",
-      cause,
-      root,
-    ),
-    "the vite plugin": classifyWorkerConfigFailure(cause, root),
+    [CONFIG_SURFACE]: classifyConfigLoadFailure(cause, root),
+    [CAPABILITY_SURFACE]: classifyCapabilityLoadFailure("payments", "@pithy-sh/payments/src/capability", cause, root),
   };
 }
 
-describe("every kind, in both runtimes' shapes, through all three surfaces", () => {
-  for (const name of Object.keys(IMPORTS) as Case[]) {
-    for (const runtime of ["bun", "node"] as const) {
-      test(`${name}, as ${runtime === "bun" ? "Bun 1.4.2" : "Node 22"} throws it`, () => {
-        const expected = REMEDIES[name];
-        const remedy = typeof expected === "string" ? expected : expected[runtime];
-        for (const [surface, { kind, action }] of Object.entries(surfaces(placed(SHAPES[name][runtime], root)))) {
+const run = promisify(execFile);
+
+/**
+ * **Bun**: a Bun child imports every case and puts what it threw — the object itself, wrapper and all —
+ * through both CLI classifiers, loaded from this repository's source.
+ */
+async function underBun(): Promise<Record<string, Verdicts | null>> {
+  const script = join(scripts, "bun-surfaces.ts");
+  const config = pathToFileURL(resolve(import.meta.dirname, "config.ts")).href;
+  const capability = pathToFileURL(resolve(import.meta.dirname, "..", "capabilities", "loadFailure.ts")).href;
+  writeFileSync(
+    script,
+    [
+      `import { classifyConfigLoadFailure } from ${JSON.stringify(config)};`,
+      `import { classifyCapabilityLoadFailure } from ${JSON.stringify(capability)};`,
+      "const [root, ...names] = process.argv.slice(2);",
+      "const out = {};",
+      "for (const name of names) {",
+      '  try { await import(root + "/case-" + name + ".js"); out[name] = null; }',
+      "  catch (thrown) {",
+      "    out[name] = {",
+      `      ${JSON.stringify(CONFIG_SURFACE)}: classifyConfigLoadFailure(thrown, root),`,
+      `      ${JSON.stringify(CAPABILITY_SURFACE)}: classifyCapabilityLoadFailure("payments", "@pithy-sh/payments/src/capability", thrown, root),`,
+      "    };",
+      "  }",
+      "}",
+      "console.log(JSON.stringify(out));",
+    ].join("\n"),
+  );
+  const { stdout } = await run("bun", [script, root, ...CASES], { cwd: scripts });
+  return JSON.parse(stdout) as Record<string, Verdicts | null>;
+}
+
+/**
+ * **Node**: a Node child imports every case and hands back every string the thrown error carries — its
+ * own properties and its prototypes', and the same of an `AggregateError`'s `errors` and of a `cause` —
+ * which is everything a classifier could read. Rebuilt here as an `Error` with those properties.
+ */
+async function underNode(): Promise<Record<string, Verdicts | null>> {
+  const script = join(scripts, "node-causes.mjs");
+  writeFileSync(
+    script,
+    [
+      "function dump(e, depth) {",
+      '  if (typeof e !== "object" || e === null) return e;',
+      "  const out = {};",
+      "  for (let o = e; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {",
+      "    for (const k of Object.getOwnPropertyNames(o)) {",
+      '      if (k in out || k === "stack" || k === "constructor") continue;',
+      "      let v; try { v = e[k]; } catch { continue; }",
+      '      if (typeof v === "string") out[k] = v;',
+      '      else if (k === "errors" && Array.isArray(v) && depth < 2) out[k] = v.map((x) => dump(x, depth + 1));',
+      '      else if (k === "cause" && depth < 2) out[k] = dump(v, depth + 1);',
+      "    }",
+      "  }",
+      "  return out;",
+      "}",
+      "const [root, ...names] = process.argv.slice(2);",
+      "const out = {};",
+      "for (const name of names) {",
+      '  try { await import(new URL("file://" + root + "/case-" + name + ".js").href); out[name] = null; }',
+      "  catch (thrown) { out[name] = dump(thrown, 0); }",
+      "}",
+      "console.log(JSON.stringify(out));",
+    ].join("\n"),
+  );
+  const { stdout } = await run(process.execPath, ["--no-deprecation", script, root, ...CASES], { cwd: scripts });
+  const causes = JSON.parse(stdout) as Record<string, Record<string, unknown> | null>;
+  return Object.fromEntries(
+    Object.entries(causes).map(([name, cause]) => [name, cause === null ? null : cliSurfaces(rebuilt(cause))]),
+  );
+}
+
+/** A dumped error as an `Error` again, its strings and its nested errors where they were. */
+function rebuilt(dumped: Record<string, unknown>): Error {
+  const error = new Error(typeof dumped.message === "string" ? dumped.message : "");
+  for (const [key, value] of Object.entries(dumped)) {
+    const restored =
+      key === "errors" && Array.isArray(value)
+        ? value.map((inner) => rebuilt(inner as Record<string, unknown>))
+        : key === "cause" && typeof value === "object" && value !== null
+          ? rebuilt(value as Record<string, unknown>)
+          : value;
+    Object.defineProperty(error, key, { value: restored, enumerable: true, configurable: true, writable: true });
+  }
+  return error;
+}
+
+/** **Vite**: the plugin's own loader, in this process, and the refusal it throws. */
+async function underVite(): Promise<Record<string, Verdicts | null>> {
+  const out: Record<string, Verdicts | null> = {};
+  for (const name of CASES) {
+    try {
+      await loadWorkerConfig(join(root, `case-${name}.js`));
+      out[name] = null;
+    } catch (thrown) {
+      const payload = (thrown as { payload?: { action?: string; detail?: string } }).payload;
+      const kind = payload?.detail?.split(":")[0] ?? "no payload";
+      out[name] = { [VITE_SURFACE]: { kind, action: payload?.action ?? String(thrown) } };
+    }
+  }
+  return out;
+}
+
+const verdicts: Partial<Record<Source, Record<string, Verdicts | null>>> = {};
+beforeAll(async () => {
+  [verdicts.bun, verdicts.node, verdicts.vite] = await Promise.all([underBun(), underNode(), underVite()]);
+}, 120_000);
+
+describe("every case, thrown by each surface's real loader, says one thing", () => {
+  for (const name of CASES) {
+    for (const source of SOURCES) {
+      test(`${name}, thrown by ${SOURCE_NAME[source]}`, () => {
+        const said = verdicts[source]?.[name];
+        expect(said, "the case imported cleanly, so nothing was tested").toBeTruthy();
+        const remedy = remedyFor(name, source);
+        for (const [surface, { kind, action }] of Object.entries(said ?? {})) {
           expect(action, surface).toBe(remedy);
+          // Read as an import that did not resolve: never the config's own throw, never a parse error.
+          if (surface !== CAPABILITY_SURFACE) expect(kind, surface).toBe("unresolved-import");
           expect(kind, surface).not.toBe("unknown");
-          // No rendered field carries a path or a URL, whatever the shape handed over.
+          // No rendered field carries a path or a URL, whatever the loader handed over.
           expect(action, surface).not.toContain(root);
           expect(action, surface).not.toContain("file:");
           expect(action, surface).not.toContain("node_modules");
@@ -339,64 +358,18 @@ describe("every kind, in both runtimes' shapes, through all three surfaces", () 
   // help. Read off the table rather than asserted per row, so a new row cannot forget it.
   test("an install is named only where an install can help", () => {
     const installs = new Set<Case>(["absent", "absentDeep", "dependencyAbsent"]);
-    for (const name of Object.keys(IMPORTS) as Case[]) {
-      for (const runtime of ["bun", "node"] as const) {
-        const expected = REMEDIES[name];
-        const remedy = typeof expected === "string" ? expected : expected[runtime];
+    // An entry that is not on disk is that one package's to rebuild or reinstall, not the project's.
+    const reinstalls = new Set<Case>(["mainMissing", "mainDirectory", "exportsMissing", "dependencyEntryMissing"]);
+    for (const name of CASES) {
+      for (const source of SOURCES) {
+        const remedy = remedyFor(name, source);
         // Bun 1.4.2's `bun:nope` is the one a runtime takes out of our hands: see REMEDIES.
-        const says = installs.has(name) || (name === "bunScheme" && runtime === "bun");
-        expect(remedy.includes("bun install"), `${name} on ${runtime}`).toBe(says);
-        if (!says) expect(remedy, `${name} on ${runtime}`).toContain(NO_INSTALL);
+        const says = installs.has(name) || (name === "bunScheme" && source === "bun");
+        expect(remedy.includes("bun install"), `${name} from ${source}`).toBe(says);
+        if (reinstalls.has(name)) expect(remedy, `${name} from ${source}`).toContain("remove it and install it again");
+        else if (!says) expect(remedy, `${name} from ${source}`).toContain(NO_INSTALL);
       }
     }
-  });
-});
-
-/**
- * **The shapes above are what the runtimes throw today**, not what they threw once.
- *
- * Both runtimes import every case file in the staged tree, in a child process, and hand back the fields
- * the classifier reads. They must match {@link SHAPES} exactly. Node is whichever Node runs this suite —
- * 24 here, 22 in CI's floor job — and the two throw the same, which this asserts on both. Bun is spawned
- * as `config.test.ts` spawns it: every CI job that runs this suite installs it.
- */
-describe("the recorded shapes are still the shapes", () => {
-  const probe = join(root, "probe.mjs");
-  writeFileSync(
-    probe,
-    [
-      "const shapes = {};",
-      "for (const name of process.argv.slice(2)) {",
-      '  try { await import(new URL("./case-" + name + ".js", import.meta.url).href); shapes[name] = null; }',
-      "  catch (thrown) {",
-      "    const e = Array.isArray(thrown?.errors) && thrown.errors.length > 0 ? thrown.errors[0] : thrown;",
-      "    const shape = {};",
-      '    for (const field of ["name", "code", "message", "specifier", "referrer", "url"]) if (typeof e?.[field] === "string") shape[field] = e[field];',
-      "    shapes[name] = shape;",
-      "  }",
-      "}",
-      "console.log(JSON.stringify(shapes));",
-    ].join("\n"),
-  );
-
-  /** What `command` threw for every case, with the staged directory put back to `<root>`. */
-  async function measured(command: string, args: string[]): Promise<Record<string, Shape>> {
-    const { stdout } = await promisify(execFile)(command, [...args, probe, ...Object.keys(IMPORTS)], { cwd: root });
-    const href = pathToFileURL(root).href.replace(/^file:\/\//, "");
-    return JSON.parse(stdout.replaceAll(href, R).replaceAll(root, R)) as Record<string, Shape>;
-  }
-
-  /** The recorded shapes for one runtime, keyed as the probe keys them. */
-  function recorded(runtime: "bun" | "node"): Record<string, Shape> {
-    return Object.fromEntries((Object.keys(IMPORTS) as Case[]).map((name) => [name, SHAPES[name][runtime]]));
-  }
-
-  test("Bun 1.4.2", { timeout: 30_000 }, async () => {
-    expect(await measured("bun", [])).toEqual(recorded("bun"));
-  });
-
-  test("Node", { timeout: 30_000 }, async () => {
-    expect(await measured(process.execPath, ["--no-deprecation"])).toEqual(recorded("node"));
   });
 });
 

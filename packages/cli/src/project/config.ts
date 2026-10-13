@@ -22,7 +22,7 @@ import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/n
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
-import { installedBeside } from "./kitResolve";
+import { entryBeside, installedBeside } from "./kitResolve";
 import { registerTypeScriptResolution } from "./typescriptResolve";
 import { discoverWorkers } from "./workers";
 
@@ -609,7 +609,12 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
   const cause = rootCause(wrapped);
 
   // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
-  const unresolved = unresolvedImport(cause, { installed: installedBeside, relativeTo, loader: "@pithy-sh/cli" });
+  const unresolved = unresolvedImport(cause, {
+    installed: installedBeside,
+    entry: entryBeside,
+    relativeTo,
+    loader: "@pithy-sh/cli",
+  });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
 
   if (isParseError(cause)) {

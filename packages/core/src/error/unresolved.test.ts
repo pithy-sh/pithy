@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { importingPackage, nodeModulesProbe, unresolvedImport } from "./unresolved";
+import { declaredEntry, importingPackage, nodeModulesProbe, packageEntryProbe, unresolvedImport } from "./unresolved";
 
 /**
  * The one classifier for an import that would not resolve (#709), unit by unit.
@@ -41,12 +41,20 @@ describe("unresolvedImport", () => {
         "ERR_UNKNOWN_BUILTIN_MODULE",
         "ERR_PACKAGE_IMPORT_NOT_DEFINED",
         "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+        "ERR_RESOLVE_PACKAGE_ENTRY_FAIL",
       ]) {
         expect(unresolvedImport({ code, message: "x" }), code).toBeDefined();
       }
       expect(unresolvedImport({ name: "ResolveMessage", message: "x" })).toBeDefined();
       expect(unresolvedImport({ message: "Failed to resolve import x" })).toBeDefined();
       expect(unresolvedImport({ message: "No such built-in module: node:nope" })).toBeDefined();
+      expect(unresolvedImport({ message: 'Failed to resolve entry for package "x". The package may…' })).toBeDefined();
+      expect(
+        unresolvedImport({
+          message:
+            '"." is not exported under the conditions ["node"] from package /p/node_modules/x (see exports field in /p/node_modules/x/package.json)',
+        }),
+      ).toBeDefined();
 
       expect(unresolvedImport(new Error("PAYMENTS_CONFIG is required"))).toBeUndefined();
       expect(unresolvedImport({ name: "BuildMessage", message: 'Expected identifier but found "{"' })).toBeUndefined();
@@ -186,7 +194,7 @@ describe("unresolvedImport", () => {
 
   // The must-fix of #709's first review: a bare name went straight to "not installed", ahead of the probe.
   // Bun 1.4.2 says `Cannot find package 'pkg'` for an installed package with no entry at its bare name —
-  // an `exports` map with no ".", which is every @pithy-sh/* package, or a `main` naming a missing file.
+  // an `exports` map with no ".", which is every @pithy-sh/* package, or one whose "." no import matches.
   describe("an installed package with no entry at its bare name", () => {
     const NO_ENTRY =
       "The installed nodot has no entry to import by its bare name. Import one of its paths, or check the version of nodot you have — installing dependencies will not help.";
@@ -249,10 +257,15 @@ describe("unresolvedImport", () => {
       expect(found?.shown).toBe("@pithy-sh/core");
     });
 
-    test("Node: a main naming a missing file is the bare name, not the file", () => {
+    test("Node: a package with no exports, no main and no index.js is the bare name, asked of its manifest", () => {
+      const seen: string[][] = [];
+      const entry = (pkg: string, from: string) => {
+        seen.push([pkg, from]);
+        return null;
+      };
       const found = unresolvedImport(
-        node(`Cannot find package '/p/node_modules/nodot/missing.js' imported from ${CONFIG}`),
-        { relativeTo: ROOT },
+        node(`Cannot find package '/p/node_modules/nodot/index.js' imported from ${CONFIG}`),
+        { relativeTo: ROOT, entry },
       );
       expect(found).toEqual({
         kind: "package-subpath",
@@ -261,6 +274,50 @@ describe("unresolvedImport", () => {
         installHelps: false,
         remedy: NO_ENTRY,
       });
+      // Asked from the package's own directory, which Node's sentence names, not from the importer.
+      expect(seen).toEqual([["nodot", "/p/node_modules/nodot/package.json"]]);
+    });
+
+    test('Vite: an exports map with no usable "." names the package from the directory it quotes', () => {
+      const found = unresolvedImport({
+        name: "Error",
+        code: "PLUGIN_ERROR",
+        message:
+          '"." is not exported under the conditions ["node", "module-sync", "import"] from package /p/node_modules/@pithy-sh/core (see exports field in /p/node_modules/@pithy-sh/core/package.json)',
+      });
+      expect(found?.kind).toBe("package-subpath");
+      expect(found?.package).toBe("@pithy-sh/core");
+      expect(found?.remedy).toBe(NO_ENTRY.replaceAll("nodot", "@pithy-sh/core"));
+    });
+
+    test("Vite: an unexported subpath is the same remedy as Node's, named by package and subpath", () => {
+      const found = unresolvedImport({
+        name: "Error",
+        code: "PLUGIN_ERROR",
+        message:
+          '"./hidden.js" is not exported under the conditions ["node", "module-sync", "import"] from package /p/node_modules/expkg (see exports field in /p/node_modules/expkg/package.json)',
+      });
+      expect(found).toMatchObject({ kind: "package-subpath", package: "expkg", shown: "expkg/hidden.js" });
+    });
+
+    test("Vite: an entry it cannot resolve, from a package that declares none, is the bare name", () => {
+      const seen: string[][] = [];
+      const entry = (pkg: string, from: string) => {
+        seen.push([pkg, from]);
+        return null;
+      };
+      const found = unresolvedImport(
+        {
+          name: "Error",
+          code: "ERR_RESOLVE_PACKAGE_ENTRY_FAIL",
+          message:
+            'Failed to resolve entry for package "nodot". The package may have incorrect main/module/exports specified in its package.json.',
+        },
+        { relativeTo: ROOT, entry },
+      );
+      expect(found?.remedy).toBe(NO_ENTRY);
+      // Vite names no importer, so the manifest is found from the project.
+      expect(seen).toEqual([["nodot", "/p/package.json"]]);
     });
 
     test("a dependency importing it by its bare name names both, and never an install", () => {
@@ -272,6 +329,124 @@ describe("unresolvedImport", () => {
       expect(found?.remedy).toBe(
         'deppkg imports "nodot", which the installed nodot does not provide. Bring deppkg and nodot to matching versions, or report this to its maintainer — installing dependencies will not help.',
       );
+    });
+  });
+
+  // The must-fix of #709's second review. A package that *declares* an entry whose file is not there — an
+  // unbuilt workspace package, a broken install — was told to import one of its paths on Bun, and on Node
+  // was quoted as a deep import the adopter never wrote. It is that package to rebuild or reinstall.
+  describe("an installed package that names an entry it does not carry", () => {
+    const MISSING =
+      "The installed exmiss names an entry that is not there, so it is unbuilt or its install is broken. Rebuild exmiss, or remove it and install it again.";
+    const declares =
+      (entries: Record<string, string | null>) =>
+      (pkg: string): string | null | undefined =>
+        entries[pkg];
+
+    test("Bun: installed, and its manifest declares an entry, so it is the entry that is missing", () => {
+      const found = unresolvedImport(bun("exmiss", "Cannot find package 'exmiss'"), {
+        installed: has("exmiss"),
+        entry: declares({ exmiss: "dist/index.js" }),
+      });
+      expect(found).toEqual({
+        kind: "package-entry",
+        package: "exmiss",
+        shown: "exmiss",
+        installHelps: false,
+        remedy: MISSING,
+      });
+    });
+
+    test("Bun: installed, and its manifest declares none, so it has no entry there", () => {
+      const found = unresolvedImport(bun("exmiss", "Cannot find package 'exmiss'"), {
+        installed: has("exmiss"),
+        entry: declares({ exmiss: null }),
+      });
+      expect(found?.kind).toBe("package-subpath");
+      expect(found?.remedy).toContain("has no entry to import by its bare name");
+    });
+
+    test("Bun: a deep import is never asked of the manifest, whatever it declares", () => {
+      const found = unresolvedImport(bun("exmiss/dist/index.js", "Cannot find package 'exmiss'"), {
+        installed: has("exmiss"),
+        entry: declares({ exmiss: "dist/index.js" }),
+      });
+      expect(found).toMatchObject({ kind: "package-subpath", shown: "exmiss/dist/index.js" });
+    });
+
+    test("Node: the resolved url is the declared entry, so the import was the bare name", () => {
+      const found = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/exmiss/dist/index.js' imported from ${CONFIG}`,
+          "file:///p/node_modules/exmiss/dist/index.js",
+        ),
+        { relativeTo: ROOT, entry: declares({ exmiss: "dist/index.js" }) },
+      );
+      expect(found?.kind).toBe("package-entry");
+      expect(found?.remedy).toBe(MISSING);
+      expect(found?.remedy).not.toContain("dist/index.js");
+    });
+
+    test("Node: a url that is not the declared entry is still a path the package lacks", () => {
+      const found = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/exmiss/src/nope' imported from ${CONFIG}`,
+          "file:///p/node_modules/exmiss/src/nope",
+        ),
+        { relativeTo: ROOT, entry: declares({ exmiss: "dist/index.js" }) },
+      );
+      expect(found).toMatchObject({ kind: "package-subpath", shown: "exmiss/src/nope" });
+      // Beneath a directory `main` is a deep import too, never the entry it sits under.
+      const beneath = unresolvedImport(
+        node(
+          `Cannot find module '/p/node_modules/exmiss/lib/foo.js' imported from ${CONFIG}`,
+          "file:///p/node_modules/exmiss/lib/foo.js",
+        ),
+        { relativeTo: ROOT, entry: declares({ exmiss: "lib" }) },
+      );
+      expect(beneath).toMatchObject({ kind: "package-subpath", shown: "exmiss/lib/foo.js" });
+    });
+
+    test("Node: a main naming a missing file or directory is the entry, never the path", () => {
+      const mains: [string, string][] = [
+        ["/p/node_modules/exmiss/missing.js", "missing.js"],
+        ["/p/node_modules/exmiss/lib", "lib"],
+      ];
+      for (const [path, main] of mains) {
+        const found = unresolvedImport(node(`Cannot find package '${path}' imported from ${CONFIG}`), {
+          relativeTo: ROOT,
+          entry: declares({ exmiss: main }),
+        });
+        expect(found?.remedy, path).toBe(MISSING);
+      }
+      // With no manifest to read, Node reaching for a package's main is taken as one it named.
+      const noProbe = unresolvedImport(
+        node(`Cannot find package '/p/node_modules/exmiss/missing.js' imported from ${CONFIG}`),
+      );
+      expect(noProbe?.kind).toBe("package-entry");
+    });
+
+    test("Vite: an entry it cannot resolve, from a package that declares one, is the entry missing", () => {
+      const found = unresolvedImport(
+        {
+          name: "Error",
+          code: "ERR_RESOLVE_PACKAGE_ENTRY_FAIL",
+          message:
+            'Failed to resolve entry for package "exmiss". The package may have incorrect main/module/exports specified in its package.json.',
+        },
+        { relativeTo: ROOT, entry: declares({ exmiss: "dist/index.js" }) },
+      );
+      expect(found?.remedy).toBe(MISSING);
+    });
+
+    test("a dependency importing it names both, and the package to rebuild", () => {
+      const referrer = "/p/node_modules/entrydep/index.js";
+      const found = unresolvedImport(bun("exmiss", "Cannot find package 'exmiss'", referrer), {
+        installed: has("exmiss"),
+        entry: declares({ exmiss: "dist/index.js" }),
+      });
+      expect(found?.owner).toBe("entrydep");
+      expect(found?.remedy).toBe(`entrydep imports "exmiss", and ${MISSING.replace("The installed", "the installed")}`);
     });
   });
 
@@ -634,6 +809,54 @@ describe("nodeModulesProbe", () => {
       realpath: (path) => path,
     });
     expect(windows("x", "C:\\p\\apps\\a.ts")).toBe(true);
+  });
+});
+
+describe("declaredEntry", () => {
+  test('exports wins, by its ".", a bare string, or a map of conditions for "."', () => {
+    expect(declaredEntry({ exports: "./dist/index.js", main: "x.js" })).toBe("dist/index.js");
+    expect(declaredEntry({ exports: { ".": "./dist/index.js", "./x": "./x.js" } })).toBe("dist/index.js");
+    expect(declaredEntry({ exports: { import: "./esm.js", require: "./cjs.cjs" } })).toBe("esm.js");
+    expect(declaredEntry({ exports: { ".": { types: "./a.d.ts", node: { import: "./n.js" } } } })).toBe("n.js");
+    expect(declaredEntry({ exports: { ".": ["./first.js", "./second.js"] } })).toBe("first.js");
+  });
+
+  test('an exports map with no ".", or none an import matches, declares no entry, whatever main says', () => {
+    expect(declaredEntry({ exports: { "./x.js": "./x.js" }, main: "index.js" })).toBeNull();
+    expect(declaredEntry({ exports: { ".": { browser: "./b.js", require: "./c.cjs" } } })).toBeNull();
+  });
+
+  test("with no exports it is main, and with neither it is none", () => {
+    expect(declaredEntry({ main: "./lib/" })).toBe("lib");
+    expect(declaredEntry({ main: "" })).toBeNull();
+    expect(declaredEntry({ exports: null, main: "m.js" })).toBe("m.js");
+    expect(declaredEntry({})).toBeNull();
+    expect(declaredEntry(undefined)).toBeNull();
+  });
+});
+
+describe("packageEntryProbe", () => {
+  const files: Record<string, string> = {
+    "/p/node_modules/exmiss/package.json": '{"exports":{".":"./dist/index.js"}}',
+    "/p/node_modules/broken/package.json": "{ not json",
+  };
+  const probe = packageEntryProbe({
+    exists: (path) => path in files,
+    realpath: (path) => path,
+    read: (path) => {
+      const text = files[path];
+      if (text === undefined) throw new Error("ENOENT");
+      return text;
+    },
+  });
+
+  test("walks the same chain as nodeModulesProbe, and reads the manifest it finds", () => {
+    expect(probe("exmiss", "/p/apps/api/pithy.config.ts")).toBe("dist/index.js");
+  });
+
+  test("a package that is not there, or a manifest that will not parse, says nothing", () => {
+    expect(probe("absent", "/p/apps/api/pithy.config.ts")).toBeUndefined();
+    expect(probe("broken", "/p/apps/api/pithy.config.ts")).toBeUndefined();
   });
 });
 

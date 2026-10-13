@@ -35,6 +35,7 @@ import { causeMessage, prop, rootCause } from "./cause";
  * | `#internal` | `Cannot find package '#internal'` | `ERR_PACKAGE_IMPORT_NOT_DEFINED` |
  * | installed package, `exports` with no `"."` | `Cannot find package 'pkg'` — the sentence for an absent one | `No "exports" main defined in …/pkg/package.json` |
  * | installed package, `main` names a missing file | the same sentence again | `Cannot find package '…/node_modules/pkg/<main>'` |
+ * | installed package, `exports` `"."` names a missing file | the same sentence again | the resolved `url` of that file |
  * | a `file:` URL | converted to a path | the resolved `url` |
  * | a package's own relative import | the import as written, `referrer` in the package | the resolved `url` |
  *
@@ -48,6 +49,21 @@ import { causeMessage, prop, rootCause } from "./cause";
  * map has no `"."` — exactly as it says it for one that is absent. Taken at face value, that told an
  * adopter to install what was installed. So a bare name the probe finds is an installed package with no
  * usable entry, named by the package, and Node's two sentences for the same tree read to the same remedy.
+ *
+ * **And so is its `package.json`.** Bun says the same sentence again for a package that *declares* an entry
+ * whose file is not there — an unbuilt workspace package, a broken install — and Node hands back that
+ * file's path, so a bare import read as a deep one the adopter never wrote. Neither is "no entry": it is
+ * that package to rebuild or reinstall. Only the manifest says which, so {@link packageEntryProbe} reads
+ * it, and every runtime's shape for the same tree reads to the same kind.
+ *
+ * ## Vite's module runner says it a third way
+ *
+ * The vite plugin loads a config through `runnerImport` (Vite 8.3.0, measured), which resolves bare
+ * imports itself before any runtime does and throws its own shapes: `PLUGIN_ERROR` with
+ * *`"." is not exported under the conditions [...] from package <dir>`* for an `exports` map with no
+ * usable `"."` (or `"./sub"` for an unexported subpath), and `ERR_RESOLVE_PACKAGE_ENTRY_FAIL` —
+ * *Failed to resolve entry for package "pkg"* — for every other bare name with nothing on disk to load,
+ * declared or not. Neither names an importer, so the manifest is found from the project instead.
  *
  * **Bun 1.4.2 cannot be told from an absent package for `bun:nope`.** It drops the scheme and reports a
  * package called `nope`, with nothing left in the cause to say otherwise. That one reads as an absent
@@ -69,6 +85,12 @@ export type UnresolvedImportKind =
    * when it has no entry there. Installing changes nothing.
    */
   | "package-subpath"
+  /**
+   * An installed package whose `package.json` names an entry — `exports` `"."` or `main` — that is not on
+   * disk: unbuilt, or a broken install. That package is rebuilt or reinstalled; the project's install
+   * does not touch a package it already has.
+   */
+  | "package-entry"
   /** An installed package's own relative import of its own file. Its maintainer's, never an install. */
   | "package-file"
   /** A module the runtime provides, or does not: `node:nope`. Installing cannot add one. */
@@ -108,11 +130,25 @@ export type InstalledProbe = (pkg: string, referrer: string) => boolean;
 export interface UnresolvedImportOptions {
   /** Answers the one question the cause cannot. Without it, a deep import is `undetermined`. */
   installed?: InstalledProbe;
+  /**
+   * Answers the next one: the entry an installed package declares. Without it, Bun's bare name is taken to
+   * have no entry there, and a loader that names the file or the package it could not load — Node reaching
+   * for a `main`, Vite's *Failed to resolve entry* — is taken to have reached for a declared one.
+   */
+  entry?: EntryProbe;
   /** The directory an adopter's paths are shown relative to. Without it, a resolved path is never shown. */
   relativeTo?: string;
   /** The package doing the importing — `@pithy-sh/cli`, `@pithy-sh/vite`. Never named as an owner. */
   loader?: string;
 }
+
+/**
+ * The entry an installed `pkg` declares for an ESM import of its bare name, as a path inside the package
+ * (`dist/index.js`, `lib`), found on the chain above `from`. `null` when it declares none — no `exports`
+ * `"."` an import can use, and no `main` — and `undefined` when there is no such package, or no manifest
+ * to read. {@link packageEntryProbe} builds the answer.
+ */
+export type EntryProbe = (pkg: string, from: string) => string | null | undefined;
 
 /** The two filesystem calls {@link nodeModulesProbe} makes. `node:fs`'s `existsSync` and `realpathSync`. */
 export interface ProbeFileSystem {
@@ -135,21 +171,84 @@ export interface ProbeFileSystem {
  * Core has no filesystem, so the two calls are the caller's. The walk is here, once.
  */
 export function nodeModulesProbe(fs: ProbeFileSystem): InstalledProbe {
-  return (pkg, referrer) => {
-    let real = referrer;
+  return (pkg, referrer) => installedAt(fs, pkg, referrer) !== undefined;
+}
+
+/**
+ * The {@link EntryProbe} a surface on Node or Bun passes: the same walk as {@link nodeModulesProbe}, and
+ * then the package's own `package.json`, read for the entry an `import` of its bare name would take.
+ */
+export function packageEntryProbe(fs: ProbeFileSystem & { read(path: string): string }): EntryProbe {
+  return (pkg, from) => {
+    const dir = installedAt(fs, pkg, from);
+    if (dir === undefined) return undefined;
     try {
-      real = fs.realpath(referrer);
+      return declaredEntry(JSON.parse(fs.read(`${dir}/package.json`)));
     } catch {
-      // Not there to resolve. The chain above where it was said to be is the best there is.
-    }
-    let dir = parentOf(real);
-    for (;;) {
-      if (fs.exists(`${dir.replace(/[\\/]+$/, "")}/node_modules/${pkg}/package.json`)) return true;
-      const up = parentOf(dir);
-      if (up === dir) return false;
-      dir = up;
+      return undefined;
     }
   };
+}
+
+/** The directory `pkg` is installed in on the chain above `referrer`, walked from where it really is. */
+function installedAt(fs: ProbeFileSystem, pkg: string, referrer: string): string | undefined {
+  let real = referrer;
+  try {
+    real = fs.realpath(referrer);
+  } catch {
+    // Not there to resolve. The chain above where it was said to be is the best there is.
+  }
+  let dir = parentOf(real);
+  for (;;) {
+    const at = `${dir.replace(/[\\/]+$/, "")}/node_modules/${pkg}`;
+    if (fs.exists(`${at}/package.json`)) return at;
+    const up = parentOf(dir);
+    if (up === dir) return undefined;
+    dir = up;
+  }
+}
+
+/** The conditions an ESM import of a package matches, on Node and on Vite's runner. */
+const IMPORT_CONDITIONS = new Set(["import", "node", "module-sync", "default"]);
+
+/**
+ * The entry a manifest declares for an `import` of the package's bare name, or `null` for none. `exports`
+ * wins when present — its `"."`, or the whole map when no key is a subpath — and a target is the first
+ * one whose condition an import matches. With no `exports`, it is `main`.
+ */
+export function declaredEntry(manifest: unknown): string | null {
+  const exports = prop(manifest, "exports");
+  if (exports !== undefined && exports !== null) {
+    const subpaths =
+      typeof exports === "object" && !Array.isArray(exports) && Object.keys(exports).some((key) => key.startsWith("."));
+    return importTarget(subpaths ? prop(exports, ".") : exports);
+  }
+  const main = prop(manifest, "main");
+  return typeof main === "string" && main.length > 0 ? inside(main) : null;
+}
+
+/** One `exports` target, followed through conditions and fallbacks to the path an import takes. */
+function importTarget(target: unknown): string | null {
+  if (typeof target === "string") return inside(target);
+  if (Array.isArray(target)) {
+    for (const option of target) {
+      const found = importTarget(option);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof target !== "object" || target === null) return null;
+  for (const [condition, value] of Object.entries(target)) {
+    if (!IMPORT_CONDITIONS.has(condition)) continue;
+    const found = importTarget(value);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** A manifest's path, as a path inside the package: no `./`, no trailing slash. */
+function inside(path: string): string {
+  return path.replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 /** Every code a runtime throws for a module it could not find, or would not load as a module. */
@@ -161,11 +260,12 @@ const CODES = new Set([
   "ERR_UNSUPPORTED_DIR_IMPORT",
   "ERR_UNKNOWN_BUILTIN_MODULE",
   "ERR_UNSUPPORTED_ESM_URL_SCHEME",
+  "ERR_RESOLVE_PACKAGE_ENTRY_FAIL",
 ]);
 
 /** The same, said in prose by something that sets no code: Vite's module runner, and older loaders. */
 const SENTENCE =
-  /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url |No such built-in module: |is not defined by "exports"|No "exports" main defined in |Package import specifier /;
+  /Cannot find (?:package|module) |Failed to resolve (?:import|module)|Failed to load url |No such built-in module: |is not defined by "exports"|No "exports" main defined in |Package import specifier |is not exported under the conditions |Failed to resolve entry for package /;
 
 /**
  * Classify an import that would not resolve, or answer `undefined` when `cause` is not one.
@@ -231,33 +331,45 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
   }
   if (
     code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ||
-    /is not defined by "exports"|No "exports" main defined in /.test(message)
+    /is not defined by "exports"|No "exports" main defined in |is not exported under the conditions /.test(message)
   ) {
     return unexported(cause, message);
+  }
+  // Vite's runner, for a bare name it found installed and could load nothing for. It names the package and
+  // no importer, so the manifest is asked from the project; a package that declares nothing has no entry.
+  const unloadable = /Failed to resolve entry for package "([^"]+)"/.exec(message)?.[1];
+  if (unloadable !== undefined) {
+    const from = referrer ?? (options.relativeTo === undefined ? undefined : `${options.relativeTo}/package.json`);
+    const declared = from === undefined ? undefined : options.entry?.(unloadable, from);
+    return { kind: declared === null ? "package-subpath" : "package-entry", package: unloadable, shown: unloadable };
   }
 
   const specifier = writtenSpecifier(cause, message);
   if (specifier === undefined) return { kind: "unnamed" };
   if (code === "ERR_UNKNOWN_BUILTIN_MODULE") return { kind: "builtin", shown: specifier };
   if (specifier.startsWith("#")) return { kind: "imports-map", shown: specifier };
-  if (specifier.startsWith("file:")) return atPath(urlPath(specifier), referrer, options.relativeTo);
+  if (specifier.startsWith("file:")) return atPath(urlPath(specifier), referrer, options);
   // `node:nope`: the runtime provides these, so no install will. Never a package by its name.
   if (URL_SCHEME.test(specifier)) return { kind: "builtin", shown: specifier };
 
   // Node states the path it resolved to. That is the fact, whatever the import was written as.
   const url = prop(cause, "url");
-  if (typeof url === "string" && url.startsWith("file:")) return atPath(urlPath(url), referrer, options.relativeTo);
+  if (typeof url === "string" && url.startsWith("file:")) return atPath(urlPath(url), referrer, options);
 
   if (specifier.startsWith(".")) {
     if (referrer === undefined) return { kind: "local-file", shown: specifier };
-    return atPath(joinPath(parentOf(referrer), specifier), referrer, options.relativeTo, specifier);
+    return atPath(joinPath(parentOf(referrer), specifier), referrer, options, specifier);
   }
   if (ABSOLUTE.test(specifier)) {
-    // Node's sentence for a bare import whose `main` names a missing file: the *package* could not be
-    // found, at the path its `main` points to. What was imported was the package's bare name.
+    // Node's sentence for a bare import of a package with no `exports`: the *package* could not be found,
+    // at the path its `main` points to — or `index.js`, when it names none. What was imported was the
+    // package's bare name, and whether it declared that path is the manifest's to say.
     const entry = /^Cannot find package '/.test(message) ? packageAt(specifier) : undefined;
-    if (entry !== undefined) return { kind: "package-subpath", package: entry.name, shown: entry.name };
-    return atPath(specifier, referrer, options.relativeTo);
+    if (entry !== undefined) {
+      const declared = options.entry?.(entry.name, `${entry.dir}/package.json`);
+      return { kind: declared === null ? "package-subpath" : "package-entry", package: entry.name, shown: entry.name };
+    }
+    return atPath(specifier, referrer, options);
   }
 
   // A bare name is the package itself, and Bun says the same of one installed with no entry as of one
@@ -269,9 +381,12 @@ function locate(cause: unknown, referrer: string | undefined, options: Unresolve
       ? { kind: "package", package: pkg, shown: pkg }
       : { kind: "undetermined", package: pkg, shown: specifier };
   }
-  return options.installed(pkg, referrer)
-    ? { kind: "package-subpath", package: pkg, shown: specifier }
-    : { kind: "package", package: pkg, shown: pkg };
+  if (!options.installed(pkg, referrer)) return { kind: "package", package: pkg, shown: pkg };
+  // Installed, and Bun says no more. By its bare name, the manifest says whether an entry was declared.
+  const declared = bare ? options.entry?.(pkg, referrer) : undefined;
+  return typeof declared === "string"
+    ? { kind: "package-entry", package: pkg, shown: pkg }
+    : { kind: "package-subpath", package: pkg, shown: specifier };
 }
 
 /**
@@ -288,7 +403,9 @@ function unexported(cause: unknown, message: string): Located {
   const main = /No "exports" main defined in (.+?)[\\/]package\.json/.exec(message)?.[1];
   const entry = main === undefined ? undefined : packageAt(`${main}/package.json`);
   if (entry !== undefined) return { kind: "package-subpath", package: entry.name, shown: entry.name };
-  const match = /Package subpath '([^']+)' is not defined by "exports" in (.+?)[\\/]package\.json/.exec(message);
+  const match =
+    /Package subpath '([^']+)' is not defined by "exports" in (.+?)[\\/]package\.json/.exec(message) ??
+    /"([^"]+)" is not exported under the conditions \[[^\]]*\] from package (.+?) \(see exports field/.exec(message);
   const at = match?.[2] === undefined ? undefined : packageAt(`${match[2]}/package.json`);
   if (match?.[1] === undefined || at === undefined) return { kind: "package-subpath" };
   const subpath = match[1].replace(/^\.\/?/, "");
@@ -302,13 +419,26 @@ function unexported(cause: unknown, message: string): Located {
  * and a path the package does not have when anything else asked for it. In the adopter's tree, it is shown
  * relative to the project, or as the relative import it was written as, or not at all.
  */
-function atPath(path: string, referrer: string | undefined, relativeTo: string | undefined, written?: string): Located {
+function atPath(
+  path: string,
+  referrer: string | undefined,
+  options: UnresolvedImportOptions,
+  written?: string,
+): Located {
   const inPackage = packageAt(path);
   if (inPackage !== undefined) {
     const shown = inPackage.rest === "" ? inPackage.name : `${inPackage.name}/${inPackage.rest}`;
     const own = referrer !== undefined && packageAt(referrer)?.name === inPackage.name;
-    return { kind: own ? "package-file" : "package-subpath", package: inPackage.name, shown };
+    if (own) return { kind: "package-file", package: inPackage.name, shown };
+    // Node resolves a bare name through `exports` and reports the file it landed on, so the path is the
+    // package's declared entry when the manifest names it — and the import was the bare name, not this.
+    const declared = options.entry?.(inPackage.name, `${inPackage.dir}/package.json`);
+    if (typeof declared === "string" && isEntry(inPackage.rest, declared)) {
+      return { kind: "package-entry", package: inPackage.name, shown: inPackage.name };
+    }
+    return { kind: "package-subpath", package: inPackage.name, shown };
   }
+  const { relativeTo } = options;
   const shown = (relativeTo === undefined ? undefined : within(path, relativeTo)) ?? written;
   return shown === undefined ? { kind: "local-file" } : { kind: "local-file", shown };
 }
@@ -316,15 +446,31 @@ function atPath(path: string, referrer: string | undefined, relativeTo: string |
 /** A package name as npm allows one: an optional `@scope/`, and never a store's dot-directory. */
 const PACKAGE_NAME = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
 
-/** The package a path sits in, by the last `node_modules` in it, and the path inside that package. */
-function packageAt(path: string): { name: string; rest: string } | undefined {
+/**
+ * The package a path sits in, by the last `node_modules` in it: its name, its directory, and the path
+ * inside it. The directory is for reading its manifest and never leaves this module.
+ */
+function packageAt(path: string): { name: string; dir: string; rest: string } | undefined {
   const segments = path.split(/[\\/]/);
   const at = segments.lastIndexOf("node_modules");
   if (at === -1) return undefined;
-  const inside = segments.slice(at + 1);
-  const name = packageOf(inside.join("/"));
+  const tail = segments.slice(at + 1);
+  const name = packageOf(tail.join("/"));
   if (!PACKAGE_NAME.test(name)) return undefined;
-  return { name, rest: inside.slice(name.split("/").length).join("/") };
+  const depth = name.split("/").length;
+  return {
+    name,
+    dir: segments.slice(0, at + 1 + depth).join("/"),
+    rest: tail.slice(depth).join("/"),
+  };
+}
+
+/**
+ * Whether a path inside a package is the entry it declares, or that entry with the `.js` or `/index.js` a
+ * `main` is tried with. Exact, so a deep import beneath a directory `main` is never read as the entry.
+ */
+function isEntry(rest: string, declared: string): boolean {
+  return rest === declared || rest === `${declared}.js` || rest === `${declared}/index.js`;
 }
 
 /** The importing package, unless it is the loader's own frame. */
@@ -435,6 +581,12 @@ function remedy(found: Located, owner: string | undefined): string {
       return owner === undefined || owner === pkg
         ? `"${shown}" is not something the installed ${pkg} provides. Check the version of ${pkg} you have, or correct that import — ${NO_INSTALL}`
         : `${owner} imports "${shown}", which the installed ${pkg} does not provide. Bring ${owner} and ${pkg} to matching versions, or report this to its maintainer — ${NO_INSTALL}`;
+    case "package-entry": {
+      const missing = `names an entry that is not there, so it is unbuilt or its install is broken. Rebuild ${pkg}, or remove it and install it again.`;
+      return owner === undefined || owner === pkg
+        ? `The installed ${pkg} ${missing}`
+        : `${owner} imports "${pkg}", and the installed ${pkg} ${missing}`;
+    }
     case "package-file":
       return `${pkg} is missing its own file "${shown}". Report this to its maintainer — ${NO_INSTALL}`;
     case "builtin":

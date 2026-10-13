@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { causeMessage, failurePosition, prop, rootCause, safeReason } from "@pithy-sh/core/src/error/cause";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { nodeModulesProbe, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
+import { nodeModulesProbe, packageEntryProbe, unresolvedImport } from "@pithy-sh/core/src/error/unresolved";
 import { runnerImport } from "vite";
 
 /** The default export of a Worker's `pithy.config.ts`, before it is trusted. */
@@ -93,6 +93,17 @@ function isParseError(cause: unknown): boolean {
 const installed = nodeModulesProbe({ exists: existsSync, realpath: realpathSync });
 
 /**
+ * What an installed package's bare name resolves to, from its own `package.json`: core's read, the same the
+ * CLI passes. Vite's runner says *Failed to resolve entry* for a package that declares no entry and for one
+ * whose declared entry is not on disk, and names no importer for either (#709).
+ */
+const entry = packageEntryProbe({
+  exists: existsSync,
+  realpath: realpathSync,
+  read: (path) => readFileSync(path, "utf8"),
+});
+
+/**
  * Choose the refusal's `action` **from** the failure rather than asserting one over it (#217).
  *
  * An unresolved import is core's {@link unresolvedImport}: the same sentence the CLI gives for the same
@@ -104,7 +115,7 @@ export function classifyWorkerConfigFailure(wrapped: unknown, relativeTo?: strin
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
   // Which import, whose, and what to do: core's, for all three surfaces that refuse a module (#709).
-  const unresolved = unresolvedImport(cause, { installed, relativeTo, loader: "@pithy-sh/vite" });
+  const unresolved = unresolvedImport(cause, { installed, entry, relativeTo, loader: "@pithy-sh/vite" });
   if (unresolved !== undefined) return { kind: "unresolved-import", action: unresolved.remedy };
 
   if (isParseError(cause)) {

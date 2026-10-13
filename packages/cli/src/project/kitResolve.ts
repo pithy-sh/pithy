@@ -1,11 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type InstalledProbe, nodeModulesProbe } from "@pithy-sh/core/src/error/unresolved";
+import {
+  type EntryProbe,
+  type InstalledProbe,
+  nodeModulesProbe,
+  packageEntryProbe,
+} from "@pithy-sh/core/src/error/unresolved";
 import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 
 /**
@@ -158,6 +163,17 @@ export function packageDirFrom(projectDir: string, pkg: string): string | null {
  * that will help from one that will not.
  */
 export const installedBeside: InstalledProbe = nodeModulesProbe({ exists: existsSync, realpath: realpathSync });
+
+/**
+ * The entry an installed `pkg` declares for an import of its bare name, read from its `package.json` on the
+ * same chain. Bun 1.4.2 writes the absent-package sentence for one that declares no entry and for one whose
+ * declared entry is not on disk, and only the manifest tells *import a path* from *rebuild it* (#709).
+ */
+export const entryBeside: EntryProbe = packageEntryProbe({
+  exists: existsSync,
+  realpath: realpathSync,
+  read: (path) => readFileSync(path, "utf8"),
+});
 
 /**
  * The project's Worker directories — `apps/*`, and nothing else.

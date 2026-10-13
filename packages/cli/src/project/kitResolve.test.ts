@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { installedBeside } from "./kitResolve";
+import { entryBeside, installedBeside } from "./kitResolve";
 
 describe("installedBeside", () => {
   const root = mkdtempSync(join(tmpdir(), "pithy-installed-beside-"));
@@ -50,5 +50,30 @@ describe("installedBeside", () => {
     expect(installedBeside("stripe", join(linked, "node_modules", "@pithy-sh", "email", "src", "capability.js"))).toBe(
       true,
     );
+  });
+});
+
+describe("entryBeside", () => {
+  const root = mkdtempSync(join(tmpdir(), "pithy-entry-beside-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const manifests: Record<string, string> = {
+    "@pithy-sh/core": '{"name":"@pithy-sh/core","exports":{"./src/*":{"default":"./dist/*.js"}}}',
+    unbuilt: '{"name":"unbuilt","exports":{".":"./dist/index.js"}}',
+  };
+  for (const [name, text] of Object.entries(manifests)) {
+    mkdirSync(join(root, "node_modules", name), { recursive: true });
+    writeFileSync(join(root, "node_modules", name, "package.json"), text);
+  }
+  const referrer = join(root, "apps", "api", "pithy.config.ts");
+
+  // The two Bun 1.4.2 cannot tell apart, read from disk: the kit's own packages declare no bare entry, and
+  // an unbuilt package declares one it does not carry (#709).
+  test("reads the entry an installed package declares, or that it declares none", () => {
+    expect(entryBeside("@pithy-sh/core", referrer)).toBeNull();
+    expect(entryBeside("unbuilt", referrer)).toBe("dist/index.js");
+  });
+
+  test("a package that is not installed declares nothing it can be asked about", () => {
+    expect(entryBeside("absent", referrer)).toBeUndefined();
   });
 });
