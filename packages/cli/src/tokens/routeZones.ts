@@ -18,10 +18,12 @@ import { loadWorkerDomains, type WorkerConfig } from "../project/config";
  *
  * Two rules decide the scope, and both are here rather than at the mint.
  *
- * **The zones are the declared ones, never the account's.** A `ci-system` token scoped to every zone on
- * the account would deploy fine and would be a credential that can repoint any hostname the account
- * holds — including a customer's, on an account that runs more than this project. So the set is exactly
- * the zones the project's `domains` name, and a project that declares none gets no zone policy at all.
+ * **The zones are the declared ones, never the account's.** A route policy over every zone on the
+ * account would deploy fine and would let the token repoint any route the account holds. So the set is
+ * exactly the zones the project's `domains` name, and a project that declares none gets no zone policy
+ * at all. That limits the route calls and nothing more: the account policy's Workers Scripts Write
+ * already attaches a custom domain on any zone (measured, #709), so `docs/TOKENS.md` tells an adopter to
+ * keep the token as one that can.
  *
  * **An unresolvable zone fails the mint.** A zone the account does not hold cannot be scoped, and minting
  * without it produces a token that passes every check here and fails at deploy, hours later, in someone

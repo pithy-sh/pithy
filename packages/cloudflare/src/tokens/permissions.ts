@@ -46,6 +46,10 @@ export const PERMISSION_GROUPS = {
   //
   // Still not a group that can alter a zone. "Workers Routes Write" writes routes on a zone; changing
   // the zone itself would be "Zone Write", which this catalog does not have and will not get.
+  //
+  // Only this group is zone-limited. "Workers Scripts Write" is account-scoped and attaches a custom
+  // domain — a proxied DNS record and a certificate — on any zone the account holds (measured, #709;
+  // docs/TOKENS.md). So a token carrying the base can reach every zone's hostnames whatever this scopes.
   "routes:write": ["Workers Routes Write"],
 } as const;
 

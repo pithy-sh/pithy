@@ -73,7 +73,7 @@ A Worker that declares `domains` answers on a custom domain, and deploying one i
 
 So one zone-scoped grant unblocks the deploy. A minted token's resources are account-scoped, and the account policy every other permission rides on grants a zone-level group nothing at all — which is why every deploy of a declared domain failed.
 
-So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in. Not account-wide, not every zone on the account, and not a group that can alter a zone — Pithy attaches routes and never touches the zone itself.
+So `ci-system` carries a second policy: Workers Routes Write, on exactly the zones your declared domains sit in, and not a group that can alter a zone. **Only that route policy is zone-limited.** The base grant is not: Workers Scripts Write attaches a custom domain on any zone in the account, which creates a proxied DNS record and a certificate for that hostname there — measured, in the table above. So `ci-system` can put a Worker on a hostname in any zone the account holds, declared or not. Keep it where you would keep a credential that can: in your CI's secret store, readable only by the jobs that deploy. If the account holds zones this project has no business touching, give the project an account of its own: no token scope draws that line.
 
 You declare nothing extra. The zones come from `domains` in each Worker's `pithy.config.ts`, composed for the environment you are minting for, and resolved by name against your account at mint time. Two consequences worth knowing:
 

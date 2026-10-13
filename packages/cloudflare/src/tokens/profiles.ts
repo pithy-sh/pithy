@@ -263,6 +263,10 @@ export function permissionsForKeys(keys: PermissionKey[], accountId: string): To
  * it is a policy of its own rather than a permission on the profile because its resources are zones,
  * which a profile cannot name: they are resolved from the domains at mint time.
  *
+ * **This limits the route, not the token.** The account policy beside it carries Workers Scripts Write,
+ * which attaches a custom domain on any zone the account holds (measured, #709; `docs/TOKENS.md`). Only
+ * the route calls are held to the declared zones.
+ *
  * **Empty for an empty zone list, deliberately.** A project that declares no domain attaches no route,
  * so it mints exactly the token it minted before this existed. No new permission for a project that
  * needs none.
