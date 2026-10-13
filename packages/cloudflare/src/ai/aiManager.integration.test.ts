@@ -49,18 +49,24 @@ describe.skipIf(!creds.hasCreds)("CloudflareAIManager — LIVE", () => {
   });
 
   test("surfaces an unknown model as a wrapped request failure", async () => {
-    const error = await ai.runModel("@cf/does-not/exist", { text: "x" }).then(
+    const model = "@cf/does-not/exist";
+    const error = await ai.runModel(model, { text: "x" }).then(
       () => null,
       (caught: unknown) => caught,
     );
     expect(error).toEqual(
-      expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          code: "cloudflare/request_failed",
+          message: expect.stringContaining(`AI run model '${model}'`),
+        }),
+      }),
     );
-    // Workers AI's own refusal, not the router's. 7000 "No route for that URI" is what every model got while
-    // the path carried `@cf%2Fdoes-not%2Fexist` (#709): the request never reached Workers AI, so a test that
-    // accepted any failure passed on a manager that could run no model at all.
-    const apiCode = (error as { payload?: { params?: { apiCode?: unknown } } }).payload?.params?.apiCode;
-    expect(apiCode, "Cloudflare answered with no error code").toEqual(expect.any(Number));
-    expect(apiCode, "7000 is Cloudflare's router: the run path is malformed").not.toBe(7000);
+    // Cloudflare's own answer rides through the wrapper as `params`, and the live account answers an unknown
+    // model on a well-formed path with 7000 — the same code the router gave every model while the path was
+    // percent-encoded (#709, run 38323817975). So this test cannot tell the two apart, and does not try: the
+    // path is proven well-formed by the real-model tests above succeeding and by `aiRunPath`'s unit test.
+    const params = (error as { payload?: { params?: { apiCode?: unknown; apiMessage?: unknown } } }).payload?.params;
+    expect(params?.apiCode, `Cloudflare answered ${JSON.stringify(params)}`).toBe(7000);
   });
 });
