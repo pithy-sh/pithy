@@ -89,7 +89,7 @@ Each one is a `PithyError`: the problem, then the action. Under `--json` it is a
 ```
 $ pithy init
 /home/you/replay already has .gitignore, apps/board, package.json, pithy.config.ts, tsconfig.json, ….
-Move those aside, or pick a directory without them. Run pithy init again.
+Move those aside, or pick a directory without them, then run this again.
 ```
 
 **A Worker name that is not kebab-case.** Validated before any path is built out of it.

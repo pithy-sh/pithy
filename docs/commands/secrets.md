@@ -116,11 +116,12 @@ A schema this cannot render — a union, a record, a list of objects — falls b
 
 **What decides which of the two you get is stdin, and only stdin.** A pipe, a heredoc, a file, `< /dev/null` — anything that is not a terminal on stdin — is a document, and it is read exactly the same way with `--json`, with output redirected to a file, and with neither. Whether a *prompt* can be drawn is a separate question with separate inputs: `--json` off, `--no-input` and `PITHY_NONINTERACTIVE=1` unset, and a terminal on stdout.
 
-**So there is a third case, and it says so rather than guessing.** stdin is your terminal, so no document is coming; and the run cannot draw a prompt, because you passed `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, or redirected the output to a file. Reading your terminal anyway would be an unmasked, unannounced request for a credential, and waiting on it would be a hang. It refuses instead — `input/required` with `"flag": null`, because no flag carries a secret — and names the way in that works from there:
+**So there is a third case, and it says so rather than guessing.** stdin is your terminal, so no document is coming; and the run cannot draw a prompt, because you passed `--json`, `--no-input` or `PITHY_NONINTERACTIVE=1`, or redirected the output to a file. Reading your terminal anyway would be an unmasked, unannounced request for a credential, and waiting on it would be a hang. It refuses instead — `input/required` with `"flag": null`, because no flag carries a secret — and names the way in that works from there. The command it names is your own run again, with every flag you gave it:
 
 ```
+$ pithy secrets create STRIPE_SECRET_KEY --env staging > create.log
 No value was piped for 'STRIPE_SECRET_KEY', and this run cannot prompt for one — stdout is not a terminal, --json was passed, or prompts are forbidden.
-  Pipe the value in: printf '%s' "$VALUE" | pithy secrets create STRIPE_SECRET_KEY
+  Pipe the value in: printf '%s' "$VALUE" | pithy secrets create STRIPE_SECRET_KEY --env staging
 ```
 
 `create`, `update` and `rm` are audited (`secrets/set`, `secrets/rotated`, `secrets/removed`), recording the secret's name, its backend, and the environments reached — never its value. A write that fails is audited too, with the environments it reached before it failed. Which environments a write reaches is the registry's decision, not the flag's: an `environment`-scoped secret reaches exactly the one you named; a `global` one in D1 fans out across every managed environment; a `global` one in the CF Secrets Store is written once, canonically, through the last declared environment.

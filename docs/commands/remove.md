@@ -59,7 +59,7 @@ A mismatch, or a cancel, aborts with zero changes. The confirmation gates the fi
 ```
 $ pithy remove auth --json
 pithy remove is a manual command. --json is not supported.
-Run pithy remove <capability> at a terminal.
+A person runs pithy remove at a terminal, naming the capability.
 ```
 
 Exit 5, `core/person_required`: no call an agent could make instead is the right one. There is no `--json` payload to specify, and there are no keys — errors from this command always render as the terminal problem/action lines, never as `{"error":{…}}`, because it has no machine-readable surface at all.
@@ -85,7 +85,7 @@ Use `prod`.
 ```
 $ pithy remove auth --no-input
 pithy remove is a manual command, and this run forbids prompts.
-Run pithy remove auth at a terminal, without --no-input or PITHY_NONINTERACTIVE.
+`pithy remove auth` deletes a capability's wiring. That is a person's decision, not a fix. Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.
 ```
 
 **`--drop` with no terminal.** There is no flag that answers a drop for you, so the run stops before anything is read. Exit 5, `core/person_required`: only a person can confirm a drop.
@@ -93,7 +93,7 @@ Run pithy remove auth at a terminal, without --no-input or PITHY_NONINTERACTIVE.
 ```
 $ pithy remove auth --drop < /dev/null
 Dropping auth's tables needs a person to confirm it.
-Run pithy remove auth --drop at a terminal, without --no-input or PITHY_NONINTERACTIVE.
+`pithy remove auth --drop --env dev` deletes a capability's wiring and a capability's tables. That is a person's decision, not a fix. Run it at a terminal, without --no-input or PITHY_NONINTERACTIVE.
 ```
 
 **Several Workers, none named.** With a TTY the command prompts; without one, it raises the same `input/required` refusal `pithy add` does.
@@ -139,7 +139,7 @@ Unwire a capability and keep the data.
 $ pithy remove leaderboard
 Removed leaderboard from board.
 Uninstalled @pithy-sh/leaderboard.
-leaderboard's D1 tables were left in place — your data is safe, and a later pithy add leaderboard reuses them. To drop them, remove the pithy_leaderboard_* tables by hand (pass --drop to reverse them during removal).
+leaderboard's D1 tables were left in place — your data is safe, and composing leaderboard again with pithy add reuses them. To drop them, remove the pithy_leaderboard_* tables by hand (pass --drop to reverse them during removal).
 Done.
 ```
 

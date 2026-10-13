@@ -266,7 +266,7 @@ After a `mv` of the checkout, with the answers left behind under the old path.
 ```
 $ pithy worker list
 Autostart answers are recorded for a checkout at /home/you/Projects/app, which is gone: acme-web.
-Nothing looks them up again. If that was this project before it moved, re-set them here with pithy dev --app <name> --disable-autostart.
+Nothing looks them up again. If that was this project before it moved, re-set them here with pithy dev, naming each Worker with --app beside --disable-autostart.
 acme-api  api  autostart  port 8787
 acme-web  web  autostart  port 8788
 ```

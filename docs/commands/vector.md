@@ -170,8 +170,10 @@ Pick one of: docs, notes.
 
 ```
 The metadata indexes on `acme-staging-vector-docs` were accepted but are not live yet.
-Re-run `pithy vector provision` in a minute. Do not write vectors until it reports them ready.
+Re-run `pithy vector provision --worker api --env staging` in a minute. Do not write vectors until it reports them ready.
 ```
+
+The command is this run's own, with its Worker and environment. In a production environment it is not offered as a fix: the line names it and says the run is a person's decision.
 
 **The Workflow did not finish.** `reset` and `reprocess` wait on dispatched instances and raise a `cloudflare/*` error when one ends `errored` or `terminated`, or is still running at the poll cap.
 

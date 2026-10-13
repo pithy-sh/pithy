@@ -253,14 +253,14 @@ Tear that feature down from its own worktree, or pass --branch feature/70-other 
 
 ```
 Could not resolve the repo's git directory.
-Run pithy from inside a git repository.
+Run this from inside a git repository.
 ```
 
 **`prune` in a bare repository's worktree or a submodule.** The registry files a checkout under the directory that holds its git directory. For a bare repository that is the directory the repository sits in, beside any other; for a submodule it is the superproject's `.git/modules`, the same for every submodule it has. Another repository's blocks may be filed under the same key, and their branches are not this repository's, so every one would look deleted. It refuses and names the key.
 
 ```
 This checkout is in a bare repository or a submodule, whose registry key other repositories can share.
-Free these blocks with pithy feature destroy from each feature's worktree. Prune cannot judge blocks other repositories may hold.
+Free these blocks from each feature's worktree, where tearing the feature down releases them. `pithy feature destroy` deletes the feature's worktree, its branch and every resource it provisioned. That is a person's decision, not a fix. Prune cannot judge blocks other repositories may hold.
 ```
 
 **A `.dev.config.json` that will not parse.** It sits in a directory on disk holding some block, and nobody can say which, so `prune` refuses rather than guess. Fix or delete the file.

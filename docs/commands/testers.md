@@ -515,7 +515,7 @@ This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` ins
 
 ```
 No such cohort.
-List your cohorts with `pithy testers list` and retry with an id from there.
+List this environment's cohorts with `pithy testers list` and its --env, and retry with an id from there.
 ```
 
 **That address is not on this cohort**, from `remove`.
