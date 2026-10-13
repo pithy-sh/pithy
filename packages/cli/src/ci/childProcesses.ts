@@ -112,14 +112,27 @@ export interface ChildProcessReport {
 /** How the walk decides which calls start a child that must be narrated. */
 export interface ChildProcessPolicy {
   /**
-   * Executables whose run is bounded local work — reading git's metadata, the process table, a short
-   * kill. Judged by the literal spelled at the call site, never by its argv, in the two shapes
-   * {@link boundedExecutableName} accepts: a lone string literal (`"git"`), and
+   * Executables whose run is bounded local work in every module — reading git's metadata, the process
+   * table, a short kill. Judged by the literal spelled at the call site, never by its argv, in the two
+   * shapes {@link boundedExecutableName} accepts: a lone string literal (`"git"`), and
    * `systemExecutable("taskkill")`, judged by its literal argument, which names the System32 copy so the
    * working directory (the project's) is never searched for it. A literal inside a wider expression is
    * held.
+   *
+   * **Only a single-purpose tool belongs here, because only its binary bounds it.** `git`, `lsof`, `ps`
+   * and `taskkill` do one fixed kind of work whatever their argv. An interpreter runs whatever it is
+   * handed, so its call is bounded only where its script is written and read: in
+   * {@link moduleBoundedExecutables}, never here. {@link interpretersIn} is the check (#734).
    */
   readonly boundedExecutables: ReadonlySet<string>;
+  /**
+   * Executables bounded in one module only: module → spelling → the reason that module's calls are
+   * bounded. The spelling is the one {@link boundedExecutableName} reports. A call there is exempt when
+   * its spelling is in its own module's entry; the same spelling in any other module is held. This is
+   * where an interpreter goes — `dev/ports.ts`'s two CIM queries run PowerShell with fixed argv — so the
+   * exemption reaches the scripts someone read, and not the next one written elsewhere (#734).
+   */
+  readonly moduleBoundedExecutables?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /**
    * Modules whose `spawn` hands the child's streams on — to the terminal, to a log, or to nothing — rather
    * than collecting them. Only `spawn` there is exempt: `execFile`, `exec` and every `*Sync` collect output
@@ -157,9 +170,68 @@ export function boundedExecutableName(executable: string): string | undefined {
   return /^systemExecutable\(\s*["']([^"'`$]*)["']\)?\s*$/.exec(executable)?.[1];
 }
 
-export function isBoundedExecutable(executable: string, bounded: ReadonlySet<string>): boolean {
+export function isBoundedExecutable(
+  executable: string,
+  bounded: ReadonlySet<string>,
+  boundedHere?: ReadonlyMap<string, string>,
+): boolean {
   const name = boundedExecutableName(executable);
-  return name !== undefined && bounded.has(name);
+  return name !== undefined && (bounded.has(name) || (boundedHere?.has(name) ?? false));
+}
+
+/**
+ * Programs that run whatever they are handed — a shell, PowerShell, a script runtime, or a launcher that
+ * runs another program (`env`, `npx`, `sudo`). Matched by basename, with a Windows launcher suffix and a
+ * version suffix taken off, so `C:\…\node.cmd`, `python3.12` and `node18` are the programs they name.
+ */
+const INTERPRETERS: ReadonlySet<string> = new Set([
+  "bash",
+  "bun",
+  "bunx",
+  "cmd",
+  "cscript",
+  "csh",
+  "dash",
+  "deno",
+  "env",
+  "fish",
+  "ksh",
+  "lua",
+  "mshta",
+  "node",
+  "nohup",
+  "npx",
+  "nu",
+  "osascript",
+  "perl",
+  "php",
+  "powershell",
+  "pwsh",
+  "python",
+  "ruby",
+  "sh",
+  "sudo",
+  "tcsh",
+  "ts-node",
+  "tsx",
+  "wscript",
+  "wsl",
+  "xargs",
+  "zsh",
+]);
+
+/**
+ * The members of an executable set that are interpreters, in its order. An interpreter is bounded only
+ * by the script it is handed, so it never belongs in a set that exempts it in every module
+ * ({@link ChildProcessPolicy.boundedExecutables}), and {@link childProcessReport} refuses a policy
+ * that puts one there.
+ */
+export function interpretersIn(executables: ReadonlySet<string>): string[] {
+  return [...executables].filter((name) => {
+    const base = (name.split(/[/\\]/).pop() ?? "").toLowerCase();
+    const program = base.replace(/\.(exe|com|cmd|bat)$/, "").replace(/[\d.]+$/, "");
+    return INTERPRETERS.has(program);
+  });
 }
 
 /** An identifier occurrence, not a property access, not inside a longer name, not inside a quote. */
@@ -660,6 +732,13 @@ export function childProcessReport(
   all: ReadonlyMap<string, SourceModule>,
   policy: ChildProcessPolicy,
 ): ChildProcessReport {
+  // Refused here rather than in one gate, so every policy the walk is handed keeps the rule (#734).
+  const interpreters = interpretersIn(policy.boundedExecutables);
+  if (interpreters.length > 0) {
+    throw new Error(
+      `boundedExecutables holds an interpreter: ${interpreters.join(", ")}. Bound it in its module, through moduleBoundedExecutables.`,
+    );
+  }
   const calls = new Map<string, CallSite[]>();
   const unfollowable: string[] = [];
   const decls = new Map<string, Declaration>();
@@ -726,7 +805,14 @@ export function childProcessReport(
 
     const own = (at: number): Declaration | undefined => list.find((decl) => at >= decl.start && at < decl.end);
     for (const call of moduleCalls) {
-      if (isBoundedExecutable(call.executable, policy.boundedExecutables)) continue;
+      if (
+        isBoundedExecutable(
+          call.executable,
+          policy.boundedExecutables,
+          policy.moduleBoundedExecutables?.get(module.file),
+        )
+      )
+        continue;
       // The streams-on exemption covers `spawn`, and the seam calls spelled from inside a module the
       // policy lists: `spawnCommand` is `spawn` with resolution in front of it, and a caller that
       // streams the child's output — the editor, the browser opener — stays as silent-by-design

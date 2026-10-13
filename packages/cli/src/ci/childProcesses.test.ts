@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { blankStrings, type ChildProcessReport, childProcessReport, type SourceModule } from "./childProcesses";
+import {
+  blankStrings,
+  type ChildProcessPolicy,
+  type ChildProcessReport,
+  childProcessReport,
+  interpretersIn,
+  type SourceModule,
+} from "./childProcesses";
 
 /**
  * **Every spelling of a child process this walk claims to follow, kept as a fixture (#593).**
@@ -15,7 +22,7 @@ import { blankStrings, type ChildProcessReport, childProcessReport, type SourceM
  */
 
 const ROOT = "/virtual/src";
-const POLICY = {
+const POLICY: ChildProcessPolicy = {
   boundedExecutables: new Set(["git"]),
   uncapturedModules: new Set([`${ROOT}/platform/editor.ts`]),
   progressModule: `${ROOT}/terminal/progress.ts`,
@@ -24,12 +31,12 @@ const POLICY = {
 const PROGRESS = "export function startStep(what: string): void {}\n";
 
 /** A report over these files, keyed by path under the virtual root. */
-function walk(files: Record<string, string>): ChildProcessReport {
+function walk(files: Record<string, string>, policy: ChildProcessPolicy = POLICY): ChildProcessReport {
   const all = new Map<string, SourceModule>();
   for (const [path, code] of Object.entries({ "terminal/progress.ts": PROGRESS, ...files })) {
     all.set(`${ROOT}/${path}`, { file: `${ROOT}/${path}`, code });
   }
-  return childProcessReport(all, POLICY);
+  return childProcessReport(all, policy);
 }
 
 /** The command declarations left silent, as `path#name`. */
@@ -204,6 +211,68 @@ describe("what the walk cannot follow is reported, not skipped", () => {
       expect(walk({ "pm.ts": pm }).unfollowable).not.toEqual([]);
     });
   }
+});
+
+describe("an interpreter is bounded only in the module that names it", () => {
+  const POWERSHELL = 'systemExecutable("WindowsPowerShell/v1.0/powershell")';
+  const query = `import { execFile } from "node:child_process";\nexport function holders() {\n  execFile(${POWERSHELL}, ["-NoProfile"]);\n}\n`;
+  const SCOPED: ChildProcessPolicy = {
+    ...POLICY,
+    moduleBoundedExecutables: new Map([
+      [`${ROOT}/dev/ports.ts`, new Map([["WindowsPowerShell/v1.0/powershell", "Two CIM queries, fixed argv."]])],
+    ]),
+  };
+  const commandFor = (module: string) =>
+    `import { holders } from "../${module}";\nexport default function run() {\n  holders();\n}\n`;
+
+  test("in its own module, the call is bounded", () => {
+    const report = walk({ "dev/ports.ts": query, "commands/dev.ts": commandFor("dev/ports") }, SCOPED);
+    expect(silentCommands(report)).toEqual([]);
+  });
+
+  test("the same spelling in any other module is held", () => {
+    const report = walk({ "feature/probe.ts": query, "commands/dev.ts": commandFor("feature/probe") }, SCOPED);
+    expect(silentCommands(report)).toEqual(["commands/dev.ts#run"]);
+  });
+
+  test("a module's entry covers only the spelling it names", () => {
+    const other = query.replace(POWERSHELL, '"pwsh"');
+    const report = walk({ "dev/ports.ts": other, "commands/dev.ts": commandFor("dev/ports") }, SCOPED);
+    expect(silentCommands(report)).toEqual(["commands/dev.ts#run"]);
+  });
+});
+
+describe("the global set refuses an interpreter", () => {
+  test("whatever policy carries it, the walk throws and names it", () => {
+    const policy: ChildProcessPolicy = { ...POLICY, boundedExecutables: new Set(["git", "pwsh"]) };
+    expect(() => walk({ "commands/add.ts": COMMAND }, policy)).toThrow(/pwsh/);
+  });
+});
+
+describe("interpretersIn", () => {
+  test("names every interpreter in a set, by basename, whatever its path or suffix", () => {
+    expect(
+      interpretersIn(
+        new Set(["git", "WindowsPowerShell/v1.0/powershell", "pwsh", "cmd.exe", "/bin/bash", "node", "ps"]),
+      ),
+    ).toEqual(["WindowsPowerShell/v1.0/powershell", "pwsh", "cmd.exe", "/bin/bash", "node"]);
+  });
+
+  test("a single-purpose tool is not one", () => {
+    expect(interpretersIn(new Set(["git", "lsof", "ps", "taskkill"]))).toEqual([]);
+  });
+
+  test("a launcher spelling, a version suffix, and a program that runs another program each count", () => {
+    expect(
+      interpretersIn(
+        new Set(["node.cmd", "python.bat", "powershell.com", "python3.12", "node18", "env", "npx", "tsx"]),
+      ),
+    ).toEqual(["node.cmd", "python.bat", "powershell.com", "python3.12", "node18", "env", "npx", "tsx"]);
+  });
+
+  test("a name that only contains an interpreter's name is not one", () => {
+    expect(interpretersIn(new Set(["nodemon", "bashful", "shasum"]))).toEqual([]);
+  });
 });
 
 describe("blankStrings", () => {

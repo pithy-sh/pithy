@@ -9,6 +9,7 @@ import {
   type ChildProcessPolicy,
   type ChildProcessReport,
   childProcessReport,
+  interpretersIn,
   relativeImports,
   type SourceModule,
 } from "./childProcesses";
@@ -51,9 +52,11 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *    at runtime.
  *
  * **Not every child needs a step, and there are two exceptions.** A child whose executable is written as the
- * literal `"git"`, `"lsof"`, `"ps"`, `"taskkill"` or `"WindowsPowerShell/v1.0/powershell"` (both via `systemExecutable`) is bounded local work — git's metadata, the process
- * table, a short kill, and the CIM process table behind PowerShell — judged at
- * the call site, so the same `execFile` with `"npm"` beside it is held. And a streams-on spawn in one of
+ * literal `"git"`, `"lsof"`, `"ps"` or `"taskkill"` (the last via `systemExecutable`) is bounded local work —
+ * git's metadata, the process table, a short kill — judged at the call site, so the same `execFile` with
+ * `"npm"` beside it is held. Those four are bounded everywhere because each is a single-purpose tool. An
+ * interpreter is bounded only in a module named for it, with the reason (`ChildProcessPolicy`'s docblock
+ * states the rule): PowerShell in `dev/ports.ts`, for its two CIM queries. And a streams-on spawn in one of
  * three named modules — the editor that owns the terminal, the browser opener that detaches, and the dev
  * orchestrator that pipes each worker's streams to the terminal and the session log — is not captured.
  * Streams-on means the `spawn` primitive, and its #698 spelling through the shared command spawner,
@@ -132,7 +135,18 @@ const WRAP = /\bwithErrorReporting\s*\(/;
 
 /** What needs no step. Each entry is argued in the docblock above. */
 const POLICY: ChildProcessPolicy = {
-  boundedExecutables: new Set(["git", "lsof", "ps", "taskkill", "WindowsPowerShell/v1.0/powershell"]),
+  boundedExecutables: new Set(["git", "lsof", "ps", "taskkill"]),
+  moduleBoundedExecutables: new Map([
+    [
+      resolve(CLI_SRC, "dev", "ports.ts"),
+      new Map([
+        [
+          "WindowsPowerShell/v1.0/powershell",
+          "Two CIM queries on Windows, with fixed argv and a pid or port as a number literal: which pid listens on a dev port, and that pid's command line and parent.",
+        ],
+      ]),
+    ],
+  ]),
   uncapturedModules: new Set(
     ["platform/browser.ts", "platform/editor.ts", "dev/orchestrator.ts"].map((path) => resolve(CLI_SRC, path)),
   ),
@@ -222,6 +236,21 @@ describe("a long command narrates itself", () => {
       .flat()
       .map((call) => boundedExecutableName(call.executable) ?? call.executable.replace(/^["']|["']$/g, ""));
     for (const executable of POLICY.boundedExecutables) expect(executables, executable).toContain(executable);
+    for (const [file, entries] of POLICY.moduleBoundedExecutables ?? []) {
+      // The module first, so a moved or mistyped key says which module, not only which spelling.
+      expect(report.calls.has(file), `${shown(file)} starts no child, so its bounded entry bounds nothing`).toBe(true);
+      const spelled = (report.calls.get(file) ?? []).map((call) => boundedExecutableName(call.executable));
+      for (const [executable, reason] of entries) {
+        expect(reason.trim(), `${shown(file)} ${executable} names no reason`).not.toBe("");
+        expect(spelled, `${shown(file)} ${executable} (${reason})`).toContain(executable);
+      }
+    }
+  });
+
+  test("no interpreter is bounded in every module", () => {
+    // An interpreter runs whatever it is handed, so its call is bounded only where someone read the
+    // script: a `moduleBoundedExecutables` entry, never the global set (#734).
+    expect(interpretersIn(POLICY.boundedExecutables)).toEqual([]);
   });
 
   /**
