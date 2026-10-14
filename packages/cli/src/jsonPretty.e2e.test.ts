@@ -26,9 +26,19 @@ const ESC = "\u001b";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching the escape byte is the point.
 const ANSI = /\u001b\[[0-9;]*m/g;
 
-/** A child environment with the runner's own color and JSON signals scrubbed, so the bin decides. */
+/**
+ * A child environment with the runner's own color and JSON signals scrubbed, so the bin decides.
+ *
+ * Offline, because `doctor` asks the registry for the latest version on every run: two runs compared
+ * for the same document would otherwise differ whenever one got an answer and the other did not.
+ */
 function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, TERM: "xterm-256color", PITHY_NO_UPDATE_NOTIFIER: "1" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TERM: "xterm-256color",
+    PITHY_NO_UPDATE_NOTIFIER: "1",
+    PITHY_OFFLINE: "1",
+  };
   for (const key of ["NO_COLOR", "FORCE_COLOR", "TEST", "CI", "PITHY_JSON"]) delete env[key];
   return { ...env, ...extra };
 }
