@@ -156,7 +156,7 @@ interface Ruleset {
   target: string;
   enforcement: string;
   conditions: { ref_name: { include: string[]; exclude: string[] } };
-  bypass_actors: { actor_type: string; actor_id: number; bypass_mode: string }[];
+  bypass_actors: { actor_type: string; actor_id: number | null; bypass_mode: string }[];
   rules: Rule[];
 }
 
@@ -258,9 +258,13 @@ describe("the main ruleset", () => {
     expect(ruleset.conditions.ref_name.include).toEqual(["~DEFAULT_BRANCH"]);
   });
 
-  test("lets repository admins past it, and nobody else", () => {
+  // The deploy key is the release workflow's push (#749): the version commit, its tags and `release`. GitHub
+  // will not take GitHub Actions as a bypass actor, and `GITHUB_TOKEN` is not an admin. A `DeployKey` entry
+  // admits every write-enabled deploy key on the repository, and GitHub stores it with no actor id.
+  test("lets repository admins and the release workflow's deploy key past it, and nobody else", () => {
     expect(ruleset.bypass_actors).toEqual([
       { actor_type: "RepositoryRole", actor_id: REPOSITORY_ADMIN_ROLE, bypass_mode: "always" },
+      { actor_type: "DeployKey", actor_id: null, bypass_mode: "always" },
     ]);
   });
 

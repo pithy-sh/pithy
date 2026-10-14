@@ -52,7 +52,7 @@ The pull request template asks for each of these. Link the issue your change clo
 
 The rule is a repository ruleset, committed at `.github/rulesets/main.json` and applied from it. `packages/cli/src/ci/mainRuleset.test.ts` holds that file, and the `CI` job it requires, to the rule. It does not read GitHub, so the live ruleset can drift from the file; `/vet` compares the two before every merge it performs.
 
-Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo.
+Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo. The release workflow's deploy key bypasses it too, which is how a release pushes its version commit; `docs/RELEASING.md` §6 has the key, and why it must stay the only write-enabled one.
 
 To change the rule, edit the file, then apply it. `gh api repos/pithy-sh/pithy/rulesets` lists the id; with no `main` ruleset listed, create it instead:
 

@@ -29,13 +29,13 @@ name: Release
 # `contents: read` and no OIDC, so a compromised dev dependency executing there can neither mint an npm
 # token nor push to `main`.
 #
-# `release` holds `id-token: write` and `contents: write` and runs nothing but the release. That split
+# `release` holds `id-token: write` and the release deploy key, and runs nothing but the release. That split
 # is the point: one job with both would put the publish credential for all 22 packages inside the same
 # process as the test suite.
 #
 # ## Authentication
 #
-# **npm trusted publishing (OIDC).** No `NPM_TOKEN`, no secret in this repository at all. `id-token:
+# **npm trusted publishing (OIDC).** No `NPM_TOKEN`, no npm secret of any kind. `id-token:
 # write` on the release job lets it mint a short-lived OIDC token that npm exchanges for publish rights,
 # and npm generates provenance from it.
 #
@@ -43,12 +43,15 @@ name: Release
 # the `npm-publish` environment is what pins the ref — see the comment on the job. `docs/RELEASING.md`
 # has the one-time setup, including why the very first publish of a brand-new package cannot use OIDC.
 #
+# **The pushes are the one secret.** The release deploy key, in the `npm-publish` environment, is read
+# by the two push steps and nothing else (step 6, #749).
+#
 # `GITHUB_TOKEN` is needed at **version** time, not publish time: `@changesets/changelog-github` calls
 # the GitHub API to attribute every changeset, and `changeset version` exits 1 without it.
 #
 # **The same OIDC identity authenticates step 7.** The dashboard's ingest endpoint takes a GitHub-signed
 # token rather than a shared string, and checks `sub` — `repo:pithy-sh/pithy:environment:npm-publish`.
-# So reporting adds two repository *variables* and no secret, and the claim above stays literally true.
+# So reporting adds two repository *variables* and no secret.
 
 on:
   workflow_dispatch:
@@ -221,7 +224,8 @@ jobs:
     # claim because every trusted publisher is registered with `--env npm-publish`. docs/RELEASING.md §4-5.
     environment: npm-publish
     permissions:
-      contents: write # push the version commit and the tags
+      # Read only: the job pushes as the release deploy key, never as this token (step 6).
+      contents: read
       id-token: write # npm trusted publishing (OIDC) and provenance
     outputs:
       # The version commit this release pushed. Empty on a dry run, which pushes nothing.
@@ -368,13 +372,36 @@ jobs:
       # `changeset publish` just wrote. After the publish on purpose: npm is the source of truth for
       # what exists, and a commit pushed before a failed publish would claim a release that never
       # happened.
-      - name: Commit and push
-        id: push
+      #
+      # **The pushes go out as the release deploy key (#749).** `main`'s ruleset requires a pull request
+      # and lets only admins and deploy keys past it. `GITHUB_TOKEN` is neither, and GitHub will not take
+      # GitHub Actions as a bypass actor. The key is a durable credential, unlike the OIDC tokens above,
+      # so it is read in the two push steps and nowhere else: never on disk while `bun install`, the
+      # build, the publish or the commit hooks run third-party code, and deleted when its step exits.
+      # Each push ignores git hooks and any ssh config, so nothing an earlier step planted runs beside it.
+      # The secret lives in `npm-publish`, which admits only `main`. docs/RELEASING.md §6 says how to
+      # replace it. A push as a key starts workflows where `GITHUB_TOKEN`'s does not; Changesets' tags
+      # are `@pithy-sh/<name>@<version>`, which `integration.yml`'s `v*` does not match.
+      - name: Commit the release
         if: ${{ !inputs.dry_run }}
         run: |
           git add -A
           git commit -m "chore(release): version packages" || echo "Nothing to commit."
-          git push --follow-tags origin HEAD:main
+          # Pushes go over SSH, to GitHub's published host key and no other (`gh api meta`).
+          git remote set-url --push origin git@github.com:pithy-sh/pithy.git
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/github_known_hosts"
+
+      - name: Push to main
+        id: push
+        if: ${{ !inputs.dry_run }}
+        env:
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          export GIT_SSH_COMMAND="ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/github_known_hosts"
+          git -c core.hooksPath=/dev/null push --follow-tags origin HEAD:main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Step 6b. Move `release` to the commit just released (#719).
@@ -383,20 +410,27 @@ jobs:
       # runs ahead of npm between releases, so a plugin read from it would name commands the user's
       # installed `pithy` does not have yet. This is the only thing that moves the branch, and only on a
       # real release, after the publish and the push to `main` — a plugin a user can install is always one
-      # whose CLI is already on npm. A plain push, never forced: `release` only ever follows `main` forward, so a push that
-      # is not a fast-forward is a fact to stop on rather than to overwrite.
+      # whose CLI is already on npm. It pushes as the deploy key, the same way as step 6. A plain push,
+      # never forced: `release` only ever follows `main` forward, so a push that is not a fast-forward is
+      # a fact to stop on rather than to overwrite.
       - name: Move the release branch
         if: ${{ !inputs.dry_run }}
         env:
           SHA: ${{ steps.push.outputs.sha }}
-        run: git push origin "${SHA}:refs/heads/release"
+          DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          export GIT_SSH_COMMAND="ssh -F /dev/null -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/github_known_hosts"
+          git -c core.hooksPath=/dev/null push origin "${SHA}:refs/heads/release"
 
       # Step 7. Tell the dashboard what shipped — staging and production, each on its own.
       #
       # **Two variables and no secret.** The job's `id-token: write` already mints the npm token; it
       # mints one of these per destination too, naming that destination's origin as the audience, so a
       # token minted for staging is not replayable against production. Nothing is held on two sides,
-      # which is why the header above still says there is no secret in this repository at all.
+      # so reporting adds no secret: the deploy key (step 6) is the only one this job reads.
       #
       # **Off because nothing is configured**, rather than because a second switch says so. With neither
       # variable set this prints one line and succeeds.

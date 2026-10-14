@@ -12,9 +12,10 @@ import { describe, expect, test } from "vitest";
  * what every user's Claude Code loads. The workflow pushes it in exactly one step, on a real release only,
  * after the publish and the push to `main`, and never with `--force`. No other workflow names the branch.
  *
- * Nothing on GitHub's side refuses anyone else yet: a ruleset that admits only the workflow needs an
- * identity GitHub accepts as a bypass, and it refuses GitHub Actions itself. `docs/RELEASING.md` says
- * what is open.
+ * The release job pushes as a deploy key (#749), because `main`'s ruleset refuses `GITHUB_TOKEN` and GitHub
+ * will not take GitHub Actions as a bypass actor. Only its two push steps read the key. Nothing on GitHub's
+ * side yet refuses anyone else a push to `release`.
+ * `docs/RELEASING.md` says what is open.
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
@@ -37,7 +38,7 @@ describe("the release workflow moves it", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression is the fixture, not a template.
     expect(move).toContain("SHA: ${{ steps.push.outputs.sha }}");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion is the fixture, not a template.
-    expect(move).toContain('git push origin "${SHA}:refs/heads/release"');
+    expect(move).toContain('push origin "${SHA}:refs/heads/release"');
     expect(move).not.toMatch(/--force|\s\+\$\{?SHA/);
   });
 
@@ -50,8 +51,9 @@ describe("the release workflow moves it", () => {
     const at = (name: string) => release.indexOf(`- name: ${name}\n`);
     expect(at("Version the packages")).toBeLessThan(at("Restamp the kit's OpenAPI document"));
     expect(at("Restamp the kit's OpenAPI document")).toBeLessThan(at("Publish to npm"));
-    expect(at("Publish to npm")).toBeLessThan(at("Commit and push"));
-    expect(at("Commit and push")).toBeLessThan(at("Move the release branch"));
+    expect(at("Publish to npm")).toBeLessThan(at("Commit the release"));
+    expect(at("Commit the release")).toBeLessThan(at("Push to main"));
+    expect(at("Push to main")).toBeLessThan(at("Move the release branch"));
   });
 
   test("and no other workflow names the branch", () => {
@@ -60,5 +62,37 @@ describe("the release workflow moves it", () => {
       .filter((file) => /refs\/heads\/release\b/.test(readFileSync(resolve(WORKFLOWS, file), "utf8")));
     expect(others).toEqual([]);
     expect(release.match(/refs\/heads\/release\b/g)).toHaveLength(1);
+  });
+});
+
+describe("the release workflow pushes as the deploy key", () => {
+  // The key is durable, unlike the job's OIDC tokens, so it is read only where it pushes. A checkout that took
+  // it would leave it on disk through `bun install`, the build, the publish and the commit hooks.
+  const readers = ["Push to main", "Move the release branch"];
+
+  test("in the two steps that push, each loading it for that step alone", () => {
+    for (const name of readers) {
+      const push = step(release, name);
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a GitHub Actions expression is the fixture, not a template.
+      expect(push).toContain("DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}");
+      expect(push).toContain(`trap 'rm -f "$key"' EXIT`);
+      expect(push).toContain("-o StrictHostKeyChecking=yes");
+      // Nothing an earlier step planted runs while the key is on disk: no git hook, no ssh config.
+      expect(push).toContain("git -c core.hooksPath=/dev/null push");
+      expect(push).toContain("ssh -F /dev/null");
+    }
+  });
+
+  test("never in the checkout, or in the step whose commit runs the hooks", () => {
+    for (const checkout of release.split("- name: Checkout\n").slice(1))
+      expect(checkout.split("- name: ")[0]).not.toContain("ssh-key");
+    expect(step(release, "Commit the release")).not.toContain("RELEASE_DEPLOY_KEY");
+  });
+
+  test("and nowhere else in any workflow", () => {
+    const reads = readdirSync(WORKFLOWS)
+      .filter((file) => /\.ya?ml$/.test(file))
+      .flatMap((file) => readFileSync(resolve(WORKFLOWS, file), "utf8").match(/RELEASE_DEPLOY_KEY/g) ?? []);
+    expect(reads).toHaveLength(readers.length);
   });
 });

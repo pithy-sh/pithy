@@ -13,6 +13,11 @@
       "actor_type": "RepositoryRole",
       "actor_id": 5,
       "bypass_mode": "always"
+    },
+    {
+      "actor_type": "DeployKey",
+      "actor_id": null,
+      "bypass_mode": "always"
     }
   ],
   "rules": [

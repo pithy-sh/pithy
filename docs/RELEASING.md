@@ -118,17 +118,28 @@ Then, on npm, set each package's publishing access to **"Require two-factor auth
 
 ### 6. GitHub
 
-**There is nothing to configure.** No `NPM_TOKEN`, no npm secret of any kind. The workflow already declares:
+**No npm secret of any kind.** No `NPM_TOKEN`. The workflow declares:
 
 ```yaml
 permissions:
-  contents: write   # push the version commit and the tags
+  contents: read    # the job pushes as the deploy key, never as GITHUB_TOKEN
   id-token: write   # npm trusted publishing (OIDC) and provenance
 ```
 
-`id-token: write` lets the job mint a short-lived OIDC token that npm exchanges for publish rights. It grants no access to anything else.
+`id-token: write` lets the job mint a short-lived OIDC token that npm exchanges for publish rights. It grants no access to anything else. `GITHUB_TOKEN`, which GitHub provides to every run, only reads.
 
-The only other credential in play is `GITHUB_TOKEN`, which GitHub provides to every workflow run automatically.
+**The push needs a deploy key.** `main`'s ruleset (`.github/rulesets/main.json`) requires a pull request, and lets only repository admins and deploy keys past it. `GITHUB_TOKEN` is neither, and GitHub will not take GitHub Actions as a bypass actor. So the release job pushes the version commit, its tags and `release` over SSH as a deploy key. The key is read only in the two steps that push, and deleted when each exits: unlike the job's OIDC tokens it does not expire, so it is never on disk while `bun install`, the build, the publish or the commit hooks run third-party code. Setting one up, once:
+
+1. The `pithy-sh` organization must allow deploy keys. An org owner, with a token carrying `admin:org` (`gh auth refresh -s admin:org`): `gh api -X PATCH orgs/pithy-sh -F deploy_keys_enabled_for_repositories=true`.
+2. Make the key, add it, store it, and delete the local copy:
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C 'pithy-sh/pithy release workflow' -f ~/release_key
+   gh repo deploy-key add ~/release_key.pub -R pithy-sh/pithy --allow-write --title 'release workflow'
+   gh secret set RELEASE_DEPLOY_KEY -R pithy-sh/pithy --env npm-publish < ~/release_key
+   rm ~/release_key ~/release_key.pub
+   ```
+
+The secret lives in `npm-publish`, which admits only `main`, so a run from any other branch cannot read it. **Keep it the only write-enabled deploy key on the repository.** The ruleset's `DeployKey` bypass admits every one of them, not this one by name. A lost or leaked key is replaced the same way: delete it (`gh repo deploy-key delete <id>`), then run step 2 again. Nothing else names it.
 
 ## Cutting a release, after setup
 
@@ -153,7 +164,7 @@ The `pithy` Claude Code plugin installs from `pithy-sh/pithy#release`, never fro
 
 Three consequences. **The branch does not exist until the first workflow release creates it**, and until then `/plugin marketplace add pithy-sh/pithy#release` has nothing to read. **`bun run release:local` never moves it**: the workflow is the one thing that does. **A failure at that step comes after the publish and the push**: the packages are on npm and `main` is current, and only the plugin is a release behind.
 
-**Two things are open, and both need one answer.** Nothing yet stops anyone with write access from pushing `release` by hand: a ruleset that admits only the workflow needs an identity GitHub accepts as a ruleset bypass, and it refuses GitHub Actions itself. And `main`'s ruleset requires a pull request with only admins past it, so the workflow's push of the version commit to `main` is expected to be refused — the step before this one, and so this one with it. Until that identity is chosen, a release publishes to npm and stops at the push.
+**One thing is open.** Nothing yet stops anyone with write access from pushing `release` by hand. The workflow pushes as the deploy key (§6), which a ruleset can admit, so a ruleset on `release` that only the key bypasses would close it. That is a separate change.
 
 ## The version path to 1.0.0
 
@@ -285,6 +296,8 @@ Nothing is backfilled. Retroactively deciding whether a two-year-old patch was s
 ## Troubleshooting
 
 **`changeset version` exits 1 with a token error.** `@changesets/changelog-github` needs `GITHUB_TOKEN` to attribute changesets. In CI it is provided; locally use `GITHUB_TOKEN=$(gh auth token)`.
+
+**The push to `main` is refused** (`GH013: Repository rule violations`). The job pushed as something the ruleset does not admit. Check that the deploy key is still on the repository (`gh repo deploy-key list`), that `RELEASE_DEPLOY_KEY` is set in `npm-publish` (`gh secret list --env npm-publish`), and that the live ruleset still lists the `DeployKey` bypass (`gh api repos/pithy-sh/pithy/rulesets/<id>`). The packages are already on npm by then, and the version commit and its tags were made on the runner and went with it. Fix the key, then re-run the release: `main` still holds the changesets, so it versions to the same numbers, and the publish skips every package already on the registry. It tags none of them, though — `changeset publish` tags only what it publishes — so tag them from a checkout of the new version commit: `bunx changeset tag` writes every missing `<package>@<version>` tag in the form the publish would have, and `git push --follow-tags origin main` sends them. Then run `replay` and `post` (above) for the dashboard write the failed run never made.
 
 **`changeset version` exits 1 with no changesets.** There is nothing to release. Expected under `@changesets/cli` 3.0.0.
 
