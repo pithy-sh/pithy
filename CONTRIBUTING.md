@@ -52,7 +52,7 @@ The pull request template asks for each of these. Link the issue your change clo
 
 The rule is a repository ruleset, committed at `.github/rulesets/main.json` and applied from it. `packages/cli/src/ci/mainRuleset.test.ts` holds that file, and the `CI` job it requires, to the rule. It does not read GitHub, so the live ruleset can drift from the file; `/vet` compares the two before every merge it performs.
 
-Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo. GitHub Actions bypasses it too, so the release job can push its version commit; `docs/RELEASING.md` §8 says what that trusts, and what to revisit before anyone else gets write access.
+Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo.
 
 To change the rule, edit the file, then apply it. `gh api repos/pithy-sh/pithy/rulesets` lists the id; with no `main` ruleset listed, create it instead:
 
@@ -61,7 +61,6 @@ gh api -X PUT repos/pithy-sh/pithy/rulesets/<id> --input .github/rulesets/main.j
 gh api -X POST repos/pithy-sh/pithy/rulesets --input .github/rulesets/main.json        # create
 ```
 
-`.github/rulesets/release.json` is the second ruleset, and it is applied the same way, with `release.json` as the input. It guards the `release` branch the `pithy` Claude Code plugin installs from: nobody but GitHub Actions may create, update, delete or force-push it, admins included, because the release workflow moves it only once a release is on npm. `packages/cli/src/ci/releaseRuleset.test.ts` holds the file to that; `docs/RELEASING.md` has the rest.
 
 ## The board
 

@@ -130,16 +130,6 @@ permissions:
 
 The only other credential in play is `GITHUB_TOKEN`, which GitHub provides to every workflow run automatically.
 
-### 7. The `release` branch ruleset
-
-`.github/rulesets/release.json` refuses creating, updating, deleting or force-pushing `release` to everyone but GitHub Actions — the app the release workflow's `GITHUB_TOKEN` belongs to. An admin is refused too, unlike on `main`: an admin pushing `release` by hand would ship a plugin whose CLI is not on npm. Apply it with the same `gh api` commands `CONTRIBUTING.md` gives for `main.json`, with `release.json` as the input. `packages/cli/src/ci/releaseRuleset.test.ts` holds the file and the workflow step to that rule; it does not read GitHub, so apply the file whenever it changes.
-
-### 8. GitHub Actions past `main`'s review rule
-
-The release job pushes its version commit straight to `main` with the workflow's `GITHUB_TOKEN`, and `main`'s ruleset requires a pull request. So `.github/rulesets/main.json` lets GitHub Actions past it, beside repository admins. Apply it the way `CONTRIBUTING.md` says whenever it changes.
-
-**A bypass for Actions is a bypass for every workflow run, and that is the boundary to know.** GitHub cannot tell which workflow pushed. On `main`, exactly one job may hold a token that writes contents — the Release job, dispatched by hand and admitted only by the `npm-publish` environment — and `packages/cli/src/ci/mainRuleset.test.ts` fails on a second writer, a top-level grant, `write-all`, or a new trigger on the release. What no test can see is a workflow on another branch: anyone with **write access** can push one that writes contents, and its run gets the same bypass, onto `main` and onto `release`. A fork's pull request cannot, because its token is read-only and its workflow edits never run with write access. So the trust boundary of both bypasses is the list of people with write access. **Before granting anyone write access, revisit both rulesets:** a GitHub App whose token alone may bypass, or a version pull request in place of the push, takes the boundary back to the release job.
-
 ## Cutting a release, after setup
 
 ```bash
@@ -161,7 +151,9 @@ A release with no changesets **fails** rather than passing quietly — `@changes
 
 The `pithy` Claude Code plugin installs from `pithy-sh/pithy#release`, never from `main`. `main` runs ahead of npm between releases, so a plugin read from it would name commands the installed `pithy` does not have yet. So `release` moves in one step of the workflow, on a real release only, after the publish and the push to `main`: a plugin anyone can install is always one whose CLI is already on npm. It is a plain push, never forced. `release` only ever follows `main` forward, so a push that is not a fast-forward fails rather than overwriting. The plugin's version is the CLI's, stamped by the `version` script, and Claude Code keeps a user's cached copy until that string moves, so the plugin updates once per release and never between.
 
-Three consequences. **The branch does not exist until the first workflow release creates it**, and until then `/plugin marketplace add pithy-sh/pithy#release` has nothing to read. **`bun run release:local` never moves it**, because a laptop is not the app the ruleset admits. **A failure at that step comes after the publish and the push**: the packages are on npm and `main` is current, and only the plugin is a release behind.
+Three consequences. **The branch does not exist until the first workflow release creates it**, and until then `/plugin marketplace add pithy-sh/pithy#release` has nothing to read. **`bun run release:local` never moves it**: the workflow is the one thing that does. **A failure at that step comes after the publish and the push**: the packages are on npm and `main` is current, and only the plugin is a release behind.
+
+**Two things are open, and both need one answer.** Nothing yet stops anyone with write access from pushing `release` by hand: a ruleset that admits only the workflow needs an identity GitHub accepts as a ruleset bypass, and it refuses GitHub Actions itself. And `main`'s ruleset requires a pull request with only admins past it, so the workflow's push of the version commit to `main` is expected to be refused — the step before this one, and so this one with it. Until that identity is chosen, a release publishes to npm and stops at the push.
 
 ## The version path to 1.0.0
 

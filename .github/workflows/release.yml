@@ -383,8 +383,7 @@ jobs:
       # runs ahead of npm between releases, so a plugin read from it would name commands the user's
       # installed `pithy` does not have yet. This is the only thing that moves the branch, and only on a
       # real release, after the publish and the push to `main` — a plugin a user can install is always one
-      # whose CLI is already on npm. `.github/rulesets/release.json` lets this workflow and nothing else
-      # update it. A plain push, never forced: `release` only ever follows `main` forward, so a push that
+      # whose CLI is already on npm. A plain push, never forced: `release` only ever follows `main` forward, so a push that
       # is not a fast-forward is a fact to stop on rather than to overwrite.
       - name: Move the release branch
         if: ${{ !inputs.dry_run }}

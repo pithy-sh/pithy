@@ -13,11 +13,6 @@
       "actor_type": "RepositoryRole",
       "actor_id": 5,
       "bypass_mode": "always"
-    },
-    {
-      "actor_type": "Integration",
-      "actor_id": 15368,
-      "bypass_mode": "always"
     }
   ],
   "rules": [
