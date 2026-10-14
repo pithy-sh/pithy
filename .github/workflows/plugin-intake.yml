@@ -28,4 +28,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
-        run: gh issue edit "$ISSUE" --repo "$REPO" --add-label "from: pithy-plugin" --add-label needs-triage
+        # A block scalar, because the label's own `: ` ends a plain one and GitHub then cannot parse the file.
+        run: |
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label "from: pithy-plugin" --add-label needs-triage
