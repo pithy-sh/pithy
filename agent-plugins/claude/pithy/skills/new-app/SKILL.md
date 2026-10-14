@@ -54,4 +54,4 @@ In order:
 
 ## 5. Report
 
-What exists now, in a few lines: the project, its Workers, its capabilities, the clients, and the one command that runs it all locally (`pithy dev`). Name anything left undecided, and anything an agent filed with `/report-kit-gap`.
+What exists now, in a few lines: the project, its Workers, its capabilities, the clients, and the one command that runs it all locally (`pithy dev`). Name anything left undecided, and anything an agent filed with `/report-kit-gap`. When they are ready to put it on Cloudflare, `/deploy` takes it to staging or production and connects the dashboard.

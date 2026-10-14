@@ -40,6 +40,21 @@ export const NextKey = z
   .optional()
   .describe("Follow-ups this run left required, in the order to run them. Absent when there are none, never empty.");
 
+/**
+ * **`offers` is the optional sibling of `next` (#757).** A follow-up the run found worth putting to the person
+ * and did not require, in the same `{ command, why }` shape: an agent asks before it runs one, and acts on a
+ * `next` without asking. Two keys rather than one, because a list an agent must judge item by item is the
+ * thing `next` exists to never be. Absent when there are none, never empty, never on a dry run or a failed
+ * run. `contract/offerKeys.test.ts` holds every payload to this schema.
+ */
+export const OffersKey = z
+  .array(NextStep)
+  .min(1)
+  .optional()
+  .describe(
+    "Follow-ups worth putting to the person, which this run did not require. Ask before running one. Absent when there are none, never empty.",
+  );
+
 /** `steps`, or no key at all when there are none: `formatJsonLine` drops an `undefined` member. */
 export function nextOrAbsent(steps: readonly NextStep[]): NextStep[] | undefined {
   return steps.length === 0 ? undefined : [...steps];

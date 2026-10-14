@@ -29,7 +29,7 @@ A plugin's version is the `pithy` CLI's version, so an update arrives once per r
 | `server` | Sonnet, medium | The Worker: `pithy.config.ts`, capabilities, app routes, migrations. |
 | `client-web` | Sonnet, medium | A React app in the same Worker: `pithy ui add react`, `@pithy-sh/vite`, `@pithy-sh/ui-react`, the kit's TypeScript clients. Cookie sessions with CSRF, or bearer. |
 | `client-mobile` | Sonnet, medium | A React Native app from the app stores: bearer tokens in secure device storage, device headers at sign-in, OAuth with PKCE and deep links. |
-| `runner` | Haiku, low. Bash and Read only. | Runs `pithy dev`, the tests, typecheck and builds. Returns a summary, never raw logs. |
+| `runner` | Haiku, low. Bash and Read only. | Runs `pithy dev`, the tests, typecheck and builds, and deploys an environment you approved. Returns a summary, never raw logs. |
 
 Web and mobile are two agents because they authenticate two ways. One agent holding both would mix them.
 
@@ -41,13 +41,24 @@ Every agent's model and effort are settings: `server_model`, `server_effort`, `c
 echo '{"server_model": "opus", "server_effort": "high"}' | claude plugin configure pithy@pithy --values-stdin
 ```
 
-`/new-app` passes your choice on every agent it dispatches, and it outranks the agent's own default. An agent the main session reaches for on its own, outside `/new-app`, runs on its own default: a plugin cannot put a setting into an agent's definition, and it cannot set the main session's model either, so that one is yours to set.
+`/new-app` and `/deploy` pass your choice on every agent they dispatch, and it outranks the agent's own default. An agent the main session reaches for on its own, outside those skills, runs on its own default: a plugin cannot put a setting into an agent's definition, and it cannot set the main session's model either, so that one is yours to set.
 
 ## The skills
 
 - `/new-app`: asks what `pithy init` asks — web, mobile or both — then scaffolds the project, adds the capabilities, and brings in only the agents the answer needs.
 - `/app-design`: settles the capabilities, the data model and the auth flows before any code.
+- `/deploy`: takes the app to staging or production, and connects the dashboard. See below.
 - `/report-kit-gap`: files what the kit cannot do against `pithy-sh/pithy`. It searches first, comments on a match, never includes your code or a secret, files only on your yes, and marks the workaround so it is removed when the fix ships.
+
+## Deploy, and connect the dashboard
+
+Ask for a deploy in any session, days into a build or on the first: `/deploy`, or just say so. The team checks your Cloudflare credentials, shows what it will create on your account, and asks. On your yes the runner provisions, migrates and deploys that one environment, and reports each Worker's address.
+
+- **A yes is for one environment.** A yes to staging is not a yes to production.
+- **Production takes a phrase you type.** `yes, i really want to provision prod`. The team passes it on exactly as typed and never writes it itself.
+- **Then the dashboard.** After a staging or production deploy with no connection, it offers to connect the [Pithy dashboard](https://app.pithy.sh). On your yes it gives you a sign-in address and a short code, and you approve the connection in your browser.
+
+It never runs `pithy remove` or a rollback. Those stay yours.
 
 ## Building against the contract
 

@@ -328,7 +328,11 @@
         "$.next": "array?",
         "$.next[]": "object",
         "$.next[].command": "string",
-        "$.next[].why": "string"
+        "$.next[].why": "string",
+        "$.offers": "array?",
+        "$.offers[]": "object",
+        "$.offers[].command": "string",
+        "$.offers[].why": "string"
       },
       "events": {
         "$": "object",

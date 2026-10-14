@@ -41,6 +41,20 @@ const shipped = vi.hoisted(() => ({ rows: [] as unknown[] }));
  */
 const narrating = vi.hoisted(() => ({ on: false }));
 
+/**
+ * What the stubbed dashboard offer returns, and what it was asked (#757). Its condition is
+ * `dashboard/deployOffer.test.ts`'s; this file asks only that the deploy hands it the run's facts and prints it.
+ */
+const offered = vi.hoisted(() => ({ steps: undefined as unknown, asked: [] as unknown[] }));
+
+vi.mock("../dashboard/deployOffer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../dashboard/deployOffer")>()),
+  dashboardOffers: async (options: unknown) => {
+    offered.asked.push(options);
+    return offered.steps;
+  },
+}));
+
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
 const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
 
@@ -509,6 +523,47 @@ describe("the two halves", () => {
       expect(Object.hasOwn(JSON.parse(await invoke({ env: "staging", apps: true })), "next")).toBe(false);
     } finally {
       counted.ledger = { pending: 0, undeclared: [] };
+    }
+  });
+
+  /**
+   * **A named environment with no dashboard is offered one, as `offers`, never as `next` (#757).**
+   * Connecting is the person's choice, so the run states it and leaves it to them: the `--json` line carries it
+   * under its own key, and the human output says it in one line before `Done.`.
+   */
+  test("offers names the dashboard connect the offer returned, and the human output says it", async () => {
+    const step = {
+      command: "pithy dashboard connect --env staging --worker api",
+      why: "staging is not connected to a dashboard. Connecting opens a browser sign-in, so it is a person's to approve.",
+    };
+    offered.steps = [step];
+    offered.asked.length = 0;
+    try {
+      const line = JSON.parse(await invoke({ env: "staging", apps: true }));
+      expect(line.offers).toEqual([step]);
+      expect(Object.hasOwn(line, "next")).toBe(false);
+      expect(offered.asked[0]).toMatchObject({ env: "staging", failed: false, account: ACCOUNT });
+      await expectConforms("deploy", await invoke({ env: "staging", apps: true }));
+
+      const { out } = await invokeRun({ env: "staging", apps: true, json: false });
+      expect(out).toBe(
+        "staging is not connected to a dashboard. Connect it with `pithy dashboard connect --env staging --worker api`.\nDone.\n",
+      );
+    } finally {
+      offered.steps = undefined;
+    }
+    expect(Object.hasOwn(JSON.parse(await invoke({ env: "staging", apps: true })), "offers")).toBe(false);
+    expect((await invokeRun({ env: "staging", apps: true, json: false })).out).toBe("Done.\n");
+  });
+
+  test("a failed run hands the offer its failure, so it offers nothing over a broken deploy", async () => {
+    shipped.rows = [{ name: "acme-api", ok: false, error: "wrangler deploy failed." }];
+    offered.asked.length = 0;
+    try {
+      await invokeRun({ env: "staging", apps: true });
+      expect(offered.asked[0]).toMatchObject({ failed: true });
+    } finally {
+      shipped.rows = [];
     }
   });
 

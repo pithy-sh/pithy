@@ -11,6 +11,7 @@ import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
 import { EVENTS_ARG, EVENTS_NEED_JSON, eventsOption, eventsRecord } from "../contract/events";
+import { dashboardOfferLine, dashboardOffers } from "../dashboard/deployOffer";
 import { branchIdentityWithoutWorkers } from "../feature/identity";
 import { assertProjectDeclaresNoFeatureIds } from "../feature/ratelimits";
 import { establishedPending } from "../migrations/pendingCount";
@@ -37,7 +38,7 @@ import { optionalEnvArg, requireEnvironment, requireManagedEnvironment } from ".
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { EXIT } from "../terminal/exitClass";
-import { deployNext, NextKey } from "../terminal/nextSteps";
+import { deployNext, NextKey, OffersKey } from "../terminal/nextSteps";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -263,6 +264,7 @@ const DeployPayload = z
     dryRun: z.boolean().describe("Whether this was `--dry-run`. Nothing was uploaded when it is `true`."),
     plan: PlanKey,
     next: NextKey,
+    offers: OffersKey,
   })
   .describe("What `pithy deploy` shipped, or under `--dry-run` would.");
 
@@ -390,6 +392,9 @@ export default withContract(
             : null;
           const kitFailed = kit !== null && kitDeployFailed(kit);
           const failed = appsFailed || kitFailed;
+          // The dashboard, offered to a named environment that has none (#757). An offer, not a `next`: connecting
+          // is the person's to choose, and its sign-in is theirs to approve.
+          const offers = await dashboardOffers({ projectDir, env, account, failed });
 
           if (args.json) {
             // `pithy migrate`, when the schema this deploy shipped against is behind it (#697). Absent otherwise.
@@ -407,6 +412,7 @@ export default withContract(
                 kitProblems: kit?.problems ?? null,
                 dryRun: false,
                 next,
+                offers,
               })}\n`,
             );
             if (failed) process.exitCode = runExit(deploys, appsFailed);
@@ -431,6 +437,7 @@ export default withContract(
             process.exitCode = runExit(deploys, appsFailed); // The per-worker lines are the report; non-zero for CI.
             return;
           }
+          if (offers) process.stdout.write(`${dashboardOfferLine(env as string, offers)}\n`);
           process.stdout.write(`${formatDone()}\n`);
         },
         eventsOption("deploy", args),

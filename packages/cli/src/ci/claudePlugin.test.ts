@@ -37,7 +37,7 @@ const TEAM = [
   { agent: "runner", key: "runner", model: "haiku", effort: "low" },
 ] as const;
 
-const SKILLS = ["new-app", "app-design", "report-kit-gap"] as const;
+const SKILLS = ["new-app", "app-design", "deploy", "report-kit-gap"] as const;
 
 interface UserConfigEntry {
   type: string;
@@ -283,6 +283,67 @@ describe("the skills", () => {
     const workflow = readFileSync(join(REPO_ROOT, ".github", "workflows", "plugin-intake.yml"), "utf8");
     expect(workflow).toContain(`contains(github.event.issue.body, '${marker}')`);
     expect(workflow).toContain('--add-label "from: pithy-plugin" --add-label needs-triage');
+  });
+});
+
+/**
+ * **`/deploy` takes an app to a named environment on the person's word, and offers the dashboard after (#757).**
+ *
+ * A deploy comes days into a build, in a session that may never have run `/new-app`, so it is a skill of its own
+ * whose description an agent matches. What it may do is held here, because each rule is a sentence an edit could
+ * quietly soften: a yes is per environment, a production phrase comes only from the person, exit 5 stops the
+ * team, and the dashboard is offered, never connected unasked.
+ */
+describe("the deploy skill", () => {
+  const skill = () => skillSource("deploy");
+  const runner = () => agentSource("runner");
+
+  test("is found by what a person says when they want it", () => {
+    const description = frontmatter(skill()).description ?? "";
+    for (const words of ["deploy", "staging", "production", "go live", "connect the dashboard"]) {
+      expect(description).toContain(words);
+    }
+  });
+
+  test("checks, plans and asks before anything touches the account", () => {
+    const source = skill();
+    expect(source.indexOf("pithy doctor --json")).toBeLessThan(source.indexOf("## 3. Ask"));
+    expect(source.indexOf("--dry-run --json")).toBeLessThan(source.indexOf("## 3. Ask"));
+    expect(source).toMatch(/A yes for staging is not a yes for production/);
+  });
+
+  test("provisions, migrates and deploys, in that order", () => {
+    const source = skill();
+    const at = (command: string) => source.indexOf(command);
+    expect(at("pithy provision --env <env> --yes")).toBeGreaterThan(-1);
+    expect(at("pithy provision --env <env> --yes")).toBeLessThan(at("pithy migrate --env <env>"));
+    expect(at("pithy migrate --env <env>")).toBeLessThan(at("pithy deploy --env <env>"));
+  });
+
+  test("passes a production phrase only as the person typed it, and stops on exit 5", () => {
+    expect(skill()).toMatch(/Pass what they typed to `--confirm` verbatim, and never write the phrase yourself/);
+    expect(skill()).toMatch(/Exit 5 means stop/);
+    expect(runner()).toMatch(/Never write a confirmation phrase yourself/);
+    expect(runner()).toMatch(/exits 5, `core\/person_required`, is a step only the person may take/);
+  });
+
+  test("the runner deploys only on the person's word, and never removes or rolls back", () => {
+    expect(runner()).toMatch(/only when the caller says the person approved that environment in this conversation/);
+    expect(runner()).toMatch(/Never run `pithy remove` or a rollback/);
+  });
+
+  test("offers the dashboard from offers, never as next, and runs the connect itself", () => {
+    expect(skill()).toMatch(/`offers` is not `next`/);
+    expect(skill()).toContain("pithy dashboard status --env <env> --json");
+    expect(skill()).toMatch(/run the command `offers` names yourself, not through the runner/);
+    expect(runner()).toMatch(/Never `pithy dashboard connect`/);
+  });
+
+  test("new-app points at it, and the README says what it asks first", () => {
+    expect(skillSource("new-app")).toContain("`/deploy`");
+    const readme = readFileSync(join(PITHY, "README.md"), "utf8");
+    expect(readme).toMatch(/## Deploy, and connect the dashboard/);
+    expect(readme).toMatch(/A yes to staging is not a yes to production/);
   });
 });
 
