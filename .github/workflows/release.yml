@@ -438,6 +438,11 @@ jobs:
   # **The trust pins three claims**: this repository's numeric id, `refs/heads/main`, and the
   # `leed-release` environment. That environment carries no protection rules, so the job never waits on
   # an approval. A dry run previews the same range against the dispatched commit and schedules nothing.
+  #
+  # **It schedules documentation and blog pages, and nothing else.** The trust names its page types: docs
+  # (`xhvsgc`) and blog posts (`caw3pw`), so a post revised for a release ships with it. A page of any other
+  # type stamped with a commit in the range is left where it is. A trust cannot be edited; widening it is a
+  # new trust, a new `audience` here, and the old one revoked once this has merged.
   docs:
     name: Schedule the docs
     needs: release
@@ -478,7 +483,7 @@ jobs:
       - name: Schedule
         uses: Leed-AI/schedule-release@v1
         with:
-          audience: leed-cms:ecb612e5-2137-423e-bc75-66dde4fe24f8
+          audience: leed-cms:681cf409-312c-4122-aa59-0af1d52b00be
           since: ${{ steps.range.outputs.since }}
           until: ${{ steps.range.outputs.until }}
           publish-at: ${{ steps.range.outputs.publish_at }}
