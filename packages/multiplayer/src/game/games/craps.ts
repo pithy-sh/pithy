@@ -71,6 +71,20 @@ export const CrapsRound = z
   .describe("The craps round state.");
 export type CrapsRound = z.infer<typeof CrapsRound>;
 
+/** The craps round as a player sees it — the shooter by user id rather than by roster index. */
+export const CrapsRoundView = z
+  .object({
+    phase: z.enum(["come-out", "point"]).describe("`come-out` (no point yet) or `point` (rolling to make the point)."),
+    point: z.number().int().nullable().describe("The established point (4,5,6,8,9,10), or null on the come-out."),
+    shooter: z.string().nullable().describe("The user id of the shooter — the only player who may roll."),
+    lastRoll: z
+      .tuple([z.number(), z.number()])
+      .nullable()
+      .describe("The two dice of the last roll, or null before the first."),
+  })
+  .describe("The craps round, as every player at the table sees it.");
+export type CrapsRoundView = z.infer<typeof CrapsRoundView>;
+
 /** The field bet's one-roll outcome for a dice sum: a win multiplier (1 or 2), or null to lose. */
 function fieldWin(sum: number): number | null {
   if (sum === 2 || sum === 12) return 2;
@@ -170,7 +184,8 @@ export const crapsGame = wageringTable<CrapsConfig, CrapsRound, CrapsBet>({
     return { round: { phase, point, shooterIndex, lastRoll: [d1, d2] as [number, number] }, decisions };
   },
 
-  view: (ctx, round) => ({
+  roundView: CrapsRoundView,
+  view: (ctx, round): CrapsRoundView => ({
     phase: round.phase,
     point: round.point,
     shooter: ctx.players[round.shooterIndex % Math.max(1, ctx.players.length)] ?? null,

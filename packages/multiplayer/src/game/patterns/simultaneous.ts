@@ -48,11 +48,37 @@ export function simultaneous<Config, Submission>(
       submissions: z.record(z.string(), spec.submission).describe("Each player's hidden submission, keyed by user id."),
     })
     .describe(`The ${spec.kind} game's persisted submissions.`);
+  const view = z
+    .object({
+      you: z
+        .object({
+          userId: z.string().describe("Your user id."),
+          submitted: z.boolean().describe("Whether you have submitted."),
+          submission: spec.submission.nullable().describe("Your own submission, or null before you submit."),
+        })
+        .describe("Your side of the game. Your own submission is always visible to you."),
+      opponents: z
+        .array(
+          z
+            .object({
+              userId: z.string().describe("The opponent's user id."),
+              submitted: z.boolean().describe("Whether they have submitted. Visible from the start."),
+              submission: spec.submission
+                .nullable()
+                .describe("Their submission — null until the session is terminal, then revealed."),
+            })
+            .describe("One opponent, as you may see them."),
+        )
+        .describe("Every other player, in join order."),
+    })
+    .describe(`What one player sees of a ${spec.kind} game: their own submission, and who else has submitted.`);
 
   return {
     kind: spec.kind,
     config: spec.config,
     state,
+    action: spec.submission,
+    view,
     minPlayers: spec.minPlayers,
     maxPlayers: spec.maxPlayers,
 

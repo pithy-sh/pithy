@@ -40,6 +40,18 @@ const app = defineCapability({
     );
     a.post("/raw", (c) => c.text("raw"));
   },
+  sockets: [
+    {
+      name: "appRoom",
+      path: "/rooms/:id/socket",
+      summary: "Play in a room.",
+      verification: "public",
+      params: Who,
+      versions: { current: "app.room.v1", previous: null },
+      send: [{ name: "state", summary: "The room.", schema: Greeting }],
+      receive: [{ name: "ping", summary: "Keep it open.", text: "ping" }],
+    },
+  ],
 });
 
 export default { domains: {}, capabilities: [], app };
@@ -91,8 +103,15 @@ describe("pithy contract", () => {
         operations: 3,
         undescribed: [{ method: "POST", path: "/raw" }],
         changed: true,
+        asyncapi: { path: join("apps", "api", "asyncapi.json"), channels: 1, changed: true },
       },
     ]);
+    const sockets = JSON.parse(await readFile(join(dir, "apps", "api", "asyncapi.json"), "utf8")) as {
+      asyncapi: string;
+      channels: Record<string, { address: string }>;
+    };
+    expect(sockets.asyncapi).toBe("3.0.0");
+    expect(sockets.channels.appRoom?.address).toBe("/rooms/{id}/socket");
 
     const document = JSON.parse(await readFile(join(dir, "apps", "api", "openapi.json"), "utf8")) as {
       info: { title: string };
@@ -110,9 +129,30 @@ describe("pithy contract", () => {
 
     const { code } = await pithy(["contract", "--worker", "api", "--out", "contracts", "--json"]);
     expect(code).toBe(0);
-    expect(await readFile(join(dir, "contracts", "api", "openapi.json"), "utf8")).toBe(
-      await readFile(join(dir, "apps", "api", "openapi.json"), "utf8"),
-    );
+    for (const file of ["openapi.json", "asyncapi.json"]) {
+      expect(await readFile(join(dir, "contracts", "api", file), "utf8")).toBe(
+        await readFile(join(dir, "apps", "api", file), "utf8"),
+      );
+    }
+  }, 60_000);
+
+  test("a Worker that stops serving a socket loses its generated asyncapi.json, never a hand-written one", async () => {
+    const config = join(dir, "apps", "api", "pithy.config.ts");
+    const withSocket = await readFile(config, "utf8");
+    try {
+      await writeFile(config, withSocket.replace(/\n {2}sockets: \[[\s\S]*?\n {2}\],\n/, "\n"));
+      const { stdout } = await pithy(["contract", "--json"]);
+      expect((JSON.parse(stdout) as { workers: { asyncapi: unknown }[] }).workers[0]?.asyncapi).toBeNull();
+      await expect(readFile(join(dir, "apps", "api", "asyncapi.json"), "utf8")).rejects.toThrow();
+
+      const mine =
+        '{ "asyncapi": "3.0.0", "info": { "title": "Mine", "version": "1", "description": "Hand-written." } }\n';
+      await writeFile(join(dir, "apps", "api", "asyncapi.json"), mine);
+      await pithy(["contract", "--json"]);
+      expect(await readFile(join(dir, "apps", "api", "asyncapi.json"), "utf8")).toBe(mine);
+    } finally {
+      await writeFile(config, withSocket);
+    }
   }, 60_000);
 
   test("refuses an environment that is not one, before composing anything", async () => {
@@ -130,14 +170,23 @@ describe("renderReport", () => {
       operations: 3,
       undescribed: [{ method: "POST", path: "/raw" }],
       changed: true,
+      asyncapi: { path: "apps/api/asyncapi.json", channels: 1, changed: false },
     });
     expect(lines[0]).toBe("api: 3 operations. Wrote apps/api/openapi.json.");
+    expect(lines[1]).toBe("api: 1 socket. Unchanged: apps/api/asyncapi.json.");
     expect(lines.join("\n")).toContain("POST /raw");
   });
 
   test("an unchanged document says so, and a fully described Worker is one line", () => {
     expect(
-      renderReport({ worker: "api", path: "apps/api/openapi.json", operations: 1, undescribed: [], changed: false }),
+      renderReport({
+        worker: "api",
+        path: "apps/api/openapi.json",
+        operations: 1,
+        undescribed: [],
+        changed: false,
+        asyncapi: null,
+      }),
     ).toEqual(["api: 1 operations. Unchanged: apps/api/openapi.json."]);
   });
 });

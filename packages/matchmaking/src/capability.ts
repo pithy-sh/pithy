@@ -10,6 +10,7 @@ import { registerMatchmakingRoutes } from "./http/routes";
 import { ROOM_PREFIX, Room, RoomKey } from "./kv/rooms";
 import { matchmaking_0001_matchmaking } from "./migrations/0001_matchmaking";
 import { type MatchmakingPeers, matchmakingPeers } from "./peers";
+import { presenceSocket } from "./presence/channel";
 import { matchmakingExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -98,6 +99,8 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
       peers = matchmakingPeers(capabilities, resolved);
     },
     routes: registerMatchmakingRoutes({ config: resolved, basePath, peers: () => peers }),
+    // The presence socket, for the AsyncAPI contract: mounted where the routes put its upgrade.
+    sockets: [presenceSocket(basePath)],
     seeds: [matchmakingExampleSeed],
   });
 

@@ -568,6 +568,40 @@ jobs:
           validate .
           for plugin in agent-plugins/claude/*/; do validate "$plugin"; done
 
+  # The Unity client (#718): the pinned `openapi-generator` turns the kit's OpenAPI contract into a C#
+  # client with `--library unityWebRequest`, the one a Unity build on IL2CPP and WebGL can run. The
+  # `pithy-games` plugin's `client-unity` agent and its README name the same image, and
+  # `claudePlugin.test.ts` holds all three to one constant, so a version bump moves them together.
+  #
+  # Generated, never compiled: the client calls `UnityEngine.Networking.UnityWebRequest`, which only exists
+  # in Unity's own assemblies, and no runner has those. What this proves is the half Pithy owns — that its
+  # contract is one the generator accepts and turns into a client. 7.10.0 did not: it crashed on the
+  # OpenAPI 3.1 document. Compilation is the adopter's Unity project, and the guide says so.
+  #
+  # Every pull request, never narrowed: the document is whole-repo, and any route can break generation.
+  unity-client:
+    name: Unity client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Generate the C# client from the kit's contract
+        run: |
+          set -euo pipefail
+          docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/local" \
+            openapitools/openapi-generator-cli:v7.26.0 generate \
+            -i /local/docs/openapi.generated.json -g csharp --library unityWebRequest \
+            -o /local/.unity-client --additional-properties=packageName=Pithy.Client
+          # The generator exits 0 on some failures it only logs, so the output is checked too.
+          test -f .unity-client/src/Pithy.Client/Client/ApiClient.cs
+          apis="$(find .unity-client/src/Pithy.Client/Api -name '*.cs' | wc -l)"
+          echo "Generated ${apis} API classes."
+          test "${apis}" -gt 10
+
   # The CLI's Windows set (#702): `*.windows.test.ts` in `packages/cli`, and nothing else. CI ran on Linux
   # alone, so #698 shipped with every `pithy add` dying on `ENOENT` on Windows and every check green. The
   # whole suite is not run here — the Workers suites, the clean room and the Node matrix test nothing that
@@ -641,7 +675,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room, windows, plugins]
+    needs: [plan, verify, test, test-node, clean-room, windows, plugins, unity-client]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

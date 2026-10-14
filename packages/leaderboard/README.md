@@ -12,6 +12,11 @@ pithy add leaderboard
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## Clients
+
+A web app the Worker serves calls the routes through `@pithy-sh/leaderboard/src/client/api`, on its own origin and nowhere else. A mobile app or a game engine generates its client from the Worker's `openapi.json`, which `pithy contract` writes.
+
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

@@ -47,7 +47,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy env [--worker <name>]` | Report each Worker's deployment environments (`dev`/`staging`/`prod`), their bindings, resolved ids, and dashboard links — read-only, switches nothing |
 | `pithy dashboard <connect\|rotate\|revoke-key\|disconnect\|status>` | Register, rotate, revoke, and inspect a management client's access to this project — project-wide and **per environment**, never per Worker. `connect` resolves the Worker's address and the seam's base path from the project (it prints both and where they came from; `--worker-url` overrides, and `--worker <name>` is required when a project has several Workers), runs a browser device-code flow, writes the trusted public key into your own D1, and reports connected only once a signed ping round-trips; `--public-key` registers a key you generated yourself, with no dashboard involved. `revoke-key` pulls one leaked key and leaves the connection standing; `disconnect` removes the lot. Both are local, immediate, and need nothing from the client. See `docs/CONTROL-PLANE.md` |
 | `pithy deploy` | Deploy to Cloudflare Workers. A Worker carrying a UI builds it first — its manifest's `ui.build`, then `wrangler deploy` (see [`commands/ui.md`](commands/ui.md)) |
-| `pithy contract [--worker <name>] [--out <dir>] [--env <name>]` | Write each Worker's OpenAPI document, read off the app it composes: every route's parameters, body, responses and verification, with every field's description. A client in any language generates its calls from it (see [`commands/contract.md`](commands/contract.md)) |
+| `pithy contract [--worker <name>] [--out <dir>] [--env <name>]` | Write each Worker's OpenAPI document, read off the app it composes: every route's parameters, body, responses and verification, with every field's description. A Worker that serves a socket gets an AsyncAPI document beside it, with every frame. A client in any language generates its calls from them (see [`commands/contract.md`](commands/contract.md)) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
 | `pithy docs <connect\|disconnect\|status>` | Point your AI coding agent at the Pithy documentation server — writes the `pithy` MCP entry into whichever of ten clients this machine has (Claude Code, Cursor, VS Code, Codex, Zed, Goose, …), merging into each tool's own file and leaving every other server in it alone. `--scope project` commits it for the team, `--scope user` follows you; a file it cannot parse is refused with the snippet to paste, never rewritten. No credential is written or read — the client runs the OAuth flow (see [`commands/docs.md`](commands/docs.md)) |
@@ -178,7 +178,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 |---|---|
 | `pithy add` | [`commands/add.md`](commands/add.md) — Install a capability into a Worker |
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
-| `pithy contract` | [`commands/contract.md`](commands/contract.md) — Write each Worker's OpenAPI document |
+| `pithy contract` | [`commands/contract.md`](commands/contract.md) — Write each Worker's OpenAPI and AsyncAPI documents |
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
 | `pithy deploy` | [`commands/deploy.md`](commands/deploy.md) — Deploy to Cloudflare Workers |
 | `pithy dev` | [`commands/dev.md`](commands/dev.md) — Run every Worker the project composes locally under one supervisor |
@@ -862,7 +862,7 @@ COMMANDS
      worker    Manage the project's Workers under apps/ (the dev/deploy registry)
          ui    Scaffold and wire a front end served by one of the project's Workers
     upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
-   contract    Write each worker's OpenAPI document
+   contract    Write each worker's OpenAPI and AsyncAPI documents
 
   Develop
         dev    Run every worker locally under one supervisor

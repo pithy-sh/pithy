@@ -17,23 +17,37 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { EXIT } from "../terminal/exitClass";
-import { KIT_CONTRACT_PATH, kitDocument } from "./kitDocument";
+import {
+  KIT_CONTRACT_PATH,
+  KIT_SOCKET_CONTRACT_PATH,
+  kitComposition,
+  kitDocument,
+  kitSocketDocument,
+  kitSocketGroups,
+} from "./kitDocument";
 import { renderDocument } from "./workerContract";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-const path = join(REPO_ROOT, KIT_CONTRACT_PATH);
-const expected = renderDocument(kitDocument());
+const { capabilities, groups } = kitComposition();
+const documents = [
+  { file: KIT_CONTRACT_PATH, expected: renderDocument(kitDocument(groups)) },
+  { file: KIT_SOCKET_CONTRACT_PATH, expected: renderDocument(kitSocketDocument(kitSocketGroups(capabilities))) },
+];
 
-// `readOptionalFile`, not a swallowed `readFileSync`: absent means "write it", and every other failure has
-// to be loud, for the reason `writeCatalog.ts` gives.
-const actual = await readOptionalFile(path);
-
-if (actual === expected) {
-  process.stdout.write(`${KIT_CONTRACT_PATH} is current.\n`);
-} else if (process.argv.includes("--check")) {
-  process.stderr.write(`${KIT_CONTRACT_PATH} is stale. Run \`bun run kit-contract\`.\n`);
-  process.exit(EXIT.failed);
-} else {
-  writeFileSync(path, expected);
-  process.stdout.write(`Wrote ${KIT_CONTRACT_PATH}.\n`);
+let stale = false;
+for (const { file, expected } of documents) {
+  const path = join(REPO_ROOT, file);
+  // `readOptionalFile`, not a swallowed `readFileSync`: absent means "write it", and every other failure has
+  // to be loud, for the reason `writeCatalog.ts` gives.
+  const actual = await readOptionalFile(path);
+  if (actual === expected) {
+    process.stdout.write(`${file} is current.\n`);
+  } else if (process.argv.includes("--check")) {
+    process.stderr.write(`${file} is stale. Run \`bun run kit-contract\`.\n`);
+    stale = true;
+  } else {
+    writeFileSync(path, expected);
+    process.stdout.write(`Wrote ${file}.\n`);
+  }
 }
+if (stale) process.exit(EXIT.failed);

@@ -75,8 +75,14 @@ export type HideResult = z.infer<typeof HideResult>;
 
 /** What removing an entry returns. */
 export const RemoveResult = z
-  .object({ removed: z.boolean().describe("True when an entry existed and is gone; false when there was none.") })
-  .describe("The entry was removed, or there was none.");
+  .object({
+    removed: z
+      .boolean()
+      .describe(
+        "Always true: the entry existed and is gone. An entry that does not exist is a 404, `leaderboard/entry_not_found`.",
+      ),
+  })
+  .describe("The entry was removed.");
 export type RemoveResult = z.infer<typeof RemoveResult>;
 
 /** One configured board, as a board picker needs it. */

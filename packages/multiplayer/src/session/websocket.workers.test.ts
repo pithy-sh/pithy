@@ -2,18 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 import { env, runInDurableObject } from "cloudflare:test";
+import { ErrorBody } from "@pithy-sh/core/src/error/wire";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
+import { battleGame } from "../game/games/battle";
 import { multiplayer_0001_results } from "../migrations/0001_results";
 import type { MultiplayerSession } from "./durableObject";
+import { ErrorFrame, ServerFrame, type StateFrame } from "./frames";
 import { USER_HEADER } from "./protocol";
 import type { GameSnapshot } from "./state";
-import type { SessionView } from "./view";
+import { SessionView } from "./view";
+
+/** The battle game's declared view — what a resolved state frame's `state` must conform to. */
+const BattleView = battleGame.view as z.ZodType;
 
 // The composition an adopter's `createEntrypoint` performs at load (#645): every capability's `compose` hook over
 // the whole set. It is what hands the session its ledger and its leaderboard, which the session never imports;
@@ -181,5 +188,186 @@ describe("MultiplayerSession — WebSocket (Hibernation API)", () => {
     const frame = await errorFrame;
     expect(frame.type).toBe("error");
     expect(frame.error.code).toBe("validation/invalid_input");
+  });
+});
+
+/**
+ * Every frame one socket receives, kept in order, with a way to wait for the next. So a test can assert on
+ * the frames it cares about and still hold **every** frame the socket was sent to the published schema.
+ */
+function recorder(ws: WebSocket) {
+  const frames: string[] = [];
+  const waiting: ((text: string) => void)[] = [];
+  let read = 0;
+  ws.addEventListener("message", (event) => {
+    const text = event.data as string;
+    frames.push(text);
+    const resolve = waiting.shift();
+    if (resolve) {
+      read++;
+      resolve(text);
+    }
+  });
+  return {
+    frames,
+    /** The next frame not yet read, parsed. */
+    next(): Promise<unknown> {
+      if (read < frames.length) return Promise.resolve(JSON.parse(frames[read++] as string));
+      return new Promise((resolve) => waiting.push((text) => resolve(JSON.parse(text))));
+    },
+  };
+}
+
+/** Require a frame to parse with a schema, and the parse to hand back exactly what arrived. */
+function conforming(schema: z.ZodType, text: string): void {
+  const frame: unknown = JSON.parse(text);
+  expect(schema.parse(frame)).toEqual(frame);
+}
+
+function upgradeOffering(
+  stub: DurableObjectStub<MultiplayerSession>,
+  userId: string,
+  offered: string,
+): Promise<Response> {
+  const request = new Request("https://do/socket", {
+    headers: { upgrade: "websocket", [USER_HEADER]: userId, "Sec-WebSocket-Protocol": offered },
+  });
+  return stub.fetch(request);
+}
+
+async function activeBattle(): Promise<DurableObjectStub<MultiplayerSession>> {
+  const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+  await runInDurableObject(stub, (s: MultiplayerSession) => s.create(game, "alice"));
+  await runInDurableObject(stub, (s: MultiplayerSession) => s.join("bob"));
+  return stub;
+}
+
+describe("MultiplayerSession — the socket contract, both versions", () => {
+  test("pithy.multiplayer.v1: the 101 names it, and every frame is a published ServerFrame", async () => {
+    const stub = await activeBattle();
+    const response = await upgradeOffering(stub, "alice", "pithy.multiplayer.v1");
+    expect(response.status).toBe(101);
+    // A browser drops a socket whose answer does not name a protocol it offered.
+    expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("pithy.multiplayer.v1");
+    const socket = response.webSocket;
+    if (!socket) throw new Error("no socket");
+    socket.accept();
+    const frames = recorder(socket);
+
+    const initial = (await frames.next()) as StateFrame;
+    expect(initial.type).toBe("state");
+    expect(initial.phase).toBe("active");
+
+    socket.send(JSON.stringify({ type: "state" }));
+    expect(((await frames.next()) as StateFrame).type).toBe("state");
+
+    // Malformed, four ways: not JSON, a `type` the socket does not accept, no `type` at all, and a payload
+    // the game refuses. A v1 socket answers every one.
+    socket.send("not json");
+    expect((await frames.next()) as ErrorFrame).toMatchObject({
+      type: "error",
+      error: { code: "validation/invalid_input" },
+    });
+    socket.send(JSON.stringify({ type: "move", payload: {} }));
+    expect((await frames.next()) as ErrorFrame).toMatchObject({
+      type: "error",
+      error: { code: "validation/invalid_input" },
+    });
+    socket.send(JSON.stringify({ payload: {} }));
+    expect((await frames.next()) as ErrorFrame).toMatchObject({
+      type: "error",
+      error: { code: "validation/invalid_input" },
+    });
+    socket.send(JSON.stringify({ type: "action", payload: { offense: "fire" } }));
+    const refused = (await frames.next()) as ErrorFrame;
+    expect(refused).toMatchObject({ type: "error", error: { code: "validation/invalid_input", status: 400 } });
+    expect(refused.error.issues?.length).toBeGreaterThan(0);
+    expect(Object.hasOwn(refused.error, "detail")).toBe(false);
+
+    // A well-formed action, then the resolving one from the other seat: both pushed as state frames.
+    socket.send(JSON.stringify({ type: "action", payload: { offense: ["fire"], defense: ["guard-ice"] } }));
+    expect(((await frames.next()) as StateFrame).type).toBe("state");
+    await runInDurableObject(stub, (s: MultiplayerSession) =>
+      s.action("bob", { offense: ["ice"], defense: ["guard-fire"] }),
+    );
+    const resolved = (await frames.next()) as StateFrame;
+    expect(resolved.phase).toBe("resolved");
+    expect(BattleView.parse(resolved.state)).toEqual(resolved.state);
+
+    expect(frames.frames.length).toBe(8);
+    for (const text of frames.frames) conforming(ServerFrame, text);
+  });
+
+  test("unversioned: no protocol answered, and the state is the bare view it always was", async () => {
+    const stub = await activeBattle();
+    const response = await upgrade(stub, "alice");
+    expect(response.status).toBe(101);
+    expect(response.headers.get("Sec-WebSocket-Protocol")).toBeNull();
+    const socket = response.webSocket;
+    if (!socket) throw new Error("no socket");
+    socket.accept();
+    const frames = recorder(socket);
+
+    const initial = (await frames.next()) as Record<string, unknown>;
+    expect(Object.hasOwn(initial, "type")).toBe(false);
+    // Not JSON is the one malformed frame the unversioned protocol always answered.
+    socket.send("not json");
+    expect(await frames.next()).toMatchObject({ type: "error", error: { code: "validation/invalid_input" } });
+    // A `type` it does not know, or none at all, it always ignored. The `state` request after them is
+    // answered next, so nothing came back for any of the four.
+    socket.send(JSON.stringify({ type: "nonsense" }));
+    socket.send(JSON.stringify({ payload: {} }));
+    socket.send(JSON.stringify(5));
+    socket.send(JSON.stringify(null));
+    socket.send(JSON.stringify({ type: "state" }));
+    expect(Object.hasOwn((await frames.next()) as object, "type")).toBe(false);
+    socket.send(JSON.stringify({ type: "action", payload: { offense: ["fire"], defense: ["guard-ice"] } }));
+    expect(Object.hasOwn((await frames.next()) as object, "type")).toBe(false);
+
+    expect(frames.frames.length).toBe(4);
+    const [first, error, resync, acted] = frames.frames as [string, string, string, string];
+    conforming(SessionView, first);
+    conforming(ErrorFrame, error);
+    conforming(SessionView, resync);
+    conforming(SessionView, acted);
+  });
+
+  test("a v1 socket and an unversioned one on the same session each get their own version of one change", async () => {
+    const stub = await activeBattle();
+    const v1 = (await upgradeOffering(stub, "alice", "pithy.multiplayer.v1")).webSocket;
+    const bare = (await upgrade(stub, "bob")).webSocket;
+    if (!v1 || !bare) throw new Error("no socket");
+    v1.accept();
+    bare.accept();
+    const v1Frames = recorder(v1);
+    const bareFrames = recorder(bare);
+    await v1Frames.next();
+    await bareFrames.next();
+
+    await runInDurableObject(stub, (s: MultiplayerSession) =>
+      s.action("bob", { offense: ["ice"], defense: ["guard-fire"] }),
+    );
+    expect(((await v1Frames.next()) as StateFrame).type).toBe("state");
+    expect(Object.hasOwn((await bareFrames.next()) as object, "type")).toBe(false);
+    for (const text of v1Frames.frames) conforming(ServerFrame, text);
+    for (const text of bareFrames.frames) conforming(SessionView, text);
+  });
+
+  test("an offer this socket does not serve is a 400 before the upgrade, as the ordinary error body", async () => {
+    const stub = await activeBattle();
+    const response = await upgradeOffering(stub, "alice", "pithy.multiplayer.v9");
+    expect(response.status).toBe(400);
+    expect(response.webSocket).toBeNull();
+    const body: unknown = await response.json();
+    expect(ErrorBody.parse(body)).toEqual(body);
+    expect((body as ErrorBody).error.code).toBe("validation/invalid_input");
+    expect(Object.hasOwn((body as ErrorBody).error, "action")).toBe(false);
+  });
+
+  test("an offer naming v1 among others is answered with v1", async () => {
+    const stub = await activeBattle();
+    const response = await upgradeOffering(stub, "alice", "chat, pithy.multiplayer.v1");
+    expect(response.status).toBe(101);
+    expect(response.headers.get("Sec-WebSocket-Protocol")).toBe("pithy.multiplayer.v1");
   });
 });

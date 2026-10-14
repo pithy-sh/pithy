@@ -8736,7 +8736,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The entry was removed, or there was none.",
+            "description": "The entry was removed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8744,13 +8744,13 @@
                   "properties": {
                     "removed": {
                       "type": "boolean",
-                      "description": "True when an entry existed and is gone; false when there was none."
+                      "description": "Always true: the entry existed and is gone. An entry that does not exist is a 404, `leaderboard/entry_not_found`."
                     }
                   },
                   "required": [
                     "removed"
                   ],
-                  "description": "The entry was removed, or there was none."
+                  "description": "The entry was removed."
                 }
               }
             }
@@ -9225,7 +9225,7 @@
         ],
         "operationId": "postMultiplayerSessionsByIdAction",
         "summary": "Take a turn in a session.",
-        "description": "The JSON body is the action itself, in whatever shape the game's model defines. It is forwarded to the model untouched, and a missing or unreadable body reaches the model as no payload.",
+        "description": "The JSON body is the action itself, in whatever shape the game's model defines — its `<gameKey>.action` schema in the AsyncAPI document, where it declares one. A body that schema refuses is a `validation/invalid_input` 400. A missing or unreadable body reaches the model as no payload.",
         "parameters": [
           {
             "name": "id",
@@ -9893,7 +9893,7 @@
         ],
         "operationId": "getMultiplayerSessionsByIdSocket",
         "summary": "Open a live socket on a session.",
-        "description": "Send `Upgrade: websocket`. Only a member of the session may connect.",
+        "description": "Send `Upgrade: websocket`. Only a member of the session may connect. Offer `pithy.multiplayer.v1` in `Sec-WebSocket-Protocol` for typed frames; the frames are described in the AsyncAPI document. An offer of a subprotocol this Worker does not serve is a `validation/invalid_input` 400.",
         "parameters": [
           {
             "name": "id",
@@ -9909,7 +9909,7 @@
         ],
         "responses": {
           "101": {
-            "description": "Switches to a WebSocket. The server sends the caller's view of the session as a JSON text frame on connect and after every change; the client sends `{ \"type\": \"action\", \"payload\": … }` to act, or `{ \"type\": \"state\" }` to resync. An error arrives as a frame, not a closed socket."
+            "description": "Switches to a WebSocket, answering `Sec-WebSocket-Protocol` with the version chosen. The server sends the caller's view of the session as a `state` frame on connect and after every change; the client sends `{ \"type\": \"action\", \"payload\": … }` to act, or `{ \"type\": \"state\" }` to resync. An error arrives as an `error` frame, not a closed socket."
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -11529,7 +11529,7 @@
         ],
         "operationId": "getMatchmakingPresence",
         "summary": "Open the caller's presence socket.",
-        "description": "Send `Upgrade: websocket`. The socket first receives the caller's pending invites and which accepted friends are online, then invites, friend requests and matches as they happen. Send `ping` to get `pong`.",
+        "description": "Send `Upgrade: websocket`, and offer `pithy.presence.v1` in `Sec-WebSocket-Protocol`. The socket first receives the caller's pending invites and which accepted friends are online, then invites, friend requests and matches as they happen. Send `ping` to get `pong`. The frames are in the AsyncAPI contract.",
         "responses": {
           "101": {
             "description": "Switches to a WebSocket. The server pushes presence events as JSON text frames."

@@ -13,9 +13,12 @@ import { beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { MATCHMAKING_MIGRATION_ORDER } from "../capability";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "../config/config";
+import { matchmakingDatabase } from "../data/tables";
+import { inviteStore } from "../invite/store";
 import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
 import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
 import { registerMatchmakingRoutes } from "./routes";
+import { inviteView } from "./views";
 
 function provider(): MigrationProvider {
   const registry = createMigrationRegistry([
@@ -303,6 +306,63 @@ describe("matchmaking routes — invites", () => {
     );
     expect(accepted.status).toBe(200);
     expect((await conforming(accepted, InviteView)).sessionId).toBeTruthy();
+  });
+
+  test("every invite route sends the view, byte for byte what the stored row serialized to", async () => {
+    await seedAuthUser("bob", "bob@example.com", "Bob");
+    const app = makeApp();
+    const store = inviteStore(matchmakingDatabase(env.DB));
+    /** The stored row as `c.json(row)` wrote it before the view existed. */
+    const rowBytes = async (id: string): Promise<string> => JSON.stringify(await store.get(id));
+    const send = async (): Promise<Response> =>
+      app.request(
+        "/matchmaking/games/duel/invites",
+        {
+          method: "POST",
+          headers: { "x-user": "alice", "content-type": "application/json" },
+          body: JSON.stringify({ email: "bob@example.com" }),
+        },
+        requestEnv(),
+      );
+
+    const created = await send();
+    expect(created.status).toBe(201);
+    const createdBytes = await created.clone().text();
+    const first = await conforming(created, InviteView);
+    expect(createdBytes).toBe(await rowBytes(first.id));
+    const second = await conforming(await send(), InviteView);
+
+    const pending = await app.request("/matchmaking/invites", { headers: { "x-user": "bob" } }, requestEnv());
+    const pendingBytes = await pending.clone().text();
+    const list = await conforming(pending, InviteList);
+    const rows = await store.pendingFor("bob");
+    expect(list.invites.map((invite) => invite.id).sort()).toEqual([first.id, second.id].sort());
+    expect(pendingBytes).toBe(JSON.stringify({ invites: rows }));
+    expect(list).toEqual({ invites: rows.map(inviteView) });
+
+    const accepted = await app.request(
+      `/matchmaking/invites/${first.id}/accept`,
+      { method: "POST", headers: { "x-user": "bob" } },
+      requestEnv(),
+    );
+    expect(accepted.status).toBe(200);
+    const acceptedBytes = await accepted.clone().text();
+    expect(await conforming(accepted, InviteView)).toMatchObject({ id: first.id, status: "accepted" });
+    expect(acceptedBytes).toBe(await rowBytes(first.id));
+
+    const declined = await app.request(
+      `/matchmaking/invites/${second.id}/decline`,
+      { method: "POST", headers: { "x-user": "bob" } },
+      requestEnv(),
+    );
+    expect(declined.status).toBe(200);
+    const declinedBytes = await declined.clone().text();
+    expect(await conforming(declined, InviteView)).toMatchObject({
+      id: second.id,
+      status: "declined",
+      sessionId: null,
+    });
+    expect(declinedBytes).toBe(await rowBytes(second.id));
   });
 
   test("an invite with neither email nor name is a 400, not a misleading 404", async () => {

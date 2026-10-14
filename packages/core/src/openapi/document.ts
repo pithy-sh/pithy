@@ -4,6 +4,7 @@
 import type { Hono } from "hono";
 import { z } from "zod";
 import { CONTROL_PLANE_HEADER } from "../controlPlane/wire";
+import { ErrorBody } from "../error/wire";
 import { pathParams } from "../http/routeContract";
 import { type DocumentedMethod, type RouteResponse, type RouteSpec, routeSpecOf } from "../http/routeSpec";
 import { type RequestContract, requestContractOf } from "../http/validation";
@@ -70,39 +71,6 @@ export interface UndescribedRoute {
   readonly path: string;
 }
 
-/**
- * The wire body of every error a route returns, whatever its status: `pithyErrorHandler` renders
- * `{ error: clientError(payload) }`. The payload's own schema is a union over every kit code, which
- * would put several hundred variants into each operation, so the contract describes the envelope and
- * names the code list's home instead.
- */
-export const ErrorBody = z
-  .object({
-    error: z
-      .object({
-        code: z
-          .string()
-          .describe(
-            "Namespaced `domain/reason`, e.g. `auth/invalid_token`. Stable: a client switches on it. The full list is `pithy schema --json`'s `errorCodes`.",
-          ),
-        status: z.number().int().describe("The HTTP status, repeated in the body."),
-        message: z
-          .string()
-          .describe("English, for a person. A client that translates renders its own wording for `code` instead."),
-        params: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Values a translating client interpolates into its own wording for `code`."),
-        issues: z
-          .array(z.unknown())
-          .optional()
-          .describe("For `validation/invalid_input`: one entry per field that failed, with its path."),
-      })
-      .describe("The public error payload. Never carries the operator's remedy or internal detail."),
-  })
-  .describe("The body of every error response.");
-export type ErrorBody = z.infer<typeof ErrorBody>;
-
 /** How each verification strategy is presented on the wire. `signed-webhook` and `public` have no scheme. */
 const SECURITY_SCHEMES: Record<string, unknown> = {
   bearer: {
@@ -161,7 +129,7 @@ export function operationId(method: string, path: string): string {
 }
 
 /** A Zod schema as JSON Schema, without the `$schema` key OpenAPI does not want inside a document. */
-function jsonSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
+export function jsonSchema(schema: z.ZodType, io: "input" | "output"): JsonSchema {
   const { $schema: _dialect, ...rest } = z.toJSONSchema(schema, { io, unrepresentable: "any" }) as JsonSchema;
   return rest;
 }
@@ -406,6 +374,14 @@ const escapePointer = (segment: string) => segment.replaceAll("~", "~0").replace
  * generates from, rather than on the source it came from.
  */
 export function undescribedFields(document: OpenApiDocument): UndescribedField[] {
+  return undescribedFieldsIn(document.paths, "/paths");
+}
+
+/**
+ * The same sweep over any part of a contract document, from a JSON pointer: every object property and every
+ * OpenAPI parameter below `node` without a description. The AsyncAPI document runs it over its messages.
+ */
+export function undescribedFieldsIn(node: unknown, at: string): UndescribedField[] {
   const found: UndescribedField[] = [];
   const visit = (node: unknown, pointer: string): void => {
     if (Array.isArray(node)) {
@@ -431,6 +407,6 @@ export function undescribedFields(document: OpenApiDocument): UndescribedField[]
     }
     for (const [key, child] of Object.entries(record)) visit(child, `${pointer}/${escapePointer(key)}`);
   };
-  visit(document.paths, "/paths");
+  visit(node, at);
   return found;
 }

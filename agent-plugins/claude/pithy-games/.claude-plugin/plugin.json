@@ -1,0 +1,30 @@
+{
+  "name": "pithy-games",
+  "version": "0.13.1",
+  "description": "A game add-on to the pithy agent team: game design, a Unity client in C#, and playtests with simulated players against pithy dev. Installs pithy with it.",
+  "author": {
+    "name": "Pithy",
+    "url": "https://pithy.sh"
+  },
+  "homepage": "https://pithy.sh",
+  "repository": "https://github.com/pithy-sh/pithy",
+  "license": "MIT",
+  "keywords": ["pithy", "cloudflare", "workers", "multiplayer", "games", "unity", "asyncapi"],
+  "dependencies": ["pithy"],
+  "userConfig": {
+    "client_unity_model": {
+      "type": "string",
+      "title": "Unity client agent model",
+      "description": "The model the Unity client agent runs on. Default: sonnet.",
+      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "default": "sonnet"
+    },
+    "client_unity_effort": {
+      "type": "string",
+      "title": "Unity client agent effort",
+      "description": "How hard the Unity client agent thinks. Default: medium.",
+      "options": ["low", "medium", "high", "xhigh", "max"],
+      "default": "medium"
+    }
+  }
+}

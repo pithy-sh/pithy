@@ -5,6 +5,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { D1Database, DurableObjectNamespace } from "@cloudflare/workers-types";
 import type { MatchmakingQueueSettings, MatchmakingSnapshot } from "../config/config";
 import { MatchmakingNotQueuedError } from "../error/errors";
+import type { PresenceMatchFoundFrame } from "../presence/frames";
 import { guardRpc } from "../rpc";
 import { type SessionNamespace, sessionMinter } from "../session/minter";
 import { formMatches, StoredMatch, WaitingList, type WaitingTicket } from "./matching";
@@ -45,9 +46,12 @@ export interface QueueStatus {
   waitingMs: number;
 }
 
-/** The minimal presence RPC the coordinator pushes to — declared locally so the queue never imports it. */
+/**
+ * The minimal presence RPC the coordinator pushes to — declared locally so the queue never imports the presence
+ * Durable Object. The frame it pushes is the presence socket's own `match_found` schema.
+ */
 interface PresenceStub {
-  notify(userId: string, event: { type: "match_found"; sessionId: string; gameKey: string }): Promise<void>;
+  notify(userId: string, event: PresenceMatchFoundFrame): Promise<void>;
 }
 
 const WAITING_KEY = "waiting";

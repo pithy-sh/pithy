@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -48,6 +48,7 @@ interface UserConfigEntry {
 interface PluginManifest {
   name: string;
   version: string;
+  dependencies?: string[];
   userConfig: Record<string, UserConfigEntry>;
 }
 
@@ -77,22 +78,36 @@ function substitute(content: string, configured: Record<string, string>): string
   return content.replace(/\$\{user_config\.([A-Za-z0-9_]+)\}/g, (whole, key: string) => configured[key] ?? whole);
 }
 
-/** The dispatch table rows of a skill: `subagent_type`, `model` and `effort`, per row that names a plugin agent. */
-function dispatchRows(content: string): { agent: string; model: string; effort: string }[] {
+/**
+ * The dispatch table rows of a skill: `subagent_type`, `model` and `effort`, per row that names an agent of
+ * `plugin`. `pithy-games:client-unity` is not a `pithy` row: the prefix is the plugin name and its colon.
+ */
+function dispatchRows(content: string, plugin = "pithy"): { agent: string; model: string; effort: string }[] {
+  const prefix = `${plugin}:`;
   const rows: { agent: string; model: string; effort: string }[] = [];
   for (const line of content.split("\n")) {
     const cells = line.split("|").map((cell) => cell.trim().replace(/^`|`$/g, ""));
-    const agent = cells.find((cell) => cell.startsWith("pithy:"));
+    const agent = cells.find((cell) => cell.startsWith(prefix));
     if (agent === undefined) continue;
     const at = cells.indexOf(agent);
-    rows.push({ agent: agent.slice("pithy:".length), model: cells[at + 1] ?? "", effort: cells[at + 2] ?? "" });
+    rows.push({ agent: agent.slice(prefix.length), model: cells[at + 1] ?? "", effort: cells[at + 2] ?? "" });
   }
   return rows;
 }
 
-const manifest = json<PluginManifest>(join(PITHY, ".claude-plugin", "plugin.json"));
-const agentSource = (name: string) => readFileSync(join(PITHY, "agents", `${name}.md`), "utf8");
-const skillSource = (name: string) => readFileSync(join(PITHY, "skills", name, "SKILL.md"), "utf8");
+/** One plugin's files, read by name: its manifest, an agent, a skill, its README. */
+function pluginFiles(name: string) {
+  const dir = join(PLUGINS, name);
+  return {
+    dir,
+    manifest: json<PluginManifest>(join(dir, ".claude-plugin", "plugin.json")),
+    agent: (agent: string) => readFileSync(join(dir, "agents", `${agent}.md`), "utf8"),
+    skill: (skill: string) => readFileSync(join(dir, "skills", skill, "SKILL.md"), "utf8"),
+    readme: () => readFileSync(join(dir, "README.md"), "utf8"),
+  };
+}
+
+const { manifest, agent: agentSource, skill: skillSource } = pluginFiles("pithy");
 
 describe("the marketplace", () => {
   const marketplace = json<{
@@ -288,6 +303,224 @@ describe("the README", () => {
   });
 });
 
+/**
+ * **The `pithy-games` add-on, held to what it claims (#718).** It depends on `pithy`, reuses its team by
+ * name, adds one agent with its own two settings, and pins the generator its Unity client is built with.
+ * Every name it reaches across the plugin boundary — `pithy:runner`, `pithy:report-kit-gap` — is checked to
+ * land on a file, because nothing else would notice a rename on the other side.
+ */
+describe("the pithy-games add-on", () => {
+  const games = pluginFiles("pithy-games");
+  const GAMES_TEAM = [{ agent: "client-unity", key: "client_unity", model: "sonnet", effort: "medium" }] as const;
+  const GAMES_SKILLS = ["new-game", "game-design", "playtest"] as const;
+  const markdown = sourceFiles(games.dir, { keep: (name) => name.endsWith(".md") });
+
+  /** Every `<plugin>:<name>` a file names, for the two plugins in this marketplace. */
+  function qualifiedNames(source: string): { plugin: string; name: string }[] {
+    return [...source.matchAll(/(?<![\w-])(pithy|pithy-games):([a-z][a-z0-9-]*)/g)].map((match) => ({
+      plugin: match[1] as string,
+      name: match[2] as string,
+    }));
+  }
+
+  /** Where Claude Code finds `<plugin>:<name>`: an agent file, or a skill directory, in that plugin. */
+  function resolve(plugin: string, name: string): string | undefined {
+    const candidates = [
+      join(PLUGINS, plugin, "agents", `${name}.md`),
+      join(PLUGINS, plugin, "skills", name, "SKILL.md"),
+    ];
+    return candidates.find((path) => existsSync(path));
+  }
+
+  test("depends on pithy, and every dependency is a plugin in this marketplace", () => {
+    expect(games.manifest.name).toBe("pithy-games");
+    expect(games.manifest.dependencies).toEqual(["pithy"]);
+    const listed = json<{ plugins: { name: string }[] }>(MARKETPLACE).plugins.map((plugin) => plugin.name);
+    for (const dependency of games.manifest.dependencies ?? []) expect(listed).toContain(dependency);
+  });
+
+  test("ships exactly client-unity, on its documented defaults, which are its settings' defaults", () => {
+    expect(readdirSync(join(games.dir, "agents"))).toEqual(["client-unity.md"]);
+    expect(Object.keys(games.manifest.userConfig).sort()).toEqual(["client_unity_effort", "client_unity_model"]);
+    for (const { agent, key, model, effort } of GAMES_TEAM) {
+      const fields = frontmatter(games.agent(agent));
+      expect(fields.name).toBe(agent);
+      expect(fields.model).toBe(model);
+      expect(fields.effort).toBe(effort);
+      expect(games.manifest.userConfig[`${key}_model`]).toEqual(expect.objectContaining({ default: model }));
+      expect(games.manifest.userConfig[`${key}_effort`]).toEqual(expect.objectContaining({ default: effort }));
+      // The same choices the base team offers, so a setting means the same thing in either plugin.
+      expect(games.manifest.userConfig[`${key}_model`]?.options).toEqual(manifest.userConfig.server_model?.options);
+      expect(games.manifest.userConfig[`${key}_effort`]?.options).toEqual(manifest.userConfig.server_effort?.options);
+    }
+  });
+
+  test("client-unity leaves the running to pithy:runner and files gaps with pithy's skill", () => {
+    const source = games.agent("client-unity");
+    expect(source).toMatch(/runner agent, `pithy:runner`/);
+    expect(source).toContain("/pithy:report-kit-gap");
+    expect(source).toContain("--library unityWebRequest");
+    expect(source).toContain("pithy.multiplayer.v1");
+    expect(source).toContain("link.xml");
+  });
+
+  describe("new-game dispatches every agent through its own two settings", () => {
+    const source = games.skill("new-game");
+    const configured = {
+      ...Object.fromEntries(
+        TEAM.flatMap(({ key }) => [
+          [`${key}_model`, "opus"],
+          [`${key}_effort`, "max"],
+        ]),
+      ),
+      client_unity_model: "fable",
+      client_unity_effort: "xhigh",
+    } as Record<string, string>;
+
+    /**
+     * Settings are per-plugin, measured on Claude Code 2.1.296: a `pithy-games` skill rendering
+     * `${user_config.server_model}` got the literal text, while `pithy`'s own skills got the configured value.
+     * So the base team is brought in by `pithy:new-app`, inside the plugin that owns its settings, and this
+     * skill dispatches only its own agent.
+     */
+    test("leaves the base team to pithy:new-app, and dispatches only client-unity, by its own keys", () => {
+      expect(dispatchRows(source, "pithy")).toEqual([]);
+      expect(source).toContain("Invoke the `pithy:new-app` skill");
+      expect(dispatchRows(source, "pithy-games")).toEqual(
+        GAMES_TEAM.map(({ agent, key }) => ({
+          agent,
+          model: `\${user_config.${key}_model}`,
+          effort: `\${user_config.${key}_effort}`,
+        })),
+      );
+    });
+
+    test("rendered with configured values, the Unity dispatch carries them", () => {
+      const rendered = substitute(source, configured);
+      for (const { agent, key } of GAMES_TEAM) {
+        expect(dispatchRows(rendered, "pithy-games").find((row) => row.agent === agent)).toEqual({
+          agent,
+          model: configured[`${key}_model`],
+          effort: configured[`${key}_effort`],
+        });
+      }
+    });
+
+    test("a setting left unset stays a placeholder, and the skill says to leave it out of the call", () => {
+      const rows = dispatchRows(substitute(source, { client_unity_model: "opus" }), "pithy-games");
+      expect(rows).toEqual([
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the unsubstituted placeholder is the fixture.
+        { agent: "client-unity", model: "opus", effort: "${user_config.client_unity_effort}" },
+      ]);
+      expect(source).toMatch(/passing `subagent_type`, `model` and `effort` exactly as this table gives them/);
+      expect(source).toMatch(
+        /still reads `\$\{user_config\.…\}` is a setting the user never chose\. Leave that parameter out/,
+      );
+    });
+
+    test("no skill dispatches an agent without its settings", () => {
+      for (const skill of GAMES_SKILLS) {
+        for (const [plugin, team] of [
+          ["pithy", TEAM],
+          ["pithy-games", GAMES_TEAM],
+        ] as const) {
+          for (const row of dispatchRows(games.skill(skill), plugin)) {
+            const key = (team as readonly { agent: string; key: string }[]).find(
+              (member) => member.agent === row.agent,
+            )?.key;
+            expect(key, `${skill} dispatches ${plugin}:${row.agent}, which is not on the team`).toBeDefined();
+            expect(row.model).toBe(`\${user_config.${key}_model}`);
+            expect(row.effort).toBe(`\${user_config.${key}_effort}`);
+          }
+        }
+      }
+    });
+  });
+
+  test("every pithy: and pithy-games: name in the add-on resolves, in the plugin it names", () => {
+    const faults: string[] = [];
+    let checked = 0;
+    for (const { path: file, text } of markdown) {
+      for (const { plugin, name } of qualifiedNames(text)) {
+        checked += 1;
+        if (resolve(plugin, name) === undefined) faults.push(`${file.slice(REPO_ROOT.length + 1)}: ${plugin}:${name}`);
+      }
+    }
+    expect(faults).toEqual([]);
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  test("every agent a dispatch table names is an agent file, not a skill", () => {
+    for (const skill of GAMES_SKILLS) {
+      for (const plugin of ["pithy", "pithy-games"]) {
+        for (const row of dispatchRows(games.skill(skill), plugin)) {
+          expect(existsSync(join(PLUGINS, plugin, "agents", `${row.agent}.md`)), `${plugin}:${row.agent}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  test("a skill invokes pithy:report-kit-gap by name, and it is pithy's skill", () => {
+    const invoking = GAMES_SKILLS.filter((skill) => games.skill(skill).includes("invoke `pithy:report-kit-gap`"));
+    expect(invoking.length).toBeGreaterThan(0);
+    expect(resolve("pithy", "report-kit-gap")).toBe(join(PITHY, "skills", "report-kit-gap", "SKILL.md"));
+  });
+
+  test("playtest dispatches pithy:runner to run the shipped script, which exists", () => {
+    const source = games.skill("playtest");
+    expect(source).toMatch(/Dispatch `pithy:runner`/);
+    expect(resolve("pithy", "runner")).toBe(join(PITHY, "agents", "runner.md"));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the plugin-root variable is what the skill must name.
+    expect(source).toContain("node ${CLAUDE_PLUGIN_ROOT}/scripts/playtest.ts");
+    expect(existsSync(join(games.dir, "scripts", "playtest.ts"))).toBe(true);
+    for (const flag of ["--origin", "--game", "--players", "--moves", "--token"]) expect(source).toContain(flag);
+  });
+
+  test.each(GAMES_SKILLS)("%s exists, says what it is for, and is documented in the README", (skill) => {
+    expect(frontmatter(games.skill(skill)).name).toBe(skill);
+    expect(frontmatter(games.skill(skill)).description?.length).toBeGreaterThan(40);
+    expect(games.readme()).toContain(`\`/${skill}\``);
+  });
+
+  test("the README installs from #release, and pithy-games brings pithy", () => {
+    const readme = games.readme();
+    expect(readme).toContain("/plugin marketplace add pithy-sh/pithy#release");
+    expect(readme).toContain("/plugin install pithy-games@pithy");
+    expect(readme).toMatch(/installs `pithy` with it/);
+    expect(readme).toMatch(/Install from one source/);
+    expect(readme).toContain("asyncapi.json");
+    expect(readme).toContain("client_unity_model");
+    expect(readme).toContain("client_unity_effort");
+  });
+
+  /**
+   * The Unity client's generator is pinned, because `unityWebRequest` is experimental. The pin lives in
+   * one exported constant; the agent and the README name it, and no other version of it appears anywhere
+   * in the add-on. Imported by computed path: it sits outside this package's `rootDir`.
+   */
+  test("the pinned generator is the constant, in the agent and the README, and no other version is", async () => {
+    const generatorModule = join(games.dir, "scripts", "generator.ts");
+    const { UNITY_OPENAPI_GENERATOR } = (await import(generatorModule)) as { UNITY_OPENAPI_GENERATOR: string };
+    expect(UNITY_OPENAPI_GENERATOR).toMatch(/^openapitools\/openapi-generator-cli:v\d+\.\d+\.\d+$/);
+    for (const source of [games.agent("client-unity"), games.readme()]) {
+      expect(source).toContain(UNITY_OPENAPI_GENERATOR);
+      expect(source).toContain(
+        `${UNITY_OPENAPI_GENERATOR} generate -i apps/<worker>/openapi.json -g csharp --library unityWebRequest --additional-properties=packageName=Pithy.Client -o <unity project>/Assets/Pithy/Client`,
+      );
+    }
+    for (const { text } of markdown) {
+      for (const [image] of text.matchAll(/openapitools\/openapi-generator-cli:v[\w.-]+/g)) {
+        expect(image).toBe(UNITY_OPENAPI_GENERATOR);
+      }
+    }
+    // And CI's Unity job generates with the same image, so what the guide recommends is what CI proves.
+    const ci = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+    const images = [...ci.matchAll(/openapitools\/openapi-generator-cli:v[\w.-]+/g)].map(([image]) => image);
+    expect(images.length).toBeGreaterThan(0);
+    for (const image of images) expect(image).toBe(UNITY_OPENAPI_GENERATOR);
+  });
+});
+
 describe("the version is the CLI's", () => {
   const cli = json<{ version: string }>(join(REPO_ROOT, "packages", "cli", "package.json"));
 
@@ -412,5 +645,22 @@ describe("every pithy command the plugin names is in pithy schema", () => {
     expect(faults).toEqual([]);
     // Non-vacuous: the plugin names a good part of the CLI, and a reader that found nothing is broken.
     expect(checked).toBeGreaterThan(20);
+  });
+});
+
+/**
+ * **A plugin names only its own settings.** Substitution is per-plugin, so a `${user_config.KEY}` in one
+ * plugin's markdown that its own manifest does not declare never fills in — it reaches the Agent call as
+ * text, or is left out and silently ignores the user's choice in another plugin. Every plugin, every key.
+ */
+describe("every user_config key a plugin's markdown names is one its own manifest declares", () => {
+  test.each(readdirSync(PLUGINS))("%s", (plugin) => {
+    const declared = new Set(
+      Object.keys(json<PluginManifest>(join(PLUGINS, plugin, ".claude-plugin", "plugin.json")).userConfig ?? {}),
+    );
+    const named = sourceFiles(join(PLUGINS, plugin), { keep: (name) => name.endsWith(".md") }).flatMap(({ text }) =>
+      [...text.matchAll(/\$\{user_config\.([A-Za-z0-9_]+)\}/g)].map((match) => match[1] as string),
+    );
+    expect(named.filter((key) => !declared.has(key))).toEqual([]);
   });
 });

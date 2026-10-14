@@ -35,6 +35,13 @@ pithy migrate
 
 **This section stays here.** `src/capability.test.ts` holds those two export lines against the Durable Object classes the capability actually binds, and against the module each must come from. An instruction naming the package entry point would name a module that does not export them — a Worker that fails at bundle time, on the line the docs told somebody to write.
 
+## Clients
+
+A web app the Worker serves calls the routes through `@pithy-sh/matchmaking/src/client/api`, on its own origin and nowhere else; `presencePath` gives it the presence socket's path. A mobile app or a game engine generates its client from the Worker's `openapi.json`, and reads the presence socket against its `asyncapi.json`. `pithy contract` writes both.
+
+The presence socket's frames are Zod schemas in `src/presence/frames.ts`. Offer `pithy.presence.v1` at the upgrade. How a frame may change between releases, and why `ping` and `pong` are plain text, is [`docs/SOCKETS.md`](../../docs/SOCKETS.md).
+
+
 ## License
 
 MIT — adopter-side app value. The root `LICENSE` covers it.

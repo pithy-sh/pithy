@@ -4,7 +4,14 @@
 import { DurableObject } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
 import { clientError } from "@pithy-sh/core/src/error/client";
-import { InternalError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  fromZodError,
+  InternalError,
+  messageOf,
+  PithyError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
+import { negotiateSubprotocol, SUBPROTOCOL_HEADER } from "@pithy-sh/core/src/http/subprotocol";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { MultiplayerResult } from "../data/result";
@@ -21,9 +28,10 @@ import {
 import { applyLedgerEffects } from "../game/effects";
 import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
+import { ClientFrame, encodeErrorFrame, encodeStateFrame, MULTIPLAYER_SOCKET_VERSIONS } from "./frames";
 import { multiplayerPeers } from "./peers";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
-import { type GameSnapshot, isTerminal, SessionMeta } from "./state";
+import { type GameSnapshot, isTerminal, SessionMeta, SocketAttachment } from "./state";
 import type { SessionOutcome, SessionView } from "./view";
 
 /** The Worker env a session DO reads — the app `DB` database it writes its terminal result to. */
@@ -46,12 +54,6 @@ function publishFailure(error: unknown): PithyError {
   return new InternalError({ message: "The leaderboard publish failed.", detail: messageOf(error) }, { cause: error });
 }
 
-/** A message a client sends over the WebSocket — take an action, or ask for the current state. */
-interface ClientMessage {
-  type: "action" | "state";
-  payload?: unknown;
-}
-
 /**
  * One error, as a frame on a player's socket. Every error the socket sends is built here, and the payload
  * goes through core's `clientError` — the same projection the HTTP codec encodes through, because a socket
@@ -62,7 +64,13 @@ interface ClientMessage {
  * there is no second definition of what a client may read (#344).
  */
 function errorFrame(error: PithyError): string {
-  return JSON.stringify({ type: "error", error: clientError(error.payload) });
+  return encodeErrorFrame(clientError(error.payload));
+}
+
+/** A socket's attachment, read through its schema; null for a socket that carries none or a corrupt one. */
+function attachmentOf(ws: WebSocket): SocketAttachment | null {
+  const parsed = SocketAttachment.safeParse(ws.deserializeAttachment());
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -222,7 +230,7 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
   connectedUserIds(): string[] {
     return this.ctx
       .getWebSockets()
-      .map((ws) => (ws.deserializeAttachment() as { userId?: string } | null)?.userId)
+      .map((ws) => attachmentOf(ws)?.userId)
       .filter((id): id is string => Boolean(id));
   }
 
@@ -323,6 +331,20 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     const model = this.model(meta);
     const { ctx, rng } = this.makeContext(meta, model);
     const state = await this.loadModelState(model);
+    // A model that declares its action's shape has every action checked against it first, so a malformed one
+    // is the caller's `validation/invalid_input` — judged after membership and phase, like a validator after
+    // its guards. The check is a gate and nothing more: `apply` gets the payload as it was sent, never the
+    // parsed output. Every `apply` parses its own input, and a schema with a transform produces an output
+    // that is not valid input again, so handing it the output would refuse a legal move.
+    if (model.action) {
+      const parsed = model.action.safeParse(payload);
+      if (!parsed.success) {
+        throw fromZodError(parsed.error, {
+          message: "That action is not one this game accepts.",
+          detail: `Action: ${userId} sent a malformed ${meta.game.kind} action to ${this.sessionId}.`,
+        });
+      }
+    }
     const { state: next, effects } = model.apply(ctx, state, userId, payload);
 
     // Settle the action's ledger effects (a bet's hold) BEFORE committing the new state: a hold the player
@@ -528,12 +550,23 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
   /**
    * Accept a member's WebSocket via the Hibernation API. The upgrade is forwarded by the authenticated Hono
    * handler, which sets {@link USER_HEADER} to the AuthContext user id — the DO trusts that server-set header
-   * and never a client-supplied id. The identity is stashed with `serializeAttachment` so it survives
-   * hibernation.
+   * and never a client-supplied id. The identity and the negotiated subprotocol are stashed with
+   * `serializeAttachment` so they survive hibernation.
+   *
+   * The subprotocol is negotiated before anything else is judged: an offer this socket does not serve is a
+   * 400 with the ordinary JSON error body, and a chosen one is echoed on the 101 — a browser drops a socket
+   * whose answer does not name a protocol it offered.
    */
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("upgrade") !== "websocket") {
       return new Response("Expected a WebSocket upgrade.", { status: 426 });
+    }
+    let protocol: string | null;
+    try {
+      protocol = negotiateSubprotocol(request.headers.get(SUBPROTOCOL_HEADER), MULTIPLAYER_SOCKET_VERSIONS);
+    } catch (error) {
+      if (!(error instanceof PithyError)) throw error;
+      return Response.json({ error: clientError(error.payload) }, { status: error.payload.status });
     }
     const userId = request.headers.get(USER_HEADER);
     if (!userId) return new Response("Missing authenticated user.", { status: 401 });
@@ -546,33 +579,60 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     const [client, server] = [pair[0], pair[1]];
     // Hibernation API — never `server.accept()`, which would pin the object in memory.
     this.ctx.acceptWebSocket(server, [userId]);
-    // Tiny attachment, well under the 16,384-byte ceiling — the reconnection/resume identity.
-    server.serializeAttachment({ userId, sessionId: this.sessionId });
-    server.send(JSON.stringify(await this.snapshot(userId)));
-    return new Response(null, { status: 101, webSocket: client });
+    // Tiny attachment, well under the 16,384-byte ceiling — the reconnection/resume identity and its version.
+    server.serializeAttachment({ userId, sessionId: this.sessionId, protocol } satisfies SocketAttachment);
+    server.send(encodeStateFrame(await this.snapshot(userId), protocol));
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      ...(protocol === null ? {} : { headers: { [SUBPROTOCOL_HEADER]: protocol } }),
+    });
   }
 
+  /**
+   * One frame from a member, parsed with {@link ClientFrame}. Anything that is not JSON is answered with a
+   * `validation/invalid_input` error frame on every version, and the socket stays open. A frame that is JSON
+   * but not one {@link ClientFrame} accepts depends on the version: a `pithy.multiplayer.v1` socket gets the
+   * same error frame, and an unversioned one hears nothing, exactly as before versions existed.
+   */
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const attachment = ws.deserializeAttachment() as { userId?: string } | null;
-    const userId = attachment?.userId;
-    if (!userId) {
+    const attachment = attachmentOf(ws);
+    if (!attachment) {
       ws.send(errorFrame(new MultiplayerNotAMemberError({ message: "Unidentified socket." })));
       return;
     }
-    let parsed: ClientMessage;
+    const { userId, protocol } = attachment;
+    let raw: unknown;
     try {
-      parsed = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)) as ClientMessage;
+      raw = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
     } catch (error) {
       ws.send(errorFrame(new ValidationError({ message: "Message must be JSON.", detail: messageOf(error) })));
       return;
     }
+    const parsed = ClientFrame.safeParse(raw);
+    if (!parsed.success) {
+      // The unversioned protocol ignored a frame whose `type` it did not know, or that had none, and a client
+      // written against it may lean on that. `ClientFrame` refuses nothing else: an `action` frame's payload
+      // is any value and its other keys are dropped, so this is that case and only that one.
+      if (protocol === null) return;
+      ws.send(
+        errorFrame(
+          fromZodError(parsed.error, {
+            message: "That frame is not one this socket accepts.",
+            detail: `Socket frame from ${userId} on ${this.sessionId} failed ClientFrame.`,
+          }),
+        ),
+      );
+      return;
+    }
+    const frame = parsed.data;
 
     try {
-      if (parsed.type === "action") {
+      if (frame.type === "action") {
         // Call the internal method directly — no RPC boundary here, so it throws a real PithyError.
-        await this.applyAction(userId, parsed.payload);
-      } else if (parsed.type === "state") {
-        ws.send(JSON.stringify(await this.snapshot(userId)));
+        await this.applyAction(userId, frame.payload);
+      } else {
+        ws.send(encodeStateFrame(await this.snapshot(userId), protocol));
       }
     } catch (error) {
       ws.send(
@@ -600,10 +660,10 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
     for (const ws of sockets) {
-      const attachment = ws.deserializeAttachment() as { userId?: string } | null;
-      if (!attachment?.userId) continue;
+      const attachment = attachmentOf(ws);
+      if (!attachment) continue;
       try {
-        ws.send(JSON.stringify(await this.snapshot(attachment.userId)));
+        ws.send(encodeStateFrame(await this.snapshot(attachment.userId), attachment.protocol));
       } catch {
         // A dead socket — skip it; the next message or reconnect will resync.
       }

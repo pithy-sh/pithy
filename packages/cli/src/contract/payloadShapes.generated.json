@@ -152,7 +152,11 @@
         "$.workers[].undescribed[]": "object",
         "$.workers[].undescribed[].method": "string",
         "$.workers[].undescribed[].path": "string",
-        "$.workers[].changed": "boolean"
+        "$.workers[].changed": "boolean",
+        "$.workers[].asyncapi": "null | object",
+        "$.workers[].asyncapi.path": "string",
+        "$.workers[].asyncapi.channels": "integer",
+        "$.workers[].asyncapi.changed": "boolean"
       }
     },
     "dashboard connect": {

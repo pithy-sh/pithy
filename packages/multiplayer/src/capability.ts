@@ -10,6 +10,7 @@ import { multiplayerTables } from "./data/tables";
 import { registerMultiplayerRoutes } from "./http/routes";
 import { multiplayer_0001_results } from "./migrations/0001_results";
 import { multiplayerExampleSeed } from "./seeds/example";
+import { multiplayerSocketChannel } from "./session/channel";
 import { composeMultiplayerPeers } from "./session/peers";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -96,6 +97,8 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
       },
     },
     routes: registerMultiplayerRoutes({ games, basePath }),
+    // The session socket, for the AsyncAPI contract: its frames, and each configured game's action and view.
+    sockets: [multiplayerSocketChannel(games, basePath)],
     // The optional peers — the ledger a wager settles through, the leaderboard a result publishes to — found
     // among the composed capabilities rather than imported, and refused here when a configured game needs one
     // this Worker cannot reach. See `session/peers.ts`.

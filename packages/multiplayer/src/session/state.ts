@@ -66,3 +66,23 @@ export const SessionMeta = z
   })
   .describe("A session's authoritative metadata, persisted in Durable Object storage.");
 export type SessionMeta = z.infer<typeof SessionMeta>;
+
+/**
+ * What a session socket carries across hibernation, in its attachment: who it belongs to, and the
+ * subprotocol it negotiated at the upgrade, so every later frame renders for that version. Tiny, well under
+ * the 16,384-byte attachment ceiling. Read back through this schema, never cast.
+ */
+export const SocketAttachment = z
+  .object({
+    userId: z.string().describe("The authenticated user id the upgrade was forwarded with."),
+    sessionId: z.string().describe("The session the socket is on."),
+    protocol: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The subprotocol negotiated at the upgrade, or null for an unversioned client. A socket accepted before versions existed has none, and reads as null.",
+      ),
+  })
+  .describe("A session socket's hibernation-safe attachment.");
+export type SocketAttachment = z.output<typeof SocketAttachment>;

@@ -6,10 +6,10 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { pithyErrorHandler } from "../error/http";
 import { NotFoundError } from "../error/pithyError";
+import { ErrorBody } from "../error/wire";
 import { describeRoute } from "../http/routeSpec";
 import { validate } from "../http/validation";
 import {
-  ErrorBody,
   type OpenApiDocument,
   openApiDocument,
   openApiPath,

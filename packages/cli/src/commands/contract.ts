@@ -21,13 +21,21 @@ const ContractPayload = z
     environment: z.string().describe("The environment every Worker was composed for."),
     workers: z.array(WorkerContractReport).describe("One entry per Worker, in `apps/` order."),
   })
-  .describe("What `pithy contract` wrote: one OpenAPI document per Worker.");
+  .describe(
+    "What `pithy contract` wrote: one OpenAPI document per Worker, and an AsyncAPI one for each that serves a socket.",
+  );
 
 /** The human lines for one Worker's report. */
 export function renderReport(report: WorkerContractReport): string[] {
   const lines = [
     `${report.worker}: ${report.operations} operations. ${report.changed ? "Wrote" : "Unchanged:"} ${report.path}.`,
   ];
+  if (report.asyncapi !== null) {
+    const sockets = report.asyncapi;
+    lines.push(
+      `${report.worker}: ${sockets.channels} ${sockets.channels === 1 ? "socket" : "sockets"}. ${sockets.changed ? "Wrote" : "Unchanged:"} ${sockets.path}.`,
+    );
+  }
   if (report.undescribed.length > 0) {
     lines.push(
       dim(`  ${report.undescribed.length} without describeRoute, written from their validators and marked:`),
@@ -39,12 +47,16 @@ export function renderReport(report: WorkerContractReport): string[] {
 
 export default withContract(
   defineCommand({
-    meta: { name: "contract", description: "Write each worker's OpenAPI document" },
+    meta: {
+      name: "contract",
+      description: "Write each worker's OpenAPI and AsyncAPI documents",
+    },
     args: {
       worker: { type: "string", description: "Only this worker (default: every worker under apps/)" },
       out: {
         type: "string",
-        description: "Write into this directory, as <dir>/<worker>/openapi.json (default: apps/<worker>/openapi.json)",
+        description:
+          "Write into this directory, as <dir>/<worker>/openapi.json and asyncapi.json (default: apps/<worker>/)",
       },
       env: {
         type: "string",

@@ -62,7 +62,7 @@ Each one is a package you add to a Worker with `pithy add <name>`, and each runs
 
 Two more pieces ride along with every project. The [control plane](https://pithy.sh/docs/capabilities/control-plane/) is the inbound administration seam, present and denying by default. `pithy ui add react` scaffolds a [front end](https://pithy.sh/docs/front-ends/) into a Worker you already have, on the same origin as its API.
 
-Every route the kit ships declares what it accepts, how its caller is verified and what it returns, so `pithy contract` writes each Worker's OpenAPI document from the routes it composes. A client in any language generates its calls from that file instead of writing them by hand. The kit's own is [`docs/openapi.generated.json`](docs/openapi.generated.json).
+Every route the kit ships declares what it accepts, how its caller is verified and what it returns, so `pithy contract` writes each Worker's OpenAPI document from the routes it composes. A client in any language generates its calls from that file instead of writing them by hand. The kit's own is [`docs/openapi.generated.json`](docs/openapi.generated.json). A Worker that serves a socket, for multiplayer or presence, also gets `asyncapi.json`: every frame, typed, with the game's own moves in it. The kit's own is [`docs/asyncapi.generated.json`](docs/asyncapi.generated.json), and how a frame may change between releases is [`docs/SOCKETS.md`](docs/SOCKETS.md).
 
 ## Built for agents too
 
@@ -73,6 +73,12 @@ For Claude Code there is a plugin: an agent team for a server, a web client, a m
 ```text
 /plugin marketplace add pithy-sh/pithy#release
 /plugin install pithy@pithy
+```
+
+Building a game? `pithy-games` adds game design, a Unity client and playtests with simulated players, and installs `pithy` with it. See [`agent-plugins/claude/pithy-games`](agent-plugins/claude/pithy-games/README.md).
+
+```text
+/plugin install pithy-games@pithy
 ```
 
 ## One project, or two?
@@ -87,6 +93,7 @@ To build *with* Pithy, use [pithy.sh/docs](https://pithy.sh/docs/start-here/intr
 - [`docs/NAMING.md`](docs/NAMING.md): how every provisioned resource is named, and every limit.
 - [`docs/UI.md`](docs/UI.md): front ends and the one-origin model.
 - [`docs/I18N.md`](docs/I18N.md): the translator seam, catalog keys, and what stays English.
+- [`docs/SOCKETS.md`](docs/SOCKETS.md): socket frames, subprotocol versions, and how a frame may change.
 - [`docs/STACK.md`](docs/STACK.md): the toolchain.
 - [`docs/BRAND.md`](docs/BRAND.md): identity and voice.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): how to work here, and what a pull request needs to merge.

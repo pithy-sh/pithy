@@ -12,6 +12,15 @@ pithy add multiplayer
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
+## Clients
+
+A web app the Worker serves calls the routes through `@pithy-sh/multiplayer/src/client/api`, on its own origin and nowhere else. A mobile app or a game engine generates its client from the Worker's `openapi.json`, and plays the live session socket against its `asyncapi.json`. `pithy contract` writes both.
+
+The session socket's frames are Zod schemas in `src/session/frames.ts`, and the Worker parses every frame it receives with them. Offer `pithy.multiplayer.v1` at the upgrade. How a frame may change between releases is [`docs/SOCKETS.md`](../../docs/SOCKETS.md).
+
+A game model may declare an `action` schema and a `view` schema, and the three built-in games do. A declared `action` is checked before `apply` runs. Both are published in `asyncapi.json` as `<gameKey>.action` and `<gameKey>.view`, so a client in any engine types the part that is the game.
+
+
 ## License
 
 MIT — adopter-side app value, the same as `@pithy-sh/auth` and `@pithy-sh/leaderboard`. The root `LICENSE` covers it.

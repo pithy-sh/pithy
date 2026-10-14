@@ -9,9 +9,11 @@ import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
 import { resultStore } from "../data/store";
 import { multiplayerDatabase } from "../data/tables";
+import { type GameModel, registerGameModel } from "../game/model";
 import { multiplayer_0001_results } from "../migrations/0001_results";
 import type { MultiplayerSession } from "./durableObject";
 import type { GameSnapshot } from "./state";
@@ -220,6 +222,61 @@ describe("sequential (tic-tac-toe), end to end", () => {
     await expect(
       runInDurableObject(stub, (s: MultiplayerSession) => s.action("o", { row: 0, col: 0 })),
     ).rejects.toThrow(/multiplayer\/invalid_move/);
+  });
+});
+
+/**
+ * A model whose action schema transforms: a tally arrives as a numeric string and parses to a number. The
+ * output is not valid input again, so a session that handed `apply` the parsed output would refuse every
+ * legal action when `apply` parses its own input, as every built-in pattern does.
+ */
+const TallyAction = z
+  .object({ add: z.string().regex(/^\d+$/).transform(Number).describe("How much to add, as digits.") })
+  .describe("One tally action.");
+type TallyState = { total: number };
+const tallyModel: GameModel<Record<string, never>, TallyState> = {
+  kind: "test-tally",
+  config: z.object({}).describe("No rules."),
+  state: z.object({ total: z.number().describe("The running total.") }).describe("Tally state."),
+  action: TallyAction,
+  init: () => ({ total: 0 }),
+  apply: (_ctx, state, _playerId, action) => ({ state: { total: state.total + TallyAction.parse(action).add } }),
+  isComplete: (_ctx, state) => state.total >= 5,
+  resolve: () => ({ outcome: { scores: {}, winnerUserId: null, draw: true } }),
+  redact: (_ctx, state) => state,
+};
+registerGameModel(tallyModel);
+
+function tally(): GameSnapshot {
+  return {
+    key: "tally",
+    kind: "test-tally",
+    mode: "match",
+    players: 2,
+    turnTimeoutMs: null,
+    leaderboard: null,
+    rules: {},
+  };
+}
+
+describe("the declared action schema is a gate, not a rewrite", () => {
+  test("apply gets the payload as sent, so a schema with a transform still applies", async () => {
+    const { stub } = newSession();
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.create(tally(), "a"));
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.join("b"));
+    const once = await runInDurableObject(stub, (s: MultiplayerSession) => s.action("a", { add: "2" }));
+    expect((once.state as TallyState).total).toBe(2);
+    const done = await runInDurableObject(stub, (s: MultiplayerSession) => s.action("b", { add: "3" }));
+    expect(done.phase).toBe("resolved");
+  });
+
+  test("a payload the schema refuses is validation/invalid_input and never reaches apply", async () => {
+    const { stub } = newSession();
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.create(tally(), "a"));
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.join("b"));
+    await expect(runInDurableObject(stub, (s: MultiplayerSession) => s.action("a", { add: 2 }))).rejects.toThrow(
+      /validation\/invalid_input/,
+    );
   });
 });
 

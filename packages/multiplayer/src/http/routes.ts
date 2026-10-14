@@ -6,6 +6,7 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { negotiateSubprotocol, SUBPROTOCOL_HEADER } from "@pithy-sh/core/src/http/subprotocol";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { type ResolvedGame, resolveGame } from "../config/config";
@@ -13,7 +14,9 @@ import { MultiplayerGameNotFoundError, MultiplayerSessionNotFoundError } from ".
 // Type-only, so it erases: the DO module imports `cloudflare:workers` and must never land on the value
 // import graph the adopter's `pithy.config.ts` pulls in. The two constants both sides need live in the
 // pure `session/protocol` module for the same reason (#172).
+import { multiplayerSocketPath } from "../session/channel";
 import type { MultiplayerSession } from "../session/durableObject";
+import { MULTIPLAYER_SOCKET_VERSIONS } from "../session/frames";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/protocol";
 import type { GameSnapshot } from "../session/state";
 import { requireAuth } from "./guard";
@@ -43,11 +46,12 @@ import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
  *
  * **No route declares a json schema, including the one route that reads a body.** An action is whatever the
  * game's model defines — a commit for a commit-reveal game, a cell for a sequential grid — and the route
- * forwards its JSON body untouched to the model, which is the only thing that knows its shape. There is no
- * shape for this capability to impose, and a `validate("json", …)` would still change what a caller may
- * send: it rejects an empty body under a JSON content-type with a 400, where a body-less action legitimately
- * reaches a model that takes no payload today. So the body is read off the raw request instead, with
- * the same "unreadable body means no payload" fallback — the model, not multiplayer, decides what is legal.
+ * forwards its JSON body to the session, which parses it with the model's own `action` schema when the model
+ * declares one (a malformed action is a `validation/invalid_input` 400, from the session, after membership
+ * and phase are judged). There is no shape for this capability to impose, and a `validate("json", …)` would
+ * still change what a caller may send: it rejects an empty body under a JSON content-type with a 400, where
+ * a body-less action legitimately reaches a model that takes no payload. So the body is read off the raw
+ * request instead, with the same "unreadable body means no payload" fallback — the model decides what is legal.
  * The join, leave, and close routes read no body at all, so validating one on them would only 400 the
  * body-less request their clients already send.
  *
@@ -193,7 +197,7 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
       describeRoute({
         summary: "Take a turn in a session.",
         description:
-          "The JSON body is the action itself, in whatever shape the game's model defines. It is forwarded to the model untouched, and a missing or unreadable body reaches the model as no payload.",
+          "The JSON body is the action itself, in whatever shape the game's model defines — its `<gameKey>.action` schema in the AsyncAPI document, where it declares one. A body that schema refuses is a `validation/invalid_input` 400. A missing or unreadable body reaches the model as no payload.",
         verification: ["bearer", "session"],
         responses: { 200: SessionView },
       }),
@@ -260,23 +264,27 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
     );
 
     // The WebSocket upgrade — forwarded to the DO with the authenticated id set on the trusted header. The
-    // DO answers a non-upgrade request with 426, so the check lives there, once.
+    // DO answers a non-upgrade request with 426, so the check lives there, once. The subprotocol is
+    // negotiated here first, so an offer this Worker does not serve is the ordinary 400 JSON error before
+    // any upgrade; the DO negotiates the same header again to choose what it answers the 101 with.
     app.get(
-      `${base}/sessions/:id/socket`,
+      multiplayerSocketPath(base),
       describeRoute({
         summary: "Open a live socket on a session.",
-        description: "Send `Upgrade: websocket`. Only a member of the session may connect.",
+        description:
+          "Send `Upgrade: websocket`. Only a member of the session may connect. Offer `pithy.multiplayer.v1` in `Sec-WebSocket-Protocol` for typed frames; the frames are described in the AsyncAPI document. An offer of a subprotocol this Worker does not serve is a `validation/invalid_input` 400.",
         verification: ["bearer", "session"],
         responses: {
           101: {
             description:
-              'Switches to a WebSocket. The server sends the caller\'s view of the session as a JSON text frame on connect and after every change; the client sends `{ "type": "action", "payload": … }` to act, or `{ "type": "state" }` to resync. An error arrives as a frame, not a closed socket.',
+              'Switches to a WebSocket, answering `Sec-WebSocket-Protocol` with the version chosen. The server sends the caller\'s view of the session as a `state` frame on connect and after every change; the client sends `{ "type": "action", "payload": … }` to act, or `{ "type": "state" }` to resync. An error arrives as an `error` frame, not a closed socket.',
           },
         },
       }),
       requireAuth(),
       validate("param", MultiplayerSessionParams),
       async (c) => {
+        negotiateSubprotocol(c.req.raw.headers.get(SUBPROTOCOL_HEADER), MULTIPLAYER_SOCKET_VERSIONS);
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const forwarded = new Request(c.req.raw);
         forwarded.headers.set(USER_HEADER, userId(c));

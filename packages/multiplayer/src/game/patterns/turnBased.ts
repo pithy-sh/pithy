@@ -42,6 +42,12 @@ export interface TurnBasedSpec<Config, Game, Move> {
   score: (ctx: GameContext<Config>, game: Game) => ResolveResult | ModelOutcome;
   /** Optional game-specific view; the helper adds the turn info around it. Defaults to the raw game state. */
   view?: (ctx: GameContext<Config>, game: Game, viewerId: string) => unknown;
+  /**
+   * The schema of what {@link view} returns, described, so the published view schema can type it. Omit it
+   * with no `view` and the game state's own schema stands in; omit it with one and the view's `game` is
+   * published as unknown.
+   */
+  gameView?: z.ZodType;
 }
 
 /** The persisted state of a turn-based game: whose turn (as a roster index) and the game-specific state. */
@@ -57,11 +63,21 @@ export function turnBased<Config, Game, Move>(
       game: spec.game.describe("The game-specific shared state."),
     })
     .describe(`The ${spec.kind} game's state — the turn pointer and the shared position.`);
+  const gameView = spec.gameView ?? (spec.view ? z.unknown() : spec.game);
+  const view = z
+    .object({
+      turn: z.string().nullable().describe("The user id whose turn it is."),
+      yourTurn: z.boolean().describe("Whether it is the viewer's turn."),
+      game: gameView.describe("The shared position, as the viewer may see it."),
+    })
+    .describe(`What one player sees of a ${spec.kind} game: whose turn it is, and the position.`);
 
   return {
     kind: spec.kind,
     config: spec.config,
     state,
+    action: spec.move,
+    view,
     minPlayers: spec.minPlayers,
     maxPlayers: spec.maxPlayers,
 

@@ -13,6 +13,11 @@
       "name": "pithy",
       "source": "pithy",
       "description": "An agent team for building any app on Pithy: a server, a web client, a mobile client and a runner."
+    },
+    {
+      "name": "pithy-games",
+      "source": "pithy-games",
+      "description": "A game add-on to the pithy team: game design, a Unity client, and playtests with simulated players. Installs pithy with it."
     }
   ]
 }

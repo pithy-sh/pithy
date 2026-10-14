@@ -68,6 +68,12 @@ export interface WageringTableSpec<Config, Round, BetInput> {
   ) => { round: Round; decisions: BetDecision[] };
   /** Optional view of the round; the helper adds the bet book around it. */
   view?: (ctx: GameContext<Config>, round: Round, viewerId: string) => unknown;
+  /**
+   * The schema of what {@link view} returns, described, so the published view schema can type it. Omit it
+   * with no `view` and the round's own schema stands in; omit it with one and the view's `round` is
+   * published as unknown.
+   */
+  roundView?: z.ZodType;
 }
 
 type TableState<Round> = { round: Round; bets: PendingBet[]; betSeq: number; lastDecisions: BetDecision[] };
@@ -104,6 +110,39 @@ export function wageringTable<Config, Round, BetInput>(
         .describe("Trigger the event."),
     ])
     .describe("A wagering-table action — place a bet, or trigger the event.");
+  const roundView = spec.roundView ?? (spec.view ? z.unknown() : spec.round);
+  const view = z
+    .object({
+      round: roundView.describe("The round, as the viewer may see it."),
+      driver: z
+        .string()
+        .nullable()
+        .describe("The user id allowed to trigger the event now (a shooter), or null when anyone may."),
+      yourTurnToTrigger: z.boolean().describe("Whether the viewer may trigger the event now."),
+      bets: z
+        .array(
+          z
+            .object({
+              userId: z.string().describe("The player who placed the bet."),
+              amount: z.number().int().describe("The staked amount, in the currency's minor unit."),
+              data: z.unknown().describe("The game's own record of the bet — for craps, `{ type }`."),
+            })
+            .describe("One pending bet on the table."),
+        )
+        .describe("Every pending bet on the table, everyone's. A table's bets are public."),
+      lastDecisions: z
+        .array(
+          z
+            .object({
+              ref: z.string().describe("The decided bet's ledger hold ref."),
+              result: z.enum(["win", "lose", "push"]).describe("How the bet was decided."),
+              payout: z.number().describe("What a win paid, beside the returned stake. Zero otherwise."),
+            })
+            .describe("How the last event decided one bet."),
+        )
+        .describe("How the last event decided each bet it settled."),
+    })
+    .describe(`What one player sees of a ${spec.kind} table: the round, who may trigger the event, and the bet book.`);
 
   return {
     kind: spec.kind,
@@ -111,6 +150,8 @@ export function wageringTable<Config, Round, BetInput>(
     movesBalances: true,
     config: spec.config,
     state,
+    action,
+    view,
     minPlayers: spec.minPlayers ?? 1,
     maxPlayers: spec.maxPlayers,
 

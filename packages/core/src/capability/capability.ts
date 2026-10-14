@@ -14,6 +14,7 @@ import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
 import type { SameOriginGate } from "../http/sameOrigin";
+import type { SocketChannel } from "../http/socket";
 import type { LocaleCatalogs } from "../i18n/catalog";
 import type { LocaleContext } from "../i18n/locale";
 import type { Translator } from "../i18n/translator";
@@ -532,6 +533,12 @@ export interface Capability<
   boot?: (context: CapabilityComposeContext) => void;
   /** Mounts a Hono sub-router. */
   routes?: (app: Hono<PithyHonoEnv>) => void;
+  /**
+   * The WebSockets this capability serves, described for the AsyncAPI contract (`../http/socket.ts`). Built
+   * from the resolved config, like `adminRoutes`: the paths it mounted, and the schemas its frames are
+   * parsed with. A capability with no socket leaves it unset.
+   */
+  sockets?: readonly SocketChannel[];
   /** Composable middleware (e.g. turnstile(), requireAuth()). */
   middleware?: PithyMiddleware[];
   /**

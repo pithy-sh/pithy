@@ -2,7 +2,7 @@
 
 _The site renders this for readers: [pithy.sh/docs/cli/commands/contract](https://pithy.sh/docs/cli/commands/contract). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
 
-Write each Worker's OpenAPI document: every route it serves, with its parameters, body, responses and how a caller is verified, read off the app the Worker composes.
+Write each Worker's OpenAPI document: every route it serves, with its parameters, body, responses and how a caller is verified, read off the app the Worker composes. A Worker that serves a socket gets an AsyncAPI document beside it.
 
 ## Synopsis
 
@@ -15,7 +15,7 @@ pithy contract [--worker <name>] [--out <dir>] [--env <name>] [--json]
 | Flag | Meaning |
 |---|---|
 | `--worker <name>` | Only this Worker, by the name `pithy worker list` shows or its `apps/<dir>` basename. Default: every Worker. |
-| `--out <dir>` | Write each document as `<dir>/<worker>/openapi.json`. Default: `apps/<worker>/openapi.json`, beside the Worker it describes. |
+| `--out <dir>` | Write each document as `<dir>/<worker>/openapi.json`, and `<dir>/<worker>/asyncapi.json` for a Worker that serves a socket. Default: `apps/<worker>/`, beside the Worker it describes. |
 | `--env <name>` | The environment each Worker is composed for. Default `prod`. |
 | `--json` | Machine-readable output. Default `false`. |
 
@@ -38,7 +38,9 @@ The document states OpenAPI 3.1. Its `info.version` is your root `package.json` 
 
 It writes only when the bytes changed, so a second run is a no-op and the file is safe to commit and to check in CI.
 
-**It is generated, so your formatter leaves it alone.** A project scaffolded by `pithy init` excludes `**/openapi.json` in `biome.jsonc`. A project scaffolded before `pithy contract` existed adds `"!**/openapi.json"` to `files.includes` itself; otherwise `biome check` reformats the document and the next `pithy contract` writes it back.
+**It is generated, so your formatter leaves it alone.** A project scaffolded by `pithy init` excludes `**/openapi.json` and `**/asyncapi.json` in `biome.jsonc`. A project scaffolded before then adds `"!**/openapi.json"` and `"!**/asyncapi.json"` to `files.includes` itself; otherwise `biome check` reformats a document and the next `pithy contract` writes it back.
+
+**A Worker that serves a socket gets `asyncapi.json` beside it.** OpenAPI stops at the upgrade; after it there are only frames. A capability that serves a socket — `@pithy-sh/multiplayer`'s rooms, `@pithy-sh/matchmaking`'s presence — declares it, and the AsyncAPI 3.0 document describes each one: its path, how the upgrade is verified, the subprotocol versions it serves, and a schema for every frame each side sends, with every field described. A game's own `action` and `view` schemas are in it too, so a client in any engine types the part that is the game. How those frames may change from one release to the next is [`docs/SOCKETS.md`](../SOCKETS.md). A Worker that serves no socket gets no `asyncapi.json`, and `asyncapi` is `null`. One that stopped serving a socket loses the `asyncapi.json` this command wrote for it; a file it did not write is left alone.
 
 `pithy schema` describes the CLI and reads nothing from your project. This command reads your project. That is why they are two commands.
 
@@ -59,6 +61,10 @@ One line on stdout.
 | `workers[].undescribed[].method` | string | The HTTP method, as Hono records it. |
 | `workers[].undescribed[].path` | string | The route's path pattern. |
 | `workers[].changed` | boolean | Whether the file's contents changed. `false` when it already matched. |
+| `workers[].asyncapi` | object \| null | Its AsyncAPI document, for the sockets it serves, or `null` for a Worker that serves none. |
+| `workers[].asyncapi.path` | string | Where its AsyncAPI document was written, relative to the project root. |
+| `workers[].asyncapi.channels` | integer | How many sockets the document describes. |
+| `workers[].asyncapi.changed` | boolean | Whether the file's contents changed. `false` when it already matched. |
 
 ## Errors
 

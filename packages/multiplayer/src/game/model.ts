@@ -95,6 +95,24 @@ export interface GameModel<Config = unknown, State = unknown> {
    * emits effects without declaring it is still refused, loudly, at the first effect — never settled silently.
    */
   movesBalances?: boolean;
+  /**
+   * The shape of one player's action — the body of `POST /sessions/:id/action` and the `payload` of a socket
+   * `action` frame. Optional, so a model written before it existed still loads. When declared, the session
+   * checks every incoming action against it before {@link apply} runs and answers a malformed one with
+   * `validation/invalid_input`. `apply` still receives the action as it was sent, never the parsed output:
+   * `apply` parses its own input, and a schema with a transform has an output that is not valid input
+   * again. It is published as the game's
+   * `<gameKey>.action` schema in the Worker's AsyncAPI document, which is how a client in any engine learns
+   * what to send: describe it like any other Zod object, every field and the object itself.
+   */
+  action?: z.ZodType;
+  /**
+   * The shape {@link redact} returns — what one player sees of the game, in a session view's `state`.
+   * Optional, so a model written before it existed still loads. Never parsed on the way out: `redact` is the
+   * authority on what a player may see, and this only tells a client how to read it. Published as the game's
+   * `<gameKey>.view` schema, so describe every field and the object itself.
+   */
+  view?: z.ZodType;
   /** The initial game state, built when the roster fills and play begins. */
   init(ctx: GameContext<Config>): State;
   /**

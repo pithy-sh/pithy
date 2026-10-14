@@ -3,10 +3,19 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { undescribedAsyncFields } from "@pithy-sh/core/src/asyncapi/document";
 import { undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { describe, expect, test } from "vitest";
 import { CATALOG } from "../capabilities/catalog";
-import { KIT_COMPOSITION, KIT_CONTRACT_PATH, kitDocument, kitRouteGroups } from "./kitDocument";
+import {
+  KIT_COMPOSITION,
+  KIT_CONTRACT_PATH,
+  KIT_SOCKET_CONTRACT_PATH,
+  kitComposition,
+  kitDocument,
+  kitSocketDocument,
+  kitSocketGroups,
+} from "./kitDocument";
 import { operationCount, renderDocument } from "./workerContract";
 
 /**
@@ -18,8 +27,10 @@ import { operationCount, renderDocument } from "./workerContract";
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..", "..", "..");
 
-const groups = kitRouteGroups();
+const composed = kitComposition();
+const groups = composed.groups;
 const document = kitDocument(groups);
+const sockets = kitSocketDocument(kitSocketGroups(composed.capabilities));
 
 /**
  * The capabilities that mount no route of their own, and what they contribute instead. Named, so the
@@ -82,5 +93,42 @@ describe("the kit's OpenAPI document", () => {
     for (const name of Object.keys(ROUTELESS)) {
       expect(groups.find((group) => group.tag === name)?.routes, name).toEqual([]);
     }
+  });
+});
+
+/**
+ * **And its socket document (#718).** The same three properties over the sockets: the kit's two socket
+ * capabilities are in it, every frame field is described, and the committed file is current.
+ */
+describe("the kit's AsyncAPI document", () => {
+  test("describes the room socket and the presence socket, and the built-in games' schemas", () => {
+    const tags = Object.values(sockets.channels).flatMap((channel) =>
+      (channel.tags as { name: string }[]).map((tag) => tag.name),
+    );
+    expect([...new Set(tags)].sort()).toEqual(["matchmaking", "multiplayer"]);
+    const schemas = Object.keys(sockets.components.schemas);
+    // Keyed by the configured game, not its model: an adopter may run one model under two keys.
+    for (const game of ["battle", "connect-four", "craps-table"]) {
+      expect(
+        schemas.some((name) => name.endsWith(`.${game}.action`)),
+        `${game}.action`,
+      ).toBe(true);
+      expect(
+        schemas.some((name) => name.endsWith(`.${game}.view`)),
+        `${game}.view`,
+      ).toBe(true);
+    }
+  });
+
+  test("every frame field and channel parameter carries a description", () => {
+    expect(undescribedAsyncFields(sockets)).toEqual([]);
+  });
+
+  test("the committed document is the rendered one", () => {
+    const committed = readFileSync(join(REPO_ROOT, KIT_SOCKET_CONTRACT_PATH), "utf8");
+    expect(
+      committed === renderDocument(sockets),
+      `${KIT_SOCKET_CONTRACT_PATH} is stale. Run \`bun run kit-contract\`.`,
+    ).toBe(true);
   });
 });

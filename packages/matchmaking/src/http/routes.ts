@@ -16,8 +16,10 @@ import { friendStore } from "../friends/store";
 import { resolveInvitee } from "../invite/resolve";
 import { type InviteStore, inviteStore } from "../invite/store";
 import type { MatchmakingPeers } from "../peers";
+import { PRESENCE_PATH } from "../presence/channel";
 import type { MatchmakingPresence } from "../presence/durableObject";
-import { PRESENCE_USER_HEADER, type PresenceEvent } from "../presence/protocol";
+import type { PresenceEvent } from "../presence/frames";
+import { PRESENCE_USER_HEADER } from "../presence/protocol";
 import type { MatchmakingQueue } from "../queue/durableObject";
 import { readSkill } from "../queue/skill";
 import { callRpc } from "../rpc";
@@ -25,6 +27,7 @@ import { type SessionNamespace, sessionMinter } from "../session/minter";
 import { requireAuth } from "./guard";
 import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
 import { FriendParams, GameParams, InviteBody, InviteParams, RoomCodeParams } from "./schemas";
+import { inviteView } from "./views";
 
 /**
  * The matchmaking HTTP surface. Every route is `requireAuth()`-gated (no public surface) and binds to
@@ -126,7 +129,7 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
           at: new Date(),
         });
         await notify(c, inviteeId, { type: "invite", inviteId: invite.id, gameKey: game.key, from: userId(c) });
-        return c.json(invite, 201);
+        return c.json(inviteView(invite) satisfies InviteView, 201);
       },
     );
 
@@ -140,7 +143,7 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
       requireAuth(),
       async (c) => {
         const invites = await inviteStore(matchmakingDatabase(dbBinding(c))).pendingFor(userId(c));
-        return c.json({ invites });
+        return c.json({ invites: invites.map(inviteView) } satisfies InviteList);
       },
     );
 
@@ -160,7 +163,7 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
         const sessionId = await minterOf(c).mint(game.snapshot, game.players, [invite.inviterId, invite.inviteeId]);
         const accepted = await store.accept(invite.id, sessionId, new Date());
         await notify(c, invite.inviterId, { type: "match_found", sessionId, gameKey: game.key });
-        return c.json(accepted, 200);
+        return c.json(inviteView(accepted) satisfies InviteView, 200);
       },
     );
 
@@ -176,7 +179,8 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
       async (c) => {
         const store = inviteStore(matchmakingDatabase(dbBinding(c)));
         const invite = await requireInvitee(c, store, c.req.valid("param").id);
-        return c.json(await store.decline(invite.id, new Date()), 200);
+        const declined = await store.decline(invite.id, new Date());
+        return c.json(inviteView(declined) satisfies InviteView, 200);
       },
     );
 
@@ -327,11 +331,11 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
     // --- Presence (WebSocket) ---
     app.get(
-      `${base}/presence`,
+      `${base}${PRESENCE_PATH}`,
       describeRoute({
         summary: "Open the caller's presence socket.",
         description:
-          "Send `Upgrade: websocket`. The socket first receives the caller's pending invites and which accepted friends are online, then invites, friend requests and matches as they happen. Send `ping` to get `pong`.",
+          "Send `Upgrade: websocket`, and offer `pithy.presence.v1` in `Sec-WebSocket-Protocol`. The socket first receives the caller's pending invites and which accepted friends are online, then invites, friend requests and matches as they happen. Send `ping` to get `pong`. The frames are in the AsyncAPI contract.",
         verification: ["bearer", "session"],
         responses: {
           101: { description: "Switches to a WebSocket. The server pushes presence events as JSON text frames." },
