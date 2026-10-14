@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, symlink } from "node:fs/promises"
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { parse } from "comment-json";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { Plan } from "./plan/plan";
 import { seedDryRunPlan } from "./seed/dryRunPlan";
@@ -57,12 +57,14 @@ test("empty dir → init → boots, serves /health 200, migrates the empty regis
   //    using the scaffold's own compatibility settings.
   const bundle = join(target, ".worker.mjs");
   await run("bun", ["build", join(workerDir, "src", "index.ts"), "--outfile", bundle, "--target=node"]);
-  const miniflare = new Miniflare({
-    modules: true,
-    script: await readFile(bundle, "utf8"),
-    compatibilityDate: wrangler.compatibility_date,
-    compatibilityFlags: wrangler.compatibility_flags,
-  });
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: await readFile(bundle, "utf8"),
+      compatibilityDate: wrangler.compatibility_date,
+      compatibilityFlags: wrangler.compatibility_flags,
+    }),
+  );
   try {
     const res = await miniflare.dispatchFetch("http://localhost/health");
     expect(res.status).toBe(200);

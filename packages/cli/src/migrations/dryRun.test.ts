@@ -7,7 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   createTable,
@@ -175,7 +175,9 @@ describe("planMigrateProject, against a remote database", () => {
 
   beforeEach(async () => {
     statements.length = 0;
-    miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "db-1" } });
+    miniflare = new Miniflare(
+      convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { DB: "db-1" } }),
+    );
     remote = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   });
   afterEach(async () => {

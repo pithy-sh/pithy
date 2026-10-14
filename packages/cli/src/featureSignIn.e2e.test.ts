@@ -12,7 +12,7 @@ import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatch
 import { runWriteWorkflow, type WriteWorkflowPayload } from "@pithy-sh/secrets/src/manager/writeWorkflow";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { parse } from "comment-json";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { runAdd } from "./capabilities/flow";
 import { CloudflareSecretsProvisioner } from "./capabilities/secretsProvisioner";
@@ -191,11 +191,13 @@ interface Faults {
 
 /** The stand-in Cloudflare account: databases, the Secrets Store, deployed scripts and the Workflows API. */
 async function standInAccount() {
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: Object.fromEntries(D1_POOL.map((id) => [id, id])),
-  });
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: Object.fromEntries(D1_POOL.map((id) => [id, id])),
+    }),
+  );
   const databases = new Map<string, D1Database>();
   for (const id of D1_POOL) databases.set(id, (await miniflare.getD1Database(id)) as unknown as D1Database);
   const database = (id: string): D1Database => {

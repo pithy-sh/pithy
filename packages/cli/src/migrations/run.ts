@@ -570,13 +570,19 @@ async function localDriver(persistRoot: string, groups: DatabaseGroup[]): Promis
   // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
   // every command module that could reach this one paid it before citty had parsed a flag (#482).
   // `ci/lazyHeavyImports.test.ts` holds the property.
-  const { Miniflare } = await import("miniflare");
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: bindings,
-    d1Persist: join(persistRoot, ".wrangler", "state", "v3", "d1"),
-  });
+  //
+  // Miniflare 5 takes a list of Workers, not one flat Worker. `convertV4MiniflareOptions` is its own
+  // adapter from the flat shape, the one wrangler's local `d1 execute` passes through, and it persists
+  // to the same `<root>/d1/` file wrangler dev reads (#738).
+  const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: bindings,
+      resourcePersistencePath: join(persistRoot, ".wrangler", "state", "v3"),
+    }),
+  );
 
   const cache = new Map<string, D1Database>();
   for (const [index, group] of groups.entries()) {

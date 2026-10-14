@@ -4,7 +4,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { withErrorReporting } from "../terminal/output";
 import { appCapability, migrateHarness, multiplayerCapability } from "../test-utils/migrateHarness";
@@ -49,11 +49,13 @@ let miniflare: Miniflare;
 let remotes: Map<string, D1Database>;
 
 beforeEach(async () => {
-  miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { DB: IDS.DB, COLLAB_DB: IDS.COLLAB_DB },
-  });
+  miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { DB: IDS.DB, COLLAB_DB: IDS.COLLAB_DB },
+    }),
+  );
   remotes = new Map([
     [IDS.DB, (await miniflare.getD1Database("DB")) as unknown as D1Database],
     [IDS.COLLAB_DB, (await miniflare.getD1Database("COLLAB_DB")) as unknown as D1Database],

@@ -17,11 +17,29 @@ import { assertWorkerName, ensureEmptyTarget, environmentWorkerName, kitRange, w
  * majors. Exported and imported rather than restated, so there is one literal and one test holding it to
  * the template on disk.
  *
- * `@cloudflare/vite-plugin` peers on wrangler, so this range is not free to move alone. Checked at
- * 4.123.0: plugin 1.48.0 peers `^4.115.0` and plugin 1.52.1 peers `^4.123.0`, and the stub's `^1.48.0`
- * resolves the latter. Both are satisfied. A wrangler **major** still needs the plugin moved with it.
+ * **An exact version, not a range (#738).** Every wrangler since 4.148.0 pins one exact miniflare from the
+ * 5 line, a prerelease, and a semver range cannot follow one prerelease to the next — so a caret here let a
+ * new project resolve a wrangler whose miniflare differs from the one `@pithy-sh/cli` pins, and install two
+ * workerds. `ci/miniflarePins.test.ts` holds this release, through the starter, to the kit's own wrangler;
+ * a bump moves them together. Once miniflare 5 reaches `latest` this becomes a caret again.
+ *
+ * `@cloudflare/vite-plugin` peers on wrangler, so this pin is not free to move alone: the React stub pins
+ * the plugin release that pins this wrangler, {@link CLOUDFLARE_VITE_PLUGIN}, and a bump moves both.
  */
-export const WRANGLER_RANGE = "^4.123.0";
+export const WRANGLER_RANGE = "4.151.0";
+
+/**
+ * The `@cloudflare/vite-plugin` release `pithy ui add react` writes, and the wrangler that release pins.
+ *
+ * **Exact, and it moves with {@link WRANGLER_RANGE} (#738).** Every vite-plugin release depends on one
+ * exact wrangler and one exact miniflare, and peers `^4.<that wrangler>`. A caret beside the exact
+ * wrangler above resolves the plugin's next release, whose peer the pinned wrangler no longer satisfies:
+ * npm refuses the install, and bun nests a second wrangler with a second miniflare and workerd. The
+ * plugin is not installed in this repository, so the pair is recorded here from
+ * `npm view @cloudflare/vite-plugin@<version> dependencies.wrangler`, and `ci/miniflarePins.test.ts`
+ * fails when `wrangler` here stops matching the kit's installed wrangler.
+ */
+export const CLOUDFLARE_VITE_PLUGIN = { version: "1.64.0", wrangler: "4.151.0" } as const;
 
 /**
  * The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve).

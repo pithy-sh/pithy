@@ -55,7 +55,7 @@
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
     "ink": "7.1.1",
-    "miniflare": "^4.20260722.1",
+    "miniflare": "5.20261012.0-beta",
     "picocolors": "^1.1.1",
     "react": "^19.2.8"
   },
@@ -88,7 +88,7 @@
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.149.0",
+    "wrangler": "^4.151.0",
     "zod": "^4.4.0"
   },
   "peerDependencies": {

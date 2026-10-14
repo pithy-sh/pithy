@@ -10,7 +10,7 @@ import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imag
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { featureConfigPath } from "../provision/featureConfig";
 import { fixOf } from "../terminal/exitClass";
@@ -124,12 +124,14 @@ describe("openSeedDriver", () => {
       }
 
       // Reopen the store exactly as wrangler binds it — id `DB` — and the table is there.
-      const wranglerView = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { DB: "DB" },
-        d1Persist: join(dir, ".wrangler", "state", "v3", "d1"),
-      });
+      const wranglerView = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { DB: "DB" },
+          resourcePersistencePath: join(dir, ".wrangler", "state", "v3"),
+        }),
+      );
       try {
         const row = await (await wranglerView.getD1Database("DB"))
           .prepare("SELECT count(*) AS n FROM seeded")

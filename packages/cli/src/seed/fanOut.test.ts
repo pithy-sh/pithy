@@ -4,7 +4,7 @@
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { defineSeed, kvSeedGroup } from "@pithy-sh/core/src/seed/seed";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { migrateProject } from "../migrations/run";
@@ -125,12 +125,14 @@ describe("seedProject", () => {
       expect(report.workers[1]?.shared).toEqual([]);
       expect(report.workers[1]?.sets.map((set) => set.name)).toEqual(["1000_app_demo"]);
 
-      const mf = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { API: "db-local", COLLAB: "db-collab" },
-        d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-      });
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { API: "db-local", COLLAB: "db-collab" },
+          resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+        }),
+      );
       try {
         for (const binding of ["API", "COLLAB"]) {
           const db = (await mf.getD1Database(binding)) as unknown as D1Database;

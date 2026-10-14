@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { runCommand } from "citty";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Plan } from "../plan/plan";
 import { scaffoldProject } from "../project/scaffold";
@@ -132,7 +132,9 @@ describe("pithy migrate --dry-run, against staging", () => {
     statements.length = 0;
     vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
-    miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "db-1" } });
+    miniflare = new Miniflare(
+      convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { DB: "db-1" } }),
+    );
     const db = (await miniflare.getD1Database("DB")) as unknown as D1Database;
     remote.d1 = () =>
       new Proxy(db, {

@@ -7,7 +7,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationGroups } from "@pithy-sh/core/src/migrations/groups";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { featureConfigPath } from "../provision/featureConfig";
 import { EXIT, exitCodeOf, fixOf } from "../terminal/exitClass";
@@ -163,12 +163,14 @@ describe("migrateProject", () => {
     });
 
     // Open the store exactly as wrangler binds it — id `DB` — and the migrated table is there.
-    const mf = new Miniflare({
-      modules: true,
-      script: "export default {};",
-      d1Databases: { DB: "DB" },
-      d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-    });
+    const mf = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { DB: "DB" },
+        resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+      }),
+    );
     try {
       const count = await (await mf.getD1Database("DB"))
         .prepare("SELECT count(*) AS n FROM things")
@@ -300,8 +302,15 @@ describe("migrateProject", () => {
       const workers = [h.api([appCapability()])];
       await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      const d1Persist = join(h.projectDir, ".wrangler", "state", "v3", "d1");
-      let mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
+      const resourcePersistencePath = join(h.projectDir, ".wrangler", "state", "v3");
+      let mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { DB: "DB" },
+          resourcePersistencePath,
+        }),
+      );
       try {
         await (await mf.getD1Database("DB")).prepare("INSERT INTO things (id) VALUES (1)").run();
       } finally {
@@ -310,7 +319,14 @@ describe("migrateProject", () => {
 
       await resetProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" }, d1Persist });
+      mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { DB: "DB" },
+          resourcePersistencePath,
+        }),
+      );
       try {
         const count = await (await mf.getD1Database("DB"))
           .prepare("SELECT count(*) AS n FROM things")
@@ -398,11 +414,13 @@ describe("migrateProject", () => {
       );
       await writeFile(join(h.projectDir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=acct-1\nCLOUDFLARE_API_TOKEN=tok-1\n");
 
-      const miniflare = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { REMOTE: "app-staging-id" },
-      });
+      const miniflare = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { REMOTE: "app-staging-id" },
+        }),
+      );
       try {
         const reachable = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
         // What a revoked token or a deleted database actually does to a read.
@@ -461,11 +479,13 @@ describe("migrateProject", () => {
 
       // The REST-backed D1 is substituted with an in-memory Miniflare D1 — issue #24's client is
       // tested separately; here we assert the remote *orchestration* (id resolution, creds, ordering).
-      const miniflare = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { REMOTE: "remote-staging-id" },
-      });
+      const miniflare = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { REMOTE: "remote-staging-id" },
+        }),
+      );
       const remote = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
       const resolved: { binding: string; databaseId: string }[] = [];
       const opts = {
@@ -516,11 +536,13 @@ describe("migrateProject", () => {
         JSON.stringify({ env: { staging: { d1_databases: [{ binding: "DB", database_id: "remote-staging-id" }] } } }),
       );
 
-      const miniflare = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { REMOTE: "remote-staging-id" },
-      });
+      const miniflare = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { REMOTE: "remote-staging-id" },
+        }),
+      );
       try {
         const remote = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
         const resolved: { binding: string; databaseId: string }[] = [];
@@ -647,11 +669,13 @@ describe("migrateProject", () => {
       vi.stubEnv("CLOUDFLARE_API_TOKEN", "");
       await writeStagingConfig("remote-staging-id");
 
-      const miniflare = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { REMOTE: "remote-staging-id" },
-      });
+      const miniflare = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { REMOTE: "remote-staging-id" },
+        }),
+      );
       try {
         const remote = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
         const runs = await migrateProject({

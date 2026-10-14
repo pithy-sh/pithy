@@ -10,7 +10,7 @@ import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { StatePathOptions } from "../notifier/state";
 import { devSecretsFile } from "./location";
@@ -58,12 +58,14 @@ async function withMasterKey(): Promise<void> {
  * so: the store would come back ready and read an empty database the Worker never writes to.
  */
 async function migrateLocalSecrets(): Promise<void> {
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { [SECRETS_D1_BINDING]: SECRETS_D1_BINDING },
-    d1Persist: join(dir, ".wrangler", "state", "v3", "d1"),
-  });
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { [SECRETS_D1_BINDING]: SECRETS_D1_BINDING },
+      resourcePersistencePath: join(dir, ".wrangler", "state", "v3"),
+    }),
+  );
   try {
     const d1 = (await miniflare.getD1Database(SECRETS_D1_BINDING)) as unknown as D1Database;
     await secrets_0001_init.up(createDatabase(d1, secretsTables));

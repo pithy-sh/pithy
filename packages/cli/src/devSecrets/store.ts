@@ -48,7 +48,17 @@ export const SECRETS_D1_BINDING = "SECRETS";
  * a remote D1 cannot name this path and mean it.
  */
 export function localDevStorePath(projectDir: string): string {
-  return join(localDevStateRoot(projectDir), "v3", "d1");
+  return join(localResourceRoot(projectDir), "d1");
+}
+
+/**
+ * The root miniflare persists every local resource under, one directory per kind: `d1/`, `kv/`, `r2/`.
+ *
+ * Miniflare 5 takes this root and nothing narrower — its per-kind `d1Persist` and `kvPersist` are gone —
+ * so a store opened here lands in `localDevStorePath`, where `wrangler dev` reads it (#738).
+ */
+function localResourceRoot(projectDir: string): string {
+  return join(localDevStateRoot(projectDir), "v3");
 }
 
 /**
@@ -165,13 +175,19 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
   // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
   // every command module that could reach this one paid it before citty had parsed a flag (#482).
   // `ci/lazyHeavyImports.test.ts` holds the property.
-  const { Miniflare } = await import("miniflare");
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { [SECRETS_D1_BINDING]: databaseId },
-    d1Persist: persistPath,
-  });
+  //
+  // Miniflare 5 takes a list of Workers, not one flat Worker. `convertV4MiniflareOptions` is its own
+  // adapter from the flat shape, the one wrangler's local `d1 execute` passes through, and it persists
+  // to the same `<root>/d1/` file wrangler dev reads (#738).
+  const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { [SECRETS_D1_BINDING]: databaseId },
+      resourcePersistencePath: localResourceRoot(options.projectDir),
+    }),
+  );
   const dispose = () => miniflare.dispose();
 
   let store: SystemSecretsStore;

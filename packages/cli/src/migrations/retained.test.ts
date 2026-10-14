@@ -32,7 +32,7 @@ import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
 import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import type { Migration } from "kysely/migration";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { defaultRemoveSteps } from "../capabilities/remove";
 import { CloudflareSecretsDeprovisioner } from "../capabilities/secretsProvisioner";
@@ -449,11 +449,13 @@ describe("a database other environments bind (#588)", () => {
   }
 
   async function remotes(): Promise<{ mf: Miniflare; byId: (id: string) => D1Database }> {
-    const mf = new Miniflare({
-      modules: true,
-      script: "export default {};",
-      d1Databases: { STAGING: "staging-db", GLOBAL: "global-suppressions" },
-    });
+    const mf = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { STAGING: "staging-db", GLOBAL: "global-suppressions" },
+      }),
+    );
     const staging = (await mf.getD1Database("STAGING")) as unknown as D1Database;
     const global = (await mf.getD1Database("GLOBAL")) as unknown as D1Database;
     return { mf, byId: (id) => (id === "global-suppressions" ? global : staging) };
@@ -663,12 +665,14 @@ describe("the link-signing key survives the vault (#596)", () => {
         { name: "api", dir: join(h.projectDir, "apps", "api"), registry: aggregateSecretRegistries(composed()) },
       ],
       openStore: async () => {
-        const mf = new Miniflare({
-          modules: true,
-          script: "export default {};",
-          d1Databases: { D: "SECRETS" },
-          d1Persist: persistDir(h.projectDir),
-        });
+        const mf = new Miniflare(
+          convertV4MiniflareOptions({
+            modules: true,
+            script: "export default {};",
+            d1Databases: { D: "SECRETS" },
+            resourcePersistencePath: persistDir(h.projectDir),
+          }),
+        );
         const db = (await mf.getD1Database("D")) as unknown as D1Database;
         return {
           ready: true,
@@ -783,12 +787,14 @@ describe("the link-signing key survives the vault (#596)", () => {
       [entry, storeEntryText({}, "the-staging-link-key")],
     ]);
     const databases = new Map([["acme-staging-secrets", "db-staging"]]);
-    const mf = new Miniflare({
-      modules: true,
-      script: "export default {};",
-      d1Databases: { D: "SECRETS" },
-      d1Persist: persistDir(h.projectDir),
-    });
+    const mf = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { D: "SECRETS" },
+        resourcePersistencePath: persistDir(h.projectDir),
+      }),
+    );
     try {
       const vaultDb = await mf.getD1Database("D");
       const cf = {

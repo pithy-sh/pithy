@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runUpgrade } from "../commands/upgrade";
 import { collectMigrationSets } from "./registry";
@@ -70,7 +70,9 @@ describe("a migration run composes for the environment it was asked about", () =
 
   /** An in-memory stand-in for the REST-backed D1 a staging run reaches. */
   async function remote(): Promise<{ d1: D1Database; dispose: () => Promise<void> }> {
-    const miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { REMOTE: "r" } });
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { REMOTE: "r" } }),
+    );
     return {
       d1: (await miniflare.getD1Database("REMOTE")) as unknown as D1Database,
       dispose: () => miniflare.dispose(),

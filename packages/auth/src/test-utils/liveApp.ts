@@ -17,7 +17,7 @@ import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptio
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { Hono } from "hono";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { publishSameOrigin } from "../http/csrf";
 import { createSessionMiddleware } from "../http/middleware";
@@ -150,11 +150,13 @@ export interface LiveApp {
  * forgets leaves a workerd process behind.
  */
 export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { DB: "DB", SECRETS: "SECRETS" },
-  });
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { DB: "DB", SECRETS: "SECRETS" },
+    }),
+  );
   const db = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   const secretsDb = (await miniflare.getD1Database("SECRETS")) as unknown as D1Database;
 

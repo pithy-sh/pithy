@@ -15,7 +15,7 @@ import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migratio
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type CliAuditEmit, type CliAuditEvent, createCliAudit } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
@@ -30,7 +30,9 @@ let miniflare: Miniflare;
 let d1: D1Database;
 
 beforeEach(async () => {
-  miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" } });
+  miniflare = new Miniflare(
+    convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { DB: "DB" } }),
+  );
   d1 = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   await controlplane_0001_init.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
   await controlplane_0002_management_origin.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);

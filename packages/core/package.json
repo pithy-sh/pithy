@@ -39,7 +39,7 @@
     "kysely-d1": "^0.4.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@cloudflare/vitest-plugin": "^1.4.2",
     "@pithy-sh/tsconfig": "workspace:*",
     "@vitest/coverage-v8": "^4.1.0",
     "hono": "^4.13.2",
@@ -47,7 +47,7 @@
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.149.0",
+    "wrangler": "^4.151.0",
     "zod": "^4.4.0"
   },
   "peerDependencies": {

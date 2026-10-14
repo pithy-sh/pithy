@@ -13,7 +13,7 @@ import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provision
 import { deprovisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { MigrationProvider } from "kysely/migration";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { blankStrings } from "../ci/childProcesses";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
@@ -40,7 +40,9 @@ afterEach(async () => {
 
 /** A fresh in-memory D1, migrated by `provider`. */
 async function migratedD1(provider: MigrationProvider): Promise<D1Database> {
-  const mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { D: "retained" } });
+  const mf = new Miniflare(
+    convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { D: "retained" } }),
+  );
   open.push(mf);
   const db = (await mf.getD1Database("D")) as unknown as D1Database;
   await runMigrations(db, provider);

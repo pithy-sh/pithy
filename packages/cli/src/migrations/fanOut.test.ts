@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import {
   appCapability,
@@ -118,12 +118,14 @@ describe("migrateProject", () => {
 
         // Both tables landed in the one shared local D1, and nothing is pending afterwards.
         expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toBe(0);
-        const mf = new Miniflare({
-          modules: true,
-          script: "export default {};",
-          d1Databases: { DB: "DB" },
-          d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-        });
+        const mf = new Miniflare(
+          convertV4MiniflareOptions({
+            modules: true,
+            script: "export default {};",
+            d1Databases: { DB: "DB" },
+            resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+          }),
+        );
         try {
           const tables = await (await mf.getD1Database("DB"))
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -245,12 +247,14 @@ describe("migrateProject", () => {
         expect(runs[0]?.databases[0]?.results.map((r) => r.migrationName)).toEqual(["1000_app_0001_things"]);
 
         // Both tables landed: a shared database migrates as a whole, or the ledger diverges from it.
-        const mf = new Miniflare({
-          modules: true,
-          script: "export default {};",
-          d1Databases: { DB: "DB" },
-          d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-        });
+        const mf = new Miniflare(
+          convertV4MiniflareOptions({
+            modules: true,
+            script: "export default {};",
+            d1Databases: { DB: "DB" },
+            resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+          }),
+        );
         try {
           const tables = await (await mf.getD1Database("DB"))
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
@@ -287,12 +291,14 @@ describe("migrateProject", () => {
 
       await migrateProject({ account: null, projectDir: h.projectDir, workers, env: "dev", project: "acme" });
 
-      const mf = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { DB: "DB" },
-        d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-      });
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { DB: "DB" },
+          resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+        }),
+      );
       try {
         const row = await (await mf.getD1Database("DB"))
           .prepare("SELECT count(*) AS n FROM things")

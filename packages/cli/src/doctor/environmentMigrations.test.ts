@@ -4,7 +4,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import type { MigrationScope } from "../capabilities/reconcile";
 import {
@@ -434,7 +434,9 @@ describe("a Worker beside one that does not compose for the environment", () => 
     await worker("b", 1100, "shared-staging");
     await worker("c", 1200, "c-staging", true);
 
-    const miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { REMOTE: "r" } });
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { REMOTE: "r" } }),
+    );
     try {
       const d1 = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
       // The shared database, as a healthy staging holds it: both Workers' first migration applied.

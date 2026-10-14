@@ -11,7 +11,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { featureHostCapabilities, featureHostScripts } from "../feature/hosts";
@@ -144,7 +144,9 @@ describe("planProvision", () => {
   test("what exists is adopted by id, and an adopted database lists only what it has not applied", async () => {
     vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "acct");
     vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
-    const miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "d1-real" } });
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { DB: "d1-real" } }),
+    );
     try {
       const db = (await miniflare.getD1Database("DB")) as unknown as D1Database;
       remote.d1 = () => db;

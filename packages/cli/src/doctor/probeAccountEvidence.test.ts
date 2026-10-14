@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { PITHY_OFFLINE_ENV } from "../cloudflare/config";
 import { type MisnamedCandidate, probeAccountEvidence } from "./projectName";
@@ -29,7 +29,9 @@ import { type MisnamedCandidate, probeAccountEvidence } from "./projectName";
 
 /** A D1 the probe can read, stamped or not, backed by real SQLite. */
 async function database(stamp?: string): Promise<{ db: D1Database; dispose: () => Promise<void> }> {
-  const miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { DB: "DB" } });
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({ modules: true, script: "export default {};", d1Databases: { DB: "DB" } }),
+  );
   const db = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   if (stamp) await claimMigrationOwnership(db, { project: stamp });
   return { db, dispose: () => miniflare.dispose() };

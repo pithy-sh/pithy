@@ -4,7 +4,7 @@
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "@pithy-sh/ui-react/src/templates";
 import { kitRange } from "../project/scaffold";
-import { WRANGLER_RANGE } from "../project/workerScaffold";
+import { CLOUDFLARE_VITE_PLUGIN, WRANGLER_RANGE } from "../project/workerScaffold";
 import type { UiStub, UiStubContext, UiStubFile } from "./stubs";
 
 /**
@@ -68,7 +68,9 @@ export const reactStub: UiStub = {
     "@pithy-sh/i18n": kitRange(PACKAGE_VERSION),
   },
   devDependencies: {
-    "@cloudflare/vite-plugin": "^1.48.0",
+    // Exact, and the release that pins the wrangler below: a caret resolves the plugin's next release,
+    // whose wrangler peer the exact pin no longer satisfies (#738).
+    "@cloudflare/vite-plugin": CLOUDFLARE_VITE_PLUGIN.version,
     // Derived, never a literal: `"^0.0.0"` 404'd the adopter's next install, and no release would ever
     // have moved it. `kitRange` answers `null` while nothing under the scope is published, which drops
     // the line entirely, and writes a real range the day one exists.

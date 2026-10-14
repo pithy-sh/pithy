@@ -6,7 +6,7 @@ import type { CloudflareKVManager } from "@pithy-sh/cloudflare/src/kv/kvManager"
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { d1SeedGroup, defineSeed } from "@pithy-sh/core/src/seed/seed";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { migrateProject, type WorkerScope } from "../migrations/run";
@@ -51,11 +51,13 @@ let miniflare: Miniflare;
 let remotes: Map<string, D1Database>;
 
 beforeEach(async () => {
-  miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { DB: IDS.DB, BOARD_DB: IDS.BOARD_DB },
-  });
+  miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { DB: IDS.DB, BOARD_DB: IDS.BOARD_DB },
+    }),
+  );
   remotes = new Map([
     [IDS.DB, (await miniflare.getD1Database("DB")) as unknown as D1Database],
     [IDS.BOARD_DB, (await miniflare.getD1Database("BOARD_DB")) as unknown as D1Database],

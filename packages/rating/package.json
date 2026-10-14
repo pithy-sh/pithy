@@ -45,7 +45,7 @@
     "zod": "^4.4.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@cloudflare/vitest-plugin": "^1.4.2",
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
@@ -56,7 +56,7 @@
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.149.0",
+    "wrangler": "^4.151.0",
     "zod": "^4.4.0"
   }
 }

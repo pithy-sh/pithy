@@ -3,7 +3,7 @@
 
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import { defaultRemoveSteps } from "../capabilities/remove";
 import { seedProject } from "../seed/run";
@@ -26,12 +26,14 @@ describe("project ownership", () => {
 
   /** Read the local D1's owner stamp straight out of the shared Miniflare store. */
   async function ownerOf(binding = "DB"): Promise<{ project: string } | null> {
-    const miniflare = new Miniflare({
-      modules: true,
-      script: "export default {};",
-      d1Databases: { [binding]: binding },
-      d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-    });
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { [binding]: binding },
+        resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+      }),
+    );
     try {
       const db = await miniflare.getD1Database(binding);
       return await db.prepare("select project from pithy_migrations_owner").first<{ project: string }>();
@@ -42,12 +44,14 @@ describe("project ownership", () => {
 
   /** Whether a table exists in the local D1 — the proof that a refused run applied nothing. */
   async function hasTable(name: string): Promise<boolean> {
-    const miniflare = new Miniflare({
-      modules: true,
-      script: "export default {};",
-      d1Databases: { DB: "DB" },
-      d1Persist: join(h.projectDir, ".wrangler", "state", "v3", "d1"),
-    });
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { DB: "DB" },
+        resourcePersistencePath: join(h.projectDir, ".wrangler", "state", "v3"),
+      }),
+    );
     try {
       const db = await miniflare.getD1Database("DB");
       const row = await db

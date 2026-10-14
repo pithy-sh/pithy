@@ -43,9 +43,9 @@ export const pendingFrom = async (options: MigrationFanOutOptions): Promise<numb
   return ledger.pending;
 };
 
-/** The local Miniflare store `pithy migrate` persists a project's `dev` databases to. */
+/** The local Miniflare root `pithy migrate` persists a project's `dev` databases under, in its `d1/`. */
 export function persistDir(projectDir: string): string {
-  return join(projectDir, ".wrangler", "state", "v3", "d1");
+  return join(projectDir, ".wrangler", "state", "v3");
 }
 
 /**
@@ -61,13 +61,15 @@ export async function withLocalD1<T>(
   binding: string,
   body: (db: D1Database) => Promise<T>,
 ): Promise<T> {
-  const { Miniflare } = await import("miniflare");
-  const mf = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: { D: binding },
-    d1Persist: persistDir(projectDir),
-  });
+  const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
+  const mf = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { D: binding },
+      resourcePersistencePath: persistDir(projectDir),
+    }),
+  );
   try {
     return await body((await mf.getD1Database("D")) as unknown as D1Database);
   } finally {

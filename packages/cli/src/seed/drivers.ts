@@ -246,17 +246,21 @@ async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets)
   // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
   // every command module that could reach this one paid it before citty had parsed a flag (#482).
   // `ci/lazyHeavyImports.test.ts` holds the property.
-  const { Miniflare } = await import("miniflare");
-  const miniflare = new Miniflare({
-    modules: true,
-    script: "export default {};",
-    d1Databases: d1Ids,
-    kvNamespaces: kvIds,
-    r2Buckets: r2Ids,
-    d1Persist: join(state, "d1"),
-    kvPersist: join(state, "kv"),
-    r2Persist: join(state, "r2"),
-  });
+  //
+  // Miniflare 5 takes a list of Workers, not one flat Worker. `convertV4MiniflareOptions` is its own
+  // adapter from the flat shape, the one wrangler's local `d1 execute` passes through, and it persists
+  // to the same `<root>/d1/` file wrangler dev reads (#738).
+  const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
+  const miniflare = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: "export default {};",
+      d1Databases: d1Ids,
+      kvNamespaces: kvIds,
+      r2Buckets: r2Ids,
+      resourcePersistencePath: state,
+    }),
+  );
 
   const d1Cache = new Map<string, D1Database>();
   for (const binding of Object.keys(d1Ids)) {

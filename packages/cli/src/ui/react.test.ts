@@ -9,6 +9,7 @@ import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { TEMPLATE_DIR } from "@pithy-sh/ui-react/src/templates";
 import { beforeAll, describe, expect, test } from "vitest";
 import { kitRange } from "../project/scaffold";
+import { CLOUDFLARE_VITE_PLUGIN } from "../project/workerScaffold";
 import { reactStub } from "./react";
 import { loadStubFiles } from "./templates";
 
@@ -616,7 +617,10 @@ describe("the React 19 stub", () => {
     // @vitejs/plugin-react 6.x is the Vite 8 line; 5.1.x does not support Vite 8.
     expect(reactStub.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.4");
     expect(reactStub.devDependencies.vite).toBe("^8.2.1");
-    expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe("^1.48.0");
+    // Exact, not a caret: every release pins one wrangler and peers `^4.<that wrangler>`, so a caret
+    // resolves the next release against the stub's exact wrangler and conflicts with it (#738).
+    expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe(CLOUDFLARE_VITE_PLUGIN.version);
   });
 
   test("every @pithy-sh range is that package's OWN version, not core's", async () => {

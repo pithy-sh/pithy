@@ -8,7 +8,7 @@ import type { D1Database, KVNamespace } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { d1SeedGroup, defineSeed, kvSeedGroup } from "@pithy-sh/core/src/seed/seed";
 import type { Migration } from "kysely/migration";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach } from "vitest";
 import { z } from "zod";
 import type { WorkerScope } from "../migrations/run";
@@ -155,14 +155,15 @@ export function seedHarness(): SeedHarness {
     },
     async openLocal(): Promise<LocalStores> {
       const state = join(dir, ".wrangler", "state", "v3");
-      const mf = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        d1Databases: { DB: "db-local" },
-        kvNamespaces: { CACHE: "cache-local" },
-        d1Persist: join(state, "d1"),
-        kvPersist: join(state, "kv"),
-      });
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { DB: "db-local" },
+          kvNamespaces: { CACHE: "cache-local" },
+          resourcePersistencePath: state,
+        }),
+      );
       return {
         d1: (await mf.getD1Database("DB")) as unknown as D1Database,
         kv: (await mf.getKVNamespace("CACHE")) as unknown as KVNamespace,

@@ -9,7 +9,7 @@ import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imag
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { defineSeed, type MediaSeedItem } from "@pithy-sh/core/src/seed/seed";
-import { Miniflare } from "miniflare";
+import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import { migrateProject } from "../migrations/run";
 import { dataCapability, localWrangler, seedHarness } from "../test-utils/seedHarness";
@@ -190,7 +190,13 @@ describe("seedProject", () => {
 
       // The REST-backed D1 is substituted with an in-memory Miniflare D1 (the REST client is tested
       // separately); the KV manager is a fake capturing its `set` calls.
-      const mf = new Miniflare({ modules: true, script: "export default {};", d1Databases: { REMOTE: "db-staging" } });
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { REMOTE: "db-staging" },
+        }),
+      );
       const remoteD1 = (await mf.getD1Database("REMOTE")) as unknown as D1Database;
       const kvSets: { key: string; value: string }[] = [];
       const remoteKv = {
@@ -252,12 +258,14 @@ describe("seedProject", () => {
     /** Open a fresh Miniflare over the same persisted R2 state to read back what a seed wrote. */
     async function openLocalR2(): Promise<{ bucket: R2Bucket; dispose: () => Promise<void> }> {
       const state = join(h.projectDir, ".wrangler", "state", "v3");
-      const mf = new Miniflare({
-        modules: true,
-        script: "export default {};",
-        r2Buckets: { ASSETS: "assets-local" },
-        r2Persist: join(state, "r2"),
-      });
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: "export default {};",
+          r2Buckets: { ASSETS: "assets-local" },
+          resourcePersistencePath: state,
+        }),
+      );
       return { bucket: (await mf.getR2Bucket("ASSETS")) as unknown as R2Bucket, dispose: () => mf.dispose() };
     }
 
