@@ -424,7 +424,9 @@ describe("runWrangler", () => {
         cwd: project,
         env: { PATH: fakeBin },
       });
-      expect(stdout).not.toContain("x\n");
+      // Whole lines, not a substring: `bun x` arrives as a line of its own, and the temporary project
+      // path is random, so a substring match fails whenever that path happens to end in `x`.
+      expect(stdout.split("\n")).not.toContain("x");
       expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "--cwd", project, "whoami", NO_PROVISION_ARG]);
     });
   });
