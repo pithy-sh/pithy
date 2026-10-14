@@ -20,6 +20,18 @@ The session socket's frames are Zod schemas in `src/session/frames.ts`, and the 
 
 A game model may declare an `action` schema and a `view` schema, and the three built-in games do. A declared `action` is checked before `apply` runs. Both are published in `asyncapi.json` as `<gameKey>.action` and `<gameKey>.view`, so a client in any engine types the part that is the game.
 
+## Who reads a session
+
+A session reads only for the people in it. The session itself judges membership, and anyone it does not admit gets a 403. Every route answers it as `multiplayer/not_a_member`, and the socket upgrade as a plain 403.
+
+- **`GET /multiplayer/sessions/:id`, the socket, an action and a close:** current members only.
+- **`GET /multiplayer/sessions/:id/result`:** anyone who ever joined, a player who left the table included. The session keeps that record.
+- **`POST /multiplayer/sessions/:id/leave`:** anyone who ever joined. Leaving closes the player's sockets. A repeated leave is not an error, and its view shows nothing live.
+
+No state frame reaches a socket whose player is no longer a member.
+
+This gates reading, not joining. Whoever holds an open session's id may still join it, by design.
+
 
 ## License
 

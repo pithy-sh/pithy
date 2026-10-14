@@ -91,6 +91,18 @@ const CONFIG: MultiplayerConfigInput = {
   ],
 };
 
+/** A table that does nothing, so a test can join, leave and close it with no ledger composed. */
+const QUIET_TABLE: GameModel = {
+  kind: "test-route-table",
+  config: z.object({}).describe("No rules."),
+  state: z.object({}).describe("No state."),
+  init: () => ({}),
+  apply: (_ctx, state) => ({ state }),
+  isComplete: () => false,
+  resolve: () => ({ outcome: { scores: {}, winnerUserId: null, draw: false } }),
+  redact: () => ({}),
+};
+
 const req = (
   app: Hono<PithyHonoEnv>,
   method: string,
@@ -158,6 +170,62 @@ describe("multiplayer routes", () => {
     expect((await bad.json<{ error: { code: string } }>()).error.code).toBe("multiplayer/session_not_found");
 
     expect((await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "alice" })).status).toBe(404);
+  });
+
+  test("a session reads only for its members: the view for a current one, the result for anyone who played", async () => {
+    const app = makeApp(CONFIG);
+    const created = await req(app, "POST", "/multiplayer/games/battle", { user: "alice" });
+    const id = (await created.json<SessionView>()).sessionId;
+    await req(app, "POST", `/multiplayer/sessions/${id}/join`, { user: "bob" });
+
+    expect((await req(app, "GET", `/multiplayer/sessions/${id}`, { user: "alice" })).status).toBe(200);
+    const view = await req(app, "GET", `/multiplayer/sessions/${id}`, { user: "mallory" });
+    expect(view.status).toBe(403);
+    expect((await view.json<{ error: { code: string } }>()).error.code).toBe("multiplayer/not_a_member");
+
+    await req(app, "POST", `/multiplayer/sessions/${id}/action`, {
+      user: "alice",
+      body: { offense: ["fire"], defense: ["guard-ice"] },
+    });
+    await req(app, "POST", `/multiplayer/sessions/${id}/action`, {
+      user: "bob",
+      body: { offense: ["ice"], defense: ["guard-fire"] },
+    });
+
+    expect((await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "bob" })).status).toBe(200);
+    const result = await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "mallory" });
+    expect(result.status).toBe(403);
+    expect((await result.json<{ error: { code: string } }>()).error.code).toBe("multiplayer/not_a_member");
+  });
+
+  test("the result 403s a non-member before it says whether the session has ended", async () => {
+    const app = makeApp(CONFIG);
+    const created = await req(app, "POST", "/multiplayer/games/battle", { user: "alice" });
+    const id = (await created.json<SessionView>()).sessionId;
+    expect((await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "mallory" })).status).toBe(403);
+  });
+
+  test("a player who left a table reads how it ended, never the live view; a stranger can't leave it", async () => {
+    registerGameModel(QUIET_TABLE);
+    const app = makeApp({ games: [{ key: "quiet", kind: "test-route-table", mode: "table", players: 4, rules: {} }] });
+    const created = await req(app, "POST", "/multiplayer/games/quiet", { user: "alice" });
+    const id = (await created.json<SessionView>()).sessionId;
+    await req(app, "POST", `/multiplayer/sessions/${id}/join`, { user: "bob" });
+
+    const stranger = await req(app, "POST", `/multiplayer/sessions/${id}/leave`, { user: "mallory" });
+    expect(stranger.status).toBe(403);
+    expect((await stranger.json<{ error: { code: string } }>()).error.code).toBe("multiplayer/not_a_member");
+
+    expect((await req(app, "POST", `/multiplayer/sessions/${id}/leave`, { user: "bob" })).status).toBe(200);
+    // A retried leave from the player who just left stays idempotent.
+    expect((await req(app, "POST", `/multiplayer/sessions/${id}/leave`, { user: "bob" })).status).toBe(200);
+    expect((await req(app, "GET", `/multiplayer/sessions/${id}`, { user: "bob" })).status).toBe(403);
+
+    await req(app, "POST", `/multiplayer/sessions/${id}/close`, { user: "alice" });
+    const result = await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "bob" });
+    expect(result.status).toBe(200);
+    expect((await conforming(result, SessionResult)).players).toEqual(["alice"]);
+    expect((await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "mallory" })).status).toBe(403);
   });
 
   test("a malformed game key is the validator's 400; a well-shaped unknown key keeps its 404", async () => {

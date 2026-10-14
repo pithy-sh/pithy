@@ -9404,6 +9404,7 @@
         ],
         "operationId": "postMultiplayerSessionsByIdLeave",
         "summary": "Leave a seat at a table.",
+        "description": "Only a player who joined may leave; anyone else is `multiplayer/not_a_member`. Leaving closes the player's sockets. A repeated leave is not an error, and shows nothing live.",
         "parameters": [
           {
             "name": "id",
@@ -9760,6 +9761,7 @@
         ],
         "operationId": "getMultiplayerSessionsByIdResult",
         "summary": "Read how a finished session ended.",
+        "description": "Anyone who ever joined the session may read it, a player who left included. Anyone else is `multiplayer/not_a_member`, before the session says whether it has ended.",
         "parameters": [
           {
             "name": "id",
@@ -9936,6 +9938,7 @@
         ],
         "operationId": "getMultiplayerSessionsById",
         "summary": "Read the caller's view of a session.",
+        "description": "Only a current member may read it; anyone else is `multiplayer/not_a_member`, as on the socket.",
         "parameters": [
           {
             "name": "id",

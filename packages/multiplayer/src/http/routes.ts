@@ -220,6 +220,8 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
       `${base}/sessions/:id/leave`,
       describeRoute({
         summary: "Leave a seat at a table.",
+        description:
+          "Only a player who joined may leave; anyone else is `multiplayer/not_a_member`. Leaving closes the player's sockets. A repeated leave is not an error, and shows nothing live.",
         verification: ["bearer", "session"],
         responses: { 200: SessionView },
       }),
@@ -250,6 +252,8 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
       `${base}/sessions/:id/result`,
       describeRoute({
         summary: "Read how a finished session ended.",
+        description:
+          "Anyone who ever joined the session may read it, a player who left included. Anyone else is `multiplayer/not_a_member`, before the session says whether it has ended.",
         verification: ["bearer", "session"],
         responses: { 200: SessionResult },
       }),
@@ -257,7 +261,7 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
       validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
-        const result = await callSession(() => stub.result());
+        const result = await callSession(() => stub.result(userId(c)));
         if (!result) throw new MultiplayerSessionNotFoundError({ detail: "The session has no terminal result yet." });
         return c.json(result, 200);
       },
@@ -297,6 +301,7 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
       `${base}/sessions/:id`,
       describeRoute({
         summary: "Read the caller's view of a session.",
+        description: "Only a current member may read it; anyone else is `multiplayer/not_a_member`, as on the socket.",
         verification: ["bearer", "session"],
         responses: { 200: SessionView },
       }),
