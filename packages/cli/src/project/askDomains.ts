@@ -7,7 +7,11 @@ import type { ZoneInfo } from "@pithy-sh/cloudflare/src/zones/zonesManager";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { cloudflareClients } from "../cloudflare/clients";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import {
+  type CloudflareAccountSelection,
+  describeCloudflareAccountMismatch,
+  resolveCloudflare,
+} from "../cloudflare/config";
 import { canceled } from "../terminal/exitClass";
 import { applyDomains } from "./applyDomains";
 import { writeFileAtomic } from "./atomic";
@@ -46,9 +50,20 @@ interface ZoneLookup {
  * Never throws. Every failure — no credentials, a token without `Zone:Read`, an unreachable account —
  * degrades to free text with a line saying so. Failing the command instead would make declaring a domain
  * impossible offline, which is exactly when someone is scaffolding.
+ *
+ * **An account mismatch is one of those failures (#739).** Resolved without the throwing guard, so the
+ * mismatch becomes a line rather than a refusal arriving after `worker add` has scaffolded the Worker. The
+ * guard's intent still holds: credentials for another account build no client, so that account's zones are
+ * never offered.
  */
 async function lookupZones(account: CloudflareAccountSelection | null): Promise<ZoneLookup> {
-  const vars = cloudflareEnv({ account });
+  const { vars, mismatch } = resolveCloudflare({ account });
+  if (mismatch) {
+    return {
+      zones: [],
+      note: `${describeCloudflareAccountMismatch(mismatch)} Zones are not listed. Type the domain instead.`,
+    };
+  }
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {

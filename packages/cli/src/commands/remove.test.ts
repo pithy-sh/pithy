@@ -212,4 +212,41 @@ describe("remove --drop composes for the environment it drops", () => {
       { drop: undefined, migrations: ["0001:dev"] },
     ]);
   });
+
+  /**
+   * **Another account's credentials stop only the run that would use them (#739).** An unwiring and a
+   * `--drop --env dev` touch this machine alone, so the audit they get is inert and reads nothing. A drop
+   * against staging reaches a live database, and refuses before anything is removed.
+   */
+  test("under another account's credentials, a local removal runs and a remote drop refuses", async () => {
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      'export default { name: "acme", environments: ["staging"], cloudflare: { accountId: "pinned-account" } };\n',
+    );
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "other-account");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
+    const stderr: string[] = [];
+    const write = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    try {
+      await run({});
+      await run({ drop: true, env: "dev" });
+      expect(seen.calls.map((call) => call.drop)).toEqual([undefined, "dev"]);
+
+      await expect(run({ drop: true, env: "staging" })).rejects.toThrow("exit 3");
+      expect(stderr.join("")).toContain(
+        "This project pins Cloudflare account pinned-account, and the environment supplies credentials for other-account.",
+      );
+      expect(seen.calls).toHaveLength(2);
+    } finally {
+      write.mockRestore();
+      exit.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 });

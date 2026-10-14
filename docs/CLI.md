@@ -677,7 +677,7 @@ Project name: [my-pithy-app]
 
 Default values shown in brackets. `Y/n` means default yes; `y/N` means default no.
 
-**A prompt that can be answered from the account, is.** `pithy init` and `pithy worker add` ask where a Worker will answer, per environment, and offer the account's real Cloudflare zones rather than a free-text field — so a typo fails at `init` with a list of what exists, instead of at `deploy` with a Cloudflare error to decode. Where the account cannot be reached — no credentials, a token without `Zone:Read`, an offline laptop — the prompt says so in one line and falls back to free text. Scaffolding has never required the network, and this does not change that.
+**A prompt that can be answered from the account, is.** `pithy init` and `pithy worker add` ask where a Worker will answer, per environment, and offer the account's real Cloudflare zones rather than a free-text field — so a typo fails at `init` with a list of what exists, instead of at `deploy` with a Cloudflare error to decode. Where the account cannot be reached — no credentials, a token without `Zone:Read`, an offline laptop, credentials for another account than the project pins — the prompt says so in one line and falls back to free text. Scaffolding has never required the network, and this does not change that.
 
 **Every one of these is skippable.** A project without a domain yet is legitimate, and most are on the first day; an empty answer writes no `domains` block at all, and adding one later is a config edit plus a deploy, never a rescaffold. A non-interactive run asks nothing and declares nothing — `domains` goes in `pithy.config.ts` directly, which is exactly what the prompt writes.
 

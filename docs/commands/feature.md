@@ -17,7 +17,7 @@ pithy feature prune [--dry-run] [--json]
 
 **The feature's live Cloudflare environment is [`pithy provision --feature`](provision.md).** Provisioning is one job whichever environment it is for, so it is one command and one page. What lives here is the rest of a branch's lifecycle, which is a branch's alone.
 
-**`destroy` needs a Cloudflare account.** It acts on real Worker scripts, D1, KV, and R2. `create` and `sync` are entirely local — a git worktree, a port reservation, and a Miniflare-backed `dev` backend. `destroy --local-only` is the deliberate way to tear down the local half without credentials.
+**`destroy` needs a Cloudflare account.** It acts on real Worker scripts, D1, KV, and R2. `create` and `sync` are entirely local — a git worktree, a port reservation, and a Miniflare-backed `dev` backend. `destroy --local-only` is the deliberate way to tear down the local half without credentials. It resolves no account at all, so a shell exporting credentials for an account other than the one `pithy.config.ts` pins does not refuse it. Without `--local-only`, that mismatch refuses before anything is deleted.
 
 ## Flags
 

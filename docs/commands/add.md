@@ -37,7 +37,7 @@ One capability, one Worker, in this order.
 
 They are a **graph**, not a list, and they are composed deepest first. `secrets` before `email`, because `email` reads a secret at boot; `email` before `auth`. The order comes from walking the declarations, never from the order a manifest happens to write them in.
 
-Each one is a real `pithy add`: its package installed, its config and bindings written, its dev secrets minted, its own `capability/added` audit event. Their config options take manifest defaults — you asked for one capability, not for an interview about three — and `pithy add email --set …` afterwards edits the same registration.
+Each one is a real `pithy add`: its package installed, its config and bindings written, its dev secrets minted, its own `capability/added` audit event to the same inert emitter as the add that pulled it in. Their config options take manifest defaults — you asked for one capability, not for an interview about three — and `pithy add email --set …` afterwards edits the same registration.
 
 **What decides whether they are composed at all** is what the run can be asked:
 
@@ -74,7 +74,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Bootstrap what is left.** Dev-only values a capability needs to boot — the master key `pithy add secrets` mints, the session secret `auth` needs — land in `$PITHY_CONFIG_DIR/<project>/secrets.jsonc`, outside every checkout. What only a provision command can supply comes back as a note instead.
 
-`add` runs against no Cloudflare account. It writes config and local D1 only. Bindings whose resources live in the account (`pithy storage provision`, `pithy secrets provision`, `pithy vector provision`) are named in `notes` rather than created here. The one thing an account changes is the audit trail: with Cloudflare credentials resolvable and the `audit` capability composed, the run records `capability/added` at `info` severity, on success and on failure alike. Without them the emitter is inert — which is always true the first time `pithy add audit` runs, since nothing can audit-log its own installation.
+`add` runs against no Cloudflare account. It writes config and local D1 only. Bindings whose resources live in the account (`pithy storage provision`, `pithy secrets provision`, `pithy vector provision`) are named in `notes` rather than created here. It emits `capability/added` at `info` severity, on success and on failure alike, but against `dev`, whose emitter is inert: an add changes nothing shared, so nothing is recorded, and no Cloudflare credentials are read for it. A shell exporting another account's credentials therefore does not refuse an `add`.
 
 **The project needs a `name`.** It leads every resource name `add` proposes, and it claims the database the closing dev migration writes to. A project without one is told to set it before anything is installed, rather than left half-configured around an unowned database.
 

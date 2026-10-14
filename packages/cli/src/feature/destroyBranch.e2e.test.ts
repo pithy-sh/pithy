@@ -923,3 +923,115 @@ describe("a branch's issue is canonical — #660", () => {
     ]);
   });
 });
+
+/**
+ * **`--local-only` resolves no account, so another account's credentials cannot stop it (#739).**
+ *
+ * A shell that works on several accounts carries credentials for one of them, and the project pins
+ * another. The local half needs neither: it prunes a worktree, deletes a branch and frees a port block. It
+ * used to resolve the account, build the teardown, the store and the audit through the guard, and discard
+ * all three — so the guard refused a run that would have used none of them, and its remedy sent the
+ * operator to edit a `pithy.config.ts` that was right. The remote half keeps the guard, and refuses before
+ * anything goes.
+ */
+describe("feature destroy under another account's credentials — #739", () => {
+  const dirs: string[] = [];
+
+  afterEach(async () => {
+    for (const dir of dirs.splice(0)) await removeTempDir(dir);
+  });
+
+  /** The account the shell's credentials are for, which is not the one the fixture pins. */
+  const OTHER = "0ther000000000000000000000000000";
+
+  function otherAccount(dir: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      PITHY_CONFIG_DIR: join(dir, ".pithy-config"),
+      NO_COLOR: "1",
+      CLOUDFLARE_ACCOUNT_ID: OTHER,
+      CLOUDFLARE_API_TOKEN: "stub-token",
+    };
+  }
+
+  /**
+   * Feature 12 with a worktree, a branch, and a port block held for it in the registry. The branch is
+   * merged, as at teardown: an unmerged one is kept by design, which would hide whether the run reached it.
+   */
+  async function feature(): Promise<{ root: string; worktree: string; registry: string; realRoot: string }> {
+    const root = await mainCheckout();
+    dirs.push(root);
+    const worktree = await addFeature(root, "12", "x", [{ name: "DB", type: "d1" }]);
+    await gitIn(root)(["merge", "-q", "--ff-only", "feature/12-x"]);
+    await writeFile(join(worktree, ".dev.config.json"), JSON.stringify({ version: 1, branch: "feature/12-x" }));
+    const configDir = join(root, ".pithy-config");
+    await mkdir(configDir, { recursive: true });
+    const realRoot = (await run("realpath", [root])).stdout.trim();
+    const registry = join(configDir, "dev-ports.json");
+    await writeFile(registry, JSON.stringify({ [realRoot]: { "feature/12-x": { block: 0, base: 9000, size: 10 } } }));
+    return { root, worktree, registry, realRoot };
+  }
+
+  test("**--local-only prunes the worktree, deletes the branch, frees the ports, and exits 0**", async () => {
+    const { root, worktree, registry, realRoot } = await feature();
+
+    const { code, stdout, stderr } = await pithy(["feature", "destroy", "--local-only", "--json"], {
+      cwd: worktree,
+      env: otherAccount(root),
+    });
+
+    expect(stderr).not.toContain("pins Cloudflare account");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout.trim())).toMatchObject({
+      remote: false,
+      portsFreed: true,
+      worktreePruned: true,
+      branchDeleted: true,
+    });
+    const ports = JSON.parse(await readFile(registry, "utf8")) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(ports[realRoot] ?? {})).toEqual([]);
+    const branches = await run("git", ["branch", "--list", "feature/12-x"], { cwd: root });
+    expect(branches.stdout.trim()).toBe("");
+  });
+
+  test("without --local-only it still refuses with the mismatch, before anything is deleted", async () => {
+    const { root, worktree, registry, realRoot } = await feature();
+
+    const { code, stdout, stderr } = await pithy(["feature", "destroy"], { cwd: worktree, env: otherAccount(root) });
+
+    expect(code).toBe(EXIT.precondition);
+    expect(stderr).toContain(
+      `This project pins Cloudflare account ${ACCOUNT_ID}, and the environment supplies credentials for ${OTHER}.`,
+    );
+    expect(stdout).toBe("");
+    expect(existsSync(join(worktree, ".dev.config.json"))).toBe(true);
+    const ports = JSON.parse(await readFile(registry, "utf8")) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(ports[realRoot] ?? {})).toEqual(["feature/12-x"]);
+    const branches = await run("git", ["branch", "--list", "feature/12-x"], { cwd: root });
+    expect(branches.stdout.trim()).not.toBe("");
+  });
+
+  /**
+   * The remote half's other refusal, now inside `remoteHalf`: with no credentials at all and no
+   * `--local-only`, a teardown that went ahead would leak every Worker and D1/KV/R2 while reporting
+   * success, then delete the branch their names come from. A CI job whose credentials did not propagate
+   * must stop here, before the worktree, the branch or the ports are touched.
+   */
+  test("without credentials and without --local-only it refuses, before anything is deleted", async () => {
+    const { root, worktree, registry, realRoot } = await feature();
+    const env: NodeJS.ProcessEnv = { ...process.env, PITHY_CONFIG_DIR: join(root, ".pithy-config"), NO_COLOR: "1" };
+    delete env.CLOUDFLARE_ACCOUNT_ID;
+    delete env.CLOUDFLARE_API_TOKEN;
+
+    const { code, stdout, stderr } = await pithy(["feature", "destroy"], { cwd: worktree, env });
+
+    expect(code).toBe(EXIT.precondition);
+    expect(stderr).toContain("Cloudflare credentials are missing, so the feature's resources cannot be deleted.");
+    expect(stdout).toBe("");
+    expect(existsSync(join(worktree, ".dev.config.json"))).toBe(true);
+    const ports = JSON.parse(await readFile(registry, "utf8")) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(ports[realRoot] ?? {})).toEqual(["feature/12-x"]);
+    const branches = await run("git", ["branch", "--list", "feature/12-x"], { cwd: root });
+    expect(branches.stdout.trim()).not.toBe("");
+  });
+});

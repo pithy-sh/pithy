@@ -127,6 +127,43 @@ async function buildAudit(
   });
 }
 
+/**
+ * The seams `feature destroy`'s remote half deletes through, resolved against the project's account: the
+ * teardown, the store, and the account the audit is built for.
+ *
+ * Refuses on an account mismatch, through the guard each builder resolves with, and refuses when the
+ * credentials are missing. Called only when the remote half will run, so `--local-only` reaches neither
+ * refusal (#739).
+ */
+async function remoteHalf(
+  projectDir: string,
+  configDir: string,
+  project: string,
+): Promise<{
+  teardown: Required<RemoteTeardown>;
+  store: SecretsStore | null;
+  account: CloudflareAccountSelection | null;
+}> {
+  const account = await projectCloudflareAccount(projectDir);
+  // The feature's own indexes are composed from the feature's own configs, for the reason the
+  // capability set is (#660).
+  const teardown = await buildTeardown(account, configDir, project);
+
+  // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
+  // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the
+  // branch the names are derived from — so a later attempt can no longer work out what to delete. A CI
+  // job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
+  if (!teardown) {
+    throw new PreconditionFailedError({
+      message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
+      action:
+        "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, " +
+        "or pass --local-only to remove just the worktree and its ports.",
+    });
+  }
+  return { teardown, store: await buildStore(account), account };
+}
+
 /** `pithy feature create <slug> --issue <n>` — local, automatic. Run from the main checkout. */
 const Branch = z.string().describe("The feature branch.");
 
@@ -486,27 +523,17 @@ const destroy = withContract(
               "and prune its worktree without touching Cloudflare.",
           });
         }
-        const account = await projectCloudflareAccount(projectDir);
-        // The feature's own indexes are composed from the feature's own configs, for the reason the
-        // capability set above is (#660).
-        const teardown = await buildTeardown(account, configDir, identity.project);
-
-        // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
-        // Worker script and D1/KV/R2 leaks while the run reports success, and teardown then deletes the
-        // branch the names are derived from — so a later attempt can no longer work out what to delete. A CI
-        // job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
-        if (!teardown && !args["local-only"]) {
-          throw new PreconditionFailedError({
-            message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
-            action:
-              "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, " +
-              "or pass --local-only to remove just the worktree and its ports.",
-          });
-        }
-
-        const store = await buildStore(account);
+        /*
+          **`--local-only` resolves no account (#739).** The local half prunes a worktree, deletes a branch
+          and frees a port block, and none of that reaches Cloudflare. Resolving the account anyway, and
+          building the teardown, the store and the audit only to discard them, put the account guard in
+          front of a run that uses no credentials — so a shell holding another account's pair was refused,
+          and told to edit a `pithy.config.ts` that was right. A shell that works on several accounts does
+          so on purpose. The remote half resolves, and refuses on a mismatch, exactly as before.
+        */
+        const remote = args["local-only"] ? null : await remoteHalf(projectDir, configDir, identity.project);
         // Both seams or neither, whichever way the remote half is skipped (#592).
-        const remote: RemoteTeardown = teardown && !args["local-only"] ? teardown : {};
+        const teardown: RemoteTeardown = remote?.teardown ?? {};
         let report: DestroyReport;
         try {
           report = await destroyFeature({
@@ -514,7 +541,7 @@ const destroy = withContract(
             identity,
             capabilities: isUnknown(capabilities) ? [] : [...capabilities],
             workers: isUnknown(workerSet) ? [] : workerSet,
-            ...(store && !args["local-only"] ? { store } : {}),
+            ...(remote?.store ? { store: remote.store } : {}),
             env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
             // Which worktree is the feature's own, and whether this machine has it (#660).
             record,
@@ -522,11 +549,12 @@ const destroy = withContract(
             // name is composed from the canonical issue; only the worktree, the branch and the port key
             // may have been filed under `012`.
             spelled: identity.spelled,
-            ...remote,
+            ...teardown,
             // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
             // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
             // as *this project composed no trail* — that is the conflation this whole change undoes (#455).
-            audit: await buildAudit(projectDir, capabilities, account),
+            // Only the remote half records through it, so `--local-only` builds none (#739).
+            ...(remote ? { audit: await buildAudit(projectDir, capabilities, remote.account) } : {}),
           });
         } catch (error) {
           // A teardown that failed on the fourth delete has already destroyed three, and until #380 the

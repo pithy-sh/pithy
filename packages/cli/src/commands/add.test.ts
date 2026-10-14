@@ -148,6 +148,35 @@ describe("buildAudit", () => {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * **A local env reads no credentials, so another account's cannot refuse it (#739).** `add` always passes
+   * `dev`, and so does a `remove` without `--drop`: the emitter they get is inert whatever the shell holds,
+   * and the mismatch guard used to fire on the way to building it. A remote env still refuses.
+   */
+  test("a local env is inert under another account's credentials, and a remote env still refuses", async () => {
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "other-account");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
+    const projectDir = await mkdtemp(join(tmpdir(), "pithy-add-audit-"));
+    const options = {
+      projectDir,
+      account: { accountId: "pinned-account" },
+      worker: "api",
+      capabilities: [],
+      create: async (): Promise<never> => {
+        throw new Error("must not build an emitter for a local env");
+      },
+    };
+    try {
+      const emit = await buildAudit({ ...options, env: "dev" });
+      await expect(emit({ action: "capability/added", outcome: "success" })).resolves.toBeUndefined();
+      await expect(buildAudit({ ...options, env: "staging" })).rejects.toThrow(
+        "This project pins Cloudflare account pinned-account, and the environment supplies credentials for other-account.",
+      );
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("targetWorker", () => {
@@ -365,6 +394,34 @@ describe("pithy add --json conforms to its published payload", () => {
     followUp.asked.length = 0;
     await runCaptured("add", ["auth", "--json"]);
     expect(followUp.asked).toEqual([{ ready: ["staging"], brought: false, productionEnvironments: ["live"] }]);
+  });
+
+  /** Wiring is local, so a shell holding another account's credentials does not stop it (#739). */
+  test("wires under credentials for an account the project does not pin", async () => {
+    await project();
+    await writeFile(
+      join(dir, "pithy.config.ts"),
+      'const config = { name: "acme", cloudflare: { accountId: "pinned-account" } };\nexport default config;\n',
+    );
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "other-account");
+    vi.stubEnv("CLOUDFLARE_API_TOKEN", "tok");
+    flow.result = {
+      capability: "auth",
+      worker: "api",
+      deployedAs: "acme-api",
+      package: "@pithy-sh/auth",
+      packageManager: "bun",
+      databases: [],
+      kvNamespaces: [],
+      notes: [],
+      prerequisites: [],
+    } satisfies AddResult;
+    try {
+      const line = (await runCaptured("add", ["auth", "--json"])).join("");
+      expect(JSON.parse(line)).toMatchObject({ command: "add", capability: "auth", worker: "api" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

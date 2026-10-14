@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { z } from "zod";
-import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
+import { type CliAuditEmit, createRemoteCliAudit, isRemoteEnv } from "../audit/cliAudit";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { withContract } from "../contract/commandContract";
@@ -108,11 +108,14 @@ async function buildSeedAudit(
   capabilities: readonly Capability[],
   account: CloudflareAccountSelection | null,
 ): Promise<CliAuditEmit> {
+  // Data-plane: a `dev` seed or reset only touches local Miniflare, so it is not audited — and asked before
+  // the credentials are read, because another account's pair would refuse a run that uses none of it. By
+  // then a real run has already written the dev secrets, so the refusal left it half done (#739).
+  if (!isRemoteEnv(env)) return async () => {};
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return async () => {};
-  // Data-plane: a `dev` seed or reset only touches local Miniflare, so it is not audited.
   return createRemoteCliAudit({
     projectDir,
     env,

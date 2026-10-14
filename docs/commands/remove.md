@@ -37,7 +37,7 @@ The package is the one project-wide part of a removal, so it is uninstalled only
 
 Idempotent, and never destructive by default. An absent capability is a no-op. Without `--drop`, your data is untouched — a later `pithy add <capability>` reuses the same tables. When the tables are left in place and no sibling Worker needs them, `remove` names the `pithy_<capability>_*` prefix to drop by hand, because the `down` code is gone and no later `pithy` command can reverse them for you.
 
-Audited like `add`, when Cloudflare credentials resolve and the Worker composes `audit`. Two actions: `capability/removed` at `info` severity, and `capability/tables_dropped` at `warning` for a `--drop`. With `--drop` the audit record carries the environment being destroyed; without it, `dev`, which makes the emitter inert.
+Audited when it reaches a remote environment: a `--drop --env <remote>`, with Cloudflare credentials resolvable and the Worker composing `audit`. Two actions: `capability/removed` at `info` severity, and `capability/tables_dropped` at `warning` for a `--drop`. With `--drop` the audit record carries the environment being destroyed; without it, `dev`, which makes the emitter inert. An inert emitter reads no credentials, so a plain `remove` or a `--drop --env dev` is not refused by a shell exporting another account's credentials. A remote `--drop` still is.
 
 ### Retained tables
 

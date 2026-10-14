@@ -8,7 +8,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { z } from "zod";
-import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
+import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit, isRemoteEnv } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
 import { addListCommand } from "../capabilities/addCommand";
 import { addFollowUp, readyEnvironments } from "../capabilities/addFollowUp";
@@ -73,9 +73,14 @@ export interface BuildAuditOptions {
  *
  * A no-op when Cloudflare creds or the audit capability aren't there (which is always true the very
  * first time `pithy add audit` itself runs — nothing can audit-log its own installation).
+ *
+ * **A local env reads no credentials at all (#739).** Its emitter is inert whatever they say, so resolving
+ * them only gave the account guard a run to refuse — an `add` in a shell holding another account's pair
+ * failed over credentials it would never use. A remote env resolves, and refuses, exactly as before.
  */
 export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEmit> {
   const { projectDir, worker, env, capabilities, account } = options;
+  if (!isRemoteEnv(env)) return async () => {};
   const create = options.create ?? createRemoteCliAudit;
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
