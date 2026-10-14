@@ -5,7 +5,9 @@ import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { OrganizationConfig } from "../config/config";
@@ -32,7 +34,7 @@ import {
  * a promise to a client that 404s.
  *
  * The *behavioral* checks send real requests with no credential at all. A middleware count would call a
- * bare `zValidator` a guard; only the answer says which gate ran. That is how the CSRF ordering is
+ * bare `validate` a guard; only the answer says which gate ran. That is how the CSRF ordering is
  * asserted: `requireSameOrigin()` denies with `auth/forbidden` when nothing published an origin policy,
  * so a mutating route that lost it answers `auth/invalid_token` from the session gate instead and this
  * file fails. **That is the test the brief asks for** — a mutating route without the same-origin guard
@@ -170,6 +172,24 @@ async function errorCode(response: Response): Promise<string | undefined> {
   return payload.error?.code;
 }
 
+/**
+ * The verification strategies a mounted route's `describeRoute` declares, by `METHOD path`. The table above
+ * names one strategy per route and the contract may name more — a `requireAuth()` route takes a bearer
+ * token or a session — so the table's must be among them, or the two records of one fact have drifted.
+ */
+function declaredVerification(app: Hono<PithyHonoEnv>): Map<string, readonly string[]> {
+  const found = new Map<string, readonly string[]>();
+  for (const route of app.routes) {
+    const spec = routeSpecOf(route.handler);
+    if (spec === undefined) continue;
+    found.set(
+      `${route.method} ${route.path}`,
+      typeof spec.verification === "string" ? [spec.verification] : spec.verification,
+    );
+  }
+  return found;
+}
+
 describe("the declared surface and the mounted one are the same surface", () => {
   test("every declaration is mounted, and nothing is mounted that was not declared", () => {
     const keys = new Set(mountedKeys(makeApp()));
@@ -261,7 +281,7 @@ describe("the request contract: every path param is validated", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These routes declare path params but register no zValidator("param", …):\n${uncovered
+      `These routes declare path params but register no validate("param", …):\n${uncovered
         .map((route) => `  ${route.method} ${route.path} — :${route.params.join(", :")}`)
         .join("\n")}\nAdd a param schema in src/http/schemas.ts and declare it on the route line.`,
     ).toEqual([]);
@@ -482,5 +502,34 @@ describe("the registry says what it must", () => {
       "POST /invitations/accept",
       "POST /ownership/accept",
     ]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  // Both wirings, so the four ownership routes are held to it too.
+  const groups = () => [
+    { tag: "organization", routes: makeApp().routes },
+    { tag: "organization-without-ownership", routes: makeAppWithoutOwnership().routes },
+  ];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "organization", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
+  });
+});
+
+describe("the declared strategy and the contract agree", () => {
+  test("every route's ORGANIZATION_ROUTES strategy is among the verifications its describeRoute declares", () => {
+    const declared = declaredVerification(makeApp());
+    for (const route of ORGANIZATION_ROUTES) {
+      const key = `${route.method} ${fullPath(route.path)}`;
+      expect(declared.get(key), `${key} declares no describeRoute`).toBeDefined();
+      expect(declared.get(key), key).toContain(route.strategy);
+    }
   });
 });

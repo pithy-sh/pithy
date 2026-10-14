@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { MediaConfig } from "../config/config";
@@ -12,7 +13,7 @@ import { registerMediaRoutes } from "./routes";
 
 /**
  * The route request contract, gated for this package (issue #74). Every media route that declares a
- * `:segment` must register a `zValidator("param", …)` for it — a handler can always reach a path param
+ * `:segment` must register a `validate("param", …)` for it — a handler can always reach a path param
  * through a validator it never declared, so the check has to be positive.
  *
  * No request is made. The app is composed and inspected, so no auth, no D1, no bindings are needed —
@@ -34,7 +35,7 @@ describe("media route contract", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These media routes read path params with no schema. Add zValidator("param", …, validationHook) ` +
+      `These media routes read path params with no schema. Add validate("param", …) ` +
         `on the route line, with the schema in src/http/schemas.ts: ${JSON.stringify(uncovered)}`,
     ).toEqual([]);
   });
@@ -45,5 +46,19 @@ describe("media route contract", () => {
     const paramPaths = [...new Set(app.routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path))].sort();
     // Media has exactly two `:segment`-bearing paths: fetch/delete one record, and finalize its upload.
     expect(paramPaths).toEqual(["/media/:id", "/media/:id/finalize"]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "media", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "media", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

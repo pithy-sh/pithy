@@ -171,7 +171,7 @@ export type CheckoutRequest = z.infer<typeof CheckoutRequest>;
  *
  * **No body at all on `keep`.** Withdrawing a scheduled cancellation takes no parameters: which
  * subscription is the server's answer, and there is nothing to say about it but *do not*. So that route
- * declares no schema and no `zValidator("json", …)`, exactly as `POST {base}/portal` does. A
+ * declares no schema and no `validate("json", …)`, exactly as `POST {base}/portal` does. A
  * `z.object({})` would read as a refusal of everything and be neither — Zod strips rather than refuses —
  * while making a POST with no body at all a 400 on a route that wants nothing.
  */

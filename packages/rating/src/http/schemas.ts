@@ -5,7 +5,7 @@ import { z } from "zod";
 
 /**
  * HTTP-boundary shapes for the rating routes. Declared on the route line with
- * `zValidator(target, Schema, validationHook)`, so a malformed request becomes a
+ * `validate(target, Schema)`, so a malformed request becomes a
  * `validation/invalid_input` 400 before any handler runs, never an unhandled throw.
  *
  * The param schemas are **shape** checks, not existence checks: they bound what may reach a store or a

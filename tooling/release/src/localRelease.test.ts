@@ -220,11 +220,17 @@ describe("scripts/localRelease.ts", () => {
     expect(steps.indexOf("run verify-published")).toBeLessThan(steps.indexOf("run release"));
   });
 
+  it("restamps the kit's OpenAPI document after the build it is composed from, and before the publish", () => {
+    expect(steps.indexOf("run kit-contract")).toBeGreaterThan(steps.indexOf("run build"));
+    expect(steps.indexOf("run kit-contract")).toBeLessThan(steps.indexOf("run release"));
+  });
+
   it("runs the sequence the workflow runs", () => {
     expect(steps).toEqual([
       "scripts/releaseRecords.ts snapshot",
       "run version",
       "run build",
+      "run kit-contract",
       "run verify-published",
       "scripts/releaseRecords.ts build",
       "run release",

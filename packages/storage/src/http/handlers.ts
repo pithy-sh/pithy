@@ -14,7 +14,8 @@ import {
 } from "../error/errors";
 import { deriveObjectKey } from "../object/key";
 import { collectParts, needsMultipart, planMultipart } from "../object/multipart";
-import type { ObjectStore, UploadedPart } from "../object/store";
+import type { ObjectStore } from "../object/store";
+import type { UploadedPart } from "../object/uploadedPart";
 import { assertWithinQuota, insertReservingQuota, updateSettlingQuota } from "../quota/quota";
 import type {
   CompleteUploadInput,
@@ -31,7 +32,7 @@ import type {
  * these dependencies from the request env and maps their results onto responses.
  *
  * **Request shape is not validated here.** Each route declares its own schemas with
- * `zValidator(target, Schema, validationHook)` and hands the handler the already-parsed value, so a
+ * `validate(target, Schema)` and hands the handler the already-parsed value, so a
  * malformed request is refused before a dependency is resolved or a row is read. What survives in
  * these handlers is everything a request schema cannot express — ownership, quota, upload state —
  * which is the whole of what they were ever really about.

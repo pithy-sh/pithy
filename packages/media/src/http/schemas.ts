@@ -6,7 +6,7 @@ import { MediaType } from "../data/enums";
 
 /**
  * The request schemas for the media routes. Validation happens at the HTTP boundary (CLAUDE.md §Zod),
- * declared on the route line with `zValidator(target, Schema, validationHook)` — so reading `routes.ts`
+ * declared on the route line with `validate(target, Schema)` — so reading `routes.ts`
  * tells you what each route accepts without opening a handler.
  * The create body is `loose` so an adopter's extension fields pass through to be validated against the
  * effective record schema; the known client fields are typed and bounded here.

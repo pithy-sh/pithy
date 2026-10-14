@@ -6,7 +6,9 @@ import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/cap
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { testers } from "../capability";
@@ -83,12 +85,30 @@ function paramPaths(app: Hono<PithyHonoEnv>): string[] {
   return mountedPaths(app).filter((path) => pathParams(path).length > 0);
 }
 
+/**
+ * The verification strategies a mounted route's `describeRoute` declares, by `METHOD path`. The table above
+ * names one strategy per route and the contract may name more — a `requireAuth()` route takes a bearer
+ * token or a session — so the table's must be among them, or the two records of one fact have drifted.
+ */
+function declaredVerification(app: Hono<PithyHonoEnv>): Map<string, readonly string[]> {
+  const found = new Map<string, readonly string[]>();
+  for (const route of app.routes) {
+    const spec = routeSpecOf(route.handler);
+    if (spec === undefined) continue;
+    found.set(
+      `${route.method} ${route.path}`,
+      typeof spec.verification === "string" ? [spec.verification] : spec.verification,
+    );
+  }
+  return found;
+}
+
 describe("testers route contract", () => {
   test("every route that declares a path param validates it", async () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These testers routes read a path param they never declared a schema for. Add \`zValidator("param", <Schema>, validationHook)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
+      `These testers routes read a path param they never declared a schema for. Add \`validate("param", <Schema>)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
         .map((route) => `  ${route.method} ${route.path} (:${route.params.join(", :")})`)
         .join("\n")}`,
     ).toEqual([]);
@@ -342,5 +362,30 @@ describe("withdrawing takes two steps", () => {
     // Asserting its HTML through a request would need a database bound to look the token up first.
     // The renderer takes a string and returns a Response, so that is the layer that can prove it.
     expect(TESTERS_ROUTES.some((route) => route.method === "POST" && route.path === "/opt-out/:token")).toBe(true);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "testers", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "testers", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
+  });
+});
+
+describe("the declared strategy and the contract agree", () => {
+  test("every route's TESTERS_ROUTES strategy is among the verifications its describeRoute declares", () => {
+    const declared = declaredVerification(makeApp());
+    for (const route of TESTERS_ROUTES) {
+      const key = `${route.method} /testers${route.path}`;
+      expect(declared.get(key), `${key} declares no describeRoute`).toBeDefined();
+      expect(declared.get(key), key).toContain(route.strategy);
+    }
   });
 });

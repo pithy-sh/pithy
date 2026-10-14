@@ -326,7 +326,7 @@ describe("untrusted input reaches nothing", () => {
   });
 
   test("a hostile `?lang=` gets the default locale and nothing else", async () => {
-    // The query string is read off the URL rather than through `zValidator`, because a global
+    // The query string is read off the URL rather than through `validate`, because a global
     // middleware has no route line to declare one on. What replaces the validator is structural: the
     // value is matched against `supportedLocales` before anything is done with it, so nothing
     // downstream ever sees a string this project did not already configure.

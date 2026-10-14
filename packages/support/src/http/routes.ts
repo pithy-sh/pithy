@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { requireAuth } from "./guards";
 import {
@@ -22,7 +22,18 @@ import {
   submitFeedbackRequest,
   updateFlags,
 } from "./handlers";
-import type { SupportRepliesResponse } from "./responses";
+import {
+  SupportArchiveResponse,
+  SupportFlagsResponse,
+  SupportMyThreadResponse,
+  SupportMyThreadsResponse,
+  SupportReclassifiedResponse,
+  SupportRepliesResponse,
+  SupportReplySentResponse,
+  SupportSubmissionResponse,
+  SupportThreadResponse,
+  SupportThreadsResponse,
+} from "./responses";
 import {
   ArchiveThreadInput,
   FlagsInput,
@@ -192,40 +203,70 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
   return (app) => {
     app.get(
       `${base}/threads`,
+      describeRoute({
+        summary: "List the support inbox.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_READ_SCOPE],
+        responses: { 200: SupportThreadsResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
-      zValidator("query", ListThreadsQuery, validationHook),
+      validate("query", ListThreadsQuery),
       async (c) => c.json(await listInbox(await resolve(c), c.req.valid("query"), viewer(c))),
     );
 
     app.get(
       `${base}/replies`,
+      describeRoute({
+        summary: "List the canned replies.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_READ_SCOPE],
+        responses: { 200: SupportRepliesResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
-      zValidator("query", RepliesQuery, validationHook),
+      validate("query", RepliesQuery),
       async (c) =>
         c.json({ replies: listReplies(await resolve(c), c.req.valid("query")) } satisfies SupportRepliesResponse),
     );
 
     app.get(
       `${base}/threads/:id`,
+      describeRoute({
+        summary: "Read one conversation and its messages.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_READ_SCOPE],
+        responses: { 200: SupportThreadResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_READ_SCOPE),
-      zValidator("param", ThreadIdParam, validationHook),
+      validate("param", ThreadIdParam),
       async (c) => c.json(await readConversation(await resolve(c), c.req.valid("param").id)),
     );
 
     app.post(
       `${base}/threads/:id/archive`,
+      describeRoute({
+        summary: "Mark a conversation done, or reopen it.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_ARCHIVE_SCOPE],
+        responses: { 200: SupportArchiveResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_ARCHIVE_SCOPE),
-      zValidator("param", ThreadIdParam, validationHook),
-      zValidator("json", ArchiveThreadInput, validationHook),
+      validate("param", ThreadIdParam),
+      validate("json", ArchiveThreadInput),
       async (c) =>
         c.json(await archiveConversation(await resolve(c), c.req.valid("param").id, c.req.valid("json"), viewer(c))),
     );
 
     app.post(
       `${base}/threads/:id/reply`,
+      describeRoute({
+        summary: "Answer the customer.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_REPLY_SCOPE],
+        responses: { 201: SupportReplySentResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_REPLY_SCOPE),
-      zValidator("param", ThreadIdParam, validationHook),
-      zValidator("json", ReplyInput, validationHook),
+      validate("param", ThreadIdParam),
+      validate("json", ReplyInput),
       async (c) =>
         c.json(
           await replyToConversation(await resolve(c), c.req.valid("param").id, c.req.valid("json"), viewer(c)),
@@ -235,16 +276,28 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
 
     app.post(
       `${base}/threads/:id/reclassify`,
+      describeRoute({
+        summary: "Run the classifier again on the latest inbound message.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_RECLASSIFY_SCOPE],
+        responses: { 200: SupportReclassifiedResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_RECLASSIFY_SCOPE),
-      zValidator("param", ThreadIdParam, validationHook),
+      validate("param", ThreadIdParam),
       async (c) => c.json(await reclassifyConversation(await resolve(c), c.req.valid("param").id, viewer(c))),
     );
 
     app.post(
       `${base}/threads/:id/flags`,
+      describeRoute({
+        summary: "Set the caller's private read and snooze flags.",
+        verification: "control-plane",
+        scopes: [SUPPORT_THREADS_FLAG_SCOPE],
+        responses: { 200: SupportFlagsResponse },
+      }),
       requireControlPlane(SUPPORT_THREADS_FLAG_SCOPE),
-      zValidator("param", ThreadIdParam, validationHook),
-      zValidator("json", FlagsInput, validationHook),
+      validate("param", ThreadIdParam),
+      validate("json", FlagsInput),
       async (c) => c.json(await updateFlags(await resolve(c), c.req.valid("param").id, c.req.valid("json"), viewer(c))),
     );
 
@@ -255,18 +308,39 @@ export function registerSupportRoutes(options: SupportRoutesOptions): (app: Hono
     // unauthenticated caller which submissions were well-formed.
     app.post(
       `${base}/feedback`,
+      describeRoute({
+        summary: "Write in to support from the app.",
+        verification: ["bearer", "session"],
+        responses: { 201: SupportSubmissionResponse },
+      }),
       requireAuth(),
       requireSameOrigin(),
-      zValidator("json", SubmitFeedbackInput, validationHook),
+      validate("json", SubmitFeedbackInput),
       async (c) => c.json(await submitFeedbackRequest(await resolve(c), c.req.valid("json"), submitter(c)), 201),
     );
 
-    app.get(`${base}/feedback`, requireAuth(), zValidator("query", MyThreadsQuery, validationHook), async (c) =>
-      c.json(await listMyThreads(await resolve(c), c.req.valid("query"), submitter(c))),
+    app.get(
+      `${base}/feedback`,
+      describeRoute({
+        summary: "List the caller's own support requests.",
+        verification: ["bearer", "session"],
+        responses: { 200: SupportMyThreadsResponse },
+      }),
+      requireAuth(),
+      validate("query", MyThreadsQuery),
+      async (c) => c.json(await listMyThreads(await resolve(c), c.req.valid("query"), submitter(c))),
     );
 
-    app.get(`${base}/feedback/:id`, requireAuth(), zValidator("param", ThreadIdParam, validationHook), async (c) =>
-      c.json(await readMyThread(await resolve(c), c.req.valid("param").id, submitter(c))),
+    app.get(
+      `${base}/feedback/:id`,
+      describeRoute({
+        summary: "Read one of the caller's own support requests.",
+        verification: ["bearer", "session"],
+        responses: { 200: SupportMyThreadResponse },
+      }),
+      requireAuth(),
+      validate("param", ThreadIdParam),
+      async (c) => c.json(await readMyThread(await resolve(c), c.req.valid("param").id, submitter(c))),
     );
   };
 }

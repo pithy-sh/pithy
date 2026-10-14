@@ -1,0 +1,13 @@
+// The OpenAPI contract's request half (#719). Scoped by biome.jsonc to packages/*/src/**.
+//
+// A route declares what it accepts with `validate(target, Schema)` from
+// `@pithy-sh/core/src/http/validation`. That is `zValidator` with the one failure hook applied and the
+// schema left readable on the middleware, which is how the contract finds it in a composed app. A bare
+// `zValidator(...)` still validates, so nothing at runtime notices; the schema just never reaches the
+// document, and every client generated from it is missing that part of the request. So it is refused
+// here, the one place it can be. `validation.ts` is the single call site that may name it.
+language js
+
+`zValidator($...)` as $call where {
+  register_diagnostic(span=$call, message="A bare zValidator hides its schema from the OpenAPI contract. Use validate(target, Schema) from @pithy-sh/core/src/http/validation.")
+}

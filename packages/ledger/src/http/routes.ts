@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
 import { listAccounts, listTransactions, readAccounts } from "../admin/read";
@@ -17,7 +17,13 @@ import { type LedgerConfig, resolveCurrency } from "../config/config";
 import { LedgerCurrencyNotFoundError } from "../error/errors";
 import { openLedger } from "../ledger";
 import { requireAdmin, requireAuth } from "./guards";
-import type { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
+import {
+  LedgerAccountsResponse,
+  LedgerBalanceResponse,
+  LedgerOwnTransactionsResponse,
+  LedgerTransactionsResponse,
+  LedgerUserAccountsResponse,
+} from "./responses";
 import {
   AdminAccountParam,
   AdminAccountsQuery,
@@ -95,7 +101,7 @@ export const LEDGER_DEFAULT_BASE_PATH = "/ledger";
  *
  * **Exported so a test can assert against the declaration rather than against a middleware count.**
  * Counting middleware proves that *something* runs before the handler; it cannot prove *what*, and a
- * bare `zValidator` satisfies a count. `routeContract.test.ts` checks this list against the routes Hono
+ * bare validator satisfies a count. `routeContract.test.ts` checks this list against the routes Hono
  * actually registered in both directions, so a route added without an entry and an entry naming a route
  * nobody mounts both fail.
  */
@@ -220,8 +226,14 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/admin/accounts`,
+      describeRoute({
+        summary: "List every account, a page at a time.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_READ_SCOPE],
+        responses: { 200: LedgerAccountsResponse },
+      }),
       requireControlPlane(LEDGER_ACCOUNTS_READ_SCOPE),
-      zValidator("query", AdminAccountsQuery, validationHook),
+      validate("query", AdminAccountsQuery),
       async (c) => {
         const query = c.req.valid("query");
         // A currency filter is still config-backed resolution: an operator who mistypes one gets the
@@ -242,8 +254,14 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/admin/accounts/:userId`,
+      describeRoute({
+        summary: "Read one player's balances in every currency.",
+        verification: "control-plane",
+        scopes: [LEDGER_ACCOUNTS_READ_SCOPE],
+        responses: { 200: LedgerUserAccountsResponse },
+      }),
       requireControlPlane(LEDGER_ACCOUNTS_READ_SCOPE),
-      zValidator("param", AdminUserParam, validationHook),
+      validate("param", AdminUserParam),
       async (c) => {
         const { userId } = c.req.valid("param");
         const accounts = await readAccounts(db(c), userId);
@@ -257,9 +275,15 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/admin/accounts/:userId/:currency/transactions`,
+      describeRoute({
+        summary: "Read one account's entry log, a page at a time.",
+        verification: "control-plane",
+        scopes: [LEDGER_TRANSACTIONS_READ_SCOPE],
+        responses: { 200: LedgerTransactionsResponse },
+      }),
       requireControlPlane(LEDGER_TRANSACTIONS_READ_SCOPE),
-      zValidator("param", AdminAccountParam, validationHook),
-      zValidator("query", AdminTransactionsQuery, validationHook),
+      validate("param", AdminAccountParam),
+      validate("query", AdminTransactionsQuery),
       async (c) => {
         const { userId, currency: requested } = c.req.valid("param");
         const code = currency(config, requested);
@@ -287,8 +311,13 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/:currency/transactions`,
+      describeRoute({
+        summary: "Read the caller's own recent entries in one currency.",
+        verification: ["bearer", "session"],
+        responses: { 200: LedgerOwnTransactionsResponse },
+      }),
       requireAuth(),
-      zValidator("param", CurrencyParam, validationHook),
+      validate("param", CurrencyParam),
       async (c) => {
         const code = currency(config, c.req.valid("param").currency);
         const rows = await openLedger(db(c)).transactions(callerId(c), code, 50);
@@ -296,17 +325,34 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
       },
     );
 
-    app.get(`${base}/:currency`, requireAuth(), zValidator("param", CurrencyParam, validationHook), async (c) => {
-      const code = currency(config, c.req.valid("param").currency);
-      return c.json(await openLedger(db(c)).balance(callerId(c), code), 200);
-    });
+    app.get(
+      `${base}/:currency`,
+      describeRoute({
+        summary: "Read the caller's own balance in one currency.",
+        verification: ["bearer", "session"],
+        responses: { 200: LedgerBalanceResponse },
+      }),
+      requireAuth(),
+      validate("param", CurrencyParam),
+      async (c) => {
+        const code = currency(config, c.req.valid("param").currency);
+        return c.json(await openLedger(db(c)).balance(callerId(c), code), 200);
+      },
+    );
 
     app.post(
       `${base}/:currency/credit`,
+      describeRoute({
+        summary: "Credit a player's balance.",
+        description: "A replay with the same `ref` changes nothing and answers with the current balance.",
+        verification: ["bearer", "session"],
+        scopes: [config.adminScope],
+        responses: { 200: LedgerBalanceResponse },
+      }),
       requireAuth(),
       requireAdmin(config.adminScope),
-      zValidator("param", CurrencyParam, validationHook),
-      zValidator("json", AdminWrite, validationHook),
+      validate("param", CurrencyParam),
+      validate("json", AdminWrite),
       async (c) => {
         const code = currency(config, c.req.valid("param").currency);
         const input = c.req.valid("json");
@@ -319,10 +365,17 @@ export function registerLedgerRoutes(options: LedgerRoutesOptions): (app: Hono<P
 
     app.post(
       `${base}/:currency/debit`,
+      describeRoute({
+        summary: "Debit a player's balance.",
+        description: "A replay with the same `ref` changes nothing and answers with the current balance.",
+        verification: ["bearer", "session"],
+        scopes: [config.adminScope],
+        responses: { 200: LedgerBalanceResponse },
+      }),
       requireAuth(),
       requireAdmin(config.adminScope),
-      zValidator("param", CurrencyParam, validationHook),
-      zValidator("json", AdminWrite, validationHook),
+      validate("param", CurrencyParam),
+      validate("json", AdminWrite),
       async (c) => {
         const code = currency(config, c.req.valid("param").currency);
         const input = c.req.valid("json");

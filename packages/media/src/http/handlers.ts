@@ -20,7 +20,7 @@ import type { CreateMediaInput, DuplicatesInput, FinalizeMediaInput, ListMediaQu
  * scoping is an adopter concern via an extension field (e.g. `userId`).
  *
  * Request shape is NOT validated here. Each route declares its own schema with
- * `zValidator(target, Schema, validationHook)` and hands the handler the already-parsed value, so a
+ * `validate(target, Schema)` and hands the handler the already-parsed value, so a
  * malformed request is rejected before any dependency is resolved. What survives in these handlers is
  * validation the schema cannot express: the R2 size rule (a cross-field, config-dependent check) and
  * `validateRecord`, which validates the *assembled* record against the effective (adopter-extended)

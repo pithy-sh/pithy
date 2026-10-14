@@ -10,9 +10,11 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { MATCHMAKING_MIGRATION_ORDER } from "../capability";
 import { MatchmakingConfig, type MatchmakingConfigInput } from "../config/config";
 import { matchmaking_0001_matchmaking } from "../migrations/0001_matchmaking";
+import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
 import { registerMatchmakingRoutes } from "./routes";
 
 function provider(): MigrationProvider {
@@ -47,6 +49,17 @@ const fakeSessions = {
     },
   }),
 };
+
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
 
 function requestEnv(): typeof env {
   return { ...env, SESSIONS: fakeSessions } as unknown as typeof env;
@@ -112,7 +125,7 @@ describe("matchmaking routes — rooms", () => {
       requestEnv(),
     );
     expect(created.status).toBe(201);
-    const room = await created.json<{ code: string; sessionId: string }>();
+    const room = await conforming(created, RoomCreated);
     expect(room.code).toMatch(/^[A-Z]{4}-[0-9]{4}$/);
 
     const joined = await app.request(
@@ -121,7 +134,7 @@ describe("matchmaking routes — rooms", () => {
       requestEnv(),
     );
     expect(joined.status).toBe(200);
-    const result = await joined.json<{ sessionId: string; usesRemaining: number }>();
+    const result = await conforming(joined, RoomJoined);
     expect(result.sessionId).toBe(room.sessionId);
   });
 
@@ -277,11 +290,11 @@ describe("matchmaking routes — invites", () => {
       requestEnv(),
     );
     expect(created.status).toBe(201);
-    const invite = await created.json<{ id: string; inviteeId: string }>();
+    const invite = await conforming(created, InviteView);
     expect(invite.inviteeId).toBe("bob");
 
     const pending = await app.request("/matchmaking/invites", { headers: { "x-user": "bob" } }, requestEnv());
-    expect((await pending.json<{ invites: unknown[] }>()).invites).toHaveLength(1);
+    expect((await conforming(pending, InviteList)).invites).toHaveLength(1);
 
     const accepted = await app.request(
       `/matchmaking/invites/${invite.id}/accept`,
@@ -289,7 +302,7 @@ describe("matchmaking routes — invites", () => {
       requestEnv(),
     );
     expect(accepted.status).toBe(200);
-    expect((await accepted.json<{ sessionId: string | null }>()).sessionId).toBeTruthy();
+    expect((await conforming(accepted, InviteView)).sessionId).toBeTruthy();
   });
 
   test("an invite with neither email nor name is a 400, not a misleading 404", async () => {
@@ -354,7 +367,7 @@ describe("matchmaking routes — friends", () => {
     );
     expect(accept.status).toBe(204);
     const list = await app.request("/matchmaking/friends", { headers: { "x-user": "alice" } }, requestEnv());
-    const { friends } = await list.json<{ friends: { userId: string; status: string; direction: string }[] }>();
+    const { friends } = await conforming(list, FriendList);
     expect(friends).toEqual([{ userId: "bob", status: "accepted", direction: "mutual", since: expect.any(String) }]);
   });
 });
@@ -373,14 +386,14 @@ describe("matchmaking routes — queue", () => {
       { method: "POST", headers: { "x-user": "bob" } },
       requestEnv(),
     );
-    const bStatus = await b.json<{ state: string }>();
+    const bStatus = await conforming(b, QueueStanding);
     // The second enqueue forms the match (region "unknown" for both, no skill pool → same bucket).
     const aStatus = await app.request(
       "/matchmaking/games/duel/queue",
       { headers: { "x-user": "alice" } },
       requestEnv(),
     );
-    const aState = await aStatus.json<{ state: string }>();
+    const aState = await conforming(aStatus, QueueStanding);
     expect([bStatus.state, aState.state]).toContain("matched");
   });
 

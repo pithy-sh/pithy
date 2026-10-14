@@ -6,7 +6,7 @@ import { MAX_NAME_BYTES, MAX_TOPK_WITHOUT_PAYLOAD, MAX_UPSERT_BATCH, MAX_VECTOR_
 
 /**
  * The request schemas for the vector routes. Each is declared on the route line with
- * `zValidator(target, Schema, validationHook)`, so a malformed request is a `validation/invalid_input` 400
+ * `validate(target, Schema)`, so a malformed request is a `validation/invalid_input` 400
  * before any handler runs (CLAUDE.md §Zod). They carry only the shape rules — the Vectorize ceilings
  * (dimensions, id bytes, metadata size, filter size) are enforced once, in `index/index.ts`, so the numbers
  * cannot disagree between two files.

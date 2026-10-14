@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { Context, Hono, Next } from "hono";
 import type { PithyHonoEnv } from "../capability/capability";
 import { commandName } from "../cli/command";
 import { type AmbientEnv, ambientEnv, compositionEnvironment } from "../env/ambient";
 import { ForbiddenError, PithyError } from "../error/pithyError";
-import { validationHook } from "../http/validation";
+import { describeRoute } from "../http/routeSpec";
+import { validate } from "../http/validation";
 import type { VerificationStrategy } from "../http/verification";
 import { workflowBindingFor } from "./dispatch";
 import {
   WORKFLOW_DISPATCH_ROUTE,
   WorkflowDispatchParams,
   WorkflowDispatchRequest,
-  type WorkflowDispatchResponse,
+  WorkflowDispatchResponse,
 } from "./schemas";
 import type { RegisteredWorkflow, WorkflowRegistry } from "./spec";
 
@@ -130,9 +130,15 @@ export function registerWorkflowDispatchRoute(app: Hono<PithyHonoEnv>, options: 
 
   app.post(
     WORKFLOW_DISPATCH_ROUTE,
+    describeRoute({
+      summary: "Start a Workflow instance on this host, in dev only.",
+      description: "Refused outside a `dev` composition. Deployed Workers dispatch through a Workflow binding instead.",
+      verification: WORKFLOW_DISPATCH_VERIFICATION,
+      responses: { 202: WorkflowDispatchResponse },
+    }),
     guard,
-    zValidator("param", WorkflowDispatchParams, validationHook),
-    zValidator("json", WorkflowDispatchRequest, validationHook),
+    validate("param", WorkflowDispatchParams),
+    validate("json", WorkflowDispatchRequest),
     async (c) => {
       const { binding } = c.req.valid("param");
       const { id, params } = c.req.valid("json");

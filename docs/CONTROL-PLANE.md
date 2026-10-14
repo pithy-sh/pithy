@@ -275,8 +275,14 @@ A capability also **declares** those routes via `adminRoutes`, so a management c
 ```ts
 app.post(
   `${base}/entitlements/grant`,
+  describeRoute({
+    summary: "Grant an entitlement by hand.",
+    verification: "control-plane",
+    scopes: [PAYMENTS_ENTITLEMENT_GRANT_SCOPE],
+    responses: { 200: PaymentsEntitlementResponse },
+  }),
   requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE),
-  zValidator("json", EntitlementGrantRequest, validationHook),
+  validate("json", EntitlementGrantRequest),
   (c) => grantEntitlement(c, c.req.valid("json")),
 );
 ```

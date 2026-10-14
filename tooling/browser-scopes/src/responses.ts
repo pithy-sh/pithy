@@ -4,12 +4,19 @@
 import * as audit from "@pithy-sh/audit/src/http/responses";
 import * as auth from "@pithy-sh/auth/src/http/responses";
 import * as email from "@pithy-sh/email/src/http/responses";
+import * as leaderboard from "@pithy-sh/leaderboard/src/http/responses";
 import * as ledger from "@pithy-sh/ledger/src/http/responses";
+import * as matchmaking from "@pithy-sh/matchmaking/src/http/responses";
+import * as media from "@pithy-sh/media/src/http/responses";
+import * as multiplayer from "@pithy-sh/multiplayer/src/http/responses";
 import * as organization from "@pithy-sh/organization/src/http/responses";
 import * as payments from "@pithy-sh/payments/src/http/responses";
+import * as rating from "@pithy-sh/rating/src/http/responses";
 import * as secrets from "@pithy-sh/secrets/src/http/responses";
+import * as storage from "@pithy-sh/storage/src/http/responses";
 import * as support from "@pithy-sh/support/src/http/responses";
 import * as testers from "@pithy-sh/testers/src/http/responses";
+import * as vector from "@pithy-sh/vector/src/http/responses";
 
 /**
  * The rule, stated once: **a module a browser may import reaches no module that needs the Workers
@@ -52,10 +59,17 @@ export const EVERY_RESPONSE_MODULE: readonly object[] = [
   audit,
   auth,
   email,
+  leaderboard,
   ledger,
+  matchmaking,
+  media,
+  multiplayer,
   organization,
   payments,
+  rating,
   secrets,
+  storage,
   support,
   testers,
+  vector,
 ];

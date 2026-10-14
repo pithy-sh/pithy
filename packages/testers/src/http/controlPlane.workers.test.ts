@@ -36,6 +36,7 @@ import {
   InviteResponse,
   NudgeDryRunResponse,
   NudgeResponse,
+  NudgeResult,
   RemoveResponse,
   ResendResponse,
 } from "./responses";
@@ -781,6 +782,8 @@ describe("the exported response schemas against the live routes", () => {
       dryRun: true,
     });
     expect(preview.wouldSend).toEqual([{ id: nudgeable.member.id }]);
+    // The route's contract names one schema for its one status, so each body must also survive it whole.
+    expect(NudgeResult.parse(preview)).toEqual(preview);
 
     const nudged = await contract(NudgeResponse, TESTERS_NUDGE_SEND_SCOPE, "POST", "/testers/nudge", {
       cohortId: cohort.id,
@@ -788,6 +791,7 @@ describe("the exported response schemas against the live routes", () => {
       memberIds: [nudgeable.member.id],
     });
     expect(nudged.sent).toHaveLength(1);
+    expect(NudgeResult.parse(nudged)).toEqual(nudged);
 
     await contract(RemoveResponse, TESTERS_ROSTER_WRITE_SCOPE, "POST", "/testers/remove", {
       memberId: nudgeable.member.id,

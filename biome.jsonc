@@ -65,6 +65,17 @@
     {
       "path": "plugins/no-z-config.grit",
       "includes": ["**/packages/*/src/**"]
+    },
+    // `no-bare-zvalidator.grit` keeps every request schema readable by the OpenAPI contract (#719).
+    // `validation.ts` defines `validate` on top of `zValidator`, and its own test pins the difference
+    // between the two, so both are the exceptions and nothing else is.
+    {
+      "path": "plugins/no-bare-zvalidator.grit",
+      "includes": [
+        "**/packages/*/src/**",
+        "!**/packages/core/src/http/validation.ts",
+        "!**/packages/core/src/http/validation.test.ts"
+      ]
     }
   ],
   "formatter": {

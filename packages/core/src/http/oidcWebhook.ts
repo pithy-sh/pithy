@@ -491,8 +491,8 @@ export async function verifyOidcToken(token: string, options: VerifyOidcTokenOpt
 }
 
 /**
- * The OIDC gate, as a route wears it: `app.post(path, requireOidcWebhook({…}), zValidator("json", Body,
- * validationHook), handler)`.
+ * The OIDC gate, as a route wears it: `app.post(path, requireOidcWebhook({…}), validate("json", Body),
+ * handler)`.
  *
  * ## Why the header is read before anything else
  *
@@ -528,7 +528,7 @@ export async function verifyOidcToken(token: string, options: VerifyOidcTokenOpt
  * null-check.
  *
  * The body is never read here — unlike the HMAC gate, whose proof covers the bytes. An OIDC token proves who
- * sent the request and says nothing about what they sent, so the route's `zValidator` is the only thing that
+ * sent the request and says nothing about what they sent, so the route's `validate` is the only thing that
  * touches the body, and it sees an untouched stream.
  */
 export function requireOidcWebhook(options: OidcWebhookGuardOptions): MiddlewareHandler<PithyHonoEnv> {

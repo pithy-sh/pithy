@@ -12,6 +12,7 @@ import type { LogRecord } from "@pithy-sh/core/src/logger/record";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { TestersConfig } from "../config/config";
 import { testersDatabase } from "../data/tables";
 import { testers_0001_cohorts } from "../migrations/0001_cohorts";
@@ -24,7 +25,19 @@ import {
   requireMember,
   type WriteDeps,
 } from "../roster/write";
+import { MembershipsResponse } from "./responses";
 import { registerTestersRoutes } from "./routes";
+
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
 
 /**
  * The tester-facing routes against real D1.
@@ -342,7 +355,7 @@ describe("the request's own logger reaches the activity read", () => {
 
     // A 200 with a membership in it. The response is exactly what it would be if the cohort were fine.
     expect(response.status).toBe(200);
-    expect((await response.json<{ memberships: unknown[] }>()).memberships).toHaveLength(1);
+    expect((await conforming(response, MembershipsResponse)).memberships).toHaveLength(1);
 
     const warned = records.filter((record) => record.level === "warn");
     expect(warned).toHaveLength(1);

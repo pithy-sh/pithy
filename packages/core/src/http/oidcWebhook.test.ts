@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -20,7 +19,7 @@ import {
   requireOidcWebhook,
   verifyOidcToken,
 } from "./oidcWebhook";
-import { validationHook } from "./validation";
+import { validate } from "./validation";
 
 /**
  * The authenticity boundary on an OIDC webhook, exercised for real: minted RSA keys, genuine RS256
@@ -847,7 +846,7 @@ function guardedApp(overrides: Record<string, unknown> = {}, onHandler?: () => v
       transport: publishing(JWKS_URL, [key.jwk]),
       ...overrides,
     }),
-    zValidator("json", Delivery, validationHook),
+    validate("json", Delivery),
     (c) => {
       onHandler?.();
       return c.json({ event: c.req.valid("json").event });

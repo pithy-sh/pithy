@@ -46,9 +46,21 @@ const app = defineCapability({
   // on the first request — a missing binding fails fast with the binding's name.
   requiredBindings: [],
   // Mount your routes here. Every route declares how callers are verified —
-  // bearer, session, signed-webhook, or public. `GET /health` is built in.
+  // bearer, session, signed-webhook, or public — and what it returns, with
+  // `describeRoute` from @pithy-sh/core/src/http/routeSpec. `pithy contract`
+  // writes that into apps/api/openapi.json for every client to build against.
+  // Read a request through `validate(target, Schema)` from
+  // @pithy-sh/core/src/http/validation. `GET /health` is built in.
   // routes: (a) => {
-  //   a.get("/hello", (c) => c.text("Hi."));
+  //   a.get(
+  //     "/hello",
+  //     describeRoute({
+  //       summary: "Say hi.",
+  //       verification: "public",
+  //       responses: { 200: { description: "A greeting.", contentType: "text/plain" } },
+  //     }),
+  //     (c) => c.text("Hi."),
+  //   );
   // },
 });
 

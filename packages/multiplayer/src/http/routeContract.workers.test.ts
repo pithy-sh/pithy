@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from "../config/config";
@@ -84,7 +85,21 @@ describe("multiplayer route contract", () => {
     expect(
       uncovered,
       `These multiplayer routes declare a :segment but validate none of it: ${offenders}. ` +
-        `Give each a zValidator("param", <Schema>, validationHook), with the schema in src/http/schemas.ts.`,
+        `Give each a validate("param", <Schema>), with the schema in src/http/schemas.ts.`,
     ).toEqual([]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "multiplayer", routes: composed().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "multiplayer", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

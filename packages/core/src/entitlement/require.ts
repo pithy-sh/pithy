@@ -16,7 +16,7 @@ import {
  * `verification`-strategy sibling every paid route carries: it says what the caller must *hold*, the
  * way `requireAuth()` says who the caller must *be*, and it belongs on the route line beside it.
  *
- *   app.get("/reports", requireAuth(), requireEntitlement("pro"), zValidator(…), handler)
+ *   app.get("/reports", requireAuth(), requireEntitlement("pro"), validate(…), handler)
  *
  * It lives in `@pithy-sh/core` rather than in `@pithy-sh/payments` for the same reason `requireAuth()`
  * is copied into each capability instead of imported from `@pithy-sh/auth`: a gate that arrives with a

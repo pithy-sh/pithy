@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import type { RatingConfig, ResolvedRatingGame } from "../config/config";
 import { resolveGame } from "../config/config";
@@ -15,6 +15,7 @@ import { RatingGameNotFoundError } from "../error/errors";
 import { classifyLevel } from "../experience/xp";
 import { recordOutcome } from "../record/record";
 import { requireAuth, requireRecordScope } from "./guard";
+import { RatingView, RecordedOutcome } from "./responses";
 import { RatingGameParams, RatingPlayerParams, RecordOutcomeBody } from "./schemas";
 
 /**
@@ -43,17 +44,6 @@ export interface RatingRoutesOptions {
   basePath?: string;
 }
 
-/** A player-facing view of a standing. `skill` is null when the game hides it. */
-interface RatingView {
-  pool: string;
-  userId: string;
-  skill: number | null;
-  xp: number;
-  level: string | null;
-  games: number;
-  provisional: boolean;
-}
-
 export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/rating";
   const { games, config } = options;
@@ -61,10 +51,17 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
   return (app) => {
     app.post(
       `${base}/games/:game/outcomes`,
+      describeRoute({
+        summary: "Record the result of a rated game.",
+        description: "Requires the record scope while `serverAuthoritative` is on, which is the default.",
+        verification: ["bearer", "session"],
+        scopes: config.serverAuthoritative ? [config.recordScope] : [],
+        responses: { 201: RecordedOutcome },
+      }),
       requireAuth(),
       requireRecordScope(config.serverAuthoritative, config.recordScope),
-      zValidator("param", RatingGameParams, validationHook),
-      zValidator("json", RecordOutcomeBody, validationHook),
+      validate("param", RatingGameParams),
+      validate("json", RecordOutcomeBody),
       async (c) => {
         const resolved = game(games, c.req.valid("param").game);
         const body = c.req.valid("json");
@@ -74,14 +71,22 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
           sharedRoom: body.sharedRoom,
           at: new Date(),
         });
-        return c.json({ game: resolved.game.key, pool: resolved.game.pool, players: recorded }, 201);
+        return c.json(
+          { game: resolved.game.key, pool: resolved.game.pool, players: recorded } satisfies RecordedOutcome,
+          201,
+        );
       },
     );
 
     app.get(
       `${base}/games/:game/me`,
+      describeRoute({
+        summary: "Read the caller's own standing in a game.",
+        verification: ["bearer", "session"],
+        responses: { 200: RatingView },
+      }),
       requireAuth(),
-      zValidator("param", RatingGameParams, validationHook),
+      validate("param", RatingGameParams),
       async (c) => {
         const resolved = game(games, c.req.valid("param").game);
         return c.json(await view(c, resolved, userId(c)));
@@ -90,8 +95,13 @@ export function registerRatingRoutes(options: RatingRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/games/:game/players/:userId`,
+      describeRoute({
+        summary: "Read another player's standing in a game.",
+        verification: ["bearer", "session"],
+        responses: { 200: RatingView },
+      }),
       requireAuth(),
-      zValidator("param", RatingPlayerParams, validationHook),
+      validate("param", RatingPlayerParams),
       async (c) => {
         const params = c.req.valid("param");
         const resolved = game(games, params.game);

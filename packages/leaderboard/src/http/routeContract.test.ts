@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
@@ -14,7 +15,7 @@ import { registerLeaderboardRoutes } from "./routes";
  * only read them through a validator it declared. A path param has no such chokepoint: `c.req.param()`
  * hands one over whether or not a schema exists. This gate is the positive check that replaces the ban.
  *
- * Every leaderboard route that declares a `:segment` must register a `zValidator("param", …)` for it.
+ * Every leaderboard route that declares a `:segment` must register a `validate("param", …)` for it.
  * Add a param route without one and this fails, naming the route.
  *
  * No request is made — the app is only inspected — so no auth middleware, database, or binding is wired.
@@ -54,9 +55,23 @@ describe("route contract: every path param is validated", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These routes declare path params but register no zValidator("param", …):\n${uncovered
+      `These routes declare path params but register no validate("param", …):\n${uncovered
         .map((r) => `  ${r.method} ${r.path} — :${r.params.join(", :")}`)
         .join("\n")}\nAdd a param schema in src/http/schemas.ts and declare it on the route line.`,
     ).toEqual([]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "leaderboard", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "leaderboard", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

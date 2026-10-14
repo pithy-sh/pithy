@@ -5,7 +5,7 @@ import { z } from "zod";
 
 /**
  * What the matchmaking routes accept. Every schema here is named on a route line via
- * `zValidator(target, Schema, validationHook)`, so reading `routes.ts` tells you the shape of a request
+ * `validate(target, Schema)`, so reading `routes.ts` tells you the shape of a request
  * without opening a handler.
  *
  * Path params are **shape** checks, not existence checks. A game key, a room code, an invite id and a

@@ -9,10 +9,12 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import { LeaderboardConfig, type LeaderboardConfigInput } from "../config/config";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
 import { BOOKMARK_HEADER } from "../session/bookmark";
+import { BoardList, BoardPage, OwnRank } from "./responses";
 import { registerLeaderboardRoutes } from "./routes";
 
 const SUBMIT = "leaderboard:submit";
@@ -70,13 +72,17 @@ const req = (
   );
 };
 
-/** `Response.json()` is `unknown` under strict mode; these name the shapes the routes actually return. */
-interface Page {
-  board: string;
-  window: string;
-  entries: Array<{ userId: string; rank: number; score: number; tier: string | null }>;
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
 }
-const page = async (res: Response): Promise<Page> => (await res.json()) as Page;
+const page = (res: Response): Promise<BoardPage> => conforming(res, BoardPage);
 
 /** Submit as the trusted server on behalf of a player. */
 const submit = (app: Hono<PithyHonoEnv>, user: string, score: number) =>
@@ -205,7 +211,7 @@ describe("score validation", () => {
 describe("reads", () => {
   test("lists the configured boards", async () => {
     const res = await req(makeApp(CONFIG), "GET", "/leaderboard", { user: "u1" });
-    expect(await res.json()).toEqual({
+    expect(await conforming(res, BoardList)).toEqual({
       boards: [{ key: "b1", store: "d1", direction: "desc", aggregation: "best", window: null, tiers: [] }],
     });
   });
@@ -231,7 +237,7 @@ describe("reads", () => {
     await submit(app, "u1", 10);
     await submit(app, "u2", 30);
     const res = await req(app, "GET", "/leaderboard/b1/me", { user: "u1" });
-    expect(await res.json()).toMatchObject({ userId: "u1", score: 10, rank: 2, rankStale: false });
+    expect(await conforming(res, OwnRank)).toMatchObject({ userId: "u1", score: 10, rank: 2, rankStale: false });
   });
 
   test("404s my-rank for a player who has never submitted", async () => {

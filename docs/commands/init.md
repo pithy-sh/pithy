@@ -7,7 +7,7 @@ Scaffold a new Pithy project — the root config, the gates CI needs, and its fi
 ## Synopsis
 
 ```
-pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
+pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir <path>] [--json]
 ```
 
 ## Flags
@@ -16,6 +16,7 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 |---|---|---|---|
 | `--name <name>` | string | the target directory's name | Application name. Leads every Cloudflare resource this project provisions |
 | `--worker <name>` | string | `api` | Name of the first Worker, created at `apps/<name>` |
+| `--target <mobile\|web\|both>` | string | `mobile` | Which clients call this backend. `web` and `both` scaffold a React front end into the first Worker |
 | `--dir <path>` | string | `.` | Target directory. Created if missing; must not already hold the files `init` writes |
 | `--json` | boolean | `false` | Machine-readable output. Also suppresses every prompt |
 
@@ -26,6 +27,8 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 **Ask the names**, when a human is attached and a flag did not supply them. The project name comes with the reasoning printed above it, because both halves of it are hard to undo: the name leads every Cloudflare resource this project provisions, teardown recomputes those names rather than storing them, and the scope decision behind it — one project or two? — cannot be fixed by editing a string later. One project per set of apps that share users or data. Another app is another Worker, not another project. The first Worker is named too, because every Worker lives in `apps/<name>` and `api` is only a default.
 
 **Ask which environments this project deploys to.** `["staging", "prod"]` is offered as the default, so one keypress is the whole answer. It is asked here for the same reason the project name is: `<project>-<env>-<thing>` has a 33-character ceiling, `name` is capped at 26 against it, and the environment is the *other* segment of that budget — it sits in the middle of every Cloudflare name this project will compose. Like `name`, it is effectively permanent: renaming an environment does not rename anything provisioned under the old name, it orphans it. What you answer is written into each Worker's `env.<name>` stanzas, and — only when it differs from the default — into the root `pithy.config.ts` as `environments`. An answer the naming rule refuses is re-asked rather than accepted; `dev` is refused outright, because it is local, always present, and never deployed.
+
+**Ask which clients call this backend:** mobile apps, a web app, or both. The answer decides whether the first Worker also serves a front end. `@pithy-sh/auth` already speaks both dialects — bearer tokens for a device, a CSRF-protected cookie for a browser — so the backend is the same either way, and only what the Worker serves beside its routes differs. `mobile`, the default, scaffolds the API alone, which is what `init` has always written. `web` and `both` add a React front end to the first Worker exactly as `pithy ui add react` would, with no screens yet, because a new project composes nothing to sign in to. Run `pithy ui add react` again once a capability with screens is composed: it adds them and leaves every file already there as it is. The front end's dev command runs through the package manager that launched `pithy` — `bunx`, `pnpm dlx`, `npx` or `yarn dlx` — and, with none, through npm until the first install writes a lockfile; re-running `pithy ui add react` then rewires it. An answer that is not one of the three is refused before anything is asked.
 
 **Write the scaffold.** The root `pithy.config.ts`, the root `package.json`, `biome.jsonc`, `.gitignore`, the `.dev.vars.example` and `.dev.secrets.example.jsonc` templates, the two Grit plugins, and the configs CI gates on — `tsconfig.json` (a solution file), `tsconfig.tools.json`, `vitest.config.ts`, and `vitest.workers.config.ts`. Then `apps/<worker>/` with its own `pithy.config.ts`, `wrangler.jsonc`, `pithy.worker.jsonc`, `tsconfig.json`, `package.json`, `src/index.ts`, `src/cloudflare-test.d.ts`, and a `src/bindings.workers.test.ts` that runs against real D1 and KV through Miniflare.
 
@@ -39,7 +42,7 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 
@@ -49,7 +52,7 @@ One line, one object.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
 ```
 
 | key | type | meaning |
@@ -60,6 +63,10 @@ $ pithy init --name replay --worker board --json
 | `appName` | string | The project name written into the root `pithy.config.ts` as `name`. From `--name`, or the target directory's basename |
 | `worker` | string | The first Worker's `apps/` directory. What `--worker` accepts, and what `--worker` on later commands names |
 | `environments` | string[] | Every environment this project deploys to, in declaration order — the second segment of every Cloudflare name it composes, and the set each Worker's `env.<name>` stanzas were generated from. **Always `["staging","prod"]` under `--json`**, because declaring anything else is a prompt and `--json` never prompts |
+| `target` | string | Which clients call this backend: `mobile`, `web` or `both`. **`mobile` under `--json` unless `--target` says otherwise**, because asking is a prompt |
+| `frontEnd` | object or `null` | The front end scaffolded into the first Worker, or `null` for a `mobile` target |
+| `frontEnd.framework` | string | The framework scaffolded. `react` |
+| `frontEnd.created` | string[] | The Worker-relative files it created, sorted |
 | `domains` | object or `null` | Where that Worker answers, per environment, or `null` when none was declared. **Always `null` under `--json`**, because declaring a domain is a prompt and `--json` never prompts |
 | `domains.staging` | object | Where the Worker answers in `staging`, if it has a domain yet |
 | `domains.staging.pattern` | string | The hostname, e.g. `api.example.com`. A bare hostname, not a URL — that is what wrangler's route matcher takes |
@@ -108,6 +115,14 @@ $ pithy init --name this-is-a-really-long-project-name
 Shorten `name` in pithy.config.ts to 26 characters or fewer.
 ```
 
+**A target that is not one.** Refused before the first question, so a typo does not cost the answers after it.
+
+```
+$ pithy init --target desktop
+"desktop" is not a target.
+Pass --target mobile, web or both.
+```
+
 **A symlink or a non-directory in the way.** Refused at every segment of the path, rather than left to die on a raw `ENOTDIR` with the run half-written.
 
 **A name in the reserved test namespace.** Refused before anything is written — the debris reaper deletes on that prefix alone.
@@ -141,7 +156,16 @@ Scaffold headlessly. Both names given, so nothing is asked.
 
 ```
 $ pithy init --name replay --worker board --json
-{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+{"command":"init","schemaVersion":1,"targetDir":"/home/you/replay","appName":"replay","worker":"board","environments":["staging","prod"],"target":"mobile","frontEnd":null,"domains":null,"agents":{"path":"AGENTS.md","state":"added","reason":null},"claude":{"path":"CLAUDE.md","state":"added","reason":null}}
+```
+
+Scaffold for a web app. The first Worker serves a React front end beside its routes.
+
+```
+$ pithy init --name replay --worker board --target web
+…
+A React front end is in apps/board/. Install, then run it.
+…
 ```
 
 Scaffold into a directory that does not exist yet. It is created.

@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
 import { AuditTrailActions } from "../actions";
 import type { AuditDatabase } from "../data/tables";
 import { pageAuditEvents, readAuditEvent } from "../query";
 import { AUDIT_EVENT_DETAIL_READ_SCOPE, AUDIT_TRAIL_READ_SCOPE } from "./guards";
-import type { AuditEventResponse, AuditEventsResponse } from "./responses";
+import { AuditEventResponse, AuditEventsResponse } from "./responses";
 import { AuditEventIdParam, ListAuditEventsQuery } from "./schemas";
 import { auditEventDetailView, auditEventView } from "./views";
 
@@ -43,7 +43,7 @@ import { auditEventDetailView, auditEventView } from "./views";
  * What every route this capability mounts declares: its path, its strategy, and the scope it checks.
  *
  * Exported so a test asserts against the declaration rather than against a middleware count. Counting
- * `app.routes` entries proves that *something* runs before the handler — a bare `zValidator` satisfies
+ * `app.routes` entries proves that *something* runs before the handler — a bare `validate` satisfies
  * it — and cannot prove *what*. This is a declaration, so it can drift from the router;
  * `routeContract.test.ts` checks it against Hono in both directions, so a route added without an entry
  * and an entry naming no route both fail.
@@ -129,8 +129,14 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
      */
     app.get(
       `${base}/events`,
+      describeRoute({
+        summary: "Page through the audit trail, newest first.",
+        verification: "control-plane",
+        scopes: [AUDIT_TRAIL_READ_SCOPE],
+        responses: { 200: AuditEventsResponse },
+      }),
       requireControlPlane(AUDIT_TRAIL_READ_SCOPE),
-      zValidator("query", ListAuditEventsQuery, validationHook),
+      validate("query", ListAuditEventsQuery),
       async (c) => {
         const operator = caller(c);
         const query = c.req.valid("query");
@@ -172,8 +178,14 @@ export function registerAuditRoutes(options: AuditRoutesOptions): (app: Hono<Pit
      */
     app.get(
       `${base}/events/:eventId`,
+      describeRoute({
+        summary: "Read one audit event in full, with its IP, user-agent and metadata.",
+        verification: "control-plane",
+        scopes: [AUDIT_EVENT_DETAIL_READ_SCOPE],
+        responses: { 200: AuditEventResponse },
+      }),
       requireControlPlane(AUDIT_EVENT_DETAIL_READ_SCOPE),
-      zValidator("param", AuditEventIdParam, validationHook),
+      validate("param", AuditEventIdParam),
       async (c) => {
         const operator = caller(c);
         const { eventId } = c.req.valid("param");

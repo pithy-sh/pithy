@@ -57,7 +57,7 @@ export type ControlPlaneVerifier = (
  */
 export function createControlPlaneVerifier(deps: ControlPlaneVerifyDeps): ControlPlaneVerifier {
   return async (request, requirement) => {
-    // Clone before reading. The handler still has to parse this body through `zValidator`, and a stream
+    // Clone before reading. The handler still has to parse this body through `validate`, and a stream
     // consumed here would reach it empty — the digest check would pass and the request would then fail
     // validation for no visible reason.
     const body = new Uint8Array(await request.clone().arrayBuffer());

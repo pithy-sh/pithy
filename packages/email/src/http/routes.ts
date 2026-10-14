@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
@@ -10,7 +9,8 @@ import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard"
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono } from "hono";
@@ -33,7 +33,7 @@ import {
   EMAIL_SUPPRESSIONS_READ_SCOPE,
   EMAIL_SUPPRESSIONS_WRITE_SCOPE,
 } from "./guards";
-import type {
+import {
   EmailJobResponse,
   EmailJobRetryResponse,
   EmailJobsResponse,
@@ -91,7 +91,7 @@ export interface EmailRouteDeclaration {
  * Every management route, and how it is gated.
  *
  * Exported so a test can assert against the declaration rather than against a middleware count. A count
- * proves that *something* runs before the handler — a bare `zValidator` satisfies it — and cannot prove
+ * proves that *something* runs before the handler — a bare `validate` satisfies it — and cannot prove
  * *what*. `routeContract.test.ts` checks this list against the paths Hono actually registered, in both
  * directions, so a route added without an entry and an entry without a route both fail.
  */
@@ -192,8 +192,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.get(
       `${base}/jobs`,
+      describeRoute({
+        summary: "Page through the send log.",
+        verification: "control-plane",
+        scopes: [EMAIL_JOBS_READ_SCOPE],
+        responses: { 200: EmailJobsResponse },
+      }),
       requireControlPlane(EMAIL_JOBS_READ_SCOPE),
-      zValidator("query", JobsQuery, validationHook),
+      validate("query", JobsQuery),
       async (c) => {
         const query = c.req.valid("query");
         const who = caller(c);
@@ -223,8 +229,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.get(
       `${base}/jobs/:id`,
+      describeRoute({
+        summary: "Read one email job in full, recipient included.",
+        verification: "control-plane",
+        scopes: [EMAIL_JOBS_READ_SCOPE],
+        responses: { 200: EmailJobResponse },
+      }),
       requireControlPlane(EMAIL_JOBS_READ_SCOPE),
-      zValidator("param", JobIdParam, validationHook),
+      validate("param", JobIdParam),
       async (c) => {
         const { id } = c.req.valid("param");
         const who = caller(c);
@@ -256,8 +268,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.post(
       `${base}/jobs/:id/retry`,
+      describeRoute({
+        summary: "Queue a job to send again.",
+        verification: "control-plane",
+        scopes: [EMAIL_JOBS_RETRY_SCOPE],
+        responses: { 200: EmailJobRetryResponse },
+      }),
       requireControlPlane(EMAIL_JOBS_RETRY_SCOPE),
-      zValidator("param", JobIdParam, validationHook),
+      validate("param", JobIdParam),
       async (c) => {
         const { id } = c.req.valid("param");
         const who = caller(c);
@@ -299,8 +317,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.get(
       `${base}/suppressions`,
+      describeRoute({
+        summary: "Page through the suppression list, or look one address up.",
+        verification: "control-plane",
+        scopes: [EMAIL_SUPPRESSIONS_READ_SCOPE],
+        responses: { 200: EmailSuppressionsResponse },
+      }),
       requireControlPlane(EMAIL_SUPPRESSIONS_READ_SCOPE),
-      zValidator("query", SuppressionsQuery, validationHook),
+      validate("query", SuppressionsQuery),
       async (c) => {
         const query = c.req.valid("query");
         const who = caller(c);
@@ -335,8 +359,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.post(
       `${base}/suppressions`,
+      describeRoute({
+        summary: "Block an address by hand.",
+        verification: "control-plane",
+        scopes: [EMAIL_SUPPRESSIONS_WRITE_SCOPE],
+        responses: { 200: EmailSuppressResponse },
+      }),
       requireControlPlane(EMAIL_SUPPRESSIONS_WRITE_SCOPE),
-      zValidator("json", SuppressRequest, validationHook),
+      validate("json", SuppressRequest),
       async (c) => {
         const input = c.req.valid("json");
         const who = caller(c);
@@ -427,8 +457,14 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
 
     app.post(
       `${base}/suppressions/remove`,
+      describeRoute({
+        summary: "Lift the block on an address.",
+        verification: "control-plane",
+        scopes: [EMAIL_SUPPRESSIONS_DELETE_SCOPE],
+        responses: { 200: EmailUnsuppressResponse },
+      }),
       requireControlPlane(EMAIL_SUPPRESSIONS_DELETE_SCOPE),
-      zValidator("json", UnsuppressRequest, validationHook),
+      validate("json", UnsuppressRequest),
       async (c) => {
         const input = c.req.valid("json");
         const who = caller(c);

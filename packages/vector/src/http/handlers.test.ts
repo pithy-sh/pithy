@@ -177,8 +177,8 @@ describe("upsertDocuments", () => {
     expect(documents.rows.get("generated-id")?.namespace).toBe("tenant-1");
   });
 
-  // The two shape rules below moved off the handler and onto the route line — `zValidator("json",
-  // UpsertDocumentsInput, validationHook)` answers them with a `validation/invalid_input` 400 before a
+  // The two shape rules below moved off the handler and onto the route line — `validate("json",
+  // UpsertDocumentsInput)` answers them with a `validation/invalid_input` 400 before a
   // handler runs (pinned over HTTP in routes.test.ts). The handler now takes an already-validated value, so
   // the rule is asserted where it is now enforced: on the schema.
   it("refuses a document that names both text and values — two sources for one vector", () => {

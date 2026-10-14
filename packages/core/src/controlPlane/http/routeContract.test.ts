@@ -38,7 +38,7 @@ describe("control-plane route contract", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These control-plane routes read a path param they never declared a schema for. Add \`zValidator("param", <Schema>, validationHook)\` to each route line, with the schema in src/controlPlane/http/schemas.ts:\n${uncovered
+      `These control-plane routes read a path param they never declared a schema for. Add \`validate("param", <Schema>)\` to each route line, with the schema in src/controlPlane/http/schemas.ts:\n${uncovered
         .map((route) => `  ${route.method} ${route.path} (:${route.params.join(", :")})`)
         .join("\n")}`,
     ).toEqual([]);

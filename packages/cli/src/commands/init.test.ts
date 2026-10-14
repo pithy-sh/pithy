@@ -12,7 +12,10 @@ import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import {
   askCloudflareAccount,
   askEnvironments,
+  askTarget,
+  DEFAULT_TARGET,
   type InitPrompt,
+  parseTarget,
   renderCloudflareBlock,
   writeCloudflareBlock,
 } from "./init";
@@ -512,5 +515,62 @@ describe("pithy init — agent instructions", () => {
     expect(lines.indexOf("AGENTS.md: Pithy block added.")).toBeLessThan(done);
     expect(lines.indexOf("CLAUDE.md: points at AGENTS.md.")).toBeLessThan(done);
     expect(lines.indexOf("CLAUDE.md: points at AGENTS.md.")).toBeGreaterThan(-1);
+  });
+});
+
+/**
+ * The app target (#719). `mobile` is the API alone and is what `init` scaffolded before it asked, so a
+ * run that passes no flag is unchanged; `web` and `both` add a React front end to the first Worker.
+ */
+describe("the app target", () => {
+  test("asks which clients call the backend, and takes the answer", async () => {
+    const select = vi.fn(async () => "web");
+    expect(await askTarget({ interactive: true, prompt: prompts({ select }) })).toEqual({
+      value: "web",
+      prompted: true,
+    });
+    expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: "Which clients call this backend?" }));
+  });
+
+  test("asks nothing without a human, and takes the default the scaffold always had", async () => {
+    expect(DEFAULT_TARGET).toBe("mobile");
+    expect(await askTarget({ interactive: false, prompt: prompts({}) })).toEqual({ value: "mobile", prompted: false });
+  });
+
+  test("a canceled question aborts rather than scaffolding on half an answer", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("exited");
+    });
+    await expect(
+      askTarget({ interactive: true, prompt: prompts({ select: async () => Symbol("cancel") }) }),
+    ).rejects.toThrow("exited");
+    exit.mockRestore();
+  });
+
+  test("--target takes the three targets and refuses anything else, naming them", () => {
+    expect(parseTarget("both")).toBe("both");
+    expect(() => parseTarget("desktop")).toThrow('"desktop" is not a target.');
+  });
+
+  test("--target web scaffolds the React front end into the first Worker, and --json says what it made", async () => {
+    const target = join(dir, "web");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--target", "web", "--json"]);
+    const payload = JSON.parse(written.join("")) as {
+      target: string;
+      frontEnd: { framework: string; created: string[] };
+    };
+    expect(payload.target).toBe("web");
+    expect(payload.frontEnd.framework).toBe("react");
+    expect(payload.frontEnd.created).toContain("src/client.tsx");
+    expect(await readFile(join(target, "apps", "api", "src", "client.tsx"), "utf8")).not.toBe("");
+  });
+
+  test("no flag is the mobile target: no front end, exactly the scaffold init always wrote", async () => {
+    const target = join(dir, "api-only");
+    const written = await runCaptured("init", ["--dir", target, "--name", "acme", "--json"]);
+    const payload = JSON.parse(written.join("")) as { target: string; frontEnd: unknown };
+    expect(payload.target).toBe("mobile");
+    expect(payload.frontEnd).toBeNull();
+    await expect(readFile(join(target, "apps", "api", "src", "client.tsx"), "utf8")).rejects.toThrow();
   });
 });

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import type { LeaderboardConfig } from "../config/config";
 import { BOOKMARK_HEADER, leaderboardSession, readBookmark } from "../session/bookmark";
@@ -22,6 +22,7 @@ import {
   setOwnVisibility,
   submitScore,
 } from "./handlers";
+import { BoardList, BoardPage, HideResult, OwnRank, RemoveResult, SubmitResult, VisibilityResult } from "./responses";
 import {
   AroundQuery,
   BoardParam,
@@ -118,47 +119,81 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
   };
 
   return (app) => {
-    app.get(base, requireAuth(), (c) => respond(c, false, (deps) => listBoards(deps)));
+    app.get(
+      base,
+      describeRoute({
+        summary: "List the configured boards.",
+        verification: ["bearer", "session"],
+        responses: { 200: BoardList },
+      }),
+      requireAuth(),
+      (c) => respond(c, false, (deps) => listBoards(deps)),
+    );
 
     // Static segments are registered before `:board`-rooted reads so they cannot be shadowed.
     app.post(
       `${base}/:board/segment`,
+      describeRoute({
+        summary: "Rank a segment of players, such as a friends list.",
+        verification: ["bearer", "session"],
+        responses: { 200: BoardPage },
+      }),
       requireAuth(),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("json", SegmentBody, validationHook),
+      validate("param", BoardParam),
+      validate("json", SegmentBody),
       (c) => respond(c, false, (deps) => readSegment(deps, c.req.valid("param").board, c.req.valid("json"))),
     );
 
     app.get(
       `${base}/:board/top`,
+      describeRoute({
+        summary: "Read the top of a board.",
+        verification: ["bearer", "session"],
+        responses: { 200: BoardPage },
+      }),
       requireAuth(),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("query", TopQuery, validationHook),
+      validate("param", BoardParam),
+      validate("query", TopQuery),
       (c) => respond(c, false, (deps) => readTop(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
     app.get(
       `${base}/:board/me`,
+      describeRoute({
+        summary: "Read the caller's own rank.",
+        verification: ["bearer", "session"],
+        responses: { 200: OwnRank },
+      }),
       requireAuth(),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("query", WindowQuery, validationHook),
+      validate("param", BoardParam),
+      validate("query", WindowQuery),
       (c) => respond(c, false, (deps) => readOwnRank(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
     app.get(
       `${base}/:board/around`,
+      describeRoute({
+        summary: "Read the players ranked around the caller.",
+        verification: ["bearer", "session"],
+        responses: { 200: BoardPage },
+      }),
       requireAuth(),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("query", AroundQuery, validationHook),
+      validate("param", BoardParam),
+      validate("query", AroundQuery),
       (c) => respond(c, false, (deps) => readAround(deps, c.req.valid("param").board, c.req.valid("query"))),
     );
 
     app.put(
       `${base}/:board/me/visibility`,
+      describeRoute({
+        summary: "Show or hide the caller's own entry.",
+        verification: ["bearer", "session"],
+        responses: { 200: VisibilityResult },
+      }),
       requireAuth(),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("query", WindowQuery, validationHook),
-      zValidator("json", VisibilityBody, validationHook),
+      validate("param", BoardParam),
+      validate("query", WindowQuery),
+      validate("json", VisibilityBody),
       (c) =>
         respond(c, true, (deps) =>
           setOwnVisibility(deps, c.req.valid("param").board, c.req.valid("query"), c.req.valid("json")),
@@ -167,11 +202,17 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
 
     app.put(
       `${base}/:board/entries/:userId/hidden`,
+      describeRoute({
+        summary: "Hide or restore another player's entry.",
+        verification: ["bearer", "session"],
+        scopes: [adminScope],
+        responses: { 200: HideResult },
+      }),
       requireAuth(),
       requireAdminScope(adminScope),
-      zValidator("param", EntryParam, validationHook),
-      zValidator("query", WindowQuery, validationHook),
-      zValidator("json", HideBody, validationHook),
+      validate("param", EntryParam),
+      validate("query", WindowQuery),
+      validate("json", HideBody),
       (c) => {
         const { board, userId } = c.req.valid("param");
         return respond(c, true, (deps) => hideEntry(deps, board, userId, c.req.valid("query"), c.req.valid("json")));
@@ -180,10 +221,16 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
 
     app.delete(
       `${base}/:board/entries/:userId`,
+      describeRoute({
+        summary: "Remove another player's entry.",
+        verification: ["bearer", "session"],
+        scopes: [adminScope],
+        responses: { 200: RemoveResult },
+      }),
       requireAuth(),
       requireAdminScope(adminScope),
-      zValidator("param", EntryParam, validationHook),
-      zValidator("query", WindowQuery, validationHook),
+      validate("param", EntryParam),
+      validate("query", WindowQuery),
       (c) => {
         const { board, userId } = c.req.valid("param");
         return respond(c, true, (deps) => removeEntry(deps, board, userId, c.req.valid("query")));
@@ -192,10 +239,17 @@ export function registerLeaderboardRoutes(options: LeaderboardRoutesOptions): (a
 
     app.post(
       `${base}/:board`,
+      describeRoute({
+        summary: "Submit a score.",
+        description: "Requires the submit scope while `serverAuthoritative` is on, which is the default.",
+        verification: ["bearer", "session"],
+        scopes: serverAuthoritative ? [submitScope] : [],
+        responses: { 201: SubmitResult },
+      }),
       requireAuth(),
       requireSubmitScope(serverAuthoritative, submitScope),
-      zValidator("param", BoardParam, validationHook),
-      zValidator("json", SubmitScoreBody, validationHook),
+      validate("param", BoardParam),
+      validate("json", SubmitScoreBody),
       (c) => respond(c, true, (deps) => submitScore(deps, c.req.valid("param").board, c.req.valid("json")), 201),
     );
   };

@@ -5,10 +5,11 @@
   //
   // No `vcs` block on purpose. Reading .gitignore needs a repository, and `pithy init` scaffolds into
   // directories that are not one yet — the ignores are stated here instead, so the first `bun run lint`
-  // works before the first `git init`.
+  // works before the first `git init`. `openapi.json` is `pithy contract`'s output: generated, rewritten
+  // whenever a route changes, and never formatted by hand.
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/dist", "!**/.wrangler", "!**/.worktrees"]
+    "includes": ["**", "!**/dist", "!**/.wrangler", "!**/.worktrees", "!**/openapi.json"]
   },
   // The logging gate. Scoped to each Worker's own `.ts` source, because that is the code that runs in
   // the Worker, where `c.var.log` and `createWorkerLogger()` exist. A `.tsx` file is the client, and a

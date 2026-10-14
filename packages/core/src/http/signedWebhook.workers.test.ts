@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -9,7 +8,7 @@ import type { PithyHonoEnv } from "../capability/capability";
 import { pithyErrorHandler } from "../error/http";
 import { PithyError } from "../error/pithyError";
 import { requireSignedWebhook, verifySignedWebhook } from "./signedWebhook";
-import { validationHook } from "./validation";
+import { validate } from "./validation";
 
 /**
  * The same gate, inside workerd.
@@ -63,7 +62,7 @@ function guardedApp(overrides: Record<string, unknown> = {}) {
   app.post(
     "/hooks/inbound",
     requireSignedWebhook({ header: HEADER, secret: SECRET, now: () => NOW, ...overrides }),
-    zValidator("json", Delivery, validationHook),
+    validate("json", Delivery),
     (c) => c.json({ event: c.req.valid("json").event }),
   );
   return app;

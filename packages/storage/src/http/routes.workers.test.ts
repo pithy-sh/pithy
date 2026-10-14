@@ -9,13 +9,25 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { StorageConfig, type StorageConfigInput } from "../config/config";
 import { STORAGE_OBJECTS_TABLE, STORAGE_SHARES_TABLE, type StorageDatabase, storageDatabase } from "../data/tables";
 import { storage_0001_objects } from "../migrations/0001_objects";
 import { collectParts, planMultipart } from "../object/multipart";
-import { type ObjectStore, objectStore, type PresignedObjects, type UploadedPart } from "../object/store";
+import { type ObjectStore, objectStore, type PresignedObjects } from "../object/store";
+import type { UploadedPart } from "../object/uploadedPart";
 import { usedBytes } from "../quota/quota";
 import type { HandlerDeps } from "./handlers";
+import {
+  ObjectDeletedResponse,
+  ObjectListResponse,
+  PresignedUrlResponse,
+  ShareResponse,
+  ShareRevokedResponse,
+  StorageObjectResponse,
+  UploadInitResponse,
+  UploadPartsResponse,
+} from "./responses";
 import { registerStorageRoutes } from "./routes";
 
 /**
@@ -127,6 +139,21 @@ function testStore(): ObjectStore {
       await bucket.put(destinationKey, await object.arrayBuffer(), { httpMetadata: object.httpMetadata });
     },
   };
+}
+
+/**
+ * Require a body to parse through its schema in `responses.ts` and hand back exactly what arrived. That
+ * is the binding between the contract and the handler: a field the handler adds or drops without the
+ * schema fails here, on a real answer.
+ */
+function conforms<Schema extends z.ZodType>(body: unknown, schema: Schema): z.infer<Schema> {
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
+/** Read a response through its schema. See {@link conforms}. */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  return conforms(await res.json(), schema);
 }
 
 let idCounter = 0;
@@ -322,9 +349,10 @@ describe("declared request shapes", () => {
   test("abort takes no body, so it declares no json schema and a bodyless POST still works", async () => {
     const app = makeApp();
     const created = await init(app, ADA, { path: "a.txt", contentType: "text/plain", size: 5 });
-    const id = (created.json as unknown as { object: { id: string } }).object.id;
+    const id = conforms(created.json, UploadInitResponse).object.id;
     const response = await app.request(`/storage/${id}/abort`, { method: "POST", headers: { "x-user": ADA } });
     expect(response.status).toBe(200);
+    expect((await conforming(response, StorageObjectResponse)).status).toBe("failed");
   });
 
   test("a complete with no body at all still completes — an absent body reads as an empty one", async () => {
@@ -436,7 +464,7 @@ describe("upload — single PUT", () => {
       headers: { "content-type": "application/json", "x-user": ADA },
       body: JSON.stringify({}),
     });
-    const object = (await response.json()) as { status: string; size: number };
+    const object = await conforming(response, StorageObjectResponse);
     expect(object.status).toBe("stored");
     expect(object.size).toBe(5);
   });
@@ -462,11 +490,8 @@ describe("upload — multipart", () => {
     const app = makeApp(multipartConfig);
     const size = 11 * MIB;
     const created = await init(app, ADA, { path: "big.bin", contentType: "application/octet-stream", size });
-    const payload = created.json as unknown as {
-      object: { id: string };
-      upload: { kind: string; uploadId: string; partSize: number; parts: { partNumber: number; length: number }[] };
-    };
-    expect(payload.upload.kind).toBe("multipart");
+    const payload = conforms(created.json, UploadInitResponse);
+    if (payload.upload.kind !== "multipart") throw new Error("expected a multipart upload");
     expect(payload.upload.parts.map((part) => part.length)).toEqual([5 * MIB, 5 * MIB, MIB]);
 
     const id = payload.object.id;
@@ -636,13 +661,7 @@ describe("resuming a multipart upload", () => {
 
     const response = await app.request(`/storage/${id}/parts`, { headers: { "x-user": ADA } });
     expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      uploadId: string;
-      partSize: number;
-      partCount: number;
-      uploaded: { partNumber: number; etag: string; size: number }[];
-      missing: { partNumber: number; offset: number; length: number; url: string }[];
-    };
+    const payload = await conforming(response, UploadPartsResponse);
 
     expect(payload.uploadId).toBe(uploadId);
     expect(payload.partCount).toBe(3);
@@ -988,7 +1007,7 @@ describe("serving bytes", () => {
     const { id, key } = await storeFile(app, ADA, "fox.txt", body);
     const response = await app.request(`/storage/${id}/url`, { headers: { "x-user": ADA } });
     expect(response.status).toBe(200);
-    const payload = (await response.json()) as { url: string; expiresInSeconds: number };
+    const payload = await conforming(response, PresignedUrlResponse);
     expect(payload.url).toContain(key);
     expect(payload.expiresInSeconds).toBe(300);
   });
@@ -1110,7 +1129,7 @@ describe("rename, copy, delete", () => {
       body: JSON.stringify({ path: "new/name.txt", visibility: "public" }),
     });
     expect(response.status).toBe(200);
-    const object = (await response.json()) as { path: string; visibility: string };
+    const object = await conforming(response, StorageObjectResponse);
     expect(object.path).toBe("new/name.txt");
     expect(object.visibility).toBe("public");
     expect(await bucket.head(key)).not.toBe(null);
@@ -1136,7 +1155,7 @@ describe("rename, copy, delete", () => {
       body: JSON.stringify({ path: "ada/copy.txt" }),
     });
     expect(response.status).toBe(201);
-    const copy = (await response.json()) as { id: string; ownerId: string; visibility: string; path: string };
+    const copy = await conforming(response, StorageObjectResponse);
     expect(copy.id).not.toBe(id);
     expect(copy.ownerId).toBe(ADA);
     // Republishing is a decision, so a copy never inherits `public`.
@@ -1162,6 +1181,7 @@ describe("rename, copy, delete", () => {
     const { id, key } = await storeFile(app, ADA, "a.txt", "hello");
     const response = await app.request(`/storage/${id}`, { method: "DELETE", headers: { "x-user": ADA } });
     expect(response.status).toBe(200);
+    expect(await conforming(response, ObjectDeletedResponse)).toEqual({ id, deleted: true });
     expect(await bucket.head(key)).toBe(null);
     expect(await db.selectFrom(STORAGE_OBJECTS_TABLE).selectAll().where("id", "=", id).execute()).toEqual([]);
   });
@@ -1174,7 +1194,7 @@ describe("listing", () => {
     await storeFile(app, ADA, "a.txt", "a");
     await storeFile(app, GRACE, "c.txt", "c");
     const response = await app.request("/storage", { headers: { "x-user": ADA } });
-    const payload = (await response.json()) as { objects: { path: string }[] };
+    const payload = await conforming(response, ObjectListResponse);
     expect(payload.objects.map((object) => object.path)).toEqual(["a.txt", "b.txt"]);
   });
 
@@ -1199,7 +1219,7 @@ describe("listing", () => {
     for (let page = 0; page < 10; page += 1) {
       const query = cursor ? `?limit=2&cursor=${encodeURIComponent(cursor)}` : "?limit=2";
       const response = await app.request(`/storage${query}`, { headers: { "x-user": ADA } });
-      const payload = (await response.json()) as { objects: { path: string }[]; cursor?: string };
+      const payload = await conforming(response, ObjectListResponse);
       seen.push(...payload.objects.map((object) => object.path));
       cursor = payload.cursor;
       if (!cursor) break;
@@ -1218,7 +1238,7 @@ describe("share links", () => {
       body: JSON.stringify({}),
     });
     expect(minted.status).toBe(201);
-    const share = (await minted.json()) as { token: string; expiresAt: string | null };
+    const share = await conforming(minted, ShareResponse);
     expect(share.expiresAt).toBe(null);
 
     const fetched = await app.request(`/s/${share.token}`);
@@ -1284,7 +1304,7 @@ describe("share links", () => {
     const { token } = (await minted.json()) as { token: string };
     const response = await app.request(`/storage/shares/${token}`, { method: "DELETE", headers: { "x-user": ADA } });
     // A revoke answers with the token; an object delete would have answered with an id.
-    expect(await response.json()).toMatchObject({ token });
+    expect(await conforming(response, ShareRevokedResponse)).toMatchObject({ token });
   });
 
   test("deleting the object takes its share links with it", async () => {

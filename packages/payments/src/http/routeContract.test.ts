@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { routeSpecOf } from "@pithy-sh/core/src/http/routeSpec";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import * as z from "zod";
@@ -94,7 +96,7 @@ describe("payments route contract", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These payments routes read a path param they never declared a schema for. Add \`zValidator("param", <Schema>, validationHook)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
+      `These payments routes read a path param they never declared a schema for. Add \`validate("param", <Schema>)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
         .map((route) => `  ${route.method} ${route.path} (:${route.params.join(", :")})`)
         .join("\n")}`,
     ).toEqual([]);
@@ -176,13 +178,29 @@ describe("payments route contract", () => {
   test("every route carries at least one guard ahead of its handler", () => {
     // The positive half of "no public routes". A route registered with a bare handler has one entry in
     // `app.routes`; every route here must have more, and the first of them is its verification strategy.
+    // `describeRoute` is not a guard — it does nothing but call `next` — so it is not counted.
     const app = makeApp();
     const handlerCounts = new Map<string, number>();
     for (const route of app.routes) {
+      if (routeSpecOf(route.handler) !== undefined) continue;
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "payments", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "payments", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });
 

@@ -53,6 +53,7 @@ export type WorkerScopedPath = (typeof WORKER_SCOPED)[number];
  * first that answers, and the flag narrows.
  */
 export const WORKER_NARROWS = [
+  "contract",
   "dashboard disconnect",
   "dashboard revoke-key",
   "dashboard rotate",

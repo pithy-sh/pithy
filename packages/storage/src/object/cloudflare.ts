@@ -3,7 +3,8 @@
 
 import { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import type { R2StorageCredentials } from "../secret/registry";
-import { type PresignedObjects, UploadedPart } from "./store";
+import type { PresignedObjects } from "./store";
+import { UploadedPart } from "./uploadedPart";
 
 /**
  * The SDK-friction boundary: the one file in this package that touches `@pithy-sh/cloudflare`.

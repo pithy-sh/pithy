@@ -192,7 +192,7 @@ function liveToken(claims: TokenClaims, audience = "http://localhost"): Promise<
 
 /**
  * The three routes as `registerCallbacks` mounts them — the app-level peer of the direct-handler cases
- * above, so the `zValidator("param" | "query", …, validationHook)` declarations on the route line are
+ * above, so the `validate("param" | "query", …)` declarations on the route line are
  * actually exercised. The signing key resolves through the shared secrets accessor from the binding a
  * deployed Worker gets from its `secrets_store_secrets` stanza: the entry's text, exactly as provisioning
  * writes it (`storeEntryText`) — a fresh envelope, so its one version is `"1"`, the `kid` `liveToken()`

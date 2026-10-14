@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database, DurableObjectNamespace, KVNamespace } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { createRoom, joinRoom, normalizeCode } from "../code/room";
 import { type MatchmakingConfig, type MatchmakingGame, resolveGame } from "../config/config";
@@ -23,6 +23,7 @@ import { readSkill } from "../queue/skill";
 import { callRpc } from "../rpc";
 import { type SessionNamespace, sessionMinter } from "../session/minter";
 import { requireAuth } from "./guard";
+import { FriendList, InviteList, InviteView, QueueStanding, RoomCreated, RoomJoined } from "./responses";
 import { FriendParams, GameParams, InviteBody, InviteParams, RoomCodeParams } from "./schemas";
 
 /**
@@ -30,8 +31,8 @@ import { FriendParams, GameParams, InviteBody, InviteParams, RoomCodeParams } fr
  * `c.var.auth.userId`. Verification strategy: `bearer | session` throughout; the room-code join route may
  * additionally stack a Turnstile humanity check when the adopter opts in (abuse flag).
  *
- * Every route also declares what it accepts on its route line, with `zValidator(target, Schema,
- * validationHook)` from `./schemas` — always after the guards, so an unauthenticated caller still gets a
+ * Every route also declares what it accepts on its route line, with `validate(target, Schema)` from
+ * `./schemas` — always after the guards, so an unauthenticated caller still gets a
  * 401 rather than a 400. A route that reads no request body declares no `json` validator.
  *
  * Rooms · POST /games/:game/rooms (param GameParams) · POST /rooms/:code/join (param RoomCodeParams)
@@ -58,30 +59,51 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
   return (app) => {
     // --- Rooms ---
-    app.post(`${base}/games/:game/rooms`, requireAuth(), zValidator("param", GameParams, validationHook), async (c) => {
-      const game = resolveMatchmakingGame(config, c.req.valid("param").game);
-      const result = await createRoom(kvOf(c), game, minterOf(c), userId(c), new Date());
-      return c.json(result, 201);
-    });
+    app.post(
+      `${base}/games/:game/rooms`,
+      describeRoute({
+        summary: "Open a room with a shareable join code.",
+        verification: ["bearer", "session"],
+        responses: { 201: RoomCreated },
+      }),
+      requireAuth(),
+      validate("param", GameParams),
+      async (c) => {
+        const game = resolveMatchmakingGame(config, c.req.valid("param").game);
+        const result = await createRoom(kvOf(c), game, minterOf(c), userId(c), new Date());
+        return c.json(result satisfies RoomCreated, 201);
+      },
+    );
 
     app.post(
       `${base}/rooms/:code/join`,
+      describeRoute({
+        summary: "Join a room by its code.",
+        verification: ["bearer", "session"],
+        responses: { 200: RoomJoined },
+      }),
       requireAuth(),
-      zValidator("param", RoomCodeParams, validationHook),
+      validate("param", RoomCodeParams),
       async (c) => {
         // The param schema is a length bound; `normalizeCode` still owns the code's real shape.
         const code = normalizeCode(c.req.valid("param").code);
         const result = await joinRoom(kvOf(c), minterOf(c), code, userId(c), new Date());
-        return c.json(result, 200);
+        return c.json(result satisfies RoomJoined, 200);
       },
     );
 
     // --- Invites ---
     app.post(
       `${base}/games/:game/invites`,
+      describeRoute({
+        summary: "Invite another player to a two-player game.",
+        description: "Name the invitee by `email` or by screen `name`, never both.",
+        verification: ["bearer", "session"],
+        responses: { 201: InviteView },
+      }),
       requireAuth(),
-      zValidator("param", GameParams, validationHook),
-      zValidator("json", InviteBody, validationHook),
+      validate("param", GameParams),
+      validate("json", InviteBody),
       async (c) => {
         const game = resolveMatchmakingGame(config, c.req.valid("param").game);
         // A direct invite seats exactly two players (inviter + invitee). A game that needs a larger roster
@@ -108,15 +130,29 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
       },
     );
 
-    app.get(`${base}/invites`, requireAuth(), async (c) => {
-      const invites = await inviteStore(matchmakingDatabase(dbBinding(c))).pendingFor(userId(c));
-      return c.json({ invites });
-    });
+    app.get(
+      `${base}/invites`,
+      describeRoute({
+        summary: "List the invites waiting on the caller.",
+        verification: ["bearer", "session"],
+        responses: { 200: InviteList },
+      }),
+      requireAuth(),
+      async (c) => {
+        const invites = await inviteStore(matchmakingDatabase(dbBinding(c))).pendingFor(userId(c));
+        return c.json({ invites });
+      },
+    );
 
     app.post(
       `${base}/invites/:id/accept`,
+      describeRoute({
+        summary: "Accept an invite and start its session.",
+        verification: ["bearer", "session"],
+        responses: { 200: InviteView },
+      }),
       requireAuth(),
-      zValidator("param", InviteParams, validationHook),
+      validate("param", InviteParams),
       async (c) => {
         const store = inviteStore(matchmakingDatabase(dbBinding(c)));
         const invite = await requireInvitee(c, store, c.req.valid("param").id);
@@ -130,8 +166,13 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
     app.post(
       `${base}/invites/:id/decline`,
+      describeRoute({
+        summary: "Decline an invite.",
+        verification: ["bearer", "session"],
+        responses: { 200: InviteView },
+      }),
       requireAuth(),
-      zValidator("param", InviteParams, validationHook),
+      validate("param", InviteParams),
       async (c) => {
         const store = inviteStore(matchmakingDatabase(dbBinding(c)));
         const invite = await requireInvitee(c, store, c.req.valid("param").id);
@@ -141,15 +182,29 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
     // --- Friends ---
     if (config.friends) {
-      app.get(`${base}/friends`, requireAuth(), async (c) => {
-        const friends = await friendStore(matchmakingDatabase(dbBinding(c))).list(userId(c));
-        return c.json({ friends });
-      });
+      app.get(
+        `${base}/friends`,
+        describeRoute({
+          summary: "List the caller's friends and pending requests.",
+          verification: ["bearer", "session"],
+          responses: { 200: FriendList },
+        }),
+        requireAuth(),
+        async (c) => {
+          const friends = await friendStore(matchmakingDatabase(dbBinding(c))).list(userId(c));
+          return c.json({ friends });
+        },
+      );
 
       app.post(
         `${base}/friends/:userId/request`,
+        describeRoute({
+          summary: "Send a friend request.",
+          verification: ["bearer", "session"],
+          responses: { 204: { description: "The request was sent." } },
+        }),
         requireAuth(),
-        zValidator("param", FriendParams, validationHook),
+        validate("param", FriendParams),
         async (c) => {
           const other = c.req.valid("param").userId;
           await friendStore(matchmakingDatabase(dbBinding(c))).request(userId(c), other, new Date());
@@ -160,8 +215,13 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
       app.post(
         `${base}/friends/:userId/accept`,
+        describeRoute({
+          summary: "Accept a friend request.",
+          verification: ["bearer", "session"],
+          responses: { 204: { description: "The two players are now friends." } },
+        }),
         requireAuth(),
-        zValidator("param", FriendParams, validationHook),
+        validate("param", FriendParams),
         async (c) => {
           await friendStore(matchmakingDatabase(dbBinding(c))).accept(
             userId(c),
@@ -174,8 +234,13 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
       app.post(
         `${base}/friends/:userId/decline`,
+        describeRoute({
+          summary: "Decline a friend request.",
+          verification: ["bearer", "session"],
+          responses: { 204: { description: "The request was declined." } },
+        }),
         requireAuth(),
-        zValidator("param", FriendParams, validationHook),
+        validate("param", FriendParams),
         async (c) => {
           await friendStore(matchmakingDatabase(dbBinding(c))).decline(userId(c), c.req.valid("param").userId);
           return c.body(null, 204);
@@ -184,8 +249,13 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
 
       app.delete(
         `${base}/friends/:userId`,
+        describeRoute({
+          summary: "Remove a friend.",
+          verification: ["bearer", "session"],
+          responses: { 204: { description: "The friendship was removed." } },
+        }),
         requireAuth(),
-        zValidator("param", FriendParams, validationHook),
+        validate("param", FriendParams),
         async (c) => {
           await friendStore(matchmakingDatabase(dbBinding(c))).remove(userId(c), c.req.valid("param").userId);
           return c.body(null, 204);
@@ -194,34 +264,60 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
     }
 
     // --- Open queue ---
-    app.post(`${base}/games/:game/queue`, requireAuth(), zValidator("param", GameParams, validationHook), async (c) => {
-      const game = resolveMatchmakingGame(config, c.req.valid("param").game);
-      const skill = game.skillPool
-        ? await readSkill(dbBinding(c), game.skillPool, userId(c), options.peers?.().rating)
-        : null;
-      const status = await callRpc(() =>
-        queueStub(c, game.key).enqueue({
-          userId: userId(c),
-          skill,
-          region: region(c),
-          gameKey: game.key,
-          players: game.players,
-          settings: game.queue,
-          snapshot: game.snapshot,
-        }),
-      );
-      return c.json(status, 200);
-    });
+    app.post(
+      `${base}/games/:game/queue`,
+      describeRoute({
+        summary: "Join a game's open queue.",
+        verification: ["bearer", "session"],
+        responses: { 200: QueueStanding },
+      }),
+      requireAuth(),
+      validate("param", GameParams),
+      async (c) => {
+        const game = resolveMatchmakingGame(config, c.req.valid("param").game);
+        const skill = game.skillPool
+          ? await readSkill(dbBinding(c), game.skillPool, userId(c), options.peers?.().rating)
+          : null;
+        const status = await callRpc(() =>
+          queueStub(c, game.key).enqueue({
+            userId: userId(c),
+            skill,
+            region: region(c),
+            gameKey: game.key,
+            players: game.players,
+            settings: game.queue,
+            snapshot: game.snapshot,
+          }),
+        );
+        return c.json(status, 200);
+      },
+    );
 
-    app.get(`${base}/games/:game/queue`, requireAuth(), zValidator("param", GameParams, validationHook), async (c) => {
-      const game = resolveMatchmakingGame(config, c.req.valid("param").game);
-      return c.json(await callRpc(() => queueStub(c, game.key).status(userId(c))), 200);
-    });
+    app.get(
+      `${base}/games/:game/queue`,
+      describeRoute({
+        summary: "Read the caller's standing in a game's queue.",
+        description: "A match is delivered once: the read that reports it clears it.",
+        verification: ["bearer", "session"],
+        responses: { 200: QueueStanding },
+      }),
+      requireAuth(),
+      validate("param", GameParams),
+      async (c) => {
+        const game = resolveMatchmakingGame(config, c.req.valid("param").game);
+        return c.json(await callRpc(() => queueStub(c, game.key).status(userId(c))), 200);
+      },
+    );
 
     app.delete(
       `${base}/games/:game/queue`,
+      describeRoute({
+        summary: "Leave a game's open queue.",
+        verification: ["bearer", "session"],
+        responses: { 204: { description: "The caller is no longer queued." } },
+      }),
       requireAuth(),
-      zValidator("param", GameParams, validationHook),
+      validate("param", GameParams),
       async (c) => {
         const game = resolveMatchmakingGame(config, c.req.valid("param").game);
         await callRpc(() => queueStub(c, game.key).leave(userId(c)));
@@ -230,11 +326,24 @@ export function registerMatchmakingRoutes(options: MatchmakingRoutesOptions): (a
     );
 
     // --- Presence (WebSocket) ---
-    app.get(`${base}/presence`, requireAuth(), async (c) => {
-      const request = new Request(c.req.url, c.req.raw);
-      request.headers.set(PRESENCE_USER_HEADER, userId(c));
-      return presenceStub(c).fetch(request);
-    });
+    app.get(
+      `${base}/presence`,
+      describeRoute({
+        summary: "Open the caller's presence socket.",
+        description:
+          "Send `Upgrade: websocket`. The socket first receives the caller's pending invites and which accepted friends are online, then invites, friend requests and matches as they happen. Send `ping` to get `pong`.",
+        verification: ["bearer", "session"],
+        responses: {
+          101: { description: "Switches to a WebSocket. The server pushes presence events as JSON text frames." },
+        },
+      }),
+      requireAuth(),
+      async (c) => {
+        const request = new Request(c.req.url, c.req.raw);
+        request.headers.set(PRESENCE_USER_HEADER, userId(c));
+        return presenceStub(c).fetch(request);
+      },
+    );
   };
 }
 

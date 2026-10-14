@@ -377,8 +377,8 @@ export async function verifySignedWebhook(
 }
 
 /**
- * The `signed-webhook` gate, as a route wears it: `app.post(path, requireSignedWebhook({…}), zValidator("json",
- * Body, validationHook), handler)`.
+ * The `signed-webhook` gate, as a route wears it: `app.post(path, requireSignedWebhook({…}), validate("json",
+ * Body), handler)`.
  *
  * ## Why the header is read before anything else
  *
@@ -402,7 +402,7 @@ export async function verifySignedWebhook(
  * `c.req.text()` is not.
  *
  * `c.req.text()` rather than `c.req.raw.text()`, and the distinction is load-bearing. Hono caches its own
- * body reads and serves `c.req.json()` out of the cached text, so a `zValidator("json", …)` after this gate
+ * body reads and serves `c.req.json()` out of the cached text, so a `validate("json", …)` after this gate
  * parses identical bytes. Reading `c.req.raw` would consume the stream and leave the validator with nothing.
  */
 export function requireSignedWebhook(options: SignedWebhookGuardOptions): MiddlewareHandler<PithyHonoEnv> {

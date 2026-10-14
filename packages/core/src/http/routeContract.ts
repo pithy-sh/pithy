@@ -65,7 +65,7 @@ function probeContext(record: () => void) {
   return { req, env: {}, var: {}, get: () => undefined, set: () => {} } as unknown as Context;
 }
 
-/** Does this middleware read `c.req.param()` — i.e. is it a `zValidator("param", …)`? */
+/** Does this middleware read `c.req.param()` — i.e. is it a `validate("param", …)`? */
 async function readsPathParams(handler: (c: Context, next: Next) => unknown): Promise<boolean> {
   let read = false;
   try {

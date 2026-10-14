@@ -80,4 +80,5 @@ export {
   wageringTable,
 } from "./game/patterns/wageringTable";
 export { createRngState, type RandomSource, RngState, randomSource } from "./game/random";
-export { GameSnapshot, isTerminal, type SessionOutcome, SessionPhase, SessionView } from "./session/state";
+export { GameSnapshot, isTerminal } from "./session/state";
+export { type SessionOutcome, SessionPhase, SessionView } from "./session/view";

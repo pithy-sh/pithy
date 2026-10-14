@@ -105,7 +105,7 @@ export interface OrganizationGuardDeps<Power extends string = string, Role exten
  * the mount rather than reading an id inside a handler that has already been let through.
  *
  * **It names a validated target, not a raw one.** The id is read back through `c.req.valid(...)`, so the
- * route must declare it on the route line with `zValidator(target, Schema, validationHook)` — the kit's
+ * route must declare it on the route line with `validate(target, Schema)` — the kit's
  * request contract, and the reason nothing in this package reaches `c.req.param()` or `c.req.query()`.
  * A route that named an organization and declared no schema for it has nothing to read, and the gate
  * refuses rather than guessing.

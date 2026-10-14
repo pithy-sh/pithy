@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
@@ -15,7 +14,7 @@ import {
   SIGNED_WEBHOOK_MAX_CANDIDATES,
   verifySignedWebhook,
 } from "./signedWebhook";
-import { validationHook } from "./validation";
+import { validate } from "./validation";
 import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS, SIGNED_WEBHOOK_TOLERANCE_SECONDS } from "./webhookWindow";
 
 const SECRET = "whsec_a_secret_nobody_should_ever_read_back";
@@ -471,7 +470,7 @@ function guardedApp(overrides: Record<string, unknown> = {}) {
   app.post(
     "/hooks/inbound",
     requireSignedWebhook({ header: HEADER, secret: SECRET, now: () => NOW, ...overrides }),
-    zValidator("json", Delivery, validationHook),
+    validate("json", Delivery),
     (c) => c.json({ event: c.req.valid("json").event }),
   );
   return app;

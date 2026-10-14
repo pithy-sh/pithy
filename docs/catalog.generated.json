@@ -112,6 +112,16 @@
       ]
     },
     {
+      "path": "contract",
+      "flags": [
+        "--worker",
+        "--out",
+        "--env",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "dashboard",
       "flags": []
     },
@@ -400,6 +410,7 @@
       "flags": [
         "--name",
         "--worker",
+        "--target",
         "--dir",
         "--json",
         "--no-json"

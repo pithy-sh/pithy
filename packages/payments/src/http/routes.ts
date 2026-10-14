@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { memoryJwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { resolveWorkflowBinding } from "@pithy-sh/core/src/workflow/dispatch";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -76,7 +76,7 @@ import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
 import { PAYMENTS_CAPABILITY, paymentsWorkflows } from "../workflows/specs";
 import { requireAuth } from "./guards";
-import type {
+import {
   PaymentsAdminCatalogResponse,
   PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
@@ -91,17 +91,18 @@ import type {
   PaymentsEntitlementsResponse,
   PaymentsPortalHandoffResponse,
   PaymentsPricingEnvelope,
-  PaymentsPricingResponse,
+  type PaymentsPricingResponse,
   PaymentsPurchaseResponse,
-  PaymentsQuotedFrom,
-  PaymentsRefundRequest,
+  type PaymentsQuotedFrom,
+  type PaymentsRefundRequest,
   PaymentsRefundResponse,
   PaymentsRestoreResponse,
-  PaymentsSubscriptionQuote,
+  type PaymentsSubscriptionQuote,
   PaymentsSubscriptionQuoteResponse,
   PaymentsSubscriptionResponse,
   PaymentsSubscriptionStandingResponse,
-  PaymentsSubscriptionView,
+  type PaymentsSubscriptionView,
+  PaymentsWebhookAck,
 } from "./responses";
 import {
   AdminDiscountsQuery,
@@ -234,8 +235,10 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  * selects a verifier through `resolveRailProvider`, and everything past that point is the normalized event. A
  * rail arriving is one entry in `rails/providers.ts`, not a case in a handler.
  *
- * **No `public` routes, ever.** Every caller is either an authenticated user acting on their own purchases or a
- * machine proving authenticity. Turnstile has nothing to gate here.
+ * **One `public` route, and only one.** `GET /checkout/resume` opens the transaction a Paddle payment link
+ * arrived for, and the person following that link may not be signed in. Every other caller is either an
+ * authenticated user acting on their own purchases or a machine proving authenticity. Turnstile has nothing
+ * to gate here.
  *
  * **`signed-webhook` is one strategy over three unrelated mechanisms** — Apple signs a JWS against its
  * certificate chain, Google's Pub/Sub push carries an OIDC token verified with an audience check, Stripe sends
@@ -1331,13 +1334,23 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * No query at all, and none to add: the catalog is small, fixed at deploy, and has no page. What
      * crosses is decided by `adminCatalogView` and asserted as an invariant rather than as a field list.
      */
-    app.get(`${base}/admin/catalog`, requireControlPlane(PAYMENTS_CATALOG_READ_SCOPE), async (c) => {
-      const view = adminCatalogView(config);
-      await recordRead(c, PaymentsAuditActions.catalogRead, null, {
-        products: view.enabled ? view.products.length : 0,
-      });
-      return c.json(view satisfies PaymentsAdminCatalogResponse, 200);
-    });
+    app.get(
+      `${base}/admin/catalog`,
+      describeRoute({
+        summary: "Read what this project sells, and the keys it comps by hand.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_CATALOG_READ_SCOPE],
+        responses: { 200: PaymentsAdminCatalogResponse },
+      }),
+      requireControlPlane(PAYMENTS_CATALOG_READ_SCOPE),
+      async (c) => {
+        const view = adminCatalogView(config);
+        await recordRead(c, PaymentsAuditActions.catalogRead, null, {
+          products: view.enabled ? view.products.length : 0,
+        });
+        return c.json(view satisfies PaymentsAdminCatalogResponse, 200);
+      },
+    );
 
     /**
      * CONTROL PLANE. The purchase log, paged, newest first.
@@ -1349,8 +1362,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/purchases`,
+      describeRoute({
+        summary: "Read the purchase log, newest first.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_PURCHASES_READ_SCOPE],
+        responses: { 200: PaymentsAdminPurchasesResponse },
+      }),
       requireControlPlane(PAYMENTS_PURCHASES_READ_SCOPE),
-      zValidator("query", AdminPurchasesQuery, validationHook),
+      validate("query", AdminPurchasesQuery),
       async (c) => {
         const query = c.req.valid("query");
         const subject = subjectFilter(query);
@@ -1395,8 +1414,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/subscriptions`,
+      describeRoute({
+        summary: "Read the purchases that renew, newest first.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_SUBSCRIPTIONS_READ_SCOPE],
+        responses: { 200: PaymentsAdminSubscriptionsResponse },
+      }),
       requireControlPlane(PAYMENTS_SUBSCRIPTIONS_READ_SCOPE),
-      zValidator("query", AdminSubscriptionsQuery, validationHook),
+      validate("query", AdminSubscriptionsQuery),
       async (c) => {
         const query = c.req.valid("query");
         const subject = subjectFilter(query);
@@ -1434,8 +1459,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/entitlements`,
+      describeRoute({
+        summary: "Read the entitlement model, page by page.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_ENTITLEMENTS_READ_SCOPE],
+        responses: { 200: PaymentsAdminEntitlementsResponse },
+      }),
       requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
-      zValidator("query", AdminEntitlementsQuery, validationHook),
+      validate("query", AdminEntitlementsQuery),
       async (c) => {
         const query = c.req.valid("query");
         const now = clock();
@@ -1482,8 +1513,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/entitlements/:subjectType/:subjectId`,
+      describeRoute({
+        summary: "Read one subject's entitlements, resolved now.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_ENTITLEMENTS_READ_SCOPE],
+        responses: { 200: PaymentsAdminSubjectEntitlementsResponse },
+      }),
       requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
-      zValidator("param", AdminSubjectParam, validationHook),
+      validate("param", AdminSubjectParam),
       async (c) => {
         const subject = c.req.valid("param");
         const now = clock();
@@ -1515,8 +1552,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/reconcile-runs`,
+      describeRoute({
+        summary: "Read the reconciliation passes this deployment has run.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_RECONCILE_READ_SCOPE],
+        responses: { 200: PaymentsAdminReconcileRunsResponse },
+      }),
       requireControlPlane(PAYMENTS_RECONCILE_READ_SCOPE),
-      zValidator("query", AdminReconcileRunsQuery, validationHook),
+      validate("query", AdminReconcileRunsQuery),
       async (c) => {
         const query = c.req.valid("query");
         const page = await listReconcileRuns(database(c), query);
@@ -1553,50 +1596,60 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * pass happen, and answering 202 while nothing started is the failure this codebase spends its comments
      * avoiding — so the binding is resolved directly and its absence is a refusal naming what to deploy.
      *
-     * Idempotent, like the pass itself. A second press while one is in flight starts nothing and says
-     * `started: false`, which is a true sentence rather than a 409 that reads as a fault.
+     * Every press that is not refused starts a pass and answers `started: true`. A second press while one is
+     * in flight starts a second: the pass is idempotent, so two converge on the same repairs.
      */
-    app.post(`${base}/admin/reconcile-runs`, requireControlPlane(PAYMENTS_RECONCILE_RUN_SCOPE), async (c) => {
-      const spec = paymentsWorkflows.reconcile;
-      const binding = resolveWorkflowBinding(c.env as Record<string, unknown>, {
-        binding: spec.binding,
-        capability: PAYMENTS_CAPABILITY,
-        log: c.var.log,
-      });
-      if (!binding) {
-        // Named as a provisioning fact rather than a fault of the request: the caller's scope was right, the
-        // route exists, and the job's host is not deployed here. `action` is what a person does about it.
-        throw new PaymentsReconcileNotProvisionedError({
-          detail: `Dispatching a reconciliation pass needs a Workflow binding named ${spec.binding} on this Worker.`,
+    app.post(
+      `${base}/admin/reconcile-runs`,
+      describeRoute({
+        summary: "Start a reconciliation pass now.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_RECONCILE_RUN_SCOPE],
+        responses: { 202: PaymentsAdminReconcileRunStarted },
+      }),
+      requireControlPlane(PAYMENTS_RECONCILE_RUN_SCOPE),
+      async (c) => {
+        const spec = paymentsWorkflows.reconcile;
+        const binding = resolveWorkflowBinding(c.env as Record<string, unknown>, {
+          binding: spec.binding,
+          capability: PAYMENTS_CAPABILITY,
+          log: c.var.log,
         });
-      }
+        if (!binding) {
+          // Named as a provisioning fact rather than a fault of the request: the caller's scope was right, the
+          // route exists, and the job's host is not deployed here. `action` is what a person does about it.
+          throw new PaymentsReconcileNotProvisionedError({
+            detail: `Dispatching a reconciliation pass needs a Workflow binding named ${spec.binding} on this Worker.`,
+          });
+        }
 
-      // `create` answers `unknown` — the binding is structural, matched by having the method at all, and a
-      // loopback stand-in under `pithy dev` answers a different shape from the Workflows runtime. Narrowed
-      // here rather than cast: an instance with no readable id is a pass that started and cannot be named,
-      // which is `runId: null` and a true sentence, not a reason to fail the press.
-      const instance: unknown = await binding.create({ params: {} });
-      const runId =
-        typeof instance === "object" && instance !== null && "id" in instance && typeof instance.id === "string"
-          ? instance.id
-          : null;
+        // `create` answers `unknown` — the binding is structural, matched by having the method at all, and a
+        // loopback stand-in under `pithy dev` answers a different shape from the Workflows runtime. Narrowed
+        // here rather than cast: an instance with no readable id is a pass that started and cannot be named,
+        // which is `runId: null` and a true sentence, not a reason to fail the press.
+        const instance: unknown = await binding.create({ params: {} });
+        const runId =
+          typeof instance === "object" && instance !== null && "id" in instance && typeof instance.id === "string"
+            ? instance.id
+            : null;
 
-      const who = controlPlaneCaller(c);
-      await c.var.emit({
-        action: PaymentsAuditActions.reconcileRunStarted,
-        outcome: "success",
-        // The token's `sub`, so the trail names the person at the console rather than the console. One
-        // connection is normally shared by everybody using it, and this row is the join to every repair the
-        // pass then made.
-        actorType: "control-plane",
-        actorId: who.subject,
-        resourceType: "reconcile_run",
-        resourceId: runId,
-        metadata: { deployment: deploymentName(c) },
-      });
+        const who = controlPlaneCaller(c);
+        await c.var.emit({
+          action: PaymentsAuditActions.reconcileRunStarted,
+          outcome: "success",
+          // The token's `sub`, so the trail names the person at the console rather than the console. One
+          // connection is normally shared by everybody using it, and this row is the join to every repair the
+          // pass then made.
+          actorType: "control-plane",
+          actorId: who.subject,
+          resourceType: "reconcile_run",
+          resourceId: runId,
+          metadata: { deployment: deploymentName(c) },
+        });
 
-      return c.json({ started: true, runId } satisfies PaymentsAdminReconcileRunStarted, 202);
-    });
+        return c.json({ started: true, runId } satisfies PaymentsAdminReconcileRunStarted, 202);
+      },
+    );
 
     /**
      * AUTHED WRITE. The purchaser's own app submitting what the store SDK gave it, so the buyer sees their
@@ -1604,63 +1657,73 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * existing purchase — the write path is idempotent, so a repeat is not an error. A receipt belonging to
      * somebody else is a 409, audited as denied.
      */
-    app.post(`${base}/purchases`, requireAuth(), zValidator("json", PurchaseSubmission, validationHook), async (c) => {
-      const input = c.req.valid("json");
-      // Resolved before the store is called: a caller acting for nobody has no row to write, so refusing here
-      // costs no round trip and cannot leave a charged customer with an unattributed purchase.
-      const subject = await requirePaymentsSubject(c, seam);
-      try {
-        const projection = await submit(c, subject, input.rail, input.receipt);
-        await c.var.emit({
-          action: PaymentsAuditActions.purchaseVerified,
-          outcome: "success",
-          // The person who submitted, always — the subject they act for rides in the metadata below. Under
-          // organization billing the two differ, and collapsing them would answer "who did this" with a
-          // company rather than with somebody who can be asked.
-          actorType: "user",
-          actorId: c.var.auth?.userId,
-          sessionId: c.var.auth?.sessionId,
-          resourceType: "purchase",
-          resourceId: projection.purchase.id,
-          // Identifiers and outcomes only. Never the receipt: the trail is long-lived and queryable, and a
-          // receipt is a bearer artifact. The holder is two keys, never one joined string.
-          metadata: {
-            rail: input.rail,
-            subjectType: subject.subjectType,
-            subjectId: subject.subjectId,
-            productId: projection.product.id,
-            status: projection.purchase.status,
-            outcome: projection.outcome,
-          },
-        });
-        return c.json(
-          {
-            purchase: purchaseView(projection),
-            entitlements: projection.entitlements.map((row) =>
-              entitlementView({ key: row.entitlement, active: row.active, expiresAt: row.expiresAt }),
-            ),
-          } satisfies PaymentsPurchaseResponse,
-          200,
-        );
-      } catch (cause) {
-        // A refused submission is the security-relevant event, so it is recorded before the error propagates.
-        await c.var.emit({
-          action: PaymentsAuditActions.purchaseVerified,
-          outcome: "denied",
-          severity: "warning",
-          actorType: "user",
-          actorId: c.var.auth?.userId,
-          sessionId: c.var.auth?.sessionId,
-          metadata: {
-            rail: input.rail,
-            subjectType: subject.subjectType,
-            subjectId: subject.subjectId,
-            reason: cause instanceof PithyError ? cause.payload.code : "unknown",
-          },
-        });
-        throw cause;
-      }
-    });
+    app.post(
+      `${base}/purchases`,
+      describeRoute({
+        summary: "Verify a receipt and project the purchase.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsPurchaseResponse },
+      }),
+      requireAuth(),
+      validate("json", PurchaseSubmission),
+      async (c) => {
+        const input = c.req.valid("json");
+        // Resolved before the store is called: a caller acting for nobody has no row to write, so refusing here
+        // costs no round trip and cannot leave a charged customer with an unattributed purchase.
+        const subject = await requirePaymentsSubject(c, seam);
+        try {
+          const projection = await submit(c, subject, input.rail, input.receipt);
+          await c.var.emit({
+            action: PaymentsAuditActions.purchaseVerified,
+            outcome: "success",
+            // The person who submitted, always — the subject they act for rides in the metadata below. Under
+            // organization billing the two differ, and collapsing them would answer "who did this" with a
+            // company rather than with somebody who can be asked.
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            resourceType: "purchase",
+            resourceId: projection.purchase.id,
+            // Identifiers and outcomes only. Never the receipt: the trail is long-lived and queryable, and a
+            // receipt is a bearer artifact. The holder is two keys, never one joined string.
+            metadata: {
+              rail: input.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              productId: projection.product.id,
+              status: projection.purchase.status,
+              outcome: projection.outcome,
+            },
+          });
+          return c.json(
+            {
+              purchase: purchaseView(projection),
+              entitlements: projection.entitlements.map((row) =>
+                entitlementView({ key: row.entitlement, active: row.active, expiresAt: row.expiresAt }),
+              ),
+            } satisfies PaymentsPurchaseResponse,
+            200,
+          );
+        } catch (cause) {
+          // A refused submission is the security-relevant event, so it is recorded before the error propagates.
+          await c.var.emit({
+            action: PaymentsAuditActions.purchaseVerified,
+            outcome: "denied",
+            severity: "warning",
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            metadata: {
+              rail: input.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              reason: cause instanceof PithyError ? cause.payload.code : "unknown",
+            },
+          });
+          throw cause;
+        }
+      },
+    );
 
     /**
      * AUTHED READ. Always the caller's own holder — the subject comes from the seam, never the request, so
@@ -1672,14 +1735,23 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * already answers for somebody who has bought nothing — and a 403 here would make a paywall render an
      * error where it should render the paywall.
      */
-    app.get(`${base}/entitlements`, requireAuth(), async (c) => {
-      const subject = await resolvePaymentsSubject(c, seam);
-      if (subject === undefined) {
-        return c.json({ entitlements: [] } satisfies PaymentsEntitlementsResponse, 200);
-      }
-      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
-      return c.json({ entitlements: entitlements.map(entitlementView) } satisfies PaymentsEntitlementsResponse, 200);
-    });
+    app.get(
+      `${base}/entitlements`,
+      describeRoute({
+        summary: "Read the caller's own entitlements.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsEntitlementsResponse },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await resolvePaymentsSubject(c, seam);
+        if (subject === undefined) {
+          return c.json({ entitlements: [] } satisfies PaymentsEntitlementsResponse, 200);
+        }
+        const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
+        return c.json({ entitlements: entitlements.map(entitlementView) } satisfies PaymentsEntitlementsResponse, 200);
+      },
+    );
 
     /**
      * AUTHED WRITE. Restore Purchases, client-driven because only the device can enumerate what its store
@@ -1690,42 +1762,58 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * success would hide it. Every receipt that did project stays projected — the writer is idempotent, so the
      * client simply retries.
      */
-    app.post(`${base}/restore`, requireAuth(), zValidator("json", RestoreRequest, validationHook), async (c) => {
-      const input = c.req.valid("json");
-      // One resolution for the whole batch. A client submits *its own* history, so every receipt in it is
-      // filed against one holder or the request is refused — asking the seam per receipt would let the answer
-      // change mid-batch and split one store account across two.
-      const subject = await requirePaymentsSubject(c, seam);
-      const purchases: ReturnType<typeof purchaseView>[] = [];
-      for (const receipt of input.receipts) purchases.push(purchaseView(await submit(c, subject, input.rail, receipt)));
+    app.post(
+      `${base}/restore`,
+      describeRoute({
+        summary: "Restore purchases onto the caller's own holder.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsRestoreResponse },
+      }),
+      requireAuth(),
+      validate("json", RestoreRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        // One resolution for the whole batch. A client submits *its own* history, so every receipt in it is
+        // filed against one holder or the request is refused — asking the seam per receipt would let the answer
+        // change mid-batch and split one store account across two.
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchases: ReturnType<typeof purchaseView>[] = [];
+        for (const receipt of input.receipts)
+          purchases.push(purchaseView(await submit(c, subject, input.rail, receipt)));
 
-      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
-      await c.var.emit({
-        action: PaymentsAuditActions.purchaseRestored,
-        outcome: "success",
-        actorType: "user",
-        actorId: c.var.auth?.userId,
-        sessionId: c.var.auth?.sessionId,
-        metadata: {
-          rail: input.rail,
-          subjectType: subject.subjectType,
-          subjectId: subject.subjectId,
-          restored: purchases.length,
-        },
-      });
-      return c.json(
-        { purchases, entitlements: entitlements.map(entitlementView) } satisfies PaymentsRestoreResponse,
-        200,
-      );
-    });
+        const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
+        await c.var.emit({
+          action: PaymentsAuditActions.purchaseRestored,
+          outcome: "success",
+          actorType: "user",
+          actorId: c.var.auth?.userId,
+          sessionId: c.var.auth?.sessionId,
+          metadata: {
+            rail: input.rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
+            restored: purchases.length,
+          },
+        });
+        return c.json(
+          { purchases, entitlements: entitlements.map(entitlementView) } satisfies PaymentsRestoreResponse,
+          200,
+        );
+      },
+    );
 
     /**
      * SIGNED WEBHOOK — Apple. App Store Server Notifications V2, signed as a JWS against Apple's pinned chain.
      */
     app.post(
       `${base}/webhooks/apple`,
+      describeRoute({
+        summary: "Receive an App Store Server Notification.",
+        verification: "signed-webhook",
+        responses: { 200: PaymentsWebhookAck },
+      }),
       requireSignedWebhook("apple", { config, now: clock, trust }),
-      zValidator("json", AppleWebhookNotification, validationHook),
+      validate("json", AppleWebhookNotification),
       webhookHandler("apple"),
     );
 
@@ -1738,8 +1826,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/webhooks/google`,
+      describeRoute({
+        summary: "Receive a Play notification, pushed through Pub/Sub.",
+        verification: "signed-webhook",
+        responses: { 200: PaymentsWebhookAck },
+      }),
       requireSignedWebhook("google", { config, now: clock, trust }),
-      zValidator("json", GoogleWebhookNotification, validationHook),
+      validate("json", GoogleWebhookNotification),
       webhookHandler("google"),
     );
 
@@ -1753,8 +1846,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/webhooks/stripe`,
+      describeRoute({
+        summary: "Receive a Stripe event.",
+        verification: "signed-webhook",
+        responses: { 200: PaymentsWebhookAck },
+      }),
       requireSignedWebhook("stripe", { config, now: clock, trust }),
-      zValidator("json", StripeWebhookNotification, validationHook),
+      validate("json", StripeWebhookNotification),
       webhookHandler("stripe"),
     );
 
@@ -1773,8 +1871,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/webhooks/lemon-squeezy`,
+      describeRoute({
+        summary: "Receive a Lemon Squeezy event.",
+        verification: "signed-webhook",
+        responses: { 200: PaymentsWebhookAck },
+      }),
       requireSignedWebhook("lemonSqueezy", { config, now: clock, trust }),
-      zValidator("json", LemonSqueezyWebhookNotification, validationHook),
+      validate("json", LemonSqueezyWebhookNotification),
       webhookHandler("lemonSqueezy"),
     );
 
@@ -1795,8 +1898,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/webhooks/paddle`,
+      describeRoute({
+        summary: "Receive a Paddle event.",
+        verification: "signed-webhook",
+        responses: { 200: PaymentsWebhookAck },
+      }),
       requireSignedWebhook("paddle", { config, now: clock, trust }),
-      zValidator("json", PaddleWebhookNotification, validationHook),
+      validate("json", PaddleWebhookNotification),
       webhookHandler("paddle"),
     );
 
@@ -1813,63 +1921,73 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * be charged as, and refusing before the 404 keeps this from answering what a project sells to somebody it
      * cannot bill.
      */
-    app.post(`${base}/checkout`, requireAuth(), zValidator("json", CheckoutRequest, validationHook), async (c) => {
-      const input = c.req.valid("json");
-      const subject = await requirePaymentsSubject(c, seam);
-      const entry = product(config, input.productId);
-      const rail = checkoutRailFor(entry, input.rail);
-      const settings = returnUrls(rail);
-      const sku = providerProductId(entry.product, rail);
-      if (sku === undefined) {
-        // In the catalog, but not sold here. A 404 on the product rather than on the rail: the rail is
-        // available, this product simply is not one of the things it sells.
-        throw new PaymentsProductNotFoundError({
-          detail: `Product "${entry.id}" declares no ${rail} SKU, so it cannot be bought through hosted checkout.`,
+    app.post(
+      `${base}/checkout`,
+      describeRoute({
+        summary: "Start a hosted checkout for one catalog product.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsCheckoutHandoffResponse },
+      }),
+      requireAuth(),
+      validate("json", CheckoutRequest),
+      async (c) => {
+        const input = c.req.valid("json");
+        const subject = await requirePaymentsSubject(c, seam);
+        const entry = product(config, input.productId);
+        const rail = checkoutRailFor(entry, input.rail);
+        const settings = returnUrls(rail);
+        const sku = providerProductId(entry.product, rail);
+        if (sku === undefined) {
+          // In the catalog, but not sold here. A 404 on the product rather than on the rail: the rail is
+          // available, this product simply is not one of the things it sells.
+          throw new PaymentsProductNotFoundError({
+            detail: `Product "${entry.id}" declares no ${rail} SKU, so it cannot be bought through hosted checkout.`,
+          });
+        }
+
+        const provider = await checkoutRail(c, rail);
+        const handoff = await provider.createCheckoutSession(
+          {
+            providerProductId: sku,
+            subscription: entry.product.type === "subscription",
+            // The pair, so the rail stamps `encodeSubjectReference(subject)` into the checkout it creates and
+            // the webhook that follows already names a holder this server chose.
+            subject,
+            // Reuse the buyer's existing store customer, so one buyer keeps one account and their billing portal
+            // shows every purchase rather than only the last one's.
+            providerAccountId: await accountFor(c, rail, subject),
+            successUrl: settings.successUrl,
+            cancelUrl: settings.cancelUrl,
+            // Passed to the store unchanged. Pithy never computes a discounted amount and never checks a code
+            // against anything of its own — the provider is the authority on what is owed.
+            discountCode: input.discountCode,
+          },
+          { now: clock(), deployment: deploymentName(c) },
+        );
+
+        await c.var.emit({
+          action: PaymentsAuditActions.checkoutStarted,
+          outcome: "success",
+          actorType: "user",
+          actorId: c.var.auth?.userId,
+          sessionId: c.var.auth?.sessionId,
+          resourceType: "product",
+          resourceId: entry.id,
+          metadata: {
+            rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
+            productId: entry.id,
+            subscription: entry.product.type === "subscription",
+            // Whether one was used, never which. The trail is long-lived and a code is a commercial fact.
+            discounted: input.discountCode !== undefined,
+          },
         });
-      }
-
-      const provider = await checkoutRail(c, rail);
-      const handoff = await provider.createCheckoutSession(
-        {
-          providerProductId: sku,
-          subscription: entry.product.type === "subscription",
-          // The pair, so the rail stamps `encodeSubjectReference(subject)` into the checkout it creates and
-          // the webhook that follows already names a holder this server chose.
-          subject,
-          // Reuse the buyer's existing store customer, so one buyer keeps one account and their billing portal
-          // shows every purchase rather than only the last one's.
-          providerAccountId: await accountFor(c, rail, subject),
-          successUrl: settings.successUrl,
-          cancelUrl: settings.cancelUrl,
-          // Passed to the store unchanged. Pithy never computes a discounted amount and never checks a code
-          // against anything of its own — the provider is the authority on what is owed.
-          discountCode: input.discountCode,
-        },
-        { now: clock(), deployment: deploymentName(c) },
-      );
-
-      await c.var.emit({
-        action: PaymentsAuditActions.checkoutStarted,
-        outcome: "success",
-        actorType: "user",
-        actorId: c.var.auth?.userId,
-        sessionId: c.var.auth?.sessionId,
-        resourceType: "product",
-        resourceId: entry.id,
-        metadata: {
-          rail,
-          subjectType: subject.subjectType,
-          subjectId: subject.subjectId,
-          productId: entry.id,
-          subscription: entry.product.type === "subscription",
-          // Whether one was used, never which. The trail is long-lived and a code is a commercial fact.
-          discounted: input.discountCode !== undefined,
-        },
-      });
-      // The handoff, verbatim. A `redirect` carries a URL; a `paddle` handoff carries the transaction the
-      // browser opens in place, because that rail's overlay and inline modes never leave this page.
-      return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
-    });
+        // The handoff, verbatim. A `redirect` carries a URL; a `paddle` handoff carries the transaction the
+        // browser opens in place, because that rail's overlay and inline modes never leave this page.
+        return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
+      },
+    );
 
     /**
      * PUBLIC READ — Paddle only. What a page needs to resume a transaction Paddle itself created.
@@ -1901,31 +2019,40 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * Paddle's own, at a URL only a transaction read would yield — the read this route may not do. A buyer
      * on a hosted-mode project is already on Paddle's page, so there is nothing here to resume.
      */
-    app.get(`${base}/checkout/resume`, zValidator("query", PaddleResumeQuery, validationHook), (c) => {
-      const { transaction } = c.req.valid("query");
-      if (config.paddle === undefined) {
-        throw new PaymentsRailNotConfiguredError({
-          detail: "The paddle rail is off in this project's config, so there is no payment link to resume.",
-        });
-      }
-      if (config.paddle.checkout === "hosted") {
-        throw new PaymentsRailNotConfiguredError({
-          detail:
-            'This project runs `paddle.checkout: "hosted"`, which redirects to Paddle\'s own checkout rather than opening one in the page, so a `_ptxn` arrival has nothing to resume here.',
-        });
-      }
-      const handoff = {
-        kind: "paddle",
-        transactionId: transaction,
-        clientToken: config.paddle.clientToken,
-        environment: config.paddle.environment,
-        displayMode: config.paddle.checkout,
-        // From config, exactly as the minted path takes it, and for the reason stated on the field there:
-        // a client that could name one could send a paying customer to a page it controls.
-        successUrl: config.paddle.successUrl,
-      } as const;
-      return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
-    });
+    app.get(
+      `${base}/checkout/resume`,
+      describeRoute({
+        summary: "Resume a Paddle transaction a payment link arrived for.",
+        verification: "public",
+        responses: { 200: PaymentsCheckoutHandoffResponse },
+      }),
+      validate("query", PaddleResumeQuery),
+      (c) => {
+        const { transaction } = c.req.valid("query");
+        if (config.paddle === undefined) {
+          throw new PaymentsRailNotConfiguredError({
+            detail: "The paddle rail is off in this project's config, so there is no payment link to resume.",
+          });
+        }
+        if (config.paddle.checkout === "hosted") {
+          throw new PaymentsRailNotConfiguredError({
+            detail:
+              'This project runs `paddle.checkout: "hosted"`, which redirects to Paddle\'s own checkout rather than opening one in the page, so a `_ptxn` arrival has nothing to resume here.',
+          });
+        }
+        const handoff = {
+          kind: "paddle",
+          transactionId: transaction,
+          clientToken: config.paddle.clientToken,
+          environment: config.paddle.environment,
+          displayMode: config.paddle.checkout,
+          // From config, exactly as the minted path takes it, and for the reason stated on the field there:
+          // a client that could name one could send a paying customer to a page it controls.
+          successUrl: config.paddle.successUrl,
+        } as const;
+        return c.json(handoff satisfies PaymentsCheckoutHandoffResponse, 200);
+      },
+    );
 
     /**
      * AUTHED WRITE — Stripe only. Open the Billing Portal for the caller's own store account.
@@ -1934,77 +2061,86 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * and it comes from the provider-account map. A `customer` field here would be the whole vulnerability —
      * any signed-in caller could open a session against somebody else's billing history and cancel it.
      */
-    app.post(`${base}/portal`, requireAuth(), async (c) => {
-      const subject = await requirePaymentsSubject(c, seam);
+    app.post(
+      `${base}/portal`,
+      describeRoute({
+        summary: "Open the billing portal for the caller's own store account.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsPortalHandoffResponse },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await requirePaymentsSubject(c, seam);
 
-      // Which rail this caller actually bought on, found by asking the account map rather than by taking it
-      // from the request. Still no body: the caller names neither the customer nor the rail, so there is
-      // nothing here anyone could point at somebody else's billing.
-      const enabled = PAYMENTS_HOSTED_RAILS.filter((rail) => railEnabled(config, rail));
-      // No hosted rail at all is a fact about the deployment, not about this caller — a mobile-only project
-      // has no billing portal to open. Same refusal `/checkout` gives, rather than a 404 that reads as "you
-      // have no account" to somebody who could never have had one.
-      if (enabled.length === 0) {
-        throw new PaymentsRailNotConfiguredError({
-          detail:
-            "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe`, `rails.lemonSqueezy`, or `rails.paddle`.",
-        });
-      }
-
-      let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
-      for (const rail of enabled) {
-        const providerAccountId = await accountFor(c, rail, subject);
-        if (providerAccountId !== null) {
-          found = { rail, providerAccountId };
-          break;
+        // Which rail this caller actually bought on, found by asking the account map rather than by taking it
+        // from the request. Still no body: the caller names neither the customer nor the rail, so there is
+        // nothing here anyone could point at somebody else's billing.
+        const enabled = PAYMENTS_HOSTED_RAILS.filter((rail) => railEnabled(config, rail));
+        // No hosted rail at all is a fact about the deployment, not about this caller — a mobile-only project
+        // has no billing portal to open. Same refusal `/checkout` gives, rather than a 404 that reads as "you
+        // have no account" to somebody who could never have had one.
+        if (enabled.length === 0) {
+          throw new PaymentsRailNotConfiguredError({
+            detail:
+              "No hosted-checkout rail is on in this project's config, so there is no billing portal to open. Enable `rails.stripe`, `rails.lemonSqueezy`, or `rails.paddle`.",
+          });
         }
-      }
 
-      if (found === undefined) {
-        // Nothing has ever been bought through a hosted rail by this caller, so there is no billing to
-        // manage. Not a payments-domain refusal: the rail is configured and working, the resource simply
-        // does not exist.
-        throw new NotFoundError({
-          message: "No billing account yet.",
-          action: "Buy a subscription first, then manage it here.",
-          detail: `No hosted-rail provider account is linked to ${encodeSubjectReference(subject)}.`,
+        let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
+        for (const rail of enabled) {
+          const providerAccountId = await accountFor(c, rail, subject);
+          if (providerAccountId !== null) {
+            found = { rail, providerAccountId };
+            break;
+          }
+        }
+
+        if (found === undefined) {
+          // Nothing has ever been bought through a hosted rail by this caller, so there is no billing to
+          // manage. Not a payments-domain refusal: the rail is configured and working, the resource simply
+          // does not exist.
+          throw new NotFoundError({
+            message: "No billing account yet.",
+            action: "Buy a subscription first, then manage it here.",
+            detail: `No hosted-rail provider account is linked to ${encodeSubjectReference(subject)}.`,
+          });
+        }
+
+        const provider = await checkoutRail(c, found.rail);
+        const session = await provider.createPortalSession(
+          {
+            providerAccountId: found.providerAccountId,
+            // Undefined for a rail whose portal takes no return parameter — Lemon Squeezy's is a signed,
+            // expiring link with nowhere to go back to, and Paddle's takes none at all. The contract admits
+            // that rather than have the rail silently drop a URL an adopter configured.
+            returnUrl: found.rail === "stripe" ? stripeSettings().portalReturnUrl : undefined,
+            // **From the caller's own rows, never from a body.** A store that mints per-subscription deep
+            // links mints authenticated ones, so naming a subscription is naming somebody's cancel button.
+            // There is still no request field: the route reads what this caller owns.
+            subscriptionIds: await ownSubscriptionIds(c, found.rail, subject),
+          },
+          { now: clock(), deployment: deploymentName(c) },
+        );
+
+        await c.var.emit({
+          action: PaymentsAuditActions.portalOpened,
+          outcome: "success",
+          actorType: "user",
+          actorId: c.var.auth?.userId,
+          sessionId: c.var.auth?.sessionId,
+          resourceType: "provider_account",
+          resourceId: found.providerAccountId,
+          metadata: { rail: found.rail, subjectType: subject.subjectType, subjectId: subject.subjectId },
         });
-      }
-
-      const provider = await checkoutRail(c, found.rail);
-      const session = await provider.createPortalSession(
-        {
-          providerAccountId: found.providerAccountId,
-          // Undefined for a rail whose portal takes no return parameter — Lemon Squeezy's is a signed,
-          // expiring link with nowhere to go back to, and Paddle's takes none at all. The contract admits
-          // that rather than have the rail silently drop a URL an adopter configured.
-          returnUrl: found.rail === "stripe" ? stripeSettings().portalReturnUrl : undefined,
-          // **From the caller's own rows, never from a body.** A store that mints per-subscription deep
-          // links mints authenticated ones, so naming a subscription is naming somebody's cancel button.
-          // There is still no request field: the route reads what this caller owns.
-          subscriptionIds: await ownSubscriptionIds(c, found.rail, subject),
-        },
-        { now: clock(), deployment: deploymentName(c) },
-      );
-
-      await c.var.emit({
-        action: PaymentsAuditActions.portalOpened,
-        outcome: "success",
-        actorType: "user",
-        actorId: c.var.auth?.userId,
-        sessionId: c.var.auth?.sessionId,
-        resourceType: "provider_account",
-        resourceId: found.providerAccountId,
-        metadata: { rail: found.rail, subjectType: subject.subjectType, subjectId: subject.subjectId },
-      });
-      return c.json(
-        {
-          url: session.url,
-          ...(session.subscriptions === undefined ? {} : { subscriptions: [...session.subscriptions] }),
-        } satisfies PaymentsPortalHandoffResponse,
-        200,
-      );
-    });
+        return c.json(
+          {
+            url: session.url,
+            ...(session.subscriptions === undefined ? {} : { subscriptions: [...session.subscriptions] }),
+          } satisfies PaymentsPortalHandoffResponse,
+          200,
+        );
+      },
+    );
 
     /**
      * CONTROL PLANE. Grant an entitlement by hand — a comped account, or the repair of a purchase that
@@ -2044,58 +2180,67 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * bought anything has no pricing and may still have no customer, and somebody mid-subscription has
      * both. Nesting one in the other would make the common case unreachable.
      */
-    app.get(`${base}/pricing`, requireAuth(), async (c) => {
-      const subject = await resolvePaymentsSubject(c, seam);
-      // A read, so nobody resolved is the empty answer rather than a refusal — the same direction
-      // `GET {base}/entitlements` takes, and for the same reason: a screen with no billing account selected
-      // is quoting from nothing, which is a fact rather than a failure.
-      if (subject === undefined)
-        return c.json({ pricing: null, quotedFrom: null } satisfies PaymentsPricingEnvelope, 200);
-      const db = paymentsDatabase(database(c));
+    app.get(
+      `${base}/pricing`,
+      describeRoute({
+        summary: "Read what the caller's own subscription pays, and when that changes.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsPricingEnvelope },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await resolvePaymentsSubject(c, seam);
+        // A read, so nobody resolved is the empty answer rather than a refusal — the same direction
+        // `GET {base}/entitlements` takes, and for the same reason: a screen with no billing account selected
+        // is quoting from nothing, which is a fact rather than a failure.
+        if (subject === undefined)
+          return c.json({ pricing: null, quotedFrom: null } satisfies PaymentsPricingEnvelope, 200);
+        const db = paymentsDatabase(database(c));
 
-      // The one read, shared with `/checkout`. `accountFor` is what that route calls to decide who is
-      // charged, so a screen quoting from this answer is quoting from the row that will be billed.
-      const paddleCustomer = await accountFor(c, "paddle", subject);
-      const quotedFrom: PaymentsQuotedFrom | null =
-        paddleCustomer === null ? null : { rail: "paddle", providerAccountId: paddleCustomer };
-      /** The envelope, so every exit below carries both facts rather than three of them carrying one. */
-      const answer = (pricing: PaymentsPricingResponse | null) =>
-        c.json({ pricing, quotedFrom } satisfies PaymentsPricingEnvelope, 200);
+        // The one read, shared with `/checkout`. `accountFor` is what that route calls to decide who is
+        // charged, so a screen quoting from this answer is quoting from the row that will be billed.
+        const paddleCustomer = await accountFor(c, "paddle", subject);
+        const quotedFrom: PaymentsQuotedFrom | null =
+          paddleCustomer === null ? null : { rail: "paddle", providerAccountId: paddleCustomer };
+        /** The envelope, so every exit below carries both facts rather than three of them carrying one. */
+        const answer = (pricing: PaymentsPricingResponse | null) =>
+          c.json({ pricing, quotedFrom } satisfies PaymentsPricingEnvelope, 200);
 
-      // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
-      // row records a closed period and has no "next".
-      const rows = await db
-        .selectFrom(PAYMENTS_PURCHASES_TABLE)
-        .selectAll()
-        .where("subjectType", "=", subject.subjectType)
-        .where("subjectId", "=", subject.subjectId)
-        .where("type", "=", "subscription")
-        .orderBy("providerEventAt", "desc")
-        .execute();
-      // The row that carries the subscription's *standing*, preferred over any receipt.
-      //
-      // On Lemon Squeezy a subscriber's newest rows are `charge` receipts — one per invoice — and a receipt
-      // names a closed period no rail can price. Taking the newest of any role therefore returned null for
-      // every LS subscriber while looking like it had worked. Every other rail writes `charge` for
-      // everything and has no `state` row, so the fallback is what serves them.
-      const row = rows.find((candidate) => candidate.role === "state") ?? rows[0];
-      if (row === undefined) return answer(null);
+        // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
+        // row records a closed period and has no "next".
+        const rows = await db
+          .selectFrom(PAYMENTS_PURCHASES_TABLE)
+          .selectAll()
+          .where("subjectType", "=", subject.subjectType)
+          .where("subjectId", "=", subject.subjectId)
+          .where("type", "=", "subscription")
+          .orderBy("providerEventAt", "desc")
+          .execute();
+        // The row that carries the subscription's *standing*, preferred over any receipt.
+        //
+        // On Lemon Squeezy a subscriber's newest rows are `charge` receipts — one per invoice — and a receipt
+        // names a closed period no rail can price. Taking the newest of any role therefore returned null for
+        // every LS subscriber while looking like it had worked. Every other rail writes `charge` for
+        // everything and has no `state` row, so the fallback is what serves them.
+        const row = rows.find((candidate) => candidate.role === "state") ?? rows[0];
+        if (row === undefined) return answer(null);
 
-      const purchase = PaymentsPurchase.parse(row);
-      const provider = resolveRailProvider(purchase.rail, config, await credentials(c), trust);
-      if (!isPricingRail(provider)) return answer(null);
+        const purchase = PaymentsPurchase.parse(row);
+        const provider = resolveRailProvider(purchase.rail, config, await credentials(c), trust);
+        if (!isPricingRail(provider)) return answer(null);
 
-      const pricing = await provider.readPricing(purchase, { now: clock(), deployment: deploymentName(c) });
-      if (pricing === undefined) return answer(null);
+        const pricing = await provider.readPricing(purchase, { now: clock(), deployment: deploymentName(c) });
+        if (pricing === undefined) return answer(null);
 
-      return answer({
-        currency: pricing.currency,
-        currentAmountMinor: pricing.currentAmountMinor,
-        listAmountMinor: pricing.listAmountMinor,
-        discountCode: pricing.discountCode,
-        discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
-      });
-    });
+        return answer({
+          currency: pricing.currency,
+          currentAmountMinor: pricing.currentAmountMinor,
+          listAmountMinor: pricing.listAmountMinor,
+          discountCode: pricing.discountCode,
+          discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
+        });
+      },
+    );
 
     /**
      * AUTHED READ — where the caller's own subscription stands, read live from the store.
@@ -2120,30 +2265,39 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * shape of this request that reads somebody else's. Nobody resolved is the empty answer rather than a
      * refusal, which is the read half of the seam's rule and what `GET {base}/entitlements` already does.
      */
-    app.get(`${base}/subscription`, requireAuth(), async (c) => {
-      const subject = await resolvePaymentsSubject(c, seam);
-      if (subject === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+    app.get(
+      `${base}/subscription`,
+      describeRoute({
+        summary: "Read where the caller's own subscription stands, live from the store.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsSubscriptionResponse },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await resolvePaymentsSubject(c, seam);
+        if (subject === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
 
-      const target = await changeableSubscription(database(c), subject, clock());
-      // Two subscriptions have no encoding in an envelope that holds one, and picking is the defect the
-      // whole resolver exists to prevent. The refusal is the same one every verb gives.
-      if (target.found === "many") throw tooManySubscriptions(target.purchases);
-      if (target.found === "none") return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+        const target = await changeableSubscription(database(c), subject, clock());
+        // Two subscriptions have no encoding in an envelope that holds one, and picking is the defect the
+        // whole resolver exists to prevent. The refusal is the same one every verb gives.
+        if (target.found === "many") throw tooManySubscriptions(target.purchases);
+        if (target.found === "none") return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
 
-      const provider = await subscriptionRail(c, target.purchase.rail);
-      const standing = await provider.readStanding(target.purchase, { now: clock(), deployment: deploymentName(c) });
-      // A rail that cannot address this purchase, or a store that no longer knows it. A fact about the
-      // purchase rather than a failure — a store that could not be *reached* raises
-      // `payments/provider_unavailable` instead, so a screen distinguishes the two.
-      if (standing === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+        const provider = await subscriptionRail(c, target.purchase.rail);
+        const standing = await provider.readStanding(target.purchase, { now: clock(), deployment: deploymentName(c) });
+        // A rail that cannot address this purchase, or a store that no longer knows it. A fact about the
+        // purchase rather than a failure — a store that could not be *reached* raises
+        // `payments/provider_unavailable` instead, so a screen distinguishes the two.
+        if (standing === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
 
-      return c.json(
-        {
-          subscription: subscriptionView(target.purchase.productId, standing),
-        } satisfies PaymentsSubscriptionResponse,
-        200,
-      );
-    });
+        return c.json(
+          {
+            subscription: subscriptionView(target.purchase.productId, standing),
+          } satisfies PaymentsSubscriptionResponse,
+          200,
+        );
+      },
+    );
 
     /**
      * AUTHED READ — what moving to one catalog product would cost, as the store previews it.
@@ -2169,8 +2323,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/subscription/preview`,
+      describeRoute({
+        summary: "Preview what moving to one catalog product would cost.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsSubscriptionQuoteResponse },
+      }),
       requireAuth(),
-      zValidator("json", SubscriptionPreviewRequest, validationHook),
+      validate("json", SubscriptionPreviewRequest),
       async (c) => {
         const input = c.req.valid("json");
         const subject = await requirePaymentsSubject(c, seam);
@@ -2220,8 +2379,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/subscription/change`,
+      describeRoute({
+        summary: "Move the caller's own subscription onto one catalog product.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsSubscriptionStandingResponse },
+      }),
       requireAuth(),
-      zValidator("json", SubscriptionChangeRequest, validationHook),
+      validate("json", SubscriptionChangeRequest),
       async (c) => {
         const input = c.req.valid("json");
         const subject = await requirePaymentsSubject(c, seam);
@@ -2294,8 +2458,13 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/subscription/cancel`,
+      describeRoute({
+        summary: "Stop the caller's own subscription renewing.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsSubscriptionStandingResponse },
+      }),
       requireAuth(),
-      zValidator("json", SubscriptionCancelRequest, validationHook),
+      validate("json", SubscriptionCancelRequest),
       async (c) => {
         const input = c.req.valid("json");
         const subject = await requirePaymentsSubject(c, seam);
@@ -2362,38 +2531,49 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * A subscription with nothing scheduled is the no-op rather than a refusal — it already renews, which
      * is what the caller asked for — and it writes no audit row, for {@link standingMoved}'s reason.
      */
-    app.post(`${base}/subscription/keep`, requireAuth(), async (c) => {
-      const subject = await requirePaymentsSubject(c, seam);
-      const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+    app.post(
+      `${base}/subscription/keep`,
+      describeRoute({
+        summary: "Withdraw a scheduled cancellation.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsSubscriptionStandingResponse },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
 
-      const provider = await subscriptionRail(c, purchase.rail);
-      const context = { now: clock(), deployment: deploymentName(c) };
-      const before = await provider.readStanding(purchase, context);
-      const standing = await provider.keepSubscription(purchase, context);
+        const provider = await subscriptionRail(c, purchase.rail);
+        const context = { now: clock(), deployment: deploymentName(c) };
+        const before = await provider.readStanding(purchase, context);
+        const standing = await provider.keepSubscription(purchase, context);
 
-      if (standingMoved(before, standing)) {
-        await c.var.emit({
-          action: PaymentsAuditActions.subscriptionCancelWithdrawn,
-          outcome: "success",
-          actorType: "user",
-          actorId: c.var.auth?.userId,
-          sessionId: c.var.auth?.sessionId,
-          resourceType: "purchase",
-          resourceId: purchase.id,
-          metadata: {
-            rail: purchase.rail,
-            subjectType: subject.subjectType,
-            subjectId: subject.subjectId,
-            productId: purchase.productId,
-          },
-        });
-      }
+        if (standingMoved(before, standing)) {
+          await c.var.emit({
+            action: PaymentsAuditActions.subscriptionCancelWithdrawn,
+            outcome: "success",
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            resourceType: "purchase",
+            resourceId: purchase.id,
+            metadata: {
+              rail: purchase.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              productId: purchase.productId,
+            },
+          });
+        }
 
-      return c.json(
-        { subscription: subscriptionView(purchase.productId, standing) } satisfies PaymentsSubscriptionStandingResponse,
-        200,
-      );
-    });
+        return c.json(
+          {
+            subscription: subscriptionView(purchase.productId, standing),
+          } satisfies PaymentsSubscriptionStandingResponse,
+          200,
+        );
+      },
+    );
 
     /**
      * AUTHED WRITE — ask the store to give this subscription's payments back.
@@ -2427,67 +2607,76 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * already standing is the state the caller wanted, and a trail claiming two of them is worse than one
      * claiming none.
      */
-    app.post(`${base}/subscription/refund`, requireAuth(), async (c) => {
-      const subject = await requirePaymentsSubject(c, seam);
-      const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
-      // The rail is narrowed **before** the payments are resolved, and the order is the answer a caller
-      // gets. "This store does not refund from the server" is true of every payment on the subscription and
-      // is what an Apple or Google subscriber needs to hear; "there is no payment to refund" would be the
-      // same 409 they would get if they had never paid, and it would send them looking for the wrong thing.
-      const provider = await refundRail(c, purchase.rail);
-      const payments = await refundablePayments(database(c), subject, purchase);
-      if (payments.length === 0) {
-        // A 409 rather than an empty report, and rather than a 404. The subscription is there and the
-        // request is well-formed; what is absent is a payment to refund, which is a fact about the account's
-        // present state. An empty report would read as "refunded, nothing to do".
-        throw new PaymentsSubscriptionChangeRefusedError({
-          message: "There is no payment on this subscription to refund.",
-          action: "Check the subscription's payment history. A refund attaches to a payment, not to a plan.",
-          detail: `No charge rows resolved on ${purchase.rail} for the family this subscription heads.`,
-        });
-      }
+    app.post(
+      `${base}/subscription/refund`,
+      describeRoute({
+        summary: "Ask the store to refund the payments on the caller's own subscription.",
+        verification: ["bearer", "session"],
+        responses: { 200: PaymentsRefundResponse },
+      }),
+      requireAuth(),
+      async (c) => {
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+        // The rail is narrowed **before** the payments are resolved, and the order is the answer a caller
+        // gets. "This store does not refund from the server" is true of every payment on the subscription and
+        // is what an Apple or Google subscriber needs to hear; "there is no payment to refund" would be the
+        // same 409 they would get if they had never paid, and it would send them looking for the wrong thing.
+        const provider = await refundRail(c, purchase.rail);
+        const payments = await refundablePayments(database(c), subject, purchase);
+        if (payments.length === 0) {
+          // A 409 rather than an empty report, and rather than a 404. The subscription is there and the
+          // request is well-formed; what is absent is a payment to refund, which is a fact about the account's
+          // present state. An empty report would read as "refunded, nothing to do".
+          throw new PaymentsSubscriptionChangeRefusedError({
+            message: "There is no payment on this subscription to refund.",
+            action: "Check the subscription's payment history. A refund attaches to a payment, not to a plan.",
+            detail: `No charge rows resolved on ${purchase.rail} for the family this subscription heads.`,
+          });
+        }
 
-      const refund = await provider.requestRefunds(
-        {
-          purchases: payments,
-          // Composed here and never read from a body: it is written into the adopter's own store console,
-          // where a person reads it as a statement about their business. The catalog product and nothing
-          // else — no customer text, no identifier a store does not already hold.
-          reason: `Refund requested by the subscriber for "${purchase.productId}".`,
-        },
-        { now: clock(), deployment: deploymentName(c) },
-      );
-
-      const raised = refund.outcomes.filter((outcome) => outcome.outcome === "requested");
-      if (raised.length > 0) {
-        await c.var.emit({
-          action: PaymentsAuditActions.subscriptionRefundRequested,
-          outcome: "success",
-          // The person who asked, always — the holder they act for rides in the metadata.
-          actorType: "user",
-          actorId: c.var.auth?.userId,
-          sessionId: c.var.auth?.sessionId,
-          resourceType: "purchase",
-          resourceId: purchase.id,
-          // Counts and the store's own handles on the money in flight. **No amount**: how much anybody is
-          // getting back is the store's later decision, and a figure here would assert something nobody has
-          // agreed to, in the one table nothing corrects.
-          metadata: {
-            rail: purchase.rail,
-            subjectType: subject.subjectType,
-            subjectId: subject.subjectId,
-            productId: purchase.productId,
-            payments: refund.outcomes.length,
-            requested: raised.length,
-            alreadyRequested: refund.outcomes.filter((outcome) => outcome.outcome === "already_requested").length,
-            failed: refund.outcomes.filter((outcome) => outcome.outcome === "failed").length,
-            adjustmentIds: raised.map((outcome) => outcome.adjustmentId),
+        const refund = await provider.requestRefunds(
+          {
+            purchases: payments,
+            // Composed here and never read from a body: it is written into the adopter's own store console,
+            // where a person reads it as a statement about their business. The catalog product and nothing
+            // else — no customer text, no identifier a store does not already hold.
+            reason: `Refund requested by the subscriber for "${purchase.productId}".`,
           },
-        });
-      }
+          { now: clock(), deployment: deploymentName(c) },
+        );
 
-      return c.json({ refund: refundView(refund) } satisfies PaymentsRefundResponse, 200);
-    });
+        const raised = refund.outcomes.filter((outcome) => outcome.outcome === "requested");
+        if (raised.length > 0) {
+          await c.var.emit({
+            action: PaymentsAuditActions.subscriptionRefundRequested,
+            outcome: "success",
+            // The person who asked, always — the holder they act for rides in the metadata.
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            resourceType: "purchase",
+            resourceId: purchase.id,
+            // Counts and the store's own handles on the money in flight. **No amount**: how much anybody is
+            // getting back is the store's later decision, and a figure here would assert something nobody has
+            // agreed to, in the one table nothing corrects.
+            metadata: {
+              rail: purchase.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              productId: purchase.productId,
+              payments: refund.outcomes.length,
+              requested: raised.length,
+              alreadyRequested: refund.outcomes.filter((outcome) => outcome.outcome === "already_requested").length,
+              failed: refund.outcomes.filter((outcome) => outcome.outcome === "failed").length,
+              adjustmentIds: raised.map((outcome) => outcome.adjustmentId),
+            },
+          });
+        }
+
+        return c.json({ refund: refundView(refund) } satisfies PaymentsRefundResponse, 200);
+      },
+    );
 
     /**
      * CONTROL PLANE. The discount codes this project has issued.
@@ -2501,8 +2690,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.get(
       `${base}/admin/discounts`,
+      describeRoute({
+        summary: "Read the discount codes this project has issued at one store.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_DISCOUNT_READ_SCOPE],
+        responses: { 200: PaymentsAdminDiscountsResponse },
+      }),
       requireControlPlane(PAYMENTS_DISCOUNT_READ_SCOPE),
-      zValidator("query", AdminDiscountsQuery, validationHook),
+      validate("query", AdminDiscountsQuery),
       async (c) => {
         const { rail } = c.req.valid("query");
         const provider = resolveRailProvider(rail, config, await credentials(c), trust);
@@ -2537,8 +2732,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/admin/discounts`,
+      describeRoute({
+        summary: "Mint a discount code at one store.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_DISCOUNT_CREATE_SCOPE],
+        responses: { 200: PaymentsDiscountResponse },
+      }),
       requireControlPlane(PAYMENTS_DISCOUNT_CREATE_SCOPE),
-      zValidator("json", DiscountCreateRequest, validationHook),
+      validate("json", DiscountCreateRequest),
       async (c) => {
         const input = c.req.valid("json");
         const provider = resolveRailProvider(input.rail, config, await credentials(c), trust);
@@ -2590,8 +2791,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
     app.post(
       `${base}/entitlements/grant`,
+      describeRoute({
+        summary: "Grant an entitlement by hand.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_ENTITLEMENT_GRANT_SCOPE],
+        responses: { 200: PaymentsEntitlementResponse },
+      }),
       requireControlPlane(PAYMENTS_ENTITLEMENT_GRANT_SCOPE),
-      zValidator("json", EntitlementGrantRequest, validationHook),
+      validate("json", EntitlementGrantRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -2715,8 +2922,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(
       `${base}/entitlements/revoke`,
+      describeRoute({
+        summary: "Revoke an entitlement by hand.",
+        verification: "control-plane",
+        scopes: [PAYMENTS_ENTITLEMENT_REVOKE_SCOPE],
+        responses: { 200: PaymentsEntitlementResponse },
+      }),
       requireControlPlane(PAYMENTS_ENTITLEMENT_REVOKE_SCOPE),
-      zValidator("json", EntitlementRevokeRequest, validationHook),
+      validate("json", EntitlementRevokeRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -2819,7 +3032,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
             ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
           },
         });
-        return c.json({ received: true, projected: false }, 200);
+        return c.json({ received: true, projected: false } satisfies PaymentsWebhookAck, 200);
       };
 
       // Bind the store account to a user, when the notification carried both halves — before anything else,
@@ -2897,7 +3110,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
               projected: true,
             },
           });
-          return c.json({ received: true, projected: true, outcome: projection.outcome }, 200);
+          return c.json(
+            { received: true, projected: true, outcome: projection.outcome } satisfies PaymentsWebhookAck,
+            200,
+          );
         }
         return await acknowledge({
           error: `${noteText(notification.note) ?? "voided purchase"} — no purchase is stored under that order id.`,
@@ -3004,7 +3220,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           projected: true,
         },
       });
-      return c.json({ received: true, projected: true, outcome: projection.outcome }, 200);
+      return c.json({ received: true, projected: true, outcome: projection.outcome } satisfies PaymentsWebhookAck, 200);
     };
   }
 }

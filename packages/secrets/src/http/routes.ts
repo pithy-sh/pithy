@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { pageLimit } from "@pithy-sh/core/src/data/cursor";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
 import { dueForRotation } from "../admin/health";
@@ -19,7 +19,7 @@ import { SecretNotFoundError } from "../error/errors";
 import type { SecretRegistry, SecretRegistryEntry } from "../registry";
 import type { SecretRotationOutcome } from "../rotation/rotateValue";
 import { SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "./guards";
-import type { SecretRotateResponse, SecretRotationsResponse, SecretsStatusResponse } from "./responses";
+import { SecretRotateResponse, SecretRotationsResponse, SecretsStatusResponse } from "./responses";
 import { runWorkerRotation, workerRotationDeps, workerRotationEnvironment } from "./rotate";
 import { RotationsQuery, SecretNameParam } from "./schemas";
 import { secretRotationOutcomeView, secretRotationView, secretStatusView } from "./view";
@@ -95,7 +95,7 @@ export const SECRETS_DEFAULT_BASE_PATH = "/secrets";
  *
  * Exported so a test can assert against the declaration rather than against a middleware count.
  * Counting middleware proves that *something* runs before the handler; it cannot prove *what*, and a
- * bare `zValidator` satisfies a count. `routeContract.test.ts` checks this list against the routes Hono
+ * bare `validate` satisfies a count. `routeContract.test.ts` checks this list against the routes Hono
  * actually registered in both directions.
  */
 export interface SecretsRouteDeclaration {
@@ -233,26 +233,44 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
   const base = options.basePath ?? SECRETS_DEFAULT_BASE_PATH;
 
   return (app) => {
-    app.get(`${base}/admin/status`, requireControlPlane(SECRETS_STATUS_READ_SCOPE), async (c) => {
-      const entries = await readSecretStatus(secretsStatusDatabase(c), options.registry());
-      // Narrowed, not filtered by shape. An entry whose row would not decode has no `status` to render, so
-      // it cannot reach `secretStatusView` — the union is what makes that a compile error rather than an
-      // `undefined` on the wire (#387).
-      const secrets = entries.flatMap((entry) => (entry.state === "readable" ? [secretStatusView(entry.status)] : []));
-      const unreadable = entries.flatMap((entry) => (entry.state === "unreadable" ? [entry.name] : []));
-      await record(c, SecretsAuditActions.statusRead, null, {
-        declared: entries.length,
-        overdue: dueForRotation(entries),
-        unreadable: unreadable.length,
-      });
-      return c.json({ secrets, unreadable } satisfies SecretsStatusResponse, 200);
-    });
+    app.get(
+      `${base}/admin/status`,
+      describeRoute({
+        summary: "Read the status of every declared secret, never a value.",
+        verification: "control-plane",
+        scopes: [SECRETS_STATUS_READ_SCOPE],
+        responses: { 200: SecretsStatusResponse },
+      }),
+      requireControlPlane(SECRETS_STATUS_READ_SCOPE),
+      async (c) => {
+        const entries = await readSecretStatus(secretsStatusDatabase(c), options.registry());
+        // Narrowed, not filtered by shape. An entry whose row would not decode has no `status` to render, so
+        // it cannot reach `secretStatusView` — the union is what makes that a compile error rather than an
+        // `undefined` on the wire (#387).
+        const secrets = entries.flatMap((entry) =>
+          entry.state === "readable" ? [secretStatusView(entry.status)] : [],
+        );
+        const unreadable = entries.flatMap((entry) => (entry.state === "unreadable" ? [entry.name] : []));
+        await record(c, SecretsAuditActions.statusRead, null, {
+          declared: entries.length,
+          overdue: dueForRotation(entries),
+          unreadable: unreadable.length,
+        });
+        return c.json({ secrets, unreadable } satisfies SecretsStatusResponse, 200);
+      },
+    );
 
     app.get(
       `${base}/admin/status/:name/rotations`,
+      describeRoute({
+        summary: "Read one secret's rotation history, newest first.",
+        verification: "control-plane",
+        scopes: [SECRETS_STATUS_READ_SCOPE],
+        responses: { 200: SecretRotationsResponse },
+      }),
       requireControlPlane(SECRETS_STATUS_READ_SCOPE),
-      zValidator("param", SecretNameParam, validationHook),
-      zValidator("query", RotationsQuery, validationHook),
+      validate("param", SecretNameParam),
+      validate("query", RotationsQuery),
       async (c) => {
         const { name } = c.req.valid("param");
         declared(options.registry(), name);
@@ -272,8 +290,16 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
 
     app.post(
       `${base}/admin/status/:name/rotate`,
+      describeRoute({
+        summary: "Rotate one secret inside this Worker, for the environment the credential names.",
+        description:
+          "Takes no body. The successor is minted or fetched inside the Worker and never returned; the answer says what happened, not what the value is.",
+        verification: "control-plane",
+        scopes: [SECRETS_ROTATE_SCOPE],
+        responses: { 200: SecretRotateResponse },
+      }),
       requireControlPlane(SECRETS_ROTATE_SCOPE),
-      zValidator("param", SecretNameParam, validationHook),
+      validate("param", SecretNameParam),
       async (c) => {
         const { name } = c.req.valid("param");
         const who = caller(c);

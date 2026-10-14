@@ -4,6 +4,8 @@ _The site renders this for readers: [pithy.sh/docs/cli/commands/ui](https://pith
 
 Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command.
 
+A new project can start with one: `pithy init --target web` or `--target both` runs the same scaffold into its first Worker, with no screens, because nothing is composed yet to sign in to. Run `pithy ui add react` once a capability with screens is.
+
 ## Synopsis
 
 ```

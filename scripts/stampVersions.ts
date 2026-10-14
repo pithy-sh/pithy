@@ -44,16 +44,32 @@
  * `--check` runs in CI's whole-repo verify job, which is what makes drift a failed build rather than a
  * lie a customer acts on.
  *
+ * It stamps one more thing: every Claude Code plugin's `plugin.json` under `agent-plugins/claude/` takes
+ * `@pithy-sh/cli`'s version (#719), for the reason given at {@link pluginManifests}.
+ *
  * Only packages carrying a `pithy.manifest.json` are stamped: those are the capability packages, the ones
  * whose version a control-plane manifest reports. Stamping the rest would be 21 generated files for a
  * question nobody asks of them.
  */
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const packagesDir = join(here, "..", "packages");
+
+/**
+ * The repository the stamp reads and writes. `--root <dir>` points it at another tree, which is how
+ * `packages/cli/src/ci/claudePlugin.test.ts` proves `--check` fails on a drift it planted in a copy rather
+ * than in this checkout.
+ */
+function rootDir(): string {
+  const at = process.argv.indexOf("--root");
+  const given = at === -1 ? undefined : process.argv[at + 1];
+  return given === undefined ? join(here, "..") : resolve(given);
+}
+
+const root = rootDir();
+const packagesDir = join(root, "packages");
 
 /** The generated module's filename, relative to a package's `src/`. */
 const GENERATED = "version.generated.ts";
@@ -141,6 +157,55 @@ export const PACKAGE_VERSION = ${JSON.stringify(target.version)};
 `;
 }
 
+/** Where the Claude Code plugins live: one directory per plugin, each with its own `.claude-plugin/plugin.json`. */
+const PLUGINS_DIR = join("agent-plugins", "claude");
+
+/**
+ * **A plugin's version is the CLI's** (#719). Every plugin under `agent-plugins/claude/` describes the
+ * `pithy` commands it drives, so the version a user holds says which CLI it was written for — and the
+ * version is also what Claude Code keys updates on: an unchanged string keeps a user's cached copy, so a
+ * plugin updates once per release and never between. Stamped here, beside the packages, for the reason
+ * those are: Changesets rewrites `@pithy-sh/cli`'s `package.json` in the `version` script, and this runs
+ * straight after it. Every plugin installs from one checkout, so an add-on's `"dependencies": ["pithy"]`
+ * needs no range.
+ */
+function pluginManifests(): string[] {
+  const dir = join(root, PLUGINS_DIR);
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+  return names
+    .map((name) => join(dir, name, ".claude-plugin", "plugin.json"))
+    .filter((path) => {
+      try {
+        return statSync(path).isFile();
+      } catch {
+        return false;
+      }
+    });
+}
+
+/** The CLI's version: the one every plugin carries. */
+function cliVersion(): string {
+  return (JSON.parse(readFileSync(join(packagesDir, "cli", "package.json"), "utf8")) as { version: string }).version;
+}
+
+/**
+ * A plugin manifest with its top-level `version` set to the CLI's, and every other byte where it was.
+ *
+ * Replaced in the text rather than re-serialized: Biome formats the file, and `JSON.stringify` lays an
+ * array out differently, so a stamp that rewrote the whole file would fight the formatter on every run and
+ * `--check` could never pass. The top-level key is the first `"version"` at two spaces of indent.
+ */
+function renderPlugin(source: string, version: string): string {
+  const field = /^ {2}"version": "[^"]*"/m;
+  if (!field.test(source)) throw new Error(`A plugin manifest has no top-level "version" to stamp.`);
+  return source.replace(field, `  "version": ${JSON.stringify(version)}`);
+}
+
 const check = process.argv.includes("--check");
 const stale: string[] = [];
 let written = 0;
@@ -164,6 +229,19 @@ for (const target of targets()) {
   written += 1;
 }
 
+const version = cliVersion();
+for (const path of pluginManifests()) {
+  const actual = readFileSync(path, "utf8");
+  const expected = renderPlugin(actual, version);
+  if (actual === expected) continue;
+  if (check) {
+    stale.push(`${path.slice(root.length + 1)} (${version})`);
+    continue;
+  }
+  writeFileSync(path, expected);
+  written += 1;
+}
+
 if (check && stale.length > 0) {
   // A stamped version that has drifted from the package.json it came from is worse than reporting
   // nothing, because a customer would act on it — deciding not to upgrade against a version that is a
@@ -173,4 +251,4 @@ if (check && stale.length > 0) {
   process.exit(1);
 }
 
-if (!check) process.stdout.write(written === 0 ? "Versions already stamped.\n" : `Stamped ${written} package(s).\n`);
+if (!check) process.stdout.write(written === 0 ? "Versions already stamped.\n" : `Stamped ${written} file(s).\n`);

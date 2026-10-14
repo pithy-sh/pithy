@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute, type RouteResponse } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
+import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import type { StorageConfig } from "../config/config";
@@ -29,6 +30,16 @@ import {
   revokeShare,
   updateObject,
 } from "./handlers";
+import {
+  ObjectDeletedResponse,
+  ObjectListResponse,
+  PresignedUrlResponse,
+  ShareResponse,
+  ShareRevokedResponse,
+  StorageObjectResponse,
+  UploadInitResponse,
+  UploadPartsResponse,
+} from "./responses";
 import {
   CompleteUploadInput,
   CopyObjectInput,
@@ -164,6 +175,20 @@ function shareToken(): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** `requireAuth()` lets either a bearer token or a session through. */
+const AUTHENTICATED: readonly VerificationStrategy[] = ["bearer", "session"];
+
+/** What a byte read can answer: the whole file, the range asked for, or nothing new since the caller's copy. */
+const BYTE_RESPONSES: Readonly<Record<number, RouteResponse>> = {
+  200: {
+    description:
+      "The whole file. Served as its stored type, or as `application/octet-stream` when none was stored or the stored one could run in a browser.",
+    contentType: "application/octet-stream",
+  },
+  206: { description: "The byte range the `Range` header asked for.", contentType: "application/octet-stream" },
+  304: { description: "The caller's copy matches `If-None-Match`. No body." },
+};
+
 /** Register the storage sub-router. Returned as the capability's `routes` hook. */
 export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/storage";
@@ -200,19 +225,47 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
   };
 
   return (app) => {
-    app.post(base, requireAuth(), zValidator("json", CreateUploadInput, validationHook), async (c) => {
-      return c.json(await initUpload(await resolve(c), c.req.valid("json")), 201);
-    });
+    app.post(
+      base,
+      describeRoute({
+        summary: "Start an upload.",
+        description:
+          "Reserves the file and its quota, then answers with the presigned URL, or one URL per part, to PUT the bytes to. The bytes never pass through the Worker.",
+        verification: AUTHENTICATED,
+        responses: { 201: UploadInitResponse },
+      }),
+      requireAuth(),
+      validate("json", CreateUploadInput),
+      async (c) => {
+        return c.json(await initUpload(await resolve(c), c.req.valid("json")), 201);
+      },
+    );
 
-    app.get(base, requireAuth(), zValidator("query", ListObjectsQuery, validationHook), async (c) => {
-      return c.json(await listObjects(await resolve(c), c.req.valid("query")));
-    });
+    app.get(
+      base,
+      describeRoute({
+        summary: "List the caller's files.",
+        verification: AUTHENTICATED,
+        responses: { 200: ObjectListResponse },
+      }),
+      requireAuth(),
+      validate("query", ListObjectsQuery),
+      async (c) => {
+        return c.json(await listObjects(await resolve(c), c.req.valid("query")));
+      },
+    );
 
     // Static before `:id` — see the file doc comment.
     app.delete(
       `${base}/shares/:token`,
+      describeRoute({
+        summary: "Revoke a share link.",
+        description: "Takes effect on the next fetch. Revoking twice is a no-op that keeps the first time.",
+        verification: AUTHENTICATED,
+        responses: { 200: ShareRevokedResponse },
+      }),
       requireAuth(),
-      zValidator("param", ShareTokenParam, validationHook),
+      validate("param", ShareTokenParam),
       async (c) => {
         return c.json(await revokeShare(await resolve(c), c.req.valid("param").token));
       },
@@ -220,30 +273,64 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
 
     app.post(
       `${base}/:id/complete`,
+      describeRoute({
+        summary: "Finish an upload.",
+        description:
+          "Assembles a multipart upload, then confirms the bytes against R2. Completing a stored file again answers with it unchanged.",
+        verification: AUTHENTICATED,
+        responses: { 200: StorageObjectResponse },
+      }),
       requireAuth(),
-      zValidator("param", ObjectIdParam, validationHook),
-      zValidator("json", CompleteUploadInput, validationHook),
+      validate("param", ObjectIdParam),
+      validate("json", CompleteUploadInput),
       async (c) => {
         return c.json(await completeUpload(await resolve(c), c.req.valid("param").id, c.req.valid("json")));
       },
     );
 
     // No json validator: this route reads no body, and a client that sends none must keep working.
-    app.post(`${base}/:id/abort`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
-      return c.json(await abortUpload(await resolve(c), c.req.valid("param").id));
-    });
+    app.post(
+      `${base}/:id/abort`,
+      describeRoute({
+        summary: "Abandon an upload.",
+        description: "Discards whatever R2 holds for the upload. The record stays, marked failed.",
+        verification: AUTHENTICATED,
+        responses: { 200: StorageObjectResponse },
+      }),
+      requireAuth(),
+      validate("param", ObjectIdParam),
+      async (c) => {
+        return c.json(await abortUpload(await resolve(c), c.req.valid("param").id));
+      },
+    );
 
     // The resume path: what R2 already holds, and a fresh URL for every part still missing. Minting
     // on demand is what keeps a part URL's TTL short without making a stalled upload unrecoverable.
-    app.get(`${base}/:id/parts`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
-      return c.json(await listUploadParts(await resolve(c), c.req.valid("param").id));
-    });
+    app.get(
+      `${base}/:id/parts`,
+      describeRoute({
+        summary: "Resume a multipart upload.",
+        verification: AUTHENTICATED,
+        responses: { 200: UploadPartsResponse },
+      }),
+      requireAuth(),
+      validate("param", ObjectIdParam),
+      async (c) => {
+        return c.json(await listUploadParts(await resolve(c), c.req.valid("param").id));
+      },
+    );
 
     app.post(
       `${base}/:id/copy`,
+      describeRoute({
+        summary: "Copy a file.",
+        description: "R2 copies the bytes. The copy is a new private file with its own id.",
+        verification: AUTHENTICATED,
+        responses: { 201: StorageObjectResponse },
+      }),
       requireAuth(),
-      zValidator("param", ObjectIdParam, validationHook),
-      zValidator("json", CopyObjectInput, validationHook),
+      validate("param", ObjectIdParam),
+      validate("json", CopyObjectInput),
       async (c) => {
         return c.json(await copyObject(await resolve(c), c.req.valid("param").id, c.req.valid("json")), 201);
       },
@@ -251,23 +338,47 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
 
     app.post(
       `${base}/:id/shares`,
+      describeRoute({
+        summary: "Mint a share link.",
+        verification: AUTHENTICATED,
+        responses: { 201: ShareResponse },
+      }),
       requireAuth(),
-      zValidator("param", ObjectIdParam, validationHook),
-      zValidator("json", CreateShareInput, validationHook),
+      validate("param", ObjectIdParam),
+      validate("json", CreateShareInput),
       async (c) => {
         return c.json(await createShare(await resolve(c), c.req.valid("param").id, c.req.valid("json")), 201);
       },
     );
 
-    app.get(`${base}/:id/url`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
-      return c.json(await presignObject(await resolve(c), c.req.valid("param").id));
-    });
+    app.get(
+      `${base}/:id/url`,
+      describeRoute({
+        summary: "Mint a direct download URL.",
+        description:
+          "For a public file or one the caller owns. The URL cannot be revoked, so it lapses in five minutes.",
+        verification: AUTHENTICATED,
+        responses: { 200: PresignedUrlResponse },
+      }),
+      requireAuth(),
+      validate("param", ObjectIdParam),
+      async (c) => {
+        return c.json(await presignObject(await resolve(c), c.req.valid("param").id));
+      },
+    );
 
     // No `requireAuth`: a public object must be readable without a session. The handler authorizes.
     app.get(
       `${base}/:id`,
-      zValidator("param", ObjectIdParam, validationHook),
-      zValidator("query", ObjectReadQuery, validationHook),
+      describeRoute({
+        summary: "Read a file's bytes.",
+        description:
+          "Public files need no credential. A private file needs the owner's bearer token or session, and reads as missing to anyone else. Honors `Range` and `If-None-Match`.",
+        verification: ["public", "bearer", "session"],
+        responses: BYTE_RESPONSES,
+      }),
+      validate("param", ObjectIdParam),
+      validate("query", ObjectReadQuery),
       async (c) => {
         const deps = await resolve(c);
         const object = await readableObject(deps, c.req.valid("param").id);
@@ -275,34 +386,68 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
       },
     );
 
-    app.on("HEAD", `${base}/:id`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
-      const deps = await resolve(c);
-      const object = await readableObject(deps, c.req.valid("param").id);
-      const metadata = await deps.store.head(object.key);
-      if (!metadata) return c.notFound();
-      return serveMetadata({ metadata, path: object.path, visibility: object.visibility });
-    });
+    app.on(
+      "HEAD",
+      `${base}/:id`,
+      describeRoute({
+        summary: "Read a file's headers without its bytes.",
+        verification: AUTHENTICATED,
+        responses: { 200: { description: "The headers a GET would carry, with no body." } },
+      }),
+      requireAuth(),
+      validate("param", ObjectIdParam),
+      async (c) => {
+        const deps = await resolve(c);
+        const object = await readableObject(deps, c.req.valid("param").id);
+        const metadata = await deps.store.head(object.key);
+        if (!metadata) return c.notFound();
+        return serveMetadata({ metadata, path: object.path, visibility: object.visibility });
+      },
+    );
 
     app.patch(
       `${base}/:id`,
+      describeRoute({
+        summary: "Rename a file or change who may read it.",
+        verification: AUTHENTICATED,
+        responses: { 200: StorageObjectResponse },
+      }),
       requireAuth(),
-      zValidator("param", ObjectIdParam, validationHook),
-      zValidator("json", UpdateObjectInput, validationHook),
+      validate("param", ObjectIdParam),
+      validate("json", UpdateObjectInput),
       async (c) => {
         return c.json(await updateObject(await resolve(c), c.req.valid("param").id, c.req.valid("json")));
       },
     );
 
-    app.delete(`${base}/:id`, requireAuth(), zValidator("param", ObjectIdParam, validationHook), async (c) => {
-      return c.json(await deleteObject(await resolve(c), c.req.valid("param").id));
-    });
+    app.delete(
+      `${base}/:id`,
+      describeRoute({
+        summary: "Delete a file.",
+        description: "Its share links go with it.",
+        verification: AUTHENTICATED,
+        responses: { 200: ObjectDeletedResponse },
+      }),
+      requireAuth(),
+      validate("param", ObjectIdParam),
+      async (c) => {
+        return c.json(await deleteObject(await resolve(c), c.req.valid("param").id));
+      },
+    );
 
     // Public by design: the token is the credential, and it is checked on every fetch — which is what
     // makes revocation possible at all.
     app.get(
       `${share}/:token`,
-      zValidator("param", ShareTokenParam, validationHook),
-      zValidator("query", ObjectReadQuery, validationHook),
+      describeRoute({
+        summary: "Read a file through a share link.",
+        description:
+          "The token is the credential. A revoked or expired link answers 410. Honors `Range` and `If-None-Match`.",
+        verification: "public",
+        responses: BYTE_RESPONSES,
+      }),
+      validate("param", ShareTokenParam),
+      validate("query", ObjectReadQuery),
       async (c) => {
         const deps = await resolve(c);
         const object = await resolveShare(deps, c.req.valid("param").token);

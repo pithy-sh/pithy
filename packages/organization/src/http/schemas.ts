@@ -10,7 +10,7 @@ import { MAX_ORGANIZATION_NAME_LENGTH, Organization } from "../data/organization
 
 /**
  * What the tenancy routes accept, declared on the route line with
- * `zValidator(target, Schema, validationHook)` — so reading `routes.ts` says what each route takes
+ * `validate(target, Schema)` — so reading `routes.ts` says what each route takes
  * without opening a handler.
  *
  * ## Nothing here names an organization, except the two that must

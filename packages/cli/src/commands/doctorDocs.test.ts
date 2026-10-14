@@ -1576,6 +1576,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   command: [
     "add",
     "alias",
+    "contract",
     "dashboard",
     "deploy",
     "dev",
@@ -1634,6 +1635,8 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "upgrade",
     "vector",
   ],
+  // The one environment a run acted for: `dashboard`'s connection, `contract`'s composition (#719).
+  environment: ["contract", "dashboard"],
   environments: ["doctor", "email", "init", "media", "payments", "secrets", "storage", "support"],
   // The status a `provision --json` report's run exits with, on the one outcome that run writes (#711).
   exitCode: ["email", "media", "payments", "storage", "support", "testers"],
@@ -1663,6 +1666,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   schemaVersion: [
     "add",
     "alias",
+    "contract",
     "dashboard",
     "deploy",
     "dev",
@@ -1705,7 +1709,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
-  workers: ["deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
+  workers: ["contract", "deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
 };
 
 /**
@@ -1738,6 +1742,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   domains: "object",
   dryRun: "boolean",
   env: "string",
+  environment: "string",
   exitCode: "number",
   from: "string",
   interrupted: "boolean",

@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import {
   type AdminSubList,
@@ -33,7 +33,7 @@ import {
   AUTH_USERS_READ_SCOPE,
 } from "./guards";
 import { getAuthInstance, resolveDb } from "./resolve";
-import type {
+import {
   AdminDeviceRevokeResponse,
   AdminDevicesResponse,
   AdminRevokeResponse,
@@ -179,8 +179,14 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.get(
       `${base}/admin/users`,
+      describeRoute({
+        summary: "Page through the users, newest first, optionally searching by email or name.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_READ_SCOPE],
+        responses: { 200: AdminUsersResponse },
+      }),
       requireControlPlane(AUTH_USERS_READ_SCOPE),
-      zValidator("query", ListUsersQuery, validationHook),
+      validate("query", ListUsersQuery),
       async (c) => {
         const query = c.req.valid("query");
         const caller = controlPlaneCaller(c);
@@ -204,8 +210,14 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.get(
       `${base}/admin/users/:userId`,
+      describeRoute({
+        summary: "Read one user with their sessions, devices and linked providers.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_READ_SCOPE],
+        responses: { 200: AdminUserResponse },
+      }),
       requireControlPlane(AUTH_USERS_READ_SCOPE),
-      zValidator("param", UserIdParam, validationHook),
+      validate("param", UserIdParam),
       async (c) => {
         const { userId } = c.req.valid("param");
         const caller = controlPlaneCaller(c);
@@ -254,8 +266,14 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.get(
       `${base}/admin/devices`,
+      describeRoute({
+        summary: "Page through the device registry, most recently seen first.",
+        verification: "control-plane",
+        scopes: [AUTH_DEVICES_READ_SCOPE],
+        responses: { 200: AdminDevicesResponse },
+      }),
       requireControlPlane(AUTH_DEVICES_READ_SCOPE),
-      zValidator("query", ListDevicesQuery, validationHook),
+      validate("query", ListDevicesQuery),
       async (c) => {
         const query = c.req.valid("query");
         const caller = controlPlaneCaller(c);
@@ -278,8 +296,14 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.post(
       `${base}/admin/sessions/revoke`,
+      describeRoute({
+        summary: "Revoke one session by its id.",
+        verification: "control-plane",
+        scopes: [AUTH_SESSIONS_REVOKE_SCOPE],
+        responses: { 200: AdminRevokeResponse },
+      }),
       requireControlPlane(AUTH_SESSIONS_REVOKE_SCOPE),
-      zValidator("json", RevokeSessionBody, validationHook),
+      validate("json", RevokeSessionBody),
       async (c) => {
         const { sessionId } = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -309,8 +333,14 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.post(
       `${base}/admin/users/:userId/sessions/revoke`,
+      describeRoute({
+        summary: "Sign one user out everywhere.",
+        verification: "control-plane",
+        scopes: [AUTH_USERS_LOGOUT_SCOPE],
+        responses: { 200: AdminRevokeResponse },
+      }),
       requireControlPlane(AUTH_USERS_LOGOUT_SCOPE),
-      zValidator("param", UserIdParam, validationHook),
+      validate("param", UserIdParam),
       async (c) => {
         const { userId } = c.req.valid("param");
         const caller = controlPlaneCaller(c);
@@ -335,9 +365,15 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
     app.post(
       `${base}/admin/users/:userId/devices/revoke`,
+      describeRoute({
+        summary: "Sign out one of a user's devices and remove it from the registry.",
+        verification: "control-plane",
+        scopes: [AUTH_DEVICES_REVOKE_SCOPE],
+        responses: { 200: AdminDeviceRevokeResponse },
+      }),
       requireControlPlane(AUTH_DEVICES_REVOKE_SCOPE),
-      zValidator("param", UserIdParam, validationHook),
-      zValidator("json", RevokeDeviceBody, validationHook),
+      validate("param", UserIdParam),
+      validate("json", RevokeDeviceBody),
       async (c) => {
         const { userId } = c.req.valid("param");
         const { deviceId } = c.req.valid("json");

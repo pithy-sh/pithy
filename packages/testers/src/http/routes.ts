@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { AuthPeer } from "@pithy-sh/auth/src/peer";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
@@ -12,7 +11,8 @@ import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard"
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import { migrateStep } from "@pithy-sh/core/src/migrations/migrateStep";
 import type { Context, Hono } from "hono";
@@ -49,15 +49,16 @@ import {
 import { requireAuth } from "./guards";
 import { confirmOptOutPage, page, storePage } from "./pages";
 import {
-  type CohortsResponse,
+  CohortsResponse,
   DISCLAIMER,
-  type InviteResponse,
-  type MembershipsResponse,
+  InviteResponse,
+  MembershipsResponse,
   type MembershipView,
   type NudgeDryRunResponse,
   type NudgeResponse,
-  type RemoveResponse,
-  type ResendResponse,
+  NudgeResult,
+  RemoveResponse,
+  ResendResponse,
 } from "./responses";
 import {
   CohortsQuery,
@@ -313,143 +314,210 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
 
     // Step one: "yes, I will test." Records consent and tells the developer to add this address to the
     // store's tester list. Nothing installs yet, and no store link is shown — it would not work.
-    app.get(`${base}/confirm/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
-      const now = clock();
-      const db = testersDatabase(database(c));
-      const member = await memberFor(db, c.req.valid("param").token);
-      const result = await recordAccepted({ db, now, newId: ids }, member.id);
+    app.get(
+      `${base}/confirm/:token`,
+      describeRoute({
+        summary: "Record a tester's yes to the test.",
+        description: "The token in the path is the whole credential. Idempotent: a repeat visit records nothing new.",
+        verification: "public",
+        responses: {
+          200: { description: "A page thanking the tester and saying what happens next.", contentType: "text/html" },
+        },
+      }),
+      validate("param", OptInTokenParam),
+      async (c) => {
+        const now = clock();
+        const db = testersDatabase(database(c));
+        const member = await memberFor(db, c.req.valid("param").token);
+        const result = await recordAccepted({ db, now, newId: ids }, member.id);
 
-      // Only the first answer is audited. A prefetching mail client following the link three times is
-      // not three events, and recording it as such would make the trail useless.
-      if (result.firstTime) {
-        await c.var.emit({
-          action: TestersAuditActions.memberAccepted,
-          outcome: "success",
-          actorType: "user",
-          actorId: null,
-          resourceType: "testers_member",
-          resourceId: member.id,
-          ip: c.req.header("cf-connecting-ip"),
-          userAgent: c.req.header("user-agent"),
-          metadata: { cohortId: member.cohortId },
-        });
-      }
+        // Only the first answer is audited. A prefetching mail client following the link three times is
+        // not three events, and recording it as such would make the trail useless.
+        if (result.firstTime) {
+          await c.var.emit({
+            action: TestersAuditActions.memberAccepted,
+            outcome: "success",
+            actorType: "user",
+            actorId: null,
+            resourceType: "testers_member",
+            resourceId: member.id,
+            ip: c.req.header("cf-connecting-ip"),
+            userAgent: c.req.header("user-agent"),
+            metadata: { cohortId: member.cohortId },
+          });
+        }
 
-      return page(
-        "Thank you.",
-        "You are down as a tester. The developer will add you to the test, and you will get one more email with the link to join and install. Nothing to do until then.",
-      );
-    });
+        return page(
+          "Thank you.",
+          "You are down as a tester. The developer will add you to the test, and you will get one more email with the link to join and install. Nothing to do until then.",
+        );
+      },
+    );
 
     // Step two: through to the store's own opt-in page. This is the strongest enrollment signal Pithy can
     // observe — and it is still not proof that the store accepted them, which is what `estimated` means.
-    app.get(`${base}/opt-in/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
-      const now = clock();
-      const db = testersDatabase(database(c));
-      const member = await memberFor(db, c.req.valid("param").token);
-      const cohort = await requireCohort(db, member.cohortId);
-      const result = await confirmOptIn({ db, now, newId: ids }, member.id);
+    app.get(
+      `${base}/opt-in/:token`,
+      describeRoute({
+        summary: "Record a tester's opt-in and hand them the store link.",
+        description:
+          "The store link is rendered on the page, never redirected to. Without a usable store link the page says the developer will be in touch.",
+        verification: "public",
+        responses: {
+          200: {
+            description: "A page carrying the store's opt-in link, or a thank-you when the cohort has none.",
+            contentType: "text/html",
+          },
+        },
+      }),
+      validate("param", OptInTokenParam),
+      async (c) => {
+        const now = clock();
+        const db = testersDatabase(database(c));
+        const member = await memberFor(db, c.req.valid("param").token);
+        const cohort = await requireCohort(db, member.cohortId);
+        const result = await confirmOptIn({ db, now, newId: ids }, member.id);
 
-      if (result.firstTime) {
-        await c.var.emit({
-          action: TestersAuditActions.memberOptedIn,
-          outcome: "success",
-          actorType: "user",
-          actorId: null,
-          resourceType: "testers_member",
-          resourceId: member.id,
-          ip: c.req.header("cf-connecting-ip"),
-          userAgent: c.req.header("user-agent"),
-          metadata: { cohortId: member.cohortId },
-        });
-      }
+        if (result.firstTime) {
+          await c.var.emit({
+            action: TestersAuditActions.memberOptedIn,
+            outcome: "success",
+            actorType: "user",
+            actorId: null,
+            resourceType: "testers_member",
+            resourceId: member.id,
+            ip: c.req.header("cf-connecting-ip"),
+            userAgent: c.req.header("user-agent"),
+            metadata: { cohortId: member.cohortId },
+          });
+        }
 
-      // The link is rendered, never redirected to. A 302 would make this Worker a redirector, and the
-      // host allowlist would then be the only thing between a bad config write and a phishing hop off a
-      // domain the tester trusts *because* the adopter signed the email that brought them here. It also
-      // leaves nowhere to put the two instructions below — and those are the difference between a tester
-      // who joins and one who sees `App not available` and concludes the app is broken.
-      if (!cohort.storeOptInUrl || !isStoreOptInUrl(cohort.storeOptInUrl)) {
-        // Recording the opt-in is still right — they did their part — but we have nowhere to send them.
-        return page("You're in.", "Thank you. The developer will be in touch with the link to install.");
-      }
-      return storePage(cohort.storeOptInUrl, cohort.targetPlatform);
-    });
+        // The link is rendered, never redirected to. A 302 would make this Worker a redirector, and the
+        // host allowlist would then be the only thing between a bad config write and a phishing hop off a
+        // domain the tester trusts *because* the adopter signed the email that brought them here. It also
+        // leaves nowhere to put the two instructions below — and those are the difference between a tester
+        // who joins and one who sees `App not available` and concludes the app is broken.
+        if (!cohort.storeOptInUrl || !isStoreOptInUrl(cohort.storeOptInUrl)) {
+          // Recording the opt-in is still right — they did their part — but we have nowhere to send them.
+          return page("You're in.", "Thank you. The developer will be in touch with the link to install.");
+        }
+        return storePage(cohort.storeOptInUrl, cohort.targetPlatform);
+      },
+    );
 
     // Withdrawing takes two steps, and the reason is the same one that makes the confirmation route
     // idempotent: mail clients prefetch links and security scanners follow them. A one-tap GET would let
     // a scanner silently withdraw a tester — and because withdrawing rotates their token, that is
     // irreversible without a fresh invitation. So the GET asks, and only the POST acts. Scanners do not
     // POST. This is why the opt-out is the one tester-facing action that is deliberately not one tap.
-    app.get(`${base}/opt-out/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
-      const db = testersDatabase(database(c));
-      // Looked up so a dead link says so here rather than after the tester has confirmed an intent that
-      // was never going to be honored.
-      await memberForWithdrawal(db, c.req.valid("param").token);
-      return confirmOptOutPage(`${base}/opt-out/${c.req.valid("param").token}`);
-    });
+    app.get(
+      `${base}/opt-out/:token`,
+      describeRoute({
+        summary: "Ask a tester to confirm they are leaving.",
+        description:
+          "Changes nothing. The withdrawal is the POST its form submits, so a prefetching mail client cannot withdraw anyone.",
+        verification: "public",
+        responses: {
+          200: { description: "A page with the form that confirms the withdrawal.", contentType: "text/html" },
+        },
+      }),
+      validate("param", OptInTokenParam),
+      async (c) => {
+        const db = testersDatabase(database(c));
+        // Looked up so a dead link says so here rather than after the tester has confirmed an intent that
+        // was never going to be honored.
+        await memberForWithdrawal(db, c.req.valid("param").token);
+        return confirmOptOutPage(`${base}/opt-out/${c.req.valid("param").token}`);
+      },
+    );
 
-    app.post(`${base}/opt-out/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
-      const now = clock();
-      const db = testersDatabase(database(c));
-      const member = await memberForWithdrawal(db, c.req.valid("param").token);
-      const lapsed = await lapseMember({ db, now, newId: ids }, member.id);
-      // Only a real withdrawal is audited. These routes answer unauthenticated strangers holding a
-      // token, so auditing every request lets one link write unbounded rows into the adopter's trail.
-      if (lapsed.firstTime) {
-        await c.var.emit({
-          action: TestersAuditActions.memberLapsed,
-          outcome: "success",
-          actorType: "user",
-          actorId: null,
-          resourceType: "testers_member",
-          resourceId: lapsed.member.id,
-          metadata: { cohortId: lapsed.member.cohortId },
-        });
-      }
-      return page(
-        "You've been removed.",
-        "You will not hear from this test again. Thank you for the time you gave it.",
-      );
-    });
+    app.post(
+      `${base}/opt-out/:token`,
+      describeRoute({
+        summary: "Take a tester off the test at their own request.",
+        description: "The token never expires for this route, so the way out lasts as long as the mail does.",
+        verification: "public",
+        responses: { 200: { description: "A page confirming the tester has been removed.", contentType: "text/html" } },
+      }),
+      validate("param", OptInTokenParam),
+      async (c) => {
+        const now = clock();
+        const db = testersDatabase(database(c));
+        const member = await memberForWithdrawal(db, c.req.valid("param").token);
+        const lapsed = await lapseMember({ db, now, newId: ids }, member.id);
+        // Only a real withdrawal is audited. These routes answer unauthenticated strangers holding a
+        // token, so auditing every request lets one link write unbounded rows into the adopter's trail.
+        if (lapsed.firstTime) {
+          await c.var.emit({
+            action: TestersAuditActions.memberLapsed,
+            outcome: "success",
+            actorType: "user",
+            actorId: null,
+            resourceType: "testers_member",
+            resourceId: lapsed.member.id,
+            metadata: { cohortId: lapsed.member.cohortId },
+          });
+        }
+        return page(
+          "You've been removed.",
+          "You will not hear from this test again. Thank you for the time you gave it.",
+        );
+      },
+    );
 
     // ── bearer | session: a tester's own view ─────────────────────────────────
-    app.get(`${base}/status`, requireAuth(), zValidator("query", StatusQuery, validationHook), async (c) => {
-      const now = clock();
-      const d1 = database(c);
-      const db = testersDatabase(d1);
-      const query = c.req.valid("query");
+    app.get(
+      `${base}/status`,
+      describeRoute({
+        summary: "Read the caller's own tester memberships.",
+        verification: ["bearer", "session"],
+        responses: { 200: MembershipsResponse },
+      }),
+      requireAuth(),
+      validate("query", StatusQuery),
+      async (c) => {
+        const now = clock();
+        const d1 = database(c);
+        const db = testersDatabase(d1);
+        const query = c.req.valid("query");
 
-      // A tester sees their own memberships and nothing else — not the roster, not the other testers,
-      // and not the cohort's forecast. What they legitimately want to know is whether their own
-      // confirmation registered and how long is left.
-      const userEmail = await resolveCallerEmail(d1, callerId(c), options.auth?.());
-      if (!userEmail) return c.json({ memberships: [], disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
+        // A tester sees their own memberships and nothing else — not the roster, not the other testers,
+        // and not the cohort's forecast. What they legitimately want to know is whether their own
+        // confirmation registered and how long is left.
+        const userEmail = await resolveCallerEmail(d1, callerId(c), options.auth?.());
+        if (!userEmail) return c.json({ memberships: [], disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
 
-      const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
-      const memberships: MembershipView[] = [];
-      for (const cohort of cohorts) {
-        const member = (await listMembers(db, cohort.id)).find((entry) => entry.email === userEmail);
-        if (!member) continue;
-        // The request's own logger, namespaced to this capability. An activity read that degrades is
-        // then correlated to the request that asked, rather than being an orphaned line.
-        const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"), options.auth?.());
-        memberships.push({
-          cohortName: cohort.name,
-          state: member.state,
-          estimatedOptedInAt: member.optedInAt?.toISOString() ?? null,
-          estimatedDaysRemaining: reading.clock.estimatedDaysRemaining,
-          windowDays: cohort.windowDays,
-        });
-      }
-      return c.json({ memberships, disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
-    });
+        const cohorts = query.cohortId ? [await requireCohort(db, query.cohortId)] : await listCohorts(db);
+        const memberships: MembershipView[] = [];
+        for (const cohort of cohorts) {
+          const member = (await listMembers(db, cohort.id)).find((entry) => entry.email === userEmail);
+          if (!member) continue;
+          // The request's own logger, namespaced to this capability. An activity read that degrades is
+          // then correlated to the request that asked, rather than being an orphaned line.
+          const reading = await readCohort(db, d1, cohort, config, now, c.var.log.child("testers"), options.auth?.());
+          memberships.push({
+            cohortName: cohort.name,
+            state: member.state,
+            estimatedOptedInAt: member.optedInAt?.toISOString() ?? null,
+            estimatedDaysRemaining: reading.clock.estimatedDaysRemaining,
+            windowDays: cohort.windowDays,
+          });
+        }
+        return c.json({ memberships, disclaimer: DISCLAIMER } satisfies MembershipsResponse, 200);
+      },
+    );
 
     // ── control-plane: the dashboard's surface ────────────────────────────────
     app.get(
       `${base}/cohorts`,
+      describeRoute({
+        summary: "Read cohort state for a dashboard.",
+        verification: "control-plane",
+        scopes: [TESTERS_ROSTER_READ_SCOPE],
+        responses: { 200: CohortsResponse },
+      }),
       requireControlPlane(TESTERS_ROSTER_READ_SCOPE),
-      zValidator("query", CohortsQuery, validationHook),
+      validate("query", CohortsQuery),
       async (c) => {
         const now = clock();
         const d1 = database(c);
@@ -491,8 +559,14 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
 
     app.post(
       `${base}/invite`,
+      describeRoute({
+        summary: "Invite an address onto a cohort.",
+        verification: "control-plane",
+        scopes: [TESTERS_ROSTER_WRITE_SCOPE],
+        responses: { 200: InviteResponse },
+      }),
       requireControlPlane(TESTERS_ROSTER_WRITE_SCOPE),
-      zValidator("json", InviteRequest, validationHook),
+      validate("json", InviteRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -568,8 +642,14 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
 
     app.post(
       `${base}/resend`,
+      describeRoute({
+        summary: "Send a tester another invitation.",
+        verification: "control-plane",
+        scopes: [TESTERS_ROSTER_WRITE_SCOPE],
+        responses: { 200: ResendResponse },
+      }),
       requireControlPlane(TESTERS_ROSTER_WRITE_SCOPE),
-      zValidator("json", ResendRequest, validationHook),
+      validate("json", ResendRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -656,8 +736,14 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
 
     app.post(
       `${base}/remove`,
+      describeRoute({
+        summary: "Take a tester off a cohort.",
+        verification: "control-plane",
+        scopes: [TESTERS_ROSTER_WRITE_SCOPE],
+        responses: { 200: RemoveResponse },
+      }),
       requireControlPlane(TESTERS_ROSTER_WRITE_SCOPE),
-      zValidator("json", RemoveRequest, validationHook),
+      validate("json", RemoveRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
@@ -680,8 +766,15 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
 
     app.post(
       `${base}/nudge`,
+      describeRoute({
+        summary: "Mail selected testers on a cohort.",
+        description: "With `dryRun` set, reports who would be mailed and enqueues nothing.",
+        verification: "control-plane",
+        scopes: [TESTERS_NUDGE_SEND_SCOPE],
+        responses: { 200: NudgeResult },
+      }),
       requireControlPlane(TESTERS_NUDGE_SEND_SCOPE),
-      zValidator("json", NudgeRequest, validationHook),
+      validate("json", NudgeRequest),
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);

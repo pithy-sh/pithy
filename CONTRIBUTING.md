@@ -32,6 +32,8 @@ File one on a form: **Bug report** or **Feature request**. Blank issues are off,
 
 Each form sets the issue type, `Bug` or `Feature`, and applies `needs-triage`; every new issue lands on the board at `Inbox`. **What kind of issue it is goes in the type, never a label.** The org defines `Bug`, `Feature`, `Task` and `Epic`, and an issue has exactly one, so `bug`, `enhancement` and `documentation` are no longer applied. Labels are for what can overlap: `needs-triage`, `good first issue`, `help wanted`. The label means the issue arrived on a form and nobody has evaluated it yet; the team files through `/refine`, which skips the forms. `/refine` removes it at `Ready`. Nothing removes it on close, so the triage list is `is:open label:needs-triage`. `packages/cli/src/ci/contributorIntake.test.ts` holds the forms, their types, the blank-issue setting and the disclosure link to that. It cannot hold an issue filed through the API, which skips the forms and arrives unlabeled.
 
+One road through the API is labeled anyway. The `pithy` Claude Code plugin's `/report-kit-gap` files from the customer's own account with `gh issue create`, and ends every body with `Filed with the pithy plugin for Claude Code.` `.github/workflows/plugin-intake.yml` sees that line and applies `from: pithy-plugin` and `needs-triage`. The line grants no trust, since anybody can type it; all it buys is two labels that ask a maintainer to look. Both labels must exist in the repository, or the job fails.
+
 ## Pull requests from outside the team
 
 Welcome. A pull request merges into `main` when three things hold, and GitHub enforces all of them:
@@ -50,7 +52,7 @@ The pull request template asks for each of these. Link the issue your change clo
 
 The rule is a repository ruleset, committed at `.github/rulesets/main.json` and applied from it. `packages/cli/src/ci/mainRuleset.test.ts` holds that file, and the `CI` job it requires, to the rule. It does not read GitHub, so the live ruleset can drift from the file; `/vet` compares the two before every merge it performs.
 
-Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo.
+Repository admins bypass it — all of it, force push and deletion included. That is how `/ship` commits to `main`, and merges its own pull requests with `--admin`, while the team is solo. GitHub Actions bypasses it too, so the release job can push its version commit; `docs/RELEASING.md` §8 says what that trusts, and what to revisit before anyone else gets write access.
 
 To change the rule, edit the file, then apply it. `gh api repos/pithy-sh/pithy/rulesets` lists the id; with no `main` ruleset listed, create it instead:
 
@@ -58,6 +60,8 @@ To change the rule, edit the file, then apply it. `gh api repos/pithy-sh/pithy/r
 gh api -X PUT repos/pithy-sh/pithy/rulesets/<id> --input .github/rulesets/main.json   # update
 gh api -X POST repos/pithy-sh/pithy/rulesets --input .github/rulesets/main.json        # create
 ```
+
+`.github/rulesets/release.json` is the second ruleset, and it is applied the same way, with `release.json` as the input. It guards the `release` branch the `pithy` Claude Code plugin installs from: nobody but GitHub Actions may create, update, delete or force-push it, admins included, because the release workflow moves it only once a release is on npm. `packages/cli/src/ci/releaseRuleset.test.ts` holds the file to that; `docs/RELEASING.md` has the rest.
 
 ## The board
 
@@ -159,6 +163,17 @@ bun packages/cli/src/docs/writeCatalog.ts --check   # what CI runs
 **`commands` answers whether a flag exists, not whether a page may name it**, and a flag check that ignores the difference reports correct pages as wrong. A command page cites other commands' flags (`deploy.md` writes `pithy provision --env <name> --yes` while explaining what deploy refuses), quotes flags belonging to no Pithy command at all (`git rev-parse --git-common-dir`), and — most often — documents flags that deliberately **do not exist**: `secrets.md` argues at length that there is no `--all`, `vector.md` that `reset` takes no `--yes`, `turnstile.md` that there is no `--mode`. So match `<command> --flag` as a pair, and expect the absences to be the loudest thing on the page. `globalFlags` covers the flags the walk cannot see, hidden pair included.
 
 It is committed, so a consumer that neither is this repository nor installs it can read it with no build step — and committed means it can go stale, which is what the `--check` in CI's verify job is for. A stale export does not fail the site's check; it makes every page pass against a kit that has moved.
+
+### The kit's OpenAPI document
+
+`docs/openapi.generated.json` is every route every capability ships, as OpenAPI 3.1, for a reader with no build step — the docs site, a client generator in another language. It is composed from each package's `dist`, so write it after a build.
+
+```bash
+bun run build && bun run kit-contract                    # rewrite it
+bun packages/cli/src/openapi/writeKitDocument.ts --check   # what CI runs
+```
+
+**Adding or changing a route moves it, so a route change regenerates it in the same commit.** And a route is not finished until the document can say something true about it: `describeRoute({ summary, verification, responses })` first on the route line, each success response a Zod object in the capability's `src/http/responses.ts`, every request part read through `validate(target, Schema)`, and every field `.describe()`d. The capability's `routeContract.test.ts` fails on a route or a field that is not, and `CLAUDE.md` §HTTP states the rule.
 
 ### The shipped declarations
 

@@ -15,6 +15,7 @@ import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-util
 import { turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
@@ -25,6 +26,7 @@ import { AUTH_MIGRATIONS } from "../migrations/set";
 import { publishSameOrigin } from "./csrf";
 import { createSessionMiddleware } from "./middleware";
 import { createRateLimitMiddleware } from "./rateLimit";
+import { MyDeviceRevokeResponse, MyDevicesResponse, TokenRotateResponse } from "./responses";
 import { createAuthRoutes } from "./routes";
 
 const SECRET = "test-secret-please-rotate-0000000000";
@@ -148,6 +150,17 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
 
 const DEVICE_HEADERS = { "x-pithy-device-id": "dev-1", "x-pithy-platform": "ios", "cf-connecting-ip": "203.0.113.5" };
 
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
 beforeEach(async () => {
   for (const t of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${t}`).run();
@@ -193,7 +206,7 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(200);
-    const body = await res.json<{ devices: { id: string; platform: string }[] }>();
+    const body = await conforming(res, MyDevicesResponse);
     expect(body.devices).toHaveLength(1);
     expect(body.devices[0]).toMatchObject({ id: "dev-1", platform: "ios" });
   });
@@ -208,7 +221,7 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(200);
-    const body = await res.json<{ accessToken: string; refreshToken: string }>();
+    const body = await conforming(res, TokenRotateResponse);
     expect(body.accessToken.split(".")).toHaveLength(3); // a JWT
     expect(body.refreshToken).not.toBe(token); // the session token rotated
 
@@ -555,7 +568,7 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(400);
-    // The route-line `zValidator("json", RevokeDeviceBody)` now rejects it, so the code is the shared
+    // The route-line `validate("json", RevokeDeviceBody)` now rejects it, so the code is the shared
     // validation code rather than the hand-rolled `validation/invalid_input` the handler used to throw.
     expect((await res.json<{ error: { code: string } }>()).error.code).toBe("validation/invalid_input");
   });
@@ -618,7 +631,7 @@ describe("auth HTTP routes", () => {
       appEnv(),
     );
     expect(res.status).toBe(200);
-    expect((await res.json<{ revoked: number }>()).revoked).toBe(0);
+    expect((await conforming(res, MyDeviceRevokeResponse)).revoked).toBe(0);
   });
 
   test("turnstile auto-gates the OTP send route — a tokenless request is denied", async () => {

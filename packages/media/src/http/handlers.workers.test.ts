@@ -68,7 +68,7 @@ beforeEach(async () => {
   await migration.up(mediaDatabase(env.DB) as unknown as Parameters<typeof migration.up>[0]);
 });
 
-// The handlers now take the already-parsed value the route's `zValidator("json", CreateMediaInput, …)`
+// The handlers now take the already-parsed value the route's `validate("json", CreateMediaInput)`
 // produced, so these fixtures are typed as that value rather than as raw literals.
 const imageBody: CreateMediaInput = {
   type: "image",
@@ -93,7 +93,7 @@ describe("createMedia", () => {
   });
 
   // Body shape is no longer this handler's job — a bad `type` is rejected by the route's
-  // `zValidator("json", CreateMediaInput, validationHook)` before the handler runs. That assertion now
+  // `validate("json", CreateMediaInput)` before the handler runs. That assertion now
   // lives in routes.workers.test.ts ("a malformed body is a 400 …").
 
   test("persists an adopter extension field and enforces it when required", async () => {

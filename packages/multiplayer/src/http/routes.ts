@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { DurableObjectNamespace, DurableObjectStub } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import { type ResolvedGame, resolveGame } from "../config/config";
 import { MultiplayerGameNotFoundError, MultiplayerSessionNotFoundError } from "../error/errors";
@@ -17,6 +17,7 @@ import type { MultiplayerSession } from "../session/durableObject";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "../session/protocol";
 import type { GameSnapshot } from "../session/state";
 import { requireAuth } from "./guard";
+import { SessionResult, SessionView } from "./responses";
 import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
 
 /**
@@ -43,7 +44,7 @@ import { MultiplayerGameParams, MultiplayerSessionParams } from "./schemas";
  * **No route declares a json schema, including the one route that reads a body.** An action is whatever the
  * game's model defines — a commit for a commit-reveal game, a cell for a sequential grid — and the route
  * forwards its JSON body untouched to the model, which is the only thing that knows its shape. There is no
- * shape for this capability to impose, and a `zValidator("json", …)` would still change what a caller may
+ * shape for this capability to impose, and a `validate("json", …)` would still change what a caller may
  * send: it rejects an empty body under a JSON content-type with a 400, where a body-less action legitimately
  * reaches a model that takes no payload today. So the body is read off the raw request instead, with
  * the same "unreadable body means no payload" fallback — the model, not multiplayer, decides what is legal.
@@ -150,8 +151,14 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
     // Create a session for a configured game. The creator is its first member.
     app.post(
       `${base}/games/:game`,
+      describeRoute({
+        summary: "Start a session of a configured game.",
+        description: "The caller becomes the session's first member.",
+        verification: ["bearer", "session"],
+        responses: { 201: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerGameParams, validationHook),
+      validate("param", MultiplayerGameParams),
       async (c) => {
         const gameKey = c.req.valid("param").game;
         const game = resolveGame(games, gameKey);
@@ -167,8 +174,13 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
 
     app.post(
       `${base}/sessions/:id/join`,
+      describeRoute({
+        summary: "Join a session.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const view = await callSession(() => stub.join(userId(c)));
@@ -178,8 +190,15 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
 
     app.post(
       `${base}/sessions/:id/action`,
+      describeRoute({
+        summary: "Take a turn in a session.",
+        description:
+          "The JSON body is the action itself, in whatever shape the game's model defines. It is forwarded to the model untouched, and a missing or unreadable body reaches the model as no payload.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         // The action payload is the one thing this capability does not shape — it belongs to the game's
@@ -195,8 +214,13 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
     // Table mode: take or leave a seat, or close the table. Neither reads a body.
     app.post(
       `${base}/sessions/:id/leave`,
+      describeRoute({
+        summary: "Leave a seat at a table.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         return c.json(await callSession(() => stub.leave(userId(c))), 200);
@@ -205,8 +229,13 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
 
     app.post(
       `${base}/sessions/:id/close`,
+      describeRoute({
+        summary: "Close a table.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         return c.json(await callSession(() => stub.close(userId(c))), 200);
@@ -215,8 +244,13 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
 
     app.get(
       `${base}/sessions/:id/result`,
+      describeRoute({
+        summary: "Read how a finished session ended.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionResult },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const result = await callSession(() => stub.result());
@@ -229,8 +263,19 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
     // DO answers a non-upgrade request with 426, so the check lives there, once.
     app.get(
       `${base}/sessions/:id/socket`,
+      describeRoute({
+        summary: "Open a live socket on a session.",
+        description: "Send `Upgrade: websocket`. Only a member of the session may connect.",
+        verification: ["bearer", "session"],
+        responses: {
+          101: {
+            description:
+              'Switches to a WebSocket. The server sends the caller\'s view of the session as a JSON text frame on connect and after every change; the client sends `{ "type": "action", "payload": … }` to act, or `{ "type": "state" }` to resync. An error arrives as a frame, not a closed socket.',
+          },
+        },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const forwarded = new Request(c.req.raw);
@@ -242,8 +287,13 @@ export function registerMultiplayerRoutes(options: MultiplayerRoutesOptions): (a
     // Registered last so `/sessions/:id/*` static suffixes above are matched first.
     app.get(
       `${base}/sessions/:id`,
+      describeRoute({
+        summary: "Read the caller's view of a session.",
+        verification: ["bearer", "session"],
+        responses: { 200: SessionView },
+      }),
       requireAuth(),
-      zValidator("param", MultiplayerSessionParams, validationHook),
+      validate("param", MultiplayerSessionParams),
       async (c) => {
         const stub = sessionStub(sessionsBinding(c), c.req.valid("param").id);
         const view = await callSession(() => stub.view(userId(c)));

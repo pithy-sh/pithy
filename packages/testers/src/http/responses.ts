@@ -632,3 +632,12 @@ export const NudgeResponse = z
   })
   .describe("What a nudge send actually did, and who it left out.");
 export type NudgeResponse = z.output<typeof NudgeResponse>;
+
+/**
+ * `POST {base}/nudge`, whichever way it went. One status carries both bodies, so the contract names the
+ * pair; `dryRun` is the key that tells them apart.
+ */
+export const NudgeResult = z
+  .union([NudgeDryRunResponse, NudgeResponse])
+  .describe("A nudge preview when the request set `dryRun`, otherwise what the send actually did.");
+export type NudgeResult = z.output<typeof NudgeResult>;

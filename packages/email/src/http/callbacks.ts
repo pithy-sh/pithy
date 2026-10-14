@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Hono } from "hono";
 import { resolveSigningKeys } from "../crypto/signingKey";
@@ -202,21 +202,50 @@ export function registerCallbacks(app: Hono<PithyHonoEnv>): void {
     };
   };
 
-  app.get(`${CALLBACK_BASE}/c/:token`, zValidator("param", CallbackTokenParam, validationHook), async (c) => {
-    const { db, keys } = await setup(c.env as unknown as CallbackEnv);
-    return handleClick(db, keys, { token: c.req.valid("param").token, url: c.req.url }, new Date());
-  });
+  app.get(
+    `${CALLBACK_BASE}/c/:token`,
+    describeRoute({
+      summary: "Record a click on a tracked link, then send the reader on to it.",
+      description:
+        "Public: the HMAC signature on the token is the only gate. A forged, altered, or expired token answers `email/invalid_token` (400) before anything is recorded, and the destination is the http(s) URL signed into the token, never one from the request.",
+      verification: "public",
+      responses: { 302: { description: "A redirect to the link's destination, carried in `Location`." } },
+    }),
+    validate("param", CallbackTokenParam),
+    async (c) => {
+      const { db, keys } = await setup(c.env as unknown as CallbackEnv);
+      return handleClick(db, keys, { token: c.req.valid("param").token, url: c.req.url }, new Date());
+    },
+  );
 
-  app.get(`${CALLBACK_BASE}/o/:token`, zValidator("param", CallbackTokenParam, validationHook), async (c) => {
-    const { db, keys } = await setup(c.env as unknown as CallbackEnv);
-    return handleOpen(db, keys, { token: c.req.valid("param").token, url: c.req.url }, new Date());
-  });
+  app.get(
+    `${CALLBACK_BASE}/o/:token`,
+    describeRoute({
+      summary: "Record that an email was opened.",
+      description:
+        "Public: the HMAC signature on the token is the only gate. The token may carry the `.png` suffix mail clients expect on an image URL.",
+      verification: "public",
+      responses: { 200: { description: "A 1×1 transparent PNG, never cached.", contentType: "image/png" } },
+    }),
+    validate("param", CallbackTokenParam),
+    async (c) => {
+      const { db, keys } = await setup(c.env as unknown as CallbackEnv);
+      return handleOpen(db, keys, { token: c.req.valid("param").token, url: c.req.url }, new Date());
+    },
+  );
 
   app.on(
     ["GET", "POST"],
     `${CALLBACK_BASE}/u/:token`,
-    zValidator("param", CallbackTokenParam, validationHook),
-    zValidator("query", UnsubscribeQuery, validationHook),
+    describeRoute({
+      summary: "Unsubscribe the recipient from everything but the mail they ask for.",
+      description:
+        "Public: the HMAC signature on the token is the only gate. Answers GET for the link in the message and POST for one-click unsubscribe. The address joins the suppression list shared by every environment.",
+      verification: "public",
+      responses: { 200: { description: "A short HTML page confirming the opt-out.", contentType: "text/html" } },
+    }),
+    validate("param", CallbackTokenParam),
+    validate("query", UnsubscribeQuery),
     async (c) => {
       const env = c.env as unknown as CallbackEnv;
       const { db, suppressionDb, keys } = await setup(env);

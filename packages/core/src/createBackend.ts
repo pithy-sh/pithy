@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Hono } from "hono";
+import { z } from "zod";
 import { noopEmit } from "./audit/recorder";
 import { BindingSpec } from "./capability/bindings";
 import type {
@@ -20,12 +21,15 @@ import { allowedOriginSet, corsSurface, registerControlPlaneCors } from "./contr
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { ValidationError } from "./error/pithyError";
+import { describeRoute } from "./http/routeSpec";
 import { catalogFor, composeMessages } from "./i18n/registry";
 import { bakedTranslator, DEFAULT_LOCALE } from "./i18n/translator";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import type { RouteGroup } from "./openapi/document";
+import { recordRouteGroups } from "./openapi/routeGroups";
 import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
 import { registeredWorkflowBinding } from "./workflow/bindings";
@@ -103,6 +107,18 @@ function versionOf(env: Record<string, unknown>): string | undefined {
 function envNameOf(env: Record<string, unknown>, fallback: string | undefined): string {
   return typeof env.ENVIRONMENT === "string" && env.ENVIRONMENT.length > 0 ? env.ENVIRONMENT : (fallback ?? "unknown");
 }
+
+/** What `GET /health` answers. */
+export const HealthBody = z
+  .object({
+    status: z.literal("ok").describe("Always `ok`: an answer at all is the liveness signal."),
+    version: z
+      .string()
+      .nullable()
+      .describe("The Cloudflare version id of the build answering, or null where the Worker cannot say."),
+  })
+  .describe("Liveness, and which build is answering.");
+export type HealthBody = z.infer<typeof HealthBody>;
 
 /**
  * Assemble capabilities into a deployable Hono app — a valid Worker `fetch` handler.
@@ -284,14 +300,30 @@ export function createBackend<
    * before `version_metadata` was declared reports "I cannot tell you", and `deploy` reports the check
    * as inconclusive instead of failing it.
    */
-  app.get(HEALTH_PATH, (c) => c.json({ status: "ok", version: workerVersion(c.env) }));
+  const groups: RouteGroup[] = [];
+  const healthStart = app.routes.length;
+  app.get(
+    HEALTH_PATH,
+    describeRoute({
+      summary: "Report liveness, and which build is answering.",
+      verification: "public",
+      responses: { 200: HealthBody },
+    }),
+    (c) => c.json({ status: "ok", version: workerVersion(c.env) } satisfies HealthBody),
+  );
+  groups.push({ tag: "core", routes: app.routes.slice(healthStart) });
 
   for (const cap of all) {
     for (const middleware of cap.middleware ?? []) middleware(app);
   }
+  // Each hook's slice of the route table is noted as it mounts, so the OpenAPI contract can tag every
+  // operation with the capability that owns it (`openapi/routeGroups.ts`).
   for (const cap of all) {
+    const start = app.routes.length;
     cap.routes?.(app);
+    groups.push({ tag: cap.name, routes: app.routes.slice(start) });
   }
+  recordRouteGroups(app, groups);
 
   return app as unknown as Hono<BackendEnv<readonly [...Caps, App]>>;
 }

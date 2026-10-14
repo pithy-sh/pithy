@@ -4,6 +4,7 @@
 import { basename, join, resolve } from "node:path";
 import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
 import { commandName } from "@pithy-sh/core/src/cli/command";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
@@ -30,12 +31,14 @@ import {
 import { askDomains, writeDomains } from "../project/askDomains";
 import { writeFileAtomic } from "../project/atomic";
 import { renderDomainsBlock } from "../project/domainPrompt";
+import { packageManagerFromUserAgent } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
 import { canceled } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
+import { runUiAdd } from "../ui/flow";
 import { installAlias } from "./alias";
 import { offerDocs } from "./docs";
 
@@ -442,6 +445,59 @@ export async function writeCloudflareBlock(projectDir: string, block: Cloudflare
   return { declared: true };
 }
 
+/**
+ * Which clients call this backend. `CLAUDE.md` §CLI: `pithy init` offers app-target profiles.
+ *
+ * The answer decides one thing today: whether the first Worker also serves a React front end. Auth
+ * already speaks both dialects — bearer for a device, a CSRF-protected cookie for a browser — so a
+ * mobile project and a web project need the same backend and differ only in what the Worker serves
+ * beside its routes. `mobile` is the default because it is what `init` always scaffolded: a CI run that
+ * passes no flag gets the same project it got before the question existed.
+ */
+export const AppTarget = z
+  .enum(["mobile", "web", "both"])
+  .describe(
+    "Which clients call this backend: `mobile` (an app store app, so the Worker is an API), `web` (a React app served by the same Worker) or `both`.",
+  );
+export type AppTarget = z.infer<typeof AppTarget>;
+
+/** The default target: an API and nothing beside it, which is what `init` scaffolded before it asked. */
+export const DEFAULT_TARGET: AppTarget = "mobile";
+
+/** Whether a target puts a web front end in the first Worker. */
+export function servesWeb(target: AppTarget): boolean {
+  return target !== "mobile";
+}
+
+/** Parse `--target`, refusing anything that is not a target with the three it could be. */
+export function parseTarget(raw: string): AppTarget {
+  const parsed = AppTarget.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  throw new ValidationError({
+    message: `"${raw}" is not a target.`,
+    action: "Pass --target mobile, web or both.",
+  });
+}
+
+/** Ask which clients call this backend, or take the default when nobody is there to ask. */
+export async function askTarget(options: {
+  interactive: boolean;
+  prompt?: InitPrompt;
+}): Promise<{ value: AppTarget; prompted: boolean }> {
+  if (!options.interactive) return { value: DEFAULT_TARGET, prompted: false };
+  const prompt = options.prompt ?? (await clackPrompt());
+  const answer = await prompt.select({
+    message: "Which clients call this backend?",
+    options: [
+      { value: "mobile", label: "Mobile apps. The Worker is an API." },
+      { value: "web", label: "A web app. The Worker serves it too." },
+      { value: "both", label: "Both." },
+    ],
+  });
+  if (prompt.isCancel(answer)) canceled();
+  return { value: parseTarget(String(answer)), prompted: true };
+}
+
 /** `pithy init --json`. `docs/commands/init.md`. */
 const InitPayload = z
   .object({
@@ -452,6 +508,14 @@ const InitPayload = z
     environments: z
       .array(z.string().describe("An environment."))
       .describe("Every environment the project deploys to, in declaration order."),
+    target: AppTarget,
+    frontEnd: z
+      .object({
+        framework: z.string().describe("The front-end framework scaffolded. `react`."),
+        created: z.array(z.string().describe("A Worker-relative path.")).describe("The files it created, sorted."),
+      })
+      .nullable()
+      .describe("The front end scaffolded into the first Worker, or `null` for a `mobile` target."),
     domains: WorkerDomains.nullable().describe("Where the first Worker answers, or `null` when none was declared."),
     agents: InstructionsFile.describe("`AGENTS.md`, and what happened to the Pithy block in it."),
     claude: InstructionsFile.describe("`CLAUDE.md`, and whether it now points at `AGENTS.md`."),
@@ -466,6 +530,10 @@ export default withContract(
       worker: {
         type: "string",
         description: `Name of the first worker, created at apps/<name>. Defaults to "${DEFAULT_WORKER}".`,
+      },
+      target: {
+        type: "string",
+        description: `Which clients call this backend: mobile, web or both. Web scaffolds a React front end. Defaults to "${DEFAULT_TARGET}".`,
       },
       dir: {
         type: "string",
@@ -483,6 +551,8 @@ export default withContract(
         // what counts as a collision. A prompted worker name is only known later, and the re-check covers
         // it. `ensureScaffoldable` validates the name before it builds a path out of it.
         await ensureScaffoldable(targetDir, args.worker);
+        // Refused before any question, like a bad --worker: a typo should not cost the answers after it.
+        const flaggedTarget = args.target === undefined ? undefined : parseTarget(args.target);
 
         // Said before the question, not after it. The name leads every Cloudflare resource this project
         // provisions (docs/NAMING.md), teardown recomputes those names rather than storing them, and the
@@ -506,6 +576,10 @@ export default withContract(
         // renaming one after provisioning orphans what was created under the old one. The scaffold writes
         // each Worker's `env.<name>` stanzas from it.
         const environments = await askEnvironments({ interactive: mayPrompt(args.json) });
+        const target =
+          flaggedTarget === undefined
+            ? await askTarget({ interactive: mayPrompt(args.json) })
+            : { value: flaggedTarget, prompted: false };
 
         const appName = name.value;
         await scaffoldProject({ targetDir, appName, worker: worker.value, environments: environments.environments });
@@ -515,6 +589,28 @@ export default withContract(
         // with. `pithy upgrade` runs the same merge on the block.
         const agents = await syncAgentsBlock(targetDir, { dryRun: false });
         const claude = await syncClaudePointer(targetDir);
+        // The front end, after the agent instructions so a failure here never leaves a project without them,
+        // and with no screens: a new project composes nothing yet, so there is nothing to sign in to or pay
+        // for. Re-running `pithy ui add react` adds the screens once their capabilities are composed; files
+        // already there are left as they are. `{ capabilities: [] }` is the Worker config the scaffold just
+        // wrote, stated rather than imported, because importing it needs the kit installed and nothing is yet.
+        const workerDir = join(targetDir, "apps", worker.value);
+        const launchedBy = packageManagerFromUserAgent();
+        const frontEnd = servesWeb(target.value)
+          ? await runUiAdd({
+              projectDir: targetDir,
+              workerDir,
+              config: { capabilities: [] },
+              framework: "react",
+              auth: false,
+              payments: false,
+              organization: false,
+              // Nothing is installed yet, so no lockfile says which package manager the front end's dev
+              // command should run through. The runner that launched `pithy` is the best evidence; without
+              // one the lockfile rule applies, and re-running `pithy ui add react` after the install rewires it.
+              ...(launchedBy === undefined ? {} : { packageManager: launchedBy }),
+            })
+          : null;
 
         // Asked before the zones are, because listing them needs the token — and the same token answers
         // which account this project is for, so the two questions collapse into one.
@@ -538,17 +634,24 @@ export default withContract(
         // A declaration the writer could not place must not vanish. `writeDomains` still generates the
         // wrangler values either way, so the Worker routes correctly — but the `domains` block is the
         // source of truth, and an adopter who answered the prompt needs to know it did not land.
-        const wrote = asked.domains ? await writeDomains(join(targetDir, "apps", worker.value), asked.domains) : null;
+        const wrote = asked.domains ? await writeDomains(workerDir, asked.domains) : null;
         const prompted =
-          name.prompted || worker.prompted || environments.prompted || asked.prompted || account.prompted;
+          name.prompted ||
+          worker.prompted ||
+          environments.prompted ||
+          target.prompted ||
+          asked.prompted ||
+          account.prompted;
 
+        const frontEndReport = frontEnd === null ? null : { framework: frontEnd.framework, created: frontEnd.created };
         if (args.json) {
           process.stdout.write(
-            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, domains: asked.domains ?? null, agents, claude })}\n`,
+            `${formatJsonLine({ command: "init", targetDir, appName, worker: worker.value, environments: environments.environments, target: target.value, frontEnd: frontEndReport, domains: asked.domains ?? null, agents, claude })}\n`,
           );
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
+        if (frontEnd) process.stdout.write(`A React front end is in apps/${worker.value}/. Install, then run it.\n`);
         for (const line of [agentsLine(agents, false), claudeLine(claude)]) {
           if (line !== null) process.stdout.write(`${line}\n`);
         }

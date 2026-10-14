@@ -27,7 +27,7 @@ export type LayersFor = (locale: string) => readonly (MessageCatalog | undefined
  * formatters are held on the translator — which lives and dies with one request — rather than in a
  * module-level cache.
  *
- * ## Why the query string is read off the URL here, and not through `zValidator`
+ * ## Why the query string is read off the URL here, and not through `validate`
  *
  * §HTTP's rule is that a route declares its request contract on the route line and a handler reads
  * `c.req.valid(target)`; `plugins/no-raw-request-input.grit` enforces it by making the raw accessors

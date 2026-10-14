@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { describeRoute, type RouteResponse } from "@pithy-sh/core/src/http/routeSpec";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
@@ -29,9 +29,20 @@ import { requireAuth } from "./middleware";
 import { requireFreshAuthentication } from "./providerFreshness";
 import { collapseProviderRefusal } from "./providerRefusal";
 import { getAuthInstance, resolveDb } from "./resolve";
+import { MyDeviceRevokeResponse, MyDevicesResponse, TokenRotateResponse } from "./responses";
 import { RevokeDeviceBody } from "./schemas";
 
 type Ctx = Context<PithyHonoEnv>;
+
+/**
+ * What a route answers when the answer is Better Auth's: the catch-all, and the two endpoints of its that
+ * are mounted ahead of it for a gate. Its wire is its own contract (`handleBetterAuth` says why), so the
+ * kit's contract points at it rather than restating it.
+ */
+const BETTER_AUTH_ANSWER: RouteResponse = {
+  description: "Better Auth's own answer. See its endpoint reference.",
+  contentType: "application/json",
+};
 
 function db(c: Ctx, wiring: AuthWiring) {
   return authDatabase(resolveDb(c.env, wiring.config.database));
@@ -85,11 +96,40 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     }
 
     // Rotate the refresh credential: mint a new session, revoke the presented one, return a fresh JWT.
-    app.post(`${base}/token/rotate`, csrf, (c) => rotateToken(c, wiring));
+    app.post(
+      `${base}/token/rotate`,
+      describeRoute({
+        summary: "Trade the current refresh credential for a new access token and its successor.",
+        description:
+          "The presented session is spent. Presenting it again after a short grace window is read as theft, and revokes every session descended from the same sign-in.",
+        verification: ["bearer", "session"],
+        responses: { 200: TokenRotateResponse },
+      }),
+      csrf,
+      (c) => rotateToken(c, wiring),
+    );
     // Device management (bearer/session gated; the revoke is CSRF-guarded as a mutating route).
-    app.get(`${base}/devices`, requireAuth(), (c) => listMyDevices(c, wiring));
-    app.post(`${base}/devices/revoke`, requireAuth(), csrf, zValidator("json", RevokeDeviceBody, validationHook), (c) =>
-      revokeMyDevice(c, wiring, c.req.valid("json")),
+    app.get(
+      `${base}/devices`,
+      describeRoute({
+        summary: "List the caller's own registered devices.",
+        verification: ["bearer", "session"],
+        responses: { 200: MyDevicesResponse },
+      }),
+      requireAuth(),
+      (c) => listMyDevices(c, wiring),
+    );
+    app.post(
+      `${base}/devices/revoke`,
+      describeRoute({
+        summary: "Sign out one of the caller's own devices and forget it.",
+        verification: ["bearer", "session"],
+        responses: { 200: MyDeviceRevokeResponse },
+      }),
+      requireAuth(),
+      csrf,
+      validate("json", RevokeDeviceBody),
+      (c) => revokeMyDevice(c, wiring, c.req.valid("json")),
     );
 
     // **Changing which providers can sign you in requires a recent authentication — both directions.**
@@ -97,18 +137,64 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     // carries the argument: Better Auth guards the two unevenly, and its guard on the unlink side reads
     // `session.createdAt`, which `/token/rotate` resets. Neither takes a kit validator — the body is
     // Better Auth's, and `handleBetterAuth` hands it `c.req.raw`, which is the catch-all's own reason.
-    app.post(`${base}/link-social`, requireFreshAuthentication("link"), (c) => handleBetterAuth(c, wiring));
-    app.post(`${base}/unlink-account`, requireFreshAuthentication("unlink"), (c) => handleBetterAuth(c, wiring));
+    app.post(
+      `${base}/link-social`,
+      describeRoute({
+        summary: "Connect another sign-in provider to the caller's account.",
+        description:
+          "Better Auth's endpoint, behind a kit gate: the caller must have signed in within the last fifteen minutes, or it is refused with `auth/session_not_fresh`.",
+        verification: ["bearer", "session"],
+        responses: { 200: BETTER_AUTH_ANSWER },
+      }),
+      requireFreshAuthentication("link"),
+      (c) => handleBetterAuth(c, wiring),
+    );
+    app.post(
+      `${base}/unlink-account`,
+      describeRoute({
+        summary: "Disconnect a sign-in provider from the caller's account.",
+        description:
+          "Better Auth's endpoint, behind a kit gate: the caller must have signed in within the last fifteen minutes, or it is refused with `auth/session_not_fresh`.",
+        verification: ["bearer", "session"],
+        responses: { 200: BETTER_AUTH_ANSWER },
+      }),
+      requireFreshAuthentication("unlink"),
+      (c) => handleBetterAuth(c, wiring),
+    );
 
     // The caller's own stored picture, as bytes a browser can cache. No id in the path — see
     // `serveMyImage`, which is where the reason lives.
-    app.get(`${base}${PROFILE_IMAGE_PATH}`, requireAuth(), (c) => serveMyImage(c, wiring));
+    app.get(
+      `${base}${PROFILE_IMAGE_PATH}`,
+      describeRoute({
+        summary: "Read the caller's own stored picture.",
+        description:
+          "A picture linked from a provider, or stored as a vector, is not served here and answers 404. The response is private and immutable: the URL a client is handed carries the picture's version.",
+        verification: ["bearer", "session"],
+        responses: {
+          200: { description: "The caller's stored picture, as PNG, JPEG or WebP bytes.", contentType: "image/*" },
+        },
+      }),
+      requireAuth(),
+      (c) => serveMyImage(c, wiring),
+    );
 
     // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
     registerAuthAdminRoutes(wiring)(app);
 
     // Better Auth owns the rest (sign-in, verify, callback, sign-out, /token, /jwks, revoke-sessions…).
-    app.all(`${base}/*`, (c) => handleBetterAuth(c, wiring));
+    app.all(
+      `${base}/*`,
+      describeRoute({
+        summary: "Everything else under the auth path, answered by Better Auth.",
+        description:
+          "Sign-in, sign-up, verification, OAuth callbacks, sign-out, `/token`, `/jwks` and the rest of Better Auth's endpoints. Which credential an endpoint takes, if any, is its own decision.",
+        verification: ["public", "session", "bearer"],
+        methods: ["get", "post"],
+        responses: { 200: BETTER_AUTH_ANSWER },
+      }),
+      (c) => handleBetterAuth(c, wiring),
+    );
   };
 }
 

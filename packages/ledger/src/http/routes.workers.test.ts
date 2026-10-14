@@ -8,9 +8,11 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { LedgerConfig, type LedgerConfigInput } from "../config/config";
 import { openLedger } from "../ledger";
 import { ledger_0001_accounts } from "../migrations/0001_accounts";
+import { LedgerBalanceResponse, LedgerOwnTransactionsResponse } from "./responses";
 import { registerLedgerRoutes } from "./routes";
 
 beforeEach(async () => {
@@ -49,6 +51,17 @@ const req = (
 
 const ADMIN = "ledger:admin";
 
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
 describe("ledger routes", () => {
   test("reading a balance requires auth and is scoped to the caller", async () => {
     const app = makeApp();
@@ -56,7 +69,7 @@ describe("ledger routes", () => {
     await openLedger(env.DB).credit("alice", "chips", 100, "c1");
     const res = await req(app, "GET", "/ledger/chips", { user: "alice" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ balance: 100, held: 0, available: 100 });
+    expect(await conforming(res, LedgerBalanceResponse)).toEqual({ balance: 100, held: 0, available: 100 });
     // Bob reads his own (empty) balance, never alice's.
     expect(await (await req(app, "GET", "/ledger/chips", { user: "bob" })).json()).toEqual({
       balance: 0,
@@ -86,7 +99,7 @@ describe("ledger routes", () => {
       body: { userId: "alice", amount: 100, ref: "c1" },
     });
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ balance: 100, held: 0, available: 100 });
+    expect(await conforming(ok, LedgerBalanceResponse)).toEqual({ balance: 100, held: 0, available: 100 });
   });
 
   test("an admin debit past the balance is a 409 insufficient_funds", async () => {
@@ -184,7 +197,7 @@ describe("ledger routes", () => {
     await openLedger(env.DB).credit("alice", "chips", 100, "c1", { memo: "welcome bonus" });
     const res = await req(app, "GET", "/ledger/chips/transactions", { user: "alice" });
     expect(res.status).toBe(200);
-    const { transactions } = await res.json<{ transactions: { ref: string; memo: string }[] }>();
+    const { transactions } = await conforming(res, LedgerOwnTransactionsResponse);
     expect(transactions[0]?.ref).toBe("c1");
     expect(transactions[0]?.memo).toBe("welcome bonus");
   });

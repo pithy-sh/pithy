@@ -313,6 +313,13 @@ jobs:
       - name: Build
         run: bun run build
 
+      # The kit's OpenAPI document states the CLI's version, which `bun run version` just moved, so it is
+      # regenerated here and committed with the bump below. After the build, because it composes every
+      # capability from its `dist` (#719). Every pull request already holds the routes in it current; this
+      # step only ever moves `info.version`.
+      - name: Restamp the kit's OpenAPI document
+        run: bun run kit-contract
+
       # Step 4. Join the snapshot to the versions Changesets just wrote.
       - name: Build the release records
         run: bun scripts/releaseRecords.ts build
@@ -369,6 +376,21 @@ jobs:
           git commit -m "chore(release): version packages" || echo "Nothing to commit."
           git push --follow-tags origin HEAD:main
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Step 6b. Move `release` to the commit just released (#719).
+      #
+      # The `pithy` Claude Code plugin installs from `pithy-sh/pithy#release`, never from `main`: `main`
+      # runs ahead of npm between releases, so a plugin read from it would name commands the user's
+      # installed `pithy` does not have yet. This is the only thing that moves the branch, and only on a
+      # real release, after the publish and the push to `main` — a plugin a user can install is always one
+      # whose CLI is already on npm. `.github/rulesets/release.json` lets this workflow and nothing else
+      # update it. A plain push, never forced: `release` only ever follows `main` forward, so a push that
+      # is not a fast-forward is a fact to stop on rather than to overwrite.
+      - name: Move the release branch
+        if: ${{ !inputs.dry_run }}
+        env:
+          SHA: ${{ steps.push.outputs.sha }}
+        run: git push origin "${SHA}:refs/heads/release"
 
       # Step 7. Tell the dashboard what shipped — staging and production, each on its own.
       #

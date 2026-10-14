@@ -62,9 +62,18 @@ Each one is a package you add to a Worker with `pithy add <name>`, and each runs
 
 Two more pieces ride along with every project. The [control plane](https://pithy.sh/docs/capabilities/control-plane/) is the inbound administration seam, present and denying by default. `pithy ui add react` scaffolds a [front end](https://pithy.sh/docs/front-ends/) into a Worker you already have, on the same origin as its API.
 
+Every route the kit ships declares what it accepts, how its caller is verified and what it returns, so `pithy contract` writes each Worker's OpenAPI document from the routes it composes. A client in any language generates its calls from that file instead of writing them by hand. The kit's own is [`docs/openapi.generated.json`](docs/openapi.generated.json).
+
 ## Built for agents too
 
 Every command but the deliberately manual `pithy remove` takes full flags, answers with `--json`, and never prompts when told not to. `pithy schema --json` describes each one, and a failure exits with a code that says what to do next. So you and your coding agent drive the same CLI. `pithy docs connect` points Claude Code, Cursor, VS Code and seven other clients at the Pithy documentation server. See [Pithy for agents](https://pithy.sh/docs/agents/).
+
+For Claude Code there is a plugin: an agent team for a server, a web client, a mobile client and a runner, each on the model you choose. When it finds something the kit cannot do, it files the issue. It installs from the `release` branch, which moves only when the kit is published, so it names exactly the commands your `pithy` has. See [`agent-plugins/claude/pithy`](agent-plugins/claude/pithy/README.md).
+
+```text
+/plugin marketplace add pithy-sh/pithy#release
+/plugin install pithy@pithy
+```
 
 ## One project, or two?
 

@@ -12,7 +12,8 @@ import { MULTIPLAYER_MIGRATION_ORDER, multiplayer } from "../capability";
 import { multiplayer_0001_results } from "../migrations/0001_results";
 import type { MultiplayerSession } from "./durableObject";
 import { USER_HEADER } from "./protocol";
-import type { GameSnapshot, SessionView } from "./state";
+import type { GameSnapshot } from "./state";
+import type { SessionView } from "./view";
 
 // The composition an adopter's `createEntrypoint` performs at load (#645): every capability's `compose` hook over
 // the whole set. It is what hands the session its ledger and its leaderboard, which the session never imports;

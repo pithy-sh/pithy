@@ -9,10 +9,12 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import "../algorithm/builtins";
 import { RATING_MIGRATION_ORDER } from "../capability";
 import { RatingConfig, type RatingConfigInput, validateRatingGames } from "../config/config";
 import { rating_0001_rating } from "../migrations/0001_rating";
+import { RatingView, RecordedOutcome } from "./responses";
 import { registerRatingRoutes } from "./routes";
 
 function provider(): MigrationProvider {
@@ -50,6 +52,17 @@ function makeApp(input: RatingConfigInput) {
   const config = RatingConfig.parse(input);
   registerRatingRoutes({ games: validateRatingGames(config), config })(app);
   return app;
+}
+
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
 }
 
 const CONFIG: RatingConfigInput = {
@@ -105,10 +118,13 @@ describe("rating routes", () => {
       env,
     );
     expect(record.status).toBe(201);
+    const recorded = await conforming(record, RecordedOutcome);
+    expect(recorded).toMatchObject({ game: "duel", pool: "duel" });
+    expect(recorded.players.map((p) => p.userId).sort()).toEqual(["ada", "alan"]);
 
     const me = await app.request("/rating/games/duel/me", { headers: { "x-user": "ada" } }, env);
     expect(me.status).toBe(200);
-    const view = await me.json<{ skill: number; xp: number; level: string; provisional: boolean }>();
+    const view = await conforming(me, RatingView);
     expect(view.skill).toBeGreaterThan(1500); // Ada won
     expect(view.xp).toBe(20);
     expect(view.level).toBe("pro");
@@ -117,7 +133,7 @@ describe("rating routes", () => {
 
   test("an unrated player's read is provisional", async () => {
     const me = await makeApp(CONFIG).request("/rating/games/duel/me", { headers: { "x-user": "newbie" } }, env);
-    const view = await me.json<{ provisional: boolean; games: number }>();
+    const view = await conforming(me, RatingView);
     expect(view.provisional).toBe(true);
     expect(view.games).toBe(0);
   });

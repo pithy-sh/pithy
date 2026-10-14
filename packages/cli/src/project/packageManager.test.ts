@@ -14,6 +14,7 @@ import {
   execArgs,
   installArgs,
   installPackage,
+  packageManagerFromUserAgent,
   promoteDependencies,
   runPackageManager,
   uninstallArgs,
@@ -506,5 +507,21 @@ describe("declareOnWorker", () => {
   test("answers empty rather than throwing when the Worker has no manifest", async () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { "@pithy-sh/auth": "^0.1.4" } }));
     expect(await declareOnWorker(dir, join(dir, "apps", "gone"), "@pithy-sh/auth")).toEqual([]);
+  });
+});
+
+describe("packageManagerFromUserAgent", () => {
+  test("names the runner that launched pithy", () => {
+    expect(packageManagerFromUserAgent({ npm_config_user_agent: "bun/1.4.2 npm/? node/v22.18.0 linux x64" })).toBe(
+      "bun",
+    );
+    expect(packageManagerFromUserAgent({ npm_config_user_agent: "pnpm/10.0.0 npm/? node/v22.18.0" })).toBe("pnpm");
+    expect(packageManagerFromUserAgent({ npm_config_user_agent: "yarn/4.5.0 npm/? node/v22.18.0" })).toBe("yarn");
+    expect(packageManagerFromUserAgent({ npm_config_user_agent: "npm/11.0.0 node/v22.18.0" })).toBe("npm");
+  });
+
+  test("is undefined when no runner set it, or it names something else", () => {
+    expect(packageManagerFromUserAgent({})).toBeUndefined();
+    expect(packageManagerFromUserAgent({ npm_config_user_agent: "deno/2.0.0" })).toBeUndefined();
   });
 });

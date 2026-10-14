@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
 import { PithyError } from "../../error/pithyError";
-import { validationHook } from "../../http/validation";
+import { validate } from "../../http/validation";
 import { ControlPlaneConfig } from "../config/config";
 import type { ControlPlaneConnection, Ed25519PublicJwk } from "../data/connection";
 import type { ReplayGuard } from "../replay/guard";
@@ -123,11 +122,8 @@ function makeApp(options: { verifier?: ControlPlaneVerifier | null } = {}) {
     c.json({ controlPlane: c.var.controlPlane, auth: c.var.auth }),
   );
 
-  app.post(
-    "/control-plane/keys",
-    requireControlPlane(KEYS_ROTATE_SCOPE),
-    zValidator("json", RegisterKeyRequest, validationHook),
-    (c) => c.json({ received: c.req.valid("json") }),
+  app.post("/control-plane/keys", requireControlPlane(KEYS_ROTATE_SCOPE), validate("json", RegisterKeyRequest), (c) =>
+    c.json({ received: c.req.valid("json") }),
   );
 
   return app;
@@ -360,7 +356,7 @@ describe("createControlPlaneVerifier", () => {
 
   test("clones the body, so a verified POST still reaches its validator intact", async () => {
     // The digest check has to read the request body. Reading the original stream would leave the
-    // route's `zValidator("json", …)` an empty body: verification would pass and the call would then
+    // route's `validate("json", …)` an empty body: verification would pass and the call would then
     // fail validation for no visible reason — a bug that only appears on write routes, which are
     // exactly the ones worth protecting. So the verifier clones, and this asserts it.
     const registration = { keyId: "key_2026_04", publicKey: publicJwk };

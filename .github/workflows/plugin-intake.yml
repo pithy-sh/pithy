@@ -1,0 +1,31 @@
+name: Plugin intake
+
+# Labels an issue the `pithy` Claude Code plugin filed (#719).
+#
+# `/report-kit-gap` files with `gh issue create`, from the customer's own account. Two things a form would
+# have done do not happen on that road: GitHub drops the labels of anyone without triage access, and an
+# issue filed by API never passes through `bug.yml` or `feature.yml`, which is where `needs-triage` comes
+# from. So the skill ends every body with the marker line below, and this applies both labels.
+#
+# Nothing here reads the body beyond `contains()`, an expression, never a shell. The marker grants no
+# trust: anybody can type it, and all it buys is two labels that ask a maintainer to look.
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    name: Label plugin issues
+    if: ${{ contains(github.event.issue.body, 'Filed with the pithy plugin for Claude Code.') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Apply the intake labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: gh issue edit "$ISSUE" --repo "$REPO" --add-label "from: pithy-plugin" --add-label needs-triage

@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { StorageConfig } from "../config/config";
@@ -55,7 +56,7 @@ describe("storage route contract", () => {
     const offenders = uncovered.map((route) => `${route.method} ${route.path} (:${route.params.join(", :")})`);
     const message =
       `These storage routes read a path param no validator declared: ${offenders.join("; ")}. ` +
-      `Add zValidator("param", <Schema>, validationHook) to each, with the schema in src/http/schemas.ts.`;
+      `Add validate("param", <Schema>) to each, with the schema in src/http/schemas.ts.`;
     expect(uncovered, message).toEqual([]);
   });
 
@@ -66,5 +67,19 @@ describe("storage route contract", () => {
     expect(app.routes.length).toBeGreaterThan(0);
     const declared = app.routes.map((route) => route.path).filter((path) => pathParams(path).length > 0);
     expect([...new Set(declared)].sort()).toEqual([...PARAM_PATHS].sort());
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "storage", routes: composeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "storage", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

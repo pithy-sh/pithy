@@ -8,7 +8,7 @@ import { EmailJobStatus, SuppressionReason } from "../data/enums";
 /**
  * The request schemas for every email route — the three public callbacks and the six control-plane
  * admin routes. Validation happens at the HTTP boundary (CLAUDE.md §Zod), declared on the route line
- * with `zValidator(target, Schema, validationHook)` — so reading `callbacks.ts` or `routes.ts` tells
+ * with `validate(target, Schema)` — so reading `callbacks.ts` or `routes.ts` tells
  * you what each route accepts without opening a handler.
  *
  * The callback schemas bound a value that already reaches the handler as free-form text. Neither tries

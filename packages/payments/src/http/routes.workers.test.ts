@@ -111,6 +111,7 @@ import {
   PaymentsEntitlementsResponse,
   PaymentsPricingEnvelope,
   type PaymentsQuotedMoney,
+  PaymentsWebhookAck,
 } from "./responses";
 import { changeableSubscription, registerPaymentsRoutes } from "./routes";
 import {
@@ -1183,6 +1184,17 @@ describe("POST /payments/restore", () => {
   });
 });
 
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
 describe("POST /payments/webhooks/apple", () => {
   test("verifies, records, projects, and reports what changed", async () => {
     await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
@@ -1190,7 +1202,11 @@ describe("POST /payments/webhooks/apple", () => {
       body: { signedPayload: await notification() },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ received: true, projected: true, outcome: "created" });
+    expect(await conforming(response, PaymentsWebhookAck)).toEqual({
+      received: true,
+      projected: true,
+      outcome: "created",
+    });
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
@@ -1239,7 +1255,7 @@ describe("POST /payments/webhooks/apple", () => {
     // Apple delivers at-least-once and retries, so this is normal traffic, not an error.
     const again = await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: signed } });
     expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ received: true, duplicate: true });
+    expect(await conforming(again, PaymentsWebhookAck)).toEqual({ received: true, duplicate: true });
     expect(await webhookEvents()).toHaveLength(1);
     expect(await purchases()).toHaveLength(1);
   });
@@ -1338,7 +1354,7 @@ describe("POST /payments/webhooks/apple", () => {
       body: { signedPayload: await notification(testFixture) },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ received: true, projected: false });
+    expect(await conforming(response, PaymentsWebhookAck)).toEqual({ received: true, projected: false });
     const events = await webhookEvents();
     expect(events[0]).toMatchObject({ providerEventId: testFixture.notification.notificationUUID, error: null });
     expect(events[0]?.processedAt).not.toBeNull();

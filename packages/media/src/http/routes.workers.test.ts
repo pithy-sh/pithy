@@ -5,10 +5,18 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { MediaConfig } from "../config/config";
 import { extendMediaAsset } from "../data/extend";
 import type { MediaStorage } from "../storage/storage";
 import type { HandlerDeps } from "./handlers";
+import {
+  DuplicatesResponse,
+  MediaDeletedResponse,
+  MediaListResponse,
+  MediaRecordResponse,
+  MediaUploadInitResponse,
+} from "./responses";
 import { registerMediaRoutes } from "./routes";
 
 const schema = extendMediaAsset();
@@ -75,6 +83,17 @@ function makeApp() {
   return app;
 }
 
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
 /** The `PithyError` payload the HTTP codec wrote, for the rejection-path assertions. */
 async function errorOf(res: Response) {
   const body = (await res.json()) as { error: { code: string; status: number; message: string } };
@@ -104,7 +123,7 @@ describe("media routes — verification strategy", () => {
       body: JSON.stringify({ type: "image", name: "n", filename: "a.png", contentType: "image/png" }),
     });
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { id: string; uploadUrl: string };
+    const body = await conforming(res, MediaUploadInitResponse);
     expect(body.id).toBe("fixed");
     expect(body.uploadUrl).toContain("https://up/");
   });
@@ -132,7 +151,7 @@ describe("media routes — verification strategy", () => {
 
 describe("media routes — declared request shapes", () => {
   // These assertions moved here from handlers.workers.test.ts: the handlers no longer parse their input,
-  // so a malformed request is now rejected by the route's zValidator before any handler runs.
+  // so a malformed request is now rejected by the route's validator before any handler runs.
 
   test("a malformed body is a 400 with the validation code (bad media type)", async () => {
     const app = makeApp();
@@ -221,6 +240,38 @@ describe("media routes — declared request shapes", () => {
       body: JSON.stringify({ size: 2048 }),
     });
     expect(res.status).toBe(200);
-    expect((await res.json()) as Record<string, unknown>).toMatchObject({ id: "fixed", status: "stored", size: 2048 });
+    expect(await conforming(res, MediaRecordResponse)).toMatchObject({ id: "fixed", status: "stored", size: 2048 });
+  });
+});
+
+describe("media routes — response shapes", () => {
+  test("read, list, duplicate search and delete each answer with their declared shape", async () => {
+    const app = makeApp();
+    const headers = { "content-type": "application/json", "x-user": "u-1" };
+    await app.request("/media", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ type: "image", name: "n", filename: "a.png", contentType: "image/png" }),
+    });
+
+    const one = await app.request("/media/fixed", { headers });
+    expect(one.status).toBe(200);
+    expect(await conforming(one, MediaRecordResponse)).toMatchObject({ id: "fixed", status: "pending" });
+
+    const list = await app.request("/media", { headers });
+    expect(list.status).toBe(200);
+    expect((await conforming(list, MediaListResponse)).items.map((item) => item.id)).toEqual(["fixed"]);
+
+    const duplicates = await app.request("/media/duplicates", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ type: "image", sha256: "a".repeat(64) }),
+    });
+    expect(duplicates.status).toBe(200);
+    expect(await conforming(duplicates, DuplicatesResponse)).toEqual({ matches: [] });
+
+    const deleted = await app.request("/media/fixed", { method: "DELETE", headers });
+    expect(deleted.status).toBe(200);
+    expect(await conforming(deleted, MediaDeletedResponse)).toEqual({ id: "fixed", deleted: true });
   });
 });

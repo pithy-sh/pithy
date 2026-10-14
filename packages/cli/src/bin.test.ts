@@ -110,6 +110,8 @@ describe("pithy init", () => {
       targetDir: target,
       worker: "api",
       environments: ["staging", "prod"],
+      target: "mobile",
+      frontEnd: null,
       domains: null,
       // The agent instructions (#697): a cloned repo with neither file gets both.
       agents: { path: "AGENTS.md", state: "added", reason: null },

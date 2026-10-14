@@ -9,11 +9,12 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
 import { MULTIPLAYER_MIGRATION_ORDER } from "../capability";
 import { MultiplayerConfig, type MultiplayerConfigInput, validateGames } from "../config/config";
 import "../game/builtins";
 import { multiplayer_0001_results } from "../migrations/0001_results";
-import type { SessionView } from "../session/state";
+import { SessionResult, SessionView } from "./responses";
 import { registerMultiplayerRoutes } from "./routes";
 
 function provider(): MigrationProvider {
@@ -36,6 +37,17 @@ beforeEach(async () => {
   }
   await runMigrations(env.DB, provider());
 });
+
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
 
 /** A Hono app with the multiplayer routes and a stand-in for `@pithy-sh/auth`: `x-user` sets the player. */
 function makeApp(input: MultiplayerConfigInput) {
@@ -105,7 +117,7 @@ describe("multiplayer routes", () => {
     const app = makeApp(CONFIG);
     const created = await req(app, "POST", "/multiplayer/games/battle", { user: "alice" });
     expect(created.status).toBe(201);
-    const id = (await created.json<SessionView>()).sessionId;
+    const id = (await conforming(created, SessionView)).sessionId;
 
     const joined = await req(app, "POST", `/multiplayer/sessions/${id}/join`, { user: "bob" });
     expect((await joined.json<SessionView>()).phase).toBe("active");
@@ -118,11 +130,11 @@ describe("multiplayer routes", () => {
       user: "bob",
       body: { offense: ["ice"], defense: ["guard-fire"] },
     });
-    expect((await resolved.json<SessionView>()).phase).toBe("resolved");
+    expect((await conforming(resolved, SessionView)).phase).toBe("resolved");
 
     const result = await req(app, "GET", `/multiplayer/sessions/${id}/result`, { user: "alice" });
     expect(result.status).toBe(200);
-    expect((await result.json<{ status: string }>()).status).toBe("resolved");
+    expect((await conforming(result, SessionResult)).status).toBe("resolved");
   });
 
   test("acting as a non-member is a 403; an unparseable id is a 404; the result 404s before terminal", async () => {

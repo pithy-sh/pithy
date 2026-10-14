@@ -142,6 +142,11 @@ run("bun", ["run", "version"]);
 process.stdout.write("\nBuilding the packages.\n");
 run("bun", ["run", "build"]);
 
+// The kit's OpenAPI document states the CLI's version, which `version` just moved. The workflow does the
+// same, after its build too, because the document is composed from every package's `dist` (#719).
+process.stdout.write("\nRestamping the kit's OpenAPI document.\n");
+run("bun", ["run", "kit-contract"]);
+
 // The artifact gate, on the one path that reaches an adopter. It is what CI runs on a pull request, and
 // running it there and not here is how the laptop release became the only unchecked way out of this
 // repository: `packFaults` already refuses a tarball with no `dist/`, so the organization case was a

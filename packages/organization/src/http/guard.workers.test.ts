@@ -3,11 +3,10 @@
 
 import { env } from "cloudflare:test";
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { Hono } from "hono";
@@ -105,7 +104,7 @@ function buildApp(): Hono<OrganizationHonoEnv<Role>> {
   // reason the gate never reaches for a raw path parameter.
   app.get(
     "/named/:organizationId",
-    zValidator("param", z.object({ organizationId: z.uuid() }), validationHook),
+    validate("param", z.object({ organizationId: z.uuid() })),
     requireOrganization(deps, { from: "param", name: "organizationId" }),
     (c) => c.json(c.var.acting),
   );
@@ -114,7 +113,7 @@ function buildApp(): Hono<OrganizationHonoEnv<Role>> {
   // absent name, because the property under test is that it does not quietly fall back to the session.
   app.get(
     "/named-query",
-    zValidator("query", z.object({ organizationId: z.uuid().optional() }), validationHook),
+    validate("query", z.object({ organizationId: z.uuid().optional() })),
     requireOrganization(deps, { from: "query", name: "organizationId" }),
     (c) => c.json(c.var.acting),
   );
@@ -134,15 +133,10 @@ function buildApp(): Hono<OrganizationHonoEnv<Role>> {
   // would be worse than one that refuses.
   app.get("/power-only", requirePower("organization:read", deps), (c) => c.json({ ok: true }));
 
-  app.get(
-    "/assign",
-    zValidator("query", z.object({ role: catalog.AssignableRole }), validationHook),
-    requireOrganization(deps),
-    (c) => {
-      requireMayAssign(catalog, c.var.acting.role, c.req.valid("query").role);
-      return c.json({ ok: true });
-    },
-  );
+  app.get("/assign", validate("query", z.object({ role: catalog.AssignableRole })), requireOrganization(deps), (c) => {
+    requireMayAssign(catalog, c.var.acting.role, c.req.valid("query").role);
+    return c.json({ ok: true });
+  });
 
   return app;
 }

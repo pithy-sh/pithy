@@ -197,3 +197,57 @@ export const AdminDeviceRevokeResponse = z
   })
   .describe("How many sessions the device revocation ended, and whether the registry row went with them.");
 export type AdminDeviceRevokeResponse = z.output<typeof AdminDeviceRevokeResponse>;
+
+/*
+ * The routes a signed-in person calls on their own account. These are not read across the management
+ * version boundary the admin schemas above are, but a client generated from the contract reads Workers on
+ * older releases too, so the same rule holds: a field added here later is `.optional()`.
+ */
+
+/** `POST {base}/token/rotate`. */
+export const TokenRotateResponse = z
+  .object({
+    accessToken: z
+      .string()
+      .describe("A fresh short-lived access token (a JWT) for the `Authorization: Bearer` header."),
+    refreshToken: z
+      .string()
+      .describe(
+        "The successor refresh credential: a new session token. The one presented is spent, and presenting it again past a short grace window revokes the whole family.",
+      ),
+    expiresAt: z.iso.datetime().describe("When the successor session lapses, ISO-8601."),
+  })
+  .describe("The rotated credential pair: a new access token and the session token that replaces the one presented.");
+export type TokenRotateResponse = z.output<typeof TokenRotateResponse>;
+
+/** One of the caller's own registered devices. */
+export const MyDeviceView = z
+  .object({
+    id: z.string().describe("The client-generated device id it registered at sign-in."),
+    userId: z.string().describe("The owning user's id: always the caller's own."),
+    platform: DevicePlatform.describe("The platform the device registered as."),
+    name: z.string().nullable().describe("The device's human label, or null."),
+    model: z.string().nullable().describe("The hardware model, or null."),
+    osVersion: z.string().nullable().describe("The device OS version at last sign-in, or null."),
+    appVersion: z.string().nullable().describe("The client app version at last sign-in, or null."),
+    pushToken: z.string().nullable().describe("The APNs or FCM push token the device registered, or null."),
+    lastIp: z.string().nullable().describe("The client IP at the device's most recent sign-in, or null."),
+    lastSeenAt: z.iso.datetime().describe("When the device was last seen, ISO-8601."),
+    createdAt: z.iso.datetime().describe("When the device first registered, ISO-8601."),
+  })
+  .describe("One device registered to the caller's own account.");
+export type MyDeviceView = z.output<typeof MyDeviceView>;
+
+/** `GET {base}/devices`. */
+export const MyDevicesResponse = z
+  .object({
+    devices: z.array(MyDeviceView).describe("Every device registered to the caller, most recently seen first."),
+  })
+  .describe("The caller's own registered devices.");
+export type MyDevicesResponse = z.output<typeof MyDevicesResponse>;
+
+/** `POST {base}/devices/revoke`. */
+export const MyDeviceRevokeResponse = z
+  .object({ revoked: RevokedCount })
+  .describe("How many of the device's sessions the revocation signed out. The device's row goes with them.");
+export type MyDeviceRevokeResponse = z.output<typeof MyDeviceRevokeResponse>;

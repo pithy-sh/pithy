@@ -24,8 +24,9 @@ import { RefundRequestStatus, ScheduledSubscriptionChangeAction } from "../data/
  *
  * **Nothing here is a receipt.** `PaymentsPurchase.payload` is the whole verified provider response,
  * and a bearer artifact; the purchase view is the normalized projection of it, and there is no field
- * that carries the original. The webhook responses are deliberately absent from this file too — they
- * are acknowledgements addressed to Apple, Google and Stripe, not a contract offered to any client.
+ * that carries the original. The webhook acknowledgement is here only so the OpenAPI contract can say
+ * what a store receives — it is addressed to Apple, Google and the hosted stores, not a contract offered
+ * to any client.
  *
  * **A client's own views name no subject; the management views name both halves of one.** A player reads
  * its own rows, and who holds them is the answer the request already carried — echoing it back teaches a
@@ -808,6 +809,30 @@ export const PaymentsDiscountResponse = z
 export type PaymentsDiscountResponse = z.output<typeof PaymentsDiscountResponse>;
 
 /**
+ * What every webhook route answers a store once authenticity is established: always a 200, so the store
+ * stops redelivering. Three shapes share it — a redelivery of a finished event (`duplicate`), a delivery
+ * that projected nothing (`projected: false`), and one that projected a purchase (`projected: true` with
+ * the projection's `outcome`).
+ */
+export const PaymentsWebhookAck = z
+  .object({
+    received: z.literal(true).describe("Always true. The delivery was authentic and is recorded."),
+    duplicate: z
+      .literal(true)
+      .optional()
+      .describe("Present when this event was already finished, so the delivery changed nothing."),
+    projected: z.boolean().optional().describe("Whether the delivery projected a purchase. Absent on a duplicate."),
+    outcome: z
+      .enum(["created", "updated", "ignored"])
+      .optional()
+      .describe(
+        "What the projection did, when one ran: a new purchase, a newer event applied, or an event no newer than the stored row.",
+      ),
+  })
+  .describe("The acknowledgement a store receives for an authentic webhook delivery.");
+export type PaymentsWebhookAck = z.output<typeof PaymentsWebhookAck>;
+
+/**
  * ## The management read surface
  *
  * Everything below answers a **control-plane** route, so it is read by a dashboard across a trust
@@ -1070,9 +1095,9 @@ export type PaymentsAdminReconcileRunsResponse = z.output<typeof PaymentsAdminRe
  * job designed not to be blocked on, or invent the answer — and the answer is the one thing an operator pressed
  * the button to find out. So this says *started, here is its id*, and the run log is where the tally lands.
  *
- * **`started: false` is a real answer rather than an error.** The pass is idempotent and the trigger is too: a
- * second press while a run is in flight starts nothing and says so, which is a true sentence about somebody's
- * catalog. Turning that into a 409 would make a nervous operator's second click look like a fault.
+ * **`started` is `true` on every answer today.** A press either starts a pass or is refused with an error;
+ * a second press while a run is in flight starts a second, and the pass is idempotent, so the two converge.
+ * The field stays so a later trigger that declines a duplicate can say so without changing the shape.
  *
  * No count, no duration, no "queued position". Every one of those is a number a screen would print and nobody
  * could stand behind.
@@ -1081,7 +1106,9 @@ export const PaymentsAdminReconcileRunStarted = z
   .object({
     started: z
       .boolean()
-      .describe("Whether this request began a pass. False when one was already running, which is not a failure."),
+      .describe(
+        "Whether this request began a pass. Always true today: a press that starts nothing is refused with an error instead.",
+      ),
     runId: z
       .string()
       .nullable()

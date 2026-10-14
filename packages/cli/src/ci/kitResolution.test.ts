@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { join, relative, resolve } from "node:path";
+import { join, posix, relative, resolve } from "node:path";
 import { packageOf } from "@pithy-sh/core/src/naming/packageName";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
@@ -184,6 +184,34 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
 };
 
 /**
+ * Modules that build **the kit's own** committed artifacts from the kit's own packages, and the sentence that
+ * says so. Not residue: residue is the CLI reading its copy *on an adopter's behalf*, and these read on no
+ * one's — a document about this release is built from this release's copies, the workspace's, and from no
+ * project's. That is only true while no command reaches them, so it is checked below rather than believed:
+ * each is imported by nothing but the entry script in {@link KIT_BUILD_ENTRIES}, and that by nothing at all.
+ */
+const KIT_BUILD: Record<string, string> = {
+  "openapi/kitDocument.ts":
+    "Composes every cataloged capability into one backend to write docs/openapi.generated.json, the kit's own OpenAPI document.",
+};
+
+/** The scripts that run a {@link KIT_BUILD} module: `bun <path>` from the repository root, never a command. */
+const KIT_BUILD_ENTRIES: readonly string[] = ["openapi/writeKitDocument.ts"];
+
+/** The CLI sources that import `target` through a relative specifier, keyed as {@link cliSources} keys them. */
+function importersOf(target: string, sources: Map<string, string>): string[] {
+  const found: string[] = [];
+  for (const [path, text] of sources) {
+    const code = blankComments(text);
+    for (const match of code.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|^import\s*)"(\.{1,2}\/[^"]+)"/gm)) {
+      const resolved = posix.join(posix.dirname(path), match[1] ?? "");
+      if (resolved === target.replace(/\.ts$/, "") || resolved === target) found.push(path);
+    }
+  }
+  return [...new Set(found)].sort();
+}
+
+/**
  * A dynamic reach for a kit module: `import("@pithy-sh/…")`.
  *
  * **Both type spellings are erased first, and there are two.** `typeof import("…")` is the one everybody
@@ -271,6 +299,7 @@ function reachingFiles(): Map<string, string[]> {
 function residueFiles(): Map<string, string[]> {
   const found = new Map<string, string[]>();
   for (const [path, text] of cliSources()) {
+    if (path in KIT_BUILD) continue;
     const packages = staticPackages(text).filter((pkg) => !(pkg in CLI_RUNTIME));
     if (packages.length > 0) found.set(path, packages);
   }
@@ -357,6 +386,30 @@ describe("the static residue, which no resolver can re-base", () => {
   test("a package is the CLI's own runtime or it is residue, never both", () => {
     const both = Object.keys(RESIDUE_PACKAGES).filter((pkg) => pkg in CLI_RUNTIME);
     expect(both).toEqual([]);
+  });
+
+  test("a kit-build module still reads kit packages, and no command reaches it", () => {
+    const sources = cliSources();
+    for (const path of Object.keys(KIT_BUILD)) {
+      const text = sources.get(path);
+      expect(text, `${path} is in KIT_BUILD and not in the tree. Delete its entry.`).toBeDefined();
+      expect(
+        staticPackages(text ?? "").filter((pkg) => !(pkg in CLI_RUNTIME)),
+        `${path} no longer imports a kit package. Delete its KIT_BUILD entry.`,
+      ).not.toEqual([]);
+      expect(KIT_BUILD[path], path).toMatch(/^[A-Z].*\.$/);
+      const importers = importersOf(path, sources);
+      expect(
+        importers.filter((importer) => !KIT_BUILD_ENTRIES.includes(importer)),
+        `${path} builds the kit's own artifacts from the workspace's copies. A command importing it would read the CLI's copies on an adopter's behalf, which is residue: give that command a project-based loader instead.`,
+      ).toEqual([]);
+      // And something runs it, so the importer check above is not passing over a module nothing reaches.
+      expect(importers.length, `${path} is run by no entry script in KIT_BUILD_ENTRIES.`).toBeGreaterThan(0);
+    }
+    for (const entry of KIT_BUILD_ENTRIES) {
+      expect(sources.has(entry), `${entry} is in KIT_BUILD_ENTRIES and not in the tree.`).toBe(true);
+      expect(importersOf(entry, sources), `${entry} is a script, run with bun; nothing imports it.`).toEqual([]);
+    }
   });
 
   // Named because round one closed #533 for every capability that had a loader and left this one with no

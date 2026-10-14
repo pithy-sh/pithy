@@ -14,6 +14,7 @@ import type { VectorAi } from "../embed/embed";
 import { filterable } from "../index/filter";
 import type { VectorStore } from "../index/index";
 import type { HandlerDeps } from "./handlers";
+import { DeleteResponse, QueryResponse, UpsertResponse, VectorDocumentResponse } from "./responses";
 import { registerVectorRoutes } from "./routes";
 
 /**
@@ -132,6 +133,17 @@ function configuredApp(): Hono<PithyHonoEnv> {
 
 const authed = { "x-user": "ada", "content-type": "application/json" };
 
+/**
+ * Read a response through its schema in `responses.ts`, and require the parse to hand back exactly what
+ * arrived. That is the binding between the contract and the handler: a field the handler adds or drops
+ * without the schema fails here, on a real answer.
+ */
+async function conforming<Schema extends z.ZodType>(res: Response, schema: Schema): Promise<z.infer<Schema>> {
+  const body: unknown = await res.json();
+  expect(schema.parse(body)).toEqual(body);
+  return body as z.infer<Schema>;
+}
+
 /** Read the `error` object off a rendered `PithyError` response. */
 async function errorOf(response: Response): Promise<{ code: string; status: number }> {
   const body = (await response.json()) as { error: { code: string; status: number } };
@@ -159,7 +171,7 @@ describe("the vector routes", () => {
       body: JSON.stringify({ text: "hello" }),
     });
     expect(response.status).toBe(201);
-    expect(await response.json()).toEqual({ ids: ["generated-id"], mutationId: "m1" });
+    expect(await conforming(response, UpsertResponse)).toEqual({ ids: ["generated-id"], mutationId: "m1" });
   });
 
   it("searches and returns hydrated matches, not bare ids", async () => {
@@ -169,20 +181,22 @@ describe("the vector routes", () => {
       body: JSON.stringify({ text: "hello" }),
     });
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { matches: { id: string; document: { content: string } | null }[] };
+    const body = await conforming(response, QueryResponse);
     expect(body.matches[0]?.id).toBe("a");
     expect(body.matches[0]?.document?.content).toBe("text a");
   });
 
   it("fetches one document and 404s an unknown id", async () => {
     const hono = app();
-    expect((await hono.request("/vector/docs/documents/a", { headers: authed })).status).toBe(200);
+    const found = await hono.request("/vector/docs/documents/a", { headers: authed });
+    expect(found.status).toBe(200);
+    expect(await conforming(found, VectorDocumentResponse)).toMatchObject({ id: "a", content: "text a" });
     expect((await hono.request("/vector/docs/documents/zz", { headers: authed })).status).toBe(404);
   });
 
   it("deletes a document", async () => {
     const response = await app().request("/vector/docs/documents/a", { method: "DELETE", headers: authed });
-    expect(await response.json()).toEqual({ id: "a", mutationId: "m2" });
+    expect(await conforming(response, DeleteResponse)).toEqual({ id: "a", mutationId: "m2" });
   });
 
   it("404s an index the config does not declare, before any binding is read", async () => {

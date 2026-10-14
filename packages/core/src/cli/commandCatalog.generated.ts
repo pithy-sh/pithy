@@ -87,6 +87,33 @@ export const COMMANDS = {
       }
     ]
   },
+  "contract": {
+    "positionals": [],
+    "flags": {
+      "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--out": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "prod"
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "dashboard connect": {
     "positionals": [],
     "flags": {
@@ -879,6 +906,11 @@ export const COMMANDS = {
         "repeatable": false
       },
       "--worker": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--target": {
         "type": "string",
         "required": false,
         "repeatable": false

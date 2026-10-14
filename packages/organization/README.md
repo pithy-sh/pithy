@@ -21,7 +21,8 @@ Three gates, composed on the route line. Nothing is implicit: a route that did n
 ```ts
 import type { D1Database } from "@cloudflare/workers-types";
 import { requireAuth } from "@pithy-sh/auth/src/http/middleware";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { requireOrganization, requirePower } from "@pithy-sh/organization/src/http/guard";
 import { organizationDatabase } from "@pithy-sh/organization/src/data/tables";
 import { roles } from "./organization/roles";
@@ -33,10 +34,11 @@ const deps = {
 
 app.get(
   "/coaches",
+  describeRoute({ summary: "List the coaches.", verification: ["bearer", "session"], responses: { 200: CoachList } }),
   requireAuth(),
   requireOrganization(deps),            // fills c.var.acting, or 404s
   requirePower("sessions:read", deps),  // asks the matrix, or 403s
-  zValidator("query", ListCoaches, validationHook),
+  validate("query", ListCoaches),
   handler,
 );
 ```

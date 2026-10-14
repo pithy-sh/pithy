@@ -23,7 +23,8 @@ import { type GameContext, type GameModel, resolveModel } from "../game/model";
 import { createRngState, type RandomSource, randomSource } from "../game/random";
 import { multiplayerPeers } from "./peers";
 import { RPC_ERROR_PREFIX, USER_HEADER } from "./protocol";
-import { type GameSnapshot, isTerminal, SessionMeta, type SessionOutcome, type SessionView } from "./state";
+import { type GameSnapshot, isTerminal, SessionMeta } from "./state";
+import type { SessionOutcome, SessionView } from "./view";
 
 /** The Worker env a session DO reads — the app `DB` database it writes its terminal result to. */
 export interface MultiplayerSessionEnv {

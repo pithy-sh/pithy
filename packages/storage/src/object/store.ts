@@ -8,6 +8,12 @@ import { z } from "zod";
 import { type R2StorageCredentials, r2CredentialsRegistry, STORAGE_R2_SECRET } from "../secret/registry";
 import { r2Presigned } from "./cloudflare";
 import type { ReportedPart } from "./multipart";
+import type { UploadedPart } from "./uploadedPart";
+
+// Re-exported, which this kit otherwise never does, because this path is a public address: the folder path
+// is the import path, and `UploadedPart` was published here before it moved to `./uploadedPart` so a browser
+// could import it without the S3 client (#719). Removing the line breaks every import of the old address.
+export { UploadedPart } from "./uploadedPart";
 
 /**
  * `ObjectStore` — the object-plane seam, and the one piece of this package that is reusable outside it.
@@ -107,16 +113,6 @@ export const ObjectListing = z
   })
   .describe("One page of a bucket listing. Pagination is caller-driven — pass `cursor` back to advance.");
 export type ObjectListing = z.output<typeof ObjectListing>;
-
-/** One part already stored against an in-flight multipart upload — what makes an upload resumable. */
-export const UploadedPart = z
-  .object({
-    partNumber: z.number().int().min(1).describe("The part's 1-based index within the upload."),
-    etag: z.string().min(1).describe("The part's entity tag, verbatim. Pass it back unchanged to complete."),
-    size: z.number().int().nonnegative().describe("The part's size in bytes, as R2 stored it."),
-  })
-  .describe("One uploaded part — the unit a resumed upload skips re-sending.");
-export type UploadedPart = z.output<typeof UploadedPart>;
 
 /** How long a presigned URL stays valid. */
 export interface PresignOptions {

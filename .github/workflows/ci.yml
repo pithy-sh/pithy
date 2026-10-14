@@ -281,6 +281,13 @@ jobs:
       - name: Docs catalog
         run: bun packages/cli/src/docs/writeCatalog.ts --check
 
+      # The kit's published OpenAPI document (#719), whole-repo for the same reason: it composes every
+      # capability, so any package's route or schema can move it. Read from the built `dist`, which the
+      # build step above produced. A client generated in another language reads this file, and a stale one
+      # tells it about routes as they were.
+      - name: Kit OpenAPI document
+        run: bun packages/cli/src/openapi/writeKitDocument.ts --check
+
       # Whole-repo for the same reason as the step above, and learned the same way. Two capabilities
       # in flight at once each took migration order 1200 from the same `NEXT_FREE_ORDER`; because both
       # branches bumped the constant to the same value, git merged the registry with no conflict and
@@ -528,6 +535,39 @@ jobs:
       - name: The same, at every declared floor
         run: bun run clean-room -- --floors
 
+  # The Claude Code plugins (#719): the marketplace at `.claude-plugin/marketplace.json` and every plugin
+  # under `agent-plugins/claude/`, through Claude Code's own validator. `--strict` turns a warning into a
+  # failure — an unrecognized field, missing metadata — the things the runtime tolerates and a user then
+  # meets as a plugin that half-loads. Validating the marketplace does not open a plugin's skills or
+  # agents, so each plugin is validated on its own as well.
+  #
+  # Every pull request, never narrowed by `plan`: the plugins belong to no workspace package, so
+  # `--affected` would map an edit to them to nothing. It needs no install and no secret: the validator
+  # reads files and calls nothing. Pinned, like Bun, so a Claude Code release cannot redden a pull request
+  # that changed nothing. What `claudePlugin.test.ts` holds — the team, the settings, the stamped version,
+  # every command named — runs with the CLI's tests.
+  plugins:
+    name: Claude plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Validate the marketplace and every plugin
+        run: |
+          set -euo pipefail
+          validate() { bunx --bun @anthropic-ai/claude-code@2.1.296 plugin validate "$1" --strict; }
+          validate .
+          for plugin in agent-plugins/claude/*/; do validate "$plugin"; done
+
   # The CLI's Windows set (#702): `*.windows.test.ts` in `packages/cli`, and nothing else. CI ran on Linux
   # alone, so #698 shipped with every `pithy add` dying on `ENOENT` on Windows and every check green. The
   # whole suite is not run here — the Workers suites, the clean room and the Node matrix test nothing that
@@ -601,7 +641,7 @@ jobs:
   # `.github/rulesets/main.json`, and `packages/cli/src/ci/mainRuleset.test.ts` holds both files to it.
   ci:
     name: CI
-    needs: [plan, verify, test, test-node, clean-room, windows]
+    needs: [plan, verify, test, test-node, clean-room, windows, plugins]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -7,9 +7,11 @@ import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/co
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { AuthConfig, type AuthWiring, auth } from "../capability";
+import { registerDevLoginRoute } from "./devLoginRoute";
 import {
   AUTH_CONTROL_PLANE_SCOPES,
   AUTH_DEVICES_READ_SCOPE,
@@ -124,7 +126,7 @@ describe("route contract: every path param is validated", () => {
     const paramPaths = [...new Set(app.routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path))].sort();
     expect(
       paramPaths,
-      `Auth grew a path-param route. Give it a zValidator("param", …) schema in src/http/schemas.ts, then add its path here.`,
+      `Auth grew a path-param route. Give it a validate("param", …) schema in src/http/schemas.ts, then add its path here.`,
     ).toEqual([
       "/auth/admin/users/:userId",
       "/auth/admin/users/:userId/devices/revoke",
@@ -136,7 +138,7 @@ describe("route contract: every path param is validated", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These routes declare path params but register no zValidator("param", …):\n${uncovered
+      `These routes declare path params but register no validate("param", …):\n${uncovered
         .map((r) => `  ${r.method} ${r.path} — :${r.params.join(", :")}`)
         .join("\n")}\nAdd a param schema in src/http/schemas.ts and declare it on the route line.`,
     ).toEqual([]);
@@ -331,5 +333,35 @@ describe("the advertised admin surface matches what is mounted", () => {
     expect(response.status).toBe(403);
     // The default mount is genuinely gone, rather than both being registered.
     expect((await makeApp("/identity").request("/auth/admin/users")).status).toBe(404);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  /**
+   * The dev-login route mounts only in a `dev` composition outside CI, so the app above never has it. It
+   * is composed here on its own, in exactly that environment, so the contract covers it too.
+   */
+  function devLoginApp() {
+    const app = new Hono<PithyHonoEnv>();
+    registerDevLoginRoute(buildWiring(), { ENVIRONMENT: "dev" })(app);
+    return app;
+  }
+  const groups = () => [
+    { tag: "auth", routes: makeApp().routes },
+    { tag: "auth", routes: devLoginApp().routes },
+  ];
+
+  test("the dev-login app really mounts its route, so describing it is not vacuous", () => {
+    expect(devLoginApp().routes.length).toBeGreaterThan(0);
+  });
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "auth", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

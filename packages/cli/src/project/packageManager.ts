@@ -44,6 +44,21 @@ export async function detectPackageManager(projectDir: string): Promise<PackageM
   return "npm";
 }
 
+/**
+ * The package manager that launched this process, from `npm_config_user_agent` — `bun/1.4.2 …`,
+ * `pnpm/10.0.0 …`, `yarn/4.5.0 …`, `npm/11.0.0 …` — or `undefined` when no runner set it, as with a
+ * globally installed `pithy`.
+ *
+ * For the one moment a lockfile cannot answer: `pithy init --target web` wires the front end before
+ * anything is installed, so {@link detectPackageManager} would find no lockfile and say `npm` for a project
+ * the adopter is about to install with Bun. The user agent is the runner they chose, and the best evidence
+ * there is until the lockfile exists.
+ */
+export function packageManagerFromUserAgent(env: NodeJS.ProcessEnv = process.env): PackageManager | undefined {
+  const name = env.npm_config_user_agent?.split("/")[0]?.trim();
+  return name === "bun" || name === "pnpm" || name === "yarn" || name === "npm" ? name : undefined;
+}
+
 /** The install argv for a package manager: npm `install`, the rest `add`, for one or many packages. */
 export function installArgs(pm: PackageManager, pkgs: string | string[]): string[] {
   const list = Array.isArray(pkgs) ? pkgs : [pkgs];

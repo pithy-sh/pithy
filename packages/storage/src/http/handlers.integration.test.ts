@@ -30,7 +30,7 @@ const creds = loadIntegrationCreds();
 const BODY = new TextEncoder().encode("<p>not the pdf it was declared to be</p>");
 
 /**
- * What `zValidator("json", CompleteUploadInput, validationHook)` hands the handler for an empty body.
+ * What `validate("json", CompleteUploadInput)` hands the handler for an empty body.
  * The handlers no longer parse their own input — the route does — so a direct call supplies the
  * *parsed* value, and `parts` is only optional on the way in.
  */

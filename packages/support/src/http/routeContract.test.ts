@@ -7,6 +7,7 @@ import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/co
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { support } from "../capability";
@@ -92,7 +93,7 @@ describe("support route contract", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These support routes read a path param they never declared a schema for. Add \`zValidator("param", <Schema>, validationHook)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
+      `These support routes read a path param they never declared a schema for. Add \`validate("param", <Schema>)\` to each route line, with the schema in src/http/schemas.ts:\n${uncovered
         .map((route) => `  ${route.method} ${route.path} (:${route.params.join(", :")})`)
         .join("\n")}`,
     ).toEqual([]);
@@ -186,5 +187,19 @@ describe("support route contract", () => {
       "POST /support/threads/:id/reclassify",
       "POST /support/threads/:id/reply",
     ]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "support", routes: makeApp().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "support", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

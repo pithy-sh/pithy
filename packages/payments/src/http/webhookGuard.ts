@@ -18,6 +18,7 @@ import { PaymentsWebhookUnverifiedError } from "../error/errors";
 import type { VerifiedNotification } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
+import type { PaymentsWebhookAck } from "./responses";
 
 /**
  * The `signed-webhook` gate — the repo's first, and the shape the Google and Stripe webhooks will reuse.
@@ -32,7 +33,7 @@ import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/reg
  * it.
  *
  * `c.req.text()` rather than `c.req.raw.text()`, and that distinction matters. Hono caches its own body reads,
- * so the route's `zValidator("json", …)` afterwards is served from the same cache and sees identical bytes.
+ * so the route's `validate("json", …)` afterwards is served from the same cache and sees identical bytes.
  * Reading `c.req.raw` directly would consume the stream and leave the validator with nothing.
  *
  * ## Why it persists before it hands off
@@ -291,7 +292,7 @@ export function requireSignedWebhook(
     // been projected, and short-circuiting them made a redelivery — and a manual replay, which reuses the
     // provider's event id — the one thing that could never repair them.
     if (isWebhookEventFinished(webhookEventState(stored))) {
-      return c.json({ received: true, duplicate: true }, 200);
+      return c.json({ received: true, duplicate: true } satisfies PaymentsWebhookAck, 200);
     }
 
     verified.set(c.req.raw, { rail, notification, eventRowId: stored.id });

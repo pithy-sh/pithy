@@ -137,6 +137,24 @@
         "$<manual=true>.alias": "string"
       }
     },
+    "contract": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"contract\"",
+        "$.environment": "string",
+        "$.workers": "array",
+        "$.workers[]": "object",
+        "$.workers[].worker": "string",
+        "$.workers[].path": "string",
+        "$.workers[].operations": "integer",
+        "$.workers[].undescribed": "array",
+        "$.workers[].undescribed[]": "object",
+        "$.workers[].undescribed[].method": "string",
+        "$.workers[].undescribed[].path": "string",
+        "$.workers[].changed": "boolean"
+      }
+    },
     "dashboard connect": {
       "schemaVersion": 1,
       "payload": {
@@ -1015,6 +1033,11 @@
         "$.worker": "string",
         "$.environments": "array",
         "$.environments[]": "string",
+        "$.target": "\"both\" | \"mobile\" | \"web\"",
+        "$.frontEnd": "null | object",
+        "$.frontEnd.framework": "string",
+        "$.frontEnd.created": "array",
+        "$.frontEnd.created[]": "string",
         "$.domains": "null | object",
         "$.domains.staging": "object?",
         "$.domains.staging.pattern": "string",

@@ -9,7 +9,7 @@ import { ReportedPart } from "../object/multipart";
 /**
  * The request schemas for the storage routes. Every path parameter, query string and body is parsed
  * here before a handler sees it (CLAUDE.md §Zod: validate at every boundary), declared on the route
- * line with `zValidator(target, Schema, validationHook)` — so reading `routes.ts` tells you what a
+ * line with `validate(target, Schema)` — so reading `routes.ts` tells you what a
  * route accepts without opening a handler. A failure maps to `validation/invalid_input` through
  * `fromZodError`.
  *

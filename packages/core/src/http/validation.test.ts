@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { pithyErrorHandler } from "../error/http";
-import { validationHook } from "./validation";
+import { requestContractOf, validate, validationHook } from "./validation";
 
 const Body = z.object({ score: z.number() }).describe("A score submission.");
 const Query = z.object({ limit: z.coerce.number().int().min(1).max(10) }).describe("A page size.");
@@ -89,5 +89,37 @@ describe("validationHook", () => {
       body: JSON.stringify({}),
     });
     expect(await errorOf(res)).not.toHaveProperty("detail");
+  });
+});
+
+describe("validate", () => {
+  test("is zValidator with the shared hook: a malformed body is the same PithyError 400", async () => {
+    const a = new Hono();
+    a.onError(pithyErrorHandler);
+    a.post("/body", validate("json", Body), (c) => c.json(c.req.valid("json")));
+    const res = await a.request("/body", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ score: "high" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await errorOf(res)).code).toBe("validation/invalid_input");
+  });
+
+  test("hands the handler the parsed value, typed", async () => {
+    const a = new Hono();
+    a.get("/query", validate("query", Query), (c) => c.json({ doubled: c.req.valid("query").limit * 2 }));
+    expect(await (await a.request("/query?limit=3")).json()).toEqual({ doubled: 6 });
+  });
+
+  test("carries its target and schema, so a reader of the composed app can find them", () => {
+    const middleware = validate("param", Params);
+    expect(requestContractOf(middleware)).toEqual({ target: "param", schema: Params });
+  });
+
+  test("a bare zValidator, or anything else, carries no contract", () => {
+    expect(requestContractOf(zValidator("json", Body, validationHook))).toBeUndefined();
+    expect(requestContractOf(() => undefined)).toBeUndefined();
+    expect(requestContractOf("validate")).toBeUndefined();
   });
 });

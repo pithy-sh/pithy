@@ -17,7 +17,7 @@ import type { QueryInput, UpsertDocumentsInput, VectorDocumentInput } from "./sc
  * one of them is unit-tested against fakes with no Worker, no Vectorize, and no network. Vectorize has no
  * local emulation, so this is the only way any of this gets a test at all.
  *
- * Nothing here parses a request. Shape is declared on the route line with `zValidator`, so a handler is
+ * Nothing here parses a request. Shape is declared on the route line with `validate`, so a handler is
  * handed a value that has already been validated and takes it typed — what is left in these functions is
  * the ordering, the embedding, and the Vectorize ceilings, which are the parts a schema cannot state.
  *

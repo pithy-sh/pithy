@@ -258,10 +258,48 @@ describe("the main ruleset", () => {
     expect(ruleset.conditions.ref_name.include).toEqual(["~DEFAULT_BRANCH"]);
   });
 
-  test("lets repository admins past it, and nobody else", () => {
+  /**
+   * Admins, and GitHub Actions (#719). The release job pushes its version commit to `main` with the
+   * workflow's `GITHUB_TOKEN`, which a pull request rule otherwise refuses. A bypass for Actions is a bypass
+   * for every workflow run, so what may hold a token that writes is pinned below, and the trust boundary —
+   * anyone with write access can author a workflow on a branch — is written down in `docs/RELEASING.md`.
+   */
+  test("lets repository admins and GitHub Actions past it, and nobody else", () => {
     expect(ruleset.bypass_actors).toEqual([
       { actor_type: "RepositoryRole", actor_id: REPOSITORY_ADMIN_ROLE, bypass_mode: "always" },
+      { actor_type: "Integration", actor_id: GITHUB_ACTIONS_APP_ID, bypass_mode: "always" },
     ]);
+  });
+
+  /**
+   * The other half of that bypass. A workflow on `main` can only use it with a token that writes contents,
+   * so exactly one job may hold one: `release.yml`'s Release job, which runs on `workflow_dispatch` alone
+   * and only in the `npm-publish` environment, whose deployment-branch rule admits `main` and nothing else.
+   * A second writer, a top-level grant, `write-all`, or a new trigger on the release is a red build here
+   * rather than a quiet widening of who can push past review.
+   */
+  test("only the release job may hold a token that writes contents, and only from main, by hand", async () => {
+    const writers: string[] = [];
+    for (const file of workflowFiles) {
+      const text = await readFile(resolve(WORKFLOWS, file), "utf8");
+      if (/\bwrite-all\b/.test(text)) writers.push(`${file}: write-all`);
+      for (const match of text.matchAll(/^( *)contents:\s*write\b/gm)) {
+        const indent = match[1]?.length ?? 0;
+        const before = text.slice(0, match.index);
+        const job = [...before.matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].at(-1)?.[1];
+        writers.push(indent <= 2 ? `${file}: top-level` : `${file}: ${job ?? "?"}`);
+      }
+    }
+    expect(writers).toEqual(["release.yml: release"]);
+
+    const release = await readFile(resolve(WORKFLOWS, "release.yml"), "utf8");
+    // The `on:` block: from its key to the next top-level key.
+    const rest = release.slice(release.indexOf("\non:") + 1);
+    const end = rest.search(/\n[a-z]/);
+    const on = end === -1 ? rest : rest.slice(0, end);
+    expect([...on.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1])).toEqual(["workflow_dispatch"]);
+    const job = release.slice(release.indexOf("\n  release:\n"), release.indexOf("\n  docs:\n"));
+    expect(job).toMatch(/^ {4}environment: npm-publish$/m);
   });
 
   test("requires the CI check, from GitHub Actions, on a branch current with main", () => {

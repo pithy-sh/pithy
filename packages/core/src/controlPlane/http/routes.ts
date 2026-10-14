@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { Hono } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
-import { validationHook } from "../../http/validation";
-import type { AdminRoute } from "../discovery/adminRoute";
+import { describeRoute } from "../../http/routeSpec";
+import { validate } from "../../http/validation";
+import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
 import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { requireControlPlane } from "./guard";
 import {
@@ -16,6 +16,12 @@ import {
   pingHandler,
   registerKeyHandler,
 } from "./handlers";
+import {
+  ControlPlaneKeysResponse,
+  ControlPlanePingResponse,
+  ExpireKeyResponse,
+  RegisterKeyResponse,
+} from "./responses";
 import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas";
 
 /**
@@ -92,24 +98,66 @@ export function registerControlPlaneRoutes(
   basePath: string,
   deps: ControlPlaneHandlerDeps,
 ): void {
-  app.get(`${basePath}/ping`, requireControlPlane(ANY_VERIFIED_CALLER), pingHandler(deps));
+  app.get(
+    `${basePath}/ping`,
+    describeRoute({
+      summary: "Prove the connection and the key it signs with.",
+      verification: "control-plane",
+      responses: { 200: ControlPlanePingResponse },
+    }),
+    requireControlPlane(ANY_VERIFIED_CALLER),
+    pingHandler(deps),
+  );
 
-  app.get(`${basePath}/manifest`, requireControlPlane(MANIFEST_READ_SCOPE), manifestHandler(deps));
+  app.get(
+    `${basePath}/manifest`,
+    describeRoute({
+      summary: "Describe what this Worker composes and how to call its admin surface.",
+      verification: "control-plane",
+      scopes: [MANIFEST_READ_SCOPE],
+      responses: { 200: ControlPlaneManifest },
+    }),
+    requireControlPlane(MANIFEST_READ_SCOPE),
+    manifestHandler(deps),
+  );
 
-  app.get(`${basePath}/keys`, requireControlPlane(KEYS_ROTATE_SCOPE), listKeysHandler(deps));
+  app.get(
+    `${basePath}/keys`,
+    describeRoute({
+      summary: "Read the connection's key registration state.",
+      verification: "control-plane",
+      scopes: [KEYS_ROTATE_SCOPE],
+      responses: { 200: ControlPlaneKeysResponse },
+    }),
+    requireControlPlane(KEYS_ROTATE_SCOPE),
+    listKeysHandler(deps),
+  );
 
   app.post(
     `${basePath}/keys`,
+    describeRoute({
+      summary: "Register a key for the connection.",
+      verification: "control-plane",
+      scopes: [KEYS_ROTATE_SCOPE],
+      responses: { 201: RegisterKeyResponse },
+    }),
     requireControlPlane(KEYS_ROTATE_SCOPE),
-    zValidator("json", RegisterKeyRequest, validationHook),
+    validate("json", RegisterKeyRequest),
     (c) => registerKeyHandler(deps)(c, c.req.valid("json")),
   );
 
   app.post(
     `${basePath}/keys/:keyId/expire`,
+    describeRoute({
+      summary: "Retire a superseded key.",
+      description: "Must be signed with the successor it names as proven.",
+      verification: "control-plane",
+      scopes: [KEYS_ROTATE_SCOPE],
+      responses: { 200: ExpireKeyResponse },
+    }),
     requireControlPlane(KEYS_ROTATE_SCOPE),
-    zValidator("param", ExpireKeyParams, validationHook),
-    zValidator("json", ExpireKeyRequest, validationHook),
+    validate("param", ExpireKeyParams),
+    validate("json", ExpireKeyRequest),
     (c) => expireKeyHandler(deps)(c, c.req.valid("param"), c.req.valid("json")),
   );
 }

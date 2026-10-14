@@ -7,7 +7,7 @@ import { DevicePlatform } from "../data/device";
 
 /**
  * The request schemas for the auth routes Pithy owns. Validation happens at the HTTP boundary
- * (CLAUDE.md §Zod), declared on the route line with `zValidator(target, Schema, validationHook)` — so
+ * (CLAUDE.md §Zod), declared on the route line with `validate(target, Schema)` — so
  * reading `routes.ts` and `adminRoutes.ts` tells you what each route accepts without opening a handler.
  *
  * Only Pithy's own routes appear here. Everything under `basePath` that Better Auth owns validates

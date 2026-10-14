@@ -5,7 +5,8 @@ import { z } from "zod";
 import { TransactionKind } from "../data/transaction";
 
 /**
- * What the ledger's management routes return, as Zod objects a management client can validate against.
+ * What the ledger's routes return, as Zod objects a client can validate against and the OpenAPI contract
+ * can describe.
  *
  * `schemas.ts` bounds what a caller may send; this file states what it gets back. Both halves are
  * runtime values for the same reason: a management client reading a customer's Worker is crossing a
@@ -106,3 +107,51 @@ export const LedgerTransactionsResponse = z
   })
   .describe("A page of one account's entry log.");
 export type LedgerTransactionsResponse = z.output<typeof LedgerTransactionsResponse>;
+
+/**
+ * `GET {base}/:currency`, and the answer to an admin credit or debit.
+ *
+ * A player with no account reads zeroes rather than a 404: an account is opened by its first credit.
+ */
+export const LedgerBalanceResponse = z
+  .object({
+    balance: z.number().int().describe("Total owned, in the currency's minor unit."),
+    held: z.number().int().describe("The portion reserved by open holds."),
+    available: z.number().int().describe("Spendable now (`balance - held`)."),
+  })
+  .describe("One player's position in one currency. All zeroes when they hold none.");
+export type LedgerBalanceResponse = z.output<typeof LedgerBalanceResponse>;
+
+/** One entry in the caller's own history: the stored row, dates as ISO-8601 strings. */
+export const LedgerOwnTransactionView = z
+  .object({
+    id: z.number().int().describe("The entry's internal row id. Do not depend on it; `ref` is the stable identifier."),
+    ref: z
+      .string()
+      .describe("The caller-supplied idempotency key, unique across the ledger — the entry's stable identifier."),
+    userId: z.string().describe("The account owner, which is always the caller on this route."),
+    currency: z.string().describe("The currency the movement was in."),
+    kind: TransactionKind.describe("What the movement was."),
+    amount: z
+      .number()
+      .int()
+      .describe("The movement's magnitude in the minor unit — always positive; `kind` gives direction."),
+    relatedRef: z
+      .string()
+      .nullable()
+      .describe("The entry this one answers: a hold's ref, or the other side of a transfer. Null when standalone."),
+    memo: z.string().nullable().describe("The adopter's own note on the movement, or null."),
+    createdAt: z.iso.datetime().describe("When the movement was recorded, ISO-8601."),
+  })
+  .describe("One entry in the caller's own ledger history.");
+export type LedgerOwnTransactionView = z.output<typeof LedgerOwnTransactionView>;
+
+/** `GET {base}/:currency/transactions`. */
+export const LedgerOwnTransactionsResponse = z
+  .object({
+    transactions: z
+      .array(LedgerOwnTransactionView)
+      .describe("The caller's 50 most recent entries in this currency, newest first."),
+  })
+  .describe("The caller's own recent history in one currency.");
+export type LedgerOwnTransactionsResponse = z.output<typeof LedgerOwnTransactionsResponse>;

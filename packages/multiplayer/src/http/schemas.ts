@@ -5,7 +5,7 @@ import { z } from "zod";
 
 /**
  * The HTTP-boundary shapes for the multiplayer routes. Declared on the route line with
- * `zValidator(target, Schema, validationHook)`, so a malformed segment is a `validation/invalid_input` 400
+ * `validate(target, Schema)`, so a malformed segment is a `validation/invalid_input` 400
  * before any handler runs, never an unbounded string handed to a config lookup or a Durable Object id parse.
  *
  * Both are **param** schemas, and both are shape checks rather than existence checks. Resolving a game key

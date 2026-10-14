@@ -7,10 +7,12 @@ import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/co
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { email } from "../capability";
 import { CALLBACK_BASE } from "../templates/engine";
+import { createEmailHostApp } from "../workflows/hostApp";
 import { registerCallbacks } from "./callbacks";
 import {
   EMAIL_CONTROL_PLANE_SCOPES,
@@ -76,7 +78,7 @@ describe("email route param contract", () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
     expect(
       uncovered,
-      `These email routes read path params without a zValidator("param", …): ${uncovered
+      `These email routes read path params without a validate("param", …): ${uncovered
         .map((route) => `${route.method} ${route.path} (:${route.params.join(", :")})`)
         .join("; ")}. Add a schema to src/http/schemas.ts and declare it on the route line.`,
     ).toEqual([]);
@@ -155,7 +157,7 @@ describe("email admin route contract", () => {
   });
 
   test("a malformed path param is also refused by the gate first", async () => {
-    // Same rule, the other input surface: `zValidator("param", …)` sits after the guard too, so an id
+    // Same rule, the other input surface: `validate("param", …)` sits after the guard too, so an id
     // that could never match anything still answers 403 rather than 400.
     const response = await makeApp().request("/email/jobs/not a valid id");
     expect(response.status).toBe(403);
@@ -239,5 +241,23 @@ describe("the advertised admin surface", () => {
     // invite exactly that.
     const advertised = (capability.adminRoutes ?? []).map((route) => route.path);
     for (const path of advertised) expect(path.startsWith(CALLBACK_BASE)).toBe(false);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  // The send host's dispatch door too: it is not mounted through `routes`, but it is an HTTP route all the same.
+  const groups = () => [
+    { tag: "email", routes: makeApp().routes },
+    { tag: "email-host", routes: createEmailHostApp({ env: {} }).routes },
+  ];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "email", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });

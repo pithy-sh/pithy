@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { type AmbientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
+import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
 import type { VectorConfig, VectorIndexConfig } from "../config/config";
 import { vectorDocuments } from "../data/documents";
@@ -18,6 +19,7 @@ import { type MetadataIndexDescriptor, metadataIndexes } from "../index/metadata
 import { provisionVectors } from "../index/provisioned";
 import { requireAuth } from "./guard";
 import { deleteDocument, getDocument, type HandlerDeps, queryDocuments, upsertDocuments } from "./handlers";
+import { DeleteResponse, QueryResponse, UpsertResponse, VectorDocumentResponse } from "./responses";
 import { QueryInput, UpsertDocumentsInput, VectorDocumentParams, VectorIndexParams } from "./schemas";
 
 /**
@@ -89,6 +91,9 @@ function indexConfig(config: VectorConfig, name: string): VectorIndexConfig {
   return index;
 }
 
+/** `requireAuth()` lets either a bearer token or a session through. */
+const AUTHENTICATED: readonly VerificationStrategy[] = ["bearer", "session"];
+
 /** Register the vector sub-router. Returned as the capability's `routes` hook. */
 export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/vector";
@@ -126,9 +131,16 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
   return (app) => {
     app.post(
       `${base}/:index/documents`,
+      describeRoute({
+        summary: "Write documents into an index.",
+        description:
+          "Embeds any text with the index's model. The vectors are enqueued, so a query may not see them at once.",
+        verification: AUTHENTICATED,
+        responses: { 201: UpsertResponse },
+      }),
       requireAuth(),
-      zValidator("param", VectorIndexParams, validationHook),
-      zValidator("json", UpsertDocumentsInput, validationHook),
+      validate("param", VectorIndexParams),
+      validate("json", UpsertDocumentsInput),
       async (c) => {
         const deps = resolve(c, c.req.valid("param").index);
         return c.json(await upsertDocuments(deps, c.req.valid("json")), 201);
@@ -137,9 +149,15 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
 
     app.post(
       `${base}/:index/query`,
+      describeRoute({
+        summary: "Search an index.",
+        description: "Each match is hydrated with its document from the corpus.",
+        verification: AUTHENTICATED,
+        responses: { 200: QueryResponse },
+      }),
       requireAuth(),
-      zValidator("param", VectorIndexParams, validationHook),
-      zValidator("json", QueryInput, validationHook),
+      validate("param", VectorIndexParams),
+      validate("json", QueryInput),
       async (c) => {
         const deps = resolve(c, c.req.valid("param").index);
         return c.json(await queryDocuments(deps, c.req.valid("json")));
@@ -148,8 +166,13 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
 
     app.get(
       `${base}/:index/documents/:id`,
+      describeRoute({
+        summary: "Read one document.",
+        verification: AUTHENTICATED,
+        responses: { 200: VectorDocumentResponse },
+      }),
       requireAuth(),
-      zValidator("param", VectorDocumentParams, validationHook),
+      validate("param", VectorDocumentParams),
       async (c) => {
         const params = c.req.valid("param");
         return c.json(await getDocument(resolve(c, params.index), params.id));
@@ -158,8 +181,14 @@ export function registerVectorRoutes(options: VectorRoutesOptions): (app: Hono<P
 
     app.delete(
       `${base}/:index/documents/:id`,
+      describeRoute({
+        summary: "Delete a document.",
+        description: "Removes it from the index and from the corpus.",
+        verification: AUTHENTICATED,
+        responses: { 200: DeleteResponse },
+      }),
       requireAuth(),
-      zValidator("param", VectorDocumentParams, validationHook),
+      validate("param", VectorDocumentParams),
       async (c) => {
         const params = c.req.valid("param");
         return c.json(await deleteDocument(resolve(c, params.index), params.id));

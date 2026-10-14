@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
+import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
 import type { z } from "zod";
 import type { MediaConfig } from "../config/config";
@@ -20,6 +21,13 @@ import {
   listMedia,
   searchDuplicates,
 } from "./handlers";
+import {
+  DuplicatesResponse,
+  MediaDeletedResponse,
+  MediaListResponse,
+  MediaRecordResponse,
+  MediaUploadInitResponse,
+} from "./responses";
 import { CreateMediaInput, DuplicatesInput, FinalizeMediaInput, ListMediaQuery, MediaIdParam } from "./schemas";
 
 /**
@@ -76,44 +84,105 @@ function defaultResolveDeps(
   };
 }
 
+/** `requireAuth()` lets either a bearer token or a session through. */
+const AUTHENTICATED: readonly VerificationStrategy[] = ["bearer", "session"];
+
 /** Register the media sub-router. Returned as the capability's `routes` hook. */
 export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/media";
   const resolve = options.resolveDeps ?? defaultResolveDeps(options.config, options.schema);
 
   return (app) => {
-    app.post(`${base}/duplicates`, requireAuth(), zValidator("json", DuplicatesInput, validationHook), async (c) => {
-      const result = await searchDuplicates(await resolve(c), c.req.valid("json"));
-      return c.json(result);
-    });
+    app.post(
+      `${base}/duplicates`,
+      describeRoute({
+        summary: "Find duplicates of a file.",
+        description: "Exact matches by SHA-256, and near matches by perceptual hash for images.",
+        verification: AUTHENTICATED,
+        responses: { 200: DuplicatesResponse },
+      }),
+      requireAuth(),
+      validate("json", DuplicatesInput),
+      async (c) => {
+        const result = await searchDuplicates(await resolve(c), c.req.valid("json"));
+        return c.json(result);
+      },
+    );
 
-    app.post(base, requireAuth(), zValidator("json", CreateMediaInput, validationHook), async (c) => {
-      const result = await createMedia(await resolve(c), c.req.valid("json"));
-      return c.json(result, 201);
-    });
+    app.post(
+      base,
+      describeRoute({
+        summary: "Start an upload.",
+        description: "Creates a pending record and answers with the URL to upload the bytes to, directly.",
+        verification: AUTHENTICATED,
+        responses: { 201: MediaUploadInitResponse },
+      }),
+      requireAuth(),
+      validate("json", CreateMediaInput),
+      async (c) => {
+        const result = await createMedia(await resolve(c), c.req.valid("json"));
+        return c.json(result, 201);
+      },
+    );
 
     app.post(
       `${base}/:id/finalize`,
+      describeRoute({
+        summary: "Finish an upload.",
+        description: "Marks the record stored and starts any configured enrichment.",
+        verification: AUTHENTICATED,
+        responses: { 200: MediaRecordResponse },
+      }),
       requireAuth(),
-      zValidator("param", MediaIdParam, validationHook),
-      zValidator("json", FinalizeMediaInput, validationHook),
+      validate("param", MediaIdParam),
+      validate("json", FinalizeMediaInput),
       async (c) => {
         const record = await finalizeMedia(await resolve(c), c.req.valid("param").id, c.req.valid("json"));
         return c.json(record);
       },
     );
 
-    app.get(`${base}/:id`, requireAuth(), zValidator("param", MediaIdParam, validationHook), async (c) => {
-      const record = await getMedia(await resolve(c), c.req.valid("param").id);
-      return c.json(record);
-    });
+    app.get(
+      `${base}/:id`,
+      describeRoute({
+        summary: "Read one media record.",
+        verification: AUTHENTICATED,
+        responses: { 200: MediaRecordResponse },
+      }),
+      requireAuth(),
+      validate("param", MediaIdParam),
+      async (c) => {
+        const record = await getMedia(await resolve(c), c.req.valid("param").id);
+        return c.json(record);
+      },
+    );
 
-    app.get(base, requireAuth(), zValidator("query", ListMediaQuery, validationHook), async (c) => {
-      return c.json(await listMedia(await resolve(c), c.req.valid("query")));
-    });
+    app.get(
+      base,
+      describeRoute({
+        summary: "List media records.",
+        verification: AUTHENTICATED,
+        responses: { 200: MediaListResponse },
+      }),
+      requireAuth(),
+      validate("query", ListMediaQuery),
+      async (c) => {
+        return c.json(await listMedia(await resolve(c), c.req.valid("query")));
+      },
+    );
 
-    app.delete(`${base}/:id`, requireAuth(), zValidator("param", MediaIdParam, validationHook), async (c) => {
-      return c.json(await deleteMedia(await resolve(c), c.req.valid("param").id));
-    });
+    app.delete(
+      `${base}/:id`,
+      describeRoute({
+        summary: "Delete a media record and its bytes.",
+        verification: AUTHENTICATED,
+        responses: { 200: MediaDeletedResponse },
+      }),
+      requireAuth(),
+      validate("param", MediaIdParam),
+      async (c) => {
+        return c.json(await deleteMedia(await resolve(c), c.req.valid("param").id));
+      },
+    );
   };
 }

@@ -33,6 +33,7 @@ const COMMANDS = {
   worker: { group: "Project", load: () => import("./commands/worker").then((m) => m.default) },
   ui: { group: "Project", load: () => import("./commands/ui").then((m) => m.default) },
   upgrade: { group: "Project", load: () => import("./commands/upgrade").then((m) => m.default) },
+  contract: { group: "Project", load: () => import("./commands/contract").then((m) => m.default) },
 
   // Develop — the local loop.
   dev: { group: "Develop", load: () => import("./commands/dev").then((m) => m.default) },

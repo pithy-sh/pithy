@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { type AmbientEnv, ambientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { describeRoute } from "@pithy-sh/core/src/http/routeSpec";
+import { validate } from "@pithy-sh/core/src/http/validation";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
@@ -67,8 +67,19 @@ export function registerDevLoginRoute(
     if (isContinuousIntegration(env)) return;
     // The claim is read here rather than inside the handler: `c.req.valid` is typed off the chain it was
     // declared on, and a handler taking a bare `Context` has no validator to read from.
-    app.get(DEV_LOGIN_ROUTE, zValidator("query", DevLoginQuery, validationHook), (c) =>
-      serveDevLogin(c, wiring, c.req.valid("query")[DEV_LOGIN_CLAIM_PARAM]),
+    app.get(
+      DEV_LOGIN_ROUTE,
+      describeRoute({
+        summary: "Sign the browser in as the seeded dev user.",
+        description:
+          "Mounted only in a `dev` composition outside CI. It takes no credential: the signed claim `pithy seed` wrote into the URL is the whole of what it checks.",
+        verification: "public",
+        responses: {
+          302: { description: "Signed in: sets the session cookie and redirects to `/`." },
+        },
+      }),
+      validate("query", DevLoginQuery),
+      (c) => serveDevLogin(c, wiring, c.req.valid("query")[DEV_LOGIN_CLAIM_PARAM]),
     );
   };
 }

@@ -3,6 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { openApiDocument, undescribedFields, undescribedRoutes } from "@pithy-sh/core/src/openapi/document";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import "../algorithm/builtins";
@@ -11,7 +12,7 @@ import { registerRatingRoutes } from "./routes";
 
 /**
  * Gate 2 of the route request contract (issue #74), applied to this package. Every rating route that
- * declares a `:segment` must declare a `zValidator("param", …)` for it. Query and body are covered by
+ * declares a `:segment` must declare a `validate("param", …)` for it. Query and body are covered by
  * the `no-raw-request-input` Biome plugin; path params have no such chokepoint, so they need this.
  *
  * A composed app is the only place the answer lives — `registerRatingRoutes` builds the route table, so
@@ -21,7 +22,7 @@ import { registerRatingRoutes } from "./routes";
  * `cloudflare:workers`, so the module loads outside the Workers runtime.
  *
  * If this fails, the named route reads a path param it never validated. Add the missing
- * `zValidator("param", …, validationHook)` and its schema in `src/http/schemas.ts` — do not relax the gate.
+ * `validate("param", …)` and its schema in `src/http/schemas.ts` — do not relax the gate.
  */
 
 const CONFIG: RatingConfigInput = {
@@ -54,7 +55,7 @@ describe("rating route contract", () => {
     expect(
       uncovered,
       `These rating routes read path params they never validated: ${named}. Add ` +
-        `zValidator("param", Schema, validationHook) on the route line, and declare Schema in src/http/schemas.ts.`,
+        `validate("param", Schema) on the route line, and declare Schema in src/http/schemas.ts.`,
     ).toEqual([]);
   });
 
@@ -68,5 +69,19 @@ describe("rating route contract", () => {
       "/rating/games/:game/outcomes",
       "/rating/games/:game/players/:userId",
     ]);
+  });
+});
+
+describe("route contract: every route is described for the OpenAPI contract", () => {
+  const groups = () => [{ tag: "rating", routes: composed().routes }];
+
+  test("every route declares describeRoute", () => {
+    expect(undescribedRoutes(groups())).toEqual([]);
+  });
+
+  test("every field and parameter in the contract carries a description", () => {
+    const document = openApiDocument({ title: "rating", version: "0" }, groups());
+    expect(Object.keys(document.paths).length).toBeGreaterThan(0);
+    expect(undescribedFields(document)).toEqual([]);
   });
 });
