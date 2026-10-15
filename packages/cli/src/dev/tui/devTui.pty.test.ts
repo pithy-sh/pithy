@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { devTuiHarness, harnessEnv } from "../../test-utils/devTuiHarness";
-import { scrollScreenAway } from "./app";
+import { NO_WRAP } from "./app";
 
 /**
  * **What the footer does to a real terminal — measured, on one, with the real component.**
@@ -28,13 +28,17 @@ import { scrollScreenAway } from "./app";
  *    output is still there afterwards, which is the whole reason this shape was chosen over a full-screen
  *    app.
  * 4. **The last frame is left behind**, so a session that has stopped still says how it ended.
- * 5. **A resize repaints the footer once it settles, and only then** (#736). The harness drags its own
+ * 5. **A resize burst paints on its trailing edge only** (#736, #760). The harness drags its own
  *    terminal narrower and wider with `stty`, which arrives as SIGWINCH exactly as a window manager's
- *    does, and the footer is redrawn on a clean screen once per settled size — not once per event, and
- *    without an erase-display. A byte stream does not rewrap, so this cannot see the stale headers a
- *    rewrapping terminal stacked up; `devTui.windows.test.ts` reads those off a real ConPTY. What this
- *    holds is the half a byte stream can: how often the repaint fires, and that it leaves the stream
- *    whole.
+ *    does. Inside a burst Ink's own resize paint is muted (subscription-time, `app.tsx`/`resize.ts`)
+ *    and each event erases from the anchor down — the mute covers that paint alone: the 80 ms tick and
+ *    any line committed mid-drag still render frames through a burst (the bound below measures them).
+ *    The settle paints once, at the final size — and a settle that ends a multi-event drag rebuilds
+ *    the viewport, restating the visible tail of the stream in rows measured at the new width. A byte
+ *    stream does not rewrap, so this cannot see the stale headers a rewrapping terminal stacked up —
+ *    `devTui.windows.test.ts` reads those off a real ConPTY. What this holds is the half a byte
+ *    stream can: how often the repaint fires, and what a reader can scroll to — every committed line
+ *    present, in order, and in the settled screen each appearing exactly once.
  *
  * A pty is required and a fake will not do, for the reason `capabilities/secretPrompt.pty.test.ts` gives
  * about `password()`: this behavior is the *terminal's* and Ink's, not ours. `script(1)` allocates it,
@@ -160,11 +164,16 @@ const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g;
 const plain = () => transcript.replace(ANSI, "");
 
 describe.runIf(RUNNABLE)("the live footer on a real terminal", () => {
-  test("every committed line survives, exactly once, in order", () => {
+  test("every committed line survives, in order, and none is destroyed", () => {
+    // First appearances: a line missing or reordered is the destruction #736 shipped (main's stale
+    // erases ate lines outright), and this is the claim over the *whole* stream. Exact occurrence
+    // counts cannot ride a byte transcript — the settle rebuild restates the visible tail, so tail
+    // lines are legitimately in the bytes 1 + (restatements) times. "Exactly once" is a property of
+    // a screen, and the screen half is asserted in the settled-screen test below, where each visible
+    // line has precisely one copy.
     const seen = [...plain().matchAll(/\bL(\d+)\b/g)].map((m) => Number(m[1]));
-    expect(seen).toHaveLength(LINES);
-    expect(new Set(seen).size).toBe(LINES);
-    expect(seen).toEqual([...seen].sort((a, b) => a - b));
+    const firstSeen = seen.filter((n, index) => seen.indexOf(n) === index);
+    expect(firstSeen).toEqual(Array.from({ length: LINES }, (_, index) => index));
   });
 
   test("a line far wider than the terminal arrives in one piece", () => {
@@ -191,27 +200,69 @@ describe.runIf(RUNNABLE)("the live footer on a real terminal", () => {
     expect(plain()).toMatch(/api\s+app\s+8787\s+ready\s+0\.0s/);
   });
 
-  test("a drag repaints the footer once, when it settles, not once per resize", () => {
-    // Every step of each drag was its own SIGWINCH — four of them on the way to 60 columns, twelve on
-    // the way to 120. One repaint per settled size is the debounce working; one per step is the disease.
-    expect(transcript.split(scrollScreenAway(ROWS)).length - 1).toBe(SETTLED.length);
+  test("a drag paints its footer on the trailing edge, not once per event", () => {
+    // The guard (`#736`'s unwrapped-frame write) opens every frame Ink writes, so frames are countable
+    // in the bytes. The window from one marker to the next carries a full drag — 12 width changes at
+    // ~20 ms steps — and the session's spinner: with a worker still building, the 80 ms tick owns the
+    // window's floor, and the shipped mechanism measured 17 guarded frames inside it. The bound sits
+    // above that and below the disease: main's bytes carry no guard at all (measured 0), which the
+    // global floor below catches — it fails a per-event repaint the same way, since the mechanism
+    // before #760 painted on each event's leading edge and the guard count is how frames are seen.
+    const from = transcript.indexOf(`MARK-${SETTLED[0]}`);
+    const to = transcript.indexOf(`MARK-${SETTLED[1]}`);
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    expect(transcript.slice(from, to).split(NO_WRAP).length - 1).toBeLessThanOrEqual(22);
+    expect(transcript.split(NO_WRAP).length - 1).toBeGreaterThan(SETTLED.length);
   });
 
-  test("a marker written at each settled size arrives once, in order", () => {
+  test("a marker written at each settled size arrives, in order, and the settled screen holds one of each", () => {
+    // Arrival: first appearances, in the order the sizes came — a destroyed marker is what #736's
+    // stale erases did. Multiplicity: asserted on the screen below, not the bytes — the settle
+    // rebuild restates the visible tail, and a restated marker is a replacement, not a fan.
     const markers = [...plain().matchAll(/MARK-(\d+)/g)].map((m) => Number(m[1]));
-    expect(markers).toEqual(SETTLED);
+    expect(markers.filter((m, index) => markers.indexOf(m) === index)).toEqual(SETTLED);
+  });
+
+  test("the settled screen a reader ends on holds each visible stream line exactly once", () => {
+    // The screen the last rebuild leaves: find the last rebuild's `ESC[1J` + `ESC[H` in the bytes,
+    // and read from there on as what is on screen. The restatement wrote the visible tail there (one
+    // copy each), the markers committed on top of it, and nothing below the anchor restates twice.
+    // This is the ANSI-aware frame-model reading of "exactly once in what a reader can scroll to"
+    // for a transcript harness: the tail region of the settled screen. On main there is no `ESC[1J`
+    // at all (the scroll-away mechanism clears by newlines), so the cut goes red at the anchor —
+    // red on the disease, green on the cure.
+    const cut = transcript.lastIndexOf("\x1b[1J\x1b[H");
+    expect(cut, "no rebuild restatement in the transcript").toBeGreaterThan(-1);
+    const screen = transcript.slice(cut).replace(ANSI, "");
+    for (const n of [298, 299]) {
+      expect([...screen.matchAll(new RegExp(`\\bL${n}\\b`, "g"))]).toHaveLength(1);
+    }
+    expect([...screen.matchAll(/MARK-60/g)]).toHaveLength(1);
+    expect([...screen.matchAll(/MARK-120/g)]).toHaveLength(1);
+    // And the deep stream is *not* restated: the rebuild writes the visible tail, measured, not the
+    // uncapped store (finding 1's `slice(NaN)` shipped the whole session).
+    expect(screen).not.toMatch(/\bL7\b/);
   });
 
   test("after the last repaint the screen holds one roster header", () => {
-    // Cut at the last repaint, which is the scroll-away: everything after it is drawn on a clean screen.
-    // The repaint itself paints with no erase in front of it — there is nothing left to erase — so the
-    // final frame starts at the last erase *after* the cut if Ink has redrawn since, and at the cut if it
-    // has not. A repaint that never fired is a failure here, not an empty cut.
-    const repaint = transcript.lastIndexOf(scrollScreenAway(ROWS));
-    expect(repaint, "no repaint after the resize").toBeGreaterThan(-1);
-    const after = transcript.slice(repaint);
-    const erase = after.lastIndexOf("\x1b[2K\x1b[1A");
-    const frame = (erase === -1 ? after : after.slice(erase)).replace(ANSI, "");
-    expect([...frame.matchAll(/^\s+worker\s+kind/gm)]).toHaveLength(1);
+    // Cut at the last guarded frame that carries the roster. The last guard in the transcript can be
+    // teardown's: quitting erases the footer and writes an empty frame after it, and a cutter that
+    // takes the *final* guard then slices the exit, not the screen the drag left. One frame per
+    // split segment, honest by construction: each is what was written between two guards.
+    // On main's bytes there is no guard at all — the single "frame" is the whole transcript, the
+    // staircase is inside it, and the count below goes red. Red on the disease, green on the cure.
+    const frames = transcript.split(NO_WRAP).map((frame) => frame.replace(ANSI, ""));
+    const header = /^\s+worker\s+kind/m;
+    let carried: string | undefined;
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const frame = frames[i];
+      if (frame && header.test(frame)) {
+        carried = frame;
+        break;
+      }
+    }
+    expect(carried, "no guarded frame after the resize").toMatch(header);
+    expect([...(carried ?? "").matchAll(/^\s+worker\s+kind/gm)]).toHaveLength(1);
   });
 });

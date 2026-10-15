@@ -5,6 +5,7 @@ import { render } from "ink-testing-library";
 import { describe, expect, test, vi } from "vitest";
 import { stripAnsi } from "../logging";
 import { DevTui } from "./app";
+import { displayWidth, frameRows, restatementTail, rowsAt } from "./resize";
 import { createDevStore } from "./store";
 
 /**
@@ -18,6 +19,90 @@ import { createDevStore } from "./store";
  */
 
 const at = (ms: number) => new Date(1_700_000_000_000 + ms);
+
+describe("rowsAt — the row count the resize rebuild budgets on", () => {
+  // The rebuild's budget is rows at the *new* width, and a count that reads `undefined` or `NaN`
+  // slices the whole store back onto the screen. The count is real, and
+  // a count that is missing has to fail here, not in a full-buffer suite three commits later.
+  test("a line is at least one row, and a long line is one row per terminal width", () => {
+    expect(rowsAt("short\n", 80)).toBe(1);
+    // A 150-column wrangler line in a 60-column terminal is three rows.
+    expect(rowsAt("x".repeat(150), 60)).toBe(3);
+    expect(rowsAt(`${"y".repeat(60)}\n`, 60)).toBe(1);
+    expect(rowsAt(`${"y".repeat(61)}\n`, 60)).toBe(2);
+    expect(rowsAt("a\nb\nc", 80)).toBe(3);
+    // An empty committed line is one row — restating it writes its newline. A lone newline is one
+    // blank row plus the (popped) line it terminates. Never NaN, never a count of the whole store.
+    expect(rowsAt("", 80)).toBe(1);
+    expect(rowsAt("\n", 80)).toBe(1);
+    // Escape sequences occupy no columns.
+    expect(rowsAt("\x1b[2mshort\x1b[22m", 80)).toBe(1);
+  });
+
+  test("rows are display columns, not UTF-16 units: CJK, emoji, and tabs count what the terminal shows", () => {
+    // Wide CJK: 2 columns per character — a 75-character line is 150 columns, three rows at 60.
+    expect(displayWidth("字".repeat(75))).toBe(150);
+    expect(rowsAt("字".repeat(75), 60)).toBe(3);
+    // Emoji (astral, one code point each): 2 columns. Ten of them are 20 columns, not 20 units.
+    expect(displayWidth("😀".repeat(10))).toBe(20);
+    expect(rowsAt("😀".repeat(30), 59)).toBe(2); // 60 columns of emoji at 59 wide: two rows.
+    expect(rowsAt("😀".repeat(30), 60)).toBe(1);
+    // A ZWJ emoji sequence counts its pictographs; the joiner and the skin-tone selector ride free.
+    expect(displayWidth("👨‍👩‍👧")).toBe(6);
+    // Combining marks add nothing to the line they sit on: "e" + U+0301 ×2 is two rows' worth of text
+    // at two columns, not four.
+    expect(displayWidth("éé")).toBe(2);
+    // A tab advances to the next 8-column stop, at least one column: `a\tb` shows 'b' at column 9.
+    expect(displayWidth("a\tb")).toBe(9);
+    expect(displayWidth("\t")).toBe(8);
+    expect(displayWidth("abcdefg\th")).toBe(9);
+    expect(rowsAt(`${"x".repeat(15)}\t${"y".repeat(50)}`, 60)).toBe(2); // tab lands col 16; 61 columns.
+    // Escapes take no columns through the tab path too.
+    expect(rowsAt("a\tb\x1b[3J", 80)).toBe(1);
+  });
+});
+
+describe("frameRows — a frame is one row per line, whatever the width", () => {
+  test("an 80-column rule is one row at 60 columns, because the frame was written with autowrap off", () => {
+    expect(frameRows("─".repeat(80))).toBe(1);
+    // Wrapping it again at the new width (rowsAt) is the overcount that shrinks the budget by the
+    // frame's own height and loses the oldest visible lines.
+    expect(rowsAt("─".repeat(80), 60)).toBe(2);
+    expect(frameRows("worker  kind\n───\napi  app")).toBe(3);
+    // A trailing newline opens no line of its own; the empty frame is no rows at all.
+    expect(frameRows("a\n")).toBe(1);
+    expect(frameRows("")).toBe(0);
+    // Erase and cursor sequences in the recorded frame take no lines.
+    expect(frameRows("\x1b[2Aworker\x1b[0m\nrule")).toBe(2);
+  });
+});
+
+describe("restatementTail — the visible tail a rebuild restates", () => {
+  const frame = "header\nrule\nrow1\nrow2\nkeybar"; // a 5-line frame
+  test("the tail fills the viewport minus the frame's rows minus one, newest-first", () => {
+    const texts = Array.from({ length: 40 }, (_, i) => `L${i}`);
+    // 24 rows - 5 frame rows - 1 spare = 18: the 18 newest lines, in order.
+    expect(restatementTail(texts, frame, 80, 24)).toEqual(texts.slice(40 - 18));
+  });
+  test("a long committed line costs its wrapped rows", () => {
+    const texts = ["short", "x".repeat(150), "tail"];
+    // budget 24-5-1=18 at 60 columns: the 150-column line is 3 rows, so all three fit.
+    expect(restatementTail(texts, frame, 60, 24)).toEqual(texts);
+    // budget 5 at 60: tail (1) + 150-col line (3) = 4, +short (1) = 5 — all fit; budget 4 drops it.
+    expect(restatementTail(texts, frame, 60, 10)).toEqual(texts.slice(1));
+  });
+  test("columns and rows of 0 (a pty that has not been sized) fall back to 80x24, not NaN", () => {
+    const texts = Array.from({ length: 40 }, (_, i) => `L${i}`);
+    const tail = restatementTail(texts, frame, 0, 0);
+    // Fallback budget 24-5-1=18: a real tail, not the whole store and not `slice(NaN)`.
+    expect(tail.length).toBe(18);
+    expect(tail).toEqual(texts.slice(22));
+  });
+  test("a frame wider than the viewport never inflates the budget past the screen", () => {
+    const wide = Array.from({ length: 30 }, () => "r").join("\n"); // 30-line frame on a 24-row screen
+    expect(restatementTail(["a", "b"], wide, 80, 24)).toEqual([]);
+  });
+});
 
 const withWorkers = () => {
   const store = createDevStore();
