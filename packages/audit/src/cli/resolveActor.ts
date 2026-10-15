@@ -36,6 +36,17 @@ export interface CfActorSource {
   accountTokens: CfAccountTokenActorSource;
 }
 
+/**
+ * What the caller knows about the credential that the token's spelling cannot say.
+ *
+ * `kind: "session"` is a signed-in Cloudflare session (#759): an OAuth access token, opaque, carrying
+ * neither `cfut_` nor `cfat_`. The caller resolved the credential and knows; inferring it from the
+ * spelling would make a prefix change at Cloudflare a silent change of actor.
+ */
+export interface ResolveActorOptions {
+  kind?: "session";
+}
+
 /** A resolved CLI actor: who to attribute a control-plane audit event to, plus correlation metadata. */
 export interface ResolvedActor {
   /** The kind of principal. */
@@ -72,8 +83,22 @@ function systemActor(note: string): ResolvedActor {
  * Resolution failure — a bad token, a network error, an unrecognized prefix — is **never fatal**: it
  * returns a `system` actor with a `metadata` note, so the event is still written, just unattributed.
  */
-export async function resolveActor(apiToken: string, source: CfActorSource): Promise<ResolvedActor> {
+export async function resolveActor(
+  apiToken: string,
+  source: CfActorSource,
+  options: ResolveActorOptions = {},
+): Promise<ResolvedActor> {
   try {
+    // A signed-in session names the person through `GET /user`, which `user-details.read` grants (#759).
+    // Its access token carries neither prefix, so the caller — which resolved the credential — says so.
+    if (options.kind === "session") {
+      const user = await source.user.getUser();
+      return {
+        actorType: "user",
+        actorId: user.email ?? user.id ?? null,
+        metadata: { cfTokenType: "session", cfUserId: user.id ?? null },
+      };
+    }
     if (apiToken.startsWith("cfut_")) {
       const user = await source.user.getUser();
       return {
@@ -117,10 +142,14 @@ export async function resolveActor(apiToken: string, source: CfActorSource): Pro
  * command — actor identity is resolved at session start, not per event. Memoizes the in-flight
  * promise so concurrent emits share the single resolution.
  */
-export function createCachedActorResolver(apiToken: string, source: CfActorSource): () => Promise<ResolvedActor> {
+export function createCachedActorResolver(
+  apiToken: string,
+  source: CfActorSource,
+  options: ResolveActorOptions = {},
+): () => Promise<ResolvedActor> {
   let cached: Promise<ResolvedActor> | undefined;
   return () => {
-    cached ??= resolveActor(apiToken, source);
+    cached ??= resolveActor(apiToken, source, options);
     return cached;
   };
 }

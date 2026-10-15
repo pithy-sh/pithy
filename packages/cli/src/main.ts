@@ -45,6 +45,7 @@ const COMMANDS = {
   provision: { group: "Operate", load: () => import("./commands/provision").then((m) => m.default) },
   deploy: { group: "Operate", load: () => import("./commands/deploy").then((m) => m.default) },
   env: { group: "Operate", load: () => import("./commands/env").then((m) => m.default) },
+  cloudflare: { group: "Operate", load: () => import("./commands/cloudflare").then((m) => m.default) },
   token: { group: "Operate", load: () => import("./commands/token").then((m) => m.default) },
   dashboard: { group: "Operate", load: () => import("./commands/dashboard").then((m) => m.default) },
 

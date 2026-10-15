@@ -320,6 +320,8 @@ describe("no config string is joined into the config directory without passing a
   const VALIDATORS: Record<string, string> = {
     projectConfigSegment:
       "Holds the name to `assertValidProjectName` *and* to being its own kebab form — the two ways a project name arrives (#212), since the validator is read after kebabbing and `My/Project` passes it whole.",
+    sessionFile:
+      "Parses the profile through ProfileName — a bare token, lowercase, digits and single hyphens — so a profile name cannot carry a separator or `..` into <config>/session.<profile>.json (#759).",
     cloudflareAccountFile:
       "Parses `accountName` through `CloudflareAccountName` before it becomes `cloudflare.<name>.json` — validated at the schema precisely because it becomes a filename (#206).",
   };

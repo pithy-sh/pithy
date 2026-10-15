@@ -8,6 +8,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { parse } from "comment-json";
 import { cloudflareClients } from "../cloudflare/clients";
+import { isBoundSessionToken } from "../cloudflare/session/kind";
 import { projectCapabilitySetFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { kitImport } from "../project/kitResolve";
@@ -341,7 +342,12 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
   const apiToken = options.apiToken;
   const resolveActor =
     clients && apiToken
-      ? createCachedActorResolver(apiToken, { user: clients.user(), accountTokens: clients.accountTokens() })
+      ? createCachedActorResolver(
+          apiToken,
+          { user: clients.user(), accountTokens: clients.accountTokens() },
+          // A signed-in session names the person who signed in (#759). Derived from the token in hand.
+          isBoundSessionToken(apiToken) ? { kind: "session" } : {},
+        )
       : async () => UNATTRIBUTED;
   // Surface a dropped audit write through the CLI logger. Without this a lost record is invisible —
   // and an audit trail you cannot tell is broken is worse than none.

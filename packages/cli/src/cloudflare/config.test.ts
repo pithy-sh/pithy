@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -19,8 +19,11 @@ import {
   parseCloudflareConfig,
   pithyOffline,
   resolveCloudflare,
+  sessionMark,
   writeCloudflareConfig,
 } from "./config";
+import { bindProfile } from "./session/bindings";
+import { writeSession } from "./session/store";
 
 /**
  * Every test here resolves against a temp `PITHY_CONFIG_DIR`. That is not tidiness: the real file holds
@@ -621,5 +624,192 @@ describe("describeUnconfirmedCloudflareAccount", () => {
     expect(describeUnconfirmedCloudflareAccount("acct-stranger")).toBe(
       "Nothing states that Cloudflare account acct-stranger is this project's.",
     );
+  });
+});
+
+/**
+ * **A signed-in session, bound to the directory a command runs in (#759).** The third source, and the
+ * one that wins: a profile bound here supplies the pair, and an exported credential that disagrees is
+ * refused with both named rather than silently preferred in either direction.
+ */
+describe("a bound profile's session", () => {
+  const SESSION = {
+    profile: "pithy",
+    accountId: "acct-session",
+    accountName: "pithy.",
+    email: "jim@pithy.sh",
+    accessToken: "session-access-token",
+    refreshToken: "RT",
+    expiresAt: "2026-10-15T13:00:00.000Z",
+    scope: "user-details.read",
+  };
+  const BEFORE_EXPIRY = () => new Date("2026-10-15T12:00:00.000Z");
+
+  /** A project directory under the temp config, bound to `pithy`, with the session written. */
+  async function signedIn(): Promise<string> {
+    const project = join(dir, "project");
+    await mkdir(project, { recursive: true });
+    await bindProfile(project, "pithy", { env: { PITHY_CONFIG_DIR: dir } });
+    await writeSession(SESSION, { env: { PITHY_CONFIG_DIR: dir } });
+    return project;
+  }
+
+  /** The action line of the PithyError `run` throws — where a remedy command belongs. */
+  function actionOf(run: () => unknown): string {
+    try {
+      run();
+    } catch (error) {
+      if (error instanceof PithyError) return error.payload.action ?? "";
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  function here(cwd: string, env: Record<string, string> = {}): CloudflareConfigOptions {
+    return { ...paths(env), cwd, now: BEFORE_EXPIRY };
+  }
+
+  test("supplies the pair, over a token in the credentials file, and says the session is the source", async () => {
+    const cwd = await signedIn();
+    await config({ CLOUDFLARE_API_TOKEN: "file-token", CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "store" });
+    const resolved = resolveCloudflare(here(cwd));
+    expect(resolved.vars).toMatchObject({
+      CLOUDFLARE_API_TOKEN: "session-access-token",
+      CLOUDFLARE_ACCOUNT_ID: "acct-session",
+    });
+    // That file is another account's, so its store id would address the wrong store: it is not carried.
+    expect(resolved.vars.SECRETS_STORE_ID).toBeUndefined();
+    expect(resolved.credentialSource).toBe("session");
+    expect(resolved.session).toMatchObject({
+      profile: "pithy",
+      via: "directory",
+      email: "jim@pithy.sh",
+      expired: false,
+    });
+  });
+
+  test("the account's other keys come from a file about the same account, or one that names none", async () => {
+    const cwd = await signedIn();
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-session", SECRETS_STORE_ID: "store" });
+    expect(resolveCloudflare(here(cwd)).vars.SECRETS_STORE_ID).toBe("store");
+    await config({ SECRETS_STORE_ID: "store-unnamed" });
+    expect(resolveCloudflare(here(cwd)).vars.SECRETS_STORE_ID).toBe("store-unnamed");
+  });
+
+  test("a store id dropped as another account's gives way to one exported for this run", async () => {
+    const cwd = await signedIn();
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-file", SECRETS_STORE_ID: "other-accounts-store" });
+    expect(resolveCloudflare(here(cwd, { SECRETS_STORE_ID: "exported-store" })).vars.SECRETS_STORE_ID).toBe(
+      "exported-store",
+    );
+  });
+
+  test("a pair a pithy exported to its own child for this profile is not a conflict, even after a renewal", async () => {
+    // A nested `pithy` inherits its parent's export. The hourly renewal changes the file, not the child's
+    // environment — refusing then would tell the person to unset a variable Pithy set.
+    const cwd = await signedIn();
+    const inherited = "the-token-before-the-renewal";
+    const nested = here(cwd, {
+      CLOUDFLARE_API_TOKEN: inherited,
+      CLOUDFLARE_ACCOUNT_ID: "acct-session",
+      PITHY_SESSION_PROFILE: sessionMark("pithy", inherited),
+    });
+    expect(cloudflareEnv(nested).CLOUDFLARE_API_TOKEN).toBe("session-access-token");
+    // A mark for another profile excuses nothing.
+    expect(() =>
+      cloudflareEnv({ ...nested, env: { ...nested.env, PITHY_SESSION_PROFILE: sessionMark("other", inherited) } }),
+    ).toThrow(PithyError);
+    // Nor does the inherited mark excuse a *different* token exported beside it: that is the override.
+    expect(() =>
+      cloudflareEnv({ ...nested, env: { ...nested.env, CLOUDFLARE_API_TOKEN: "cfat_someone-elses" } }),
+    ).toThrow(PithyError);
+  });
+
+  test("offline, an expired session is not refused with a sign-in that cannot run offline", async () => {
+    const cwd = await signedIn();
+    const late = { ...here(cwd, { PITHY_OFFLINE: "1" }), now: () => new Date("2026-10-15T14:00:00.000Z") };
+    expect(cloudflareEnv(late).CLOUDFLARE_API_TOKEN).toBe("session-access-token");
+  });
+
+  test("offline, a bound profile with no session resolves no credentials — and never a file's", async () => {
+    const project = join(dir, "unsigned-offline");
+    await mkdir(project, { recursive: true });
+    await bindProfile(project, "pithy", { env: { PITHY_CONFIG_DIR: dir } });
+    await config({ CLOUDFLARE_API_TOKEN: "file-token", CLOUDFLARE_ACCOUNT_ID: "acct-file" });
+    const vars = cloudflareEnv(here(project, { PITHY_OFFLINE: "1" }));
+    expect(vars.CLOUDFLARE_API_TOKEN).toBeUndefined();
+    expect(vars.CLOUDFLARE_ACCOUNT_ID).toBeUndefined();
+  });
+
+  test("an exported CLOUDFLARE_API_TOKEN does not override it: the command refuses and names both", async () => {
+    const cwd = await signedIn();
+    const failure = (() => {
+      try {
+        cloudflareEnv(here(cwd, { CLOUDFLARE_API_TOKEN: "exported" }));
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.message).toMatch(/pithy/);
+    expect((failure as PithyError).payload.message).toMatch(/CLOUDFLARE_API_TOKEN/);
+  });
+
+  test("an exported pair that agrees with the session is not a conflict", async () => {
+    const cwd = await signedIn();
+    expect(
+      cloudflareEnv(here(cwd, { CLOUDFLARE_API_TOKEN: "session-access-token", CLOUDFLARE_ACCOUNT_ID: "acct-session" }))
+        .CLOUDFLARE_API_TOKEN,
+    ).toBe("session-access-token");
+  });
+
+  test("offline, the exported token is refused anyway, so there is nothing to conflict with", async () => {
+    const cwd = await signedIn();
+    expect(
+      cloudflareEnv(here(cwd, { CLOUDFLARE_API_TOKEN: "exported", PITHY_OFFLINE: "1" })).CLOUDFLARE_API_TOKEN,
+    ).toBe("session-access-token");
+  });
+
+  test("a bound profile with no session refuses rather than falling back to whatever the shell exports", async () => {
+    const project = join(dir, "unsigned");
+    await mkdir(project, { recursive: true });
+    await bindProfile(project, "pithy", { env: { PITHY_CONFIG_DIR: dir } });
+    expect(
+      actionOf(() => cloudflareEnv(here(project, { CLOUDFLARE_API_TOKEN: "exported", CLOUDFLARE_ACCOUNT_ID: "a" }))),
+    ).toMatch(/pithy cloudflare connect --profile pithy/);
+  });
+
+  test("an expired session refuses with the sign-in that fixes it", async () => {
+    const cwd = await signedIn();
+    expect(actionOf(() => cloudflareEnv({ ...here(cwd), now: () => new Date("2026-10-15T14:00:00.000Z") }))).toMatch(
+      /pithy cloudflare connect --profile pithy/,
+    );
+  });
+
+  test("a pin the session's account contradicts is a mismatch, sourced to the session", async () => {
+    const cwd = await signedIn();
+    const resolved = resolveCloudflare({ ...here(cwd), account: { accountId: "acct-pinned" } });
+    expect(resolved.mismatch).toMatchObject({ pinned: "acct-pinned", resolved: "acct-session", source: "session" });
+  });
+
+  test("an account no pin names is vouched for by the binding, never ambient", async () => {
+    const cwd = await signedIn();
+    expect(cloudflareAccountConfirmation(here(cwd))).toBe("bound");
+  });
+
+  test("a session supplies the whole pair, so a half-written credentials file is not reported as a split", async () => {
+    const cwd = await signedIn();
+    await config({ CLOUDFLARE_API_TOKEN: "file-token" });
+    expect(cloudflareCredentialSplit(here(cwd, { CLOUDFLARE_ACCOUNT_ID: "acct-session" }))).toBeNull();
+  });
+
+  test("with nothing bound, resolution is exactly what it was", async () => {
+    await config({ CLOUDFLARE_API_TOKEN: "file-token", CLOUDFLARE_ACCOUNT_ID: "acct-file" });
+    const elsewhere = join(dir, "elsewhere");
+    await mkdir(elsewhere, { recursive: true });
+    const resolved = resolveCloudflare(here(elsewhere));
+    expect(resolved.vars.CLOUDFLARE_API_TOKEN).toBe("file-token");
+    expect(resolved.session).toBeNull();
+    expect(resolved.credentialSource).toBe("file");
   });
 });

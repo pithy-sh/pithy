@@ -17,6 +17,15 @@ export interface CloudflareManagerConfig {
   apiToken: string;
   /** The Cloudflare account id all operations target (`CLOUDFLARE_ACCOUNT_ID`). */
   accountId: string;
+  /**
+   * The token to call with *now*, read at every call, when it can change during the manager's life (#759).
+   *
+   * A signed-in session's access token lasts an hour and is renewed on disk ahead of that, so a manager
+   * built at the start of a long run would otherwise keep sending the token it was constructed with.
+   * Absent, {@link apiToken} is the token for good — which is every command that finishes inside the hour
+   * dispatch guarantees it.
+   */
+  tokenProvider?: () => string;
 }
 
 /**
@@ -26,9 +35,10 @@ export interface CloudflareManagerConfig {
  * (`validateServiceAccess`).
  */
 export abstract class CloudflareManager {
-  private readonly client: Cloudflare;
+  /** The SDK client, and the token it was built for — rebuilt when {@link getApiToken} answers another. */
+  private client: { token: string; sdk: Cloudflare };
 
-  private readonly apiToken: string;
+  private readonly token: () => string;
 
   protected readonly accountId: string;
 
@@ -39,22 +49,30 @@ export abstract class CloudflareManager {
     if (!config.accountId) {
       throw new CloudflareNotConfiguredError({ detail: "Missing accountId in CloudflareManagerConfig." });
     }
-    this.client = new Cloudflare({ apiToken: config.apiToken });
-    this.apiToken = config.apiToken;
+    const initial = config.apiToken;
+    this.token = config.tokenProvider ?? (() => initial);
+    this.client = { token: initial, sdk: new Cloudflare({ apiToken: initial }) };
     this.accountId = config.accountId;
   }
 
   /** The configured SDK client. Subclasses route typed calls through this. */
   protected getClient(): Cloudflare {
-    return this.client;
+    const token = this.getApiToken();
+    if (token !== this.client.token) this.client = { token, sdk: new Cloudflare({ apiToken: token }) };
+    return this.client.sdk;
   }
 
   /**
    * The raw API token, for subclasses that fall back to direct `fetch()` for endpoints the typed
    * SDK does not cover (e.g. Workers Builds, event subscriptions). The documented escape hatch.
+   * Read through the provider at every call, so it is the current token, never the constructed one.
    */
   protected getApiToken(): string {
-    return this.apiToken;
+    const token = this.token();
+    if (!token) {
+      throw new CloudflareNotConfiguredError({ detail: "The tokenProvider answered no apiToken." });
+    }
+    return token;
   }
 
   /** The account id all operations target. */

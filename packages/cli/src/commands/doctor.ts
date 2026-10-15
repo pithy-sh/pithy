@@ -3271,6 +3271,9 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       // Beside `configPath` because the two are only useful together: the path is the file this run
       // resolved, and this is whether the credentials actually came out of it (#218).
       credentialSource: report.cloudflare.credentialSource ?? null,
+      // Which profile is bound here and who signed in to it, and which kind of credential is in force (#759).
+      session: report.cloudflare.session ?? null,
+      credentialKind: report.cloudflare.credentialKind ?? null,
       detail: describeCloudflareAccess(report.cloudflare),
     },
     // `null` alongside a `null` project: one fact, one shape, both keys agreeing that there is no project
@@ -3723,7 +3726,22 @@ const DoctorPayload = z
         credentialSource: z
           .string()
           .nullable()
-          .describe("Whether the credentials came from the file or the environment."),
+          .describe("Whether the credentials came from the file, the environment, or a signed-in session."),
+        session: z
+          .object({
+            profile: z.string().describe("The profile bound to this directory."),
+            via: z.string().describe("`directory` when a binding matched, `default` when the default stood in."),
+            email: z.string().nullable().describe("Who signed in, or `null`."),
+            path: z.string().describe("The session file, absolute."),
+          })
+          .nullable()
+          .optional()
+          .describe("The profile bound here and who signed in to it, or `null` when no profile is bound."),
+        credentialKind: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("`session`, `account-token` or `user-token` — whether an audit row can name a person."),
         detail: z.string().describe("The sentence."),
       })
       .describe("Cloudflare access."),

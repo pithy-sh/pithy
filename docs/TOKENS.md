@@ -6,11 +6,19 @@ _The reader's version of this page is [pithy.sh/docs/core-concepts/cloudflare-to
 
 ## The bootstrap token
 
-Everything starts from the one credential you set by hand: the bootstrap `CLOUDFLARE_API_TOKEN` (plus `CLOUDFLARE_ACCOUNT_ID`) in `<config>/cloudflare.json` — account-scoped, outside every checkout, written by `pithy init` — or the same env vars, which overlay it per key and are how CI supplies them. `pithy` uses it to mint every other token.
+Everything starts from one credential. You no longer have to make it by hand.
+
+**Sign in: `pithy cloudflare connect`.** It opens Cloudflare's consent screen in your browser and keeps a session for the directory you ran it in. The session asks for what this project's tokens carry — `ci-system` and every capability's profile, in every environment — and a small base: who you are, your account and its zones, renewal without a browser, and Account API Tokens Write, so it can mint them. Nothing a capability the project does not compose would need. Cloudflare lists that one under "Sensitive scopes", switched off: turn it on before you approve. Every audit row the CLI writes under a session names the person who signed in. [`commands/cloudflare.md`](commands/cloudflare.md) has the flow.
+
+**Or set an account token:** `CLOUDFLARE_API_TOKEN` (plus `CLOUDFLARE_ACCOUNT_ID`) in `<config>/cloudflare.json` — account-scoped, outside every checkout, written by `pithy init` — or the same env vars, which overlay it per key and are how CI supplies them. CI has no browser, so CI always runs this way, under the `ci-system` token `pithy token mint` made for it. Audit rows written under an account token name the token, not a person.
+
+A profile bound to a directory wins over the file and the environment there, and an exported credential that differs from its session is refused rather than preferred. `pithy` mints every other token from whichever credential resolves.
 
 **Least privileges the bootstrap token needs.** At minimum **API Tokens → Edit** (account scope), so `pithy` can create, roll, and delete account-owned tokens.
 
 **The delegation rule.** Cloudflare only lets a token create another token whose permissions it already holds. So the bootstrap token must itself hold **every permission it delegates into a minted token** — the union of your `ci-system` permissions (see below) plus API Tokens Edit. Names are resolved against your account at mint time; an unknown or missing one fails loudly, never silently mis-scoped.
+
+**A session is held to the same rule**, against the scopes it was granted. Compose a capability that needs a permission the session was not granted, and `pithy token mint` and `pithy token rotate` refuse before Cloudflare does, naming the missing permissions. `pithy cloudflare connect` asks for them, and you approve them.
 
 ## Token names are project-scoped
 

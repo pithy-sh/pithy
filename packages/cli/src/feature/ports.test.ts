@@ -8,15 +8,13 @@ import { dirname, join, sep } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
+import { LOCK_MAX_ATTEMPTS, LOCK_RETRY_DELAY_MS, LOCK_STALE_MS } from "../project/fileLock";
 import {
   allocatePortBlock,
   BASE_PORT,
   BLOCK_SIZE,
   describeStaleAutostartRoots,
   freePortBlock,
-  LOCK_MAX_ATTEMPTS,
-  LOCK_RETRY_DELAY_MS,
-  LOCK_STALE_MS,
   type PortsRegistry,
   portsRegistryPath,
   readWorkerAutostart,

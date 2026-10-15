@@ -862,43 +862,44 @@ USAGE pithy <command> [OPTIONS]
 COMMANDS
 
   Project
-       init    Scaffold a new project
-        add    Add a capability
-     remove    Remove a capability — the manual, interactive inverse of add
-     worker    Manage the project's Workers under apps/ (the dev/deploy registry)
-         ui    Scaffold and wire a front end served by one of the project's Workers
-    upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
-   contract    Write each worker's OpenAPI and AsyncAPI documents
+        init    Scaffold a new project
+         add    Add a capability
+      remove    Remove a capability — the manual, interactive inverse of add
+      worker    Manage the project's Workers under apps/ (the dev/deploy registry)
+          ui    Scaffold and wire a front end served by one of the project's Workers
+     upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
+    contract    Write each worker's OpenAPI and AsyncAPI documents
 
   Develop
-        dev    Run every worker locally under one supervisor
-    migrate    Run migrations for an environment
-       seed    Seed an environment from your Zod-typed fixtures
-    feature    Set up and tear down an isolated, fully-provisioned feature environment
+         dev    Run every worker locally under one supervisor
+     migrate    Run migrations for an environment
+        seed    Seed an environment from your Zod-typed fixtures
+     feature    Set up and tear down an isolated, fully-provisioned feature environment
 
   Operate
-  provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
-     deploy    Deploy to Cloudflare Workers
-        env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
-      token    Mint and manage scoped Cloudflare API tokens
-  dashboard    Connect, rotate, revoke, and inspect a management client (control-plane seam)
+   provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
+      deploy    Deploy to Cloudflare Workers
+         env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
+  cloudflare    Sign in to Cloudflare, and choose which session each directory uses
+       token    Mint and manage scoped Cloudflare API tokens
+   dashboard    Connect, rotate, revoke, and inspect a management client (control-plane seam)
 
   Capabilities
-    secrets    Manage encrypted secrets
-      email    Provision and manage the email infrastructure
-      media    Provision and manage the media infrastructure
-   payments    Provision the reconciliation Workflow, and run a pass on demand
-    storage    Provision and manage the storage infrastructure
-    support    Provision and manage the support inbox infrastructure
-    testers    Run a closed test: cohorts, roster, the clock, and the daily pass
-  turnstile    Provision and manage Turnstile widgets
-     vector    Provision, reset, and re-embed the vector indexes
+     secrets    Manage encrypted secrets
+       email    Provision and manage the email infrastructure
+       media    Provision and manage the media infrastructure
+    payments    Provision the reconciliation Workflow, and run a pass on demand
+     storage    Provision and manage the storage infrastructure
+     support    Provision and manage the support inbox infrastructure
+     testers    Run a closed test: cohorts, roster, the clock, and the daily pass
+   turnstile    Provision and manage Turnstile widgets
+      vector    Provision, reset, and re-embed the vector indexes
 
   Toolchain
-     doctor    Check the toolchain, project, and for a new CLI version
-      alias    Install the `p.` shortcut for `pithy`
-       docs    Connect the Pithy documentation server to your AI coding agent
-     schema    Describe every command, flag, payload and error code as JSON
+      doctor    Check the toolchain, project, and for a new CLI version
+       alias    Install the `p.` shortcut for `pithy`
+        docs    Connect the Pithy documentation server to your AI coding agent
+      schema    Describe every command, flag, payload and error code as JSON
 
 Use pithy <command> --help for more information about a command.
 ```

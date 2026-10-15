@@ -1,12 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
-import { cloudflareChildEnv, overriddenCredentialKeys } from "./childEnv";
+import {
+  cloudflareChildEnv,
+  overriddenCredentialKeys,
+  spawnsUnderBoundSession,
+  withCurrentSessionToken,
+} from "./childEnv";
+import { sessionMark } from "./config";
+import { bindProfile } from "./session/bindings";
+import { writeSession } from "./session/store";
 
 /** A throwaway config directory, optionally holding a `cloudflare.json`, so a case states its own file. */
 function configDir(contents?: Record<string, string>): string {
@@ -136,5 +144,50 @@ describe("overriddenCredentialKeys", () => {
 
   test("ignores everything that is not a credential — a changed PATH is not an account fact", () => {
     expect(overriddenCredentialKeys({ PATH: "/a" }, { PATH: "/b" })).toEqual([]);
+  });
+});
+
+describe("withCurrentSessionToken (#759)", () => {
+  test("a spawn after a renewal gets the renewed token and the profile mark, and nothing else moves", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "pithy-kind-")));
+    const env = { PITHY_CONFIG_DIR: join(root, "config") };
+    const cwd = join(root, "project");
+    mkdirSync(cwd);
+    await bindProfile(cwd, "pithy", { env });
+    const session = {
+      profile: "pithy",
+      accountId: "acct",
+      accountName: null,
+      email: null,
+      accessToken: "AT2",
+      refreshToken: null,
+      expiresAt: "2026-10-15T14:00:00.000Z",
+      scope: "s",
+    };
+    await writeSession(session, { env });
+    const child = {
+      CLOUDFLARE_API_TOKEN: "AT1",
+      CLOUDFLARE_ACCOUNT_ID: "acct",
+      API_PORT: "8787",
+      PITHY_SESSION_PROFILE: sessionMark("pithy", "AT1"),
+    };
+    expect(withCurrentSessionToken(child, { cwd, env })).toEqual({
+      ...child,
+      CLOUDFLARE_API_TOKEN: "AT2",
+      PITHY_SESSION_PROFILE: sessionMark("pithy", "AT2"),
+    });
+    // An environment no session built is left as it came.
+    const unmarked = { CLOUDFLARE_API_TOKEN: "cfat_x", CLOUDFLARE_ACCOUNT_ID: "acct" };
+    expect(withCurrentSessionToken(unmarked, { cwd, env })).toBe(unmarked);
+    // The profile signed in to another account since: the spawn keeps its token rather than send that
+    // account's with this one's id.
+    await writeSession({ ...session, accountId: "another-account", accessToken: "AT3" }, { env });
+    expect(withCurrentSessionToken(child, { cwd, env })).toBe(child);
+  });
+
+  test("spawnsUnderBoundSession reads the token itself, so the spawning module never names the key", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "pithy-kind-")));
+    const env = { PITHY_CONFIG_DIR: join(root, "config") };
+    expect(spawnsUnderBoundSession({ CLOUDFLARE_API_TOKEN: "AT" }, { cwd: root, env })).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { secretsStoreIdMissing } from "../capabilities/notComposed";
 import type { ConfirmedAccount } from "./accountAnswer";
@@ -44,7 +45,7 @@ export interface StoreNeed {
 export function credentialsMissing(): PreconditionFailedError {
   return new PreconditionFailedError({
     message: "Cloudflare credentials are missing.",
-    action: "Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.",
+    action: `Run ${commandName("cloudflare connect")} to sign in, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run this again.`,
   });
 }
 

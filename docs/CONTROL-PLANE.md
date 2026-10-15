@@ -510,7 +510,7 @@ It matters most for the ones that never touch your Worker at all. A management c
 
 Three things follow, and each is visible in the row:
 
-- **The actor is not `control-plane`.** That kind means a management client called in and proved it. These came from a person at a terminal, named from your Cloudflare token where the command had one and recorded as `system` with a note where it did not. `worker` and `version` are null, because no Worker recorded it and there is no build id to name.
+- **The actor is not `control-plane`.** That kind means a management client called in and proved it. These came from a person at a terminal, named from your Cloudflare sign-in or token where the command had one — the person under a `pithy cloudflare connect` session, the token's name under an account token — and recorded as `system` with a note where it did not. `worker` and `version` are null, because no Worker recorded it and there is no build id to name.
 - **Nothing is recorded that did not happen.** The row is written first and the event follows. A refused write records nothing.
 - **The trail never fails the command.** If you do not compose `audit`, the events go nowhere and `connect` is unchanged. If your trail is unreachable, the write still lands and the drop is logged. A `disconnect` that failed because the audit database was down would leave a credential live on the strength of an audit problem, which is exactly backwards.
 

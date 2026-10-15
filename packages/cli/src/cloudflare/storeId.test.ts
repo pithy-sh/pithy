@@ -166,7 +166,7 @@ describe("ensureSecretsStoreId", () => {
     expect(listStores).not.toHaveBeenCalled();
     // Not `pithy init`, which is refused inside a project for the files it would write (#711).
     expect(notes.join(" ")).toBe(
-      "SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run `pithy add secrets --worker api` again.",
+      "SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run pithy cloudflare connect, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run `pithy add secrets --worker api` again.",
     );
     expect(notes.join(" ")).not.toContain("pithy init");
   });

@@ -7,7 +7,9 @@ import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError"
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { DevLogin, DevLogins } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap, providerExample } from "../capabilities/entitlementGap";
+import { spawnsUnderBoundSession, withCurrentSessionToken } from "../cloudflare/childEnv";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { keepBoundSessionFresh } from "../cloudflare/session/keepFresh";
 import { type GenerateDevVarsResult, generateDevVars } from "../devSecrets/generate";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
@@ -1071,6 +1073,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // for the case this used to get wrong: a seed that arrives after the session is up.
   if (hasDevIdentity) await loginTargets();
   const childEnv = buildWorkerEnv(config, baseEnv);
+  // **A session outlives nothing here unless it is kept fresh** (#759). Dispatch renewed it before this
+  // command began, and this session runs all afternoon, so a keeper renews it ahead of each hour — the
+  // locked renewal every command shares. Every spawn, a restart included, then takes the token as it is
+  // *now*: a worker started at four o'clock does not inherit the token from one o'clock. A worker that
+  // runs straight through the hour keeps the token it was spawned with, and a live send that it then
+  // fails falls back to the simulator below, as any refused send does.
+  const spawnsUnderSession = spawnsUnderBoundSession(childEnv, { cwd: projectDir });
+  const sessionKeeper = spawnsUnderSession ? keepBoundSessionFresh({ cwd: projectDir }) : null;
   // One local store for the whole project, named in one place — `localDevStateRoot`. This used to compose
   // the path itself, which made three independent statements of one directory (#404).
   const persistTo = localDevStateRoot(projectDir);
@@ -1496,6 +1506,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const shutdown = async (reason: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    sessionKeeper?.stop();
     // First, before anything can take time: give the terminal back. A session that died with the
     // terminal in raw mode leaves a shell that echoes nothing.
     keys.stop();
@@ -1643,7 +1654,10 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // Both carriers, from the one value above. The argv `--var` reaches a `wrangler dev`; the
     // environment reaches a custom `dev.command`, where there is no argv to append to and
     // `@pithy-sh/vite` turns it into the same binding.
-    const env = childEnvFor(childEnv, ownOrigin);
+    const env = childEnvFor(
+      spawnsUnderSession ? withCurrentSessionToken(childEnv, { cwd: projectDir }) : childEnv,
+      ownOrigin,
+    );
     const child = spawn(command, args, { cwd: worker.dir, env, detached: hasSetsid });
     // Replaced in place on a restart, so `shutdown` signals the child that is actually running and the
     // state file names its pid.

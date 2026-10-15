@@ -60,6 +60,24 @@ describe("resolveActor", () => {
     expect(actor.metadata).toMatchObject({ cfTokenType: "user", cfUserId: "cf-user-1" });
   });
 
+  test("a signed-in session resolves to the person who signed in, whatever its token looks like (#759)", async () => {
+    // A session's access token carries neither prefix, and the old answer for it was the
+    // unrecognized-prefix system actor — the opposite of what signing in is for. The caller knows the
+    // credential is a session; the token's spelling is not asked.
+    const actor = await resolveActor("opaque-oauth-access-token", fakeSource(), { kind: "session" });
+    expect(actor).toEqual({
+      actorType: "user",
+      actorId: "dev@example.com",
+      metadata: { cfTokenType: "session", cfUserId: "cf-user-1" },
+    });
+  });
+
+  test("a session reads the user scope only — never an account-token endpoint", async () => {
+    const source = fakeSource();
+    expect((await resolveActor("opaque", source, { kind: "session" })).actorType).toBe("user");
+    expect(source.accountTokens.verifyToken).not.toHaveBeenCalled();
+  });
+
   test("cfut_ falls back to the user id when no email is returned", async () => {
     const actor = await resolveActor("cfut_abc", fakeSource({ user: { getUser: async () => ({ id: "cf-user-2" }) } }));
     expect(actor.actorId).toBe("cf-user-2");

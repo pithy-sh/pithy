@@ -1,16 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { statesNoVanishingKey } from "@pithy-sh/core/src/capability/vanishingKey";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, fromZodError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import { type StatePathOptions, stateDir } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { type BoundProfile, boundProfileSync } from "./session/bindings";
+import { readSessionSync, sessionPath } from "./session/store";
 
 /**
  * The CLI's Cloudflare credentials: `<config>/cloudflare.json`, **account-scoped**, `0600`, in the
@@ -80,6 +84,26 @@ export const CLOUDFLARE_CONFIG_FILE_NAME = "cloudflare.json";
  * unset variable and one a shell script exported empty are the same intention.
  */
 export const PITHY_OFFLINE_ENV = "PITHY_OFFLINE";
+
+/**
+ * Set on a child's environment when the credential pair in it is a bound session's, naming the profile
+ * (#759). A `pithy` run inside that child — from a `dev.command`, a script — resolves the same binding,
+ * and after an hourly renewal the token it inherited differs from the file. Without this it would read
+ * its parent's export as an override and refuse; with it, it knows the pair is the session's own.
+ */
+export const SESSION_PROFILE_ENV = "PITHY_SESSION_PROFILE";
+
+/**
+ * The value of {@link SESSION_PROFILE_ENV}: the profile, and a fingerprint of the token exported with it.
+ * A fingerprint, never the token: the mark sits in a child's environment beside the token it describes,
+ * and its only job is to say "this exported token is the one Pithy put here for this profile".
+ */
+export function sessionMark(profile: string, token: string): string {
+  return `${profile}:${createHash("sha256").update(token).digest("hex").slice(0, 16)}`;
+}
+
+/** The account-scoped keys that name a resource in one account, beside the credential pair. */
+const ACCOUNT_RESOURCE_KEYS = ["SECRETS_STORE_ID", "R2_CREDENTIALS"] as const;
 
 /** Whether this environment is refusing ambient credentials and network probes. See {@link PITHY_OFFLINE_ENV}. */
 export function pithyOffline(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -194,6 +218,13 @@ export interface CloudflareConfigOptions extends StatePathOptions {
    * an absence, so nothing silently re-enables the environment behind a caller that said no.
    */
   offline?: boolean;
+  /**
+   * The directory a profile binding is looked up from (#759). Defaults to `process.cwd()` — the directory
+   * the command was run in, which is the question a binding answers.
+   */
+  cwd?: string;
+  /** The clock a session's expiry is read against. Defaults to `() => new Date()`. */
+  now?: () => Date;
 }
 
 /**
@@ -237,8 +268,11 @@ export function cloudflareConfigPath(options: CloudflareConfigOptions): string {
   return join(stateDir(options), cloudflareAccountFile(options.account?.accountName));
 }
 
-/** Where a resolved `CLOUDFLARE_ACCOUNT_ID` came from — the two sources {@link cloudflareEnv} merges. */
-export type CloudflareAccountSource = "file" | "environment";
+/**
+ * Where a resolved `CLOUDFLARE_ACCOUNT_ID` came from — the file, the environment overlay, or a signed-in
+ * session bound to the directory (#759), which outranks both.
+ */
+export type CloudflareAccountSource = "file" | "environment" | "session";
 
 /**
  * A project's pin disagreeing with the account the credentials actually belong to.
@@ -288,6 +322,9 @@ export type CloudflareCredentialSource = CloudflareAccountSource | "mixed";
  * - `recorded` — the repository says nothing, and the default `<config>/cloudflare.json` supplied the id.
  *   This is the single-account machine `pithy init` wrote, untouched since #206, and refusing it would
  *   break every project that never needed a second account.
+ * - `bound` — the repository says nothing, and a signed-in session bound to this directory supplied the id
+ *   (#759). A person signed in to that account and bound it here, so it is a decision rather than an
+ *   ambient fact, and it is not refused; it is weaker than a pin, which is the only form two machines share.
  * - `ambient` — nothing in the repository and nothing on disk decided. The id came from `process.env`.
  *   **This is the one value that refuses**, and it is exactly the incident: on 2026-08-15 a lane read
  *   three databases belonging to a different account out of a shell that had exported one variable.
@@ -295,7 +332,38 @@ export type CloudflareCredentialSource = CloudflareAccountSource | "mixed";
  * The escape from `ambient` is one line of config, and the refusal names it. That is deliberate — a
  * command that creates or destroys infrastructure should be told which account it is for.
  */
-export type CloudflareAccountConfirmation = "pinned" | "named" | "recorded" | "ambient";
+export type CloudflareAccountConfirmation = "pinned" | "named" | "recorded" | "bound" | "ambient";
+
+/**
+ * The session a bound profile supplied, or the binding that has none (#759).
+ *
+ * Reported whole — profile, how it was chosen, who signed in, whether it has expired — so `pithy doctor`
+ * can say which credential is in force and the refusals can say which profile to sign in to.
+ */
+export interface CloudflareSessionResolution {
+  /** The profile bound here. */
+  profile: string;
+  /** Whether a directory binding chose it or the default stood in. */
+  via: BoundProfile["via"];
+  /** `<config>/session.<profile>.json`, named whether or not it exists. */
+  path: string;
+  /** Whether the session file exists and parses. A bound profile with none is a sign-in still owed. */
+  signedIn: boolean;
+  /** Who signed in, or `null` — no session, or Cloudflare did not say. */
+  email: string | null;
+  /** The account's name as Cloudflare lists it, or `null`. */
+  accountName: string | null;
+  /** Whether the access token has expired. Dispatch renews ahead of this; `true` here means it could not. */
+  expired: boolean;
+}
+
+/** An exported credential that disagrees with the bound session — the hazard #759 refuses rather than resolves. */
+export interface CloudflareAmbientConflict {
+  /** The profile bound here. */
+  profile: string;
+  /** Each exported {@link CLOUDFLARE_CREDENTIAL_KEYS} entry whose value differs from the session's. */
+  variables: string[];
+}
 
 /** One credential resolution, with everything a caller may need to refuse or to report it. */
 export interface CloudflareResolution {
@@ -327,6 +395,10 @@ export interface CloudflareResolution {
    * somewhere unintended.
    */
   credentialSource: CloudflareCredentialSource | null;
+  /** The bound profile and its session, or `null` when no profile is bound here (#759). */
+  session: CloudflareSessionResolution | null;
+  /** An exported credential the bound session disagrees with, or `null`. {@link cloudflareEnv} refuses it. */
+  ambientConflict: CloudflareAmbientConflict | null;
 }
 
 /**
@@ -354,7 +426,57 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
       if (!vars[key] && overlay) vars[key] = overlay;
     }
   }
-  const credentialSource = sourceOf(fromFile, vars);
+  // **A profile bound here outranks both** (#759). Its session supplies the pair — and only the pair: the
+  // store id and R2 credentials are the account's, and keep coming from the file and the overlay above.
+  const bound = boundProfileSync(options.cwd ?? process.cwd(), options);
+  const session = bound === null ? null : readSessionSync(bound.profile, options);
+  let sessionResolution: CloudflareSessionResolution | null = null;
+  let ambientConflict: CloudflareAmbientConflict | null = null;
+  if (bound !== null) {
+    const now = (options.now ?? (() => new Date()))();
+    sessionResolution = {
+      profile: bound.profile,
+      via: bound.via,
+      path: sessionPath(bound.profile, options),
+      signedIn: session !== null,
+      email: session?.email ?? null,
+      accountName: session?.accountName ?? null,
+      expired: session === null ? false : Date.parse(session.expiresAt) <= now.getTime(),
+    };
+    if (session !== null) {
+      vars.CLOUDFLARE_API_TOKEN = session.accessToken;
+      vars.CLOUDFLARE_ACCOUNT_ID = session.accountId;
+      // **The rest of the account's keys only from a file that is about this account.** The store id and
+      // R2 credentials name resources in one account; under a session for another, they would address
+      // that account's store with this one's credentials and fail in a way nothing names.
+      if (fromFile.CLOUDFLARE_ACCOUNT_ID && fromFile.CLOUDFLARE_ACCOUNT_ID !== session.accountId) {
+        for (const key of ACCOUNT_RESOURCE_KEYS) {
+          if (vars[key] !== fromFile[key]) continue;
+          // Dropped, and an exported value takes its place: an export is what CI and a person reach for,
+          // and the session's account is the one it is read against.
+          const exported = offline ? undefined : env[key];
+          if (exported) vars[key] = exported;
+          else delete vars[key];
+        }
+      }
+      // An exported credential is never used while a profile is bound — and one that *disagrees* is the
+      // `account_mismatch` hazard in #759's Problem, so it is reported to be refused, not quietly lost.
+      // Offline already refused the overlay, so offline has nothing to disagree with. Nor does a pair a
+      // `pithy` exported to its own child for this profile (`SESSION_PROFILE_ENV`): after a renewal it
+      // differs from the file, and it is this session's, not an override of it.
+      // The mark names the profile *and* the token it was set beside, so it excuses that exported token and
+      // no other: a different token exported under an inherited mark is still the override it looks like.
+      const ours = env[SESSION_PROFILE_ENV] === sessionMark(bound.profile, env.CLOUDFLARE_API_TOKEN ?? "");
+      const exported =
+        offline || ours ? [] : CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => env[key] && env[key] !== vars[key]);
+      if (exported.length > 0) ambientConflict = { profile: bound.profile, variables: [...exported] };
+    } else {
+      // Bound and signed out: the binding still decides, so no other source may supply the pair. Online
+      // that is refused by name; offline it is simply no credentials, as offline with no file always was.
+      for (const key of CLOUDFLARE_CREDENTIAL_KEYS) delete vars[key];
+    }
+  }
+  const credentialSource = session !== null ? "session" : sourceOf(fromFile, vars);
 
   const pinnedAccountId = selection?.accountId ?? null;
   const resolved = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
@@ -365,8 +487,12 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
       ? {
           pinned: pinnedAccountId,
           resolved,
-          source: (fromFile.CLOUDFLARE_ACCOUNT_ID ? "file" : "environment") as CloudflareAccountSource,
-          path,
+          source: (session !== null
+            ? "session"
+            : fromFile.CLOUDFLARE_ACCOUNT_ID
+              ? "file"
+              : "environment") as CloudflareAccountSource,
+          path: session !== null && sessionResolution !== null ? sessionResolution.path : path,
         }
       : null;
 
@@ -375,9 +501,21 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
     accountName,
     resolved,
     fromFileAccountId: fromFile.CLOUDFLARE_ACCOUNT_ID ?? "",
+    fromSession: session !== null,
   });
 
-  return { path, accountName, vars, pinnedAccountId, mismatch, offline, credentialSource, confirmation };
+  return {
+    path,
+    accountName,
+    vars,
+    pinnedAccountId,
+    mismatch,
+    offline,
+    credentialSource,
+    confirmation,
+    session: sessionResolution,
+    ambientConflict,
+  };
 }
 
 /**
@@ -392,6 +530,7 @@ function confirmationOf(facts: {
   accountName: string | null;
   resolved: string;
   fromFileAccountId: string;
+  fromSession: boolean;
 }): CloudflareAccountConfirmation {
   // A pin that survived the mismatch check above vouches for whatever resolved, from either source: the
   // repository named the id and the credentials agree with it.
@@ -399,6 +538,8 @@ function confirmationOf(facts: {
   // Nothing resolved is not confirmation of anything. Callers that need credentials refuse for the
   // missing pair first; this is the honest value for the state where there is no account to vouch for.
   if (!facts.resolved) return "ambient";
+  // A session bound here supplied it: somebody signed in to that account and bound it to this directory.
+  if (facts.fromSession) return "bound";
   // The file has to be the one that supplied the id. A named file holding only a token leaves the
   // account to the overlay, which is the ambient case wearing the project's nickname.
   if (facts.fromFileAccountId !== facts.resolved) return "ambient";
@@ -430,7 +571,12 @@ function sourceOf(fromFile: Record<string, string>, vars: Record<string, string>
  * place that deploys to production.
  */
 export function describeCloudflareAccountMismatch(mismatch: CloudflareAccountMismatch): string {
-  const where = mismatch.source === "file" ? mismatch.path : "the environment";
+  const where =
+    mismatch.source === "file"
+      ? mismatch.path
+      : mismatch.source === "session"
+        ? `the session in ${mismatch.path}`
+        : "the environment";
   return `This project pins Cloudflare account ${mismatch.pinned}, and ${where} supplies credentials for ${mismatch.resolved}.`;
 }
 
@@ -474,6 +620,7 @@ export function cloudflareAccountConfirmation(options: CloudflareConfigOptions):
  */
 export function cloudflareEnv(options: CloudflareConfigOptions): Record<string, string> {
   const resolved = resolveCloudflare(options);
+  refuseSessionFaults(resolved);
   if (resolved.mismatch) {
     throw new ConflictError({
       message: describeCloudflareAccountMismatch(resolved.mismatch),
@@ -483,6 +630,46 @@ export function cloudflareEnv(options: CloudflareConfigOptions): Record<string, 
     });
   }
   return resolved.vars;
+}
+
+/**
+ * The three ways a bound profile refuses, in the order they are settled (#759).
+ *
+ * **Bound and not signed in** refuses rather than falling back. A binding is a statement that this
+ * directory uses that profile; resolving the shell's token instead is the silent override the binding
+ * exists to end. **An exported credential that disagrees** refuses with both named, never preferring
+ * either. **Expired** refuses with the sign-in: dispatch renews a session ahead of its expiry, so an
+ * expired one here is one that could not be renewed.
+ */
+function refuseSessionFaults(resolved: CloudflareResolution): void {
+  const session = resolved.session;
+  // Offline, nothing is renewed and nothing over the wire would use the pair, so neither a signed-out
+  // binding nor an expired session is refused with a sign-in that cannot run offline: the first resolves
+  // no credentials, the second resolves the token it has. The conflict check already ignored the overlay.
+  if (session === null || resolved.offline) return;
+  const signIn = pithyCommand("cloudflare connect", { flags: { "--profile": session.profile } });
+  if (!session.signedIn) {
+    throw new PreconditionFailedError({
+      message: `Profile ${session.profile} is bound to this directory and is not signed in to Cloudflare.`,
+      action: `Run ${signIn}, or bind another profile here with ${commandName("cloudflare use")}, or remove the binding with ${pithyCommand("cloudflare disconnect", { flags: { "--unbind": true } })}.`,
+      detail: `no session at ${session.path}`,
+    });
+  }
+  if (resolved.ambientConflict) {
+    const names = resolved.ambientConflict.variables.join(" and ");
+    throw new ConflictError({
+      message: `Profile ${session.profile} is bound to this directory, and the environment exports a different ${names}.`,
+      action: `Unset ${names} to use the profile, or run this from a directory no profile is bound to. Pithy will not choose between them.`,
+      detail: `bound session ${session.path}; exported ${names}`,
+    });
+  }
+  if (session.expired) {
+    throw new PreconditionFailedError({
+      message: `The Cloudflare session for profile ${session.profile} has expired.`,
+      action: `Run ${signIn} to sign in again.`,
+      detail: `session ${session.path} expired and could not be renewed`,
+    });
+  }
 }
 
 /** The pair that authenticates a Cloudflare call, once both halves are known to be there. */
@@ -517,7 +704,7 @@ export function cloudflareCredentials(options: CloudflareConfigOptions): Cloudfl
     throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
       // No command (#711): `pithy init` records credentials only as it scaffolds a new project, and is refused here.
-      action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment, or in ${cloudflareConfigPath(options)}, then run this again.`,
+      action: `Run ${commandName("cloudflare connect")} to sign in, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment or in ${cloudflareConfigPath(options)}. Then run this again.`,
       detail: `resolved from ${cloudflareConfigPath(options)}; missing ${CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => !vars[key]).join(", ")}`,
     });
   }
@@ -555,6 +742,8 @@ export interface CloudflareCredentialSplit {
  * state this already says nothing about.
  */
 export function cloudflareCredentialSplit(options: CloudflareConfigOptions): CloudflareCredentialSplit | null {
+  // A session bound here supplies the whole pair (#759): one source decided it, so there is no split.
+  if (resolveCloudflare(options).credentialSource === "session") return null;
   const path = cloudflareConfigPath(options);
   let file: Record<string, string>;
   try {

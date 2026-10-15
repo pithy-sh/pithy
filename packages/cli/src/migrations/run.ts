@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { type Caller, callerOf, pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { type Caller, callerOf, commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import {
   InternalError,
@@ -613,7 +613,7 @@ async function defaultRemoteD1(env: string, account: CloudflareAccountSelection 
   if (!accountId || !apiToken) {
     throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
-      action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to migrate --env ${env}.`,
+      action: `Run ${commandName("cloudflare connect")}, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to migrate --env ${env}.`,
     });
   }
   const clients = await cloudflareClients({ accountId, apiToken });

@@ -6,6 +6,8 @@ import { describe, expect, test } from "vitest";
 import {
   isPermissionKey,
   isZoneScopedPermission,
+  OAUTH_SCOPES,
+  oauthScopesFor,
   PERMISSION_GROUPS,
   resolvePermissionKeys,
   ZONE_SCOPED_PERMISSIONS,
@@ -75,5 +77,31 @@ describe("zone-scoped permission keys", () => {
       .flat()
       .filter((name) => name.startsWith("Zone "));
     expect(zoneWords).toEqual(["Zone Read"]);
+  });
+});
+
+describe("OAUTH_SCOPES — the third column (#759)", () => {
+  test("every permission key carries at least one OAuth scope, and no scope names a key that does not exist", () => {
+    expect(Object.keys(OAUTH_SCOPES).sort()).toEqual(Object.keys(PERMISSION_GROUPS).sort());
+    for (const [key, scopes] of Object.entries(OAUTH_SCOPES)) expect(scopes.length, key).toBeGreaterThan(0);
+  });
+
+  test("every scope is a dot-delimited catalog id, because a third-party client cannot register a colon one", () => {
+    // `cf oauth-clients create` refuses `account:read`-style scopes outright, and the authorize endpoint
+    // answers one with `invalid_scope` (measured 2026-10-15). The catalog's ids are `<resource>.<verb>`.
+    for (const scope of Object.values(OAUTH_SCOPES).flat()) expect(scope).toMatch(/^[a-z0-9-]+(?:\.[a-z_]+)$/);
+  });
+
+  test("a key's scope is the catalog entry its permission group is named after", () => {
+    // `GET /oauth/scopes` names each scope exactly as the permission group it grants is named, so the
+    // two columns pair up one to one. The live check against the catalog is the integration test.
+    expect(oauthScopesFor(["d1:write"])).toEqual(["d1.write"]);
+    expect(oauthScopesFor(["workers:write"])).toEqual(["workers-scripts.write"]);
+    expect(oauthScopesFor(["routes:write"])).toEqual(["workers-routes.write"]);
+  });
+
+  test("resolves keys to scopes de-duped in first-seen order, and refuses an unknown key as the group resolver does", () => {
+    expect(oauthScopesFor(["d1:read", "d1:write", "d1:read"])).toEqual(["d1.read", "d1.write"]);
+    expect(() => oauthScopesFor(["d1:destroy"])).toThrow(PithyError);
   });
 });

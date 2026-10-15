@@ -66,7 +66,7 @@ describe("commandCredentials", () => {
     const refusal = refusalOf(() => commandCredentials(null));
     expect(refusal.payload).toMatchObject(credentialsMissing().payload);
     expect(refusal.payload.action).toBe(
-      "Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run this again.",
+      "Run pithy cloudflare connect to sign in, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run this again.",
     );
   });
 

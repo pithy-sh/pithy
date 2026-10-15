@@ -54,6 +54,8 @@ describe("checkCloudflareAccess", () => {
       accountName: null,
       accountMismatch: null,
       credentialSource: null,
+      session: null,
+      credentialKind: null,
     });
   });
 
@@ -68,6 +70,8 @@ describe("checkCloudflareAccess", () => {
       accountName: null,
       accountMismatch: null,
       credentialSource: "file",
+      session: null,
+      credentialKind: null,
     });
   });
 
@@ -192,7 +196,7 @@ describe("describeCloudflareAccess", () => {
 
   test("unconfigured tells you which keys to set and where", () => {
     expect(describeCloudflareAccess(access({ state: "unconfigured", missing: ["CLOUDFLARE_API_TOKEN"] }))).toBe(
-      "not configured (set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json, or the environment)",
+      "not configured (sign in with pithy cloudflare connect, or set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json or the environment)",
     );
   });
 

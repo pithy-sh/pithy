@@ -87,6 +87,8 @@ const CLI_SRC = resolve(import.meta.dirname, "..");
  */
 const CLI_OWNED: Record<string, string> = {
   "cloudflare/clients.ts": "The CF REST client is a CLI dependency, not a capability. No project installs it.",
+  "commands/cloudflare.ts":
+    "`pithy cloudflare connect` signs in before a project need exist, and the session it writes is account-scoped, not the project's.",
   "commands/init.ts": "`pithy init` runs before the project exists — there is no project to resolve from.",
   "seed/drivers.ts": "The CF REST client again. `persistRoot` is the project root and still must not be used.",
   "capabilities/secretsProvisioner.ts": "Token policy for a token the CLI mints, from the CLI's own client.",

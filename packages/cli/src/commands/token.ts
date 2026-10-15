@@ -3,13 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
-import {
-  CI_SYSTEM_PROFILE,
-  resolveTokenProfiles,
-  TOKEN_STORES,
-  type TokenProfile,
-  type TokenStore,
-} from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { CI_SYSTEM_PROFILE, TOKEN_STORES, type TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { type Command, commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -19,18 +13,13 @@ import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { requireSessionConsent } from "../cloudflare/session/consent";
+import { isBoundSessionToken } from "../cloudflare/session/kind";
 import { withContract } from "../contract/commandContract";
 import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import {
-  type CapabilitySet,
-  capabilitySetOf,
-  isUnknown,
-  projectCapabilities,
-  type ResolvedWorker,
-  type WorkerSet,
-} from "../project/workerScope";
+import { type CapabilitySet, capabilitySetOf, isUnknown, type ResolvedWorker } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
@@ -44,6 +33,7 @@ import {
   type TokenResult,
 } from "../tokens/engine";
 import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
+import { tokenProfiles } from "../tokens/workerProfiles";
 
 /** The rotation that replaces one profile's token in one environment. */
 function rotateCommand(profile: string, env: string): Command {
@@ -73,7 +63,7 @@ function loadCreds(account: CloudflareAccountSelection | null): {
   if (!accountId || !apiToken) {
     throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing.",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (the bootstrap token) to mint tokens.",
+      action: `Run ${commandName("cloudflare connect")} to sign in, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to mint tokens.`,
     });
   }
   return { accountId, apiToken, storeId: vars.SECRETS_STORE_ID ?? "" };
@@ -212,35 +202,8 @@ function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistr
   return Object.assign({}, ...registries) as SecretRegistry;
 }
 
-/**
- * The profile registry a token operation derives from — **refused when the capability set cannot be read,
- * never derived from an emptied one** (#455).
- *
- * {@link buildEngine} already insists the *root* config is required and never guessed, because `revoke`
- * deletes every account token of the name it computes. The Worker half was best-effort, and that is the
- * same mistake one level down: `resolveTokenProfiles([])` returns only `ci-system` and drops every
- * capability's `ciPermissions`, so `pithy token list <env>` told an operator auditing live credentials that
- * capability-profile tokens do not exist and exited 0, and `pithy token rotate ci-system <env>` minted a
- * replacement carrying only the base permissions before deleting the fully-permissioned one it replaced.
- * CI lost permissions silently, with nothing in the run saying the capability set was unknown.
- *
- * A project with genuinely **no** Workers still resolves normally: `ci-system` is a project-level profile
- * and mints fine before the first `pithy worker add`. See `resolveWorkerSet` for the difference.
- *
- * The refusal quotes the set's own diagnosis rather than inventing one, so it names the worker.
- */
-export function tokenProfiles(workers: WorkerSet): Record<string, TokenProfile> {
-  if (!isUnknown(workers)) return resolveTokenProfiles(projectCapabilities(workers));
-  throw new ValidationError({
-    message: "This project's capability set is unknown, so token permissions cannot be derived.",
-    action:
-      `${workers.unknown} Fix it — ${commandName("doctor")} names the fault — and re-run. Token permissions come from ` +
-      "the composed capabilities, so minting from a partial set narrows what CI can do.",
-  });
-}
-
 /** Assemble the token engine: the aggregated profiles, the secret-registry backends, and the audit sink. */
-async function buildEngine(projectDir: string, env: string): Promise<TokenEngine> {
+async function buildEngine(projectDir: string, env: string, options: { consent?: boolean } = {}): Promise<TokenEngine> {
   // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
   // The root config is required here, not best-effort: every token name and Secrets Store entry starts
   // with the project name, and `revoke` deletes every account token of the name it computes. Guessing
@@ -249,6 +212,14 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
   // Read *before* the credentials, because it is also what says which account they come from.
   const config = await loadProject(projectDir);
   const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
+  // A mint under a signed-in session asks for consent first when the project has composed something the
+  // session was not granted (#759) — rather than meeting Cloudflare's delegation refusal mid-mint. Only a
+  // session's own token is checked, so an account-token run derives nothing.
+  if (options.consent && isBoundSessionToken(apiToken, { cwd: projectDir })) {
+    const { projectSessionScopes } = await import("../cloudflare/session/projectScopes");
+    const needed = (await projectSessionScopes(projectDir, { environments: [env] })).scopes;
+    requireSessionConsent({ cwd: projectDir, apiToken, needed });
+  }
   const cf = await cloudflareClients({ accountId, apiToken });
   // Never best-effort. See {@link tokenProfiles}: an emptied capability set is a silently narrowed credential.
   // Composed for the environment the token is for: a capability that environment alone composes carries
@@ -439,7 +410,7 @@ const mint = withContract(
     run: ({ args, rawArgs }) =>
       withErrorReporting(args.json, async () => {
         const env = requireEnvironment(args.env);
-        const engine = await buildEngine(process.cwd(), env);
+        const engine = await buildEngine(process.cwd(), env, { consent: true });
         const result = await mintProfileToken(engine, args.profile, env, {
           store: parseStore(args.store),
           permissions: parsePermissions(collectPermissionFlags(rawArgs)),
@@ -516,7 +487,7 @@ const rotate = withContract(
     run: ({ args, rawArgs }) =>
       withErrorReporting(args.json, async () => {
         const env = requireEnvironment(args.env);
-        const engine = await buildEngine(process.cwd(), env);
+        const engine = await buildEngine(process.cwd(), env, { consent: true });
         const result = await rotateProfileToken(engine, args.profile, env, {
           store: parseStore(args.store),
           permissions: parsePermissions(collectPermissionFlags(rawArgs)),

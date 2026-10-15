@@ -87,6 +87,80 @@ export const COMMANDS = {
       }
     ]
   },
+  "cloudflare connect": {
+    "positionals": [],
+    "flags": {
+      "--profile": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--account": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--open": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "cloudflare disconnect": {
+    "positionals": [],
+    "flags": {
+      "--profile": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--unbind": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
+  "cloudflare use": {
+    "positionals": [
+      {
+        "name": "profile",
+        "required": true,
+        "variadic": false
+      },
+      {
+        "name": "dir",
+        "required": false,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--default": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "contract": {
     "positionals": [],
     "flags": {
@@ -2440,6 +2514,7 @@ export const GLOBAL_FLAGS = [
 
 /** The groups, which only list their subcommands: a sentence may name one, and nobody runs one. */
 export const GROUPS = [
+  "cloudflare",
   "dashboard",
   "docs",
   "email",

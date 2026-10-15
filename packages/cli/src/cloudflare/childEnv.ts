@@ -2,8 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import type { StatePathOptions } from "../notifier/state";
-import { type CloudflareAccountSelection, type CloudflareCredentials, cloudflareEnv } from "./config";
+import {
+  type CloudflareAccountSelection,
+  type CloudflareCredentials,
+  cloudflareEnv,
+  SESSION_PROFILE_ENV,
+  sessionMark,
+} from "./config";
+import { boundProfileSync } from "./session/bindings";
+import { isBoundSessionToken } from "./session/kind";
+import { readSessionSync } from "./session/store";
 
 /**
  * The environment of a child process that may authenticate to Cloudflare — the **only** way one is built.
@@ -123,6 +133,23 @@ function childEnvWith(base: NodeJS.ProcessEnv, resolved: Readonly<Record<string,
     if (value) env[key] = value;
     else delete env[key];
   }
+  return markSessionProfile(env, base);
+}
+
+/**
+ * Name the profile on a child whose pair is a bound session's — {@link SESSION_PROFILE_ENV} — and clear a
+ * mark the child would otherwise inherit for a pair it no longer carries. Derived from the token, never
+ * passed along: a mark that outlived its pair would excuse an export it should refuse.
+ */
+function markSessionProfile(env: Record<string, string>, base: NodeJS.ProcessEnv): Record<string, string> {
+  const options = { env: base };
+  const bound = boundProfileSync(process.cwd(), options);
+  const session = bound === null ? null : readSessionSync(bound.profile, options);
+  if (bound !== null && session !== null && env.CLOUDFLARE_API_TOKEN === session.accessToken) {
+    env[SESSION_PROFILE_ENV] = sessionMark(bound.profile, session.accessToken);
+  } else {
+    delete env[SESSION_PROFILE_ENV];
+  }
   return env;
 }
 
@@ -150,3 +177,56 @@ export function overriddenCredentialKeys(
     return Boolean(inherited) && child[key] !== inherited;
   });
 }
+
+/**
+ * Whether a child environment carries the session bound to `cwd` — the credential a long-running command
+ * must keep current, because a session renews hourly and a child keeps what it was spawned with (#759).
+ * Here, in the seam, so the module that spawns never names the key it is asking about.
+ */
+export function spawnsUnderBoundSession(
+  env: Readonly<Record<string, string>>,
+  options: StatePathOptions & { cwd?: string } = {},
+): boolean {
+  return isBoundSessionToken(env.CLOUDFLARE_API_TOKEN ?? "", options);
+}
+
+/**
+ * `env` with the bound session's **current** access token in place of the one it was built with (#759).
+ *
+ * A long-running command builds its children's environment once and spawns from it all afternoon; a
+ * session renews hourly. So a spawn — a first start or a restart — asks for the token as it is now. Only
+ * the token moves: the account is the session's, and nothing else in `env` is the session's to change.
+ */
+export function withCurrentSessionToken(
+  env: Record<string, string>,
+  options: StatePathOptions & { cwd?: string } = {},
+): Record<string, string> {
+  // The profile this environment was built for, from its own mark — never the binding as it stands now.
+  // A `use` or a `connect` in another terminal must not move a running session to another profile or
+  // account; the next spawn keeps what it started with, renewed.
+  const mark = env[SESSION_PROFILE_ENV];
+  const profile = mark?.slice(0, mark.lastIndexOf(":"));
+  if (!profile) return env;
+  const session = readSessionSync(profile, options);
+  if (session === null || session.accountId !== env.CLOUDFLARE_ACCOUNT_ID) return env;
+  return {
+    ...env,
+    CLOUDFLARE_API_TOKEN: session.accessToken,
+    [SESSION_PROFILE_ENV]: sessionMark(profile, session.accessToken),
+  };
+}
+
+/**
+ * Whether a child environment was handed a token at all — the difference between Cloudflare *refusing*
+ * credentials and there being none to refuse (#759). Asked here, so the module that spawns never names
+ * the key.
+ */
+export function childCarriesToken(env: Readonly<Record<string, string>>): boolean {
+  return Boolean(env.CLOUDFLARE_API_TOKEN);
+}
+
+/**
+ * The remedy when a child was handed **no** token and Cloudflare said so (#759). "Refused" would describe
+ * credentials nobody gave and send the reader to diagnose them; what is owed is a sign-in.
+ */
+export const NO_CHILD_TOKEN_ACTION = `Cloudflare credentials are missing, so wrangler had nothing to sign in with. Run ${commandName("cloudflare connect")} to sign in, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN.`;

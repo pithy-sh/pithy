@@ -10,6 +10,7 @@ import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runAdd } from "../capabilities/flow";
 import { readSecretValue } from "../capabilities/secretValue";
+import { chooseSessionAccount } from "../cloudflare/session/connect";
 import { addPrompts, targetWorker } from "../commands/add";
 import { confirmOrRefuse } from "../commands/dashboard";
 import { requireScopeAnswerable } from "../commands/docs";
@@ -69,6 +70,13 @@ const SITES: Record<string, PromptSite> = {
     prompts: ["promptWorker", "promptConfigValues", "promptPrerequisites"],
     kind: "required",
     gatedBy: "commands/add.ts",
+  },
+  "commands/cloudflare.ts": {
+    // The pasted landing address is optional: the loopback callback answers the same question. Choosing
+    // among several accounts has no default, so it is required, and `--account` answers it.
+    prompts: ["askLandingAddress", "askSessionAccount"],
+    kind: "mixed",
+    gatedBy: "commands/cloudflare.ts",
   },
   "commands/dashboard.ts": {
     // The scopes take the default grant. The two confirmations default to no, so they are required:
@@ -198,6 +206,21 @@ const REQUIRED: readonly {
     prompt: "promptPrerequisites",
     flag: "--with-prerequisites",
     run: (interactive) => addInScaffold("auth", interactive),
+  },
+  {
+    // Several accounts and nothing to decide: the run that cannot ask is refused, naming `--account`.
+    site: "commands/cloudflare.ts",
+    prompt: "askSessionAccount",
+    flag: "--account",
+    choices: ["a1", "b2"],
+    run: (interactive) =>
+      chooseSessionAccount(
+        [
+          { id: "a1", name: "Alpha" },
+          { id: "b2", name: "Beta" },
+        ],
+        interactive ? { choose: async () => null } : {},
+      ),
   },
   {
     site: "commands/migrate.ts",

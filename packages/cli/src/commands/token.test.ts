@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { tokenProfiles } from "../tokens/workerProfiles";
 import {
   collectPermissionFlags,
   deadTokenNotice,
@@ -14,7 +15,6 @@ import {
   publicToken,
   resolveAppDatabaseId,
   routeScopeNotice,
-  tokenProfiles,
 } from "./token";
 
 describe("collectPermissionFlags", () => {

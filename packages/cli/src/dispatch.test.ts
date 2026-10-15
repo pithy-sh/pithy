@@ -47,8 +47,8 @@ async function pithy(...args: string[]): Promise<{ code: number; stdout: string;
  * lost twenty groups was a passing test. A number a new command forces somebody to look at is the point:
  * the module's own prose had already drifted to "thirteen groups" while the tree held fourteen.
  */
-const DECLARED = 29;
-const GROUPS = 15;
+const DECLARED = 30;
+const GROUPS = 16;
 
 /**
  * Every root subcommand, split into the groups and the commands that act.

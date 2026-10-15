@@ -471,6 +471,14 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
       reads: "readFile",
       why: "`readBootstrapVars` argues it at length, and the argument is about that call rather than about the file (#219): every failure is an empty set because nothing is rewritten from this read — the result is merged into a file regenerated wholesale — and a `dev.json` half-typed by hand must not stop `pithy dev`. The two writers beside it read their own base through `readMergeBase`, which refuses in every state but absence, and they take a `MergeBase` so this lenient answer cannot be handed to them by accident. The split is by *power*, not by file, which is why both writers now return through this read when their own arguments say they will write nothing (#222) — an empty `values`, an empty `names` — rather than refusing over a file they were never going to touch.",
     },
+    "cli/src/cloudflare/session/bindings.ts": {
+      reads: "readFileSync",
+      why: "`readBindingsSync` answers the credential seam, which is synchronous and rewrites nothing: a `profiles.json` that will not open means no profile is bound, which `pithy doctor` reports, and refusing every command over it would break the command that fixes it. The writer reads its own base through `readOptionalFile` and refuses, because it is the one that would delete every other directory's binding (#759).",
+    },
+    "cli/src/cloudflare/session/store.ts": {
+      reads: "readFileSync",
+      why: "`readSessionSync` answers the credential seam and rewrites nothing from a failed read: a session that will not open is no session, so the command asks for a sign-in, which `pithy cloudflare connect` gives back. The one writer that reads first, the refresh, does nothing when this answers none — it never writes a session it could not read (#759).",
+    },
     "cli/src/cloudflare/config.ts": {
       reads: "readFileSync",
       why: "`readCloudflareConfigSync` hands its answer to a Cloudflare client and rewrites nothing, so a `cloudflare.json` that will not open costs a set of credentials and is reported by `pithy doctor` as `Cloudflare: unconfigured` — every command in the CLI resolves these, and refusing them all over one permission bit would break the command that fixes it. `writeCloudflareConfig` does its own read through `readOptionalFile` and refuses, because it is the one that could destroy what it could not read.",

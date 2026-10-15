@@ -57,6 +57,56 @@ export const PERMISSION_GROUPS = {
 export type PermissionKey = keyof typeof PERMISSION_GROUPS;
 
 /**
+ * **The third column: the OAuth scope each key needs a signed-in session to hold (#759).**
+ *
+ * A session mints only what it could do itself. Cloudflare refuses a mint whose permission groups the
+ * session's scopes do not cover — *"The OAuth session does not include the scopes required for the
+ * requested permission groups"*, measured 2026-10-15 — so the scopes `pithy cloudflare connect` asks for
+ * are derived from the permissions the project's tokens carry, through this table, and never listed by
+ * hand. `satisfies` over {@link PermissionKey} makes a key added above without a scope here a type error.
+ *
+ * **The ids pair with the group names one to one.** `GET /oauth/scopes` names each scope exactly as the
+ * permission group it grants — `d1.write` is "D1 Write", `workers-routes.write` is "Workers Routes Write" —
+ * which is what lets the integration test check this column against Cloudflare's own catalog the way
+ * the group names are checked against the account. A write scope also covers its read: a session holding
+ * `d1.write` minted a "D1 Read" token, so a key never needs both.
+ *
+ * Dot-delimited, always. The colon form (`account:read`) is what a first-party client like wrangler asks
+ * for, and a third-party client can neither register one nor request it.
+ */
+export const OAUTH_SCOPES = {
+  "d1:read": ["d1.read"],
+  "d1:write": ["d1.write"],
+  "workers:write": ["workers-scripts.write"],
+  "secrets:read": ["secrets-store.read"],
+  "secrets:write": ["secrets-store.write"],
+  "email:routing": ["email-routing-rule.write"],
+  "kv:write": ["workers-kv-storage.write"],
+  "r2:read": ["workers-r2.read"],
+  "r2:write": ["workers-r2.write"],
+  "vectorize:read": ["vectorize.read"],
+  "vectorize:write": ["vectorize.write"],
+  "ai:read": ["ai.read"],
+  "zone:read": ["zone.read"],
+  "routes:write": ["workers-routes.write"],
+} as const satisfies Record<PermissionKey, readonly string[]>;
+
+/**
+ * Resolve permission keys to the OAuth scopes a session needs to act — or mint — with them, de-duped in
+ * first-seen order. An unknown key is refused exactly as {@link resolvePermissionKeys} refuses it.
+ */
+export function oauthScopesFor(keys: readonly string[]): string[] {
+  resolvePermissionKeys([...keys]);
+  const scopes: string[] = [];
+  for (const key of keys) {
+    for (const scope of OAUTH_SCOPES[key as PermissionKey]) {
+      if (!scopes.includes(scope)) scopes.push(scope);
+    }
+  }
+  return scopes;
+}
+
+/**
  * The keys whose Cloudflare permission group is **zone-scoped**: a policy carrying one must name zone
  * resources (`com.cloudflare.api.account.zone.<id>`), never the account resource.
  *

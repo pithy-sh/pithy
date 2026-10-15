@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { type Caller, callerOf } from "@pithy-sh/core/src/cli/command";
+import { type Caller, callerOf, commandName } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { environmentScope, featureScope, type ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -234,7 +234,7 @@ async function requireProvisioners(
   if (provisioners) return provisioners;
   throw new PreconditionFailedError({
     message: "Cloudflare credentials are missing.",
-    action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision ${target}.`,
+    action: `Run ${commandName("cloudflare connect")}, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to provision ${target}.`,
   });
 }
 

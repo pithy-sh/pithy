@@ -44,7 +44,7 @@ A `--store` on the command line wins over the profile's `defaultStore`, which wi
 
 Every mint, rotate, and revoke emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`) carrying the token's id and its store, never its value — and only when the project composes `@pithy-sh/audit`. It is a no-op otherwise; the CLI never hard-depends on audit, and an audit write never breaks the token action it records.
 
-Credentials come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account. They are account-scoped, not per project, and the account is resolved from the project's own config *before* the credentials are read — minting into a file the project did not select would create a real token in someone else's account. `PITHY_OFFLINE` refuses ambient credentials, so an offline run fails with "Cloudflare credentials are missing" rather than reaching an account nobody in the session named.
+Credentials come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account. They are account-scoped, not per project, and the account is resolved from the project's own config *before* the credentials are read — minting into a file the project did not select would create a real token in someone else's account. A profile bound here by `pithy cloudflare connect` outranks the file, and the audit events then name the person who signed in rather than a token. `PITHY_OFFLINE` refuses ambient credentials, so an offline run fails with "Cloudflare credentials are missing" rather than reaching an account nobody in the session named.
 
 ## `--json`
 
@@ -93,7 +93,8 @@ The token's value and its composed Cloudflare name are both on the internal resu
 
 ## Errors
 
-- **`Cloudflare credentials are missing.`** Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the bootstrap token — then run it again. No command records them inside a project: `pithy init` does only as it scaffolds a new one.
+- **`Cloudflare credentials are missing.`** Sign in with `pithy cloudflare connect`, or set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` — the bootstrap token — then run it again. No command records a token inside a project: `pithy init` does only as it scaffolds a new one.
+- **`This project now needs permissions the session for profile <name> was not granted: <scopes>.`** `mint` and `rotate` under a signed-in session check first that the session holds every permission the project now derives, so Cloudflare's delegation rule is never met mid-mint. Run `pithy cloudflare connect --profile <name>` to approve them, then run it again.
 - **`Unknown token permission key: <key>.`** The refusal lists every legal key.
 - **`Unknown token store: <value>.`** Legal values are `secrets-store`, `dev-vars`, `ephemeral`.
 - **`Unknown token profile: <name>.`** The refusal lists the profiles this project actually resolves — the aggregate of its composed capabilities' declarations and its config overrides.

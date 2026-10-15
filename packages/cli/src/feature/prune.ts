@@ -7,10 +7,10 @@ import { personDecision, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { emptyPlan, type Plan } from "../plan/plan";
+import type { LockBudget } from "../project/fileLock";
 import { devConfigPath, readDevConfig } from "./devConfig";
 import {
   freePortBlocks,
-  type LockBudget,
   PortBlock,
   type PortsRegistry,
   type RepoPortBlocks,

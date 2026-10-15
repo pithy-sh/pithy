@@ -258,7 +258,7 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
 
   if (!configured) {
     process.stdout.write(
-      `${dim("Cloudflare credentials are per account, not per project — one set for every project on that account.")}\n${dim(`They are kept under ${stateDir(paths)}, never in this repository.`)}\n${dim(`Press enter to skip; ${commandName("doctor")} names them until they are set.`)}\n\n`,
+      `${dim("Cloudflare credentials are per account, not per project — one set for every project on that account.")}\n${dim(`They are kept under ${stateDir(paths)}, never in this repository.`)}\n${dim(`Press enter to skip; ${commandName("doctor")} names them until they are set.`)}\n${dim(`Or skip it and sign in with ${commandName("cloudflare connect")}: no token to make by hand.`)}\n\n`,
     );
   }
 

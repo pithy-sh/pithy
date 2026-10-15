@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CfSecretsStore } from "@pithy-sh/cloudflare/src/secrets/secretsStores";
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { cloudflareClients } from "../cloudflare/clients";
 import {
   type CloudflareConfigOptions,
@@ -82,7 +83,7 @@ export async function ensureSecretsStoreId(options: EnsureSecretsStoreIdOptions)
   if (!accountId || !apiToken) {
     if (recorded) return [];
     return [
-      `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account, then run ${again} again.`,
+      `SECRETS_STORE_ID is not recorded, and there are no Cloudflare credentials to resolve it with. Run ${commandName("cloudflare connect")}, or export CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for this project's account. Then run ${again} again.`,
     ];
   }
 

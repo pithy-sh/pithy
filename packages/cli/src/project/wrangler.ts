@@ -12,7 +12,12 @@ import {
 } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { parse } from "comment-json";
-import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
+import {
+  childCarriesToken,
+  cloudflareChildEnv,
+  credentialedChildEnv,
+  NO_CHILD_TOKEN_ACTION,
+} from "../cloudflare/childEnv";
 import type { CloudflareAccountSelection, CloudflareCredentials } from "../cloudflare/config";
 import { spawnCommand } from "../platform/command";
 import { assertCreatesNoResources } from "./effectiveConfig";
@@ -238,7 +243,7 @@ export function refusesTheRun(error: unknown): error is WranglerCredentialsError
   return error instanceof WranglerCredentialsError || error instanceof WranglerNotRunnableError;
 }
 
-/** The action line of {@link WranglerCredentialsError}. */
+/** The action line of {@link WranglerCredentialsError}, when wrangler was handed a token and Cloudflare refused it. */
 const CREDENTIAL_ACTION = `Cloudflare refused the credentials. Run ${pithyCommand("doctor")} to see whether the token or the account is wrong.`;
 
 /** The child's environment, from whichever of the two things the caller holds. See {@link WranglerAccount}. */
@@ -340,7 +345,11 @@ export async function runWrangler(
       const refused = !options.passthrough && CREDENTIAL_REFUSAL.test(stripVTControlCharacters(`${stderr}\n${stdout}`));
       reject(
         refused
-          ? new WranglerCredentialsError({ message, action: CREDENTIAL_ACTION, detail })
+          ? new WranglerCredentialsError({
+              message,
+              action: childCarriesToken(childEnv) ? CREDENTIAL_ACTION : NO_CHILD_TOKEN_ACTION,
+              detail,
+            })
           : new InternalError({ message, detail }),
       );
     });

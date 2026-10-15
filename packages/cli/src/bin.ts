@@ -196,7 +196,14 @@ if (wantsVersion(argv)) {
   // `--help` is citty's builtin below the root, answered by `runMain` and exiting 0. Every other call runs
   // through `runTree`, which is `runMain`'s catch with the classified code: a call citty refuses exits 2.
   else if (argv.some((token) => token === "--help" || token === "-h")) await runMain(root, { showUsage: usageFor });
-  else await runTree(root, argv, { json: asksForJson(argv), showUsage: usageFor });
+  else {
+    // A session bound here is renewed before the command body runs, so no command is marked for it and
+    // the synchronous credential read finds a fresh token (#759). Never throws; costs no call while the
+    // token has more than five minutes left. See `cloudflare/session/dispatch.ts`.
+    const { freshenBoundSession } = await import("./cloudflare/session/dispatch");
+    await freshenBoundSession();
+    await runTree(root, argv, { json: asksForJson(argv), showUsage: usageFor });
+  }
 }
 
 /**

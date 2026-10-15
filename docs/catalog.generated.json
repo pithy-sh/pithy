@@ -112,6 +112,40 @@
       ]
     },
     {
+      "path": "cloudflare",
+      "flags": []
+    },
+    {
+      "path": "cloudflare connect",
+      "flags": [
+        "--profile",
+        "--account",
+        "--open",
+        "--no-open",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "cloudflare disconnect",
+      "flags": [
+        "--profile",
+        "--unbind",
+        "--no-unbind",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
+      "path": "cloudflare use",
+      "flags": [
+        "--default",
+        "--no-default",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "contract",
       "flags": [
         "--worker",

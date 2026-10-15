@@ -136,6 +136,7 @@ export type DestructiveFlag = keyof typeof DESTRUCTIVE_FLAGS;
  * any other.
  */
 export const NOT_DESTRUCTIVE: Readonly<Record<string, string>> = {
+  "cloudflare disconnect": "revokes a sign-in and deletes no data, which `cloudflare connect` gives back",
   "docs disconnect": "removes the docs server from an editor's config, which `docs connect` restores",
   "feature prune": "forgets worktrees that are already gone",
   "testers close": "stops a cohort accruing, and keeps its history",

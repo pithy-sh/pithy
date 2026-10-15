@@ -4,6 +4,7 @@
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareManagerConfig } from "@pithy-sh/cloudflare/src/client/manager";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { sessionTokenProvider } from "./session/kind";
 
 /**
  * The one place the CLI loads the Cloudflare REST client, and it loads it at the moment a command
@@ -36,7 +37,17 @@ import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflo
  */
 export async function cloudflareClients(config: CloudflareManagerConfig): Promise<CloudflareClients> {
   const { CloudflareClients: Clients } = await import("@pithy-sh/cloudflare/src/client/clients");
-  return new Clients(config);
+  return new Clients(withSessionProvider(config));
+}
+
+/**
+ * A config built on the bound session's token reads it through a provider, so every manager these clients
+ * make sends the session's current token, renewed or not (#759). Any other config is passed as it came.
+ */
+function withSessionProvider(config: CloudflareManagerConfig): CloudflareManagerConfig {
+  if (config.tokenProvider !== undefined) return config;
+  const tokenProvider = sessionTokenProvider(config.apiToken);
+  return tokenProvider === undefined ? config : { ...config, tokenProvider };
 }
 
 /**
@@ -49,5 +60,5 @@ export async function cloudflareClients(config: CloudflareManagerConfig): Promis
  */
 export async function cloudflareWorkflows(config: CloudflareManagerConfig): Promise<CloudflareWorkflowsClient> {
   const { CloudflareWorkflowsClient: Workflows } = await import("@pithy-sh/cloudflare/src/workflows/workflowsClient");
-  return new Workflows(config);
+  return new Workflows(withSessionProvider(config));
 }

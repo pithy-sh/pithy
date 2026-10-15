@@ -137,6 +137,43 @@
         "$<manual=true>.alias": "string"
       }
     },
+    "cloudflare connect": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"cloudflare connect\"",
+        "$.profile": "string",
+        "$.email": "null | string",
+        "$.account": "object",
+        "$.account.id": "string",
+        "$.account.name": "string",
+        "$.boundTo": "string",
+        "$.scopes": "array",
+        "$.scopes[]": "string",
+        "$.expiresAt": "string"
+      }
+    },
+    "cloudflare disconnect": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"cloudflare disconnect\"",
+        "$.profile": "string",
+        "$.revoked": "boolean",
+        "$.sessionDeleted": "boolean",
+        "$.unbound": "boolean"
+      }
+    },
+    "cloudflare use": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"cloudflare use\"",
+        "$.profile": "string",
+        "$.boundTo": "null | string",
+        "$.signedIn": "boolean"
+      }
+    },
     "contract": {
       "schemaVersion": 1,
       "payload": {
@@ -649,6 +686,12 @@
         "$.cloudflare.accountMismatch": "null | object",
         "$.cloudflare.accountMismatch{}": "unknown",
         "$.cloudflare.credentialSource": "null | string",
+        "$.cloudflare.session": "null | object?",
+        "$.cloudflare.session.profile": "string",
+        "$.cloudflare.session.via": "string",
+        "$.cloudflare.session.email": "null | string",
+        "$.cloudflare.session.path": "string",
+        "$.cloudflare.credentialKind": "null | string?",
         "$.cloudflare.detail": "string",
         "$.projectName": "null | object",
         "$.projectName.state": "string",

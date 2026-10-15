@@ -1576,6 +1576,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   command: [
     "add",
     "alias",
+    "cloudflare",
     "contract",
     "dashboard",
     "deploy",
@@ -1655,17 +1656,20 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   path: ["schema", "secrets"],
   // What `--dry-run` would change, in the one shape every planning command shares (#697, `plan/plan.ts`).
   plan: ["add", "deploy", "feature", "migrate", "payments", "provision", "secrets", "seed", "ui", "upgrade", "worker"],
+  profile: ["cloudflare", "token"],
   project: ["doctor", "migrate"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
   port: ["dev", "worker"],
   removed: ["alias", "dashboard"],
+  revoked: ["cloudflare", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
   // On every payload, `doctor`'s included: the version of the payload's shape, stamped by the formatter (#697).
   schemaVersion: [
     "add",
     "alias",
+    "cloudflare",
     "contract",
     "dashboard",
     "deploy",
@@ -1695,6 +1699,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   ],
   // Both report an environment's `secrets_store_secrets`: provision says which entries it wrote, doctor
   // says which a declared environment still has no binding for. One subject, two directions.
+  scopes: ["cloudflare", "dashboard"],
   secretBindings: ["doctor", "provision"],
   shell: ["alias", "doctor"],
   // The environments a capability provisioning run created nothing for, each with why and the command
@@ -1753,10 +1758,13 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   path: "string",
   plan: "object",
   port: "number",
+  profile: "string",
   removed: "boolean",
+  revoked: "boolean",
   routing: "object",
   runs: "object[]",
   schemaVersion: "number",
+  scopes: "string[]",
   shell: "string",
   skippedEnvironments: "object[]",
   staleAutostart: "object[]",

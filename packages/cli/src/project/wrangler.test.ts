@@ -249,7 +249,7 @@ describe("runWrangler", () => {
     const printed = `\u001b[31m\u2718 \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m A request to the Cloudflare API failed.\n  ${line}\n`;
     const error = (await runWrangler(
       await standIn(`process.stderr.write(${JSON.stringify(printed)}); process.exit(1)`),
-      { account: null, bin: NODE },
+      { account: { accountId: "acct", apiToken: "cfat_handed-over" }, bin: NODE },
     ).catch((e: unknown) => e)) as PithyError;
     expect(error).toBeInstanceOf(WranglerCredentialsError);
     expect(refusesTheRun(error)).toBe(true);
@@ -259,6 +259,21 @@ describe("runWrangler", () => {
     expect(error.payload.action).toBe(
       "Cloudflare refused the credentials. Run pithy doctor to see whether the token or the account is wrong.",
     );
+  });
+
+  test("wrangler handed no token at all is told to sign in, never that its credentials were refused (#759)", async () => {
+    // Measured: `pithy deploy` with nothing configured printed "Cloudflare refused the credentials. Run
+    // pithy doctor", about credentials nobody gave. The remedy is the sign-in.
+    const printed =
+      "In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work.\n";
+    const error = (await runWrangler(
+      await standIn(`process.stderr.write(${JSON.stringify(printed)}); process.exit(1)`),
+      { account: null, bin: NODE, env: { CLOUDFLARE_API_TOKEN: "" } },
+    ).catch((e: unknown) => e)) as PithyError;
+    expect(error).toBeInstanceOf(WranglerCredentialsError);
+    expect(exitCodeOf(error.payload)).toBe(3);
+    expect(error.payload.action).toMatch(/^Cloudflare credentials are missing/);
+    expect(error.payload.action).toMatch(/pithy cloudflare connect/);
   });
 
   test("another failure that mentions a code is not a credentials refusal", async () => {

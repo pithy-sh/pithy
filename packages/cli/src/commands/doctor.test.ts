@@ -1864,7 +1864,7 @@ describe("cloudflare credentials", () => {
     );
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain(
-      "Cloudflare: not configured (set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json, or the environment)",
+      "Cloudflare: not configured (sign in with pithy cloudflare connect, or set CLOUDFLARE_API_TOKEN in ~/.config/pithy/cloudflare.json or the environment)",
     );
     expect(text).not.toContain("CLOUDFLARE_ACCOUNT_ID");
   });

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
-import { PITHY_OFFLINE_ENV } from "../cloudflare/config";
+import { PITHY_OFFLINE_ENV, SESSION_PROFILE_ENV } from "../cloudflare/config";
 import { NO_TUI_ENV } from "../dev/tui/choose";
 import { NO_UPDATE_NOTIFIER_ENV } from "../notifier/notify";
 import { CONFIG_DIR_ENV } from "../notifier/state";
@@ -62,6 +62,12 @@ export const ENVIRONMENT_VARIABLES: readonly EnvironmentVariable[] = [
     description: "Suppress the end-of-command update notice.",
   },
   { name: NO_OPEN_ENV, values: ANY, description: "Suppress every offer to open a link in a browser." },
+  {
+    name: SESSION_PROFILE_ENV,
+    values: "set by pithy",
+    description:
+      "Set by pithy on a child whose Cloudflare credentials are a bound session's, so a pithy run inside it reads that pair as the session's own. Not one to set by hand.",
+  },
   { name: NO_TUI_ENV, values: ANY, description: "Keep pithy dev to the plain stream, as --no-tui does." },
   { name: "NO_COLOR", values: ANY, description: "Turn color off." },
   { name: "FORCE_COLOR", values: ANY, description: "Turn color on, even where the stream is not a terminal." },

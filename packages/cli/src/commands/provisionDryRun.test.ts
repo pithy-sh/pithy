@@ -228,7 +228,8 @@ describe("pithy provision --feature --dry-run", () => {
     expect(planned).toBeInstanceOf(PithyError);
     expect((planned as PithyError).payload).toMatchObject({
       code: "core/precondition_failed",
-      action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to provision a feature environment.",
+      action:
+        "Run pithy cloudflare connect, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to provision a feature environment.",
     });
     expect(account.calls).toEqual([]);
   });

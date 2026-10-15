@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { commandName } from "@pithy-sh/core/src/cli/command";
 import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { canonicalIssue } from "@pithy-sh/core/src/naming/feature";
@@ -157,7 +158,7 @@ async function remoteHalf(
     throw new PreconditionFailedError({
       message: "Cloudflare credentials are missing, so the feature's resources cannot be deleted.",
       action:
-        "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, " +
+        `Run ${commandName("cloudflare connect")}, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to tear down the remote environment, ` +
         "or pass --local-only to remove just the worktree and its ports.",
     });
   }

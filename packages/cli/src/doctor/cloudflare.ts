@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { cloudflareClients } from "../cloudflare/clients";
 import {
   type CloudflareAccountMismatch,
@@ -74,7 +75,19 @@ export type CloudflareAccessState =
    * the reader to unset an environment variable that was never set. It never fails the exit, on the rule
    * every other establishes-nothing state here follows.
    */
-  | "probe_failed";
+  | "probe_failed"
+  /**
+   * A profile is bound to this directory and has no session on this machine (#759). Every command that
+   * needs Cloudflare refuses here rather than falling back to an exported token, so it fails the exit.
+   */
+  | "signed_out"
+  /** A profile is bound here and the environment exports a credential that disagrees with its session. */
+  | "session_conflict"
+  /** The bound session expired and dispatch could not renew it — a dead refresh token, usually. */
+  | "session_expired";
+
+/** Which kind of credential is in force — the fact that decides whether an audit row can name a person. */
+export type CloudflareCredentialKind = "session" | "account-token" | "user-token";
 
 /** What `doctor` learned about the configured Cloudflare credentials. */
 export interface CloudflareAccess {
@@ -113,6 +126,24 @@ export interface CloudflareAccess {
    * session had looked at, and there was no line anywhere that distinguished the two.
    */
   credentialSource?: CloudflareCredentialSource | null;
+  /**
+   * The profile bound to this directory, and who signed in to it — `null` when no profile is bound (#759).
+   * Present on every state a binding decides, so the report names the profile it is talking about.
+   */
+  session?: { profile: string; via: "directory" | "default"; email: string | null; path: string } | null;
+  /**
+   * The kind of credential in force, or `null` when none resolved or its kind cannot be told. A session
+   * is a person; an account token is a name somebody gave a token, and the report says so (#759).
+   */
+  credentialKind?: CloudflareCredentialKind | null;
+}
+
+/** The credential's kind, from what resolved it — a session — or else from the token's own prefix. */
+function credentialKindOf(fromSession: boolean, apiToken: string | undefined): CloudflareCredentialKind | null {
+  if (fromSession) return "session";
+  if (apiToken?.startsWith("cfat_")) return "account-token";
+  if (apiToken?.startsWith("cfut_")) return "user-token";
+  return null;
 }
 
 /**
@@ -170,17 +201,34 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
   // Resolved from the same file and the same environment, so what is reported is a fact about *this*
   // resolution rather than about a second one taken a moment later.
   const credentialSplit = cloudflareCredentialSplit(options);
+  const bound = resolution.session;
   const where = {
     configPath: resolution.path,
     accountName: resolution.accountName,
     accountMismatch: resolution.mismatch,
     credentialSource: resolution.credentialSource,
+    session: bound === null ? null : { profile: bound.profile, via: bound.via, email: bound.email, path: bound.path },
+    credentialKind: credentialKindOf(resolution.credentialSource === "session", vars.CLOUDFLARE_API_TOKEN),
   };
 
   // Before the credentials are even counted, and long before any of them are used: credentials for an
   // account this project does not claim must not reach Cloudflare, not even to be verified.
   if (resolution.mismatch)
     return { state: "account_mismatch", missing: [], tokenStatus: null, credentialSplit, ...where };
+
+  // Offline first among the session states: offline, no command refuses a signed-out or expired session
+  // (`refuseSessionFaults`), so the report must not either — and it must not prescribe a sign-in it
+  // cannot run. The conflict check already ignores the overlay offline.
+  if (resolution.offline && bound !== null)
+    return { state: "not_checked", missing: [], tokenStatus: null, credentialSplit, ...where };
+
+  // A binding decides before anything else may: a bound profile that is signed out, overridden, or
+  // expired is the reason every command here would refuse, so it is the line, and it fails the exit.
+  if (bound !== null && !bound.signedIn)
+    return { state: "signed_out", missing: [], tokenStatus: null, credentialSplit, ...where };
+  if (resolution.ambientConflict)
+    return { state: "session_conflict", missing: [], tokenStatus: null, credentialSplit, ...where };
+  if (bound?.expired) return { state: "session_expired", missing: [], tokenStatus: null, credentialSplit, ...where };
 
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
 
@@ -198,6 +246,30 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
 
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const clients = await cloudflareClients({ accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken });
+
+  // **A session is verified as the person it names, never through `tokens/verify`**, which answers an OAuth
+  // access token with "Invalid API Token" (measured) and would report a working session as broken.
+  if (where.credentialKind === "session") {
+    const user = await clients
+      .user()
+      .getUser()
+      .catch(() => null);
+    if (user === null) return { state: "token_invalid", missing: [], tokenStatus: null, credentialSplit, ...where };
+    const session = where.session === null ? null : { ...where.session, email: user.email ?? where.session.email };
+    // The same account probe a token is held to: a person whose membership was removed still answers
+    // `GET /user`, and the account half is what every command that follows needs.
+    const reachable = await clients.accountTokens().validateServiceAccess();
+    if (!reachable)
+      return {
+        state: "account_unreachable",
+        missing: [],
+        tokenStatus: "signed in",
+        credentialSplit,
+        ...where,
+        session,
+      };
+    return { state: "ok", missing: [], tokenStatus: "signed in", credentialSplit, ...where, session };
+  }
 
   const tokenStatus = await verifyByKind(clients, apiToken);
   if (tokenStatus === null)
@@ -243,16 +315,35 @@ function describeState(access: CloudflareAccess, home?: string): string {
       //
       // So the line says what the probe did. `checked:` names it, and the clause after it refuses the
       // inference that would otherwise be drawn from silence.
-      return `token ${access.tokenStatus ?? "verified"}; checked: API tokens — no other product was reached`;
+      if (access.credentialKind === "session") {
+        const who = access.session?.email ?? "a Cloudflare user";
+        return `signed in as ${who}, profile ${access.session?.profile ?? "default"}; checked: the signed-in user — no other product was reached`;
+      }
+      // **An account token is a name, not a person** (#759): every audit row the CLI writes under it names
+      // the token. Said on the line, because it is the fact a sign-in would change.
+      return access.credentialKind === "account-token"
+        ? `token ${access.tokenStatus ?? "verified"}, an account token — audit rows name the token, not a person; checked: API tokens — no other product was reached`
+        : `token ${access.tokenStatus ?? "verified"}; checked: API tokens — no other product was reached`;
     case "unconfigured":
       // The file this run actually resolved, when it knows it. `~/.config/pithy/cloudflare.json` is the
       // right answer for a single-account machine and the wrong one for a project that names an account,
       // and telling somebody to set a key in a file nothing will read is worse than saying nothing.
-      return `not configured (set ${access.missing.join(" and ")} in ${configPath(access, home)}, or the environment)`;
+      // The sign-in first (#759): it is the one remedy that needs no token made by hand.
+      return `not configured (sign in with ${commandName("cloudflare connect")}, or set ${access.missing.join(" and ")} in ${configPath(access, home)} or the environment)`;
     case "token_invalid":
-      return "CLOUDFLARE_API_TOKEN rejected — check the value, or mint a new bootstrap token";
+      return access.credentialKind === "session"
+        ? `the session for profile ${access.session?.profile ?? "default"} was rejected — sign in again with ${signIn(access)}`
+        : "CLOUDFLARE_API_TOKEN rejected — check the value, or mint a new bootstrap token";
+    case "signed_out":
+      return `profile ${access.session?.profile ?? "default"} is bound here and is not signed in — run ${signIn(access)}`;
+    case "session_conflict":
+      return `profile ${access.session?.profile ?? "default"} is bound here, and the environment exports a different credential — unset CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID to use the profile`;
+    case "session_expired":
+      return `the session for profile ${access.session?.profile ?? "default"} expired and could not be renewed — run ${signIn(access)}`;
     case "account_unreachable":
-      return "token is valid but the account did not answer — check CLOUDFLARE_ACCOUNT_ID and the token's permissions";
+      return access.credentialKind === "session"
+        ? `signed in, but account ${access.accountName ?? "the session's account"} did not answer — check that ${access.session?.email ?? "this user"} is still a member, or sign in again with ${signIn(access)}`
+        : "token is valid but the account did not answer — check CLOUDFLARE_ACCOUNT_ID and the token's permissions";
     case "account_mismatch":
       return access.accountMismatch
         ? `${describeCloudflareAccountMismatch(access.accountMismatch)} Nothing will run against it.`
@@ -271,8 +362,13 @@ function describeState(access: CloudflareAccess, home?: string): string {
   }
 }
 
+/** The sign-in that fixes a session fault, for the profile the report is about. */
+function signIn(access: CloudflareAccess): string {
+  return pithyCommand("cloudflare connect", { flags: { "--profile": access.session?.profile ?? "default" } });
+}
+
 /**
- * The suffix naming where the credentials stand — the file, or the environment that supplied them.
+ * The suffix naming where the credentials stand — the file, the environment, or a session (#759).
  *
  * `; from <file>` was the whole of this and it was a claim about the *resolution*, not about the
  * credentials: CI resolves a path with nothing at it and authenticates from the environment, and so did
@@ -284,6 +380,11 @@ function describeState(access: CloudflareAccess, home?: string): string {
  * where, in more detail than this can, and repeating it would be the line saying one thing twice.
  */
 function credentialOrigin(access: CloudflareAccess, home: string | undefined): string {
+  if (access.credentialKind === "session" && access.session) {
+    const sessionFile = access.session.path;
+    const shown = home && sessionFile.startsWith(`${home}/`) ? `~${sessionFile.slice(home.length)}` : sessionFile;
+    return `from the session in ${shown}`;
+  }
   const path = configPath(access, home);
   if (access.state === "not_checked" || access.state === "probe_failed")
     return `credentials would resolve from ${path}`;
