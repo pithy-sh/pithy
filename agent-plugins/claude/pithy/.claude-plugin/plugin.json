@@ -14,57 +14,49 @@
     "server_model": {
       "type": "string",
       "title": "Server agent model",
-      "description": "The model the server agent runs on. Default: sonnet.",
-      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "description": "The model the server agent runs on: opus, sonnet, haiku, fable or inherit. Default: sonnet.",
       "default": "sonnet"
     },
     "server_effort": {
       "type": "string",
       "title": "Server agent effort",
-      "description": "How hard the server agent thinks. Default: medium.",
-      "options": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How hard the server agent thinks: low, medium, high, xhigh or max. Default: medium.",
       "default": "medium"
     },
     "client_web_model": {
       "type": "string",
       "title": "Web client agent model",
-      "description": "The model the web client agent runs on. Default: sonnet.",
-      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "description": "The model the web client agent runs on: opus, sonnet, haiku, fable or inherit. Default: sonnet.",
       "default": "sonnet"
     },
     "client_web_effort": {
       "type": "string",
       "title": "Web client agent effort",
-      "description": "How hard the web client agent thinks. Default: medium.",
-      "options": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How hard the web client agent thinks: low, medium, high, xhigh or max. Default: medium.",
       "default": "medium"
     },
     "client_mobile_model": {
       "type": "string",
       "title": "Mobile client agent model",
-      "description": "The model the mobile client agent runs on. Default: sonnet.",
-      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "description": "The model the mobile client agent runs on: opus, sonnet, haiku, fable or inherit. Default: sonnet.",
       "default": "sonnet"
     },
     "client_mobile_effort": {
       "type": "string",
       "title": "Mobile client agent effort",
-      "description": "How hard the mobile client agent thinks. Default: medium.",
-      "options": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How hard the mobile client agent thinks: low, medium, high, xhigh or max. Default: medium.",
       "default": "medium"
     },
     "runner_model": {
       "type": "string",
       "title": "Runner agent model",
-      "description": "The model the runner agent runs on. Default: haiku.",
-      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "description": "The model the runner agent runs on: opus, sonnet, haiku, fable or inherit. Default: haiku.",
       "default": "haiku"
     },
     "runner_effort": {
       "type": "string",
       "title": "Runner agent effort",
-      "description": "How hard the runner agent thinks. Default: low.",
-      "options": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How hard the runner agent thinks: low, medium, high, xhigh or max. Default: low.",
       "default": "low"
     }
   }

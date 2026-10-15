@@ -6,7 +6,7 @@ argument-hint: "[staging|prod]"
 
 Deploy this project to a named environment, then offer the dashboard. You are the main session: you decide and ask, the runner runs. A deploy changes a Cloudflare account the person pays for, so nothing here runs until they say yes, and every yes is for one environment.
 
-Dispatch the runner with the Agent tool, passing `subagent_type`, `model` and `effort` exactly as this table gives them. A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call.
+Dispatch the runner with the Agent tool, passing `subagent_type`, `model` and `effort` exactly as this table gives them. A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call. A model other than `opus`, `sonnet`, `haiku`, `fable` or `inherit`, or an effort other than `low`, `medium`, `high`, `xhigh` or `max`, is a setting typed wrong. Leave that parameter out too, and tell the user which setting to fix.
 
 | Agent | `subagent_type` | `model` | `effort` | When |
 |---|---|---|---|---|

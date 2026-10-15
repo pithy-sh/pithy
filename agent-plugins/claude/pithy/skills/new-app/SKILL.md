@@ -34,7 +34,7 @@ Offer `pithy docs connect`, which points this session at the Pithy documentation
 
 Dispatch each agent with the Agent tool, passing `subagent_type`, `model` and `effort` exactly as this table gives them. They are the user's choices from the plugin's settings, and they outrank each agent's own defaults.
 
-A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call rather than passing the text, and the agent runs on its own default, which is the same one the settings offer.
+A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call rather than passing the text, and the agent runs on its own default, which is the same one the settings offer. A model other than `opus`, `sonnet`, `haiku`, `fable` or `inherit`, or an effort other than `low`, `medium`, `high`, `xhigh` or `max`, is a setting typed wrong. Leave that parameter out too, and tell the user which setting to fix.
 
 | Agent | `subagent_type` | `model` | `effort` | When |
 |---|---|---|---|---|

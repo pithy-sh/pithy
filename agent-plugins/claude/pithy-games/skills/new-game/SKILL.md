@@ -41,7 +41,7 @@ Tell it two things it would not otherwise know:
 
 When the game is built in Unity, dispatch it with the Agent tool once the contract exists, passing `subagent_type`, `model` and `effort` exactly as this table gives them. They are the user's choices from this plugin's settings, and they outrank the agent's own defaults.
 
-A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call rather than passing the text, and the agent runs on its own default, which is the same one the setting offers.
+A cell that still reads `${user_config.…}` is a setting the user never chose. Leave that parameter out of the call rather than passing the text, and the agent runs on its own default, which is the same one the setting offers. A model other than `opus`, `sonnet`, `haiku`, `fable` or `inherit`, or an effort other than `low`, `medium`, `high`, `xhigh` or `max`, is a setting typed wrong. Leave that parameter out too, and tell the user which setting to fix.
 
 | Agent | `subagent_type` | `model` | `effort` | When |
 |---|---|---|---|---|

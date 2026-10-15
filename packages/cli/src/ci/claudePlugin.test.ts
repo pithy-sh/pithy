@@ -39,8 +39,13 @@ const TEAM = [
 
 const SKILLS = ["new-app", "app-design", "deploy", "report-kit-gap"] as const;
 
+/** The values a model or an effort setting may hold: what the Agent tool's `model` and `effort` accept. */
+const MODELS = ["opus", "sonnet", "haiku", "fable", "inherit"] as const;
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 interface UserConfigEntry {
   type: string;
+  description?: string;
   default?: unknown;
   options?: string[];
 }
@@ -154,8 +159,6 @@ describe("the pithy plugin's team", () => {
   test.each(TEAM)("$agent's model and effort are settings, defaulting to the same values", ({ key, model, effort }) => {
     expect(manifest.userConfig[`${key}_model`]).toEqual(expect.objectContaining({ type: "string", default: model }));
     expect(manifest.userConfig[`${key}_effort`]).toEqual(expect.objectContaining({ type: "string", default: effort }));
-    expect(manifest.userConfig[`${key}_model`]?.options).toContain(model);
-    expect(manifest.userConfig[`${key}_effort`]?.options).toContain(effort);
   });
 
   test("declares no setting beyond the team's", () => {
@@ -410,9 +413,6 @@ describe("the pithy-games add-on", () => {
       expect(fields.effort).toBe(effort);
       expect(games.manifest.userConfig[`${key}_model`]).toEqual(expect.objectContaining({ default: model }));
       expect(games.manifest.userConfig[`${key}_effort`]).toEqual(expect.objectContaining({ default: effort }));
-      // The same choices the base team offers, so a setting means the same thing in either plugin.
-      expect(games.manifest.userConfig[`${key}_model`]?.options).toEqual(manifest.userConfig.server_model?.options);
-      expect(games.manifest.userConfig[`${key}_effort`]?.options).toEqual(manifest.userConfig.server_effort?.options);
     }
   });
 
@@ -706,6 +706,46 @@ describe("every pithy command the plugin names is in pithy schema", () => {
     expect(faults).toEqual([]);
     // Non-vacuous: the plugin names a good part of the CLI, and a reader that found nothing is broken.
     expect(checked).toBeGreaterThan(20);
+  });
+});
+
+/**
+ * **A setting is free text, and the skill that substitutes it screens it.** Anthropic's directory refuses a
+ * `userConfig` key that lists `options` and is also substituted as `${user_config.KEY}`
+ * (`USERCONFIG_OPTIONS_UNSCREENED`), because it cannot check each listed value where it lands. So no key
+ * lists them: its description names the values instead, and every skill that dispatches through the
+ * settings names them too and leaves a wrong one out of the call.
+ */
+describe("every model and effort setting is free text, screened where it is substituted", () => {
+  test.each(readdirSync(PLUGINS))("%s", (plugin) => {
+    const { dir, manifest: own } = pluginFiles(plugin);
+    for (const [key, entry] of Object.entries(own.userConfig ?? {})) {
+      expect(entry.options, key).toBeUndefined();
+      for (const value of key.endsWith("_model") ? MODELS : EFFORTS) expect(entry.description, key).toContain(value);
+    }
+    const dispatching = sourceFiles(join(dir, "skills"), { keep: (name) => name === "SKILL.md" }).filter(({ text }) =>
+      /\$\{user_config\./.test(text),
+    );
+    for (const { text } of dispatching) {
+      for (const value of [...MODELS, ...EFFORTS]) expect(text).toContain(`\`${value}\``);
+      expect(text).toMatch(/typed wrong\. Leave that parameter out too/);
+    }
+  });
+});
+
+/**
+ * **Every plugin carries its directory icon:** a square PNG of 512 to 2048 px, under 2 MB, at
+ * `.claude-plugin/icon.png`. The directory takes the icon only the first time a plugin is saved there.
+ */
+describe("every plugin carries a square PNG icon the directory accepts", () => {
+  test.each(readdirSync(PLUGINS))("%s", (plugin) => {
+    const png = readFileSync(join(PLUGINS, plugin, ".claude-plugin", "icon.png"));
+    expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    const width = png.readUInt32BE(16);
+    expect(png.readUInt32BE(20)).toBe(width);
+    expect(width).toBeGreaterThanOrEqual(512);
+    expect(width).toBeLessThanOrEqual(2048);
+    expect(png.length).toBeLessThan(2 * 1024 * 1024);
   });
 });
 

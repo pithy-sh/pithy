@@ -15,15 +15,13 @@
     "client_unity_model": {
       "type": "string",
       "title": "Unity client agent model",
-      "description": "The model the Unity client agent runs on. Default: sonnet.",
-      "options": ["opus", "sonnet", "haiku", "fable", "inherit"],
+      "description": "The model the Unity client agent runs on: opus, sonnet, haiku, fable or inherit. Default: sonnet.",
       "default": "sonnet"
     },
     "client_unity_effort": {
       "type": "string",
       "title": "Unity client agent effort",
-      "description": "How hard the Unity client agent thinks. Default: medium.",
-      "options": ["low", "medium", "high", "xhigh", "max"],
+      "description": "How hard the Unity client agent thinks: low, medium, high, xhigh or max. Default: medium.",
       "default": "medium"
     }
   }
