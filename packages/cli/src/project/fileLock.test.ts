@@ -45,27 +45,25 @@ describe("withFileLock", () => {
     expect(await exists(`${path}.lock`)).toBe(false);
   });
 
-  test("serializes two holders: the second runs only after the first has finished", async () => {
+  test("serializes two holders: whichever acquires first finishes before the other enters", async () => {
+    // Acquiring is asynchronous, so the holder called first is not always the one that wins: run
+    // 38812086350 saw the second win. The lock promises exclusion, not order, so that is what this holds.
     const path = scratch();
     const order: string[] = [];
-    const first = withFileLock(
-      path,
-      async () => {
-        order.push("first:in");
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        order.push("first:out");
-      },
-      { refusal, budget: { retryDelayMs: 5 } },
-    );
-    const second = withFileLock(
-      path,
-      async () => {
-        order.push("second:in");
-      },
-      { refusal, budget: { retryDelayMs: 5 } },
-    );
-    await Promise.all([first, second]);
-    expect(order).toEqual(["first:in", "first:out", "second:in"]);
+    const holder = (name: string) =>
+      withFileLock(
+        path,
+        async () => {
+          order.push(`${name}:in`);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          order.push(`${name}:out`);
+        },
+        { refusal, budget: { retryDelayMs: 5 } },
+      );
+    await Promise.all([holder("a"), holder("b")]);
+    const winner = order[0]?.split(":")[0];
+    const loser = winner === "a" ? "b" : "a";
+    expect(order).toEqual([`${winner}:in`, `${winner}:out`, `${loser}:in`, `${loser}:out`]);
   });
 
   test("a fresh lock survives a spent budget, and the refusal is the caller's, naming the attempts spent", async () => {
