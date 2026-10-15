@@ -95,7 +95,7 @@ The refusal is database-wide. Any `down` against a database holding retained row
 
 **Migrate never seeds and never deploys.** It moves schema. Data fixtures are `pithy seed`; shipping code is `pithy deploy`, which warns when the target environment's schema is behind but never migrates for you.
 
-Credentials for a remote run are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, from `<config>/cloudflare.json` locally — or straight from the environment in CI, which has no config file. A `dev` run needs neither.
+Credentials for a remote run are `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, from a session `pithy cloudflare connect` bound to this directory, or else `<config>/cloudflare.json` locally — or straight from the environment in CI, which has no config file. A `dev` run needs neither.
 
 ## `--json`
 

@@ -223,7 +223,7 @@ Name the branch feature/95-<slug of 31 or fewer>. Feature names are never trunca
 
 ```
 Cloudflare credentials are missing, so the feature's resources cannot be deleted.
-Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to tear down the remote environment, or pass --local-only to remove just the worktree and its ports.
+Run pithy cloudflare connect, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, to tear down the remote environment, or pass --local-only to remove just the worktree and its ports.
 ```
 
 **The project has no name.** `pithy.config.ts`'s `name` is the first segment of every feature resource name and the only key teardown has to find them by, so it is required with no guessed fallback: a wrong guess means `destroy` computes names that match nothing, deletes nothing, and exits 0. It is `core/precondition_failed`, exit 3: the call is right and the project is missing what it depends on.
