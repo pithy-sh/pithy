@@ -166,6 +166,8 @@ The `pithy` Claude Code plugin installs from `pithy-sh/pithy#release`, never fro
 
 Three consequences. **The branch does not exist until the first workflow release creates it**, and until then `/plugin marketplace add pithy-sh/pithy#release` has nothing to read. **`bun run release:local` never moves it**: the workflow is the one thing that does. **A failure at that step comes after the publish and the push**: the packages are on npm and `main` is current, and only the plugin is a release behind.
 
+**Moving it also updates Anthropic's plugin directory.** A push webhook on this repository, to `api.anthropic.com/directory-webhooks/…`, tells the directory when `release` moves, and it picks up the new version within minutes rather than at its own check, about every six hours. The webhook receives every push, `main`'s included. Only a move of `release` changes what the directory lists.
+
 **One thing is open.** Nothing yet stops anyone with write access from pushing `release` by hand. The workflow pushes as the deploy key (§6), which a ruleset can admit, so a ruleset on `release` that only the key bypasses would close it. That is a separate change.
 
 ## The version path to 1.0.0

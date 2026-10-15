@@ -113,7 +113,7 @@ function pluginFiles(name: string) {
   };
 }
 
-const { manifest, agent: agentSource, skill: skillSource } = pluginFiles("pithy");
+const { manifest, agent: agentSource, skill: skillSource, readme } = pluginFiles("pithy");
 
 describe("the marketplace", () => {
   const marketplace = json<{
@@ -279,6 +279,20 @@ describe("the skills", () => {
     expect(source).toMatch(/template=bug\.yml/);
     expect(source).toMatch(/template=feature\.yml/);
     expect(source).toMatch(/Works around pithy-sh\/pithy#/);
+  });
+
+  test("the README lists every place a skill sends anything, for the directory's data-handling review", () => {
+    // Anthropic's directory asks whether a skill sends data off-platform, and the honest answer is "yes,
+    // listed in the README". A skill that gains a destination the section does not name makes that a lie.
+    const section = readme().split("## What leaves your machine")[1]?.split("\n## ")[0] ?? "";
+    expect(section).toContain("`pithy-sh/pithy`");
+    expect(section).toContain("`/report-kit-gap`");
+    expect(section).toContain("`/deploy`");
+    expect(section).toContain("`app.pithy.sh`");
+    expect(section).toContain("`pithy docs connect`");
+    expect(skillSource("report-kit-gap")).toContain("gh issue create --repo pithy-sh/pithy");
+    expect(skillSource("deploy")).toContain("pithy dashboard connect");
+    expect(skillSource("new-app")).toContain("pithy docs connect");
   });
 
   test("report-kit-gap's marker is the one the intake workflow labels on", () => {

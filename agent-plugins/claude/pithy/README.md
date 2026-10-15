@@ -68,6 +68,19 @@ The agents build every client against the Worker's OpenAPI document, which `pith
 
 The `AGENTS.md` block `pithy init` writes, the documentation server `pithy docs connect` adds, and `pithy schema --json`. Install the `pithy` CLI first.
 
+## What leaves your machine
+
+Four places, and nothing goes to any of them without your yes.
+
+| Where | What it receives | When |
+|---|---|---|
+| GitHub, `pithy-sh/pithy` | A public issue or comment, under your GitHub account: what the kit cannot do, a repro written from scratch, `pithy --version`, and `pithy doctor --json` with account ids, domains and paths removed. Never your code, never a secret. | `/report-kit-gap`, on your yes. Without `gh` signed in it sends nothing, and hands you a prefilled address to open yourself. |
+| Cloudflare, your own account | Your app's Workers and the resources they use, and each deploy. | `/deploy`, on your yes, one environment at a time. |
+| The Pithy dashboard, `app.pithy.sh` | A connection to your deployed Worker, which it reads through and keeps until you revoke it. It keeps none of your app's data. | After a staging or production deploy, on your yes, approved in your browser. |
+| The Pithy documentation server, `pithy.sh/mcp` | The questions your session asks the documentation. | After `/new-app` offers `pithy docs connect`, on your yes. |
+
+Everything else stays in your project and your session.
+
 ## Outside Claude Code
 
 The agents and skills drive the `pithy` CLI through a shell. Where a shell is not available, as on claude.ai, the skills that run commands cannot run them.
