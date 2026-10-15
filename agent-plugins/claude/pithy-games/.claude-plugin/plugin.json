@@ -9,6 +9,7 @@
   "homepage": "https://pithy.sh",
   "repository": "https://github.com/pithy-sh/pithy",
   "license": "MIT",
+  "icon": "./.claude-plugin/icon.png",
   "keywords": ["pithy", "cloudflare", "workers", "multiplayer", "games", "unity", "asyncapi"],
   "dependencies": ["pithy"],
   "userConfig": {

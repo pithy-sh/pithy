@@ -54,6 +54,7 @@ interface PluginManifest {
   name: string;
   version: string;
   dependencies?: string[];
+  icon?: string;
   userConfig: Record<string, UserConfigEntry>;
 }
 
@@ -735,10 +736,12 @@ describe("every model and effort setting is free text, screened where it is subs
 
 /**
  * **Every plugin carries its directory icon:** a square PNG of 512 to 2048 px, under 2 MB, at
- * `.claude-plugin/icon.png`. The directory takes the icon only the first time a plugin is saved there.
+ * `.claude-plugin/icon.png`, which the manifest's `icon` names. The directory takes the icon only the
+ * first time a plugin is saved there.
  */
 describe("every plugin carries a square PNG icon the directory accepts", () => {
   test.each(readdirSync(PLUGINS))("%s", (plugin) => {
+    expect(pluginFiles(plugin).manifest.icon).toBe("./.claude-plugin/icon.png");
     const png = readFileSync(join(PLUGINS, plugin, ".claude-plugin", "icon.png"));
     expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
     const width = png.readUInt32BE(16);
