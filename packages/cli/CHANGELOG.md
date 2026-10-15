@@ -1,5 +1,11 @@
 # @pithy-sh/cli
 
+## 0.14.1
+
+### Patch Changes
+
+- [`c5a6d57`](https://github.com/pithy-sh/pithy/commit/c5a6d57c1c6d1eb0d767e254af4579723b6b7375) Thanks [@kingmesal](https://github.com/kingmesal)! - The `pithy` and `pithy-games` Claude Code plugins carry an icon and pass Anthropic's directory checks: the model and effort settings are free text, and the skills that use them leave a mistyped value out.
+
 ## 0.14.0
 
 ### Minor Changes
