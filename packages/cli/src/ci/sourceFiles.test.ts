@@ -736,15 +736,26 @@ function tracked(root: string = REPO_ROOT): string[] {
  * *about* a NUL is the easiest way to put one in the test file, which would make this file the next
  * instance of what it exists to catch.
  */
+/**
+ * Why each Claude Code plugin commits a PNG. Anthropic's directory takes a plugin's listing icon from the
+ * plugin's own folder, as a square PNG or JPEG, and refuses SVG (#719), so there is no text form to commit.
+ * The image is the "p." mark, copied from the brand assets, and nothing reads it but the directory.
+ */
+const PLUGIN_ICON =
+  "The plugin directory's listing icon: it must be a PNG or JPEG inside the plugin, and SVG is refused (#719).";
+
 describe("no file this repository commits is binary to git", () => {
   /**
    * Files allowed to hold it: path → why.
    *
-   * **Empty, and this repository has never committed a binary file** — no image, no font, no fixture.
-   * A line here is a claim that a path is not source, and adding one is the reviewable act: it costs
-   * the argument that a genuinely binary asset belongs in a tree that is otherwise all text.
+   * **Two images, and nothing else** — no font, no fixture. A line here is a claim that a path is not
+   * source, and adding one is the reviewable act: it costs the argument that a genuinely binary asset
+   * belongs in a tree that is otherwise all text.
    */
-  const BINARY_ON_PURPOSE: Record<string, string> = {};
+  const BINARY_ON_PURPOSE: Record<string, string> = {
+    "agent-plugins/claude/pithy/.claude-plugin/icon.png": PLUGIN_ICON,
+    "agent-plugins/claude/pithy-games/.claude-plugin/icon.png": PLUGIN_ICON,
+  };
 
   /** Where `path` first holds the byte, or `-1`. A file the index names but the tree lacks holds nothing. */
   function nulOffset(path: string): number {
@@ -890,7 +901,11 @@ describe("no file this repository commits hides what it says", () => {
    * visible, which is the whole of what this rule asks for. A line here is a claim that some file cannot
    * do that, and adding one costs the argument.
    */
-  const INVISIBLE_ON_PURPOSE: Record<string, string> = {};
+  const INVISIBLE_ON_PURPOSE: Record<string, string> = {
+    // A PNG's signature is `\x89PNG\r\n\x1a\n`, so every PNG carries a SUB before its first chunk.
+    "agent-plugins/claude/pithy/.claude-plugin/icon.png": PLUGIN_ICON,
+    "agent-plugins/claude/pithy-games/.claude-plugin/icon.png": PLUGIN_ICON,
+  };
 
   /**
    * Files that hold one today and should not: path → what it costs to leave it.
