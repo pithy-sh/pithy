@@ -9,10 +9,12 @@ Two audiences. **Setup** is done once, by the person who owns the npm organizati
 A release is started by hand. There is no push trigger — `.github/workflows/release.yml` runs on `workflow_dispatch` only, the same deliberateness `ci.yml` applies to `main`.
 
 ```
-snapshot -> changeset version -> build -> restamp kit contract -> build records -> publish -> tag & push -> move release -> report
+snapshot -> changeset version -> build -> restamp kit contract -> build records -> commit -> publish & tag -> push -> move release -> report
 ```
 
 The order matters and is not rearrangeable. `changeset version` **consumes and deletes** the changeset files, and the release notes live nowhere else until it has written the CHANGELOGs; the new versions do not exist until it has run. So the release records are collected around it — never reconstructed afterwards.
+
+**The version commit comes before the publish, and is pushed after it.** `changeset publish` tags `HEAD`, so committing first is what puts every `<package>@<version>` tag on the commit that carries that version. Through 0.14.0 the commit came after, and every tag named the commit before the bump. The commit stays on the runner until the publish has succeeded, so `main` never claims a release that did not happen.
 
 ## Setup, once
 

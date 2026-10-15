@@ -355,8 +355,23 @@ jobs:
             console.log(`\n${records.length} packages, ${records.filter((r) => r.security).length} security-relevant.`);
           '
 
-      # Step 5. Publish. `changeset publish` skips anything already on the registry, so a re-run after a
-      # partial failure publishes only what is missing.
+      # Step 4b. Commit the version bump, the CHANGELOGs and the stamps, here on the runner, before the
+      # publish. `changeset publish` tags `HEAD`, so this is what puts every `<package>@<version>` tag on
+      # the commit that carries that version. Committed after the publish, as it was through 0.14.0, every
+      # tag landed on the commit *before* the bump: `@pithy-sh/cli@0.14.0` named a tree whose CLI and
+      # plugins said 0.13.1. Nothing leaves the runner here. A publish that fails below leaves the commit
+      # where nobody can see it, so `main` never claims a release that did not happen.
+      - name: Commit the release
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git add -A
+          git commit -m "chore(release): version packages" || echo "Nothing to commit."
+          # Pushes go over SSH, to GitHub's published host key and no other (`gh api meta`).
+          git remote set-url --push origin git@github.com:pithy-sh/pithy.git
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/github_known_hosts"
+
+      # Step 5. Publish, and tag the version commit above. `changeset publish` skips anything already on
+      # the registry, so a re-run after a partial failure publishes only what is missing.
       #
       # `NPM_CONFIG_PROVENANCE` rather than a `publishConfig.provenance` in 22 manifests: changesets
       # passes its own flags to `npm publish` and has no seam for another, and provenance is a property
@@ -368,10 +383,9 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
         run: bun run release
 
-      # Step 6. Commit the version bump, the CHANGELOGs and the stamps, and push them with the tags
-      # `changeset publish` just wrote. After the publish on purpose: npm is the source of truth for
-      # what exists, and a commit pushed before a failed publish would claim a release that never
-      # happened.
+      # Step 6. Push the version commit with the tags `changeset publish` just wrote. After the publish on
+      # purpose: npm is the source of truth for what exists, and a commit pushed before a failed publish
+      # would claim a release that never happened.
       #
       # **The pushes go out as the release deploy key (#749).** `main`'s ruleset requires a pull request
       # and lets only admins and deploy keys past it. `GITHUB_TOKEN` is neither, and GitHub will not take
@@ -382,15 +396,6 @@ jobs:
       # The secret lives in `npm-publish`, which admits only `main`. docs/RELEASING.md §6 says how to
       # replace it. A push as a key starts workflows where `GITHUB_TOKEN`'s does not; Changesets' tags
       # are `@pithy-sh/<name>@<version>`, which `integration.yml`'s `v*` does not match.
-      - name: Commit the release
-        if: ${{ !inputs.dry_run }}
-        run: |
-          git add -A
-          git commit -m "chore(release): version packages" || echo "Nothing to commit."
-          # Pushes go over SSH, to GitHub's published host key and no other (`gh api meta`).
-          git remote set-url --push origin git@github.com:pithy-sh/pithy.git
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/github_known_hosts"
-
       - name: Push to main
         id: push
         if: ${{ !inputs.dry_run }}

@@ -225,6 +225,17 @@ describe("scripts/localRelease.ts", () => {
     expect(steps.indexOf("run kit-contract")).toBeLessThan(steps.indexOf("run release"));
   });
 
+  it("commits the bump before it publishes, so every tag names the version commit, and pushes after", () => {
+    // `changeset publish` tags `HEAD`. Through 0.14.0 the commit came after it, and every tag named the
+    // commit before the bump.
+    const commit = source.indexOf('run("git", ["commit"');
+    const publish = source.indexOf('run("bun", ["run", "release"]');
+    const push = source.indexOf('run("git", ["push"');
+    expect(commit).toBeGreaterThan(-1);
+    expect(commit).toBeLessThan(publish);
+    expect(publish).toBeLessThan(push);
+  });
+
   it("runs the sequence the workflow runs", () => {
     expect(steps).toEqual([
       "scripts/releaseRecords.ts snapshot",

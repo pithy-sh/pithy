@@ -50,9 +50,10 @@ describe("the release workflow moves it", () => {
   test("after the publish, the push to main, and the restamp of everything a release stamps", () => {
     const at = (name: string) => release.indexOf(`- name: ${name}\n`);
     expect(at("Version the packages")).toBeLessThan(at("Restamp the kit's OpenAPI document"));
-    expect(at("Restamp the kit's OpenAPI document")).toBeLessThan(at("Publish to npm"));
-    expect(at("Publish to npm")).toBeLessThan(at("Commit the release"));
-    expect(at("Commit the release")).toBeLessThan(at("Push to main"));
+    expect(at("Restamp the kit's OpenAPI document")).toBeLessThan(at("Commit the release"));
+    // `changeset publish` tags `HEAD`: committed first, every tag names the version commit, not its parent.
+    expect(at("Commit the release")).toBeLessThan(at("Publish to npm"));
+    expect(at("Publish to npm")).toBeLessThan(at("Push to main"));
     expect(at("Push to main")).toBeLessThan(at("Move the release branch"));
   });
 

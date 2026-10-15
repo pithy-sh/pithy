@@ -185,14 +185,18 @@ if (!(await confirm("\nPublish these to npm? Type yes to continue: "))) {
   process.exit(1);
 }
 
+// Committed before the publish, because `changeset publish` tags `HEAD`: this is what puts each
+// `<package>@<version>` tag on the commit that carries that version. Pushed only after it, so a failed
+// publish leaves a local commit and nothing on `main`.
+process.stdout.write("\nCommitting the version bump.\n");
+run("git", ["add", "-A"]);
+run("git", ["commit", "-m", "chore(release): version packages"]);
+
 process.stdout.write("\nPublishing.\n");
 // Provenance is generated from a CI build's OIDC identity. Off explicitly, because npm fails the
 // publish rather than skipping the attestation when it is asked for and cannot be produced.
 run("bun", ["run", "release"], { NPM_CONFIG_PROVENANCE: "false" });
 
-process.stdout.write("\nCommitting the version bump.\n");
-run("git", ["add", "-A"]);
-run("git", ["commit", "-m", "chore(release): version packages"]);
 run("git", ["push", "--follow-tags", "origin", "HEAD:main"]);
 
 process.stdout.write(
