@@ -1,5 +1,39 @@
 # @pithy-sh/payments
 
+## 0.4.0
+
+### Minor Changes
+
+- [#740](https://github.com/pithy-sh/pithy/pull/740) [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7) Thanks [@kingmesal](https://github.com/kingmesal)! - Pithy can be built on by an agent team. `/plugin install pithy@pithy` adds one to Claude Code, a server, a web client, a mobile client and a runner, each on the model you choose, and when it finds something the kit cannot do, it files the issue. Every route now has a published OpenAPI contract, so a client in any language calls Pithy the same way.
+
+- [#682](https://github.com/pithy-sh/pithy/pull/682) [`ec5200c`](https://github.com/pithy-sh/pithy/commit/ec5200c662f6517d515430896b50532e39aedba1) Thanks [@kingmesal](https://github.com/kingmesal)! - A buyer following a payment link from Paddle now lands on an open checkout.
+  
+  Paddle appends `?_ptxn=<transaction_id>` to a seller's Default payment link for the links it sends itself — past-due dunning mail, a manually-collected invoice, the payment-method-update link it mints for a subscription — and nothing read it. `usePaddleLink` does, and `GET /payments/checkout/resume` answers with the same handoff the minted path returns, so `usePaddleCheckout` opens it unchanged.
+  
+  The resume route is unauthenticated, because the buyer following a dunning mail days later is usually signed out. It discloses nothing — the client token is publishable, the environment, display mode and success URL are config constants, and the transaction id is the caller's own — and it never reads the transaction from Paddle, so it cannot report whether an id exists.
+  
+  In `inline` mode the Default payment link must point at a page that renders the frame container; `docs/paddle.md` says so where the link is set. `hosted` refuses, because the buyer is already on Paddle's own checkout.
+
+### Patch Changes
+
+- [#688](https://github.com/pithy-sh/pithy/pull/688) [`7ee04ec`](https://github.com/pithy-sh/pithy/commit/7ee04ec442dff5be58ba7518df1c6567df165515) Thanks [@kingmesal](https://github.com/kingmesal)! - Paddle's transaction and subscription ids have one definition each, and every site in the rail reads it.
+  
+  Five places decided what a Paddle id was and no two agreed. `verify.ts` held a pattern; `refund.ts`, `refresh.ts` and `subscription.ts` each asked for a prefix instead, which accepts the prefix with nothing after it and an alphabet Paddle does not issue. So one string was a transaction in one module and not one in another. All of them read `isPaddleTransactionId` and `isPaddleSubscriptionId` now, and a sweep keeps those two the only answer.
+  
+  What this changes for a stored purchase: a `providerTransactionId` holding a bare prefix, or an id in an alphabet Paddle never issues, used to cost a round trip and come back refused on the store's 404. Reconciliation and the pricing read now answer "nothing to say about this purchase" without asking — the same answer they already gave a prefix they did not recognize — and a refund refuses the row by name rather than by Paddle's reply. Nothing Paddle sends can reach those branches, because the column is only ever written from Paddle's own payloads and the one route that takes an id from outside already read the pattern, so this is reachable only by a row somebody wrote by hand.
+
+- [#716](https://github.com/pithy-sh/pithy/pull/716) [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727) Thanks [@kingmesal](https://github.com/kingmesal)! - Every command an error or a report names now runs as written, and every `provision --json` ends in one outcome.
+  
+  One builder, checked against the CLI's own command catalog, spells every `pithy` command an error, a report or a `fix` names: it names the Worker by its `apps/` directory, carries `--with-prerequisites` and the `--set` an option with no default needs, keeps the flags and values a rerun was given — `--json` included, and a caller's value shell-quoted exactly as it was passed, never refused as a placeholder — and never hands over a destructive or production command as a `fix` — that is said as a person's decision instead. A project with no Worker is told to create one first rather than handed a `pithy add` it would refuse.
+  
+  `pithy secrets provision` provisions every environment, production included, so it is never a `fix` either. `pithy doctor --json` gives `secretBindings.missing[].fix` as `null` for a value the kit composes, and `provision --json` carries `pendingSecretsRemedy` as that decision rather than as a command to run.
+  
+  `email`, `media`, `payments`, `storage`, `support` and `testers` `provision --json` now end in one outcome. A run that provisioned no environment writes only its error line, on stderr, and exits 3. Stdout is empty, where it used to carry a report. A run that went ahead writes only its report, and the report now carries `exitCode`. A script that read the report after an all-skipped run reads the error line instead.
+- Updated dependencies [[`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282), [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4), [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7), [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb), [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef), [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727), [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669)]:
+  - @pithy-sh/core@0.10.0
+  - @pithy-sh/secrets@0.4.0
+  - @pithy-sh/ledger@0.3.0
+
 ## 0.3.10
 
 ### Patch Changes

@@ -1,5 +1,42 @@
 # @pithy-sh/support
 
+## 0.4.0
+
+### Minor Changes
+
+- [#740](https://github.com/pithy-sh/pithy/pull/740) [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7) Thanks [@kingmesal](https://github.com/kingmesal)! - Pithy can be built on by an agent team. `/plugin install pithy@pithy` adds one to Claude Code, a server, a web client, a mobile client and a runner, each on the model you choose, and when it finds something the kit cannot do, it files the issue. Every route now has a published OpenAPI contract, so a client in any language calls Pithy the same way.
+
+- [#695](https://github.com/pithy-sh/pithy/pull/695) [`f5c87c6`](https://github.com/pithy-sh/pithy/commit/f5c87c664b3eff55d620a0fea9ffba9e892db77c) Thanks [@kingmesal](https://github.com/kingmesal)! - The support full-text index is now maintained by database triggers rather than by hand at every write path — re-run `pithy support provision` after upgrading, and `pithy doctor` will name any project that has not.
+  
+  Two things are new to adopters. The durability contract inverts: a trigger runs inside the message's own statement, so a failed index write now aborts the message write where it used to log a warning and carry on. And `pithy doctor` gains a `Support search:` block, which reports a provisioned `pithy_support_search` with no triggers as drift, per environment, and says so explicitly when it was offline or had no credentials rather than reading clean.
+  
+  `indexMessage` and `reindexThread` are retained and exported. Nothing public is removed.
+
+### Patch Changes
+
+- [#714](https://github.com/pithy-sh/pithy/pull/714) [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4) Thanks [@kingmesal](https://github.com/kingmesal)! - The kit is built and tested on Bun 1.4.2. Running Pithy under Bun now takes 1.4 or later; Node is unchanged.
+  
+  An import that will not resolve now gets one remedy from every surface — `pithy.config.ts`, a capability loader, and the vite plugin alike — and is told to install only when installing can help. A bare import of an installed package with no entry there — an `exports` map with no `"."`, or none an import can use — is told so, by the package's name, rather than to install it. One whose `package.json` names an entry that is not on disk is told the package is unbuilt or its install is broken, and to rebuild or reinstall that package. So is a deep import its `exports` pattern maps to a file that is not there — every deep import of an unbuilt `@pithy-sh/*` package — shown as it was written on every runtime, never as a `dist` path; a mistyped path that only matches the pattern in a built package is told to correct the import. A package whose code contradicts its `"type"` is named as the package that will not load, rather than the config being told it threw or does not parse. The vite plugin reads Vite's own wording for both, so a config importing `@pithy-sh/core` or an unbuilt package is no longer told the config threw. `@pithy-sh/core/src/error/unresolved` is the one classifier (`unresolvedImport`, `packageLoadFailure`, `nodeModulesProbe`, `packageEntryProbe`, `exportedTarget`, `importingPackage`); `packageEntryProbe` now answers the package's manifest and what is on disk beside it, rather than a declared entry, and `@pithy-sh/core/src/naming/packageName` the one `packageOf`. `unresolvedKind` and `unresolvedSpecifier` are gone from `@pithy-sh/core/src/error/cause`, and `importingPackage` moved to `unresolved`.
+  
+  Workers AI runs again from outside a Worker. `runModel` posts to `/ai/run/@cf/...` with the model's slashes intact, and refuses a malformed model name before sending anything. A D1 query over REST is sent once and never retried, so a slow `CREATE TABLE` no longer fails as `table already exists`. The CLI hands wrangler the Worker's directory as `--cwd`, so `pithy deploy` works in a project that runs wrangler through `npx`.
+  
+  An at-rest rotation whose first read-back misses waits and tries again, instead of failing. On Cloudflare a `WorkflowStep` is an RPC stub, and `classifiedSteps().sleep` asked it for a method named `call`. It calls the step's own `sleep` now. Support classification calls the AI binding the same way. `pithy vector provision` waits up to five minutes for a metadata index, and calls it live only after three reads in a row list it under its own name and type. Ten seconds and one read were not enough: Vectorize took 97s on one run and more than 120s on the next.
+
+- [#716](https://github.com/pithy-sh/pithy/pull/716) [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727) Thanks [@kingmesal](https://github.com/kingmesal)! - Every command an error or a report names now runs as written, and every `provision --json` ends in one outcome.
+  
+  One builder, checked against the CLI's own command catalog, spells every `pithy` command an error, a report or a `fix` names: it names the Worker by its `apps/` directory, carries `--with-prerequisites` and the `--set` an option with no default needs, keeps the flags and values a rerun was given — `--json` included, and a caller's value shell-quoted exactly as it was passed, never refused as a placeholder — and never hands over a destructive or production command as a `fix` — that is said as a person's decision instead. A project with no Worker is told to create one first rather than handed a `pithy add` it would refuse.
+  
+  `pithy secrets provision` provisions every environment, production included, so it is never a `fix` either. `pithy doctor --json` gives `secretBindings.missing[].fix` as `null` for a value the kit composes, and `provision --json` carries `pendingSecretsRemedy` as that decision rather than as a command to run.
+  
+  `email`, `media`, `payments`, `storage`, `support` and `testers` `provision --json` now end in one outcome. A run that provisioned no environment writes only its error line, on stderr, and exits 3. Stdout is empty, where it used to carry a report. A run that went ahead writes only its report, and the report now carries `exitCode`. A script that read the report after an all-skipped run reads the error line instead.
+- Updated dependencies [[`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282), [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4), [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7), [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb), [`7ee04ec`](https://github.com/pithy-sh/pithy/commit/7ee04ec442dff5be58ba7518df1c6567df165515), [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef), [`ec5200c`](https://github.com/pithy-sh/pithy/commit/ec5200c662f6517d515430896b50532e39aedba1), [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727), [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669)]:
+  - @pithy-sh/core@0.10.0
+  - @pithy-sh/secrets@0.4.0
+  - @pithy-sh/auth@0.8.0
+  - @pithy-sh/email@0.4.0
+  - @pithy-sh/payments@0.4.0
+  - @pithy-sh/storage@0.3.0
+
 ## 0.3.3
 
 ### Patch Changes

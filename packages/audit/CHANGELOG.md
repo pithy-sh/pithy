@@ -1,5 +1,20 @@
 # @pithy-sh/audit
 
+## 0.3.0
+
+### Minor Changes
+
+- [#740](https://github.com/pithy-sh/pithy/pull/740) [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7) Thanks [@kingmesal](https://github.com/kingmesal)! - Pithy can be built on by an agent team. `/plugin install pithy@pithy` adds one to Claude Code, a server, a web client, a mobile client and a runner, each on the model you choose, and when it finds something the kit cannot do, it files the issue. Every route now has a published OpenAPI contract, so a client in any language calls Pithy the same way.
+
+- [#761](https://github.com/pithy-sh/pithy/pull/761) [`9ccb06d`](https://github.com/pithy-sh/pithy/commit/9ccb06d2ccb546ead2cc386dc6d9b5e7bec6a159) Thanks [@kingmesal](https://github.com/kingmesal)! - Sign in to Cloudflare in your browser and Pithy mints its own credentials — scoped to exactly the capabilities your project composes, bound to the directory you ran it in, and recorded against you rather than a token's name.
+  
+  Security: The bootstrap token is over-privileged by construction: the delegation rule forces it to hold the union of every permission it will ever mint, so an adopter's first act is creating the most powerful credential they will ever hold — thirty-five permission groups in this project — by hand, from a documentation table, before they know which of it they need. A session scoped to the capabilities a project actually composes, minting narrow tokens from there, removes that credential from the setup path entirely.
+
+### Patch Changes
+
+- Updated dependencies [[`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282), [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4), [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7), [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb), [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef), [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727), [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669)]:
+  - @pithy-sh/core@0.10.0
+
 ## 0.2.7
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # @pithy-sh/vector
 
+## 0.3.0
+
+### Minor Changes
+
+- [#740](https://github.com/pithy-sh/pithy/pull/740) [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7) Thanks [@kingmesal](https://github.com/kingmesal)! - Pithy can be built on by an agent team. `/plugin install pithy@pithy` adds one to Claude Code, a server, a web client, a mobile client and a runner, each on the model you choose, and when it finds something the kit cannot do, it files the issue. Every route now has a published OpenAPI contract, so a client in any language calls Pithy the same way.
+
+### Patch Changes
+
+- [#716](https://github.com/pithy-sh/pithy/pull/716) [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727) Thanks [@kingmesal](https://github.com/kingmesal)! - Every command an error or a report names now runs as written, and every `provision --json` ends in one outcome.
+  
+  One builder, checked against the CLI's own command catalog, spells every `pithy` command an error, a report or a `fix` names: it names the Worker by its `apps/` directory, carries `--with-prerequisites` and the `--set` an option with no default needs, keeps the flags and values a rerun was given — `--json` included, and a caller's value shell-quoted exactly as it was passed, never refused as a placeholder — and never hands over a destructive or production command as a `fix` — that is said as a person's decision instead. A project with no Worker is told to create one first rather than handed a `pithy add` it would refuse.
+  
+  `pithy secrets provision` provisions every environment, production included, so it is never a `fix` either. `pithy doctor --json` gives `secretBindings.missing[].fix` as `null` for a value the kit composes, and `provision --json` carries `pendingSecretsRemedy` as that decision rather than as a command to run.
+  
+  `email`, `media`, `payments`, `storage`, `support` and `testers` `provision --json` now end in one outcome. A run that provisioned no environment writes only its error line, on stderr, and exits 3. Stdout is empty, where it used to carry a report. A run that went ahead writes only its report, and the report now carries `exitCode`. A script that read the report after an all-skipped run reads the error line instead.
+- Updated dependencies [[`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282), [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4), [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7), [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb), [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef), [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727), [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669)]:
+  - @pithy-sh/core@0.10.0
+
 ## 0.2.8
 
 ### Patch Changes

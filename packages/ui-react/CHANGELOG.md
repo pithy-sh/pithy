@@ -1,5 +1,11 @@
 # @pithy-sh/ui-react
 
+## 0.3.2
+
+### Patch Changes
+
+- [`c08a026`](https://github.com/pithy-sh/pithy/commit/c08a0266b40d7f37e12960faa1fcb50196249d4d) Thanks [@kingmesal](https://github.com/kingmesal)! - A project scaffolded with `pithy ui add react` now pre-bundles the kit as one chunk in development, so `pithy dev` serves its first request sooner.
+
 ## 0.3.1
 
 ### Patch Changes

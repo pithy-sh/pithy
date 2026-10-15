@@ -1,5 +1,90 @@
 # @pithy-sh/cli
 
+## 0.14.0
+
+### Minor Changes
+
+- [#696](https://github.com/pithy-sh/pithy/pull/696) [`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282) Thanks [@kingmesal](https://github.com/kingmesal)! - Every `pithy migrate` run now belongs to a group — named with `--group`, or stamped with the time it ran — and `--rollback --group <value>` reverses exactly that group rather than one migration at a time. **`pithy migrate --rollback` without a group no longer reverses anything**: it names the group on top and the command that would reverse it.
+
+- [#714](https://github.com/pithy-sh/pithy/pull/714) [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4) Thanks [@kingmesal](https://github.com/kingmesal)! - The kit is built and tested on Bun 1.4.2. Running Pithy under Bun now takes 1.4 or later; Node is unchanged.
+  
+  An import that will not resolve now gets one remedy from every surface — `pithy.config.ts`, a capability loader, and the vite plugin alike — and is told to install only when installing can help. A bare import of an installed package with no entry there — an `exports` map with no `"."`, or none an import can use — is told so, by the package's name, rather than to install it. One whose `package.json` names an entry that is not on disk is told the package is unbuilt or its install is broken, and to rebuild or reinstall that package. So is a deep import its `exports` pattern maps to a file that is not there — every deep import of an unbuilt `@pithy-sh/*` package — shown as it was written on every runtime, never as a `dist` path; a mistyped path that only matches the pattern in a built package is told to correct the import. A package whose code contradicts its `"type"` is named as the package that will not load, rather than the config being told it threw or does not parse. The vite plugin reads Vite's own wording for both, so a config importing `@pithy-sh/core` or an unbuilt package is no longer told the config threw. `@pithy-sh/core/src/error/unresolved` is the one classifier (`unresolvedImport`, `packageLoadFailure`, `nodeModulesProbe`, `packageEntryProbe`, `exportedTarget`, `importingPackage`); `packageEntryProbe` now answers the package's manifest and what is on disk beside it, rather than a declared entry, and `@pithy-sh/core/src/naming/packageName` the one `packageOf`. `unresolvedKind` and `unresolvedSpecifier` are gone from `@pithy-sh/core/src/error/cause`, and `importingPackage` moved to `unresolved`.
+  
+  Workers AI runs again from outside a Worker. `runModel` posts to `/ai/run/@cf/...` with the model's slashes intact, and refuses a malformed model name before sending anything. A D1 query over REST is sent once and never retried, so a slow `CREATE TABLE` no longer fails as `table already exists`. The CLI hands wrangler the Worker's directory as `--cwd`, so `pithy deploy` works in a project that runs wrangler through `npx`.
+  
+  An at-rest rotation whose first read-back misses waits and tries again, instead of failing. On Cloudflare a `WorkflowStep` is an RPC stub, and `classifiedSteps().sleep` asked it for a method named `call`. It calls the step's own `sleep` now. Support classification calls the AI binding the same way. `pithy vector provision` waits up to five minutes for a metadata index, and calls it live only after three reads in a row list it under its own name and type. Ten seconds and one read were not enough: Vectorize took 97s on one run and more than 120s on the next.
+
+- [#740](https://github.com/pithy-sh/pithy/pull/740) [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7) Thanks [@kingmesal](https://github.com/kingmesal)! - Pithy can be built on by an agent team. `/plugin install pithy@pithy` adds one to Claude Code, a server, a web client, a mobile client and a runner, each on the model you choose, and when it finds something the kit cannot do, it files the issue. Every route now has a published OpenAPI contract, so a client in any language calls Pithy the same way.
+
+- [#761](https://github.com/pithy-sh/pithy/pull/761) [`9ccb06d`](https://github.com/pithy-sh/pithy/commit/9ccb06d2ccb546ead2cc386dc6d9b5e7bec6a159) Thanks [@kingmesal](https://github.com/kingmesal)! - Sign in to Cloudflare in your browser and Pithy mints its own credentials — scoped to exactly the capabilities your project composes, bound to the directory you ran it in, and recorded against you rather than a token's name.
+  
+  Security: The bootstrap token is over-privileged by construction: the delegation rule forces it to hold the union of every permission it will ever mint, so an adopter's first act is creating the most powerful credential they will ever hold — thirty-five permission groups in this project — by hand, from a documentation table, before they know which of it they need. A session scoped to the capabilities a project actually composes, minting narrow tokens from there, removes that credential from the setup path entirely.
+
+- [#690](https://github.com/pithy-sh/pithy/pull/690) [`66013a7`](https://github.com/pithy-sh/pithy/commit/66013a78768f06ec65485e5d86ead1ba3d122a31) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy dev logs` reads a dev session back by worker and by time, from a JSONL log that now lives outside the checkout.
+  
+  A session log that cannot be opened is one line and nothing more — the session runs on, unlogged. `--follow` resumes from the bytes the backlog read, so no record falls between the two halves of the stream.
+
+- [#742](https://github.com/pithy-sh/pithy/pull/742) [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef) Thanks [@kingmesal](https://github.com/kingmesal)! - `/plugin install pithy-games@pithy` adds a game team on top: game design, a Unity client, and playtests with simulated players. Every socket now has a message schema and a version, and a game declares its own actions and views, so a client in any engine plays the same way.
+
+- [#758](https://github.com/pithy-sh/pithy/pull/758) [`ecc7a83`](https://github.com/pithy-sh/pithy/commit/ecc7a83f7a1242aff05f3d0ba2b24ccbf5140798) Thanks [@kingmesal](https://github.com/kingmesal)! - The `pithy` plugin now ships with you: it provisions, migrates and deploys staging and prod when you say so, then connects the dashboard. `pithy deploy` suggests `pithy dashboard connect` for an environment that has none.
+
+- [#695](https://github.com/pithy-sh/pithy/pull/695) [`f5c87c6`](https://github.com/pithy-sh/pithy/commit/f5c87c664b3eff55d620a0fea9ffba9e892db77c) Thanks [@kingmesal](https://github.com/kingmesal)! - The support full-text index is now maintained by database triggers rather than by hand at every write path — re-run `pithy support provision` after upgrading, and `pithy doctor` will name any project that has not.
+  
+  Two things are new to adopters. The durability contract inverts: a trigger runs inside the message's own statement, so a failed index write now aborts the message write where it used to log a warning and carry on. And `pithy doctor` gains a `Support search:` block, which reports a provisioned `pithy_support_search` with no triggers as drift, per environment, and says so explicitly when it was offline or had no credentials rather than reading clean.
+  
+  `indexMessage` and `reindexThread` are retained and exported. Nothing public is removed.
+
+- [#710](https://github.com/pithy-sh/pithy/pull/710) [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669) Thanks [@kingmesal](https://github.com/kingmesal)! - The CLI is built for agents now. It never prompts when told not to, describes every command with `pithy schema`, exits with a code that says what to do next, and plans before it changes anything. Failures exit 2 to 5 by kind, so test for non-zero, not 1.
+
+### Patch Changes
+
+- [#737](https://github.com/pithy-sh/pithy/pull/737) [`39c69aa`](https://github.com/pithy-sh/pithy/commit/39c69aa71c37d18e688d6438d51bc98551c6bbdb) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy alias` asks PowerShell where its profile is, so `p.` works with OneDrive-redirected Documents and with `pwsh` on macOS and Linux.
+
+- [#706](https://github.com/pithy-sh/pithy/pull/706) [`2dec8b1`](https://github.com/pithy-sh/pithy/commit/2dec8b1dfa9b4ef7759941ed0a8a54834846c35b) Thanks [@Brak101](https://github.com/Brak101)! - `pithy alias` installs the `p.` alias into both PowerShell profiles on Windows, so 5.1 sessions get it too.
+
+- [#689](https://github.com/pithy-sh/pithy/pull/689) [`1363cfd`](https://github.com/pithy-sh/pithy/commit/1363cfd67991bd84a3415ac5ec97980e5a24bbdc) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy worker list` and `pithy dev` now say when autostart answers were recorded for a checkout that has since moved, instead of quietly starting every worker.
+
+- [#699](https://github.com/pithy-sh/pithy/pull/699) [`8649712`](https://github.com/pithy-sh/pithy/commit/864971261c290b6e64520d017152784228b04f43) Thanks [@Brak101](https://github.com/Brak101)! - `pithy add`, `pithy worker add`, and `pithy feature create` now install with the project's package manager on Windows, and `pithy dev`, `pithy deploy` and every wrangler call spawn through the same resolution.
+
+- [#686](https://github.com/pithy-sh/pithy/pull/686) [`1b3454a`](https://github.com/pithy-sh/pithy/commit/1b3454ac72700392b6a471c2981ad36a6a201a49) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy deploy --json` now reports the Worker's address rather than, on occasion, a link to wrangler's telemetry documentation.
+  
+  The scrape took the last URL anywhere in wrangler's stdout, under a comment asserting that the last one is the deployed one. It is not: `wrangler deploy` prints a telemetry notice after the deploy summary, once per wrangler version per machine and only where telemetry is enabled, and that notice's documentation link was reported as the Worker's public address — in the machine-readable output a script or an agent reads. The address now comes from wrangler's own `Deployed <name> triggers` block, and only from a target that is an address, so a custom domain is reported as the host it answers on and a cron, a queue or a workflow trigger is reported as nothing at all. Finding no address stays an ordinary outcome, as it always was. A confidently wrong one was the bug.
+
+- [#687](https://github.com/pithy-sh/pithy/pull/687) [`cde7615`](https://github.com/pithy-sh/pithy/commit/cde7615a2e1137773e77fd19d67f8701c0f69184) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy dev` now keeps reporting which worker it is waiting for after a restart, instead of falling silent once the session has been ready one time.
+
+- [#744](https://github.com/pithy-sh/pithy/pull/744) [`d327115`](https://github.com/pithy-sh/pithy/commit/d3271157152ee5fb43159af984c024aa6436f626) Thanks [@Brak101](https://github.com/Brak101)! - Resizing the window while `pithy dev` runs no longer stacks stale roster headers on the screen. During a drag ink's resize repaint is muted and the roster is erased on every event; the clock tick and output committed mid-drag still paint, into a screen the erases keep clean. Once the size has held for 150 ms the roster is drawn once, at the final width, and a drag that crossed more than one size rebuilds the visible screen under it: your output above the roster is restated in place at the new width — counted in rows (a 150-column line is three rows at 60, the roster's own lines are one row each) — and each restated line runs through the same ANSI sanitizer ink applies to text on the normal path, so colors and hyperlinks survive and a worker's stray erase or cursor move never reaches the terminal. Lines that had scrolled up keep their single copy in scrollback; a repaint racing ConPTY's reflow can leave at most three copies of a visible-tail line, the bound the Windows suite pins. The rebuild's erase covers the visible screen, so the first drag in a fresh terminal erases the shell output on screen above `pithy dev`'s first line; it does not return to scrollback.
+
+- [#704](https://github.com/pithy-sh/pithy/pull/704) [`6927677`](https://github.com/pithy-sh/pithy/commit/6927677baf50addb038015c7ea3ea131c3f72157) Thanks [@Brak101](https://github.com/Brak101)! - `pithy dev` stops its Workers on Windows, so no `workerd` keeps a port after the session.
+
+- [#750](https://github.com/pithy-sh/pithy/pull/750) [`7807ecb`](https://github.com/pithy-sh/pithy/commit/7807ecb63b01a35c1cbc4023572620a4f0b2c7f1) Thanks [@kingmesal](https://github.com/kingmesal)! - A command that runs only on your machine no longer refuses over Cloudflare credentials for another account.
+
+- [#751](https://github.com/pithy-sh/pithy/pull/751) [`ef14ad9`](https://github.com/pithy-sh/pithy/commit/ef14ad993fb17154601905b8a49c318c6abd358d) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy dev` runs the same workerd as wrangler and the test pool, so a new project installs one runtime, not two.
+
+- [#692](https://github.com/pithy-sh/pithy/pull/692) [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb) Thanks [@kingmesal](https://github.com/kingmesal)! - A custom domain in `pithy.config.ts` is held to the same rule as every other hostname the kit reads.
+  
+  `WorkerDomain` handed the hostname pattern to a regex of its own, so `pithy.config.ts` accepted two things `pithy seed --host` refused for the same string: a punycode `xn--` label, and a name over the 253-character DNS limit. A declaration that validated before may now be refused.
+  
+  A refused declaration stops the command and names the field. Every reader throws — `pithy deploy`, `pithy env`, `pithy doctor`, `pithy worker sync`, `pithy seed`, the token minter and the capability provisioners — rather than resolving some other address through a route the adopter did not declare. An invalid domain is a config error, and the remedy is the field.
+  
+  The refusal names the rule it broke. For an internationalized domain it names Cloudflare Workers as the source of the limit, because that is whose limit it is: a Worker Custom Domain on one is refused outright, so an address no Worker can answer on is better refused where it is written. `docs/ACCEPTED-LIMITS.md` carries the evidence and the condition that would lift it.
+
+- [#705](https://github.com/pithy-sh/pithy/pull/705) [`1649328`](https://github.com/pithy-sh/pithy/commit/16493288c66aa420c075c3b194bebf253413c6d1) Thanks [@Brak101](https://github.com/Brak101)! - The stale dev-port sweep finds its port holders on Windows, so a crashed session no longer blocks the next `pithy dev`.
+
+- [#716](https://github.com/pithy-sh/pithy/pull/716) [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727) Thanks [@kingmesal](https://github.com/kingmesal)! - Every command an error or a report names now runs as written, and every `provision --json` ends in one outcome.
+  
+  One builder, checked against the CLI's own command catalog, spells every `pithy` command an error, a report or a `fix` names: it names the Worker by its `apps/` directory, carries `--with-prerequisites` and the `--set` an option with no default needs, keeps the flags and values a rerun was given — `--json` included, and a caller's value shell-quoted exactly as it was passed, never refused as a placeholder — and never hands over a destructive or production command as a `fix` — that is said as a person's decision instead. A project with no Worker is told to create one first rather than handed a `pithy add` it would refuse.
+  
+  `pithy secrets provision` provisions every environment, production included, so it is never a `fix` either. `pithy doctor --json` gives `secretBindings.missing[].fix` as `null` for a value the kit composes, and `provision --json` carries `pendingSecretsRemedy` as that decision rather than as a command to run.
+  
+  `email`, `media`, `payments`, `storage`, `support` and `testers` `provision --json` now end in one outcome. A run that provisioned no environment writes only its error line, on stderr, and exits 3. Stdout is empty, where it used to carry a report. A run that went ahead writes only its report, and the report now carries `exitCode`. A script that read the report after an all-skipped run reads the error line instead.
+- Updated dependencies [[`831e3f4`](https://github.com/pithy-sh/pithy/commit/831e3f4cf5e336094bf8f24ef74506bfda5f0282), [`2bcc71a`](https://github.com/pithy-sh/pithy/commit/2bcc71a229e96536a734e9db12ea901d58abbbc4), [`2a4e096`](https://github.com/pithy-sh/pithy/commit/2a4e0960fc4d6417f12de30a6b8fe6b7920d16c7), [`9ccb06d`](https://github.com/pithy-sh/pithy/commit/9ccb06d2ccb546ead2cc386dc6d9b5e7bec6a159), [`63dab50`](https://github.com/pithy-sh/pithy/commit/63dab50808d8a18a75bc281e4867e3c78b446bfb), [`c91dfae`](https://github.com/pithy-sh/pithy/commit/c91dfae2a3674835e5f222ac34f32d8976371fef), [`c08a026`](https://github.com/pithy-sh/pithy/commit/c08a0266b40d7f37e12960faa1fcb50196249d4d), [`add483b`](https://github.com/pithy-sh/pithy/commit/add483bca549b18ff370f69c7b4308e4fd725727), [`c9606a3`](https://github.com/pithy-sh/pithy/commit/c9606a3bfbc2924a2530470e6676547ffabd8669)]:
+  - @pithy-sh/core@0.10.0
+  - @pithy-sh/cloudflare@0.5.0
+  - @pithy-sh/secrets@0.4.0
+  - @pithy-sh/email@0.4.0
+  - @pithy-sh/ui-react@0.3.2
+  - @pithy-sh/turnstile@0.4.3
+
 ## 0.13.1
 
 ### Patch Changes
