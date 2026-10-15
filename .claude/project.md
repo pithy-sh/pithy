@@ -33,6 +33,16 @@ Security: <the issue's Security sentence — omit this line entirely when it is 
 
 **The `Security:` line goes in the body, never the frontmatter.** `@changesets/parse` reads every frontmatter key as a package name, so a `security:` key there breaks `changeset version`. Omit the line when the field is `N/A`; never invent one, and never drop one the issue states. See `docs/RELEASING.md`.
 
+## Release
+
+`/release` drives it. The **process** is in that skill; the facts are here and in `docs/RELEASING.md`, which is the authority.
+
+- **Kind:** npm. `changeset version`, then all `@pithy-sh/*` packages published with provenance by `.github/workflows/release.yml`, tagged, the version commit pushed to `main`, and `release` moved to it for the Claude Code plugins.
+- **Dry run:** `gh workflow run release.yml --repo pithy-sh/pithy --ref main -f dry_run=true`
+- **Cut:** `gh workflow run release.yml --repo pithy-sh/pithy --ref main`
+- **Never:** `bun run release` (it is `changeset publish`), `bun run release:local`, `changeset publish`, `changeset version`, `npm publish`, or a hand-made `git tag` or push to `main` or `release`. Each publishes or rewrites from a laptop, with no provenance, and a published version is permanent.
+- **Notes:** the pending `.changeset/*.md` files. Each summary is the issue's **Release note** verbatim, and becomes the CHANGELOG line.
+
 ## Docs
 
 `/update-docs` assesses each of these, and edits what a change made wrong. `/ship` runs it on every issue. The website is not listed here: it is shared by both repos, and `/update-docs` covers all of it.
