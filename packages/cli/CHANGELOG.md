@@ -1,5 +1,11 @@
 # @pithy-sh/cli
 
+## 0.14.2
+
+### Patch Changes
+
+- [`f6e2a82`](https://github.com/pithy-sh/pithy/commit/f6e2a827531a9859ed0017e1b12dbea11fb00e20) Thanks [@kingmesal](https://github.com/kingmesal)! - The `pithy` Claude Code plugin's README lists every place its skills send anything, what each receives, and that each waits for your yes.
+
 ## 0.14.1
 
 ### Patch Changes
