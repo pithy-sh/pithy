@@ -12,6 +12,7 @@ const mockList = vi.fn();
 const mockDownloadsGet = vi.fn();
 const mockDownloadsCreate = vi.fn();
 const mockDirectUploadCreate = vi.fn();
+const mockKeysCreate = vi.fn();
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
@@ -22,6 +23,7 @@ vi.mock("cloudflare", () => ({
       list: mockList,
       downloads: { get: mockDownloadsGet, create: mockDownloadsCreate },
       directUpload: { create: mockDirectUploadCreate },
+      keys: { create: mockKeysCreate },
     };
   },
 }));
@@ -192,5 +194,17 @@ describe("CloudflareStreamManager", () => {
   it("only ever throws PithyError from public methods", async () => {
     mockGet.mockRejectedValue("a bare string, not an Error");
     await expect(manager.getVideoDetails("vid-1")).rejects.toBeInstanceOf(PithyError);
+  });
+  describe("createSigningKey", () => {
+    it("creates a key and keeps the id and the single-line JWK", async () => {
+      mockKeysCreate.mockResolvedValue({ id: "kid-1", jwk: "eyJr", pem: "LS0t", created: "2026-10-16" });
+      expect(await manager.createSigningKey()).toEqual({ id: "kid-1", jwk: "eyJr" });
+      expect(mockKeysCreate).toHaveBeenCalledWith({ account_id: "acct-1", body: {} }, opts);
+    });
+
+    it("refuses a response with no key in it", async () => {
+      mockKeysCreate.mockResolvedValue({ id: "kid-1" });
+      await expect(manager.createSigningKey()).rejects.toBeInstanceOf(PithyError);
+    });
   });
 });
