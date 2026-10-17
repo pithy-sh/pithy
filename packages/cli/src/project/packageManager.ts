@@ -36,12 +36,21 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * The project's lockfile and the manager it belongs to, or `null` when there is none — the most specific
+ * first, by {@link LOCKFILES}. `pithy setup` reads the file's name as well as the manager, because it says
+ * which file it installs against (#764).
+ */
+export async function detectLockfile(projectDir: string): Promise<{ lockfile: string; pm: PackageManager } | null> {
+  for (const [lockfile, pm] of LOCKFILES) {
+    if (await exists(join(projectDir, lockfile))) return { lockfile, pm };
+  }
+  return null;
+}
+
 /** Detect the project's package manager from its lockfile; npm when none is found. */
 export async function detectPackageManager(projectDir: string): Promise<PackageManager> {
-  for (const [lockfile, pm] of LOCKFILES) {
-    if (await exists(join(projectDir, lockfile))) return pm;
-  }
-  return "npm";
+  return (await detectLockfile(projectDir))?.pm ?? "npm";
 }
 
 /**

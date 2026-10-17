@@ -157,6 +157,7 @@ const OPEN_SUBTREES = [
   "seed: $.workers[].sets[].kv[]",
   "seed: $.workers[].sets[].media[]",
   "seed: $.workers[].sets[].r2[]",
+  "setup: $|0.ports.workers",
   "testers roster: $.cohort",
   "testers roster: $.cohort.disclaimer",
   "testers roster: $.cohort.members[]",

@@ -53,6 +53,8 @@ describe("a null account is a claim, and every claim is written down", () => {
   const NO_ACCOUNT_ON_PURPOSE: Record<string, string> = {
     "cli/src/doctor/devVars.ts":
       "One sentence in the `Dev secrets:` block, about the *root* `.dev.vars` — a file that predates all of this and is not account-scoped. It names where those keys belong now, which is the unnamed file; a project that has since named an account is told by the `Cloudflare:` line instead.",
+    "cli/src/commands/setup.ts":
+      "`pithy setup` is dev only by construction (#764): there is a project here, and its account is deliberately not asked for. A teammate who only builds features never signs in to Cloudflare to run the app on their machine, so every step is local, and the one seed that would reach an account — a media upload — is not run.",
     "cli/src/commands/init.ts":
       "`init` resolves credentials before the project it is scaffolding exists, which is the one moment in the CLI where there is provably no account to ask for. It writes the named file itself, at the end, from what the token's own account listing answered.",
   };

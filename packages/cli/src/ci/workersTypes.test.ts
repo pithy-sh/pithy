@@ -118,14 +118,15 @@ const DECLARED_ONLY: Record<string, string> = {
  * population — is what a `toBeGreaterThan(3)` here would be. A scan that came back with three packages
  * would be reporting on a tree other than this one, and every assertion below it would be worthless.
  *
- * Measured 2026-08-22, last moved by migration state over the control plane (#729): `core`'s
- * `migrations/state.ts` and `controlPlane/migrationState/migrationState.ts`. A file added or removed moves
- * a count, which is the point: the number is a second reader of the same change.
+ * Measured 2026-08-22, last moved 2026-10-16 by migration state over the control plane (#729): `core`'s
+ * `migrations/state.ts` and `controlPlane/migrationState/migrationState.ts`; and by `pithy setup` (#764):
+ * `cli`'s `setup/dataHeld.ts`, which asks the local D1 whether `dev` holds rows. A file added or removed
+ * moves a count, which is the point: the number is a second reader of the same change.
  */
 const IMPORTERS: Record<string, number> = {
   "packages/audit": 2,
   "packages/auth": 4,
-  "packages/cli": 12,
+  "packages/cli": 13,
   "packages/cloudflare": 2,
   "packages/core": 16,
   "packages/email": 9,
