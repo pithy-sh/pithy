@@ -248,6 +248,30 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 | `GET /control-plane/keys` | `keys:rotate` | The registration state — which keys are live, their ages, and their validity windows |
 | `POST /control-plane/keys` | `keys:rotate` | Register a new public key. **Authenticated with the key it replaces** |
 | `POST /control-plane/keys/:keyId/expire` | `keys:rotate` | Expire a superseded key, naming the proven successor |
+| `GET /control-plane/migrations` | `migrations:read` | Where each database this Worker binds stands: applied, pending, undeclared, and the run that last moved it |
+
+### Migration state
+
+`GET /control-plane/migrations` answers what is applied where, and whether a deploy left something behind. It asks the Worker because the Worker **is** the deployed build. `pithy doctor` reads the project on disk, which is what you have and not necessarily what is deployed.
+
+**One entry per database the Worker binds**, sorted by name. A readable one carries four things:
+
+- `applied` — every applied migration, in the order the ledger applied them.
+- `pending` — declared by this build and not applied, in the order they would run.
+- `undeclared` — applied and not declared by this Worker. Kysely reads one as a corrupted chain and applies nothing, so this is not drift a later run works around.
+- `lastGroup` — the newest group with anything still applied: its value, when it applied, what it applied there, and its `position`. `top` means `pithy migrate --rollback --group <value>` would accept it. `buried` names what is in the way: the groups `above` it and the `ungrouped` migrations over it.
+
+**Every migration names its namespace.** A namespace is a capability's name, which the manifest reports in `capabilities[]`. Compare the two and your own migrations are told from a composed capability's, with no convention and no list kept anywhere. `namespace` is `null` only for an undeclared migration whose name no Pithy registry could have composed.
+
+**`undeclared` is relative to this Worker.** Two Workers bound to one D1 share its ledger, and the CLI composes across both. A Worker composes only its own capabilities, so from inside one, every migration the other shipped to the shared database is listed as undeclared. On a database no other Worker binds, an undeclared migration is the real thing.
+
+**A database that cannot be read says so, and costs only itself.** It comes back `unreadable` with its name and binding and no lists at all, never empty ones, because `pending: []` reads as up to date. The other databases still answer, and the route still answers 200. What D1 said goes to the Worker's log, not the response.
+
+**It is read-only.** Nothing over the seam runs, reverses or resets a migration. The Worker composes the provider with `collectMigrationSets` from `@pithy-sh/core/src/migrations/capabilitySets`, the function `pithy migrate` composes with, so the route and `pithy doctor` cannot disagree about one environment.
+
+The seam's own manifest entry carries two counts behind the same scope, so a client sees *this environment is behind* on the read it already makes (§14). `pendingMigrations` declares `nominal: { atMost: 0 }`. `undeclaredMigrations` declares none, for the reason above: graded, it would report a corrupted chain on a shared database that is fine. Both are totals across every bound database, and one database that cannot be read makes both unavailable rather than a partial total.
+
+`migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it; [`pithy dashboard connect --update`](commands/dashboard.md) adds it.
 
 ---
 

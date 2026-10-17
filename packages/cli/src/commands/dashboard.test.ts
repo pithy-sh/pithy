@@ -423,14 +423,20 @@ describe("the scope prompt", () => {
     expect(options.map((option) => option.value)).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "support:tickets:read",
       "support:tickets:close",
     ]);
-    expect(options[3]?.hint).toContain("support");
+    expect(options[4]?.hint).toContain("support");
   });
 
   test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
-    expect((await renderedPrompt()).initialValues).toEqual(["manifest:read", "keys:rotate", "support:tickets:read"]);
+    expect((await renderedPrompt()).initialValues).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "migrations:read",
+      "support:tickets:read",
+    ]);
   });
 });
 

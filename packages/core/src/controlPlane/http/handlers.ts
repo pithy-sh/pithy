@@ -3,6 +3,7 @@
 
 import type { Context } from "hono";
 import type { PithyHonoEnv } from "../../capability/capability";
+import { causeMessage } from "../../error/cause";
 import { workerVersion } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneConfig } from "../config/config";
@@ -14,8 +15,10 @@ import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discove
 import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { healthWire } from "../discovery/healthSummary";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
+import { type ComposedMigrationDatabase, readDatabaseMigrations } from "../migrationState/migrationState";
 import type {
   ControlPlaneKeysResponse,
+  ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
   ExpireKeyResponse,
   PublicKeyView,
@@ -68,6 +71,11 @@ export interface ControlPlaneHandlerDeps {
    * value is not: the numbers are resolved per request, behind the scope each one is declared under.
    */
   composedHealth: () => ReadonlyMap<string, CapabilityHealthSource>;
+  /**
+   * Every database this Worker binds, with the provider this build composes for it — captured by the same
+   * `compose` hook through `collectMigrationSets`, the function `pithy migrate` composes with (#729).
+   */
+  composedMigrations: () => readonly ComposedMigrationDatabase[];
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -200,6 +208,34 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       capabilities,
       grantedScopes: [...context.grantedScopes],
     } satisfies ControlPlaneManifestWire);
+  };
+}
+
+/**
+ * `GET /control-plane/migrations` — where each database this Worker binds stands (#729).
+ *
+ * Read-only: it reports, and nothing over the seam runs, reverses or resets a migration.
+ *
+ * **One unreadable ledger costs one database its answer.** Each read catches its own failure and lands on
+ * `unreadable`, so `Promise.all` still resolves and the route answers 200 with what it has. The cause is
+ * logged here, for the operator, and never projected: a D1 error can name a table or a query.
+ */
+export function migrationsHandler(deps: ControlPlaneHandlerDeps) {
+  return async (c: Context<PithyHonoEnv>) => {
+    const context = caller(c);
+    const env = c.env as Record<string, unknown>;
+    const databases = await Promise.all(
+      deps.composedMigrations().map((entry) =>
+        readDatabaseMigrations(env, entry, (failed, cause) =>
+          c.var.log.warn("migration ledger unreadable", {
+            database: failed.database,
+            binding: failed.binding,
+            reason: causeMessage(cause) ?? String(cause),
+          }),
+        ),
+      ),
+    );
+    return c.json({ environment: context.environment, databases } satisfies ControlPlaneMigrationsResponse);
   };
 }
 

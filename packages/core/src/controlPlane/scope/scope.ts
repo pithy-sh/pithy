@@ -78,8 +78,20 @@ export const MANIFEST_READ_SCOPE: ControlPlaneScope = "manifest:read";
 export const KEYS_ROTATE_SCOPE: ControlPlaneScope = "keys:rotate";
 
 /**
- * Every grantable scope the seam's own routes use — what `pithy dashboard connect` offers by default.
- * Ping is absent because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
+ * Read where each database this Worker binds stands: what is applied, what is pending, what is undeclared,
+ * and which run put it there (#729). Read-only by construction — every route behind it is a `GET`, and
+ * nothing over the seam runs, reverses or resets a migration. The two migration health keys on the seam's
+ * manifest entry sit behind it too, so a connection without it gets no number rather than a zero.
+ */
+export const MIGRATIONS_READ_SCOPE: ControlPlaneScope = "migrations:read";
+
+/**
+ * The seam's base grant — what `pithy dashboard connect` grants whatever the Worker composes. Ping is absent
+ * because it is not grantable; see {@link ANY_VERIFIED_CALLER}.
+ *
+ * **{@link MIGRATIONS_READ_SCOPE} is absent on purpose.** It is a read — every route requiring it is a `GET`
+ * — so `connect` derives it from the seam's `adminRoutes` the way it derives every capability's reads. The
+ * base exists for `keys:rotate`, which is not a read and would otherwise drop out.
  */
 export const SEAM_SCOPES: readonly ControlPlaneScope[] = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE];
 

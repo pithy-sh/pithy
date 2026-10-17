@@ -69,6 +69,14 @@ describe("grantableScopes", () => {
 });
 
 describe("defaultGrant", () => {
+  test("offers migrations:read as a read, because every route requiring it is a GET (#729)", () => {
+    // The seam's migration state is a read by the same rule as every capability's: derived from the
+    // method of each route that requires it, with nothing in this module naming it.
+    const migrations = grantableScopes([controlplane()]).find((entry) => entry.scope === "migrations:read");
+    expect(migrations?.read).toBe(true);
+    expect(defaultGrant([controlplane()])).toContain("migrations:read");
+  });
+
   test("adds every declared read, so a fresh connection opens to panes that read", () => {
     const audit = capabilityWith("audit", [
       { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
@@ -227,6 +235,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
   const EVERY_SCOPE = [
     "manifest:read",
     "keys:rotate",
+    "migrations:read",
     "audit:events:read",
     "audit:events:read_detail",
     "support:tickets:read",
@@ -256,6 +265,7 @@ describe("--scope all resolves to the list the prompt renders", () => {
     expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes(composed))).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -269,16 +279,18 @@ describe("--scope all resolves to the list the prompt renders", () => {
     expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([controlplane()]))).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
     ]);
   });
 
   test("`all` does not become the default, and does not move what the prompt preselects", () => {
     const composed: Capability[] = [controlplane(), audit, support];
 
-    // The preselection, unchanged: every read, plus the seam's pair. Written out, not derived.
+    // The preselection, unchanged: every read, plus the seam's own. Written out, not derived.
     expect(defaultGrant(composed)).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -338,6 +350,7 @@ describe("decideGrant", () => {
     expect(granted).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -381,10 +394,11 @@ describe("decideGrant", () => {
     });
 
     expect(granted).toEqual(["manifest:read"]);
-    // Every read, plus the seam's pair — written out, so widening the preselection fails here.
+    // Every read, plus the seam's own — written out, so widening the preselection fails here.
     expect(seen[0]?.preselected).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",
@@ -393,6 +407,7 @@ describe("decideGrant", () => {
     expect(seen[0]?.offered).toEqual([
       "manifest:read",
       "keys:rotate",
+      "migrations:read",
       "audit:events:read",
       "audit:events:read_detail",
       "support:tickets:read",

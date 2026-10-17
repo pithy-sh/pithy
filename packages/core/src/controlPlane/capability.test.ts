@@ -70,16 +70,18 @@ describe("controlplane capability", () => {
     expect(registeredRoutes(controlplane({ basePath: "/admin/cp" }))).toEqual([
       "GET /admin/cp/keys",
       "GET /admin/cp/manifest",
+      "GET /admin/cp/migrations",
       "GET /admin/cp/ping",
       "POST /admin/cp/keys",
       "POST /admin/cp/keys/:keyId/expire",
     ]);
   });
 
-  test("registers exactly the five seam routes", () => {
+  test("registers exactly the six seam routes", () => {
     expect(registeredRoutes(controlplane())).toEqual([
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
+      "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",

@@ -7,6 +7,7 @@ import type { PithyHonoEnv } from "../../capability/capability";
 import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { type ControlPlaneOptions, controlplane } from "../capability";
 import { missingAdminRoutes, undeclaredAdminRoutes } from "../discovery/drift";
+import { MIGRATIONS_READ_SCOPE } from "../scope/scope";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -48,12 +49,13 @@ describe("control-plane route contract", () => {
     const app = makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paths = [...new Set(app.routes.map((route) => route.path))].sort();
-    // Every route this seam serves. The list is what makes adding a sixth a deliberate edit rather than
-    // a surprise, and it is the only place a control-plane route can be counted.
+    // Every route this seam serves. The list is what makes adding a seventh a deliberate edit rather
+    // than a surprise, and it is the only place a control-plane route can be counted.
     expect(paths).toEqual([
       "/control-plane/keys",
       "/control-plane/keys/:keyId/expire",
       "/control-plane/manifest",
+      "/control-plane/migrations",
       "/control-plane/ping",
     ]);
     // The one param-carrying path, named exactly. Without this the check above would pass on an app
@@ -80,19 +82,19 @@ describe("control-plane route contract", () => {
       const key = `${route.method} ${route.path}`;
       handlerCounts.set(key, (handlerCounts.get(key) ?? 0) + 1);
     }
-    expect(handlerCounts.size).toBe(5);
+    expect(handlerCounts.size).toBe(6);
     for (const [route, count] of handlerCounts) expect(count, `${route} has no guard`).toBeGreaterThan(1);
   });
 
   test("every admin route the seam advertises is a route it actually mounts", () => {
     // The seam holds itself to the rule it imposes on every capability. `GET /control-plane/manifest`
-    // tells a management client these five routes exist and which scope each needs; a declaration that
+    // tells a management client these six routes exist and which scope each needs; a declaration that
     // drifted from the registrations would have the client calling paths nothing serves.
     const capability = controlplane();
     const app = new Hono<PithyHonoEnv>();
     capability.routes?.(app);
 
-    expect(capability.adminRoutes).toHaveLength(5);
+    expect(capability.adminRoutes).toHaveLength(6);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
     // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
     // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
@@ -116,5 +118,29 @@ describe("control-plane route contract", () => {
     const ping = advertised.find((route) => route.path.endsWith("/ping"));
     expect(ping?.scope).toBeNull();
     expect(advertised.filter((route) => route.scope === null)).toHaveLength(1);
+  });
+
+  test("every route requiring migrations:read is a GET, so connect grants it as a read", () => {
+    // `pithy dashboard connect` derives its default grant by method: a scope is a read only when every
+    // route requiring it is a `GET`. One write behind this scope would drop it from every new connection.
+    const advertised = controlplane().adminRoutes ?? [];
+    const reading = advertised.filter((route) => route.scope === MIGRATIONS_READ_SCOPE);
+    expect(reading.map((route) => `${route.method} ${route.path}`)).toEqual(["GET /control-plane/migrations"]);
+    const app = makeApp();
+    const mounted = app.routes.filter((route) => route.path === "/control-plane/migrations");
+    expect([...new Set(mounted.map((route) => route.method))]).toEqual(["GET"]);
+  });
+
+  test("the summary says undeclared is relative to this Worker", () => {
+    const migrations = (controlplane().adminRoutes ?? []).find((route) => route.path.endsWith("/migrations"));
+    expect(migrations?.summary).toMatch(/relative to this Worker/);
+  });
+
+  test("the seam's health keys are both behind migrations:read, and only the pending one is graded", () => {
+    const keys = controlplane().health?.keys ?? [];
+    expect(keys.map((key) => [key.key, key.scope, key.nominal])).toEqual([
+      ["pendingMigrations", MIGRATIONS_READ_SCOPE, { atMost: 0 }],
+      ["undeclaredMigrations", MIGRATIONS_READ_SCOPE, null],
+    ]);
   });
 });

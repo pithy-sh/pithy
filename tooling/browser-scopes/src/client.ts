@@ -9,7 +9,11 @@ import {
   AUTH_USERS_LOGOUT_SCOPE,
   AUTH_USERS_READ_SCOPE,
 } from "@pithy-sh/auth/src/http/guards";
-import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import {
+  KEYS_ROTATE_SCOPE,
+  MANIFEST_READ_SCOPE,
+  MIGRATIONS_READ_SCOPE,
+} from "@pithy-sh/core/src/controlPlane/scope/scope";
 import {
   EMAIL_JOBS_READ_SCOPE,
   EMAIL_JOBS_RETRY_SCOPE,
@@ -75,6 +79,7 @@ import {
 export const EVERY_CONTROL_PLANE_SCOPE: readonly string[] = [
   MANIFEST_READ_SCOPE,
   KEYS_ROTATE_SCOPE,
+  MIGRATIONS_READ_SCOPE,
   AUDIT_TRAIL_READ_SCOPE,
   AUDIT_EVENT_DETAIL_READ_SCOPE,
   AUTH_USERS_READ_SCOPE,

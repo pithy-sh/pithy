@@ -9,6 +9,8 @@ import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
 import { InternalError } from "../../error/pithyError";
+import { MIGRATION_GROUP_TABLE, MIGRATION_TABLE } from "../../migrations/bookkeeping";
+import { recordMigrationGroup } from "../../migrations/groups";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
@@ -19,12 +21,13 @@ import { defineCapabilityHealth } from "../discovery/health";
 import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
-import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
+import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
 import { requireControlPlane } from "./guard";
 import {
   ControlPlaneKeysResponse,
+  ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
   ExpireKeyResponse,
   type PublicKeyView,
@@ -300,6 +303,7 @@ function everyRoute(): { method: string; path: string; scope: string; body?: unk
     { method: "GET", path: "/control-plane/ping", scope: MANIFEST_READ_SCOPE },
     { method: "GET", path: "/control-plane/manifest", scope: MANIFEST_READ_SCOPE },
     { method: "GET", path: "/control-plane/keys", scope: KEYS_ROTATE_SCOPE },
+    { method: "GET", path: "/control-plane/migrations", scope: MIGRATIONS_READ_SCOPE },
     {
       method: "POST",
       path: "/control-plane/keys",
@@ -336,7 +340,7 @@ beforeEach(async () => {
 });
 
 describe("a Worker nobody has connected", () => {
-  test("denies every one of the five routes with controlplane/not_connected", async () => {
+  test("denies every one of the six routes with controlplane/not_connected", async () => {
     // The shipped state. The seam is composed, the table exists, and there is no flag that opens it —
     // `pithy dashboard connect` is the deliberate second step, and until then a perfectly well-formed,
     // correctly signed credential gets 403 on every route.
@@ -518,6 +522,7 @@ describe("GET /control-plane/manifest", () => {
     expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
       "GET /control-plane/keys",
       "GET /control-plane/manifest",
+      "GET /control-plane/migrations",
       "GET /control-plane/ping",
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
@@ -1088,5 +1093,185 @@ describe("the exported response schemas against the live routes", () => {
       }),
     );
     expect(expired.keys.find((key) => key.keyId === alice.keyId)?.validUntil).not.toBeNull();
+  });
+});
+
+describe("GET /control-plane/migrations", () => {
+  /** The seam's own two migrations — the only ones this backend declares for `DB`. */
+  const SEAM_1 = "1100_controlplane_0001_init";
+  const SEAM_2 = "1100_controlplane_0002_management_origin";
+
+  /** A second database on `ANALYTICS`, so one can be unreadable while the other answers. */
+  const reporting = defineCapability({
+    name: "reporting",
+    requiredBindings: [],
+    databases: {
+      analytics: {
+        binding: "ANALYTICS",
+        tables: {},
+        migrations: { "0001_init": { up: async () => {}, down: async () => {} } },
+        migrationOrder: 0,
+      },
+    },
+  });
+
+  /** A Worker binding two databases. Separate from `backend`, which binds one. */
+  const twoDatabases = createBackend({ capabilities: [controlplane(), reporting] });
+
+  /** A D1 that is bound and answers nothing. */
+  const broken = {
+    prepare: () => {
+      throw new Error("D1_ERROR: no such table: pithy_migrations_secret_detail");
+    },
+  };
+
+  const GRANTED = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE, MIGRATIONS_READ_SCOPE];
+
+  async function ledgerRows(database: D1Database, migrations: readonly string[]): Promise<void> {
+    await database
+      .prepare(
+        `create table if not exists ${MIGRATION_TABLE} (name varchar(255) primary key, timestamp varchar(255) not null)`,
+      )
+      .run();
+    for (const [index, name] of migrations.entries()) {
+      await database
+        .prepare(`insert into ${MIGRATION_TABLE} (name, timestamp) values (?, ?)`)
+        .bind(name, new Date(Date.UTC(2026, 9, 3, 19, 0, index)).toISOString())
+        .run();
+    }
+  }
+
+  async function onTwo(path: string, scope: string, bindings: Record<string, unknown> = BINDINGS): Promise<Response> {
+    return twoDatabases.request(
+      `http://worker.example${path}`,
+      { method: "GET", headers: { [CONTROL_PLANE_HEADER]: await mint(alice, { scope }) } },
+      bindings,
+    );
+  }
+
+  beforeEach(async () => {
+    for (const database of [env.DB, env.ANALYTICS]) {
+      await database.prepare(`drop table if exists ${MIGRATION_GROUP_TABLE}`).run();
+      await database.prepare(`drop table if exists ${MIGRATION_TABLE}`).run();
+    }
+  });
+
+  test("is refused to a connection that was not granted migrations:read", async () => {
+    await connect([registered(alice)]);
+    const response = await call("GET", "/control-plane/migrations", { key: alice, scope: MIGRATIONS_READ_SCOPE });
+    expect(response.status).toBe(403);
+    expect((await denial(response)).error.code).toBe("controlplane/insufficient_scope");
+  });
+
+  test("reports applied, pending and undeclared per database, each naming its namespace", async () => {
+    await connect([registered(alice)], GRANTED);
+    await ledgerRows(env.DB, [SEAM_1, "0400_vault_0001_init"]);
+    const at = new Date("2026-10-04T08:00:00.000Z");
+    await recordMigrationGroup(env.DB, { group: "release-7", migrations: [SEAM_1, "0400_vault_0001_init"], at });
+
+    const response = await call("GET", "/control-plane/migrations", { key: alice, scope: MIGRATIONS_READ_SCOPE });
+    expect(response.status).toBe(200);
+    const raw = await body<unknown>(response);
+    // The exported schema is the contract a management client validates with, so it is held to the bytes.
+    expect(ControlPlaneMigrationsResponse.parse(raw)).toEqual(raw);
+    expect(ControlPlaneMigrationsResponse.parse(raw)).toEqual({
+      environment: ENVIRONMENT,
+      databases: [
+        {
+          state: "readable",
+          database: "app",
+          binding: "DB",
+          applied: [
+            { name: SEAM_1, namespace: "controlplane" },
+            { name: "0400_vault_0001_init", namespace: "vault" },
+          ],
+          pending: [{ name: SEAM_2, namespace: "controlplane" }],
+          undeclared: [{ name: "0400_vault_0001_init", namespace: "vault" }],
+          lastGroup: {
+            group: "release-7",
+            appliedAt: at.toISOString(),
+            migrations: [
+              { name: SEAM_1, namespace: "controlplane" },
+              { name: "0400_vault_0001_init", namespace: "vault" },
+            ],
+            position: { state: "top" },
+          },
+        },
+      ],
+    });
+  });
+
+  test("a buried last group names what is in its way", async () => {
+    await connect([registered(alice)], GRANTED);
+    await ledgerRows(env.DB, [SEAM_1, SEAM_2]);
+    await recordMigrationGroup(env.DB, { group: "release-7", migrations: [SEAM_1] });
+
+    const json = ControlPlaneMigrationsResponse.parse(
+      await body<unknown>(await call("GET", "/control-plane/migrations", { key: alice, scope: MIGRATIONS_READ_SCOPE })),
+    );
+    const app = json.databases[0];
+    expect(app?.state === "readable" ? app.lastGroup?.position : undefined).toEqual({
+      state: "buried",
+      above: [],
+      ungrouped: [{ name: SEAM_2, namespace: "controlplane" }],
+    });
+  });
+
+  test("one unreadable database costs only itself, and carries no count", async () => {
+    await connect([registered(alice)], GRANTED);
+    await ledgerRows(env.DB, [SEAM_1, SEAM_2]);
+
+    const response = await onTwo("/control-plane/migrations", MIGRATIONS_READ_SCOPE, {
+      ...BINDINGS,
+      ANALYTICS: broken,
+    });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    // What D1 said stays in the Worker's log. It can name a table or a query.
+    expect(text).not.toContain("D1_ERROR");
+    const json = ControlPlaneMigrationsResponse.parse(JSON.parse(text));
+    expect(json.databases.map((database) => [database.database, database.state])).toEqual([
+      ["analytics", "unreadable"],
+      ["app", "readable"],
+    ]);
+    expect(json.databases[0]).toEqual({ state: "unreadable", database: "analytics", binding: "ANALYTICS" });
+  });
+
+  test("the manifest carries both counts on the seam's entry, graded and ungraded", async () => {
+    await connect([registered(alice)], GRANTED);
+    await ledgerRows(env.DB, [SEAM_1, "0400_vault_0001_init"]);
+
+    const manifest = ControlPlaneManifest.parse(
+      await body<unknown>(await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE })),
+    );
+    const seam = manifest.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.healthKeys.map((key) => [key.key, key.nominal])).toEqual([
+      ["pendingMigrations", { atMost: 0 }],
+      ["undeclaredMigrations", null],
+    ]);
+    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 1, undeclaredMigrations: 1 } });
+  });
+
+  test("a connection without migrations:read gets no value for either key, rather than a zero", async () => {
+    await connect([registered(alice)]);
+
+    const manifest = ControlPlaneManifest.parse(
+      await body<unknown>(await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE })),
+    );
+    const seam = manifest.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.health).toEqual({ state: "withheld" });
+  });
+
+  test("an unreadable database makes the counts unavailable, never a partial total", async () => {
+    await connect([registered(alice)], GRANTED);
+    await ledgerRows(env.DB, [SEAM_1, SEAM_2]);
+
+    const manifest = ControlPlaneManifest.parse(
+      await body<unknown>(
+        await onTwo("/control-plane/manifest", MANIFEST_READ_SCOPE, { ...BINDINGS, ANALYTICS: broken }),
+      ),
+    );
+    const seam = manifest.capabilities.find((capability) => capability.name === "controlplane");
+    expect(seam?.health).toEqual({ state: "unavailable" });
   });
 });
