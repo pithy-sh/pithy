@@ -15,6 +15,7 @@ import {
   sentenceOf,
   ValidationError,
 } from "@pithy-sh/core/src/error/pithyError";
+import { collectMigrationSets } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { generatedMigrationGroup } from "@pithy-sh/core/src/migrations/groups";
 import { claimMigrationOwnership, foreignOwnerRefusal, readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
@@ -57,7 +58,6 @@ import { assertRollbackConfirmed } from "./confirm";
 import { planGroupRollback, requireMigrationGroup, sharedGroupRefusal } from "./groups";
 import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { inLocalStateCopy } from "./localStateCopy";
-import { collectMigrationSets } from "./registry";
 
 /**
  * `pithy migrate` fans out over Workers. There is no root Worker: every Worker lives in `apps/<name>/`

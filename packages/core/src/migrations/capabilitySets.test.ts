@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { describe, expect, test } from "vitest";
-import { buildRegistryFromCapabilities } from "./registry";
+import { z } from "zod";
+import { defineCapability } from "../capability/capability";
+import { PithyError } from "../error/pithyError";
+import { buildRegistryFromCapabilities, collectMigrationSets } from "./capabilitySets";
 
 const noop: Migration = { up: async () => {}, down: async () => {} };
+
+/** A table schema, for the retained cases — the declaration only reads the keys. */
+const Vault = z.object({ id: z.string().describe("The row id.") }).describe("A retained table.");
 
 /** The provider for a database name, asserting it was registered. */
 function providerFor(registry: Record<string, MigrationProvider>, database: string): MigrationProvider {
@@ -15,6 +19,63 @@ function providerFor(registry: Record<string, MigrationProvider>, database: stri
   if (!provider) throw new Error(`expected a provider for database "${database}"`);
   return provider;
 }
+
+describe("collectMigrationSets", () => {
+  test("one set per capability per database, namespaced by the capability's name", () => {
+    const auth = defineCapability({
+      name: "auth",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: {}, migrations: { "0001_init": noop }, migrationOrder: 300 } },
+    });
+    const sets = collectMigrationSets([auth]);
+    expect(sets).toEqual([{ database: "app", namespace: "auth", order: 300, migrations: { "0001_init": noop } }]);
+  });
+
+  test("carries a retained declaration, and only a non-empty one", () => {
+    const secrets = defineCapability({
+      name: "secrets",
+      requiredBindings: [],
+      databases: {
+        secrets: {
+          binding: "SECRETS_DB",
+          tables: { vault: Vault },
+          migrations: { "0001_init": noop },
+          migrationOrder: 400,
+          retained: ["vault"],
+        },
+      },
+    });
+    expect(collectMigrationSets([secrets])[0]?.retained).toEqual(["vault"]);
+  });
+
+  test("refuses a retained table its database spec does not declare", () => {
+    // A misspelled key would count a table that does not exist, find no rows, and let the `down` through.
+    const secrets = defineCapability({
+      name: "secrets",
+      requiredBindings: [],
+      databases: {
+        secrets: {
+          binding: "SECRETS_DB",
+          tables: { vault: Vault },
+          migrations: { "0001_init": noop },
+          migrationOrder: 400,
+          retained: ["valt"],
+        },
+      },
+    });
+    expect(() => collectMigrationSets([secrets])).toThrow(/"valt"/);
+  });
+
+  test("refuses retention on a database it ships no migrations for", () => {
+    // Retention is recorded on a `down`, so a slice with none has nothing to record it on.
+    const secrets = defineCapability({
+      name: "secrets",
+      requiredBindings: [],
+      databases: { secrets: { binding: "SECRETS_DB", tables: { vault: Vault }, retained: ["vault"] } },
+    });
+    expect(() => collectMigrationSets([secrets])).toThrow(/ships no migrations/);
+  });
+});
 
 describe("buildRegistryFromCapabilities", () => {
   test("no capabilities, no providers", () => {

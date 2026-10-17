@@ -1,11 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import type { DatabaseSpec } from "@pithy-sh/core/src/data/databases";
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import type { MigrationProvider } from "kysely/migration";
+import type { Capability } from "../capability/capability";
+import type { DatabaseSpec } from "../data/databases";
+import { InternalError } from "../error/pithyError";
+import { createMigrationRegistry, type NamespacedMigrations } from "./registry";
+
+/**
+ * **Where a capability's migrations become a registry's sets — one function, composed twice (#729).**
+ *
+ * `pithy migrate` and `pithy doctor` compose these sets from the project on disk; the Worker composes them
+ * from the capabilities it was built with, to answer `GET {basePath}/migrations`. It lived in the CLI until
+ * the Worker needed it too. It reads nothing but `Capability.databases`, so it belongs in core — and if
+ * the two sides composed with two functions, `pithy doctor` and the route could disagree about one
+ * environment with nothing to say which was wrong.
+ */
 
 /**
  * A retained declaration must name a table this slice declares, beside the migrations that create it.
@@ -35,11 +45,12 @@ function assertRetainedDeclared(capability: string, database: string, spec: Data
 
 /**
  * Every capability's per-database migration set (`DatabaseSpec.migrations`, namespaced by capability
- * name), in composition order — the raw material both {@link buildRegistryFromCapabilities} and the
- * fan-out runner build on. The runner needs the sets rather than a finished provider because two
- * Workers can be bound to one physical D1: their sets merge into a single ordered provider so that
- * database migrates once, with every Worker's capabilities in it. Migrations without a
- * `migrationOrder` fail here, attributed to their capability.
+ * name), in composition order — the raw material {@link buildRegistryFromCapabilities}, the CLI's
+ * fan-out runner and the control-plane seam all build on. The runner needs the sets rather than a
+ * finished provider because two Workers can be bound to one physical D1: their sets merge into a single
+ * ordered provider so that database migrates once, with every Worker's capabilities in it. A Worker
+ * composes only its own, which is why the seam's `undeclared` is relative to that Worker. Migrations
+ * without a `migrationOrder` fail here, attributed to their capability.
  */
 export function collectMigrationSets(capabilities: Capability[]): NamespacedMigrations[] {
   const sets: NamespacedMigrations[] = [];

@@ -4,6 +4,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import { collectMigrationSets } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import type { MigrationScope } from "../capabilities/reconcile";
@@ -14,7 +15,6 @@ import {
   renderDoctorJson,
   renderDoctorText,
 } from "../commands/doctor";
-import { collectMigrationSets } from "../migrations/registry";
 import {
   dropCapabilityTables,
   NeighborsNotComposed,
