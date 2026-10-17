@@ -13,6 +13,7 @@ import { activeKeys, findVerifyingKey } from "@pithy-sh/core/src/controlPlane/da
 import { controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
@@ -36,6 +37,7 @@ beforeEach(async () => {
   d1 = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   await controlplane_0001_init.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
   await controlplane_0002_management_origin.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
+  await controlplane_0003_connection_principal.up(controlPlaneDatabase(d1) as unknown as Kysely<unknown>);
 });
 
 afterEach(async () => {
@@ -57,6 +59,9 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
     managementOrigin: null,
+    authorizedBy: "ada@example.com",
+    actorKind: "agent",
+    purpose: "Support triage, reading threads and replying.",
     scopes: ["manifest:read", "keys:rotate"],
     keys: [key("key_1", at)],
     createdAt: at,
@@ -292,6 +297,56 @@ describe("a write records itself", () => {
       scopes: ["manifest:read", "keys:rotate"],
       registeredKeyIds: ["key_1"],
     });
+  });
+
+  test("a registration records who sanctioned it, what kind of client it is, and what for (#721)", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    await registry.save(connection());
+
+    expect(metadata(events)).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+    });
+  });
+
+  test("editing the purpose is an update that says what it was and what it is", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const original = connection();
+    await registry.save(original);
+    await registry.save({ ...original, purpose: "Support triage, read-only." });
+
+    expect(events[1]?.action).toBe("controlplane/connection_updated");
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["purpose"],
+      purpose: { from: "Support triage, reading threads and replying.", to: "Support triage, read-only." },
+    });
+  });
+
+  test("a purpose set on a connection registered before principals is recorded from null", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const legacy = connection({ authorizedBy: null, actorKind: null, purpose: null });
+    await registry.save(legacy);
+    await registry.save({ ...legacy, purpose: "The hosted dashboard." });
+
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["purpose"],
+      purpose: { from: null, to: "The hosted dashboard." },
+    });
+    expect((await registry.read())?.authorizedBy).toBeNull();
+  });
+
+  test("a hostile purpose written straight to D1 never reaches a reader", async () => {
+    // The CLI refuses one at the flag, and so does the codec on every read: a row edited by hand with a
+    // terminal escape in it is unreadable rather than printed.
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
+    await registry.save(connection());
+    await d1.prepare("update pithy_controlplane_connections set purpose = ?").bind("triage\u001b[2J").run();
+
+    await expect(registry.read()).rejects.toThrow();
   });
 
   test("the event names no actor — a CLI write does not get to claim a verified caller", () => {

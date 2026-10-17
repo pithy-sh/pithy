@@ -155,6 +155,9 @@ function addressAndGrantChanges(
       ? {}
       : { basePath: { from: stored.basePath, to: connection.basePath } }),
     ...(before.join(" ") === after.join(" ") ? {} : { scopes: { from: before, to: after } }),
+    // The one attribution field an update may change (#721). The principal and the kind are facts of the
+    // registration, and a change to either is a new connection, recorded as one.
+    ...(stored.purpose === connection.purpose ? {} : { purpose: { from: stored.purpose, to: connection.purpose } }),
   };
 }
 
@@ -290,6 +293,11 @@ export function connectionRegistry(
           basePath: connection.basePath,
           scopes: [...connection.scopes],
           registeredKeyIds: keyIds(connection),
+          // Who sanctioned it, what kind of client, and what for (#721) — on the adopter's own trail, where
+          // the review of this credential is performed, possibly with no dashboard open.
+          authorizedBy: connection.authorizedBy,
+          actorKind: connection.actorKind,
+          purpose: connection.purpose,
           // Starting over replaces a connection rather than editing one, and the id that stopped
           // working is what an adopter needs to recognize their own older rows by.
           ...(stored === null ? {} : { replacedConnectionId: stored.id }),

@@ -251,6 +251,16 @@ export const COMMANDS = {
         "type": "string",
         "required": false,
         "repeatable": false
+      },
+      "--purpose": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
+      },
+      "--kind": {
+        "type": "string",
+        "required": false,
+        "repeatable": false
       }
     },
     "groups": [
@@ -280,11 +290,20 @@ export const COMMANDS = {
       },
       {
         "kind": "requires",
+        "flag": "--kind",
+        "needs": [
+          "--public-key"
+        ],
+        "any": false
+      },
+      {
+        "kind": "requires",
         "flag": "--update",
         "needs": [
           "--worker-url",
           "--scope",
-          "--public-key"
+          "--public-key",
+          "--purpose"
         ],
         "any": true
       }

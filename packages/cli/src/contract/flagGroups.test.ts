@@ -103,7 +103,8 @@ const CASES: Record<string, () => Promise<{ exit: number | undefined; message: s
   "dashboard connect: requires --issuer --public-key": () =>
     refusal("dashboard connect", ["--issuer", "https://client.example.com"]),
   "dashboard connect: requires --key-id --public-key": () => refusal("dashboard connect", ["--key-id", "key_1"]),
-  "dashboard connect: requires --update --worker-url --scope --public-key": () =>
+  "dashboard connect: requires --kind --public-key": () => refusal("dashboard connect", ["--kind", "agent"]),
+  "dashboard connect: requires --update --worker-url --scope --public-key --purpose": () =>
     refusal("dashboard connect", ["--update"]),
   "deploy: requires --force --env": () => refusal("deploy", ["--force"]),
   "deploy: requires --events --json": async () => eventsRefusal(["deploy", "--env", "staging", "--events"]),

@@ -4,9 +4,14 @@
 import { readFile } from "node:fs/promises";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { pithyCommand } from "@pithy-sh/core/src/cli/command";
-import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
-import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
+import {
+  ConnectionPrincipal,
+  ConnectionPurpose,
+  ControlPlaneActorKind,
+  type ControlPlaneConnection,
+  Ed25519PublicJwk,
+} from "@pithy-sh/core/src/controlPlane/data/connection";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { InputRequiredError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
@@ -24,6 +29,7 @@ import {
   dashboardStatus,
   disconnectDashboard,
   type OfflinePublicKey,
+  parsePurpose,
   type RotateReport,
   rotateDashboardKey,
   type StatusReport,
@@ -31,6 +37,7 @@ import {
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
 import { type ResolvedOrigin, repointsOrigin, resolveDashboardOrigin } from "../dashboard/origin";
+import { requireRegisteringPrincipal } from "../dashboard/principal";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import {
   composedForGrant,
@@ -137,6 +144,58 @@ export function parsePublicKey(raw: string, keyId: string | undefined): { keyId:
   return { keyId: id, publicKey: parsed.data };
 }
 
+/**
+ * Read `--kind`: what kind of client holds a key the operator registered themselves (#721).
+ *
+ * `agent` or `script`, and nothing else. `dashboard` is the device-code flow's, always, so a key registered
+ * by hand never gets to say it is one — that would let a script read as a person at a dashboard in the
+ * very trail that exists to tell them apart.
+ */
+export function parseKindFlag(raw: string): "agent" | "script" {
+  if (raw === "agent" || raw === "script") return raw;
+  throw new ValidationError({
+    message: `--kind is agent or script, not ${raw === "" ? "nothing" : raw}.`,
+    action:
+      "Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing. The dashboard registers through the device-code flow.",
+  });
+}
+
+/** Who sanctioned a connection, what kind of client it is, and what for — a report's three fields (#721). */
+interface Attribution {
+  authorizedBy: string | null;
+  actorKind: string | null;
+  purpose: string | null;
+}
+
+/**
+ * The three as label/value rows, or none for a connection that recorded none of them.
+ *
+ * A purpose is printed as stored, and safely: the codec admits one line of plain text and nothing else, on
+ * the way in and on every read, so there is no escape or line break in it to carry to this terminal.
+ */
+function attributionRows(report: Attribution): Row[] {
+  if (report.authorizedBy === null && report.actorKind === null && report.purpose === null) return [];
+  const notRecorded = "not recorded";
+  return [
+    { name: "Authorized by", description: dim(report.authorizedBy ?? notRecorded) },
+    { name: "Kind", description: dim(report.actorKind ?? notRecorded) },
+    { name: "Purpose", description: dim(report.purpose ?? notRecorded) },
+  ];
+}
+
+/**
+ * What a connection registered before principals were recorded is told (#721): that it is one, how to say
+ * what it is for when nobody has, and that its principal is set only by registering again.
+ */
+function beforePrincipals(report: { environment: string; purpose: string | null }): string {
+  // A sentence rather than a runnable line, as `connectSentence`'s re-point is: the purpose is the reader's to write.
+  const sayWhy =
+    report.purpose === null
+      ? ` Say what it is for with \`${commandName("dashboard connect")}\` and --env ${report.environment}, --update and --purpose.`
+      : "";
+  return `Registered before principals were recorded.${sayWhy} Registering again records who authorized it.`;
+}
+
 /** Render a connect run. `connected` and `registered` finish; `needs_reconnect` deliberately does not. */
 export function formatConnectReport(
   report: ConnectReport,
@@ -157,6 +216,7 @@ export function formatConnectReport(
     { name: "Worker", description: dim(report.workerUrl) },
     { name: "Scopes", description: dim(report.scopes.join(", ")) },
     ...(report.keyId === null ? [] : [{ name: "Key", description: dim(report.keyId) }]),
+    ...attributionRows(report),
   ];
 
   if (report.status === "unreachable") {
@@ -265,12 +325,15 @@ export function formatStatusReport(
     { name: "Issuer", description: dim(report.issuer ?? "") },
     { name: "Worker", description: dim(report.workerUrl ?? "") },
     { name: "Scopes", description: dim(report.scopes.join(", ")) },
+    ...attributionRows(report),
   ];
   const keys = report.keys.map((key) => ({
     name: key.keyId,
     description: dim(`${key.live ? "live" : key.revokedAt ? "revoked" : "expired"}  ${key.ageDays} days`),
   }));
-  const parts = [headline, block(rows).trimEnd(), block(keys).trimEnd()].filter((part) => part !== "");
+  // A row with no principal is one registered before they were recorded: it still works, and says so.
+  const legacy = report.authorizedBy === null ? beforePrincipals(report) : "";
+  const parts = [headline, block(rows).trimEnd(), block(keys).trimEnd(), legacy].filter((part) => part !== "");
   return `${parts.join("\n")}\n`;
 }
 
@@ -513,6 +576,26 @@ export async function promptScopes(
   return answer as ControlPlaneScope[];
 }
 
+/**
+ * Ask what a new connection's client is for, at a terminal (#721).
+ *
+ * Validated as it is typed, by the same rule `--purpose` meets, so a line the codec would refuse is never
+ * accepted here and then thrown away after the browser approval.
+ */
+export async function promptPurpose(): Promise<string> {
+  const { isCancel, text } = await import("@clack/prompts");
+  const answer = await text({
+    message: `What is this client for?\n${dim("One line. It is what a review of this credential reads.")}`,
+    placeholder: "Support triage, reading threads and replying.",
+    validate: (value) => {
+      const parsed = ConnectionPurpose.safeParse(value ?? "");
+      return parsed.success ? undefined : (parsed.error.issues[0]?.message ?? "Say what this client is for.");
+    },
+  });
+  if (isCancel(answer)) canceled();
+  return answer as string;
+}
+
 /** What `revoke-key` did — enough for `--json` to be actionable without a second call. */
 export interface RevokeKeyReport {
   environment: string;
@@ -629,6 +712,26 @@ const Scopes = z
   .array(z.string().describe("One granted operation, e.g. `manifest:read`."))
   .describe("The operations granted.");
 const Iso = (what: string) => z.string().describe(`${what}, ISO-8601.`);
+
+/**
+ * The three fields #721 added, as every `--json` contract that reports a connection carries them.
+ *
+ * `.optional()` as well as `.nullable()`, as every added response field is: an agent pinned to this
+ * schema reads a line from an older CLI, which sends none of them, and must still parse it.
+ */
+const AuthorizedBy = ConnectionPrincipal.nullable()
+  .optional()
+  .describe(
+    "Who sanctioned the connection — the signed-in session's email — or `null` for one registered before principals were recorded.",
+  );
+const ActorKind = ControlPlaneActorKind.nullable()
+  .optional()
+  .describe(
+    "What kind of client it is for (`agent`, `dashboard`, `script`), or `null` for one registered before it was recorded.",
+  );
+const Purpose = ConnectionPurpose.nullable()
+  .optional()
+  .describe("What the client is for, in the registering operator's words, or `null` when it was never said.");
 const IsoOrNull = (what: string) => z.string().nullable().describe(`${what}, ISO-8601, or \`null\`.`);
 
 /** A connection row as `--json` writes it: the stored shape, dates as ISO-8601 strings. */
@@ -643,6 +746,9 @@ const ConnectionJson = z
       .string()
       .nullable()
       .describe("Where the management client answers, or `null` for an older row."),
+    authorizedBy: AuthorizedBy,
+    actorKind: ActorKind,
+    purpose: Purpose,
     scopes: Scopes,
     keys: z
       .array(
@@ -677,6 +783,9 @@ const DashboardConnectPayload = z
       .describe("`connected` is proven by a signed ping; `registered` is the offline path, written and not proven."),
     detail: Detail,
     updated: z.boolean().describe("Whether an existing connection was re-pointed rather than a new one created."),
+    authorizedBy: AuthorizedBy,
+    actorKind: ActorKind,
+    purpose: Purpose,
   })
   .describe("What `pithy dashboard connect` did.");
 
@@ -728,6 +837,9 @@ const DashboardStatusPayload = z
     issuer: z.string().nullable().describe("The management-client origin this connection trusts."),
     workerUrl: z.string().nullable().describe("The Worker URL the management client calls."),
     scopes: Scopes,
+    authorizedBy: AuthorizedBy,
+    actorKind: ActorKind,
+    purpose: Purpose,
     keys: z
       .array(
         z
@@ -772,6 +884,11 @@ const connect = withContract(
       issuer: { type: "string", description: "With --public-key: the iss your own management client presents" },
       "key-id": { type: "string", description: "With --public-key: the key id, if the JWK carries no kid" },
       project: { type: "string", description: "Override the project name sent to the management client" },
+      purpose: {
+        type: "string",
+        description: "What this client is for, in one line. Required to register; with --update, replaces it",
+      },
+      kind: { type: "string", description: "With --public-key: agent or script — what kind of client holds the key" },
     },
     // `rawArgs` because a repeated `--scope` only survives there.
     run: ({ args, rawArgs }) =>
@@ -804,18 +921,34 @@ const connect = withContract(
             action: "Drop --key-id. The dashboard mints the keypair and names the key.",
           });
         }
-        if (args.update && args["worker-url"] === undefined && !narrowed && !offlinePath) {
+        if (!offlinePath && args.kind !== undefined) {
           throw new ValidationError({
-            message: "Nothing to update.",
-            action: "Pass --worker-url, --scope, or both.",
+            message: "--kind only applies with --public-key.",
+            action: "Drop --kind. A connection through the dashboard is the dashboard's, always.",
           });
         }
+        if (
+          args.update &&
+          args["worker-url"] === undefined &&
+          !narrowed &&
+          !offlinePath &&
+          args.purpose === undefined
+        ) {
+          throw new ValidationError({
+            message: "Nothing to update.",
+            action: "Pass --worker-url, --scope, --purpose, or any of them together.",
+          });
+        }
+        // Both read before a project is, for the reason the scope request is: an argument that cannot be
+        // stored is the operator's to fix, and a refusal that waited on a Worker would name the wrong thing.
+        const kind = args.kind === undefined ? undefined : parseKindFlag(args.kind);
+        const purpose = args.purpose === undefined ? undefined : parsePurpose(args.purpose);
 
         let publicKey: OfflinePublicKey | undefined;
         if (offlinePath) {
           const raw = await readFile(args["public-key"] as string, "utf8");
           const key = parsePublicKey(raw, args["key-id"]);
-          publicKey = { ...key, issuer: args.issuer as string };
+          publicKey = { ...key, issuer: args.issuer as string, ...(kind === undefined ? {} : { kind }) };
         }
 
         const interactive = isInteractive(args.json);
@@ -879,6 +1012,8 @@ const connect = withContract(
         const project = args.project ?? requireProjectName(config);
         const isProduction = isProductionEnv(args.env, config.seed?.productionEnvironments);
 
+        // The account the session must belong to, read the way `withRegistry` reads it.
+        const account = await projectCloudflareAccount(projectDir);
         const report = await withRegistry(args, async (registry) => {
           // Resolved once: the same answer decides which client is called and what the row records, so
           // the two cannot disagree about which dashboard this connection belongs to (#614).
@@ -905,6 +1040,12 @@ const connect = withContract(
             // The offline path called nothing, so it records only an origin the operator named — which is
             // what `resolved.source === "flag"` means there.
             ...(publicKey !== undefined && resolved.source !== "flag" ? {} : { managementOrigin: resolved.origin }),
+            // Who is registering, from the signed-in session, through the one seam that decides it (#721).
+            // In every environment: `dev` reaches no account, and still records a person.
+            principal: () => requireRegisteringPrincipal({ account }),
+            ...(purpose === undefined ? {} : { purpose }),
+            // Asked only at a terminal, and only when a connection is being created without one.
+            ...(interactive ? { askPurpose: promptPurpose } : {}),
           });
         });
         // The re-point line, asked for only when it prints (#711).
@@ -938,10 +1079,17 @@ const connect = withContract(
       },
       {
         kind: "requires",
+        flag: "--kind",
+        needs: ["--public-key"],
+        any: false,
+        rule: "--kind only applies with --public-key.",
+      },
+      {
+        kind: "requires",
         flag: "--update",
-        needs: ["--worker-url", "--scope", "--public-key"],
+        needs: ["--worker-url", "--scope", "--public-key", "--purpose"],
         any: true,
-        rule: "--update needs something to update: --worker-url, --scope or --public-key.",
+        rule: "--update needs something to update: --worker-url, --scope, --public-key or --purpose.",
       },
     ],
   },

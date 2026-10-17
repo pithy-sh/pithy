@@ -3,11 +3,24 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { personDecision } from "@pithy-sh/core/src/cli/command";
-import type { ControlPlaneConnection, Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
+import {
+  ConnectionPurpose,
+  type ControlPlaneActorKind,
+  type ControlPlaneConnection,
+  type Ed25519PublicJwk,
+  MAX_CONNECTION_PURPOSE,
+} from "@pithy-sh/core/src/controlPlane/data/connection";
 import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import { ControlPlaneNotConnectedError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
-import { ConflictError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  ConflictError,
+  InputRequiredError,
+  messageOf,
+  PithyError,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
+import { z } from "zod";
 import { ManagementClientUnreachableError } from "./api";
 import type { ConnectionHealth, DashboardClient, DeviceAuthorization } from "./contract";
 import { defaultGrant } from "./grant";
@@ -81,6 +94,12 @@ export interface ConnectReport {
   detail?: string;
   /** True when an existing connection was re-pointed rather than a new one created. */
   updated: boolean;
+  /** Who sanctioned the connection, or null for one registered before principals were recorded (#721). */
+  authorizedBy: string | null;
+  /** What kind of client it is for, or null for one registered before kinds were recorded. */
+  actorKind: ControlPlaneActorKind | null;
+  /** What it is for, in the registering operator's words, or null when it was never said. */
+  purpose: string | null;
 }
 
 /** A key the operator generated themselves — the offline registration path, with no dashboard at all. */
@@ -91,6 +110,29 @@ export interface OfflinePublicKey {
   publicKey: Ed25519PublicJwk;
   /** The `iss` the operator's client will present. Required: verification compares it on every call. */
   issuer: string;
+  /**
+   * What kind of client holds this key: `agent` or `script`, said out loud with `--kind` (#721). The
+   * dashboard is the device-code flow's, so it is never this path's. Required to register a connection,
+   * and unread when the key joins one that already exists.
+   */
+  kind?: Exclude<ControlPlaneActorKind, "dashboard">;
+}
+
+/**
+ * A purpose as the operator typed it, validated where it comes in (#721).
+ *
+ * Core's {@link ConnectionPurpose} is the rule; this turns its refusal into the operator's sentence. A
+ * purpose is written by a customer and rendered somewhere else — this terminal, a review screen — so a
+ * control character, a line break or a bidi override is refused here rather than escaped by every reader.
+ */
+export function parsePurpose(raw: string): string {
+  const parsed = ConnectionPurpose.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  throw new ValidationError({
+    message: "That purpose can't be stored.",
+    action: `Say what this client is for in one line of plain text, ${MAX_CONNECTION_PURPOSE} characters at most: --purpose "Support triage, reading threads and replying."`,
+    detail: z.prettifyError(parsed.error),
+  });
 }
 
 /** Turn a started device authorization into a connect token. Injected so tests never sleep or poll. */
@@ -218,6 +260,25 @@ export interface ConnectDashboardOptions {
   publicKey?: OfflinePublicKey;
   /** The management client. Absent only on the offline path. */
   client?: DashboardClient;
+  /**
+   * Who is registering this connection — `requireRegisteringPrincipal`, the one seam that decides it
+   * (#721). **Required**, for the reason `requireControlPlane` has no zero-argument form: an optional
+   * argument is a thing you can forget, and forgetting this one registers a connection nobody sanctioned.
+   *
+   * Asked only when a connection is created, and before anything is — the device-code approval, the
+   * management client's record, and the adopter's row all wait on it, so a refusal changes nothing.
+   */
+  principal: () => Promise<string>;
+  /**
+   * What the client is for, from `--purpose`, already through {@link parsePurpose}. Required to create a
+   * connection; on an update it replaces the stored purpose, and absent leaves it alone.
+   */
+  purpose?: string;
+  /**
+   * Ask for the purpose at a terminal, when `--purpose` was not passed and a connection is being
+   * created. Absent means nobody can be asked, and a create without a purpose is refused naming the flag.
+   */
+  askPurpose?: () => Promise<string>;
   /** The device-code flow (default: {@link authorizeDashboard}). */
   authorize?: Authorize;
   /** The clock. */
@@ -267,10 +328,15 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     });
   }
 
+  // A create needs a person and a purpose before anything else happens — before the browser approval, so
+  // nobody approves a connection that is then refused, and before the client records one (#721).
+  const attribution = options.update ? null : await registration(options, "dashboard");
+
   const authorize = options.authorize ?? ((target: DashboardClient) => authorizeDashboard(target));
   const token = await authorize(client);
 
-  if (options.update) {
+  // Null exactly on an update, which re-points a connection rather than registering one.
+  if (attribution === null) {
     if (!existing) {
       throw new ControlPlaneNotConnectedError({
         action: `Connect this environment first: ${await options.connect()}.`,
@@ -289,6 +355,10 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
       // written before the column carries, which reads as the issuer until a run observes better.
       managementOrigin: options.managementOrigin ?? existing.managementOrigin,
       scopes: options.scopes ? [...options.scopes] : existing.scopes,
+      // Editable, and the edit is recorded: `save` writes `controlplane/connection_updated` naming it (#721).
+      // Never the principal or the kind — those are facts of the registration, and registering again is
+      // the only way to change them.
+      purpose: options.purpose ?? existing.purpose,
       updatedAt: now,
     };
 
@@ -360,6 +430,7 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
     // not a client to negotiate with, so `assertNoScopeEscalation` refuses the whole connection.
     scopes: assertNoScopeEscalation(scopes, issued.scopes),
     keys: [{ keyId: issued.keyId, publicKey: issued.publicKeyJwk, validFrom: now, validUntil: null, revokedAt: null }],
+    ...attribution,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -367,6 +438,37 @@ export async function connectDashboard(options: ConnectDashboardOptions): Promis
 
   const health = await probe(client, token, connection);
   return report(connection, { keyId: issued.keyId, updated: false, health });
+}
+
+/** What a new connection records about itself (#721): who sanctioned it, what kind of client, for what. */
+type Attribution = Pick<ControlPlaneConnection, "authorizedBy" | "actorKind" | "purpose">;
+
+/**
+ * Settle who is registering and what for, in that order, before a connection is created.
+ *
+ * The principal first: an operator without a session is told to sign in before being asked to write a
+ * sentence the refusal would then throw away.
+ */
+async function registration(options: ConnectDashboardOptions, actorKind: ControlPlaneActorKind): Promise<Attribution> {
+  const authorizedBy = await options.principal();
+  return { authorizedBy, actorKind, purpose: await requirePurpose(options) };
+}
+
+/**
+ * The purpose a new connection is registered with: `--purpose`, else asked at a terminal, else refused.
+ *
+ * **Required, and refused when absent**, because a review listing credentials by key id cannot support
+ * the decision it exists for — and a purpose nobody was made to give is the one nobody gives.
+ */
+async function requirePurpose(options: ConnectDashboardOptions): Promise<string> {
+  if (options.purpose !== undefined) return parsePurpose(options.purpose);
+  if (options.askPurpose) return parsePurpose(await options.askPurpose());
+  throw new InputRequiredError({
+    message: "Say what this client is for.",
+    action:
+      'Pass --purpose "<what it does>", e.g. --purpose "Support triage, reading threads and replying." It is what a review of this credential reads.',
+    flag: "--purpose",
+  });
 }
 
 /**
@@ -386,6 +488,16 @@ async function connectOffline(
   const offline = options.publicKey as OfflinePublicKey;
 
   if (!existing) {
+    // The kind is the operator's to say on this path, and saying it is required: `agent` and `script` are
+    // the two questions an incident asks apart, and a default would answer one of them for them.
+    if (offline.kind === undefined) {
+      throw new ValidationError({
+        message: "--public-key needs --kind.",
+        action:
+          "Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.",
+      });
+    }
+    const attribution = await registration(options, offline.kind);
     const connection: ControlPlaneConnection = {
       id: crypto.randomUUID(),
       environment: options.environment,
@@ -400,6 +512,7 @@ async function connectOffline(
       // should read less than ours does.
       scopes: options.scopes ? [...options.scopes] : defaultGrant(options.capabilities ?? []),
       keys: [{ keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null }],
+      ...attribution,
       createdAt: now,
       updatedAt: now,
     };
@@ -459,6 +572,8 @@ async function connectOffline(
         // Same as the dashboard update path above — the mount point moves with the URL.
         basePath: options.basePath ?? existing.basePath,
         scopes: options.scopes ? [...options.scopes] : existing.scopes,
+        // And the purpose with it, recorded by `save` as an update (#721).
+        purpose: options.purpose ?? existing.purpose,
         updatedAt: now,
       }
     : existing;
@@ -685,6 +800,12 @@ export interface StatusReport {
   workerUrl: string | null;
   /** The operations granted. */
   scopes: readonly string[];
+  /** Who sanctioned the connection, or null — nothing registered, or registered before principals (#721). */
+  authorizedBy: string | null;
+  /** What kind of client it is for, or null on the same terms. */
+  actorKind: ControlPlaneActorKind | null;
+  /** What it is for, or null on the same terms. */
+  purpose: string | null;
   /** Every registered key, live and superseded, newest window first as stored. */
   keys: readonly KeyReport[];
   /**
@@ -737,6 +858,9 @@ export async function dashboardStatus(options: DashboardStatusOptions): Promise<
       issuer: null,
       workerUrl: null,
       scopes: [],
+      authorizedBy: null,
+      actorKind: null,
+      purpose: null,
       keys: [],
       status: "unverified",
     };
@@ -761,6 +885,9 @@ export async function dashboardStatus(options: DashboardStatusOptions): Promise<
     issuer: connection.issuer,
     workerUrl: connection.workerUrl,
     scopes: connection.scopes,
+    authorizedBy: connection.authorizedBy,
+    actorKind: connection.actorKind,
+    purpose: connection.purpose,
     keys,
     status: health?.status ?? "unverified",
     ...(health?.detail === undefined ? {} : { detail: health.detail }),
@@ -829,5 +956,8 @@ function report(
     status,
     ...(outcome.health?.detail === undefined ? {} : { detail: outcome.health.detail }),
     updated: outcome.updated,
+    authorizedBy: connection.authorizedBy,
+    actorKind: connection.actorKind,
+    purpose: connection.purpose,
   };
 }
