@@ -128,6 +128,31 @@ describe("the scripts", () => {
     60_000,
   );
 
+  test.skipIf(!installed("pwsh"))(
+    "PowerShell offers no file name when the binary answers nothing",
+    async () => {
+      const bin = await fakePithy("");
+      const path = join(dir, "completion.ps1");
+      await writeFile(path, completionScript("powershell"));
+      await writeFile(join(dir, "stray-file.txt"), "");
+      const probe = [
+        `. '${path}'`,
+        POWERSHELL_ALIAS,
+        `Set-Location '${dir}'`,
+        "foreach ($line in 'pithy secrets create ', 'p. secrets create ') {",
+        "  $result = TabExpansion2 $line $line.Length",
+        "  'matches:' + (($result.CompletionMatches | ForEach-Object { $_.CompletionText }) -join ',')",
+        "}",
+      ].join("\n");
+      const { stdout } = await run("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", probe], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      // One empty match, and no path: PowerShell's own file completion never ran.
+      expect(stdout.split(/\r?\n/).filter((line) => line !== "")).toEqual(["matches:", "matches:"]);
+    },
+    60_000,
+  );
+
   test("bash hands the binary the line up to the cursor, and offers what comes back", async () => {
     const bin = await fakePithy("secrets\tSecrets\nsetup\n");
     const probe = [

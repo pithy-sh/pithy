@@ -107,7 +107,9 @@ complete -c pithy -f -a '(__pithy_complete)'
  * with the spaces the parser left off its extent when the cursor sits past them. No `?:` or `??`, which
  * 5.1 does not parse. `-Native` covers `p.` too, though `pithy alias` makes it a function: a function with
  * no `param` block binds nothing, and PowerShell hands its arguments to the native completer registered
- * under its name. `scripts.test.ts` asks a real `pwsh` for both, where one is installed.
+ * under its name. A completer that returns nothing hands the word to PowerShell's own path completion, so
+ * an empty answer returns one empty string instead, as cobra's script does: a Tab offers no file name.
+ * `scripts.test.ts` asks a real `pwsh` for all of it, where one is installed.
  */
 const POWERSHELL = `# Tab completion for pithy, in PowerShell. Load it with: ${printing("powershell")} | Out-String | Invoke-Expression
 Register-ArgumentCompleter -Native -CommandName 'p.', 'pithy' -ScriptBlock {
@@ -115,12 +117,14 @@ Register-ArgumentCompleter -Native -CommandName 'p.', 'pithy' -ScriptBlock {
     $text = $commandAst.Extent.Text
     $length = $cursorPosition - $commandAst.Extent.StartOffset
     if ($length -gt $text.Length) { $text = $text.PadRight($length) } else { $text = $text.Substring(0, $length) }
-    & pithy __complete $text 2>$null | ForEach-Object {
+    $results = @(& pithy __complete $text 2>$null | ForEach-Object {
         $parts = $_ -split "\`t", 2
         $tip = $parts[0]
         if ($parts.Length -gt 1 -and $parts[1]) { $tip = $parts[1] }
         [System.Management.Automation.CompletionResult]::new($parts[0], $parts[0], 'ParameterValue', $tip)
-    }
+    })
+    if ($results.Count -eq 0) { return '' }
+    $results
 }
 `;
 
