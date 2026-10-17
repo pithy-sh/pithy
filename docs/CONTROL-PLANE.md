@@ -271,7 +271,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 
 The seam's own manifest entry carries two counts behind the same scope, so a client sees *this environment is behind* on the read it already makes (§14). `pendingMigrations` declares `nominal: { atMost: 0 }`. `undeclaredMigrations` declares none, for the reason above: graded, it would report a corrupted chain on a shared database that is fine. Both are totals across every bound database, and one database that cannot be read makes both unavailable rather than a partial total.
 
-`migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it; [`pithy dashboard connect --update`](commands/dashboard.md) adds it.
+`migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it, and a bare `--update` leaves the grant as it is. [`pithy dashboard connect --update --scope migrations:read`](commands/dashboard.md), with every scope the connection already holds passed beside it, adds it. So does `--update --scope all`.
 
 ---
 
