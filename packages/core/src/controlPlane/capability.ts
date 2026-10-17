@@ -13,9 +13,15 @@ import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/confi
 import { ControlPlaneConnection } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
 import type { CapabilityDeclaration } from "./discovery/adminRoute";
-import { type CapabilityHealthSource, capabilityHealthSources } from "./discovery/health";
+import { type CapabilityHealthSource, capabilityHealthSources, defineCapabilityHealth } from "./discovery/health";
 import { createControlPlaneVerifier } from "./http/guard";
 import { controlPlaneRouteDescriptors, registerControlPlaneRoutes } from "./http/routes";
+import {
+  type ComposedMigrationDatabase,
+  composeMigrationDatabases,
+  MIGRATION_HEALTH_KEYS,
+  readMigrationHealth,
+} from "./migrationState/migrationState";
 import { controlplane_0001_init } from "./migrations/0001_init";
 import { controlplane_0002_management_origin } from "./migrations/0002_management_origin";
 import { d1ReplayGuard } from "./replay/d1Guard";
@@ -132,6 +138,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // assembly, because an adopter is never offered such a scope and the number could never be granted.
   let health: ReadonlyMap<string, CapabilityHealthSource> = new Map();
 
+  // Every database this Worker binds and what this build declares for it (#729), composed by the same hook
+  // through `collectMigrationSets` — the function `pithy migrate` uses, so the route and `pithy doctor`
+  // compose the same way. The inputs differ on a D1 two Workers share: the CLI merges every co-bound
+  // Worker's sets and this Worker holds only its own, so `pending` and `undeclared` can differ there.
+  let migrationDatabases: readonly ComposedMigrationDatabase[] = [];
+
   const capability = defineCapability({
     name: "controlplane",
     // `@pithy-sh/core`'s version, stamped by `scripts/stampVersions.ts` — a Worker cannot read its own
@@ -164,6 +176,14 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
     // The seam describes itself too. Built from the same resolved `basePath` the routes mount on, so a
     // moved mount point is reported rather than becoming a lie a client believes.
     adminRoutes: controlPlaneRouteDescriptors(config.basePath),
+    // Two counts on the seam's own manifest entry, so a client sees *this environment is behind* on the read
+    // it already makes and calls the route only to see what. Behind `migrations:read`, which the route above
+    // requires — a connection without it gets no number rather than a zero. A database that cannot be read
+    // fails the producer, and the seam reports the summary unavailable rather than a partial total.
+    health: defineCapabilityHealth({
+      keys: MIGRATION_HEALTH_KEYS,
+      read: (c) => readMigrationHealth(c.env as Record<string, unknown>, migrationDatabases),
+    }),
     compose: ({ capabilities }) => {
       // Every capability, including those exposing nothing. A client rendering a capability it cannot
       // act on is useful; a client that cannot tell "no admin surface" from "not installed" is not.
@@ -186,6 +206,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         config: { ...(cap.manifestConfig?.values ?? {}) },
       }));
       health = capabilityHealthSources(capabilities);
+      migrationDatabases = composeMigrationDatabases(capabilities);
     },
     middleware: [
       (app) => {
@@ -228,6 +249,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         database,
         composedCapabilities: () => composed,
         composedHealth: () => health,
+        composedMigrations: () => migrationDatabases,
         now,
       });
     },

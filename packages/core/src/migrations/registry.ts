@@ -62,6 +62,51 @@ function assertValidLocalKey(localKey: string, namespace: string): void {
   }
 }
 
+/**
+ * The composed key for one of a set's migrations: `NNNN_<namespace>_<localKey>`. The one place the shape is
+ * written, so the registry and anything naming a declared migration's namespace build the same string.
+ */
+export function composedMigrationKey(set: Pick<NamespacedMigrations, "order" | "namespace">, localKey: string): string {
+  return `${String(set.order).padStart(ORDER_DIGITS, "0")}_${set.namespace}_${localKey}`;
+}
+
+/** A composed key taken back apart: the three parts {@link createMigrationRegistry} joined. */
+export interface ComposedMigrationKey {
+  /** The capability's `migrationOrder` — the zero-padded prefix, as a number. */
+  order: number;
+  /** The capability namespace — its `name`, which the manifest reports beside every capability. */
+  namespace: string;
+  /** The capability's own stable key, e.g. `0001_init`. */
+  localKey: string;
+}
+
+/**
+ * The composed key shape, anchored at both ends: the order prefix, a namespace (which admits no separator,
+ * so the first underscore after it is the boundary), then a local key, which may hold any number.
+ */
+const COMPOSED_KEY_PATTERN = new RegExp(
+  `^(\\d{${ORDER_DIGITS}})_(${NAMESPACE_PATTERN.source.slice(1, -1)})_(${LOCAL_KEY_PATTERN.source.slice(1, -1)})$`,
+);
+
+/**
+ * Take a composed key back apart — the inverse of the composition below.
+ *
+ * A declared migration's namespace is known from the set it came from. An **undeclared** one — applied in
+ * the database, carried by no provider this build composes — has nothing but its key, so this is the only
+ * way to say whose it was. **Null for a key no registry could have composed**, a migration written by hand
+ * or by another tool: guessing a namespace for it would be inventing one.
+ *
+ * The patterns are the same constants the composition enforces, so the two cannot disagree about what a
+ * key looks like.
+ */
+export function decomposeMigrationKey(key: string): ComposedMigrationKey | null {
+  const match = COMPOSED_KEY_PATTERN.exec(key);
+  if (!match) return null;
+  const [, order, namespace, localKey] = match;
+  if (order === undefined || namespace === undefined || localKey === undefined) return null;
+  return { order: Number(order), namespace, localKey };
+}
+
 /** Merge one database's sets into a provider, enforcing the per-database invariants. */
 function composeDatabase(database: string, sets: NamespacedMigrations[]): MigrationProvider {
   const seenOrders = new Set<number>();
@@ -85,10 +130,9 @@ function composeDatabase(database: string, sets: NamespacedMigrations[]): Migrat
 
   const composed: Record<string, Migration> = {};
   for (const set of [...sets].sort((a, b) => a.order - b.order)) {
-    const prefix = String(set.order).padStart(ORDER_DIGITS, "0");
     for (const localKey of Object.keys(set.migrations).sort()) {
       const migration = set.migrations[localKey];
-      if (migration) composed[`${prefix}_${set.namespace}_${localKey}`] = migration;
+      if (migration) composed[composedMigrationKey(set, localKey)] = migration;
     }
   }
 

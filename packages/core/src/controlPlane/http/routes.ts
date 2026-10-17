@@ -6,18 +6,20 @@ import type { PithyHonoEnv } from "../../capability/capability";
 import { describeRoute } from "../../http/routeSpec";
 import { validate } from "../../http/validation";
 import { type AdminRoute, ControlPlaneManifest } from "../discovery/adminRoute";
-import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
+import { ANY_VERIFIED_CALLER, KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE } from "../scope/scope";
 import { requireControlPlane } from "./guard";
 import {
   type ControlPlaneHandlerDeps,
   expireKeyHandler,
   listKeysHandler,
   manifestHandler,
+  migrationsHandler,
   pingHandler,
   registerKeyHandler,
 } from "./handlers";
 import {
   ControlPlaneKeysResponse,
+  ControlPlaneMigrationsResponse,
   ControlPlanePingResponse,
   ExpireKeyResponse,
   RegisterKeyResponse,
@@ -32,6 +34,7 @@ import { ExpireKeyParams, ExpireKeyRequest, RegisterKeyRequest } from "./schemas
  *   GET  /control-plane/keys                  → the registration state       (keys:rotate)
  *   POST /control-plane/keys                  → register a key               (keys:rotate)
  *   POST /control-plane/keys/:keyId/expire    → retire a superseded key      (keys:rotate)
+ *   GET  /control-plane/migrations            → where each database stands   (migrations:read)
  *
  * Every one is `control-plane` and default-denied — with no connection registered they all answer 403,
  * and that is the shipped state of a Worker nobody has connected.
@@ -89,6 +92,13 @@ export function controlPlaneRouteDescriptors(basePath: string): AdminRoute[] {
       path: `${basePath}/keys/:keyId/expire`,
       scope: KEYS_ROTATE_SCOPE,
       summary: "Retire a superseded key. Must be signed with the successor it names as proven.",
+    },
+    {
+      method: "GET",
+      path: `${basePath}/migrations`,
+      scope: MIGRATIONS_READ_SCOPE,
+      summary:
+        "What each bound database has applied, what is pending, what is undeclared, and which run put it there. Undeclared is relative to this Worker.",
     },
   ];
 }
@@ -159,5 +169,19 @@ export function registerControlPlaneRoutes(
     validate("param", ExpireKeyParams),
     validate("json", ExpireKeyRequest),
     (c) => expireKeyHandler(deps)(c, c.req.valid("param"), c.req.valid("json")),
+  );
+
+  app.get(
+    `${basePath}/migrations`,
+    describeRoute({
+      summary: "Report where each database this Worker binds stands.",
+      description:
+        "Applied, pending and undeclared migrations per database, each naming its namespace, and the last group with whether it is still reversible. Undeclared is relative to this Worker: a database shared with another Worker lists that Worker's migrations there. Read-only.",
+      verification: "control-plane",
+      scopes: [MIGRATIONS_READ_SCOPE],
+      responses: { 200: ControlPlaneMigrationsResponse },
+    }),
+    requireControlPlane(MIGRATIONS_READ_SCOPE),
+    migrationsHandler(deps),
   );
 }

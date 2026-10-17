@@ -5,9 +5,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { collectMigrationSets } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { RemoveCapabilityOptions } from "../capabilities/remove";
-import { collectMigrationSets } from "../migrations/registry";
 import { latchInputMode } from "../terminal/inputMode";
 import remove, { rejectJson, rejectNoInput, requireDropConfirmable } from "./remove";
 

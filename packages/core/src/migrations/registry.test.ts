@@ -4,7 +4,7 @@
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { describe, expect, test } from "vitest";
 import { PithyError } from "../error/pithyError";
-import { createMigrationRegistry } from "./registry";
+import { createMigrationRegistry, decomposeMigrationKey } from "./registry";
 
 const noop: Migration = { up: async () => {}, down: async () => {} };
 
@@ -152,5 +152,49 @@ describe("createMigrationRegistry", () => {
       "0100_auth_0001_init",
       "0100_auth_0002_sessions",
     ]);
+  });
+});
+
+describe("decomposeMigrationKey", () => {
+  test("splits a composed key into the order, namespace and local key that built it", () => {
+    expect(decomposeMigrationKey("0250_audit_0001_init")).toEqual({
+      order: 250,
+      namespace: "audit",
+      localKey: "0001_init",
+    });
+  });
+
+  test("keeps every underscore after the namespace in the local key", () => {
+    // The namespace pattern admits no separator, so the first underscore after it is the boundary and
+    // the rest is the local key, however many underscores that holds.
+    expect(decomposeMigrationKey("1100_controlplane_0002_management_origin")).toEqual({
+      order: 1100,
+      namespace: "controlplane",
+      localKey: "0002_management_origin",
+    });
+  });
+
+  test("is the inverse of the registry: every key it composes decomposes to its own set", async () => {
+    const registry = createMigrationRegistry([
+      { database: "app", namespace: "auth", order: 300, migrations: { "0001_init": noop, "0002_two_factor": noop } },
+      { database: "app", namespace: "app", order: 1000, migrations: { "0001_init": noop } },
+    ]);
+    const keys = Object.keys(await providerFor(registry, "app").getMigrations());
+    expect(keys.map((key) => decomposeMigrationKey(key)?.namespace)).toEqual(["auth", "auth", "app"]);
+  });
+
+  test("answers null for a key no Pithy registry could have composed", () => {
+    // An undeclared migration's key is the only source of its namespace there is, and a database can
+    // hold one written by hand or by another tool. Guessing a namespace for it would be inventing one.
+    for (const key of [
+      "20260101_init",
+      "init",
+      "0001_auth",
+      "0001_Auth_0001_init",
+      "0001_auth_init",
+      "001_auth_0001_init",
+    ]) {
+      expect(decomposeMigrationKey(key), key).toBeNull();
+    }
   });
 });

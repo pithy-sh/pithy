@@ -7,6 +7,7 @@ import {
   ControlPlaneScope,
   KEYS_ROTATE_SCOPE,
   MANIFEST_READ_SCOPE,
+  MIGRATIONS_READ_SCOPE,
   SEAM_SCOPES,
   scopeCovers,
 } from "./scope";
@@ -70,8 +71,15 @@ describe("scopeCovers", () => {
 });
 
 describe("SEAM_SCOPES", () => {
-  test("names every grantable scope the seam's own routes use, and each is well-formed", () => {
+  test("is the seam's base grant, and each is well-formed", () => {
     expect([...SEAM_SCOPES].sort()).toEqual([KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE].sort());
     for (const scope of SEAM_SCOPES) expect(() => ControlPlaneScope.parse(scope)).not.toThrow();
+  });
+});
+
+describe("MIGRATIONS_READ_SCOPE", () => {
+  test("is well-formed, and left to the read derivation rather than the base grant", () => {
+    expect(ControlPlaneScope.parse(MIGRATIONS_READ_SCOPE)).toBe("migrations:read");
+    expect(SEAM_SCOPES).not.toContain(MIGRATIONS_READ_SCOPE);
   });
 });

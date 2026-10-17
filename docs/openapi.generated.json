@@ -1002,6 +1002,311 @@
         ]
       }
     },
+    "/control-plane/migrations": {
+      "get": {
+        "tags": [
+          "controlplane"
+        ],
+        "operationId": "getControlPlaneMigrations",
+        "summary": "Report where each database this Worker binds stands.",
+        "description": "Applied, pending and undeclared migrations per database, each naming its namespace, and the last group with whether it is still reversible. Undeclared is relative to this Worker: a database shared with another Worker lists that Worker's migrations there. Read-only.",
+        "responses": {
+          "200": {
+            "description": "What is applied, pending and undeclared in each bound database, and which run put it there.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "string",
+                      "description": "The environment this Worker answers for."
+                    },
+                    "databases": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "const": "readable",
+                                "description": "This database's ledger was read."
+                              },
+                              "database": {
+                                "type": "string",
+                                "description": "The database name, as capabilities declare it in `databases`."
+                              },
+                              "binding": {
+                                "type": "string",
+                                "description": "The D1 binding it is read through, as `wrangler.jsonc` declares it."
+                              },
+                              "applied": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "description": "The composed migration name, exactly as the ledger records it: `0250_audit_0001_init`."
+                                    },
+                                    "namespace": {
+                                      "description": "The capability this migration belongs to — its name, as `capabilities[]` in the manifest reports it. Null only for an undeclared migration whose name no Pithy registry could have composed.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "namespace"
+                                  ],
+                                  "description": "One migration, and the capability namespace it belongs to."
+                                },
+                                "description": "Every applied migration, in the order the ledger applied them."
+                              },
+                              "pending": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "description": "The composed migration name, exactly as the ledger records it: `0250_audit_0001_init`."
+                                    },
+                                    "namespace": {
+                                      "description": "The capability this migration belongs to — its name, as `capabilities[]` in the manifest reports it. Null only for an undeclared migration whose name no Pithy registry could have composed.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "namespace"
+                                  ],
+                                  "description": "One migration, and the capability namespace it belongs to."
+                                },
+                                "description": "Declared by this build and not applied here, in the order they would run."
+                              },
+                              "undeclared": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "description": "The composed migration name, exactly as the ledger records it: `0250_audit_0001_init`."
+                                    },
+                                    "namespace": {
+                                      "description": "The capability this migration belongs to — its name, as `capabilities[]` in the manifest reports it. Null only for an undeclared migration whose name no Pithy registry could have composed.",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "namespace"
+                                  ],
+                                  "description": "One migration, and the capability namespace it belongs to."
+                                },
+                                "description": "Applied here and not declared by this Worker, sorted. Relative to this Worker: a database shared with another Worker lists that Worker's migrations here. Otherwise Kysely reads one as a corrupted chain and applies nothing."
+                              },
+                              "lastGroup": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "group": {
+                                        "type": "string",
+                                        "description": "The group's value: the `--group` the run was given, or the ISO-8601 timestamp it generated."
+                                      },
+                                      "appliedAt": {
+                                        "type": "string",
+                                        "format": "date-time",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                                        "description": "When this group last applied something here, ISO-8601."
+                                      },
+                                      "migrations": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "name": {
+                                              "type": "string",
+                                              "description": "The composed migration name, exactly as the ledger records it: `0250_audit_0001_init`."
+                                            },
+                                            "namespace": {
+                                              "description": "The capability this migration belongs to — its name, as `capabilities[]` in the manifest reports it. Null only for an undeclared migration whose name no Pithy registry could have composed.",
+                                              "type": [
+                                                "string",
+                                                "null"
+                                              ]
+                                            }
+                                          },
+                                          "required": [
+                                            "name",
+                                            "namespace"
+                                          ],
+                                          "description": "One migration, and the capability namespace it belongs to."
+                                        },
+                                        "description": "What this group applied in this database and is still applied, in application order."
+                                      },
+                                      "position": {
+                                        "oneOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "const": "top",
+                                                "description": "The group's migrations are the contiguous tip of this database's chain. Not a promise that `pithy migrate --rollback --group <value>` runs: the CLI also refuses an undeclared migration in the ledger, and keeps back or refuses a database another environment binds."
+                                              }
+                                            },
+                                            "required": [
+                                              "state"
+                                            ],
+                                            "description": "A group nothing on this database's ledger sits over."
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "state": {
+                                                "type": "string",
+                                                "const": "buried",
+                                                "description": "Something sits over the group or inside it, so reversing it by name is refused."
+                                              },
+                                              "above": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                },
+                                                "description": "The groups in the way, newest first."
+                                              },
+                                              "ungrouped": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "name": {
+                                                      "type": "string",
+                                                      "description": "The composed migration name, exactly as the ledger records it: `0250_audit_0001_init`."
+                                                    },
+                                                    "namespace": {
+                                                      "description": "The capability this migration belongs to — its name, as `capabilities[]` in the manifest reports it. Null only for an undeclared migration whose name no Pithy registry could have composed.",
+                                                      "type": [
+                                                        "string",
+                                                        "null"
+                                                      ]
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "name",
+                                                    "namespace"
+                                                  ],
+                                                  "description": "One migration, and the capability namespace it belongs to."
+                                                },
+                                                "description": "The migrations in the way that no group claims, newest first. Nothing can be reversed by group while one of them is at the tip."
+                                              }
+                                            },
+                                            "required": [
+                                              "state",
+                                              "above",
+                                              "ungrouped"
+                                            ],
+                                            "description": "A group with something in its way, and what that is."
+                                          }
+                                        ],
+                                        "description": "Whether the group is the top of the chain, or what is in its way."
+                                      }
+                                    },
+                                    "required": [
+                                      "group",
+                                      "appliedAt",
+                                      "migrations",
+                                      "position"
+                                    ],
+                                    "description": "The newest group with anything still applied in this database."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "The newest group with anything applied here, or null when nothing applied here was ever grouped."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "database",
+                              "binding",
+                              "applied",
+                              "pending",
+                              "undeclared",
+                              "lastGroup"
+                            ],
+                            "description": "A database whose ledger was read."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "const": "unreadable",
+                                "description": "This database's ledger could not be read on this call."
+                              },
+                              "database": {
+                                "type": "string",
+                                "description": "The database name, as capabilities declare it in `databases`."
+                              },
+                              "binding": {
+                                "type": "string",
+                                "description": "The D1 binding it would be read through."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "database",
+                              "binding"
+                            ],
+                            "description": "A database that could not be read. No lists, so nothing about it reads as zero. The other databases still answer."
+                          }
+                        ],
+                        "description": "One database this Worker binds: its migration state, or the fact that it could not be read."
+                      },
+                      "description": "One entry per database this Worker binds, sorted by database name. One unreadable costs only itself."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "databases"
+                  ],
+                  "description": "What is applied, pending and undeclared in each bound database, and which run put it there."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "migrations:read"
+        ]
+      }
+    },
     "/secrets/admin/status": {
       "get": {
         "tags": [

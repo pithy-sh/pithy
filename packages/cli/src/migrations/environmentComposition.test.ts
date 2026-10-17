@@ -5,10 +5,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import { collectMigrationSets } from "@pithy-sh/core/src/migrations/capabilitySets";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runUpgrade } from "../commands/upgrade";
-import { collectMigrationSets } from "./registry";
 import { migrateProject, previewReset, readProjectLedger } from "./run";
 
 /**
