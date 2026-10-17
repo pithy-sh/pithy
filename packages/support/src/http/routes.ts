@@ -125,7 +125,10 @@ import {
  * `createBackend` mounts **every** capability's middleware before **any** capability's routes, and the
  * adopter's `app` capability composes last — so their middleware runs after auth has resolved the
  * session and before this file's `requireAuth()`. `createBackend.workers.test.ts` pins that ordering,
- * because a paragraph asserting it is not the same as a test failing when it changes.
+ * because a paragraph asserting it is not the same as a test failing when it changes. Readiness guards
+ * (`Capability.readiness`) mount between the two, after every middleware and before every route, and
+ * skip the admin surface; `createBackend.readiness.workers.test.ts` pins that. A check like this one
+ * refuses a caller, not a broken Worker, so it stays in `middleware`.
  *
  * Two consequences worth stating rather than discovering. Their middleware sees `c.var.auth` as **null**
  * on an unauthenticated request, since it runs ahead of the route's own gate — so it should pass those

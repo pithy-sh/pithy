@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -83,5 +84,26 @@ describe("the vector drift guard on the boot path", () => {
   it("leaves `GET /health` answering, so a drifted deploy fails on traffic rather than on the probe", async () => {
     const response = await get("/health", bindings);
     expect(response.status).toBe(200);
+  });
+});
+
+describe("the drift guard and the control plane", () => {
+  it("is a readiness guard, not middleware", () => {
+    const capability = vector(options);
+    expect(capability.readiness).toHaveLength(1);
+    expect(capability.middleware ?? []).toHaveLength(0);
+  });
+
+  it("leaves the control-plane surface answering on a drifted Worker", async () => {
+    // No credential, so the seam's own gate answers. What matters is who answers: the seam, with its
+    // denial, and not the drift guard with a 500 that hides every fact a management client came for.
+    const app = createBackend({ capabilities: [vector(options), controlplane()] });
+    const response = await app.fetch(new Request("https://example.test/control-plane/ping"), {
+      ...bindings,
+      CONTROL_PLANE: {},
+    });
+    const body = (await response.json()) as { error: { code: string } };
+    expect(body.error.code).not.toBe("vector/metadata_index_drift");
+    expect(body.error.code).toMatch(/^controlplane\//);
   });
 });

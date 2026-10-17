@@ -297,6 +297,20 @@ Note that those are **two** scopes — `payments:entitlements:grant` and `paymen
 
 Guards before validators, always. A validator ahead of the guard turns a 401 into a 400 and tells an unauthenticated caller which requests were well-formed — on this seam that is a live oracle.
 
+**A Worker in a bad state still answers its control plane.** It is the diagnostic surface, so it cannot sit behind the faults it diagnoses. A capability that must refuse because the Worker is misconfigured or unprovisioned declares that refusal as `readiness`, not `middleware`:
+
+```ts
+defineCapability({
+  name: "vector",
+  readiness: [provisionGuard(resolved)],
+  // …
+});
+```
+
+`createBackend` mounts every readiness guard after every capability's `middleware` and before any capability's routes, and skips it on the admin surface: every composed capability's `adminRoutes`, the seam's own included. So a Worker whose vector index drifted answers `ping`, the manifest and every admin route, and answers everything else with the drift error. `GET /health` answers either way.
+
+Only that kind of refusal goes there. A rate limit, authentication and a CSRF check refuse a *caller*, and they stay in `middleware`, where they keep running on the admin surface. So does everything the seam stands on: `controlplane()`'s verifier and `audit()`'s recorder are both middleware, which is why the exemption is the guard and never the middleware. Skip those and the seam denies everything, or stops auditing without a word.
+
 Admin routes contributed by a capability inherit that capability's license. The seam itself is MIT, in `@pithy-sh/core`, and is never gated by tier: this is the code that runs in **your** Worker, and restricting it would make "you can build your own client against your own Worker" untrue.
 
 ---

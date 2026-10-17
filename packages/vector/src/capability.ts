@@ -109,9 +109,10 @@ export function vector(options: VectorOptions = { indexes: {} }): VectorCapabili
       },
     },
     seeds: [vectorExampleSeed],
-    // The drift check runs as middleware because the record it reads is a var, and in Workers vars arrive
-    // per request — there is no env at assembly for a `compose` hook to read.
-    middleware: [provisionGuard(resolved)],
+    // The drift check runs per request because the record it reads is a var, and in Workers vars arrive
+    // per request — there is no env at assembly for a `compose` hook to read. A readiness guard, so the
+    // control-plane surface still answers a drifted Worker.
+    readiness: [provisionGuard(resolved)],
     routes: registerVectorRoutes({ config: resolved, ...(basePath !== undefined ? { basePath } : {}) }),
   });
 
