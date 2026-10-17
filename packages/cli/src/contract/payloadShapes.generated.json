@@ -2172,6 +2172,18 @@
         "$.cohort{}": "unknown"
       }
     },
+    "token forget": {
+      "schemaVersion": 1,
+      "payload": {
+        "$": "object",
+        "$.command": "\"token forget\"",
+        "$.profile": "string",
+        "$.env": "string",
+        "$.localCopy": "\"absent\" | \"forgotten\"",
+        "$.location": "string",
+        "$.usage": "\"never-used\" | \"no-live-token\" | \"skipped\" | \"unreadable\" | \"used\""
+      }
+    },
     "token list": {
       "schemaVersion": 1,
       "payload": {
@@ -2209,7 +2221,10 @@
         "$.profile": "string",
         "$.env": "string",
         "$.name": "string",
-        "$.revokedCount": "integer"
+        "$.revokedCount": "integer",
+        "$.localCopy": "\"absent\" | \"forgotten\" | \"uncleared\"",
+        "$.location": "string",
+        "$.localCopyProblem": "string?"
       }
     },
     "token rotate": {

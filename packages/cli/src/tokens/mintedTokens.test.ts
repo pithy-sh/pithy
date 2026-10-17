@@ -1,13 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { StatePathOptions } from "../notifier/state";
-import { MINTED_TOKENS_FILE_NAME, mintedTokensPath, readMintedTokens, writeMintedToken } from "./mintedTokens";
+import {
+  forgetMintedToken,
+  holdsMintedToken,
+  MINTED_TOKENS_FILE_NAME,
+  mintedTokensPath,
+  readMintedTokens,
+  writeMintedToken,
+} from "./mintedTokens";
 
 /**
  * `<config>/<project>/tokens.json` — where a minted Cloudflare token goes now that nothing is written
@@ -269,6 +276,119 @@ describe("writeMintedToken", () => {
     await mkdir(file(), { recursive: true });
 
     await expect(writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "fresh", paths())).rejects.toThrow(PithyError);
+  });
+});
+
+/**
+ * The other half of the sink (#762): a value goes into `tokens.json` and, until this, never came out but by
+ * a hand edit. The remover is a read-modify-write over the same credential file, so it holds the writer's
+ * rules exactly — one merge base, one mode, every other entry left as it was.
+ */
+describe("forgetMintedToken", () => {
+  test("drops one environment's value for one key, and leaves every other entry as it was", async () => {
+    await writeMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", "staging-ci", paths());
+    await writeMintedToken("replay", "staging", "CF_TOKEN_OTHER", "staging-other", paths());
+    await writeMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", "prod-ci", paths());
+
+    expect(await forgetMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", paths())).toEqual({
+      path: file(),
+      forgotten: true,
+    });
+
+    expect(await readMintedTokens(file())).toEqual({
+      staging: { CF_TOKEN_OTHER: "staging-other" },
+      prod: { CF_TOKEN_CI_SYSTEM: "prod-ci" },
+    });
+  });
+
+  test("dropping an environment's last key drops the environment — nothing here ever writes `{}` for one", async () => {
+    await writeMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", "staging-ci", paths());
+    await writeMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", "prod-ci", paths());
+
+    await forgetMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", paths());
+
+    expect(JSON.parse(await readFile(file(), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "prod-ci" } });
+  });
+
+  test("writes the file back at 0600, with a trailing newline", async () => {
+    await writeMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", "a", paths());
+    await writeMintedToken("replay", "dev", "CF_TOKEN_OTHER", "b", paths());
+    await chmod(file(), 0o644);
+
+    await forgetMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", paths());
+
+    expect((await stat(file())).mode & 0o777).toBe(0o600);
+    expect(await readFile(file(), "utf8")).toBe(`${JSON.stringify({ dev: { CF_TOKEN_OTHER: "b" } }, null, 2)}\n`);
+  });
+
+  test("no file is nothing to forget — and no file is created to say so", async () => {
+    expect(await forgetMintedToken("replay", "dev", "CF_TOKEN_CI_SYSTEM", paths())).toEqual({
+      path: file(),
+      forgotten: false,
+    });
+    await expect(stat(file())).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("a key that is not there leaves the file byte for byte, and rewrites nothing", async () => {
+    await writeMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", "prod-ci", paths());
+    const before = await readFile(file(), "utf8");
+    const mtime = (await stat(file())).mtimeMs;
+
+    expect(await forgetMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", paths())).toEqual({
+      path: file(),
+      forgotten: false,
+    });
+
+    expect(await readFile(file(), "utf8")).toBe(before);
+    expect((await stat(file())).mtimeMs).toBe(mtime);
+  });
+
+  test("**refuses a file it could not make sense of, rather than rewriting it**", async () => {
+    // The writer's rule, for the same reason: a remover that read a broken file as `{}` would have nothing
+    // to remove and write nothing — but one that read it as a partial document would rename the part over
+    // the whole. Byte for byte, every environment in it stays recoverable.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    const held = `{ not json\n${JSON.stringify({ prod: { CF_TOKEN_CI_SYSTEM: "a-live-credential" } })}\n`;
+    await writeFile(file(), held, { mode: 0o600 });
+
+    const error = await forgetMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", paths()).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(`${payload.message} ${payload.action ?? ""} ${payload.detail ?? ""}`).not.toContain("a-live-credential");
+    expect(await readFile(file(), "utf8")).toBe(held);
+  });
+
+  test("refuses an unreadable file too", async () => {
+    await writeMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", "prod-ci", paths());
+    await chmod(file(), 0o000);
+
+    await expect(forgetMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", paths())).rejects.toThrow(PithyError);
+  });
+});
+
+describe("holdsMintedToken", () => {
+  test("says whether one environment holds a value for one key", async () => {
+    await writeMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", "prod-ci", paths());
+
+    expect(await holdsMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", paths())).toBe(true);
+    expect(await holdsMintedToken("replay", "staging", "CF_TOKEN_CI_SYSTEM", paths())).toBe(false);
+    expect(await holdsMintedToken("replay", "prod", "CF_TOKEN_OTHER", paths())).toBe(false);
+  });
+
+  test("no file holds nothing", async () => {
+    expect(await holdsMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", paths())).toBe(false);
+  });
+
+  test("is the strict read — a file it cannot make sense of is a refusal, not a `false`", async () => {
+    // A `false` here is what tells `pithy token forget` there is nothing to protect. Answering it for a
+    // file that would not parse would skip the check that the value has a second copy somewhere.
+    await mkdir(join(dir, "replay"), { recursive: true, mode: 0o700 });
+    await writeFile(file(), "{ not json", { mode: 0o600 });
+
+    await expect(holdsMintedToken("replay", "prod", "CF_TOKEN_CI_SYSTEM", paths())).rejects.toThrow(PithyError);
   });
 });
 

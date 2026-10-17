@@ -20,11 +20,17 @@ import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { type CapabilitySet, capabilitySetOf, isUnknown, type ResolvedWorker } from "../project/workerScope";
+import { canceled, EXIT } from "../terminal/exitClass";
+import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
+  type ForgetEngine,
+  type ForgetResult,
+  forgetProfileToken,
   listProfileTokens,
   mintProfileToken,
+  type RevokeResult,
   revokeProfileToken,
   rotateProfileToken,
   type TokenAudit,
@@ -262,6 +268,82 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
 }
 
 /**
+ * Assemble what `pithy token forget` needs (#762) — the engine's local half, and its account half only
+ * when there are credentials to read it with.
+ *
+ * **Missing credentials are not a refusal here**, and that is the one way this differs from
+ * {@link buildEngine}. `forget` drops a value from a file on this machine and consults the account only
+ * to ask whether the token has been used; a run that cannot ask falls back to a prompt rather than
+ * failing. So `Cloudflare credentials are missing` becomes "the check cannot run", and every other failure
+ * — the project's own config, its name, its Workers — is as fatal as it is for a mint.
+ */
+async function buildForgetEngine(projectDir: string, env: string): Promise<ForgetEngine> {
+  const config = await loadProject(projectDir);
+  const project = requireProjectName(config);
+  const workerSet = await resolveWorkerSetFor(env, { projectDir });
+  const base: ForgetEngine = {
+    project,
+    get profiles() {
+      return tokenProfiles(workerSet);
+    },
+  };
+  let creds: ReturnType<typeof loadCreds>;
+  try {
+    creds = loadCreds(loadProjectCloudflare(config) ?? null);
+  } catch (error) {
+    if (error instanceof PreconditionFailedError) return base;
+    throw error;
+  }
+  const cf = await cloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });
+  return Object.defineProperties(base, {
+    tokens: { value: cf.accountTokens(), enumerable: true },
+    audit: {
+      value: await buildAudit(capabilitySetOf(workerSet), cf, projectDir, env, creds.apiToken),
+      enumerable: true,
+    },
+  });
+}
+
+/**
+ * The line `forget` and `revoke` write about the local copy, or nothing when there was none to touch.
+ *
+ * `absent` says nothing on a revoke, because a revoke of a token minted into the Secrets Store never had a
+ * local copy and a line about it would be noise on every one of them.
+ */
+export function localCopyLine(result: Pick<RevokeResult, "localCopy" | "location" | "localCopyProblem">): string {
+  if (result.localCopy === "forgotten") return `Forgot its local copy in ${result.location}.\n`;
+  if (result.localCopy === "uncleared") {
+    return `Could not clear its local copy. ${result.localCopyProblem ?? `Pithy could not clear ${result.location}.`}\n`;
+  }
+  return "";
+}
+
+/** What `forget` writes for a person: what it dropped, and that the token itself is untouched. */
+export function forgetLines(result: ForgetResult): string {
+  if (result.localCopy === "absent") return `${result.profile}: no ${result.env} copy in ${result.location}.\n`;
+  return `${result.profile}: forgot its ${result.env} copy in ${result.location}. The token is still live.\n`;
+}
+
+/**
+ * Ask whether to drop a copy whose use could not be checked. Ends the run on a no, exactly as `dashboard`'s
+ * confirmations do: `Canceled.`, exit 1, and nothing dropped.
+ */
+function confirmForget(profile: string, env: string): () => Promise<void> {
+  return async () => {
+    const { confirm, isCancel } = await import("@clack/prompts");
+    const answer = await confirm({
+      message: `Cloudflare could not say whether ${profile}'s ${env} token has been used. Drop its local copy anyway?`,
+      initialValue: false,
+    });
+    if (isCancel(answer)) canceled();
+    if (answer !== true) {
+      process.stderr.write("Canceled.\n");
+      process.exit(EXIT.failed);
+    }
+  };
+}
+
+/**
  * What `pithy token list` adds for a CI token that cannot attach this project's route (#651), or nothing.
  *
  * Its own sentence rather than a column, because it is not a fact about the listing — it is the next
@@ -383,6 +465,17 @@ const TokenListPayload = z
   })
   .describe("This project's tokens, never their values.");
 
+/**
+ * What became of the profile's value in `tokens.json` (#762). A word, not a boolean: #235 is why — `revoked`
+ * was a yes/no in one command and a count in another, and the falsy value of each meant something different.
+ */
+const LocalCopyWord = z
+  .enum(["forgotten", "absent", "uncleared"])
+  .describe(
+    "The profile's local copy for this environment: `forgotten` (dropped), `absent` (there was none), or `uncleared` (the cleanup could not run, so one may still be there).",
+  );
+const TokensFile = z.string().describe("The `tokens.json` path the local copy lives in. Never a value.");
+
 /** `pithy token revoke --json`. */
 const TokenRevokePayload = z
   .object({
@@ -391,8 +484,32 @@ const TokenRevokePayload = z
     env: Env,
     name: z.string().describe("The composed Cloudflare token name the sweep matched."),
     revokedCount: z.number().int().describe("How many account tokens of that name were deleted. `0` is ordinary."),
+    localCopy: LocalCopyWord,
+    location: TokensFile,
+    localCopyProblem: z
+      .string()
+      .optional()
+      .describe("Why the local copy could not be cleared, when `localCopy` is `uncleared`. Never a line of the file."),
   })
   .describe("What `pithy token revoke` deleted.");
+
+/** `pithy token forget --json`. */
+const TokenForgetPayload = z
+  .object({
+    command: z.literal("token forget").describe('`"token forget"`.'),
+    profile: Profile,
+    env: Env,
+    localCopy: z
+      .enum(["forgotten", "absent"])
+      .describe("`forgotten` when a value was dropped, `absent` when there was none to drop."),
+    location: TokensFile,
+    usage: z
+      .enum(["used", "never-used", "no-live-token", "unreadable", "skipped"])
+      .describe(
+        "What Cloudflare said about the token's use, which is why the drop went ahead: `used`, `no-live-token`, `unreadable`, or `skipped` (`--force`, or nothing to forget). `never-used` is a refusal and never reaches this line.",
+      ),
+  })
+  .describe("What `pithy token forget` dropped. The token stays live, and the value is never here.");
 
 /** The facts `mint` and `rotate` share: where a value may go, and the repeatable permission override. */
 const OVERRIDE_FACTS = {
@@ -530,10 +647,12 @@ const revoke = withContract(
           // count is the outlier — every other `<verb>ed` key in this CLI is a boolean — so it takes the
           // suffix. `RevokeResult` keeps `revoked`: the published name is decided here.
           const { revoked: revokedCount, ...rest } = result;
+          // The local cleanup (#762) is three words under one key, for the reason `revokedCount` is a count.
           process.stdout.write(`${formatJsonLine({ command: "token revoke", ...rest, revokedCount })}\n`);
           return;
         }
         process.stdout.write(`${result.profile}: revoked ${result.revoked} token${result.revoked === 1 ? "" : "s"}.\n`);
+        process.stdout.write(localCopyLine(result));
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
@@ -547,7 +666,48 @@ const revoke = withContract(
   },
 );
 
+const forget = withContract(
+  defineCommand({
+    meta: { name: "forget", description: "Forget a minted token's local copy — the token stays live in Cloudflare" },
+    args: {
+      ...profileArg,
+      ...envArgs,
+      force: {
+        type: "boolean",
+        default: false,
+        description: "Drop it without checking whether the token has been used, and without asking",
+      },
+      ...jsonArg,
+    },
+    run: ({ args }) =>
+      withErrorReporting(args.json, async () => {
+        const env = requireEnvironment(args.env);
+        const engine = await buildForgetEngine(process.cwd(), env);
+        const result = await forgetProfileToken(engine, args.profile, env, {
+          force: args.force,
+          ...(mayPrompt(args.json) ? { confirm: confirmForget(args.profile, env) } : {}),
+        });
+        if (args.json) {
+          process.stdout.write(`${formatJsonLine({ command: "token forget", ...result })}\n`);
+          return;
+        }
+        process.stdout.write(forgetLines(result));
+        process.stdout.write(`${formatDone()}\n`);
+      }),
+  }),
+  {
+    output: "document",
+    schemaVersion: 1,
+    payload: TokenForgetPayload,
+    mutates: true,
+    // A second run finds nothing to forget, asks nobody, and calls nothing.
+    idempotent: true,
+    // It asks the account whether the token has been used, and runs without it.
+    needsNetwork: true,
+  },
+);
+
 export default defineCommand({
   meta: { name: "token", description: "Mint and manage scoped Cloudflare API tokens" },
-  subCommands: { mint, list, rotate, revoke },
+  subCommands: { mint, list, rotate, revoke, forget },
 });

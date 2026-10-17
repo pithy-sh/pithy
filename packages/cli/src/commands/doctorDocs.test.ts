@@ -1362,7 +1362,8 @@ describe("the docs say what the code emits", () => {
     // 34 since #697's `--dry-run`: `pithy add` spreads its planned result beside `dryRun: true`, a second
     // spread next to the add's own, because the plan is the add's result plus the plan rather than a third
     // payload shape.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(34);
+    // 35 since #762: `pithy token forget` spreads the engine's result behind its `command`, as `mint` does.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(35);
   });
 
   /**

@@ -861,6 +861,16 @@
       "flags": []
     },
     {
+      "path": "token forget",
+      "flags": [
+        "--env",
+        "--force",
+        "--no-force",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "token list",
       "flags": [
         "--env",

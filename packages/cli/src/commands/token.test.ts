@@ -10,6 +10,8 @@ import { tokenProfiles } from "../tokens/workerProfiles";
 import {
   collectPermissionFlags,
   deadTokenNotice,
+  forgetLines,
+  localCopyLine,
   parsePermissions,
   parseStore,
   publicToken,
@@ -250,5 +252,40 @@ describe("publicToken", () => {
     });
     expect(json).toMatchObject({ status: "disabled" });
     expect(JSON.stringify(json)).not.toContain("never printed");
+  });
+});
+
+describe("localCopyLine", () => {
+  const location = "/home/you/.config/pithy/acme/tokens.json";
+
+  test("a revoke that dropped the local copy says so, and where", () => {
+    expect(localCopyLine({ localCopy: "forgotten", location })).toBe(`Forgot its local copy in ${location}.\n`);
+  });
+
+  test("says nothing when there was nothing to drop — a Secrets Store token never had a copy", () => {
+    expect(localCopyLine({ localCopy: "absent", location })).toBe("");
+  });
+
+  test("an uncleared copy carries the refusal's own sentence", () => {
+    const problem = `Cannot update ${location}: it is there and is not JSON.`;
+    expect(localCopyLine({ localCopy: "uncleared", location, localCopyProblem: problem })).toBe(
+      `Could not clear its local copy. ${problem}\n`,
+    );
+  });
+});
+
+describe("forgetLines", () => {
+  const location = "/home/you/.config/pithy/acme/tokens.json";
+
+  test("a drop says the token itself is untouched — the opposite of what a reader beside revoke assumes", () => {
+    expect(forgetLines({ profile: "ci-system", env: "prod", localCopy: "forgotten", location, usage: "used" })).toBe(
+      `ci-system: forgot its prod copy in ${location}. The token is still live.\n`,
+    );
+  });
+
+  test("nothing to forget says so", () => {
+    expect(forgetLines({ profile: "ci-system", env: "prod", localCopy: "absent", location, usage: "skipped" })).toBe(
+      `ci-system: no prod copy in ${location}.\n`,
+    );
   });
 });

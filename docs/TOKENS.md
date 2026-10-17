@@ -45,12 +45,14 @@ pithy token mint ci-system --env prod
   ```jsonc
   // ~/.config/pithy/acme/tokens.json — mode 0600
   {
-    "production": { "CF_TOKEN_CI_SYSTEM": "<the value>" },
-    "staging":    { "CF_TOKEN_CI_SYSTEM": "<the value>" }
+    "prod":    { "CF_TOKEN_CI_SYSTEM": "<the value>" },
+    "staging": { "CF_TOKEN_CI_SYSTEM": "<the value>" }
   }
   ```
 
   Open it, copy the value for the environment you minted, and set it as `CLOUDFLARE_API_TOKEN` in your CI provider's secrets. That copy is the whole point of this store: **you are the reader.** No Pithy command consumes this file — it is a handoff to a person, because CI cannot read either secret store and a credential has to cross that gap somehow.
+
+  Once CI has it, the local copy has no reader left. `pithy token forget ci-system --env prod` drops it and leaves the token live. It refuses while Cloudflare says nothing has ever used the token, because then this file may be its only copy. `pithy token revoke` drops the local copy too, since a deleted token's value has no reason to stay.
 - **`--store ephemeral`** writes nothing — for a single CI job that mints and uses the token in the same step.
 
 The value is never printed to stdout or `--json`; `dev-vars` is how you get it out to configure CI.
@@ -149,7 +151,7 @@ Override any mint with `--store`. A flag wins over the profile default, which wi
 
 ## Commands
 
-Every command is non-interactive, `--json`, `--env`-targeted, and never prints a token value.
+Every command runs non-interactively, takes `--json` and `--env`, and never prints a token value.
 
 ```bash
 # Mint (or reuse a still-valid one) and write it to the token's store.
@@ -165,11 +167,14 @@ pithy token list --env prod
 # as a grace window while a Worker consumer picks up the new value (redeploy first).
 pithy token rotate secrets --env prod --keep-previous
 
-# Revoke: delete the profile's token for an environment.
+# Revoke: delete the profile's token for an environment, and its local copy with it.
 pithy token revoke ci-system --env prod
+
+# Forget: drop the local copy once CI has it. The token stays live.
+pithy token forget ci-system --env prod
 ```
 
-Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, and revoke emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it).
+Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, revoke, and forget emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it).
 
 ## Environments
 

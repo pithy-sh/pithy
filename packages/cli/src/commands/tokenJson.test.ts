@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
-import type { TokenListItem, TokenResult } from "../tokens/engine";
+import type { ForgetResult, RevokeResult, TokenListItem, TokenResult } from "../tokens/engine";
 
 /**
  * **What `pithy token` writes under `--json`, held to the schema `pithy schema token` publishes (#697).**
@@ -18,6 +18,12 @@ const engine = vi.hoisted(() => ({
   minted: undefined as unknown,
   listed: [] as unknown[],
   revoked: undefined as unknown,
+  forgot: undefined as unknown,
+  forgetEngine: undefined as unknown,
+  credentials: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "token", SECRETS_STORE_ID: "store" } as Record<
+    string,
+    string
+  >,
 }));
 
 vi.mock("../project/config", async (importOriginal) => ({
@@ -27,7 +33,7 @@ vi.mock("../project/config", async (importOriginal) => ({
 }));
 vi.mock("../cloudflare/config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../cloudflare/config")>()),
-  cloudflareEnv: () => ({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "token", SECRETS_STORE_ID: "store" }),
+  cloudflareEnv: () => engine.credentials,
 }));
 vi.mock("../cloudflare/clients", () => ({ cloudflareClients: async () => ({ accountTokens: () => ({}) }) }));
 vi.mock("../project/composeFor", async (importOriginal) => ({
@@ -40,6 +46,10 @@ vi.mock("../tokens/engine", async (importOriginal) => ({
   rotateProfileToken: async () => engine.minted,
   listProfileTokens: async () => engine.listed,
   revokeProfileToken: async () => engine.revoked,
+  forgetProfileToken: async (forgetEngine: unknown) => {
+    engine.forgetEngine = forgetEngine;
+    return engine.forgot;
+  },
 }));
 
 afterEach(() => {
@@ -79,8 +89,64 @@ describe("pithy token --json conforms to its published payloads", () => {
     await expectConforms("token list", await runCaptured("token list", ["--env", "prod", "--json"]));
   });
 
-  test("revoke", async () => {
-    engine.revoked = { profile: "ci-system", env: "prod", name: "acme-prod-ci-system", revoked: 0 };
-    await expectConforms("token revoke", await runCaptured("token revoke", ["ci-system", "--env", "prod", "--json"]));
+  test("revoke, with each word for its local copy", async () => {
+    const location = "/home/you/.config/pithy/acme/tokens.json";
+    for (const localCopy of ["forgotten", "absent", "uncleared"] as const) {
+      engine.revoked = {
+        profile: "ci-system",
+        env: "prod",
+        name: "acme-prod-ci-system",
+        revoked: 0,
+        localCopy,
+        location,
+        ...(localCopy === "uncleared"
+          ? { localCopyProblem: `Cannot update ${location}: it is there and is not JSON.` }
+          : {}),
+      } satisfies RevokeResult;
+      await expectConforms("token revoke", await runCaptured("token revoke", ["ci-system", "--env", "prod", "--json"]));
+    }
+  });
+
+  test("forget, dropped and absent", async () => {
+    const location = "/home/you/.config/pithy/acme/tokens.json";
+    engine.forgot = {
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "forgotten",
+      location,
+      usage: "used",
+    } satisfies ForgetResult;
+    await expectConforms("token forget", await runCaptured("token forget", ["ci-system", "--env", "prod", "--json"]));
+    engine.forgot = {
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "absent",
+      location,
+      usage: "skipped",
+    } satisfies ForgetResult;
+    await expectConforms("token forget", await runCaptured("token forget", ["ci-system", "--env", "prod", "--json"]));
+  });
+});
+
+describe("pithy token forget without credentials", () => {
+  test("**runs, with no account to ask** — missing credentials are the check not running, not a refusal", async () => {
+    // `forget` is a local file operation that consults the account. Every other `pithy token` command
+    // refuses without credentials, because each writes to the account; this one falls back to asking.
+    const saved = engine.credentials;
+    engine.credentials = {};
+    engine.forgot = {
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "forgotten",
+      location: "/home/you/.config/pithy/acme/tokens.json",
+      usage: "unreadable",
+    } satisfies ForgetResult;
+    try {
+      await expectConforms("token forget", await runCaptured("token forget", ["ci-system", "--env", "prod", "--json"]));
+      expect((engine.forgetEngine as { tokens?: unknown }).tokens).toBeUndefined();
+      expect((engine.forgetEngine as { project: string }).project).toBe("acme");
+    } finally {
+      engine.credentials = saved;
+    }
   });
 });

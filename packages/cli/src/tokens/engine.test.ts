@@ -19,6 +19,7 @@ import { managerCfApiTokenSecretName } from "@pithy-sh/secrets/src/provision/pro
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type AccountTokenControl,
+  forgetProfileToken,
   listProfileTokens,
   mintProfileToken,
   revokeProfileToken,
@@ -29,6 +30,7 @@ import {
   tokenPrefix,
   tokenStoreEntryName,
 } from "./engine";
+import { writeMintedToken } from "./mintedTokens";
 
 function fakeControl(overrides: Partial<AccountTokenControl> = {}): AccountTokenControl & {
   minted: string[];
@@ -347,6 +349,69 @@ describe("rotateProfileToken", () => {
 });
 
 describe("revokeProfileToken", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-token-revoke-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A revoked token's plaintext has no argument for staying (#762). The account-side delete is the
+   * operation, and clearing the local copy is part of it — reported, never load-bearing.
+   */
+  test("drops that profile's local value for that environment, and says so", async () => {
+    const engine = engineWith(dir, fakeControl());
+    await writeMintedToken(PROJECT, "prod", "CF_TOKEN_CI_SYSTEM", "prod-value", engine.paths);
+    await writeMintedToken(PROJECT, "staging", "CF_TOKEN_CI_SYSTEM", "staging-value", engine.paths);
+
+    const result = await revokeProfileToken(engine, "ci-system", "prod");
+
+    expect(result).toMatchObject({ revoked: 1, localCopy: "forgotten", location: tokensFile(dir) });
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({
+      staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+    });
+  });
+
+  test("no file, or no such key, is `absent` — and the revoke is the same revoke", async () => {
+    const engine = engineWith(dir, fakeControl());
+    expect(await revokeProfileToken(engine, "ci-system", "prod")).toMatchObject({ revoked: 1, localCopy: "absent" });
+
+    await writeMintedToken(PROJECT, "staging", "CF_TOKEN_CI_SYSTEM", "staging-value", engine.paths);
+    expect(await revokeProfileToken(engine, "ci-system", "prod")).toMatchObject({ revoked: 1, localCopy: "absent" });
+  });
+
+  test("**a file it cannot read cannot fail the revoke** — the cleanup is `uncleared` and the file is untouched", async () => {
+    const engine = engineWith(dir, fakeControl());
+    await mkdir(join(dir, "config", PROJECT), { recursive: true });
+    const held = '{ not json "a-live-credential"';
+    await writeFile(tokensFile(dir), held, { mode: 0o600 });
+
+    const result = await revokeProfileToken(engine, "ci-system", "prod");
+
+    expect(result.revoked).toBe(1);
+    expect(result.localCopy).toBe("uncleared");
+    expect(result.localCopyProblem).toContain(tokensFile(dir));
+    expect(JSON.stringify(result)).not.toContain("a-live-credential");
+    expect(await readFile(tokensFile(dir), "utf8")).toBe(held);
+  });
+
+  test("a failed account-side delete clears nothing locally", async () => {
+    const engine = engineWith(
+      dir,
+      fakeControl({
+        deleteTokensByName: vi.fn(async () => {
+          throw new Error("rate limited");
+        }),
+      }),
+    );
+    await writeMintedToken(PROJECT, "prod", "CF_TOKEN_CI_SYSTEM", "prod-value", engine.paths);
+
+    await expect(revokeProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/rate limited/);
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "prod-value" } });
+  });
+
   test("deletes every token of the profile's name and audits the revoke", async () => {
     const tokens = fakeControl();
     const audited: TokenAuditEvent[] = [];
@@ -363,6 +428,220 @@ describe("revokeProfileToken", () => {
       profile: "ci-system",
       env: "prod",
     });
+  });
+});
+
+/**
+ * `pithy token forget` (#762): drop a minted token's local copy and leave the token live.
+ *
+ * The check is Cloudflare's own `last_used_on`. A `null` there means nothing has ever authenticated with
+ * the token, so the file may hold its only copy and dropping it strands the credential — that is refused.
+ * Anything that cannot be read falls back to a prompt, and with nobody to ask, to the drop: a local file
+ * operation must not fail for being offline, and `pithy token rotate` recovers an unwanted drop.
+ */
+describe("forgetProfileToken", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-token-forget-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const NAME = tokenName(PROJECT, "prod", "ci-system");
+
+  function listing(tokens: AccountTokenSummary[]): AccountTokenControl {
+    return fakeControl({ listTokens: vi.fn(async () => tokens) });
+  }
+
+  async function seeded(tokens: AccountTokenControl | undefined, extra: Partial<TokenEngine> = {}) {
+    const engine = { ...engineWith(dir, tokens ?? fakeControl(), extra), tokens };
+    await writeMintedToken(PROJECT, "prod", "CF_TOKEN_CI_SYSTEM", "prod-value", engine.paths);
+    await writeMintedToken(PROJECT, "staging", "CF_TOKEN_CI_SYSTEM", "staging-value", engine.paths);
+    return engine;
+  }
+
+  async function held(): Promise<unknown> {
+    return JSON.parse(await readFile(tokensFile(dir), "utf8"));
+  }
+
+  test("a token Cloudflare has seen used is dropped locally, and the token itself is left alone", async () => {
+    const tokens = listing([{ id: "t1", name: NAME, status: "active", last_used_on: "2026-10-14T00:40:19Z" }]);
+    const audited: TokenAuditEvent[] = [];
+    const engine = await seeded(tokens, { audit: async (event) => void audited.push(event) });
+    const confirm = vi.fn(async () => {});
+
+    const result = await forgetProfileToken(engine, "ci-system", "prod", { confirm });
+
+    expect(result).toEqual({
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "forgotten",
+      location: tokensFile(dir),
+      usage: "used",
+    });
+    expect(await held()).toEqual({ staging: { CF_TOKEN_CI_SYSTEM: "staging-value" } });
+    expect(confirm).not.toHaveBeenCalled();
+    // Live in Cloudflare: nothing was deleted, rolled or minted.
+    expect(tokens.deleteToken).not.toHaveBeenCalled();
+    expect(tokens.deleteTokensByName).not.toHaveBeenCalled();
+    expect(tokens.rollToken).not.toHaveBeenCalled();
+    expect(tokens.mintToken).not.toHaveBeenCalled();
+    expect(audited).toEqual([
+      {
+        action: "cloudflare/token_forgotten",
+        outcome: "success",
+        profile: "ci-system",
+        env: "prod",
+        store: "dev-vars",
+      },
+    ]);
+  });
+
+  test("**refuses a token that has never been used — the file may hold its only copy**", async () => {
+    const audited: TokenAuditEvent[] = [];
+    const engine = await seeded(listing([{ id: "t1", name: NAME, last_used_on: null }]), {
+      audit: async (event) => void audited.push(event),
+    });
+
+    const error = await forgetProfileToken(engine, "ci-system", "prod").catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(PithyError);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).toMatch(/never been used/);
+    expect(payload.action).toContain("pithy token rotate ci-system --env prod");
+    expect(`${payload.message} ${payload.action} ${payload.detail ?? ""}`).not.toContain("prod-value");
+    // Nothing dropped, and the refusal is on the trail.
+    expect(await held()).toEqual({
+      prod: { CF_TOKEN_CI_SYSTEM: "prod-value" },
+      staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+    });
+    expect(audited).toEqual([
+      { action: "cloudflare/token_forgotten", outcome: "failure", profile: "ci-system", env: "prod" },
+    ]);
+  });
+
+  test("one unused token of the name is enough to refuse — `--keep-previous` leaves two", async () => {
+    const engine = await seeded(
+      listing([
+        { id: "old", name: NAME, last_used_on: "2026-10-05T14:46:18Z" },
+        { id: "new", name: NAME, last_used_on: null },
+      ]),
+    );
+    await expect(forgetProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/never been used/);
+  });
+
+  test("`--force` skips the check, and so the refusal", async () => {
+    const tokens = listing([{ id: "t1", name: NAME, last_used_on: null }]);
+    const engine = await seeded(tokens);
+
+    const result = await forgetProfileToken(engine, "ci-system", "prod", { force: true });
+
+    expect(result).toMatchObject({ localCopy: "forgotten", usage: "skipped" });
+    expect(tokens.listTokens).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["no credentials to ask with", undefined],
+    [
+      "the account call failed",
+      fakeControl({
+        listTokens: vi.fn(async () => {
+          throw new Error("getaddrinfo ENOTFOUND api.cloudflare.com");
+        }),
+      }),
+    ],
+    ["Cloudflare did not say", listing([{ id: "t1", name: NAME, status: "active" }])],
+  ])("**%s: asks, when there is somebody to ask, and drops on a yes**", async (_label, tokens) => {
+    const engine = await seeded(tokens);
+    const confirm = vi.fn(async () => {});
+
+    const result = await forgetProfileToken(engine, "ci-system", "prod", { confirm });
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ localCopy: "forgotten", usage: "unreadable" });
+  });
+
+  test("an unreadable check with nobody to ask drops the value — offline is not a refusal", async () => {
+    const engine = await seeded(undefined);
+
+    expect(await forgetProfileToken(engine, "ci-system", "prod")).toMatchObject({
+      localCopy: "forgotten",
+      usage: "unreadable",
+    });
+    expect(await held()).toEqual({ staging: { CF_TOKEN_CI_SYSTEM: "staging-value" } });
+  });
+
+  test("a no at the prompt drops nothing", async () => {
+    const engine = await seeded(undefined);
+    const confirm = vi.fn(async () => {
+      throw new Error("declined");
+    });
+
+    await expect(forgetProfileToken(engine, "ci-system", "prod", { confirm })).rejects.toThrow(/declined/);
+    expect(await held()).toEqual({
+      prod: { CF_TOKEN_CI_SYSTEM: "prod-value" },
+      staging: { CF_TOKEN_CI_SYSTEM: "staging-value" },
+    });
+  });
+
+  test("`--force` skips the prompt too", async () => {
+    const engine = await seeded(undefined);
+    const confirm = vi.fn(async () => {});
+
+    expect(await forgetProfileToken(engine, "ci-system", "prod", { force: true, confirm })).toMatchObject({
+      localCopy: "forgotten",
+    });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  test("a token that is no longer on the account is dropped — its value opens nothing", async () => {
+    const engine = await seeded(listing([{ id: "other", name: "acme-prod-secrets", last_used_on: null }]));
+
+    expect(await forgetProfileToken(engine, "ci-system", "prod")).toMatchObject({
+      localCopy: "forgotten",
+      usage: "no-live-token",
+    });
+  });
+
+  test("nothing to forget is `absent`, asks nobody and reaches no account — so a re-run is the same run", async () => {
+    const tokens = listing([{ id: "t1", name: NAME, last_used_on: null }]);
+    const engine = { ...engineWith(dir, tokens), tokens };
+    const confirm = vi.fn(async () => {});
+
+    expect(await forgetProfileToken(engine, "ci-system", "prod", { confirm })).toEqual({
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "absent",
+      location: tokensFile(dir),
+      usage: "skipped",
+    });
+    expect(tokens.listTokens).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  test("a tokens file it cannot read is refused, not read as nothing to protect", async () => {
+    const engine = { ...engineWith(dir, fakeControl()), tokens: undefined };
+    await mkdir(join(dir, "config", PROJECT), { recursive: true });
+    await writeFile(tokensFile(dir), "{ not json", { mode: 0o600 });
+
+    await expect(forgetProfileToken(engine, "ci-system", "prod")).rejects.toThrow(PithyError);
+  });
+
+  test("an unknown profile is refused by name", async () => {
+    const engine = await seeded(undefined);
+    await expect(forgetProfileToken(engine, "nope", "prod")).rejects.toThrow(/Unknown token profile: nope/);
+  });
+
+  test("the key is the profile's secret, verbatim — never the project-scoped store entry", async () => {
+    // `tokens.json` is keyed by what a pipeline reads, `CF_TOKEN_SECRETS_MANAGER`, so that is what goes.
+    const profile = resolveProfile(resolveTokenProfiles([secretsCap]), "secrets");
+    const engine = { ...engineWith(dir, fakeControl()), tokens: undefined };
+    await writeMintedToken(PROJECT, "prod", profile.secret, "v", engine.paths);
+
+    await forgetProfileToken(engine, "secrets", "prod");
+
+    expect(await held()).toEqual({});
   });
 });
 
@@ -398,11 +677,16 @@ describe("which operations read the profile registry", () => {
     }) as TokenEngine;
   }
 
-  test("**revoke does not — it deletes by a name composed from the root config alone**", async () => {
+  test("**revoke does not need it — it deletes by a name composed from the root config alone**", async () => {
+    // Since #762 a revoke also clears the profile's local copy, and that one step does read the
+    // registry. It is the step that is allowed to fail: the delete still happens, and the cleanup says
+    // it could not run rather than taking the revoke down with it.
     const tokens = fakeControl();
     const result = await revokeProfileToken(engineWithUnreadableProfiles(tokens), "ci-system", "prod");
 
     expect(result.revoked).toBe(1);
+    expect(result.localCopy).toBe("uncleared");
+    expect(result.localCopyProblem).toMatch(/capability set is unknown/);
     expect(tokens.deletedByName).toEqual([tokenName(PROJECT, "prod", "ci-system")]);
   });
 

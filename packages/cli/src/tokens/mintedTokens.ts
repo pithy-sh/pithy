@@ -114,6 +114,72 @@ function withMintedToken(base: MergeBase<MintedTokens>, env: string, name: strin
   return { ...document, [env]: { ...(document[env] ?? {}), [name]: value } };
 }
 
+/** What {@link forgetMintedToken} did: the file it read, and whether a value came out of it. */
+export interface ForgetOutcome {
+  /** The `tokens.json` path, whether or not there was one. Never a value. */
+  path: string;
+  /** `true` when the value was there and is gone. `false` when there was nothing to drop. */
+  forgotten: boolean;
+}
+
+/**
+ * Drop one environment's value for one variable key, and answer whether one was there (#762).
+ *
+ * The missing half of {@link writeMintedToken}, and it holds that function's rules for the same reason:
+ * it is a read-modify-write over a credential file. Its base is {@link mintedTokensBase}, so every
+ * state but "there is no file" that the writer refuses, this refuses too, and every other environment's
+ * value is carried through untouched. Same atomic write, same `0600`.
+ *
+ * **Nothing to drop writes nothing.** No file stays no file, and a file without the key keeps its bytes —
+ * a remover that rewrote a document it did not change would narrow its mode and bump its mtime for a
+ * claim that is not true. And the environment's last key takes the environment with it: `{"staging": {}}`
+ * is a shape nothing else here produces, so nothing should have to read it.
+ */
+export async function forgetMintedToken(
+  project: string,
+  env: string,
+  name: string,
+  options: StatePathOptions = {},
+): Promise<ForgetOutcome> {
+  const base = await mintedTokensBase(mintedTokensPath(project, options));
+  const remaining = withoutMintedToken(base, env, name);
+  if (remaining === null) return { path: base.path, forgotten: false };
+  await writeFileAtomic(base.path, `${JSON.stringify(remaining, null, 2)}\n`, { mode: 0o600 });
+  await tightenMode(base.path);
+  return { path: base.path, forgotten: true };
+}
+
+/**
+ * Whether one environment holds a value for one key — through the strict read, deliberately.
+ *
+ * A `false` here is what tells `pithy token forget` there is nothing to protect, so it is never answered
+ * for a file that could not be read: that refusal is {@link mintedTokensBase}'s, and the lenient
+ * {@link readMintedTokens} would have said "nothing here" and let the check that guards the only copy be
+ * skipped.
+ */
+export async function holdsMintedToken(
+  project: string,
+  env: string,
+  name: string,
+  options: StatePathOptions = {},
+): Promise<boolean> {
+  const base = await mintedTokensBase(mintedTokensPath(project, options));
+  return base.document[env]?.[name] !== undefined;
+}
+
+/**
+ * The document to write once one key is gone, or `null` when it was never there.
+ *
+ * It takes a {@link MergeBase}, for the reason {@link withMintedToken} does.
+ */
+function withoutMintedToken(base: MergeBase<MintedTokens>, env: string, name: string): MintedTokens | null {
+  const values = base.document[env];
+  if (values?.[name] === undefined) return null;
+  const { [name]: _dropped, ...kept } = values;
+  const { [env]: _environment, ...others } = base.document;
+  return Object.keys(kept).length > 0 ? { ...others, [env]: kept } : others;
+}
+
 /**
  * The merge base for a write over `tokens.json`: the whole document, known-good, or a refusal.
  *
@@ -166,9 +232,11 @@ async function mintedTokensBase(path: string): Promise<MergeBase<MintedTokens>> 
  * **It has no production caller today, and that is a true statement about this file rather than dead
  * code left behind.** The one caller it had routed its planning pass through {@link mintedTokensBase}
  * in #222 — because a plan computed against a file it could not read is a plan that may tell somebody a
- * value is safe to delete — and was itself removed in #406. Nothing else reads `tokens.json` at all: #224
- * established that the `dev-vars` sink's consumer is a person, who opens the file and pastes the
- * `ci-system` token into CI.
+ * value is safe to delete — and was itself removed in #406. Nothing reads a credential out of
+ * `tokens.json`: #224 established that the `dev-vars` sink's consumer is a person, who opens the file and
+ * pastes the `ci-system` token into CI. The two readers it has since gained, {@link forgetMintedToken} and
+ * {@link holdsMintedToken} (#762), take values out or ask whether one is there, and both read through
+ * {@link mintedTokensBase} for the reason #222 gives.
  *
  * **It stays because the split is the design, not because something might want it.** #219's whole
  * argument is that a reporting read and a merge base are different things and a call site must not be

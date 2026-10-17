@@ -96,6 +96,13 @@ const SITES: Record<string, PromptSite> = {
   "commands/provision.ts": { prompts: ["confirmPrompt"], kind: "required", gatedBy: "commands/provision.ts" },
   "commands/remove.ts": { prompts: ["dropConfirm"], kind: "required", gatedBy: "commands/remove.ts" },
   "commands/seed.ts": { prompts: ["resetPrompt", "productionPrompt"], kind: "required", gatedBy: "commands/seed.ts" },
+  "commands/token.ts": {
+    // `forget` asks only when Cloudflare could not say whether the token was used, and a run that asks
+    // nobody drops the value (#762): a local file operation does not fail for being offline.
+    prompts: ["confirmForget"],
+    kind: "optional",
+    gatedBy: "commands/token.ts",
+  },
   "commands/ui.ts": { prompts: ["promptScreens"], kind: "optional", gatedBy: "commands/ui.ts" },
   "commands/vector.ts": { prompts: ["resetPrompt"], kind: "required", gatedBy: "commands/vector.ts" },
   "project/askDomains.ts": {
