@@ -204,7 +204,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy storage` | [`commands/storage.md`](commands/storage.md) — Provision and manage the storage backends |
 | `pithy support` | [`commands/support.md`](commands/support.md) — Provision and manage the support capability |
 | `pithy testers` | [`commands/testers.md`](commands/testers.md) — Cohorts, invitations, and tester rosters |
-| `pithy token` | [`commands/token.md`](commands/token.md) — Mint, list, and revoke API tokens |
+| `pithy token` | [`commands/token.md`](commands/token.md) — Mint, list, rotate, revoke, and forget API tokens |
 | `pithy turnstile` | [`commands/turnstile.md`](commands/turnstile.md) — Provision the humanity check |
 | `pithy ui` | [`commands/ui.md`](commands/ui.md) — Scaffold a front end into a Worker and wire it |
 | `pithy upgrade` | [`commands/upgrade.md`](commands/upgrade.md) — Reconcile package-served capabilities with their manifests |
