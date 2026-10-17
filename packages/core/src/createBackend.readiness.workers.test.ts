@@ -69,7 +69,10 @@ const recorder = defineCapability({
 
 const INVENTORY_READ_SCOPE = "inventory:things:read";
 
-/** A capability with its own admin route, and a rate limit over it — auth's shape, scoped to its path. */
+/**
+ * A capability with its own admin route, and a rate limit over it — auth's shape, scoped to its path. Its
+ * public route is not admin surface, so the guard answers it.
+ */
 let limited = false;
 const inventory = defineCapability({
   name: "inventory",
@@ -87,6 +90,7 @@ const inventory = defineCapability({
   ],
   routes: (app) => {
     app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
+    app.get("/inventory/things", (c) => c.json({ things: [] }));
   },
 });
 
@@ -237,8 +241,12 @@ describe("where a readiness guard mounts", () => {
   });
 
   test("before any capability's routes, so it guards a route composed ahead of it", async () => {
+    // Inventory is composed ahead of the guard, so its public route mounts first. Mounted with the guard's
+    // own capability's routes, the guard would sit behind that route and never see the request.
     const app = createBackend({ capabilities: [controlplane(), inventory, drifted], app: adopterApp });
-    expect((await app.request("http://worker.example/api/things", { method: "GET" }, BINDINGS)).status).toBe(500);
+    const response = await app.request("http://worker.example/inventory/things", { method: "GET" }, BINDINGS);
+    expect(response.status).toBe(500);
+    expect(await errorOf(response)).toMatchObject({ code: "core/internal", message: DRIFT_MESSAGE });
   });
 
   test("never ahead of /health, which answers without reaching it", async () => {
