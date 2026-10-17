@@ -276,7 +276,7 @@ Three fields, on the **connection** rather than the credential, so they hold for
 
 **A purpose is one line of plain text, at most 200 characters.** No control character, no line break, no bidi override: those are how a sentence turns into something else once a renderer shows it, and refusing them at the boundary is one promise where escaping them is a promise per renderer. Edit it with `pithy dashboard connect --update --purpose`, which records `controlplane/connection_updated` naming the old value and the new.
 
-**A connection registered before these fields still works.** They arrived as nullable columns in `controlplane_0003_connection_principal`, nothing is backfilled — most of the trail that might be mined names a token, not a person — and every reader shows such a row as registered before principals were recorded. Its purpose may be set with `--update`. Its principal is set only by registering again, under a session.
+**A connection registered before these fields still works.** They arrived as nullable columns in `controlplane_0003_connection_principal`, nothing is backfilled — most of the trail that might be mined names a token, not a person — and `pithy dashboard status` shows such a row as registered before principals were recorded. No other reader says so: the human `connect` report leaves the three fields out, and the `--json` output and the Worker's keys listing return them as `null`. Its purpose may be set with `--update`. Its principal is set only by registering again, under a session.
 
 ---
 
