@@ -58,7 +58,7 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | `command` | string | `"cloudflare connect"`. |
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
 | `profile` | string | The profile signed in. |
-| `email` | string or null | Who signed in. Every audit row the CLI writes under this session names them. |
+| `email` | string or null | Who signed in. Every audit row the CLI writes under this session names them, and a dashboard connection registered under it records them as who authorized it. |
 | `account` | object | The account the session acts on: `account.id` and `account.name`. |
 | `boundTo` | string | The directory the profile is bound to — a repository's main checkout. |
 | `scopes` | string[] | The permissions granted. |
