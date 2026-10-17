@@ -26,7 +26,7 @@ From the directory the project should live in:
 pithy init --name <project> --worker <worker> --target <mobile|web|both> --json
 ```
 
-Read the JSON it prints. `frontEnd` says whether a React app was scaffolded. Then install with the project's package manager.
+Read the JSON it prints. `frontEnd` says whether a React app was scaffolded. Then run `pithy setup`: it installs with the project's package manager and makes the checkout ready to develop.
 
 Offer `pithy docs connect`, which points this session at the Pithy documentation server. It writes no credential.
 
