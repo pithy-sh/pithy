@@ -154,6 +154,7 @@ export const EXIT_CLASS_BY_CODE = {
   "matchmaking/room_not_found": "precondition",
   "matchmaking/user_not_found": "precondition",
   "media/not_found": "precondition",
+  "media/forbidden": "precondition",
   "multiplayer/game_not_found": "precondition",
   "multiplayer/invalid_transition": "precondition",
   "multiplayer/not_a_member": "precondition",

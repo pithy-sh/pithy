@@ -94,6 +94,7 @@ export const esErrors: MessageCatalog = {
 
   // Media.
   "media/not_found": "Ese archivo no existe.",
+  "media/forbidden": "Puedes ver este archivo, pero no cambiarlo.",
   "media/unsupported": "Ese tipo de archivo no es compatible con esta operación.",
   "media/storage_failed": "No se ha podido guardar el archivo.",
   "media/enrichment_failed": "No se ha podido analizar el archivo.",

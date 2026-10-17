@@ -115,8 +115,8 @@ export interface SettingsCheckContext {
  *
  * Closed for the reason `CapabilityHealth` is: handing a capability a raw Cloudflare client would make
  * every capability a place a network call can be invented, and would put `@pithy-sh/cloudflare` in the
- * dependency list of packages that need none of it. Three questions cover what the first checks ask; a
- * fourth lands here, once, when a capability actually needs it.
+ * dependency list of packages that need none of it. Four questions cover what the checks ask; a fifth
+ * lands here, once, when a capability actually needs it.
  *
  * Every method may throw. A throw is the account failing to answer, and the runner reports that
  * capability's account tier as unchecked rather than as a pass.
@@ -141,6 +141,31 @@ export interface SettingsAccountReader {
    * created it with, so the check looks where the value went.
    */
   storeEntry(name: string): Promise<boolean>;
+  /**
+   * The ids of the rows in one of the kit's own tables whose column holds one of `values`, in the app
+   * database a Worker binds as `DB` in one deployed environment (#727).
+   *
+   * Asked by media and storage after a project narrows `visibility.allowed`: narrowing never rewrites a
+   * record, so the records left outside the policy have to be *named*, and only the deployed database
+   * holds them. Closed in its own way — the table must be a `pithy_` one and the column an identifier,
+   * both refused otherwise, and the values are bound, never interpolated — so it reads a fact about a
+   * capability's own rows and cannot become a query language.
+   */
+  appRows(request: AppRowsRequest): Promise<readonly string[]>;
+}
+
+/** What {@link SettingsAccountReader.appRows} is asked. */
+export interface AppRowsRequest {
+  /** The deployed environment whose app database is read. `dev` is refused: it has no deployed database. */
+  readonly environment: string;
+  /** The Worker's `apps/` directory — whose `wrangler.jsonc` names the database for that environment. */
+  readonly workerDirectory: string;
+  /** The kit table, as it is named in SQL — `pithy_media_assets`. Must carry the `pithy_` prefix. */
+  readonly table: string;
+  /** The column compared, as it is named in SQL — `visibility`. */
+  readonly column: string;
+  /** The values that make a row worth naming. */
+  readonly values: readonly string[];
 }
 
 /** What the account tier is told: everything the local tier gets, plus the account it may ask. */

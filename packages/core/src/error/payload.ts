@@ -535,6 +535,18 @@ const MediaNotFoundPublic = z
   })
   .describe("A requested media record does not exist (404).");
 
+const MediaForbiddenPublic = z
+  .object({
+    code: z
+      .literal("media/forbidden")
+      .describe(
+        "The caller may read the media record but not change it: only its owner, acting for the record's organization, or a role holding `media:manage` there may edit, delete or re-scope it.",
+      ),
+    status: z.literal(403).describe("Forbidden."),
+    ...publicFields,
+  })
+  .describe("The caller may read the record but not change it (403).");
+
 const MediaUnsupportedPublic = z
   .object({
     code: z
@@ -931,7 +943,7 @@ const StorageNotFoundPublic = z
   .object({
     code: z
       .literal("storage/not_found")
-      .describe("No object row matches, or the object exists but is not visible to this caller."),
+      .describe("No object row matches, or the object exists but this caller may not read it."),
     status: z.literal(404).describe("Not Found."),
     ...publicFields,
   })
@@ -939,11 +951,15 @@ const StorageNotFoundPublic = z
 
 const StorageForbiddenPublic = z
   .object({
-    code: z.literal("storage/forbidden").describe("The caller does not own the object and the object is not public."),
+    code: z
+      .literal("storage/forbidden")
+      .describe(
+        "The caller may read the object but not change it: only its owner, acting for the object's organization, or a role holding `storage:manage` there may.",
+      ),
     status: z.literal(403).describe("Forbidden."),
     ...publicFields,
   })
-  .describe("The caller is not the owner and the object is not public (403).");
+  .describe("The caller may read the object but not change it (403).");
 
 const StorageQuotaExceededPublic = z
   .object({
@@ -1642,6 +1658,7 @@ export const KitPublicErrorPayload = z
     AuditInvalidEventPublic,
     AuditWriteFailedPublic,
     MediaNotFoundPublic,
+    MediaForbiddenPublic,
     MediaUnsupportedPublic,
     MediaStorageFailedPublic,
     MediaEnrichmentFailedPublic,
@@ -1822,6 +1839,7 @@ const AuditWriteFailed = AuditWriteFailedPublic.extend(internalFields).describe(
   AuditWriteFailedPublic.description ?? "",
 );
 const MediaNotFound = MediaNotFoundPublic.extend(internalFields).describe(MediaNotFoundPublic.description ?? "");
+const MediaForbidden = MediaForbiddenPublic.extend(internalFields).describe(MediaForbiddenPublic.description ?? "");
 const MediaUnsupported = MediaUnsupportedPublic.extend(internalFields).describe(
   MediaUnsupportedPublic.description ?? "",
 );
@@ -2148,6 +2166,7 @@ export const KitErrorPayload = z
     AuditInvalidEvent,
     AuditWriteFailed,
     MediaNotFound,
+    MediaForbidden,
     MediaUnsupported,
     MediaStorageFailed,
     MediaEnrichmentFailed,

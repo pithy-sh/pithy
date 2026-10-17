@@ -261,6 +261,10 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  *
  * Verified 2026-08-28: 121 members in each union, no duplicates, sorted lists identical.
  *
+ * `media/forbidden` (#727) took it to 134 — a media record the caller may read but not change. A record
+ * the caller cannot read is `media/not_found`, so this one only ever answers somebody who already knows
+ * the record exists, and it is storage's `storage/forbidden` given to media.
+ *
  * `payments/subscription_change_refused` (#465) — a plan change, a cancellation, or the withdrawal of a
  * scheduled one that the subscription's own state forbids. It needs its own code because every neighbor
  * it might have borrowed says something untrue about it: `receipt_already_owned` is about a transaction
@@ -315,7 +319,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 133;
+const KIT_ERROR_CODE_COUNT = 134;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
