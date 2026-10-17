@@ -26,6 +26,12 @@ import { isUnknown, type ResolvedWorker, type WorkerSet } from "../project/worke
  * clone with two broken Workers learns both the first time rather than one per run.
  */
 
+/**
+ * The check's own refusal: every problem it found, in one. Its own class so a dry run can tell it from a config
+ * that will not load. The install fixes that one; nothing the install does composes a missing peer.
+ */
+export class ProjectCheckFailedError extends ValidationError {}
+
 /** What a passing check established. */
 export interface CheckedProject {
   /** The root `pithy.config.ts` `name` — every local store this run writes is keyed on it. */
@@ -86,7 +92,7 @@ export async function checkProject(options: CheckProjectOptions): Promise<Checke
   }
 
   if (problems.length > 0) {
-    throw new ValidationError({
+    throw new ProjectCheckFailedError({
       message: "The project check failed, so setup stopped before writing anything.",
       action: `${[...new Set(problems)].join(" ")} Fix that, then run ${commandName("setup")} again.`,
     });

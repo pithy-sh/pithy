@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { relative, sep } from "node:path";
 import { personDecision, pithyCommand } from "@pithy-sh/core/src/cli/command";
-import { messageOf, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, PithyError, sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type PreparedDev, prepareDevCheckout } from "../dev/prepare";
@@ -15,7 +15,7 @@ import { migrateProject, planMigrateProject, type WorkerScope } from "../migrati
 import { emptyPlan, type Plan, type PlanFile, type PlanMigration } from "../plan/plan";
 import { seedDryRunPlan } from "../seed/dryRunPlan";
 import { type SeedRunReport, seedProject } from "../seed/run";
-import { type CheckedProject, checkProject } from "./check";
+import { type CheckedProject, checkProject, ProjectCheckFailedError } from "./check";
 import { devDataHeld, type HeldTable } from "./dataHeld";
 import { type InstallPlan, installDependencies, planInstall } from "./install";
 import { type MintReport, mintLocalSecrets } from "./mint";
@@ -166,6 +166,17 @@ async function migrateDev(options: MigrateStepOptions): Promise<string[]> {
 }
 
 /** The migrations a run would apply. */
+/**
+ * Whether the install still to run could clear the check's failure. A config that will not load usually names
+ * an uninstalled package, and on a fresh clone that is every config. The check's own refusal, a config that is
+ * not there, and a root with no `name` are the project's: no install composes a peer or writes a file.
+ */
+function installMayFix(error: unknown): boolean {
+  if (error instanceof ProjectCheckFailedError) return false;
+  if (!(error instanceof PithyError)) return true;
+  return error.payload.code !== "core/not_found" && error.payload.code !== "core/precondition_failed";
+}
+
 function planMigrateDev(options: MigrateStepOptions): Promise<PlanMigration[]> {
   return planMigrateProject({ ...options, env: LOCAL_ENVIRONMENT });
 }
@@ -243,9 +254,10 @@ export async function setupCheckout(options: SetupOptions): Promise<SetupResult>
   try {
     checked = await check(projectDir);
   } catch (error) {
-    // Only a dry run with an install still to run is planned past a failure: the install may be exactly
-    // what the check is missing. A real run has installed by now, so its failure is the project's.
-    if (dryRun && install !== null) return { dryRun: true, install, blocked: sentenceOf(error) };
+    // Only a dry run with an install still to run is planned past a failure, and only past one the install
+    // can fix: a config that will not load. A real run has installed by now, so its failure is the project's.
+    if (dryRun && install !== null && installMayFix(error))
+      return { dryRun: true, install, blocked: sentenceOf(error) };
     throw error;
   }
   const { project } = checked;

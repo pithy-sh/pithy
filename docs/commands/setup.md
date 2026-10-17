@@ -53,7 +53,7 @@ Setup finishes and exits. `pithy dev` runs until it is stopped. Folding them tog
 
 Prints every step: the install line, each secret it would mint and where, each migration, each file it would write, what it would seed. It writes nothing — not the secrets file, not `.dev.config.json`, not the machine's port registry, not the local store.
 
-On a clone with nothing installed, the project's configs cannot load until the install has run, so nothing after the install can be planned. The dry run plans the install, says why it stopped, and exits 0.
+On a clone with nothing installed, the project's configs cannot load until the install has run, so nothing after the install can be planned. The dry run plans the install, says why it stopped, and exits 0. Only a config that will not load is read that way. Any other failure of the check — a missing peer, an unusable manifest, a missing `pithy.config.ts`, a root with no `name` — is the project's, not the install's, and stops a dry run exactly as it stops a real one.
 
 ### `pithy feature sync`
 
@@ -72,7 +72,7 @@ $ pithy setup --json
 |---|---|---|
 | `command` | `"setup"` | The command that produced the line |
 | `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
-| `outcome` | `string` | The one outcome. `ready` — this run changed something and the checkout is ready. `unchanged` — it was ready, and nothing was written. `planned` — `--dry-run`. `blocked` — `--dry-run` on a clone whose configs cannot load before the install |
+| `outcome` | `string` | The one outcome. `ready` — this run changed something and the checkout is ready. `unchanged` — it was ready, and nothing was written. `planned` — `--dry-run`. `blocked` — `--dry-run` on a clone whose configs cannot load before the install. No other failure is `blocked`: it stops the run |
 | `dryRun` | `boolean` | Whether this was `--dry-run`. Nothing was written when it is `true` |
 | `project` | `string` | The project's name, what the dev secrets file and the port registry key on. Absent under `blocked` |
 | `install` | `object \| null` | The install: `packageManager`, `lockfile` (`null` when the project had none) and `command`, the whole line. `null` under `--skip-install` |
@@ -90,7 +90,7 @@ $ pithy setup --json
 
 ## Errors
 
-**The project check failed.** `The project check failed, so setup stopped before writing anything.` The action names every problem: a Worker whose `pithy.config.ts` is missing, a capability composed without its peer, an installed manifest that cannot be used. A Worker config that will not load — usually an uninstalled package — stops the run with the loader's own sentence instead.
+**The project check failed.** `The project check failed, so setup stopped before writing anything.` The action names every problem: a capability composed without its peer, an installed manifest that cannot be used. A Worker config that will not load — usually an uninstalled package — or a Worker whose `pithy.config.ts` is missing stops the run with the loader's own sentence instead, such as `Every worker here is missing its pithy.config.ts.`
 
 **The install failed.** `bun install --frozen-lockfile failed.` A frozen install fails when the lockfile is behind `package.json`. Setup never rewrites it: run the plain install, commit the lockfile, and run `pithy setup` again.
 

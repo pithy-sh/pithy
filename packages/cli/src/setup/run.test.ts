@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, NotFoundError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { PreparedDev } from "../dev/prepare";
 import type { SeedRunReport } from "../seed/run";
+import { ProjectCheckFailedError } from "./check";
 import type { HeldTable } from "./dataHeld";
 import type { MintReport } from "./mint";
 import { isBlockedPlan, type SetupReport, type SetupResult, type SetupSteps, setupCheckout, setupPlan } from "./run";
@@ -129,7 +130,9 @@ describe("setupCheckout", () => {
     const steps = freshClone(log, {
       check: async () => {
         log.push("check");
-        throw new ValidationError({ message: "The project check failed, so setup stopped before writing anything." });
+        throw new ProjectCheckFailedError({
+          message: "The project check failed, so setup stopped before writing anything.",
+        });
       },
     });
 
@@ -278,13 +281,40 @@ describe("setupCheckout", () => {
     const log: string[] = [];
     const steps = freshClone(log, {
       check: async () => {
-        throw new ValidationError({ message: "Cannot find package '@pithy-sh/auth'.", action: "Install it." });
+        throw new InternalError({
+          message: "Could not load apps/api/pithy.config.ts.",
+          action: "Install @pithy-sh/auth.",
+        });
       },
     });
 
     const result = await setupCheckout({ projectDir: DIR, account: null, dryRun: true, steps });
 
     expect(isBlockedPlan(result)).toBe(true);
-    expect(result).toMatchObject({ blocked: "Cannot find package '@pithy-sh/auth'. Install it." });
+    expect(result).toMatchObject({ blocked: "Could not load apps/api/pithy.config.ts. Install @pithy-sh/auth." });
+  });
+
+  // Only a config that will not load is the install's to fix. A missing peer, an unusable manifest, a missing
+  // config or a root with no name is the project's, and a dry run stops on it exactly as a real run does.
+  test.each([
+    [
+      "the check's own refusal",
+      () =>
+        new ProjectCheckFailedError({
+          message: "The project check failed, so setup stopped before writing anything.",
+          action: "api composes email, which requires secrets.",
+        }),
+    ],
+    ["a missing config", () => new NotFoundError({ message: "Every worker here is missing its pithy.config.ts." })],
+    ["a root with no name", () => new PreconditionFailedError({ message: "pithy.config.ts has no `name`." })],
+  ])("a dry run stops on %s, which no install fixes", async (_, failure) => {
+    const thrown = failure();
+    const steps = freshClone([], {
+      check: async () => {
+        throw thrown;
+      },
+    });
+
+    await expect(setupCheckout({ projectDir: DIR, account: null, dryRun: true, steps })).rejects.toBe(thrown);
   });
 });
