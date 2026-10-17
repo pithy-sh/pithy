@@ -54,9 +54,11 @@ export const resolveSubject: PaymentsSubjectResolver = unimplementedSubject;
 // \`requirePower("connections:manage")\` reads from here — and importing a handler's vocabulary out of a
 // config file is backwards.
 //
-// Five power names are the kit's and are already in force: organization:read, organization:manage,
-// organization:delete, members:manage and billing:manage. The capability's own routes gate on them, so
-// they cannot be redeclared — declare yours beside them.
+// Seven power names are the kit's and are already in force: organization:read, organization:manage,
+// organization:delete, members:manage and billing:manage, which tenancy's own routes gate on, and
+// media:manage and storage:manage, which let a role edit, delete and re-scope any file in its own
+// organization. They cannot be redeclared — declare yours beside them. A role must hold media:manage
+// once media is composed, and storage:manage once storage is; the Worker is refused at boot otherwise.
 //
 // This starter matrix is three roles that nest. Yours need not: a coaching academy's \`coach\` and
 // \`student\` are parallel and each holds what the other does not, which is legal and is why \`nests\` is
@@ -74,13 +76,15 @@ export const roles = defineRoles({
   powers: [],
   roles: {
     member: ["organization:read"],
-    admin: ["organization:read", "organization:manage", "members:manage"],
+    admin: ["organization:read", "organization:manage", "members:manage", "media:manage", "storage:manage"],
     owner: [
       "organization:read",
       "organization:manage",
       "members:manage",
       "billing:manage",
       "organization:delete",
+      "media:manage",
+      "storage:manage",
     ],
   },
   administrativePower: "organization:manage",

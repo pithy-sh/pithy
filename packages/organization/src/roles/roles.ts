@@ -9,10 +9,12 @@ import { OrganizationInvalidRoleCatalogError } from "../error/errors";
  *
  * ## Three places, and they are different kinds of thing
  *
- * **The capability owns five power names.** It ships routes — invite, change a role, remove a member,
- * transfer ownership, delete the account — and those routes gate on something, so that something is the
- * kit's and is closed. Reserved exactly as the kit's error domains are reserved: an adopter may not
- * redeclare one, because the capability's own handlers are written against them.
+ * **The kit owns seven power names.** Tenancy ships routes — invite, change a role, remove a member,
+ * transfer ownership, delete the account — and those routes gate on five of them. Media and storage gate
+ * on the other two: `media:manage` and `storage:manage` let a role edit, delete and re-scope any record in
+ * its own organization, so an organization can clean up after somebody who left. All seven are reserved
+ * exactly as the kit's error domains are reserved: an adopter may not redeclare one, because the kit's own
+ * handlers are written against them.
  *
  * **The adopter declares their own powers and the whole matrix**, in a module of their project rather
  * than in a config literal, because their route code imports the typed powers and importing from
@@ -46,11 +48,12 @@ import { OrganizationInvalidRoleCatalogError } from "../error/errors";
 /**
  * The five powers this capability's own routes gate on.
  *
- * Closed, and reserved against redeclaration. They are the five operations any tenancy model has —
- * read the account, change it, end it, manage who is in it, and answer for the bill — which is why a
- * product's own powers always sit *beside* them rather than replacing them.
+ * They are the five operations any tenancy model has — read the account, change it, end it, manage who is
+ * in it, and answer for the bill — which is why a product's own powers always sit *beside* them rather
+ * than replacing them. A catalog must place every one, because this capability is composed wherever a
+ * catalog is.
  */
-export const KIT_POWERS = [
+export const ORGANIZATION_POWERS = [
   "organization:read",
   "organization:manage",
   "organization:delete",
@@ -58,7 +61,19 @@ export const KIT_POWERS = [
   "billing:manage",
 ] as const;
 
-/** One of the kit's five reserved powers. */
+/**
+ * The powers other kit capabilities gate on, through core's acting-organization seam.
+ *
+ * Reserved like the five, and **required only where the capability that gates on one is composed** — a
+ * project with no media must not be refused for not placing `media:manage`. Each capability declares the
+ * powers it asks on `Capability.powers`, and {@link requireComposedPowers} reads that list at compose.
+ */
+export const CAPABILITY_POWERS = ["media:manage", "storage:manage"] as const;
+
+/** Every power the kit reserves: tenancy's five, then the two other capabilities gate on. */
+export const KIT_POWERS = [...ORGANIZATION_POWERS, ...CAPABILITY_POWERS] as const;
+
+/** One of the kit's reserved powers. */
 export type KitPower = (typeof KIT_POWERS)[number];
 
 /** Whether a name is one the kit reserves. */
@@ -67,20 +82,21 @@ export function isKitPower(power: string): power is KitPower {
 }
 
 /**
- * The kit powers a catalog must place somewhere.
+ * The kit powers a catalog must place somewhere, whatever else is composed.
  *
  * Every one of these gates a route this capability ships, so a catalog in which no role holds one
  * describes an account where that route can never be used by anybody. Refused at boot, naming the
  * power: that is a catalog mistake, not a runtime state somebody should discover on the day they try.
+ * The capability powers are checked at compose instead, against what the Worker composes.
  */
-const REQUIRED_KIT_POWERS: readonly KitPower[] = KIT_POWERS;
+const REQUIRED_KIT_POWERS: readonly KitPower[] = ORGANIZATION_POWERS;
 
 /** What an adopter hands {@link defineRoles}. */
 export interface RoleCatalogInput<Power extends string = never, Role extends string = string> {
   /**
    * The powers this product adds, under its own names.
    *
-   * Optional: a project happy with the kit's five declares none. A name the kit reserves is refused
+   * Optional: a project happy with the kit's own declares none. A name the kit reserves is refused
    * here, naming it — the same rule that reserves kit domains in `defineErrorPayload`.
    */
   readonly powers?: readonly Power[];
@@ -125,7 +141,7 @@ export interface RoleCatalogInput<Power extends string = never, Role extends str
 
 /** The resolved catalog: the matrix, plus the schemas and predicates every route reads it through. */
 export interface RoleCatalog<Power extends string, Role extends string> {
-  /** Every power in force — the kit's five, then the adopter's, in declaration order. */
+  /** Every power in force — the kit's seven, then the adopter's, in declaration order. */
   readonly powers: readonly (KitPower | Power)[];
   /** Every role, in declaration order. */
   readonly roles: readonly Role[];
@@ -184,7 +200,7 @@ export function defineRoles<const Power extends string = never, const Role exten
     if (isKitPower(power)) {
       refuse(
         `\`${power}\` is one of the kit's own powers and cannot be redeclared.`,
-        "Pick a name under your own vocabulary, or drop it — the kit's five are already in force.",
+        "Pick a name under your own vocabulary, or drop it — the kit's own are already in force.",
         `declared power ${JSON.stringify(power)} collides with a reserved kit power`,
       );
     }
@@ -228,7 +244,7 @@ export function defineRoles<const Power extends string = never, const Role exten
   if (!known.has(input.administrativePower)) {
     refuse(
       `\`${input.administrativePower}\` is named as the administrative power but is not declared.`,
-      "Name one of the kit's five, or declare it in `powers`.",
+      "Name one of the kit's own, or declare it in `powers`.",
       `administrativePower ${JSON.stringify(input.administrativePower)} is not in the power set`,
     );
   }
@@ -331,9 +347,53 @@ export function defineRoles<const Power extends string = never, const Role exten
   };
 }
 
-/** The kit's five powers, as a catalog-agnostic Zod enum. For manifests and admin surfaces. */
+/** The kit's reserved powers, as a catalog-agnostic Zod enum. For manifests and admin surfaces. */
 export const KitPower = z
   .enum(Object.fromEntries(KIT_POWERS.map((power) => [power, power])) as Record<KitPower, KitPower>)
   .describe(
-    "One of the five powers this capability's own routes gate on. Reserved: an adopter's catalog may hold them but may not redeclare them.",
+    "One of the powers the kit's own routes gate on — tenancy's five, `media:manage` and `storage:manage`. Reserved: an adopter's catalog may hold them but may not redeclare them.",
   );
+
+/** What {@link requireComposedPowers} reads off each composed capability: its name and the powers it asks. */
+export interface PowerDeclaringCapability {
+  /** The capability's name, for the refusal. */
+  readonly name: string;
+  /** The powers its routes gate on, from `Capability.powers`. */
+  readonly powers?: readonly string[];
+}
+
+/**
+ * Refuse a catalog that places no role on a power a composed capability gates on.
+ *
+ * The conditional half of the catalog requirement. `defineRoles` cannot ask it, because it does not know
+ * what the Worker composes; tenancy's `compose` hook does, so it asks here — once, at assembly — and the
+ * answer is a deploy failure rather than a media library nobody in any organization can ever clean up.
+ *
+ * A power a capability asks that the catalog does not declare at all is refused too, by name: an
+ * adopter's own capability gating on a power their catalog never declared would otherwise allow nobody,
+ * silently, forever.
+ */
+export function requireComposedPowers<Power extends string, Role extends string>(
+  catalog: RoleCatalog<Power, Role>,
+  capabilities: readonly PowerDeclaringCapability[],
+): void {
+  const declared = new Set<string>(catalog.powers);
+  for (const capability of capabilities) {
+    for (const power of capability.powers ?? []) {
+      if (!declared.has(power)) {
+        refuse(
+          `\`${capability.name}\` gates on \`${power}\`, which this role catalog does not declare.`,
+          "Declare it in `powers` and give it to the role meant to have it.",
+          `capability ${capability.name} declares power ${JSON.stringify(power)}; the catalog's powers are ${catalog.powers.join(", ")}`,
+        );
+      }
+      if (!catalog.roles.some((role) => catalog.roleAllows(role, power as KitPower | Power))) {
+        refuse(
+          `No role holds \`${power}\`, and \`${capability.name}\` is composed, so nobody could ever use what it gates.`,
+          "Give it to whichever role is meant to have it.",
+          `power ${power} asked by composed capability ${capability.name} is held by no declared role`,
+        );
+      }
+    }
+  }
+}

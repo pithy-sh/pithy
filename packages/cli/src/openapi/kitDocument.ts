@@ -80,7 +80,15 @@ const ORGANIZATION_ROLES = defineRoles({
   roles: {
     member: ["organization:read"],
     admin: ["organization:read", "organization:manage"],
-    owner: ["organization:read", "organization:manage", "members:manage", "billing:manage", "organization:delete"],
+    owner: [
+      "organization:read",
+      "organization:manage",
+      "members:manage",
+      "billing:manage",
+      "organization:delete",
+      "media:manage",
+      "storage:manage",
+    ],
   },
   administrativePower: "organization:manage",
   nests: ["member", "admin", "owner"],
