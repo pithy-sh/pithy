@@ -20,7 +20,7 @@ import { walkTree } from "./describe";
  * condition held both ways in `terminal/nextSteps.test.ts` and its line in its command's own test. A payload
  * that declares `next` and is not on this list fails below, which is the moment to write the other two.
  */
-const EMITTERS = ["add", "deploy", "provision", "ui add", "upgrade"];
+const EMITTERS = ["add", "deploy", "provision", "setup", "ui add", "upgrade"];
 
 const nodes = await walkTree(main);
 

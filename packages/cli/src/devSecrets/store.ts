@@ -56,8 +56,10 @@ export function localDevStorePath(projectDir: string): string {
  *
  * Miniflare 5 takes this root and nothing narrower — its per-kind `d1Persist` and `kvPersist` are gone —
  * so a store opened here lands in `localDevStorePath`, where `wrangler dev` reads it (#738).
+ *
+ * Exported for `pithy setup`, which opens the same stores to ask whether `dev` holds any data (#764).
  */
-function localResourceRoot(projectDir: string): string {
+export function localResourceRoot(projectDir: string): string {
   return join(localDevStateRoot(projectDir), "v3");
 }
 

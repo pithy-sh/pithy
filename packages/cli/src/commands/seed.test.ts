@@ -69,3 +69,77 @@ describe("a --redo that meets retained tables and shared databases (#588)", () =
     expect(args["destroy-retained"]).toMatchObject({ type: "string" });
   });
 });
+
+/**
+ * A real run's line says what landed, not only what the fixtures planned (#764). Every write is
+ * `INSERT OR IGNORE` or put-if-absent, so a re-run plans the same rows and writes none of them; a line
+ * that kept printing `12 rows.` told the reader something was seeded when nothing was.
+ */
+describe("a real run reports what landed", () => {
+  function run(set: {
+    d1?: { database: string; table: string; rows: number; written?: number }[];
+    kv?: { namespace: string; store: string; entries: number; written?: number }[];
+    r2?: { binding: string; key: string; written?: boolean }[];
+  }): string {
+    const line = renderSeedText({
+      command: "seed",
+      env: "dev",
+      dryRun: false,
+      workers: [
+        {
+          worker: "api",
+          sets: [{ name: "0200_demo", d1: set.d1 ?? [], kv: set.kv ?? [], r2: set.r2 ?? [], media: [] }],
+          skippedByEnv: [],
+          shared: [],
+        },
+      ],
+    }).split("\n")[0];
+    return line ?? "";
+  }
+
+  test("a first run that wrote every planned row reads as it always did", () => {
+    expect(run({ d1: [{ database: "app", table: "t", rows: 12, written: 12 }] })).toBe("api  0200_demo: 12 rows.");
+  });
+
+  test("a re-run that wrote nothing says the rows were already there", () => {
+    expect(
+      run({
+        d1: [{ database: "app", table: "t", rows: 12, written: 0 }],
+        kv: [{ namespace: "cache", store: "s", entries: 1, written: 0 }],
+        r2: [{ binding: "FILES", key: "logo.svg", written: false }],
+      }),
+    ).toBe("api  0200_demo: 12 rows already there, 1 entry already there, 1 object already there.");
+  });
+
+  test("a partial run names what landed and what was already there", () => {
+    expect(
+      run({
+        d1: [
+          { database: "app", table: "a", rows: 2, written: 2 },
+          { database: "app", table: "b", rows: 10, written: 1 },
+        ],
+        r2: [
+          { binding: "FILES", key: "a.svg", written: true },
+          { binding: "FILES", key: "b.svg", written: false },
+        ],
+      }),
+    ).toBe("api  0200_demo: 3 rows, 9 already there, 1 object, 1 already there.");
+  });
+
+  test("a dry run plans counts, and has nothing landed to report", () => {
+    const text = renderSeedText({
+      command: "seed",
+      env: "dev",
+      dryRun: true,
+      workers: [
+        {
+          worker: "api",
+          sets: [{ name: "0200_demo", d1: [{ database: "app", table: "t", rows: 12 }], kv: [], r2: [], media: [] }],
+          skippedByEnv: [],
+          shared: [],
+        },
+      ],
+    });
+    expect(text.split("\n")[0]).toBe("api  0200_demo: 12 rows.");
+  });
+});

@@ -9,19 +9,16 @@ import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { commandName, commandNameOf, pithyCommand, type WorkerDir } from "@pithy-sh/core/src/cli/command";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
-import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
-import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type EnsureSecretsStoreIdOptions, ensureSecretsStoreId } from "../cloudflare/storeId";
-import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevVarsSource } from "../devSecrets/devVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
+import { settleDevMasterKey } from "../devSecrets/masterKey";
 import { ownProperties } from "../devSecrets/records";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
@@ -185,16 +182,15 @@ export async function planBootstrapAdd({
       plan.notes.push(await provisionNote(projectDir, manifest.name, binding, worker, productionEnvironments));
       continue;
     }
-    if (stated[MASTER_KEY_BINDING]) continue;
-    const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
-    const stranded = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
-    const adopted = firstValue(recorded, stranded);
-    // An older key that is not a valid one is reported by the run and adopted by nothing, so nothing is planned.
-    if (adopted !== undefined && parseConfig(adopted) === null) continue;
+    // The run's own decision, asked without writing (#764): one function settles the key for `pithy add` and
+    // `pithy setup`, so the plan cannot plan a mint the run would answer with an adoption.
+    const outcome = await settleDevMasterKey(projectDir, { dryRun: true });
+    // A key already there, or an older one that is not a valid key, is something the run writes nothing for.
+    if (outcome.state !== "minted" && outcome.state !== "adopted") continue;
     plan.secrets.push({
       name: MASTER_KEY_BINDING,
       env: LOCAL_ENVIRONMENT,
-      action: adopted === undefined ? "mint" : "write",
+      action: outcome.state === "minted" ? "mint" : "write",
       where: path,
     });
   }
@@ -251,59 +247,30 @@ async function provisionNote(
  * is not rewritten — nothing here ever rewrites an adopter's `.dev.vars`.
  */
 async function ensureDevMasterKey(projectDir: string, again: string): Promise<string[]> {
-  const path = await resolveDevSecretsFile(projectDir);
-  if ((await readDevSecrets(path))[MASTER_KEY_BINDING]) {
-    return [`${MASTER_KEY_BINDING} is already in ${path}. Left as it is — a new key orphans every stored secret.`];
-  }
-  // Both older homes, in the order they were used: `dev.json` since #154, the project root's `.dev.vars`
-  // before it. Adopted rather than re-minted — this is the one value whose replacement cannot be undone,
-  // because every secret already encrypted under the old key becomes unreadable with no error that names
-  // the cause. Their `.dev.vars` is not rewritten; nothing here ever rewrites an adopter's.
-  //
-  // The `.dev.vars` read goes through the writer's own reader, where only `ENOENT` is "no key here".
-  // `.catch(() => "")` answered that for every errno, so an unreadable file read as absent and this
-  // minted a second key. See {@link readDevVarsSource}.
-  const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
-  const stranded = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
-  const adopted = firstValue(recorded, stranded);
-  // The file states the `EncryptionConfig` itself, and nothing around it (#323) — the binding carries the
-  // bare config, and the file states the payload its destination receives. A hand-edit that breaks it is
-  // caught by the registry's own schema, naming the secret, rather than by a Worker answering every
-  // request with `secrets/crypto_failed`. An adopted value arrives as the string a binding carried, so it
-  // is parsed back into the object the file holds — which is now the same object, unwrapped, either way.
-  const config = adopted === undefined ? await initialMasterKeyConfig() : parseConfig(adopted);
-  if (config === null) {
-    return [
-      `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was adopted.`,
-      `Put a valid one in ${path}, or delete it and run ${again} again to mint a new one — a new key orphans every secret the old one encrypted.`,
-    ];
-  }
-  const wrote = await writeDevSecrets(path, { [MASTER_KEY_BINDING]: initialDevSecret(masterKeyRegistryEntry, config) });
-  if (wrote.length === 0) return [];
-  if (adopted !== undefined) {
-    return [
-      `Adopted the ${MASTER_KEY_BINDING} this machine already had, into ${path}. A new key would orphan every secret the old one encrypted.`,
-    ];
-  }
-  return [
-    `Minted a dev master key as ${MASTER_KEY_BINDING}, into ${path}. Local only, and it reaches each Worker's generated .dev.vars.`,
-    `Deployed environments get theirs from ${commandName("secrets provision")}.`,
-  ];
-}
-
-/** The first non-empty of the older homes, or `undefined` when this machine has no key at all. */
-function firstValue(...candidates: (string | undefined)[]): string | undefined {
-  for (const candidate of candidates) if (candidate !== undefined && candidate !== "") return candidate;
-  return undefined;
-}
-
-/** A binding's string parsed back into the `EncryptionConfig` the file states, or `null` when it is not one. */
-function parseConfig(value: string): EncryptionConfig | null {
-  try {
-    const parsed = EncryptionConfig.safeParse(JSON.parse(value));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
+  // One decision, shared with `pithy setup` (#764): the file's key kept, an older home's carried over, and
+  // a fresh one only where this machine has neither. This function owns only the sentences.
+  const outcome = await settleDevMasterKey(projectDir);
+  const path = outcome.path;
+  switch (outcome.state) {
+    case "present":
+      return [`${MASTER_KEY_BINDING} is already in ${path}. Left as it is — a new key orphans every stored secret.`];
+    case "invalid":
+      return [
+        `${MASTER_KEY_BINDING} is set on this machine but is not a valid master key, so nothing was adopted.`,
+        `Put a valid one in ${path}, or delete it and run ${again} again to mint a new one — a new key orphans every secret the old one encrypted.`,
+      ];
+    case "adopted":
+      return [
+        `Adopted the ${MASTER_KEY_BINDING} this machine already had, into ${path}. A new key would orphan every secret the old one encrypted.`,
+      ];
+    case "minted":
+      return [
+        `Minted a dev master key as ${MASTER_KEY_BINDING}, into ${path}. Local only, and it reaches each Worker's generated .dev.vars.`,
+        `Deployed environments get theirs from ${commandName("secrets provision")}.`,
+      ];
+    default:
+      outcome satisfies never;
+      return [];
   }
 }
 

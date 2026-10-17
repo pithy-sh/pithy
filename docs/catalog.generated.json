@@ -678,6 +678,19 @@
       ]
     },
     {
+      "path": "setup",
+      "flags": [
+        "--skip-install",
+        "--skipInstall",
+        "--no-skip-install",
+        "--dry-run",
+        "--dryRun",
+        "--no-dry-run",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "storage",
       "flags": []
     },

@@ -60,7 +60,7 @@ beforeEach(async () => {
 describe("seedD1Group", () => {
   test("encodes app-shape rows and writes them through Kysely + CamelCasePlugin", async () => {
     const result = await seedD1Group(database(), group, Widget);
-    expect(result).toEqual({ table: "widgets", rows: 2 });
+    expect(result).toEqual({ table: "widgets", rows: 2, written: 2 });
     expect(await widgetCount()).toBe(2);
 
     // Codecs landed: boolean → 0|1, date → ms-epoch, camelCase → snake_case.
@@ -77,9 +77,15 @@ describe("seedD1Group", () => {
     expect(await widgetCount()).toBe(2);
   });
 
+  test("a re-run counts the rows it planned and reports that it wrote none (#764)", async () => {
+    await seedD1Group(database(), group, Widget);
+    const again = await seedD1Group(database(), group, Widget);
+    expect(again).toEqual({ table: "widgets", rows: 2, written: 0 });
+  });
+
   test("dryRun validates and counts but writes nothing", async () => {
     const result = await seedD1Group(database(), group, Widget, { dryRun: true });
-    expect(result).toEqual({ table: "widgets", rows: 2 });
+    expect(result).toEqual({ table: "widgets", rows: 2, written: 0 });
     expect(await widgetCount()).toBe(0);
   });
 
@@ -230,7 +236,7 @@ describe("seedD1Group and D1's bound-parameter ceiling", () => {
       schema,
     );
 
-    expect(result).toEqual({ table: "wide", rows: 500 });
+    expect(result).toEqual({ table: "wide", rows: 500, written: 500 });
     expect(await wideCount()).toBe(500);
   });
 

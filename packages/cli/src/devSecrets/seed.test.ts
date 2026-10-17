@@ -583,6 +583,8 @@ describe("the environment boundary", () => {
         join("devSecrets", "seed.ts"),
         join("dev", "orchestrator.ts"),
         join("capabilities", "addBootstrap.ts"),
+        // What `pithy dev` does before it starts, as `pithy setup` runs it (#764): no environment either.
+        join("dev", "prepare.ts"),
         // The one caller that has an environment. Its guard stays — belt and braces — and the seeder no
         // longer depends on it, which is the point of #159.
         join("commands", "seed.ts"),

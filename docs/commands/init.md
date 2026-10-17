@@ -164,7 +164,7 @@ Scaffold for a web app. The first Worker serves a React front end beside its rou
 ```
 $ pithy init --name replay --worker board --target web
 …
-A React front end is in apps/board/. Install, then run it.
+A React front end is in apps/board/. Run pithy setup, then pithy dev.
 …
 ```
 

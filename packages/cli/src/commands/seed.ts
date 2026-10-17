@@ -23,20 +23,38 @@ import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { saffron } from "../terminal/style";
 
-/** One line per set: what it wrote, per backend (docs/CLI.md §3). Empty backends are omitted. */
+/**
+ * One backend's part of a set's line. A dry run, or a real run that landed every planned write, is the
+ * plain count. A real run that found some already there says how many, since every write is
+ * `INSERT OR IGNORE` or put-if-absent and a re-run plans the same writes it skips (#764).
+ */
+function describeCount(planned: number, landed: number, one: string, many: string): string {
+  const noun = (n: number) => `${n} ${n === 1 ? one : many}`;
+  if (landed >= planned) return noun(planned);
+  if (landed === 0) return `${noun(planned)} already there`;
+  return `${noun(landed)}, ${planned - landed} already there`;
+}
+
+/**
+ * One line per set: what it wrote, per backend (docs/CLI.md §3). Empty backends are omitted. A write with
+ * no `written` count is a dry run's plan, and reads as if it all landed.
+ */
 function describeSet(set: {
   name: string;
-  d1: { rows: number }[];
-  kv: { entries: number }[];
-  r2: unknown[];
+  d1: { rows: number; written?: number }[];
+  kv: { entries: number; written?: number }[];
+  r2: { written?: boolean }[];
   media: unknown[];
 }): string {
   const rows = set.d1.reduce((sum, entry) => sum + entry.rows, 0);
+  const rowsLanded = set.d1.reduce((sum, entry) => sum + (entry.written ?? entry.rows), 0);
   const entries = set.kv.reduce((sum, entry) => sum + entry.entries, 0);
+  const entriesLanded = set.kv.reduce((sum, entry) => sum + (entry.written ?? entry.entries), 0);
+  const objectsLanded = set.r2.filter((entry) => entry.written !== false).length;
   const parts: string[] = [];
-  if (rows > 0) parts.push(`${rows} row${rows === 1 ? "" : "s"}`);
-  if (entries > 0) parts.push(`${entries} entr${entries === 1 ? "y" : "ies"}`);
-  if (set.r2.length > 0) parts.push(`${set.r2.length} object${set.r2.length === 1 ? "" : "s"}`);
+  if (rows > 0) parts.push(describeCount(rows, rowsLanded, "row", "rows"));
+  if (entries > 0) parts.push(describeCount(entries, entriesLanded, "entry", "entries"));
+  if (set.r2.length > 0) parts.push(describeCount(set.r2.length, objectsLanded, "object", "objects"));
   if (set.media.length > 0) parts.push(`${set.media.length} asset${set.media.length === 1 ? "" : "s"}`);
   return `${set.name}: ${parts.length > 0 ? parts.join(", ") : "nothing to seed"}.`;
 }

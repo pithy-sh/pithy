@@ -9,6 +9,7 @@ import {
   type NextStep,
   nextOrAbsent,
   provisionNext,
+  setupNext,
   uiAddNext,
   upgradeNext,
 } from "./nextSteps";
@@ -193,5 +194,15 @@ describe("ui add: packages it added and nothing has installed", () => {
   test("nothing added, or a dry run, carries none", () => {
     expect(uiAddNext({ dryRun: false, packageManager: "bun", added: 0 })).toBeUndefined();
     expect(uiAddNext({ dryRun: true, packageManager: "bun", added: 3 })).toBeUndefined();
+  });
+});
+
+describe("setup: the checkout is ready and nothing is running", () => {
+  test("every real run names pithy dev, changed or not", () => {
+    expect(commands(setupNext({ dryRun: false }))).toEqual(["pithy dev"]);
+  });
+
+  test("a dry run set nothing up, so it carries none", () => {
+    expect(setupNext({ dryRun: true })).toBeUndefined();
   });
 });

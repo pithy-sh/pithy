@@ -651,7 +651,13 @@ export default withContract(
           return;
         }
         for (const note of credentials) process.stdout.write(`${note}\n`);
-        if (frontEnd) process.stdout.write(`A React front end is in apps/${worker.value}/. Install, then run it.\n`);
+        // The two commands every checkout starts with, this one included (#764): setup installs and makes it
+        // ready, and `dev` runs the front end with the Worker that serves it.
+        if (frontEnd) {
+          process.stdout.write(
+            `A React front end is in apps/${worker.value}/. Run ${commandName("setup")}, then ${commandName("dev")}.\n`,
+          );
+        }
         for (const line of [agentsLine(agents, false), claudeLine(claude)]) {
           if (line !== null) process.stdout.write(`${line}\n`);
         }

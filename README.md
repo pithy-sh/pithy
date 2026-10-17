@@ -21,11 +21,13 @@ bun add --global @pithy-sh/cli      # or: npm install --global @pithy-sh/cli
 
 mkdir my-backend && cd my-backend
 pithy init                          # scaffold a project and its first Worker, apps/api
-bun install
+pithy setup                         # install, mint local secrets, migrate, pin ports, seed
 pithy dev                           # every Worker in apps/, under one supervisor
 
 curl http://localhost:8787/health   # {"status":"ok","version":…}
 ```
+
+Cloned a Pithy project instead? The same two commands make any checkout ready: `pithy setup`, then `pithy dev`. Setup is dev only, so it never needs a Cloudflare account. [`docs/commands/setup.md`](docs/commands/setup.md) says what it does.
 
 Then add what your app needs:
 

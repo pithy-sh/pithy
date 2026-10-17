@@ -35,7 +35,8 @@ const COMMANDS = {
   upgrade: { group: "Project", load: () => import("./commands/upgrade").then((m) => m.default) },
   contract: { group: "Project", load: () => import("./commands/contract").then((m) => m.default) },
 
-  // Develop — the local loop.
+  // Develop — the local loop. `setup` first: it is the first command a fresh clone runs.
+  setup: { group: "Develop", load: () => import("./commands/setup").then((m) => m.default) },
   dev: { group: "Develop", load: () => import("./commands/dev").then((m) => m.default) },
   migrate: { group: "Develop", load: () => import("./commands/migrate").then((m) => m.default) },
   seed: { group: "Develop", load: () => import("./commands/seed").then((m) => m.default) },

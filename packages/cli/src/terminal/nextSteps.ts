@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { z } from "zod";
 import { provisionFixCommand } from "../provision/provisionFix";
 
@@ -193,4 +193,14 @@ export function uiAddNext(facts: { dryRun: boolean; packageManager: string; adde
       why: `ui add wrote ${packages} into package.json, and the build needs them installed.`,
     },
   ];
+}
+
+/**
+ * `pithy setup`: the checkout is ready, and nothing is running. Setup never starts `pithy dev` — it exits, and
+ * `dev` runs until it is stopped — so the session is the step after every run that set the checkout up, whether
+ * it changed anything or not. A dry run set nothing up, so it has none.
+ */
+export function setupNext(facts: { dryRun: boolean }): NextStep[] | undefined {
+  if (facts.dryRun) return undefined;
+  return [{ command: pithyCommand("dev"), why: `Setup starts nothing. The Workers run under ${commandName("dev")}.` }];
 }

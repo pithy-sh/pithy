@@ -1547,6 +1547,27 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "setup": {
+    "positionals": [],
+    "flags": {
+      "--skip-install": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--dry-run": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "storage deprovision": {
     "positionals": [],
     "flags": {

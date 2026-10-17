@@ -3,7 +3,8 @@
 
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
+import { type DevSet, resolveDevSet } from "../dev/devSet";
+import type { WorkerTarget } from "../project/workers";
 import {
   buildDevConfig,
   type DevConfig,
@@ -58,8 +59,10 @@ export interface SyncFeatureOptions {
    * freely and never has its own answer overwritten by the branch it came from.
    */
   inheritAutostartFrom?: string;
-  /** Worker-discovery seam (default: `discoverWorkers`). */
+  /** `apps/` Worker-discovery seam, handed to {@link resolveDevSet} (default: `discoverWorkers`). */
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
+  /** Dev-set seam (default: {@link resolveDevSet}, over {@link discoverWorkers}). */
+  resolveSet?: (projectDir: string) => Promise<DevSet>;
 }
 
 /**
@@ -108,7 +111,18 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
     ...(options.inheritAutostartFrom !== undefined ? { inheritAutostartFrom: options.inheritAutostartFrom } : {}),
   });
 
-  const workers = await (options.discoverWorkers ?? discoverWorkersDefault)(options.worktreePath);
+  // **The whole dev set, the one `pithy dev` pins (#764)** — the `apps/` Workers and every capability host
+  // they compose. `buildDevConfig` keeps only the members it is handed, so `apps/` alone would release every
+  // host's pin here, and `pithy setup`'s prepare step, which runs next, would pin it again: a sync could
+  // never report that nothing moved, and a host could come back on a port an app Worker had since taken.
+  const resolveSet =
+    options.resolveSet ??
+    ((projectDir: string) =>
+      resolveDevSet({
+        projectDir,
+        ...(options.discoverWorkers !== undefined ? { discoverWorkers: options.discoverWorkers } : {}),
+      }));
+  const workers = (await resolveSet(options.worktreePath)).members.map((member) => member.worker);
   const configPath = devConfigPath(options.worktreePath);
   const previous = await readDevConfig(configPath);
   const dev = buildDevConfig({ branch: options.branch, block, workers, previous });

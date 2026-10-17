@@ -171,6 +171,9 @@ const DROPS_UNRESOLVABLE = [
   // `pithy seed`. Reported already, twice over, before this function is reached — see the comment
   // above the call, which is the thing a fifth dropper has to write for itself.
   join("devSecrets", "seed.ts"),
+  // `pithy setup`'s mint (#764). The project check that runs before it refuses on a Worker config that
+  // will not load, naming it, so a run that reaches the mint has nothing unresolvable left to report.
+  join("setup", "mint.ts"),
 ];
 
 test("every module that drops the unresolvable half is recorded (#199)", () => {

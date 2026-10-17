@@ -1594,6 +1594,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "schema",
     "secrets",
     "seed",
+    "setup",
     "storage",
     "support",
     "testers",
@@ -1618,6 +1619,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "provision",
     "secrets",
     "seed",
+    "setup",
     "ui",
     "upgrade",
     "worker",
@@ -1650,15 +1652,31 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   name: ["secrets", "token"],
   // The follow-up a run left required, as `[{ command, why }]`, and absent otherwise — never empty (#697,
   // `terminal/nextSteps.ts`). One shape on every command that can carry it.
-  next: ["add", "deploy", "provision", "ui", "upgrade"],
+  next: ["add", "deploy", "provision", "setup", "ui", "upgrade"],
+  // What a run had to say beyond its result, one sentence each: what `add` finished off-config, what each
+  // `setup` step reported (#764). Both a `string[]`, in order.
+  notes: ["add", "setup"],
   packageManager: ["add", "ui"],
   // A file path in `secrets edit`, and the command path `pithy schema <command>` was asked about. Both a
   // string, and both where the answer is: the file to open, the command the document describes.
   path: ["schema", "secrets"],
   // What `--dry-run` would change, in the one shape every planning command shares (#697, `plan/plan.ts`).
-  plan: ["add", "deploy", "feature", "migrate", "payments", "provision", "secrets", "seed", "ui", "upgrade", "worker"],
+  plan: [
+    "add",
+    "deploy",
+    "feature",
+    "migrate",
+    "payments",
+    "provision",
+    "secrets",
+    "seed",
+    "setup",
+    "ui",
+    "upgrade",
+    "worker",
+  ],
   profile: ["cloudflare", "token"],
-  project: ["doctor", "migrate"],
+  project: ["doctor", "migrate", "setup"],
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
   port: ["dev", "worker"],
@@ -1688,6 +1706,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "schema",
     "secrets",
     "seed",
+    "setup",
     "storage",
     "support",
     "testers",
@@ -1755,6 +1774,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   manifestFaults: "unknown[]",
   name: "string",
   next: "object[]",
+  notes: "string[]",
   packageManager: "string",
   path: "string",
   plan: "object",

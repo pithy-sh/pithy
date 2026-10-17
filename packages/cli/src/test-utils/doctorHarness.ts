@@ -159,6 +159,9 @@ export function doctorHarness(): DoctorHarness {
       // listing would depend on which checkouts the machine running the suite happens to hold — a report
       // that differs by machine, and a transcript nobody could pin. One own block, which is the state a
       // developer on their default branch is in; the suites about the other rows override this.
+      // A checkout that has been set up, which is the state every report below describes: a fresh clone
+      // names `pithy setup` for its local gaps instead, and the suites about that override this (#764).
+      checkoutSetUp: () => true,
       checkPortsRegistry: async () => ({
         path: "/home/u/.config/pithy/dev-ports.json",
         present: true,

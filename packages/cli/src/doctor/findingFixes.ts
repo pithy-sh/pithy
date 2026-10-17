@@ -108,6 +108,20 @@ export function migrationFix(entry: EnvironmentMigrations, productionEnvironment
 }
 
 /**
+ * `dev`'s migrations on a checkout nothing has set up (#764): `pithy setup`, which migrates and does the rest
+ * a fresh clone needs, rather than `pithy migrate` — the first of the commands it replaces, after which the
+ * next refusal names the second. Every other environment, and a set-up checkout, is {@link migrationFix}.
+ */
+export function localMigrationFix(
+  entry: EnvironmentMigrations,
+  productionEnvironments: readonly string[],
+  setUp: boolean,
+): Command | null {
+  const fix = migrationFix(entry, productionEnvironments);
+  return fix !== null && !setUp && entry.env === LOCAL_ENVIRONMENT ? pithyCommand("setup") : fix;
+}
+
+/**
  * An unbound Secrets Store secret. **A value the kit composes** has no `fix`: `pithy secrets provision` mints it, and
  * runs against every environment, production included — a person's decision, never the fix for one environment's
  * binding (#711). **A value only the operator has** is supplied first, with the `pithy secrets create` its sentence
@@ -161,7 +175,11 @@ function withNoFix<T extends { state: string }, K extends string>(declaration: T
  * package shipped, a split or divergent project-global binding, a capability its Workers resolve at two
  * versions.
  */
-export function healthWithFixes(health: ProjectHealth, productionEnvironments: readonly string[]): unknown {
+export function healthWithFixes(
+  health: ProjectHealth,
+  productionEnvironments: readonly string[],
+  setUp = true,
+): unknown {
   const none = { fix: null };
   return {
     ...health,
@@ -206,7 +224,7 @@ export function healthWithFixes(health: ProjectHealth, productionEnvironments: r
           ...worker.migrations,
           environments: worker.migrations.environments.map((entry) => ({
             ...entry,
-            fix: migrationFix(entry, productionEnvironments),
+            fix: localMigrationFix(entry, productionEnvironments, setUp),
           })),
         },
       };
