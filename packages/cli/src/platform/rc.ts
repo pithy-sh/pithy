@@ -8,6 +8,15 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { readOptionalFile } from "../project/readOptionalFile";
 
+/** What a refusal tells the operator to add by hand. */
+export interface RcBlockOptions {
+  /** The block being written, as a refusal's action names it. `the Pithy alias` unless said. */
+  what?: string;
+}
+
+/** The alias, which every rc caller wrote before completion did. */
+const DEFAULT_WHAT = "the Pithy alias";
+
 /** Mode for an rc file we create from scratch: owner read/write, group/other read (POSIX `0644`). */
 const RC_FILE_MODE = 0o644;
 
@@ -24,13 +33,14 @@ const RC_FILE_MODE = 0o644;
  * absorb it. It names the file and what to do instead. Nothing of the file's contents goes in either: an
  * rc file is where a developer keeps `export GITHUB_TOKEN=…`.
  */
-export async function readRcFile(path: string): Promise<string> {
+export async function readRcFile(path: string, options: RcBlockOptions = {}): Promise<string> {
+  const what = options.what ?? DEFAULT_WHAT;
   const contents = await readOptionalFile(path, {
     unreadable: ({ code, cause }) =>
       new ConflictError(
         {
           message: `Can't read ${path}.`,
-          action: "Fix the file's permissions, or add the Pithy alias to your shell config yourself.",
+          action: `Fix the file's permissions, or add ${what} to your shell config yourself.`,
           detail: `${code ?? "unknown error"} while reading ${path}`,
         },
         { cause },
@@ -56,7 +66,8 @@ function isInsideHome(home: string, target: string): boolean {
  *
  * The write itself is append-only: we never read-modify-write the whole file on install.
  */
-export async function appendToRcFile(path: string, text: string): Promise<void> {
+export async function appendToRcFile(path: string, text: string, options: RcBlockOptions = {}): Promise<void> {
+  const what = options.what ?? DEFAULT_WHAT;
   const home = existsSync(osHomedir()) ? realpathSync(osHomedir()) : osHomedir();
 
   // Symlink-escape guard. lstat does not follow the link, so it fires even for a *dangling* symlink — the
@@ -75,7 +86,7 @@ export async function appendToRcFile(path: string, text: string): Promise<void> 
     if (!isInsideHome(home, target)) {
       throw new ConflictError({
         message: `${path} is a symlink that points outside your home directory.`,
-        action: "Refusing to follow it. Add the Pithy alias to your shell config yourself.",
+        action: `Refusing to follow it. Add ${what} to your shell config yourself.`,
         detail: `Symlink target resolved to ${target}, outside ${home}.`,
       });
     }
@@ -86,7 +97,7 @@ export async function appendToRcFile(path: string, text: string): Promise<void> 
   if (existsSync(path) && (statSync(path).mode & 0o200) === 0) {
     throw new ValidationError({
       message: `Can't write to ${path} — it's read-only.`,
-      action: "Make it writable, or add the Pithy alias to your shell config yourself.",
+      action: `Make it writable, or add ${what} to your shell config yourself.`,
     });
   }
 

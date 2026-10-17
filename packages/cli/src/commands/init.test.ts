@@ -8,6 +8,7 @@ import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type CloudflareConfigOptions, cloudflareEnv } from "../cloudflare/config";
 import { AGENTS_FILE, CLAUDE_FILE, CLAUDE_POINTER, renderAgentsBlock } from "../project/agentInstructions";
+import { latchInputMode } from "../terminal/inputMode";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import {
   askCloudflareAccount,
@@ -15,6 +16,7 @@ import {
   askTarget,
   DEFAULT_TARGET,
   type InitPrompt,
+  offerShell,
   parseTarget,
   renderCloudflareBlock,
   writeCloudflareBlock,
@@ -572,5 +574,87 @@ describe("the app target", () => {
     expect(payload.target).toBe("mobile");
     expect(payload.frontEnd).toBeNull();
     await expect(readFile(join(target, "apps", "api", "src", "client.tsx"), "utf8")).rejects.toThrow();
+  });
+});
+
+/** `pithy init`'s two shell questions: the shortcut, then completion (#765). */
+describe("offerShell", () => {
+  const TERMINAL = { stdin: { isTTY: true }, stdout: { isTTY: true } };
+
+  /** Answers each question from `answers`, in order, and records what was asked and installed. */
+  function offers(answers: (boolean | symbol)[]) {
+    const asked: string[] = [];
+    const installed: string[] = [];
+    return {
+      asked,
+      installed,
+      offers: {
+        streams: TERMINAL,
+        prompt: {
+          confirm: async ({ message }: { message: string }) => {
+            asked.push(message);
+            return answers.shift() ?? false;
+          },
+          isCancel: (value: unknown) => typeof value === "symbol",
+        },
+        installAlias: async (options: { silent: boolean }) => {
+          installed.push(`alias silent=${options.silent}`);
+        },
+        installCompletion: async (options: { silent: boolean }) => {
+          installed.push(`completion silent=${options.silent}`);
+        },
+      },
+    };
+  }
+
+  afterEach(() => {
+    latchInputMode(false);
+  });
+
+  test("asks about completion once, after the shortcut, and a yes installs it silently", async () => {
+    const run = offers([false, true]);
+    expect(await offerShell(false, run.offers)).toBe(true);
+    expect(run.asked).toEqual(["Want a shortcut? Type `p.` instead of `pithy`.", "Want tab completion for `pithy`?"]);
+    expect(run.installed).toEqual(["completion silent=true"]);
+  });
+
+  test("a yes to both installs both, the shortcut first", async () => {
+    const run = offers([true, true]);
+    await offerShell(false, run.offers);
+    expect(run.installed).toEqual(["alias silent=true", "completion silent=true"]);
+  });
+
+  test("a no or a cancel installs nothing", async () => {
+    const no = offers([false, false]);
+    await offerShell(false, no.offers);
+    expect(no.installed).toEqual([]);
+    const cancel = offers([Symbol("cancel"), Symbol("cancel")]);
+    await offerShell(false, cancel.offers);
+    expect(cancel.installed).toEqual([]);
+  });
+
+  test("never asks under --json", async () => {
+    const run = offers([true, true]);
+    expect(await offerShell(true, run.offers)).toBe(false);
+    expect(run.asked).toEqual([]);
+    expect(run.installed).toEqual([]);
+  });
+
+  test("never asks under --no-input or PITHY_NONINTERACTIVE=1, which latch the same bit", async () => {
+    latchInputMode(true);
+    const run = offers([true, true]);
+    expect(await offerShell(false, run.offers)).toBe(false);
+    expect(run.asked).toEqual([]);
+  });
+
+  test("never asks without a terminal on both streams", async () => {
+    for (const streams of [
+      { stdin: { isTTY: false }, stdout: { isTTY: true } },
+      { stdin: { isTTY: true }, stdout: { isTTY: false } },
+    ]) {
+      const run = offers([true, true]);
+      expect(await offerShell(false, { ...run.offers, streams })).toBe(false);
+      expect(run.asked).toEqual([]);
+    }
   });
 });

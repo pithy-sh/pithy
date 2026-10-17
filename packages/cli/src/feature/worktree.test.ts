@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { GIT_NO_MAINTENANCE, removeTempDir } from "../test-utils/tempRepo";
-import { createWorktree, featureNames, mainRepoRoot, teardownWorktree } from "./worktree";
+import { createWorktree, featureBranches, featureNames, mainRepoRoot, teardownWorktree } from "./worktree";
 
 const run = promisify(execFile);
 
@@ -217,5 +217,25 @@ describe("worktree (real git)", () => {
 
     // The stray directory is untouched — createWorktree deletes nothing on its behalf.
     expect(existsSync(created.wtPath)).toBe(true);
+  });
+});
+
+describe("featureBranches", () => {
+  test("lists the local feature/ branches, sorted, and nothing else", async () => {
+    const asked: string[][] = [];
+    const git = async (args: string[]) => {
+      asked.push(args);
+      return "feature/7-auth\nfeature/12-media-cli\n";
+    };
+    expect(await featureBranches(git, "/repo")).toEqual(["feature/12-media-cli", "feature/7-auth"]);
+    // Local refs only: nothing that could reach a remote.
+    expect(asked).toEqual([["for-each-ref", "--format=%(refname:short)", "refs/heads/feature/"]]);
+  });
+
+  test("a git that fails is no branches, not an error", async () => {
+    const git = async () => {
+      throw new Error("not a git repository");
+    };
+    expect(await featureBranches(git, "/nowhere")).toEqual([]);
   });
 });

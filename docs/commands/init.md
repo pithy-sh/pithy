@@ -42,7 +42,7 @@ pithy init [--name <name>] [--worker <name>] [--target <mobile|web|both>] [--dir
 
 A block the writer could not place is **printed for you to paste**, never dropped. That applies to both the `cloudflare` block and the `domains` block: guessing at the shape of a file somebody may already have edited is how a scaffold eats an edit.
 
-**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the credentials, not the domains, not the alias. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
+**Nothing here is prompted under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1`, or without a TTY.** Every question has a default, so a run that may not ask takes it rather than failing (`docs/CLI.md` §1.2). Not the names, not the environments, not the target, not the credentials, not the domains, not the alias, not completion. A CI run scaffolds with the flags it was given, takes the default environments and writes no `environments` line, takes `mobile` unless `--target` says otherwise, and writes no `cloudflare` block; `pithy doctor` names the missing credentials until they are set.
 
 While nothing under `@pithy-sh/*` is published, the scaffolded Worker declares no kit dependency — a range naming a version no registry has would break your very next install. `init` says so at the end and tells you to link the kit from a checkout instead.
 
@@ -148,9 +148,12 @@ CLAUDE.md: points at AGENTS.md.
 Done.
 
 Want a shortcut? Type `p.` instead of `pithy`.
+Want tab completion for `pithy`?
 ```
 
 Answering yes installs the alias silently — its own `Added …` and `Open a new terminal …` lines are the only output. See `pithy alias`.
+
+The second question is asked once, after the first, with the same rules. Answering yes installs tab completion into the same rc file, silently in the same way. With the `p.` shortcut installed, completion covers `p.` too. See `pithy completion`.
 
 Scaffold headlessly. Both names given, so nothing is asked.
 

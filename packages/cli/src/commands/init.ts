@@ -35,24 +35,61 @@ import { packageManagerFromUserAgent } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { DEFAULT_WORKER, ensureScaffoldable, kitRange, scaffoldProject } from "../project/scaffold";
 import { canceled } from "../terminal/exitClass";
-import { mayPrompt } from "../terminal/inputMode";
+import { mayPrompt, type PromptStreams } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
 import { runUiAdd } from "../ui/flow";
 import { installAlias } from "./alias";
+import { installCompletion } from "./completion";
 import { offerDocs } from "./docs";
 
+/** What {@link offerShell} needs. Each defaults to the real one, so a test asks without a terminal. */
+export interface ShellOffers {
+  /** The two questions' prompt. */
+  prompt?: Pick<InitPrompt, "confirm" | "isCancel">;
+  /** Installs the `p.` shortcut, as `pithy alias` does. */
+  installAlias?: (options: { silent: boolean }) => Promise<void>;
+  /** Installs tab completion, as `pithy completion` does. */
+  installCompletion?: (options: { silent: boolean }) => Promise<void>;
+  /** The streams a prompt needs a terminal on. */
+  streams?: PromptStreams;
+}
+
+/** A yes, as opposed to a no or a cancel. */
+function saidYes(prompt: Pick<InitPrompt, "isCancel">, answer: boolean | symbol): boolean {
+  return !prompt.isCancel(answer) && answer === true;
+}
+
 /**
- * Offer the `p.` shortcut once, right after scaffolding (docs/CLI.md §2.7). Interactive only — a `--json`
- * or non-TTY run never prompts. Asked at most once per project because a second `pithy init` in the same
- * directory never reaches this line — it collides on the files the first one wrote — so there is no
- * "asked before" flag to persist. On yes, the alias installs silently (its own Added/Reload lines are
- * the only output).
+ * Offer the `p.` shortcut once, right after scaffolding (docs/CLI.md §2.7). On yes, the alias installs
+ * silently (its own Added/Reload lines are the only output).
  */
-async function offerAlias(): Promise<void> {
-  const { isCancel, confirm } = await import("@clack/prompts");
-  const wants = await confirm({ message: "Want a shortcut? Type `p.` instead of `pithy`." });
-  if (!isCancel(wants) && wants) await installAlias({ silent: true });
+async function offerAlias(prompt: Pick<InitPrompt, "confirm" | "isCancel">, offers: ShellOffers): Promise<void> {
+  const wants = await prompt.confirm({ message: "Want a shortcut? Type `p.` instead of `pithy`." });
+  if (saidYes(prompt, wants)) await (offers.installAlias ?? installAlias)({ silent: true });
+}
+
+/**
+ * Offer tab completion once, after the shortcut, with the same rules (#765). On yes, it installs the way
+ * `pithy completion` does, and covers `p.` too when the shortcut is in place.
+ */
+async function offerCompletion(prompt: Pick<InitPrompt, "confirm" | "isCancel">, offers: ShellOffers): Promise<void> {
+  const wants = await prompt.confirm({ message: "Want tab completion for `pithy`?" });
+  if (saidYes(prompt, wants)) await (offers.installCompletion ?? installCompletion)({ silent: true });
+}
+
+/**
+ * The two shell questions, asked only to a human at a terminal: never under `--json`, `--no-input`,
+ * `PITHY_NONINTERACTIVE=1` or without a TTY on both streams (`mayPrompt`). Each is asked at most once per
+ * project, because a second `pithy init` in the same directory never reaches this line — it collides on the
+ * files the first one wrote — so there is no "asked before" flag to persist. Returns whether it asked.
+ */
+export async function offerShell(json: boolean, offers: ShellOffers = {}): Promise<boolean> {
+  if (!mayPrompt(json, offers.streams)) return false;
+  const prompt = offers.prompt ?? (await clackPrompt());
+  await offerAlias(prompt, offers);
+  await offerCompletion(prompt, offers);
+  return true;
 }
 
 /**
@@ -683,12 +720,9 @@ export default withContract(
         // Set Done. off from the prompt's gutter; a flagged run has nothing above it.
         process.stdout.write(`${prompted ? "\n" : ""}${formatDone()}\n`);
 
-        // Offer the shortcut only to a human at a terminal — never in a --json, piped or --no-input run.
-        if (mayPrompt(args.json)) {
-          await offerAlias();
-          // And the docs server, which says nothing when this machine runs no AI client (#652).
-          await offerDocs();
-        }
+        // Offer the shortcut and completion only to a human at a terminal — never in a --json, piped or
+        // --no-input run — and then the docs server, which says nothing when this machine runs no AI client (#652).
+        if (await offerShell(args.json)) await offerDocs();
       }),
   }),
   {

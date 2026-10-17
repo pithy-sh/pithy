@@ -88,7 +88,7 @@ const SITES: Record<string, PromptSite> = {
   "commands/docs.ts": { prompts: ["askScope", "offerDocs"], kind: "mixed", gatedBy: "commands/docs.ts" },
   "commands/init.ts": {
     // Every question has a default: the directory name, `api`, the three environments, no account, no domain.
-    prompts: ["offerAlias", "ask", "clackPrompt"],
+    prompts: ["offerAlias", "offerCompletion", "ask", "clackPrompt"],
     kind: "optional",
     gatedBy: "commands/init.ts",
   },

@@ -30,6 +30,25 @@ export const defaultGit: GitRunner = async (args, cwd) => {
   return stdout.trim();
 };
 
+/**
+ * The repository's local feature branches, sorted: every `refs/heads/feature/*`, which is the prefix
+ * {@link featureNames} gives every branch `pithy feature create` cuts. Local refs only, so nothing reaches a
+ * remote. Best effort: outside a repository, or with a git that fails, there are none. The shell's Tab
+ * reads this for `pithy feature destroy --branch` (`completion/values.ts`).
+ */
+export async function featureBranches(git: GitRunner = defaultGit, cwd?: string): Promise<string[]> {
+  try {
+    const out = await git(["for-each-ref", "--format=%(refname:short)", "refs/heads/feature/"], cwd);
+    return out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Run git, swallow the error, and report whether it succeeded — for best-effort steps. */
 async function gitTry(git: GitRunner, args: string[], cwd?: string): Promise<boolean> {
   try {

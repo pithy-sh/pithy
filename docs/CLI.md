@@ -51,6 +51,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy contract [--worker <name>] [--out <dir>] [--env <name>]` | Write each Worker's OpenAPI document, read off the app it composes: every route's parameters, body, responses and verification, with every field's description. A Worker that serves a socket gets an AsyncAPI document beside it, with every frame. A client in any language generates its calls from them (see [`commands/contract.md`](commands/contract.md)) |
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
+| `pithy completion [shell]` | Install tab completion for `pithy` into the rc file `pithy alias` uses, or print one shell's script: bash, zsh, fish or PowerShell. Commands, flags, and the values the project knows complete from the installed binary, offline (see [`commands/completion.md`](commands/completion.md)) |
 | `pithy docs <connect\|disconnect\|status>` | Point your AI coding agent at the Pithy documentation server — writes the `pithy` MCP entry into whichever of ten clients this machine has (Claude Code, Cursor, VS Code, Codex, Zed, Goose, …), merging into each tool's own file and leaving every other server in it alone. `--scope project` commits it for the team, `--scope user` follows you; a file it cannot parse is refused with the snippet to paste, never rewritten. No credential is written or read — the client runs the OAuth flow (see [`commands/docs.md`](commands/docs.md)) |
 | `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
 | `pithy schema [command…] --json` | Describe the installed CLI as JSON, for an agent to build a call from: every command's positionals and flags with their types, defaults, values and aliases, the rules over several flags, the JSON Schema of its `--json` payload and of the error line, and whether it mutates, is idempotent and needs the network. With no command, the whole tree plus the global flags, environment variables, exit codes and error codes. Served from the binary, so it answers for the version installed — `docs/catalog.generated.json` is a projection of the same walk (see [`commands/schema.md`](commands/schema.md)) |
@@ -185,6 +186,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 |---|---|
 | `pithy add` | [`commands/add.md`](commands/add.md) — Install a capability into a Worker |
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
+| `pithy completion` | [`commands/completion.md`](commands/completion.md) — Install tab completion, or print a shell's script |
 | `pithy contract` | [`commands/contract.md`](commands/contract.md) — Write each Worker's OpenAPI and AsyncAPI documents |
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
 | `pithy deploy` | [`commands/deploy.md`](commands/deploy.md) — Deploy to Cloudflare Workers |
@@ -262,6 +264,8 @@ Want a shortcut? Type `p.` instead of `pithy`. [Y/n]
 - Default response: `Y`
 - If yes: writes alias to shell rc file, prints confirmation
 - If no: never asks again in this project; user can still install later via `pithy alias`
+
+Then, once, the same way, it asks whether to install tab completion for `pithy`. A yes installs completion into the same rc file, covering `p.` too, as `pithy completion` does (see [`commands/completion.md`](commands/completion.md)). Neither question is asked under `--json`, `--no-input`, `PITHY_NONINTERACTIVE=1` or without a TTY.
 
 **Surface 2: The `pithy alias` subcommand**
 
@@ -900,6 +904,7 @@ COMMANDS
   Toolchain
       doctor    Check the toolchain, project, and for a new CLI version
        alias    Install the `p.` shortcut for `pithy`
+  completion    Install tab completion for `pithy`, or print a shell's script
         docs    Connect the Pithy documentation server to your AI coding agent
       schema    Describe every command, flag, payload and error code as JSON
 

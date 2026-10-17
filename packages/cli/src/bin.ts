@@ -77,6 +77,22 @@ const argv = process.argv.slice(2);
 if (!colorEnabled()) process.env.NO_COLOR = "1";
 
 const { main } = await import("./main");
+
+/**
+ * **`pithy __complete <line>` answers a shell's Tab, and answers it here, ahead of everything below (#765).**
+ *
+ * Hidden: it is in no command's tree, so `--help`, `pithy schema` and the docs catalog never name it. It runs
+ * before the flag checks, because the line it is handed is full of half-typed flags that are not mistakes;
+ * before the `--json` and input latches, because it prints neither; and before the session renewal and the
+ * update notifier, because a Tab must not reach a network, resolve a credential or write a file. Whatever
+ * it meets, it exits 0 having printed candidates or nothing. See `completion/complete.ts`.
+ */
+if (argv[0] === "__complete") {
+  const { runComplete } = await import("./completion/complete");
+  await runComplete(main, argv.slice(1));
+  process.exit(0);
+}
+
 const { ownNamesOnly, runTree, usageTarget } = await import("./dispatch");
 const { asksForJson, refuseEventsFlag, refuseJsonFlag, refuseNoInputFlag, refusePrettyFlags, refuseUndeclaredFlags } =
   await import("./declaredFlags");
@@ -200,8 +216,12 @@ if (wantsVersion(argv)) {
     // A session bound here is renewed before the command body runs, so no command is marked for it and
     // the synchronous credential read finds a fresh token (#759). Never throws; costs no call while the
     // token has more than five minutes left. See `cloudflare/session/dispatch.ts`.
-    const { freshenBoundSession } = await import("./cloudflare/session/dispatch");
-    await freshenBoundSession();
+    // Not for `pithy completion`, which every new shell runs from its rc file to load the script: a shell
+    // starting is no reason to reach Cloudflare (#765).
+    if (argv[0] !== "completion") {
+      const { freshenBoundSession } = await import("./cloudflare/session/dispatch");
+      await freshenBoundSession();
+    }
     await runTree(root, argv, { json: asksForJson(argv), showUsage: usageFor });
   }
 }
@@ -210,11 +230,11 @@ if (wantsVersion(argv)) {
  * The end-of-command update check (docs/CLI.md §5). Gated to an interactive terminal at the call site: a
  * piped/CI run (non-TTY) — every test that spawns this bin, and every scripted invocation — never touches
  * the network or the state file. `doctor` runs its own fresh check, so it does not also get the background
- * one. It is fire-and-forget and never delays exit. Imported dynamically like everything else below the
+ * one, and `completion` runs at every shell's start from an rc file, where a notice is noise (#765). It is fire-and-forget and never delays exit. Imported dynamically like everything else below the
  * color line: the notifier does not reach citty today, and a later edit that made it should not silently
  * put citty's import back above the one line that has to run first.
  */
-if (process.stderr.isTTY && !process.env.PITHY_NO_UPDATE_NOTIFIER && argv[0] !== "doctor") {
+if (process.stderr.isTTY && !process.env.PITHY_NO_UPDATE_NOTIFIER && argv[0] !== "doctor" && argv[0] !== "completion") {
   const { runUpdateNotifier } = await import("./notifier/notify");
   // Dropped deliberately, and `void` says so. The promise it hands back exists for a caller that wants to
   // know when the state write landed (#658); this one does not — awaiting here would hold the process for
