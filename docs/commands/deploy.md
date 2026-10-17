@@ -82,7 +82,7 @@ A capability that owns Workflows ships a Worker of its own — `<project>-<env>-
 
 **A missing `SECRETS_STORE_ID` is a skip, not a deploy.** `pithy add secrets` records it in your Pithy config directory, which a CI runner does not have — so export it in the job, or the five Workers that read a secret (`email`, `media`, `storage`, `payments`, `secrets`) are skipped with that sentence rather than deployed bound to a store that is not there and unable to read their master key.
 
-**It deploys the configuration your project composes.** A kit Worker's config is resolved from the composed capability in `apps/<name>/pithy.config.ts` — your `media({ recordStore })`, your `vector({ indexes })`, your email theme — so `pithy deploy --env <env> --kit` and `pithy <capability> provision` resolve the same Worker to the same bytes. That is what makes `pithy deploy --env <env> --kit --force` a safe way to re-upload one without re-running a full provisioning pass.
+**It deploys the configuration your project composes.** A kit Worker's config is resolved from the composed capability in `apps/<name>/pithy.config.ts` — your `media({ visibility })`, your `vector({ indexes })`, your email theme — so `pithy deploy --env <env> --kit` and `pithy <capability> provision` resolve the same Worker to the same bytes. That is what makes `pithy deploy --env <env> --kit --force` a safe way to re-upload one without re-running a full provisioning pass.
 
 **The adopter's Workers are never gated.** Your code is the thing that changed, and no stamp can see a bundle. `--force` is refused beside `--apps` for that reason rather than accepted and ignored.
 

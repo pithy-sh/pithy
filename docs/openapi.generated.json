@@ -5229,10 +5229,11 @@
                     "description": "The exact byte count. Required: the presigned PUT signs Content-Length, and the pending row reserves these bytes against the owner's quota the moment it is written."
                   },
                   "visibility": {
-                    "description": "Who may read the file once stored. Omitted takes the configured default, which is private.",
+                    "description": "Who may read the file once stored. Omitted takes the configured `visibility.default`, which is private; a level outside `visibility.allowed` is refused, never coerced.",
                     "type": "string",
                     "enum": [
                       "private",
+                      "organization",
                       "public"
                     ]
                   }
@@ -5273,6 +5274,13 @@
                             "null"
                           ]
                         },
+                        "organizationId": {
+                          "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "contentType": {
                           "type": "string",
                           "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -5294,9 +5302,10 @@
                           "type": "string",
                           "enum": [
                             "private",
+                            "organization",
                             "public"
                           ],
-                          "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                          "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                         },
                         "checksum": {
                           "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -5462,16 +5471,30 @@
           "storage"
         ],
         "operationId": "getStorage",
-        "summary": "List the caller's files.",
+        "summary": "List the files the caller may see.",
+        "description": "The caller's own files and their organization's, by path. `includePublic=true` adds every public file.",
         "parameters": [
           {
             "name": "prefix",
             "in": "query",
             "required": false,
-            "description": "Only files whose logical path starts with this. Omitted lists everything you own.",
+            "description": "Only files whose logical path starts with this. Omitted lists everything you may see.",
             "schema": {
               "type": "string",
               "maxLength": 1024
+            }
+          },
+          {
+            "name": "includePublic",
+            "in": "query",
+            "required": false,
+            "description": "`true` adds every public file to your own and your organization's. Off by default, so nobody receives what they did not ask for.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
             }
           },
           {
@@ -5524,6 +5547,13 @@
                               "null"
                             ]
                           },
+                          "organizationId": {
+                            "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "contentType": {
                             "type": "string",
                             "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -5545,9 +5575,10 @@
                             "type": "string",
                             "enum": [
                               "private",
+                              "organization",
                               "public"
                             ],
-                            "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                            "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                           },
                           "checksum": {
                             "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -5622,6 +5653,164 @@
         "x-pithy-verification": [
           "bearer",
           "session"
+        ]
+      }
+    },
+    "/storage/admin/usage": {
+      "get": {
+        "tags": [
+          "storage"
+        ],
+        "operationId": "getStorageAdminUsage",
+        "summary": "Count files held, per organization or per owner.",
+        "description": "Stored files and their bytes. A per-owner read names its organization, so no figure ever spans two.",
+        "parameters": [
+          {
+            "name": "groupBy",
+            "in": "query",
+            "required": true,
+            "description": "`organization` is one row per organization; `owner` is one row per owner within the organization named, never across organizations.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "organization"
+              ]
+            }
+          },
+          {
+            "name": "organizationId",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one organization. Required with `groupBy=owner` and with `ownerId`, because a per-owner figure is only ever an organization's. `none` is the records written with no organization in force.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "ownerId",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one owner, within the organization named.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Count records created at or after this instant, ISO-8601.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Count records created before this instant, ISO-8601.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "The most rows to return. 100 by default.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Records and bytes held, grouped as asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "organizationId": {
+                            "description": "The organization these records were written under. Null for records written with none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ownerId": {
+                            "description": "The owner, on a per-owner read. Null for system-owned records. Absent on a per-organization read.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "records": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many stored records."
+                          },
+                          "bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Their total size in bytes. A record of unknown size counts zero."
+                          }
+                        },
+                        "required": [
+                          "organizationId",
+                          "records",
+                          "bytes"
+                        ],
+                        "description": "Records and bytes held by one organization, or by one owner within one organization."
+                      },
+                      "description": "Largest first. Capped at the requested limit."
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "Whether more rows matched than were returned."
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "truncated"
+                  ],
+                  "description": "Records and bytes held, grouped as asked."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "storage:usage:read"
         ]
       }
     },
@@ -5781,6 +5970,13 @@
                         "null"
                       ]
                     },
+                    "organizationId": {
+                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "contentType": {
                       "type": "string",
                       "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -5802,9 +5998,10 @@
                       "type": "string",
                       "enum": [
                         "private",
+                        "organization",
                         "public"
                       ],
-                      "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                      "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                     },
                     "checksum": {
                       "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -5914,6 +6111,13 @@
                         "null"
                       ]
                     },
+                    "organizationId": {
+                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "contentType": {
                       "type": "string",
                       "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -5935,9 +6139,10 @@
                       "type": "string",
                       "enum": [
                         "private",
+                        "organization",
                         "public"
                       ],
-                      "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                      "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                     },
                     "checksum": {
                       "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -6215,6 +6420,13 @@
                         "null"
                       ]
                     },
+                    "organizationId": {
+                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "contentType": {
                       "type": "string",
                       "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -6236,9 +6448,10 @@
                       "type": "string",
                       "enum": [
                         "private",
+                        "organization",
                         "public"
                       ],
-                      "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                      "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                     },
                     "checksum": {
                       "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -6416,7 +6629,7 @@
         ],
         "operationId": "getStorageByIdUrl",
         "summary": "Mint a direct download URL.",
-        "description": "For a public file or one the caller owns. The URL cannot be revoked, so it lapses in five minutes.",
+        "description": "For a file the caller may read. The URL cannot be revoked, so it lapses in five minutes.",
         "parameters": [
           {
             "name": "id",
@@ -6483,7 +6696,7 @@
         ],
         "operationId": "getStorageById",
         "summary": "Read a file's bytes.",
-        "description": "Public files need no credential. A private file needs the owner's bearer token or session, and reads as missing to anyone else. Honors `Range` and `If-None-Match`.",
+        "description": "Public files need no credential. Any other needs the bearer token or session of someone it is visible to, and reads as missing to anyone else. Honors `Range` and `If-None-Match`.",
         "parameters": [
           {
             "name": "id",
@@ -6620,10 +6833,11 @@
                     "description": "The file's logical name, e.g. `invoices/2026/q3.pdf`. Stored, indexed, and listable by prefix; never part of the R2 key, so slashes are naming, not directories."
                   },
                   "visibility": {
-                    "description": "Change who may read the file. Takes effect on the next request.",
+                    "description": "Change who may read the file. Takes effect on the next request. A level outside `visibility.allowed` is refused.",
                     "type": "string",
                     "enum": [
                       "private",
+                      "organization",
                       "public"
                     ]
                   }
@@ -6656,6 +6870,13 @@
                         "null"
                       ]
                     },
+                    "organizationId": {
+                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "contentType": {
                       "type": "string",
                       "description": "The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."
@@ -6677,9 +6898,10 @@
                       "type": "string",
                       "enum": [
                         "private",
+                        "organization",
                         "public"
                       ],
-                      "description": "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
+                      "description": "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private."
                     },
                     "checksum": {
                       "description": "Lowercase hex SHA-256 the client reported at completion, or R2's own when it reported none. Null until stored.",
@@ -6879,7 +7101,7 @@
         ],
         "operationId": "postMediaDuplicates",
         "summary": "Find duplicates of a file.",
-        "description": "Exact matches by SHA-256, and near matches by perceptual hash for images.",
+        "description": "Exact matches by SHA-256, and near matches by perceptual hash for images, within the caller's organization — or the caller's own records when none is in force.",
         "requestBody": {
           "required": true,
           "description": "A request to find exact and near duplicates of a file.",
@@ -7013,6 +7235,37 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "ownerId": {
+                                "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "organizationId": {
+                                "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "visibility": {
+                                "description": "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+                                "type": "string",
+                                "enum": [
+                                  "private",
+                                  "organization",
+                                  "public"
+                                ]
+                              },
+                              "signedDelivery": {
+                                "description": "Whether the bytes are served only through signed URLs, as Cloudflare last confirmed.",
+                                "type": "boolean"
+                              },
+                              "signingPending": {
+                                "description": "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+                                "type": "boolean"
                               },
                               "storageBackend": {
                                 "type": "string",
@@ -7171,6 +7424,164 @@
         ]
       }
     },
+    "/media/admin/usage": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "operationId": "getMediaAdminUsage",
+        "summary": "Count media held, per organization or per owner.",
+        "description": "Stored records and their bytes. A per-owner read names its organization, so no figure ever spans two.",
+        "parameters": [
+          {
+            "name": "groupBy",
+            "in": "query",
+            "required": true,
+            "description": "`organization` is one row per organization; `owner` is one row per owner within the organization named, never across organizations.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "organization"
+              ]
+            }
+          },
+          {
+            "name": "organizationId",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one organization. Required with `groupBy=owner` and with `ownerId`, because a per-owner figure is only ever an organization's. `none` is the records written with no organization in force.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "ownerId",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one owner, within the organization named.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Count records created at or after this instant, ISO-8601.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "Count records created before this instant, ISO-8601.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "The most rows to return. 100 by default.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Records and bytes held, grouped as asked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "organizationId": {
+                            "description": "The organization these records were written under. Null for records written with none.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ownerId": {
+                            "description": "The owner, on a per-owner read. Null for system-owned records. Absent on a per-organization read.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "records": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "How many stored records."
+                          },
+                          "bytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Their total size in bytes. A record of unknown size counts zero."
+                          }
+                        },
+                        "required": [
+                          "organizationId",
+                          "records",
+                          "bytes"
+                        ],
+                        "description": "Records and bytes held by one organization, or by one owner within one organization."
+                      },
+                      "description": "Largest first. Capped at the requested limit."
+                    },
+                    "truncated": {
+                      "type": "boolean",
+                      "description": "Whether more rows matched than were returned."
+                    }
+                  },
+                  "required": [
+                    "rows",
+                    "truncated"
+                  ],
+                  "description": "Records and bytes held, grouped as asked."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "media:usage:read"
+        ]
+      }
+    },
     "/media": {
       "post": {
         "tags": [
@@ -7178,7 +7589,7 @@
         ],
         "operationId": "postMedia",
         "summary": "Start an upload.",
-        "description": "Creates a pending record and answers with the URL to upload the bytes to, directly.",
+        "description": "Creates a pending record owned by the caller, in the organization in force, and answers with the URL to upload the bytes to, directly.",
         "requestBody": {
           "required": true,
           "description": "The client-supplied fields for creating a media record; extra keys are adopter extension fields.",
@@ -7276,6 +7687,15 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "visibility": {
+                    "description": "Who may read the record. Defaults to the project's `visibility.default`; a level outside `visibility.allowed` is refused, never coerced.",
+                    "type": "string",
+                    "enum": [
+                      "private",
+                      "organization",
+                      "public"
+                    ]
                   }
                 },
                 "required": [
@@ -7354,6 +7774,7 @@
         ],
         "operationId": "getMedia",
         "summary": "List media records.",
+        "description": "The caller's own records and their organization's, newest first. `includePublic=true` adds every public record.",
         "parameters": [
           {
             "name": "type",
@@ -7367,6 +7788,19 @@
                 "video",
                 "audio",
                 "document"
+              ]
+            }
+          },
+          {
+            "name": "includePublic",
+            "in": "query",
+            "required": false,
+            "description": "`true` adds every public record to the caller's own and their organization's. Off by default, so nobody receives what they did not ask for.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
               ]
             }
           },
@@ -7452,6 +7886,37 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "ownerId": {
+                            "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "organizationId": {
+                            "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "visibility": {
+                            "description": "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+                            "type": "string",
+                            "enum": [
+                              "private",
+                              "organization",
+                              "public"
+                            ]
+                          },
+                          "signedDelivery": {
+                            "description": "Whether the bytes are served only through signed URLs, as Cloudflare last confirmed.",
+                            "type": "boolean"
+                          },
+                          "signingPending": {
+                            "description": "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+                            "type": "boolean"
                           },
                           "storageBackend": {
                             "type": "string",
@@ -7575,7 +8040,7 @@
                       "description": "The records on this page, newest first."
                     },
                     "cursor": {
-                      "description": "Pass this back as `cursor` to read the next page. Absent on the last page.",
+                      "description": "Pass this back as `cursor` to read the next page. Absent on the last page. A page may hold fewer records than asked for and still carry one — a permission hook removed some — so the cursor, not the count, says whether there is more.",
                       "type": "string"
                     }
                   },
@@ -7612,7 +8077,7 @@
         ],
         "operationId": "postMediaByIdFinalize",
         "summary": "Finish an upload.",
-        "description": "Marks the record stored and starts any configured enrichment.",
+        "description": "Marks the record stored and starts any configured enrichment. The owner's, or a manager's.",
         "parameters": [
           {
             "name": "id",
@@ -7734,6 +8199,37 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "ownerId": {
+                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "organizationId": {
+                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "visibility": {
+                      "description": "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+                      "type": "string",
+                      "enum": [
+                        "private",
+                        "organization",
+                        "public"
+                      ]
+                    },
+                    "signedDelivery": {
+                      "description": "Whether the bytes are served only through signed URLs, as Cloudflare last confirmed.",
+                      "type": "boolean"
+                    },
+                    "signingPending": {
+                      "description": "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+                      "type": "boolean"
                     },
                     "storageBackend": {
                       "type": "string",
@@ -7875,6 +8371,92 @@
         ]
       }
     },
+    "/media/{id}/url": {
+      "get": {
+        "tags": [
+          "media"
+        ],
+        "operationId": "getMediaByIdUrl",
+        "summary": "Mint a delivery URL.",
+        "description": "For a record the caller may read. Signed and short-lived when its bytes are signed; plain for a public record.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The media record id from the path — bounded, not shape-checked.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "variant",
+            "in": "query",
+            "required": false,
+            "description": "The Cloudflare Images variant to deliver. `public` by default; ignored for other backends.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where to load a record's bytes, and until when.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "The URL to load the bytes from. Signed and short-lived for a record that is not public."
+                    },
+                    "expiresAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "When the URL stops working, ISO-8601. Null for a public record's plain URL, which does not expire."
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "expiresAt"
+                  ],
+                  "description": "Where to load a record's bytes, and until when."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "public",
+          "bearer",
+          "session"
+        ]
+      }
+    },
     "/media/{id}": {
       "get": {
         "tags": [
@@ -7882,6 +8464,7 @@
         ],
         "operationId": "getMediaById",
         "summary": "Read one media record.",
+        "description": "A public record needs no credential. Any other reads as not found to anyone it is not visible to.",
         "parameters": [
           {
             "name": "id",
@@ -7950,6 +8533,313 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "ownerId": {
+                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "organizationId": {
+                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "visibility": {
+                      "description": "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+                      "type": "string",
+                      "enum": [
+                        "private",
+                        "organization",
+                        "public"
+                      ]
+                    },
+                    "signedDelivery": {
+                      "description": "Whether the bytes are served only through signed URLs, as Cloudflare last confirmed.",
+                      "type": "boolean"
+                    },
+                    "signingPending": {
+                      "description": "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+                      "type": "boolean"
+                    },
+                    "storageBackend": {
+                      "type": "string",
+                      "enum": [
+                        "r2",
+                        "cf-images",
+                        "cf-stream"
+                      ],
+                      "description": "The Cloudflare product a media object's bytes live in: `r2`, `cf-images`, or `cf-stream`."
+                    },
+                    "storageKey": {
+                      "type": "string",
+                      "description": "The backend's handle to the bytes: the R2 object key, the CF Images id, or the CF Stream uid."
+                    },
+                    "sha256": {
+                      "description": "Client-computed lowercase-hex SHA-256 of the file, or null if none was sent.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "phash": {
+                      "description": "Client-computed perceptual hash (hex) for near-duplicate images, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "width": {
+                      "description": "Original pixel width for images and video, or null.",
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "height": {
+                      "description": "Original pixel height for images and video, or null.",
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "altText": {
+                      "description": "Alt text written by image-to-text enrichment, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "caption": {
+                      "description": "A longer caption written by image-to-text enrichment, or null.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "transcription": {
+                      "description": "The speech-to-text transcription for audio or video, or null until written.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hasTranscription": {
+                      "type": "boolean",
+                      "description": "Whether a transcription has been written to this record."
+                    },
+                    "extractedText": {
+                      "description": "Text extracted from a document, as markdown, or null until written.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "hasExtractedText": {
+                      "type": "boolean",
+                      "description": "Whether extracted text has been written to this record."
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the record was created and its upload URL minted, ISO-8601."
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                      "description": "When the record was last written, ISO-8601."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "type",
+                    "status",
+                    "name",
+                    "filename",
+                    "contentType",
+                    "storageBackend",
+                    "storageKey",
+                    "hasTranscription",
+                    "hasExtractedText",
+                    "createdAt",
+                    "updatedAt"
+                  ],
+                  "additionalProperties": {},
+                  "description": "One media record. Any adopter extension fields arrive beside these."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearer": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "x-pithy-verification": [
+          "public",
+          "bearer",
+          "session"
+        ]
+      },
+      "patch": {
+        "tags": [
+          "media"
+        ],
+        "operationId": "patchMediaById",
+        "summary": "Rename a media record or change who may read it.",
+        "description": "The owner's, or a manager's. A visibility change that Cloudflare has not yet confirmed comes back with `signingPending`; send it again to finish it.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "The media record id from the path — bounded, not shape-checked.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The fields of a media record its owner may change.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "A new display name.",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "visibility": {
+                    "description": "Who may read the record from now on. A level outside `visibility.allowed` is refused. Moving to or from `public` changes Cloudflare's signing setting too; a change that fails halfway is reported as pending and finished by sending it again.",
+                    "type": "string",
+                    "enum": [
+                      "private",
+                      "organization",
+                      "public"
+                    ]
+                  }
+                },
+                "description": "The fields of a media record its owner may change."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One media record. Any adopter extension fields arrive beside these.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "The record's id. What every other route takes as `:id`."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "video",
+                        "audio",
+                        "document"
+                      ],
+                      "description": "The kind of media: image, video, audio, or document. The discriminator on every record."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "stored",
+                        "failed"
+                      ],
+                      "description": "A media record's lifecycle: `pending` (URL minted), `stored` (upload finalized), or `failed`."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "A human-readable display name for the media."
+                    },
+                    "filename": {
+                      "type": "string",
+                      "description": "The original client filename, including extension."
+                    },
+                    "contentType": {
+                      "type": "string",
+                      "description": "The MIME type of the stored bytes."
+                    },
+                    "size": {
+                      "description": "The object's size in bytes, or null while it is not known.",
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "ownerId": {
+                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "organizationId": {
+                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "visibility": {
+                      "description": "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+                      "type": "string",
+                      "enum": [
+                        "private",
+                        "organization",
+                        "public"
+                      ]
+                    },
+                    "signedDelivery": {
+                      "description": "Whether the bytes are served only through signed URLs, as Cloudflare last confirmed.",
+                      "type": "boolean"
+                    },
+                    "signingPending": {
+                      "description": "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+                      "type": "boolean"
                     },
                     "storageBackend": {
                       "type": "string",
@@ -8096,6 +8986,7 @@
         ],
         "operationId": "deleteMediaById",
         "summary": "Delete a media record and its bytes.",
+        "description": "The owner's, or a manager's.",
         "parameters": [
           {
             "name": "id",
