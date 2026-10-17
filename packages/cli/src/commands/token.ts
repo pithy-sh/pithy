@@ -9,7 +9,7 @@ import { PreconditionFailedError, ValidationError } from "@pithy-sh/core/src/err
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { z } from "zod";
-import { createCliAudit } from "../audit/cliAudit";
+import { type CliAuditEmit, createCliAudit, createUncredentialedCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
@@ -178,7 +178,11 @@ async function buildAudit(
   apiToken: string,
 ): Promise<TokenAudit> {
   // `env` is both the audit destination and the environment acted on for a token operation.
-  const emit = await createCliAudit({ projectDir, env, actedOn: env, capabilities, clients: cf, apiToken });
+  return tokenAuditOf(await createCliAudit({ projectDir, env, actedOn: env, capabilities, clients: cf, apiToken }));
+}
+
+/** A token lifecycle event, in the shape every CLI audit emitter takes. */
+function tokenAuditOf(emit: CliAuditEmit): TokenAudit {
   return async (event) => {
     await emit({
       action: event.action,
@@ -275,7 +279,9 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
  * {@link buildEngine}. `forget` drops a value from a file on this machine and consults the account only
  * to ask whether the token has been used; a run that cannot ask falls back to a prompt rather than
  * failing. So `Cloudflare credentials are missing` becomes "the check cannot run", and every other failure
- * — the project's own config, its name, its Workers — is as fatal as it is for a mint.
+ * — the project's own config, its name, its Workers — is as fatal as it is for a mint. Without credentials
+ * there is also no client to write the audit event with, so a project that composes audit hears that its
+ * event was not recorded rather than nothing.
  */
 async function buildForgetEngine(projectDir: string, env: string): Promise<ForgetEngine> {
   const config = await loadProject(projectDir);
@@ -291,7 +297,14 @@ async function buildForgetEngine(projectDir: string, env: string): Promise<Forge
   try {
     creds = loadCreds(loadProjectCloudflare(config) ?? null);
   } catch (error) {
-    if (error instanceof PreconditionFailedError) return base;
+    // No client to write a row with. Said out loud when the project composes audit, never silent (#762).
+    if (error instanceof PreconditionFailedError) {
+      // Defined, not spread: a spread would read the lazy `profiles` getter and throw on an unknowable set.
+      return Object.defineProperty(base, "audit", {
+        value: tokenAuditOf(createUncredentialedCliAudit(capabilitySetOf(workerSet))),
+        enumerable: true,
+      });
+    }
     throw error;
   }
   const cf = await cloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });

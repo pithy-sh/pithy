@@ -101,7 +101,10 @@ const NO_OP: CliAuditEmit = async () => {};
  *
  * It still never throws. Auditing must not break the command it records — it just stops being silent.
  */
-function unrecordable(reason: string): CliAuditEmit {
+function unrecordable(
+  reason: string,
+  actionRequired = `Fix it — ${commandName("doctor")} names the fault — and re-run to record this event.`,
+): CliAuditEmit {
   const log = createCliLogger().child("audit");
   return async (event) => {
     log.error("audit event not recorded", {
@@ -109,9 +112,27 @@ function unrecordable(reason: string): CliAuditEmit {
       // The set's own diagnosis, which names the worker. Inventing one here is how the absent-config case
       // came to be reported as "a config will not load", pointing at a file that does not exist (#454).
       reason,
-      action_required: `Fix it — ${commandName("doctor")} names the fault — and re-run to record this event.`,
+      action_required: actionRequired,
     });
   };
+}
+
+/**
+ * The emitter for a command that **succeeds without Cloudflare credentials** — `pithy token forget`, the
+ * one token path that does (#762).
+ *
+ * With no credentials there is no client to write the audit database with, so the event cannot land. A
+ * project that composes `audit` hears that on the same logger {@link unrecordable} uses, because a forget
+ * that dropped a value and recorded nothing, in silence, is exactly the trail you cannot tell is broken.
+ * A project that composes none hears nothing, and an unknowable set names itself as it does everywhere.
+ */
+export function createUncredentialedCliAudit(capabilities: CapabilitySet): CliAuditEmit {
+  if (isUnknown(capabilities)) return unrecordable(capabilities.unknown);
+  if (!capabilities.some((capability) => capability.name === "audit")) return NO_OP;
+  return unrecordable(
+    "Cloudflare credentials are missing, so there is no client to write the audit database with.",
+    `Sign in with ${commandName("cloudflare connect")} before the next run. This event is not recorded.`,
+  );
 }
 
 /** The `wrangler.jsonc` slice the audit target is resolved from: the app database, per environment. */

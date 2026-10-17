@@ -12,6 +12,7 @@ import {
   createCliAudit,
   createProjectCliAudit,
   createRemoteCliAudit,
+  createUncredentialedCliAudit,
   isRemoteEnv,
   resolveAuditDatabaseId,
 } from "./cliAudit";
@@ -343,6 +344,30 @@ describe("an unknowable capability set", () => {
     await prod({ action: "deploy/worker_deployed", outcome: "success" });
     expect(stderr.join("")).toMatch(/not recorded/i);
     expect(stderr.join("")).toMatch(/deploy\/worker_deployed/);
+  });
+
+  /**
+   * `pithy token forget` is the one token path that succeeds without credentials (#762), and with none there
+   * is no client to write a row with. A project that composes audit must hear that its event was lost,
+   * the way an unknowable set does; a project that composes none must hear nothing.
+   */
+  test("**an uncredentialed run says its event was not recorded when the project composes audit**", async () => {
+    const audit = defineCapability({ name: "audit", requiredBindings: [] });
+    const emit = createUncredentialedCliAudit([audit]);
+    await expect(emit({ action: "cloudflare/token_forgotten", outcome: "success" })).resolves.toBeUndefined();
+    expect(stderr.join("")).toMatch(/not recorded/i);
+    expect(stderr.join("")).toMatch(/cloudflare\/token_forgotten/);
+    expect(stderr.join("")).toMatch(/credentials are missing/i);
+  });
+
+  test("an uncredentialed run stays silent when the project composes no audit, and names an unknowable set", async () => {
+    await createUncredentialedCliAudit([])({ action: "cloudflare/token_forgotten", outcome: "success" });
+    expect(stderr.join("")).toBe("");
+    await createUncredentialedCliAudit({ unknown: "No pithy.config.ts in collab." })({
+      action: "cloudflare/token_forgotten",
+      outcome: "success",
+    });
+    expect(stderr.join("")).toMatch(/No pithy\.config\.ts in collab/);
   });
 
   test("createProjectCliAudit is inert without credentials, and reaches for nothing", async () => {

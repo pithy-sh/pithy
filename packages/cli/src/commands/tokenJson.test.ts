@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { expectConforms, runCaptured } from "../test-utils/payloadContract";
 import type { ForgetResult, RevokeResult, TokenListItem, TokenResult } from "../tokens/engine";
@@ -20,6 +21,7 @@ const engine = vi.hoisted(() => ({
   revoked: undefined as unknown,
   forgot: undefined as unknown,
   forgetEngine: undefined as unknown,
+  workers: [] as unknown[],
   credentials: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "token", SECRETS_STORE_ID: "store" } as Record<
     string,
     string
@@ -38,7 +40,7 @@ vi.mock("../cloudflare/config", async (importOriginal) => ({
 vi.mock("../cloudflare/clients", () => ({ cloudflareClients: async () => ({ accountTokens: () => ({}) }) }));
 vi.mock("../project/composeFor", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/composeFor")>()),
-  resolveWorkerSetFor: async () => [],
+  resolveWorkerSetFor: async () => engine.workers,
 }));
 vi.mock("../tokens/engine", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../tokens/engine")>()),
@@ -147,6 +149,36 @@ describe("pithy token forget without credentials", () => {
       expect((engine.forgetEngine as { project: string }).project).toBe("acme");
     } finally {
       engine.credentials = saved;
+    }
+  });
+
+  test("**says its event was not recorded** when the project composes audit — never a silent forget", async () => {
+    // No credentials, no client to write the audit database with. A forget that drops a value and records
+    // nothing must say so on stderr, the way an unknowable capability set does (#762).
+    const saved = engine.credentials;
+    engine.credentials = {};
+    engine.workers = [{ name: "app", capabilities: [defineCapability({ name: "audit", requiredBindings: [] })] }];
+    const stderr: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      stderr.push(parts.map(String).join(" "));
+    });
+    engine.forgot = {
+      profile: "ci-system",
+      env: "prod",
+      localCopy: "forgotten",
+      location: "/home/you/.config/pithy/acme/tokens.json",
+      usage: "unreadable",
+    } satisfies ForgetResult;
+    try {
+      await runCaptured("token forget", ["ci-system", "--env", "prod", "--json"]);
+      const audit = (engine.forgetEngine as { audit?: (event: unknown) => Promise<void> }).audit;
+      expect(audit).toBeDefined();
+      await audit?.({ action: "cloudflare/token_forgotten", outcome: "success", profile: "ci-system", env: "prod" });
+      expect(stderr.join("")).toMatch(/not recorded/i);
+      expect(stderr.join("")).toMatch(/cloudflare\/token_forgotten/);
+    } finally {
+      engine.credentials = saved;
+      engine.workers = [];
     }
   });
 });

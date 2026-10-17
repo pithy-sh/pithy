@@ -174,7 +174,7 @@ pithy token revoke ci-system --env prod
 pithy token forget ci-system --env prod
 ```
 
-Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, revoke, and forget emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it).
+Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, revoke, and forget emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it). A `forget` without credentials has no client to write its event with, so that one goes unrecorded, and when the project composes audit it says so on stderr rather than in silence.
 
 ## Environments
 
