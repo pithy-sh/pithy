@@ -146,6 +146,17 @@
       ]
     },
     {
+      "path": "completion",
+      "flags": [
+        "--remove",
+        "--no-remove",
+        "--status",
+        "--no-status",
+        "--json",
+        "--no-json"
+      ]
+    },
+    {
       "path": "contract",
       "flags": [
         "--worker",

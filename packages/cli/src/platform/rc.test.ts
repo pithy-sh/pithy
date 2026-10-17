@@ -148,3 +148,45 @@ describe("removeFromRcFile", () => {
     expect(await removeFromRcFile(join(home, "nope"), OPEN, CLOSE)).toBe(false);
   });
 });
+
+describe("what the refusals name", () => {
+  test("the alias by default, so `pithy alias` and `pithy doctor` read as they always did", async () => {
+    const path = join(home, ".zshrc");
+    await writeFile(path, "keep\n");
+    chmodSync(path, 0o444);
+    const thrown = (await appendToRcFile(path, "added\n").catch((error: unknown) => error)) as PithyError;
+    chmodSync(path, 0o644);
+    expect(thrown.payload.action).toBe("Make it writable, or add the Pithy alias to your shell config yourself.");
+  });
+
+  test("whatever block the caller is writing, on every refusal", async () => {
+    const readOnly = join(home, ".zshrc");
+    await writeFile(readOnly, "keep\n");
+    chmodSync(readOnly, 0o444);
+    const writable = (await appendToRcFile(readOnly, "added\n", { what: "the Pithy completion" }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    chmodSync(readOnly, 0o644);
+    expect(writable.payload.action).toBe(
+      "Make it writable, or add the Pithy completion to your shell config yourself.",
+    );
+
+    const escaped = join(home, ".bashrc");
+    await symlink(join(outside, "elsewhere"), escaped);
+    const symlinked = (await appendToRcFile(escaped, "added\n", { what: "the Pithy completion" }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    expect(symlinked.payload.action).toBe(
+      "Refusing to follow it. Add the Pithy completion to your shell config yourself.",
+    );
+
+    const directory = join(home, ".config.fish");
+    await mkdir(directory);
+    const unreadable = (await readRcFile(directory, { what: "the Pithy completion" }).catch(
+      (error: unknown) => error,
+    )) as PithyError;
+    expect(unreadable.payload.action).toBe(
+      "Fix the file's permissions, or add the Pithy completion to your shell config yourself.",
+    );
+  });
+});

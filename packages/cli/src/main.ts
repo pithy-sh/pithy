@@ -64,6 +64,7 @@ const COMMANDS = {
   // Toolchain — the tool rather than the project.
   doctor: { group: "Toolchain", load: () => import("./commands/doctor").then((m) => m.default) },
   alias: { group: "Toolchain", load: () => import("./commands/alias").then((m) => m.default) },
+  completion: { group: "Toolchain", load: () => import("./commands/completion").then((m) => m.default) },
   docs: { group: "Toolchain", load: () => import("./commands/docs").then((m) => m.default) },
   schema: { group: "Toolchain", load: () => import("./commands/schema").then((m) => m.default) },
 } as const satisfies Record<string, CommandEntry>;

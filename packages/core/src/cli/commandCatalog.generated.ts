@@ -161,6 +161,41 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "completion": {
+    "positionals": [
+      {
+        "name": "shell",
+        "required": false,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--remove": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--status": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": [
+      {
+        "kind": "atMostOne",
+        "flags": [
+          "--remove",
+          "--status"
+        ]
+      }
+    ]
+  },
   "contract": {
     "positionals": [],
     "flags": {

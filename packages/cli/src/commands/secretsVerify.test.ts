@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArgsDef, CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
+import { complete } from "../completion/complete";
+import { main } from "../main";
 import secrets from "./secrets";
 
 /**
@@ -12,9 +14,9 @@ import secrets from "./secrets";
  *
  * The command body itself reaches a Cloudflare account and a deployed manager, so what is checked here
  * is the contract around it: that the subcommand is registered where the docs catalog and the shell
- * completions find it, that it is fully non-interactive, and that it supports `--json` — CLAUDE.md's
- * rule that every command is agent-drivable, which is a property of the declaration rather than of the
- * run.
+ * completions find it — `pithy __complete` walks the tree they are both read from — that it is fully
+ * non-interactive, and that it supports `--json` — CLAUDE.md's rule that every command is agent-drivable,
+ * which is a property of the declaration rather than of the run.
  */
 
 function subcommand(name: string): CommandDef {
@@ -26,6 +28,13 @@ function subcommand(name: string): CommandDef {
 describe("pithy secrets verify", () => {
   test("is registered beside its siblings", () => {
     expect(Object.keys(secrets.subCommands as Record<string, CommandDef>)).toContain("verify");
+  });
+
+  test("completes from the shell, with its flags", async () => {
+    const values = async (line: string) =>
+      (await complete(main, line, { cwd: process.cwd() })).map((candidate) => candidate.value);
+    expect(await values("pithy secrets v")).toEqual(["verify"]);
+    expect(await values("pithy secrets verify --")).toEqual(expect.arrayContaining(["--env", "--sweep", "--json"]));
   });
 
   test("takes env, sweep and json, and nothing else", () => {

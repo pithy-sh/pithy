@@ -68,6 +68,15 @@ function workerDirectories(projectDir: string): WorkerDirectory[] {
 }
 
 /**
+ * Every discovered Worker by its directory name under `apps/` — the spelling `--worker` and `--app` take —
+ * sorted. Reads no manifest and no `wrangler.jsonc`, so it cannot fail on one: the shell's Tab asks this
+ * (`completion/values.ts`), and a broken file in one Worker must not cost the operator the other names.
+ */
+export function workerDirectoryNames(projectDir: string): string[] {
+  return workerDirectories(projectDir).map((found) => found.entry);
+}
+
+/**
  * **The Workers `pithy add --worker` can wire into**, by directory, sorted by its name: discovered, and carrying a
  * `pithy.config.ts`. A dev-only process composes nothing and is no `--worker` target. Every sentence that offers
  * one command per Worker reads its Workers here.

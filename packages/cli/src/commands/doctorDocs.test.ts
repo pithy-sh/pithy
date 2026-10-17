@@ -1200,6 +1200,7 @@ const NO_READABLE_PAYLOAD = ["doctor", "remove"];
 const SPREAD_BUILT = [
   "add",
   "alias",
+  "completion",
   "dashboard",
   "email",
   "env",
@@ -1363,7 +1364,8 @@ describe("the docs say what the code emits", () => {
     // spread next to the add's own, because the plan is the add's result plus the plan rather than a third
     // payload shape.
     // 35 since #762: `pithy token forget` spreads the engine's result behind its `command`, as `mint` does.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(35);
+    // 36 since #765: `pithy completion` spreads each payload behind its `command` and `action`, as `alias` does.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(36);
   });
 
   /**
@@ -1569,8 +1571,12 @@ function sharedKeys(pages: Record<string, string[]>): Record<string, string[]> {
  * would have said it. Neither claim can be made by accident, which is the whole point.
  */
 const SHARED_JSON_KEYS: Record<string, string[]> = {
+  // `alias` and `completion` install, remove and report one rc-file block the same way, so the keys that say
+  // which path ran and what it found or changed mean the same thing in both (#765).
+  action: ["alias", "completion"],
   // The Pithy block in `AGENTS.md`: `init` writes it and `upgrade` refreshes it, through one merge (#697).
   agents: ["init", "upgrade"],
+  alreadyInstalled: ["alias", "completion"],
   branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
   changed: ["secrets", "ui"],
@@ -1578,6 +1584,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "add",
     "alias",
     "cloudflare",
+    "completion",
     "contract",
     "dashboard",
     "deploy",
@@ -1645,10 +1652,13 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // The status a `provision --json` report's run exits with, on the one outcome that run writes (#711).
   exitCode: ["email", "media", "payments", "storage", "support", "testers"],
   from: ["email", "worker"],
+  installed: ["alias", "completion"],
+  installedIn: ["alias", "completion"],
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way
   // says what it wrote, and this is the flag that says the report beside it is truncated (#324, #380).
   interrupted: ["feature", "migrate", "secrets"],
   manifestFaults: ["add", "provision", "upgrade"],
+  manual: ["alias", "completion"],
   name: ["secrets", "token"],
   // The follow-up a run left required, as `[{ command, why }]`, and absent otherwise — never empty (#697,
   // `terminal/nextSteps.ts`). One shape on every command that can carry it.
@@ -1680,7 +1690,10 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // A port a worker is pinned to, in both: `pithy worker list` reports the pin, and a `pithy dev logs`
   // `spawned` record reports the port that worker actually started on. One meaning, read two ways.
   port: ["dev", "worker"],
-  removed: ["alias", "dashboard"],
+  rcPath: ["alias", "completion"],
+  rcPaths: ["alias", "completion"],
+  removed: ["alias", "completion", "dashboard"],
+  removedFrom: ["alias", "completion"],
   revoked: ["cloudflare", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
@@ -1689,6 +1702,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "add",
     "alias",
     "cloudflare",
+    "completion",
     "contract",
     "dashboard",
     "deploy",
@@ -1721,7 +1735,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // says which a declared environment still has no binding for. One subject, two directions.
   scopes: ["cloudflare", "dashboard"],
   secretBindings: ["doctor", "provision"],
-  shell: ["alias", "doctor"],
+  shell: ["alias", "completion", "doctor"],
   // The environments a capability provisioning run created nothing for, each with why and the command
   // that resolves it. Six commands, one meaning, because it is one helper (#512). Deliberately not
   // `skipped`: `pithy ui add` already emits that name for a `string[]` of files it left alone, and a
@@ -1735,6 +1749,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
   workers: ["contract", "deploy", "dev", "env", "migrate", "provision", "seed", "upgrade", "worker"],
+  wrote: ["alias", "completion"],
 };
 
 /**
@@ -1758,7 +1773,9 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
  * type is telling the truth about how much it says.
  */
 const SHARED_JSON_KEY_TYPES: Record<string, string> = {
+  action: "string",
   agents: "object",
+  alreadyInstalled: "boolean",
   branch: "string",
   changed: "boolean",
   command: "string",
@@ -1770,8 +1787,11 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   environment: "string",
   exitCode: "number",
   from: "string",
+  installed: "boolean",
+  installedIn: "string[]",
   interrupted: "boolean",
   manifestFaults: "unknown[]",
+  manual: "unknown",
   name: "string",
   next: "object[]",
   notes: "string[]",
@@ -1780,7 +1800,10 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   plan: "object",
   port: "number",
   profile: "string",
+  rcPath: "string",
+  rcPaths: "string[]",
   removed: "boolean",
+  removedFrom: "string[]",
   revoked: "boolean",
   routing: "object",
   runs: "object[]",
@@ -1793,6 +1816,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   storageDeleted: "boolean",
   to: "string",
   worker: "string",
+  wrote: "string[]",
 };
 
 /**

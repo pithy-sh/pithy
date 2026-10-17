@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEFAULT_READY_SIGNAL } from "./workerManifest";
-import { discoverWorkers } from "./workers";
+import { discoverWorkers, workerDirectoryNames } from "./workers";
 
 describe("discoverWorkers", () => {
   let dir: string;
@@ -121,5 +121,29 @@ describe("discoverWorkers", () => {
   test("returns nothing when apps/ holds no workers", async () => {
     await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify({ name: "acme" }));
     expect(await discoverWorkers(dir)).toEqual([]);
+  });
+});
+
+describe("workerDirectoryNames", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-worker-names-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("names every discovered Worker by its directory, the spelling --worker takes, sorted, reading no manifest", async () => {
+    await mkdir(join(dir, "apps", "web"), { recursive: true });
+    await writeFile(join(dir, "apps", "web", "pithy.worker.jsonc"), "{ not json");
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(join(dir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "acme-api" }));
+    await mkdir(join(dir, "apps", "notes"), { recursive: true });
+
+    expect(workerDirectoryNames(dir)).toEqual(["api", "web"]);
+  });
+
+  test("is empty where there is no apps/ at all", () => {
+    expect(workerDirectoryNames(join(dir, "nowhere"))).toEqual([]);
   });
 });

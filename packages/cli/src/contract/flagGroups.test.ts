@@ -93,6 +93,7 @@ function keyOf(path: string, group: FlagGroup): string {
 /** Each declared group, and a call that breaks it. */
 const CASES: Record<string, () => Promise<{ exit: number | undefined; message: string }>> = {
   "alias: atMostOne --remove --status": () => refusal("alias", ["--remove", "--status"]),
+  "completion: atMostOne --remove --status": () => refusal("completion", ["--remove", "--status"]),
   "doctor: atMostOne --disable-notifier --enable-notifier": () =>
     refusal("doctor", ["--disable-notifier", "--enable-notifier"]),
   "dev: atMostOne --disable-autostart --enable-autostart": () =>
