@@ -18,7 +18,7 @@ import { asCommand, expectConforms } from "../test-utils/payloadContract";
 import { renderSeedText } from "./seed";
 
 /**
- * `docs/commands/seed.md` pastes seven `pithy seed` transcripts, and CLAUDE.md makes the CLI reference
+ * `docs/commands/seed.md` pastes eight `pithy seed` transcripts, and CLAUDE.md makes the CLI reference
  * binding rather than advisory — an adopter reads those blocks to learn what a run looks like before they
  * dare one against staging. Nothing checked them, and they rotted in four separate ways at once: every
  * text block dropped the per-worker name column `describeWorker` prefixes each line with, the skip line
@@ -186,8 +186,9 @@ const APP_RESET: ResetPreviewEntry = { database: "app", binding: "DB", migration
  *
  * `buildDryRunPlan` supplies the sets for a real run too, and that is exact rather than convenient:
  * `seedD1Group` and `seedKvGroup` both report the number of rows/entries the fixture carries — the
- * writes are `INSERT OR IGNORE` and put-if-absent, so the count never depends on what was already
- * there. A real run over these fixtures reports these numbers.
+ * writes are `INSERT OR IGNORE` and put-if-absent, so the planned count never depends on what was
+ * already there. What landed is `written`, which this leaves unset: the renderer reads an unset count as
+ * every planned write landed, which is what a first run over these fixtures reports.
  */
 function report(options: {
   env: string;
@@ -215,9 +216,9 @@ function report(options: {
 }
 
 describe("docs/commands/seed.md — Examples", () => {
-  test("pastes exactly the four transcripts pinned below", () => {
-    // A fifth would be an unpinned example free to rot — the state this suite exists to end.
-    expect(OUTPUT_BLOCKS).toHaveLength(4);
+  test("pastes exactly the five transcripts pinned below", () => {
+    // A sixth would be an unpinned example free to rot — the state this suite exists to end.
+    expect(OUTPUT_BLOCKS).toHaveLength(5);
   });
 
   /** The ordinary run: two capabilities' sets, one line each, `auth` first because its order is lower. */
@@ -242,6 +243,27 @@ describe("docs/commands/seed.md — Examples", () => {
   test("the dry run is what the renderer prints when nothing is written", () => {
     const rendered = renderSeedText(report({ env: "staging", capabilities: [leaderboard()], dryRun: true }));
     expect(transcript(OUTPUT_BLOCKS, "Examples", 3, "$ pithy seed --env staging --dry-run")).toBe(rendered);
+  });
+
+  /**
+   * The re-run: the same plan, nothing landed. `written` is what the real writers report for a store that
+   * already holds every fixture (`run.test.ts` pins that), so it is set here to `0` and `false` (#764).
+   */
+  test("the re-run is what the renderer prints when every write was already there", () => {
+    const planned = report({ env: "dev", capabilities: [auth(), leaderboard()], dryRun: false });
+    const rerun: SeedRunReport = {
+      ...planned,
+      workers: planned.workers.map((worker) => ({
+        ...worker,
+        sets: worker.sets.map((set) => ({
+          ...set,
+          d1: set.d1.map((entry) => ({ ...entry, written: 0 })),
+          kv: set.kv.map((entry) => ({ ...entry, written: 0 })),
+          r2: set.r2.map((entry) => ({ ...entry, written: false })),
+        })),
+      })),
+    };
+    expect(transcript(OUTPUT_BLOCKS, "Examples", 4, "$ pithy seed --env dev")).toBe(renderSeedText(rerun));
   });
 });
 

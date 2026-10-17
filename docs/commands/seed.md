@@ -163,6 +163,11 @@ $ pithy seed --env dev --dry-run --json
 | `workers` | object[] | The per-Worker outcome, in fan-out order. |
 | `workers[].worker` | string | The Worker's name. |
 | `workers[].sets` | object[] | The per-set outcome, in run order, each named by its composed key and carrying its `d1`, `kv`, `r2` and `media` writes. |
+| `workers[].sets[].d1[].rows` | integer | The rows the fixture carries for that table: what the run planned. |
+| `workers[].sets[].d1[].written` | integer, optional | A real run only: the rows that landed. An existing row is ignored, so a re-run reports `0`. Absent on a dry run. |
+| `workers[].sets[].kv[].entries` | integer | The entries the fixture carries for that store: what the run planned. |
+| `workers[].sets[].kv[].written` | integer, optional | A real run only: the entries put. An existing key is left alone, so a re-run reports `0`. Absent on a dry run. |
+| `workers[].sets[].r2[].written` | boolean, optional | A real run only: whether the object was put. An existing key is left alone, so a re-run reports `false`. Absent on a dry run. |
 | `workers[].skippedByEnv` | string[] | The sets the registry carries that this environment disallows — surfaced, never silently dropped. |
 | `workers[].shared` | string[] | The sets an earlier Worker in the fan-out already wrote to the same store. Two Workers sharing a binding share one store, so the fixture runs once and the second says so rather than double-counting. |
 | `reset` | object[] | Present only with `--redo`: one entry per physical database whose schema was, or would be, reset. |
@@ -212,10 +217,19 @@ api  0200_leaderboard_demo_board: 12 rows.
 Done.
 ```
 
-`--dry-run` prints the same per-set shape and adds a plain reminder before `Done.`:
+`--dry-run` prints the same per-set shape and ends with a plain reminder in place of `Done.`:
 
 ```
 $ pithy seed --env staging --dry-run
 api  0200_leaderboard_demo_board: 12 rows.
 Dry run. Nothing written.
+```
+
+A real run counts what landed. Seeding never overwrites, so a second run plans the same writes, finds them already there, and says so. A plain count is what was written:
+
+```
+$ pithy seed --env dev
+api  0100_auth_test_users: 3 rows already there, 1 entry already there.
+api  0200_leaderboard_demo_board: 12 rows already there.
+Done.
 ```

@@ -277,8 +277,8 @@ describe("seedProject", () => {
       await h.writeWrangler({ r2_buckets: [{ binding: "ASSETS", bucket_name: "assets-local" }] });
       const capabilities = [r2Capability()];
 
-      // First run writes the object.
-      await seedProject({
+      // First run writes the object, and says so.
+      const first = await seedProject({
         account: null,
         project: "acme",
         workers: [h.api(capabilities)],
@@ -294,13 +294,16 @@ describe("seedProject", () => {
         await store.dispose();
       }
 
-      await seedProject({
+      const rerun = await seedProject({
         account: null,
         project: "acme",
         workers: [h.api(capabilities)],
         projectDir: h.projectDir,
         env: "dev",
       });
+      // The report says what landed, not only what was planned: `setup` reads `seeded` off it (#764).
+      expect(first.workers[0]?.sets[0]?.r2).toEqual([{ binding: "ASSETS", key: "logo.png", written: true }]);
+      expect(rerun.workers[0]?.sets[0]?.r2).toEqual([{ binding: "ASSETS", key: "logo.png", written: false }]);
       store = await openLocalR2();
       try {
         // The existing object is untouched — seeding is non-destructive, like INSERT OR IGNORE.
