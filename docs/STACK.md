@@ -50,7 +50,7 @@ Caveat: TS 7's emit pipeline is still completing as of mid-2026 (decorators not 
 - **Fast cold start.** ~50-100ms for hello-world; Commander is closer to 250-400ms, Oclif heavier still. Matters because Pithy's brand is speed.
 - **Lazy-loadable subcommands.** Native `() => import('./commands/add')` syntax means commands don't load until invoked. Critical as Pithy grows past 8-10 commands.
 - **Customizable help renderer.** Pithy's help has specific styling rules (see `CLI.md` Section 4.3); Citty makes the renderer overridable.
-- **Built-in shell completions.** bash, zsh, fish supported out of the box. Commander needs a plugin; CAC doesn't have it.
+- **A tree the binary can read back.** Every command, flag and lazy subcommand is a value, so `pithy schema` and the shell completion `pithy completion` prints both walk the same tree the CLI dispatches on. citty ships no completion of its own; the kit's is built on that walk (see `commands/completion.md`).
 - **Same maintainers as Nuxt.** The UnJS ecosystem is large, active, and not going anywhere.
 
 ### What is UnJS, and why does it matter?
