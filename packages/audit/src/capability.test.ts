@@ -32,12 +32,11 @@ describe("audit capability", () => {
     expect(cap.requiredBindings.map((b) => b.name)).toEqual(["ANALYTICS"]);
   });
 
-  test("ships its one migration, at its declared order", () => {
-    // Asserted as a list rather than a count. It is one entry because nothing here is published and a
-    // capability's schema is one migration until it is — `packages/cli/src/migrations/oneMigration.test.ts`
-    // holds that rule for the whole repo, and this pins audit's half of it beside the capability.
+  test("ships its migrations in order, at its declared order", () => {
+    // Asserted as a list rather than a count. `0001` was the whole schema until the first publish; after
+    // it the chain is append-only, and `0002` is the actor kind (#721).
     const db = audit().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_actor_kind"]);
     expect(db?.migrationOrder).toBe(AUDIT_MIGRATION_ORDER);
   });
 

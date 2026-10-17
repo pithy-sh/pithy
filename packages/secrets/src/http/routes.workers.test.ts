@@ -277,6 +277,7 @@ function context(granted: string[], environment = "prod"): ControlPlaneContext {
     grantedScopes: granted,
     keyId: "key-1",
     tokenId: "jti-1",
+    actorKind: null,
   };
 }
 

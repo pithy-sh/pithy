@@ -7,7 +7,7 @@ Register a management client's access to one of your environments, rotate its ke
 ## Synopsis
 
 ```
-pithy dashboard connect [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--update] [--public-key <file> --issuer <url> [--key-id <id>]] [--project <name>] [--origin <url>] [--no-open] [--json]
+pithy dashboard connect [--env <environment>] [--worker <name>] [--worker-url <url>] [--scope <scope>]… [--purpose <text>] [--update] [--public-key <file> --issuer <url> --kind <agent|script> [--key-id <id>]] [--project <name>] [--origin <url>] [--no-open] [--json]
 pithy dashboard rotate [--env <environment>] [--worker <name>] [--origin <url>] [--no-open] [--json]
 pithy dashboard revoke-key --key-id <id> [--env <environment>] [--worker <name>] [--yes] [--origin <url>] [--json]
 pithy dashboard disconnect [--env <environment>] [--worker <name>] [--yes] [--local] [--origin <url>] [--no-open] [--json]
@@ -17,6 +17,8 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 **You run these, against your own project.** They are the CLI half of the control-plane seam (`docs/CONTROL-PLANE.md`): the commands by which you grant a management client — the hosted dashboard at `app.pithy.sh`, or one you wrote yourself — the right to call your Worker's administrative routes, and by which you take that right back. Every registration is a row in *your* D1. Your Worker is the authority; the management client is a client.
 
 **Connection is project-wide, per environment — never per Worker.** Workers share a resource by declaring the same binding name, so one user record lives in one D1 that several Workers touch. A per-Worker credential would produce a management view where a user is visible in one pane and absent from another. `--worker` is only how the CLI finds the app database; the row is keyed on `--env`.
+
+**Registering takes a signed-in session, in every environment.** A `connect` that creates a connection, or puts a new key on one whose every key you revoked, records who authorized it, and reads that from your `pithy cloudflare connect` session — the email `GET /user` names under it. An account token, a session with no email, or no credential at all is refused before anything is written, `--env dev` included. No flag supplies the principal. CI's account token keeps migrating and deploying; it registers nothing.
 
 **What needs what.** `--env dev` resolves the database from a local Miniflare store and needs no Cloudflare account; `--env staging` or `--env prod` reads and writes the environment's real D1 over the REST API, which needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Separately, `connect`, `rotate`, `disconnect`, and `status --verify` call the management client and run a browser device-code flow, which needs a human at a browser. Two paths avoid that: `connect --public-key`, which contacts no dashboard at all, and `disconnect --local`, which skips the courtesy call. `revoke-key` never contacts anyone.
 
@@ -29,9 +31,11 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--origin <url>` | all five | the connection's own, else `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one, and records the move |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
 | `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive. `--scope all` grants every scope the Worker composes |
-| `--update` | `connect` | `false` | Re-point an existing connection's URL and scopes instead of creating one |
+| `--purpose <text>` | `connect` | asked at a terminal | What this client is for, in one line of plain text, 200 characters at most. Required to register a connection, and refused when absent without a terminal. With `--update`, replaces the stored one |
+| `--update` | `connect` | `false` | Re-point an existing connection's URL, scopes or purpose instead of creating one |
 | `--public-key <file>` | `connect` | — | Register a JWK you generated yourself. No dashboard is contacted |
 | `--issuer <url>` | `connect` | — | With `--public-key`: the `iss` your own client presents. Required on that path, and rejected off it |
+| `--kind <agent\|script>` | `connect` | — | With `--public-key`: what kind of client holds the key. Required to register on that path, and rejected off it — the device-code flow is the dashboard, always |
 | `--key-id <id>` | `connect` | the JWK's `kid` | With `--public-key`: the key id, if the JWK carries none. Rejected off that path |
 | `--key-id <id>` | `revoke-key` | required | The key to revoke, as `status` reports it |
 | `--project <name>` | `connect` | `pithy.config.ts`'s `name` | Override the project name sent to the management client |
@@ -87,6 +91,20 @@ The client's response is checked, not trusted. A scope it returns that you did n
 
 `--public-key` is the offline path: register a key you generated, with no dashboard involved, and write your own management client against the contract in `@pithy-sh/cli/src/dashboard/contract`. Nothing proves that key — the CLI holds no private half to sign with — so the status is `registered` and the command says so.
 
+### Who authorized it, what kind of client, and what for
+
+Every connection a `connect` creates records three things on your row, beside the grant (`docs/AGENT-ACCESS.md` §7).
+
+- **Authorized by** — the email of your signed-in session. Derived, never typed.
+- **Kind** — `dashboard` on the device-code path, always. `--public-key` takes `--kind agent` or `--kind script`, said out loud. Your Worker stamps it onto every `control-plane` audit row the connection's calls write, so a row says which of the three acted.
+- **Purpose** — what the client is for, in your words. `--purpose`, or asked at a terminal. One line of plain text: a control character, a line break or a bidi override is refused, because each is how a sentence turns into something else once a terminal or a review screen shows it.
+
+The session and the purpose are settled before anything else happens — before the browser approval, before the management client records anything — so a refusal changes nothing anywhere.
+
+`--update --purpose` edits the purpose and records `controlplane/connection_updated` with the old value and the new. The principal and the kind are facts of the registration; registering again is the only way to change them.
+
+A connection registered before these were recorded keeps working. `status` shows it as registered before principals were recorded, `--update --purpose` sets its purpose, and registering again records who authorized it.
+
 ### Opening the approval page
 
 `connect`, `rotate`, `disconnect` and `status --verify` all sign in through the device-code flow, and each states a key while it waits:
@@ -119,7 +137,7 @@ A connection registered before that column existed records nothing, and falls ba
 
 Nothing registered at all means the hosted dashboard, which is where a first `connect` goes.
 
-**`status`** reports what is registered: the connection, its scopes, and every key with its age and whether it is live. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
+**`status`** reports what is registered: the connection, its scopes, who authorized it, its kind and its purpose, and every key with its age and whether it is live. Looking is free; proving costs a browser sign-in, so the probe is opt-in behind `--verify` and its absence is reported as `unverified` rather than guessed at.
 
 ## `--json`
 
@@ -127,7 +145,7 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy dashboard connect --env prod --json
-{"command":"dashboard.connect","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false}
+{"command":"dashboard.connect","schemaVersion":1,"environment":"prod","connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keyId":"cpk_2026_07","status":"connected","updated":false,"authorizedBy":"ada@example.com","actorKind":"dashboard","purpose":"Support triage, reading threads and replying."}
 ```
 
 | key | type | meaning |
@@ -143,6 +161,9 @@ $ pithy dashboard connect --env prod --json
 | `status` | `"connected" \| "needs_reconnect" \| "unreachable" \| "registered"` | Whether a signed ping proved the connection. `registered` is the `--public-key` path: written, but nothing proved it; `unreachable` is a management client that never answered |
 | `detail` | `string` | Operator-facing context for a status that is not `connected`. Absent otherwise |
 | `updated` | `boolean` | True when an existing connection was re-pointed rather than a new one created |
+| `authorizedBy` | `string \| null` | Who sanctioned the connection — the signed-in session's email — or `null` for one registered before principals were recorded |
+| `actorKind` | `"agent" \| "dashboard" \| "script" \| null` | What kind of client it is for, or `null` for one registered before it was recorded |
+| `purpose` | `string \| null` | What the client is for, in the registering operator's words, or `null` when it was never said |
 
 ```
 $ pithy dashboard rotate --env prod --json
@@ -178,6 +199,9 @@ $ pithy dashboard revoke-key --env prod --key-id cpk_2026_07 --yes --json
 | `connection.issuer` | `string` | The exact `iss` this connection accepts |
 | `connection.workerUrl` | `string` | The deployed Worker URL captured at connect |
 | `connection.basePath` | `string` | Where this Worker mounts the seam. `/control-plane` unless you moved it |
+| `connection.authorizedBy` | `string \| null` | Who sanctioned the connection, or `null` for one registered before principals were recorded |
+| `connection.actorKind` | `"agent" \| "dashboard" \| "script" \| null` | What kind of client it is for, or `null` |
+| `connection.purpose` | `string \| null` | What the client is for, or `null` |
 | `connection.scopes` | `string[]` | The operations granted, stored and enforced on your side |
 | `connection.keys` | `object[]` | Every key this connection may sign with, current and superseded |
 | `connection.keys[].keyId` | `string` | The key's id, matched against a token's `kid` header |
@@ -207,7 +231,7 @@ $ pithy dashboard disconnect --env prod --yes --json
 
 ```
 $ pithy dashboard status --env prod --json
-{"command":"dashboard.status","schemaVersion":1,"environment":"prod","connected":true,"connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"keys":[{"keyId":"cpk_2026_07","live":true,"ageDays":35,"validFrom":"2026-07-01T09:00:00.000Z","validUntil":null,"revokedAt":null}],"status":"unverified"}
+{"command":"dashboard.status","schemaVersion":1,"environment":"prod","connected":true,"connectionId":"b6a1f0c2-…","issuer":"https://app.pithy.sh","workerUrl":"https://api.example.com","scopes":["manifest:read"],"authorizedBy":"ada@example.com","actorKind":"dashboard","purpose":"Support triage, reading threads and replying.","keys":[{"keyId":"cpk_2026_07","live":true,"ageDays":35,"validFrom":"2026-07-01T09:00:00.000Z","validUntil":null,"revokedAt":null}],"status":"unverified"}
 ```
 
 | key | type | meaning |
@@ -220,6 +244,9 @@ $ pithy dashboard status --env prod --json
 | `issuer` | `string \| null` | The management-client origin this connection trusts |
 | `workerUrl` | `string \| null` | The Worker URL the management client calls |
 | `scopes` | `string[]` | The operations granted |
+| `authorizedBy` | `string \| null` | Who sanctioned the connection, or `null` — nothing registered, or registered before principals were recorded |
+| `actorKind` | `"agent" \| "dashboard" \| "script" \| null` | What kind of client it is for, or `null` on the same terms |
+| `purpose` | `string \| null` | What the client is for, or `null` on the same terms |
 | `keys` | `object[]` | Every registered key, live and superseded, in stored order |
 | `keys[].keyId` | `string` | The key's id, as a token's `kid` names it |
 | `keys[].live` | `boolean` | Whether this key may verify a call right now |
@@ -268,11 +295,34 @@ Pass --issuer https://<your-client> — it is the iss every one of your tokens m
 
 **`--issuer` or `--key-id` without `--public-key`.** Both are refused rather than ignored: on the dashboard path the client mints the keypair and returns the issuer, so either flag would be a value nothing reads.
 
+**No signed-in session.** Registering a connection records who authorized it, and only a session names a person. An account token, a session with no email, and no credential at all are each `core/precondition_failed`, exit 3, in every environment — `dev` included — and nothing is created anywhere.
+
+```
+Registering a connection takes a signed-in session, not an account token.
+Run `pithy cloudflare connect` to sign in as yourself, then run this again. An account token deploys; it registers nothing.
+```
+
+**No purpose, and nobody to ask.** `input/required`, naming `--purpose`. At a terminal it is asked for instead.
+
+```
+Say what this client is for.
+Pass --purpose "<what it does>", e.g. --purpose "Support triage, reading threads and replying." It is what a review of this credential reads.
+```
+
+**A purpose that cannot be stored.** Empty, longer than 200 characters, or carrying a control character, a line break or a bidi override. `validation/invalid_input`, exit 2.
+
+**`--public-key` without `--kind`, or `--kind` without `--public-key`.** The kind is the operator's to say on that path and nobody's to claim on the other: the device-code flow is the dashboard, always.
+
+```
+--public-key needs --kind.
+Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.
+```
+
 **`--update` with nothing to update.**
 
 ```
 Nothing to update.
-Pass --worker-url, --scope, or both.
+Pass --worker-url, --scope, --purpose, or any of them together.
 ```
 
 **`--scope all` beside a named scope.** Both are named in the refusal, so which one would have been dropped is never a guess.
@@ -309,17 +359,20 @@ Nothing was registered. Re-run the connect, and report this to whoever operates 
 Connect production, choosing the grant at a terminal.
 
 ```
-$ pithy dashboard connect --env prod
+$ pithy dashboard connect --env prod --purpose "Support triage, reading threads and replying."
 acme-api → https://api.example.com/control-plane (declared in pithy.config.ts)
 Open <the client's verification uri> and enter WXYZ-1234.
 Press o to open the link in the browser.
 ▸ Waiting for approval...
 Connected prod.
-Connection  b6a1f0c2-…
-Issuer      https://app.pithy.sh
-Worker      https://api.example.com
-Scopes      manifest:read, keys:rotate, migrations:read, auth:users:read, audit:events:read, audit:events:read_detail, email:jobs:read, email:suppressions:read
-Key         cpk_2026_07
+Connection     b6a1f0c2-…
+Issuer         https://app.pithy.sh
+Worker         https://api.example.com
+Scopes         manifest:read, keys:rotate, migrations:read, auth:users:read, audit:events:read, audit:events:read_detail, email:jobs:read, email:suppressions:read
+Key            cpk_2026_07
+Authorized by  ada@example.com
+Kind           dashboard
+Purpose        Support triage, reading threads and replying.
 Done.
 ```
 
@@ -334,7 +387,13 @@ $ pithy dashboard connect --env prod --update --worker-url https://api.example.c
 Register a key you generated, against your own management client.
 
 ```
-$ pithy dashboard connect --env prod --public-key ./client.jwk.json --issuer https://admin.example.com --scope manifest:read
+$ pithy dashboard connect --env prod --public-key ./client.jwk.json --issuer https://admin.example.com --kind script --purpose "Nightly refund report." --scope manifest:read
+```
+
+Say what a connection registered before principals is for.
+
+```
+$ pithy dashboard connect --env prod --update --purpose "The hosted dashboard, for billing support."
 ```
 
 Rotate, and read the line that is the point of the command.

@@ -67,6 +67,81 @@ export const RegisteredKey = z
 export type RegisteredKey = z.output<typeof RegisteredKey>;
 
 /**
+ * What kind of client a connection is for (#721): `agent`, `dashboard` or `script`.
+ *
+ * The audit trail's `actorType: "control-plane"` names all three identically, and the questions asked
+ * after an incident are exactly the ones that tell them apart — was it a person at the dashboard, a
+ * script somebody wrote, or an agent running unattended. So the kind is recorded on the connection when
+ * it is registered and stamped from there onto every row its calls write.
+ *
+ * It follows the path, never a guess: the device-code flow is a dashboard, always, and a key the
+ * operator registered themselves is whichever of the other two they say, out loud, with `--kind`.
+ */
+export const ControlPlaneActorKind = z
+  .enum(["agent", "dashboard", "script"])
+  .describe(
+    "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing).",
+  );
+export type ControlPlaneActorKind = z.output<typeof ControlPlaneActorKind>;
+
+/**
+ * Who sanctioned a connection: the email address of the signed-in Cloudflare session that registered it.
+ *
+ * **A plain string, deliberately not a reference.** An adopter's `pithy_auth_users` are their customers,
+ * and the operator who registers a connection is their staff, so a join into the organization model would
+ * be empty for most of them. A string is readable by anybody, and matchable against a directory where the
+ * operator is in one.
+ *
+ * **Derived, never asserted.** No flag supplies it; the CLI reads it from `GET /user` under the session.
+ */
+export const ConnectionPrincipal = z
+  .email()
+  .max(254)
+  .describe(
+    "The email address of the person who sanctioned this connection, read from their signed-in Cloudflare session at registration. Never typed, so never asserted.",
+  );
+export type ConnectionPrincipal = z.output<typeof ConnectionPrincipal>;
+
+/** The longest purpose a connection may carry. One line on a review screen, with room to say what it does. */
+export const MAX_CONNECTION_PURPOSE = 200;
+
+/**
+ * Characters a purpose may not carry: every C0 and C1 control (so no terminal escape, no newline and no
+ * carriage return), the Unicode line and paragraph separators, every `Bidi_Control` character — the
+ * embeddings, overrides and isolates, and the LRM, RLM and ALM marks — that lets text render in a
+ * different order from the one it is stored in, and the invisible zero-width space, word joiner and
+ * byte-order mark that split a word without showing it. The zero-width joiner and non-joiner stay: Persian
+ * and the Indic scripts cannot be written without them.
+ *
+ * Each of those is a way for a sentence to look like something else once it reaches a renderer: a line
+ * in `pithy dashboard status` forged beneath the real one, a screen cleared, a scope name read backwards.
+ * Escaping them at every renderer is a promise each renderer has to keep. Refusing them at the boundary
+ * is one promise, kept here.
+ */
+const UNRENDERABLE = /[\p{Cc}\p{Bidi_Control}\u2028\u2029\u200B\u2060\uFEFF]/u;
+
+/**
+ * What a connection is for, in the words of whoever registered it (#721).
+ *
+ * **Required at registration, and refused when absent**, because a review listing credentials by key id
+ * cannot support the decision it exists for. **Untrusted input**: a customer writes it and something else
+ * renders it, so it is validated on the way in, and again on every read of the row.
+ */
+export const ConnectionPurpose = z
+  .string()
+  .trim()
+  .min(1, "Say what this client is for.")
+  .max(MAX_CONNECTION_PURPOSE, `A purpose is ${MAX_CONNECTION_PURPOSE} characters at most.`)
+  .refine(
+    (purpose) => !UNRENDERABLE.test(purpose),
+    "A purpose is one line of plain text: no control, bidi or invisible characters.",
+  )
+  .describe(
+    `What this connection's client is for, in the registering operator's words — one line of plain text, ${MAX_CONNECTION_PURPOSE} characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary.`,
+  );
+export type ConnectionPurpose = z.output<typeof ConnectionPurpose>;
+
+/**
  * One management-client connection — the row in `pithy_controlplane_connections`.
  *
  * Keys are a versioned JSON column rather than a child table for two reasons. **Rotation becomes one
@@ -111,6 +186,21 @@ export const ControlPlaneConnection = z
       .default(null)
       .describe(
         "Where the management client that registered this connection answers — the origin the CLI calls for a verify, a rotation or a disconnect. Stored because it is not derivable: `issuer` is what that client *signs as*, and nothing says a dashboard's API answers at its own `iss`. Null for a connection registered before this column, which reads as the issuer rather than as the hosted dashboard — an older row is still a row about somebody's own deployment. Nothing on the Worker's side reads it; verification cares about `issuer` alone.",
+      ),
+    authorizedBy: ConnectionPrincipal.nullable()
+      .default(null)
+      .describe(
+        "Who sanctioned this connection: the email of the signed-in Cloudflare session that registered it, never a flag. Null for a connection registered before principals were recorded (#721), which keeps working and reads as exactly that; registering again is the only way to set it.",
+      ),
+    actorKind: ControlPlaneActorKind.nullable()
+      .default(null)
+      .describe(
+        "What kind of client this connection is for — `agent`, `dashboard` or `script` — stamped onto every audit row its calls write so the trail can tell them apart. Null for a connection registered before it was recorded.",
+      ),
+    purpose: ConnectionPurpose.nullable()
+      .default(null)
+      .describe(
+        "What this connection's client is for, in the registering operator's words. Required at registration and editable with `pithy dashboard connect --update --purpose`; null only for a connection registered before it was recorded.",
       ),
     scopes: sqliteJson(z.array(ControlPlaneScope)).describe(
       "The operations this connection was granted, stored and enforced on the adopter's side. Enforced only by the caller, a scope would not be a limit at all.",

@@ -30,6 +30,7 @@ const ROW: AuditEventRow = {
   severity: "info",
   actorType: "user",
   actorId: "u-1",
+  actorKind: null,
   sessionId: "s-1",
   resourceType: "user",
   resourceId: "u-1",

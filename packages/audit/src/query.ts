@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import type { AuditActorType, AuditOutcome, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
+import type { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { decodeCursor, type PageCursor, pageLimit, toPage } from "@pithy-sh/core/src/data/cursor";
 import { AuditEventRow } from "./data/auditEvent";
@@ -25,6 +26,8 @@ export interface AuditQuery {
   actorType?: AuditActorType;
   /** Match the acting principal's id. */
   actorId?: string;
+  /** Match the kind of management client that acted (`agent` | `dashboard` | `script`). */
+  actorKind?: ControlPlaneActorKind;
   /** Match an exact `domain/reason` action code. */
   action?: string;
   /** Match the outcome (`success` | `failure` | `denied`). */
@@ -95,6 +98,7 @@ function auditEventQuery(db: AuditDatabase, filter: AuditQuery) {
 
   if (filter.actorType !== undefined) query = query.where("actorType", "=", filter.actorType);
   if (filter.actorId !== undefined) query = query.where("actorId", "=", filter.actorId);
+  if (filter.actorKind !== undefined) query = query.where("actorKind", "=", filter.actorKind);
   if (filter.action !== undefined) query = query.where("action", "=", filter.action);
   if (filter.outcome !== undefined) query = query.where("outcome", "=", filter.outcome);
   if (filter.severity !== undefined) query = query.where("severity", "=", filter.severity);

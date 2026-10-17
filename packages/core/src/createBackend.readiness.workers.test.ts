@@ -13,6 +13,7 @@ import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "./control
 import { requireControlPlane } from "./controlPlane/http/guard";
 import { controlplane_0001_init } from "./controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "./controlPlane/migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "./controlPlane/migrations/0003_connection_principal";
 import { MANIFEST_READ_SCOPE } from "./controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "./controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "./controlPlane/wire";
@@ -125,6 +126,9 @@ async function connect(scopes: string[]) {
         workerUrl: "https://api.acme.example",
         basePath: "/control-plane",
         managementOrigin: null,
+        authorizedBy: "ada@example.com",
+        actorKind: "dashboard",
+        purpose: "The hosted dashboard.",
         scopes,
         keys: [
           {
@@ -167,6 +171,7 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await controlplane_0001_init.up(db);
   await controlplane_0002_management_origin.up(db);
+  await controlplane_0003_connection_principal.up(db);
   const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
   alice = { keyId: "cpk_alice", privateKey: pair.privateKey, publicKey: await exportPublicJwk(pair.publicKey) };
   await connect([MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);

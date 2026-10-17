@@ -155,6 +155,15 @@ function addressAndGrantChanges(
       ? {}
       : { basePath: { from: stored.basePath, to: connection.basePath } }),
     ...(before.join(" ") === after.join(" ") ? {} : { scopes: { from: before, to: after } }),
+    // An update may change the purpose (#721). The principal and the kind change only when a key is
+    // registered on a connection with nothing live, which credits whoever sanctioned the new key.
+    ...(stored.purpose === connection.purpose ? {} : { purpose: { from: stored.purpose, to: connection.purpose } }),
+    ...(stored.authorizedBy === connection.authorizedBy
+      ? {}
+      : { authorizedBy: { from: stored.authorizedBy, to: connection.authorizedBy } }),
+    ...(stored.actorKind === connection.actorKind
+      ? {}
+      : { actorKind: { from: stored.actorKind, to: connection.actorKind } }),
   };
 }
 
@@ -290,6 +299,11 @@ export function connectionRegistry(
           basePath: connection.basePath,
           scopes: [...connection.scopes],
           registeredKeyIds: keyIds(connection),
+          // Who sanctioned it, what kind of client, and what for (#721) — on the adopter's own trail, where
+          // the review of this credential is performed, possibly with no dashboard open.
+          authorizedBy: connection.authorizedBy,
+          actorKind: connection.actorKind,
+          purpose: connection.purpose,
           // Starting over replaces a connection rather than editing one, and the id that stopped
           // working is what an adopter needs to recognize their own older rows by.
           ...(stored === null ? {} : { replacedConnectionId: stored.id }),

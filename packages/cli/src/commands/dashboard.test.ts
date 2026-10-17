@@ -27,6 +27,7 @@ import dashboard, {
   formatRotateReport,
   formatStatusReport,
   offerIsAnswerable,
+  parseKindFlag,
   parsePublicKey,
 } from "./dashboard";
 
@@ -69,8 +70,24 @@ describe("the command surface", () => {
 
   test("connect can be driven with no prompt at all — every input is a flag", () => {
     expect(argNames("connect")).toEqual(
-      expect.arrayContaining(["env", "worker-url", "scope", "update", "public-key", "issuer", "key-id", "project"]),
+      expect.arrayContaining([
+        "env",
+        "worker-url",
+        "scope",
+        "update",
+        "public-key",
+        "issuer",
+        "key-id",
+        "project",
+        "purpose",
+        "kind",
+      ]),
     );
+  });
+
+  test("connect takes no principal from a flag — who authorized it is read from the session (#721)", () => {
+    expect(argNames("connect")).not.toContain("authorized-by");
+    for (const name of argNames("connect")) expect(name).not.toMatch(/principal|authori[sz]/);
   });
 
   test("disconnect takes --yes, so teardown runs headlessly", () => {
@@ -151,6 +168,9 @@ describe("formatConnectReport", () => {
     keyId: "key_1",
     status: "connected" as const,
     updated: false,
+    authorizedBy: "ada@example.com",
+    actorKind: "dashboard" as const,
+    purpose: "Support triage, reading threads and replying.",
   };
 
   test("--json is one line, carrying the dotted command name", () => {
@@ -191,6 +211,21 @@ describe("formatConnectReport", () => {
   test("--update reads as a re-point, not a fresh connection", () => {
     const out = formatConnectReport({ ...connected, updated: true, keyId: null }, { json: false, connect: CONNECT });
     expect(out).toContain("Re-pointed prod.");
+  });
+
+  test("names who authorized it, what kind of client it is, and what for (#721)", () => {
+    const out = formatConnectReport(connected, { json: false, connect: CONNECT });
+    expect(out).toMatch(/Authorized by\s+ada@example\.com/);
+    expect(out).toMatch(/Kind\s+dashboard/);
+    expect(out).toMatch(/Purpose\s+Support triage, reading threads and replying\./);
+  });
+
+  test("--json carries all three", () => {
+    expect(JSON.parse(formatConnectReport(connected, { json: true, connect: CONNECT }))).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "dashboard",
+      purpose: "Support triage, reading threads and replying.",
+    });
   });
 });
 
@@ -283,6 +318,9 @@ describe("formatRevokeKeyReport", () => {
       workerUrl: "https://api.example.com",
       basePath: "/control-plane",
       managementOrigin: null,
+      authorizedBy: "ada@example.com",
+      actorKind: "agent" as const,
+      purpose: "Nightly refund sweep.",
       scopes: ["manifest:read"],
       keys,
       createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -338,6 +376,9 @@ describe("formatStatusReport", () => {
     issuer: "https://app.pithy.sh",
     workerUrl: "https://api.example.com",
     scopes: ["manifest:read"],
+    authorizedBy: "ada@example.com",
+    actorKind: "dashboard" as const,
+    purpose: "Support triage, reading threads and replying.",
     keys: [
       {
         keyId: "key_1",
@@ -381,6 +422,9 @@ describe("formatStatusReport", () => {
         issuer: null,
         workerUrl: null,
         scopes: [],
+        authorizedBy: null,
+        actorKind: null,
+        purpose: null,
         keys: [],
         status: "unverified",
       },
@@ -389,6 +433,37 @@ describe("formatStatusReport", () => {
     expect(out).toContain("Nothing connected to staging.");
     // The command the caller resolved, verbatim: a placeholder Worker would be refused where it is pasted (#711).
     expect(out).toContain(`Run ${CONNECT} to register a management client.`);
+  });
+
+  test("reports who authorized it, what kind of client it is, and what for, in text and in --json (#721)", () => {
+    const out = formatStatusReport(report, { json: false, connect: CONNECT });
+    expect(out).toMatch(/Authorized by\s+ada@example\.com/);
+    expect(out).toMatch(/Kind\s+dashboard/);
+    expect(out).toMatch(/Purpose\s+Support triage, reading threads and replying\./);
+    expect(JSON.parse(formatStatusReport(report, { json: true, connect: CONNECT }))).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "dashboard",
+      purpose: "Support triage, reading threads and replying.",
+    });
+  });
+
+  test("a connection registered before principals says so, and how to set its purpose", () => {
+    const out = formatStatusReport(
+      { ...report, authorizedBy: null, actorKind: null, purpose: null },
+      { json: false, connect: CONNECT },
+    );
+    expect(out).toContain("Registered before principals were recorded.");
+    expect(out).toContain("--update and --purpose");
+    expect(out).not.toMatch(/Authorized by\s+null/);
+  });
+
+  test("a purpose is printed as one line, so it cannot forge a second one", () => {
+    // The codec refuses a line break, a control character and a bidi override on every read, so a
+    // purpose reaching this renderer is one line of plain text. Held here too, on the output itself.
+    const out = formatStatusReport(report, { json: false, connect: CONNECT });
+    const line = out.split("\n").find((row) => row.includes("Purpose")) ?? "";
+    expect(line).toContain("Support triage, reading threads and replying.");
+    expect(out.split("\n").filter((row) => row.includes("Authorized by"))).toHaveLength(1);
   });
 });
 
@@ -457,6 +532,29 @@ describe("the scope prompt", () => {
  * Blind spot, stated: this reads `dashboard.ts` only, and a decision re-inlined in a module it imports
  * would pass. Nothing else in the tree decides a grant.
  */
+/**
+ * Who authorized a connection is one seam's answer (#721), and `connect` asks it for every registration,
+ * on every path and in every environment. `connectDashboard` requires the seam outright — it is not
+ * optional on its options — so what a scan can add is that the command hands it the real one, with no
+ * environment deciding whether to.
+ */
+describe("connect asks one seam who is registering", () => {
+  const SOURCE = blankComments(readSource(resolve(import.meta.dirname, "dashboard.ts")) ?? "");
+  const CONNECT_SOURCE = blankComments(readSource(resolve(import.meta.dirname, "../dashboard/connect.ts")) ?? "");
+
+  test("it passes `requireRegisteringPrincipal`, unconditionally", () => {
+    expect(SOURCE).toContain("principal: () => requireRegisteringPrincipal({ account })");
+    // No `dev` carve-out: the tolerance `openAudit` keeps for an unattributed trail row ends here.
+    expect(SOURCE).not.toMatch(/env\s*===\s*"dev"[^\n]*requireRegisteringPrincipal/);
+  });
+
+  test("nothing in the connect orchestration resolves a person itself", () => {
+    for (const forbidden of ["isBoundSessionToken(", "getUser(", "resolveActor(", "authorizedBy: options."]) {
+      expect(CONNECT_SOURCE).not.toContain(forbidden);
+    }
+  });
+});
+
 describe("connect decides its grant in one place", () => {
   const SOURCE = blankComments(readSource(resolve(import.meta.dirname, "dashboard.ts")) ?? "");
 
@@ -788,11 +886,23 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       keyId: "key_1",
       status: "connected" as const,
       updated: false,
+      authorizedBy: "ada@example.com",
+      actorKind: "agent" as const,
+      purpose: "Nightly refund sweep.",
     };
     await expectConforms("dashboard connect", () => formatConnectReport(report, { json: true, connect: CONNECT }));
     await expectConforms("dashboard connect", () =>
       formatConnectReport(
-        { ...report, status: "unreachable", detail: "Nothing answered.", keyId: null, updated: true },
+        {
+          ...report,
+          status: "unreachable",
+          detail: "Nothing answered.",
+          keyId: null,
+          updated: true,
+          authorizedBy: null,
+          actorKind: null,
+          purpose: null,
+        },
         { json: true, connect: CONNECT },
       ),
     );
@@ -831,6 +941,9 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
       workerUrl: "https://api.example.com",
       basePath: "/control-plane",
       managementOrigin: null,
+      authorizedBy: "ada@example.com",
+      actorKind: "agent" as const,
+      purpose: "Nightly refund sweep.",
       scopes: ["manifest:read"],
       keys: [
         {
@@ -868,6 +981,9 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
           issuer: "https://app.pithy.sh",
           workerUrl: "https://api.example.com",
           scopes: ["manifest:read"],
+          authorizedBy: "ada@example.com",
+          actorKind: "script",
+          purpose: "Nightly refund sweep.",
           keys: [
             {
               keyId: "key_1",
@@ -892,6 +1008,9 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
           issuer: null,
           workerUrl: null,
           scopes: [],
+          authorizedBy: null,
+          actorKind: null,
+          purpose: null,
           keys: [],
           status: "unreachable",
           detail: "Nothing answered.",
@@ -899,5 +1018,24 @@ describe("pithy dashboard --json conforms to its published payloads", () => {
         { json: true, connect: CONNECT },
       ),
     );
+  });
+});
+
+describe("parseKindFlag", () => {
+  test("takes agent and script", () => {
+    expect(parseKindFlag("agent")).toBe("agent");
+    expect(parseKindFlag("script")).toBe("script");
+  });
+
+  test("refuses dashboard, which is the device-code flow's and nobody's to claim, naming the remedy", () => {
+    for (const value of ["dashboard", "bot", ""]) {
+      try {
+        parseKindFlag(value);
+        throw new Error("expected a refusal");
+      } catch (error) {
+        expect(error).toBeInstanceOf(PithyError);
+        expect((error as PithyError).payload.action).toContain("--kind agent");
+      }
+    }
   });
 });

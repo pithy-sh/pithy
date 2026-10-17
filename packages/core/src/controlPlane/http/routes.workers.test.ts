@@ -21,6 +21,7 @@ import { defineCapabilityHealth } from "../discovery/health";
 import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { controlplane_0002_management_origin } from "../migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "../migrations/0003_connection_principal";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE, MIGRATIONS_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
@@ -206,7 +207,15 @@ function registered(key: Signer, overrides: Partial<RegisteredKey> = {}): Regist
 }
 
 /** Register a connection — what `pithy dashboard connect` writes, and the only thing that opens the seam. */
-async function connect(keys: RegisteredKey[], scopes: string[] = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE]) {
+async function connect(
+  keys: RegisteredKey[],
+  scopes: string[] = [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
+  attribution: Pick<ControlPlaneConnection, "authorizedBy" | "actorKind" | "purpose"> = {
+    authorizedBy: "ada@example.com",
+    actorKind: "agent",
+    purpose: "Support triage, reading threads and replying.",
+  },
+) {
   const now = new Date();
   const connection: ControlPlaneConnection = {
     id: CONNECTION_ID,
@@ -215,6 +224,7 @@ async function connect(keys: RegisteredKey[], scopes: string[] = [MANIFEST_READ_
     workerUrl: "https://api.acme.example",
     basePath: "/control-plane",
     managementOrigin: null,
+    ...attribution,
     scopes,
     keys,
     createdAt: now,
@@ -332,6 +342,7 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await controlplane_0001_init.up(db);
   await controlplane_0002_management_origin.up(db);
+  await controlplane_0003_connection_principal.up(db);
   // The replay set is a table now, not a KV namespace, and it is on the verification path for every
   [alice, bob, carol] = await Promise.all([signer("cpk_alice"), signer("cpk_bob"), signer("cpk_carol")]);
   vaultUp = true;
@@ -793,6 +804,33 @@ describe("GET /control-plane/keys", () => {
     for (const key of json.keys) expect(Object.keys(key.publicKey).sort()).toEqual(["crv", "kty", "x"]);
     expect(text).not.toMatch(/"d"\s*:/);
   });
+  test("reports who authorized the connection, what kind of client it is, and what it is for (#721)", async () => {
+    await connect([registered(alice)]);
+
+    const json = ControlPlaneKeysResponse.parse(
+      await body(await call("GET", "/control-plane/keys", { key: alice, scope: KEYS_ROTATE_SCOPE })),
+    );
+    expect(json).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+    });
+  });
+
+  test("reports a connection registered before principals as null on all three, not as missing", async () => {
+    await connect([registered(alice)], undefined, { authorizedBy: null, actorKind: null, purpose: null });
+
+    const json = await body<Record<string, unknown>>(
+      await call("GET", "/control-plane/keys", { key: alice, scope: KEYS_ROTATE_SCOPE }),
+    );
+    expect(json).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
+  });
+
+  test("still validates a response from an older Worker, which sends none of the three", () => {
+    expect(
+      ControlPlaneKeysResponse.safeParse({ connectionId: CONNECTION_ID, environment: ENVIRONMENT, keys: [] }).success,
+    ).toBe(true);
+  });
 });
 
 describe("key rotation", () => {
@@ -1097,9 +1135,10 @@ describe("the exported response schemas against the live routes", () => {
 });
 
 describe("GET /control-plane/migrations", () => {
-  /** The seam's own two migrations — the only ones this backend declares for `DB`. */
+  /** The seam's own three migrations — the only ones this backend declares for `DB`. */
   const SEAM_1 = "1100_controlplane_0001_init";
   const SEAM_2 = "1100_controlplane_0002_management_origin";
+  const SEAM_3 = "1100_controlplane_0003_connection_principal";
 
   /** A second database on `ANALYTICS`, so one can be unreadable while the other answers. */
   const reporting = defineCapability({
@@ -1185,7 +1224,10 @@ describe("GET /control-plane/migrations", () => {
             { name: SEAM_1, namespace: "controlplane" },
             { name: "0400_vault_0001_init", namespace: "vault" },
           ],
-          pending: [{ name: SEAM_2, namespace: "controlplane" }],
+          pending: [
+            { name: SEAM_2, namespace: "controlplane" },
+            { name: SEAM_3, namespace: "controlplane" },
+          ],
           undeclared: [{ name: "0400_vault_0001_init", namespace: "vault" }],
           lastGroup: {
             group: "release-7",
@@ -1249,7 +1291,7 @@ describe("GET /control-plane/migrations", () => {
       ["pendingMigrations", { atMost: 0 }],
       ["undeclaredMigrations", null],
     ]);
-    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 1, undeclaredMigrations: 1 } });
+    expect(seam?.health).toEqual({ state: "reported", values: { pendingMigrations: 2, undeclaredMigrations: 1 } });
   });
 
   test("a connection without migrations:read gets no value for either key, rather than a zero", async () => {

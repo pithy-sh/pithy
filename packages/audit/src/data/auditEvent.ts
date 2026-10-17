@@ -8,6 +8,7 @@ import {
   AuditOutcome,
   AuditSeverity,
 } from "@pithy-sh/core/src/audit/auditEvent";
+import { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 
@@ -59,6 +60,11 @@ export const AuditEventRow = z
       .nullable()
       .describe(
         "The acting principal's stable id (user id, service/token name); null for `system`/`anonymous`. Indexed.",
+      ),
+    actorKind: ControlPlaneActorKind.nullable()
+      .default(null)
+      .describe(
+        "For a `control-plane` actor, what kind of management client acted: `agent`, `dashboard` or `script`, from the connection it called through (#721). Null for every other actor, for a connection registered before the kind was recorded, and on rows written before this column existed (`audit_0002_actor_kind`).",
       ),
     sessionId: z
       .string()

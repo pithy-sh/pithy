@@ -178,6 +178,8 @@ export async function verifyControlPlaneCall(
     grantedScopes: connection.scopes,
     keyId: key.keyId,
     tokenId: claims.jti,
+    // From the adopter's row, never the token: a client does not get to say what kind of client it is.
+    actorKind: connection.actorKind,
   });
 }
 

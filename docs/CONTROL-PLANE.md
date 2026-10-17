@@ -235,6 +235,8 @@ Through the `emit()` seam, under the `control-plane` actor kind, carrying the co
 
 Your trail can then answer "what did the management client do" separately from "what did my users do", which is the question you will actually ask.
 
+**And which kind of client did it.** `control-plane` names an agent, the dashboard and a script alike, so the guard stamps the connection's own `actorKind` — recorded when the connection was registered, never read from the token — onto every `control-plane` event the call writes, its own and every handler's. `@pithy-sh/audit` stores it in `actor_kind` and filters on it. A connection registered before kinds were recorded writes rows with none ([`AGENT-ACCESS.md` §7](AGENT-ACCESS.md)).
+
 Denials are audited too. `denied` is a first-class outcome, and this is the surface where an unaudited blocked attempt is least acceptable. An audit write that fails never turns a correct denial into a 500 — the denial has already been decided by the time it is recorded.
 
 ---
@@ -532,8 +534,8 @@ So one rule, stated as a property rather than a list:
 | `connect` (first, or starting over) | The CLI, into your D1 | `controlplane/connection_registered` | No key exists, so nothing can sign a registration — and your Worker may not be deployed at all. **The one exemption.** |
 | `connect --public-key` (first) | The CLI, into your D1 | `controlplane/connection_registered` | The same case with no dashboard in it. |
 | `connect --public-key` (a successor) | Refused | — | A live key exists, so the seam can serve it. The CLI cannot: the private half is yours. It prints the call to make. |
-| `connect --public-key` (recovery) | The CLI, into your D1 | `controlplane/connection_updated` | The connection existed and had nothing live, so nothing could sign. Its keys changed; the connection was not created. |
-| `connect --update` | The CLI, into your D1 | `controlplane/connection_updated` | Adds no key. It re-points an address your Worker never reads, and changes a grant only you may change — a route letting a client widen its own grant is the thing scopes exist to prevent. The client is told the new address first, and the row is written only if that succeeded. |
+| `connect --public-key` (recovery) | The CLI, into your D1 | `controlplane/connection_updated` | The connection existed and had nothing live, so nothing could sign. Its keys changed; the connection was not created. The new key takes a signed-in session, `--kind` and `--purpose`, and the row's principal, kind and purpose become that key's, recorded as a `connection_updated` that says what they were. |
+| `connect --update` | The CLI, into your D1 | `controlplane/connection_updated` | Adds no key. It re-points an address your Worker never reads, edits the purpose, and changes a grant only you may change — a route letting a client widen its own grant is the thing scopes exist to prevent. The client is told the new address first, and the row is written only if that succeeded. |
 | `rotate` | **The seam**, `POST /control-plane/keys` | `controlplane/key_registered` | A live key exists to sign with, so the registration is your Worker's to accept, audit, and scope-check. |
 | expiry | **The seam**, `POST /control-plane/keys/:keyId/expire` | `controlplane/key_expired` | Never the CLI's at all, and never was: it belongs to the client that proved the successor from its own infrastructure (§6). |
 | `revoke-key` | The CLI, into your D1 | `controlplane/connection_updated` | Revocation *removes* trust, and revocation that needed our cooperation would not be revocation (§7). |
@@ -553,4 +555,6 @@ Three things follow, and each is visible in the row:
 - **Nothing is recorded that did not happen.** The row is written first and the event follows. A refused write records nothing.
 - **The trail never fails the command.** If you do not compose `audit`, the events go nowhere and `connect` is unchanged. If your trail is unreachable, the write still lands and the drop is logged. A `disconnect` that failed because the audit database was down would leave a credential live on the strength of an audit problem, which is exactly backwards.
 
-The metadata names ids and addresses — the connection, the keys by id, the scopes, what a re-point moved from and to. Never key material.
+The metadata names ids and addresses — the connection, the keys by id, the scopes, what a re-point moved from and to. A registration also names who authorized it, its kind and its purpose, and an edited purpose names the old and the new. Never key material.
+
+**Registering takes a signed-in session.** `connect` records the session's email as the connection's authorizing principal, and refuses an account token, a session with no email, and no credential at all, in every environment, naming `pithy cloudflare connect` ([`AGENT-ACCESS.md` §7](AGENT-ACCESS.md)).

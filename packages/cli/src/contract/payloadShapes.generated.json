@@ -210,7 +210,10 @@
         "$.keyId": "null | string",
         "$.status": "\"connected\" | \"needs_reconnect\" | \"registered\" | \"unreachable\"",
         "$.detail": "string?",
-        "$.updated": "boolean"
+        "$.updated": "boolean",
+        "$.authorizedBy": "null | string?",
+        "$.actorKind": "\"agent\" | \"dashboard\" | \"script\" | null?",
+        "$.purpose": "null | string?"
       }
     },
     "dashboard disconnect": {
@@ -240,6 +243,9 @@
         "$.connection.workerUrl": "string",
         "$.connection.basePath": "string",
         "$.connection.managementOrigin": "null | string",
+        "$.connection.authorizedBy": "null | string?",
+        "$.connection.actorKind": "\"agent\" | \"dashboard\" | \"script\" | null?",
+        "$.connection.purpose": "null | string?",
         "$.connection.scopes": "array",
         "$.connection.scopes[]": "string",
         "$.connection.keys": "array",
@@ -282,6 +288,9 @@
         "$.workerUrl": "null | string",
         "$.scopes": "array",
         "$.scopes[]": "string",
+        "$.authorizedBy": "null | string?",
+        "$.actorKind": "\"agent\" | \"dashboard\" | \"script\" | null?",
+        "$.purpose": "null | string?",
         "$.keys": "array",
         "$.keys[]": "object",
         "$.keys[].keyId": "string",

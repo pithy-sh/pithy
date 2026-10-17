@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { AuditAction, AuditActorType, AuditOutcome, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
+import { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { MAX_PAGE_SIZE } from "@pithy-sh/core/src/data/cursor";
 import { z } from "zod";
 
@@ -75,6 +76,9 @@ export const ListAuditEventsQuery = z
       "Filter to one kind of principal. `control-plane` is the one that separates a management client's own actions from the adopter's users'.",
     ),
     actorId: FilterValue.optional().describe("Filter to one principal — a user id, a service name, a token subject."),
+    actorKind: ControlPlaneActorKind.optional().describe(
+      "Filter to one kind of management client: `agent`, `dashboard` or `script`. What `actorType=control-plane` cannot say on its own.",
+    ),
     action: AuditAction.max(MAX_FILTER_LENGTH)
       .optional()
       .describe("Filter to one exact `domain/reason` action code. Exact, never a prefix — the taxonomy is federated."),

@@ -7,13 +7,14 @@ import { activeKeys } from "@pithy-sh/core/src/controlPlane/data/keyLifecycle";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { ControlPlaneKeyConflictError } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test, vi } from "vitest";
 import {
   authorizeDashboard,
   connectDashboard,
   dashboardStatus,
   disconnectDashboard,
+  parsePurpose,
   rotateDashboardKey,
 } from "./connect";
 import type { ConnectionHealth, DashboardClient } from "./contract";
@@ -120,6 +121,9 @@ function existing(overrides: Partial<ControlPlaneConnection> = {}): ControlPlane
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
     managementOrigin: null,
+    authorizedBy: "grace@example.com",
+    actorKind: "dashboard",
+    purpose: "The hosted dashboard.",
     scopes: ["manifest:read"],
     keys: [key("key_1", at)],
     createdAt: at,
@@ -140,6 +144,8 @@ const base = {
   basePath: "/control-plane",
   now: () => NOW,
   authorize: async () => "ct_1",
+  principal: async () => "ada@example.com",
+  purpose: "Support triage, reading threads and replying.",
 };
 
 describe("authorizeDashboard", () => {
@@ -377,6 +383,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
     await connectDashboard({
       registry,
       project: "acme",
+      principal: async () => "ada@example.com",
       environment: "prod",
       connect: async () => CONNECT,
       update: true,
@@ -405,6 +412,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
       connectDashboard({
         registry,
         project: "acme",
+        principal: async () => "ada@example.com",
         environment: "prod",
         connect: async () => CONNECT,
         update: true,
@@ -431,6 +439,7 @@ describe("connectDashboard — an update re-points the client, not only the row"
     await connectDashboard({
       registry,
       project: "acme",
+      principal: async () => "ada@example.com",
       environment: "prod",
       connect: async () => CONNECT,
       update: true,
@@ -630,7 +639,7 @@ describe("connectDashboard — the offline path", () => {
       registry,
       client: undefined,
       authorize: undefined,
-      publicKey: { keyId: "own_1", publicKey: JWK, issuer: "https://admin.acme.dev" },
+      publicKey: { keyId: "own_1", publicKey: JWK, issuer: "https://admin.acme.dev", kind: "script" },
       scopes: ["manifest:read"],
     });
 
@@ -717,7 +726,7 @@ describe("connectDashboard — the offline path", () => {
       registry,
       client: undefined,
       authorize: undefined,
-      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh" },
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "script" },
     });
 
     expect(report.connectionId).toBe(CONNECTION_ID);
@@ -980,5 +989,306 @@ describe("dashboardStatus", () => {
   test("nothing registered reports disconnected rather than throwing", async () => {
     const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
     expect(report).toMatchObject({ connected: false, connectionId: null, keys: [], status: "unverified" });
+  });
+});
+
+/**
+ * Who sanctioned a connection, what kind of client it is, and what it is for (#721).
+ */
+describe("connectDashboard — the principal, the kind and the purpose", () => {
+  /** Thrown by a principal seam with no session — the shape `requireRegisteringPrincipal` refuses in. */
+  const noSession = async (): Promise<string> => {
+    throw new PreconditionFailedError({
+      message: "Registering a connection takes a signed-in session, not an account token.",
+      action: "Run `pithy cloudflare connect` to sign in as yourself, then run this again.",
+    });
+  };
+
+  test("the device-code path records the session's email, the dashboard kind, and the purpose", async () => {
+    const registry = fakeRegistry();
+    const report = await connectDashboard({ ...base, registry, client: fakeClient() });
+
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "dashboard",
+      purpose: "Support triage, reading threads and replying.",
+    });
+    expect(report).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "dashboard",
+      purpose: "Support triage, reading threads and replying.",
+    });
+  });
+
+  test("no session refuses before the browser approval, and nothing is created anywhere", async () => {
+    const registry = fakeRegistry();
+    const authorize = vi.fn(async () => "ct_1");
+    const createConnection = vi.fn(fakeClient().createConnection);
+
+    await expect(
+      connectDashboard({
+        ...base,
+        registry,
+        client: fakeClient({ createConnection }),
+        authorize,
+        principal: noSession,
+      }),
+    ).rejects.toMatchObject({ payload: { code: "core/precondition_failed" } });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(createConnection).not.toHaveBeenCalled();
+    expect(registry.current()).toBeNull();
+  });
+
+  test("no purpose, and nobody to ask, refuses naming --purpose before anything is created", async () => {
+    const registry = fakeRegistry();
+    const authorize = vi.fn(async () => "ct_1");
+    const { purpose: _omitted, ...withoutPurpose } = base;
+
+    const error = await connectDashboard({ ...withoutPurpose, registry, client: fakeClient(), authorize }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(PithyError);
+    expect((error as PithyError).payload).toMatchObject({ code: "input/required", flag: "--purpose" });
+    expect((error as PithyError).payload.action).toContain("--purpose");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(registry.current()).toBeNull();
+  });
+
+  test("at a terminal the purpose is asked for instead", async () => {
+    const registry = fakeRegistry();
+    const { purpose: _omitted, ...withoutPurpose } = base;
+    const askPurpose = vi.fn(async () => "  Weekly refund report.  ");
+
+    await connectDashboard({ ...withoutPurpose, registry, client: fakeClient(), askPurpose });
+
+    expect(askPurpose).toHaveBeenCalledOnce();
+    expect(registry.current()?.purpose).toBe("Weekly refund report.");
+  });
+
+  test("an answer at the terminal is validated like the flag", async () => {
+    const { purpose: _omitted, ...withoutPurpose } = base;
+    await expect(
+      connectDashboard({
+        ...withoutPurpose,
+        registry: fakeRegistry(),
+        client: fakeClient(),
+        askPurpose: async () => "triage\u001b[2J",
+      }),
+    ).rejects.toMatchObject({ payload: { code: "validation/invalid_input" } });
+  });
+
+  test("--public-key records the session's email and the kind the operator said", async () => {
+    const registry = fakeRegistry();
+    await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_1", publicKey: JWK, issuer: "https://admin.acme.dev", kind: "agent" },
+    });
+
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+    });
+  });
+
+  test("--public-key without a kind is refused, naming --kind", async () => {
+    const registry = fakeRegistry();
+    const error = (await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_1", publicKey: JWK, issuer: "https://admin.acme.dev" },
+    }).catch((caught: unknown) => caught)) as PithyError;
+
+    expect(error.payload.code).toBe("validation/invalid_input");
+    expect(error.payload.action).toContain("--kind agent");
+    expect(registry.current()).toBeNull();
+  });
+
+  test("--public-key with no session is refused, and no row is written", async () => {
+    const registry = fakeRegistry();
+    await expect(
+      connectDashboard({
+        ...base,
+        registry,
+        client: undefined,
+        authorize: undefined,
+        principal: noSession,
+        publicKey: { keyId: "own_1", publicKey: JWK, issuer: "https://admin.acme.dev", kind: "script" },
+      }),
+    ).rejects.toMatchObject({ payload: { code: "core/precondition_failed" } });
+    expect(registry.current()).toBeNull();
+  });
+
+  test("a key joining a connection that already exists registers no connection, so asks no principal", async () => {
+    const registry = fakeRegistry(existing());
+    const principal = vi.fn(noSession);
+    await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      principal,
+      publicKey: { keyId: "key_1", publicKey: JWK, issuer: "https://app.pithy.sh" },
+    });
+    expect(principal).not.toHaveBeenCalled();
+  });
+
+  /** The registry row once every key it trusted has been revoked: the recovery case, where the CLI appends. */
+  function dead(overrides: Partial<ControlPlaneConnection> = {}): ControlPlaneConnection {
+    const row = existing(overrides);
+    return { ...row, keys: [{ ...(row.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }] };
+  }
+
+  test("a new key on a connection with nothing live is a registration, so no session refuses it", async () => {
+    const registry = fakeRegistry(dead());
+    const before = registry.current();
+    await expect(
+      connectDashboard({
+        ...base,
+        registry,
+        client: undefined,
+        authorize: undefined,
+        update: true,
+        principal: noSession,
+        publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "agent" },
+      }),
+    ).rejects.toMatchObject({ payload: { code: "core/precondition_failed" } });
+    expect(registry.current()).toBe(before);
+  });
+
+  test("a new key on a connection with nothing live records who sanctioned it, its kind and its purpose", async () => {
+    const registry = fakeRegistry(dead());
+    const report = await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "agent" },
+    });
+
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+    });
+    expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1", "own_2"]);
+    expect(report).toMatchObject({ authorizedBy: "ada@example.com", actorKind: "agent" });
+  });
+
+  test("a new key on a connection with nothing live needs --kind, and nothing is written without it", async () => {
+    const registry = fakeRegistry(dead());
+    const before = registry.current();
+    const error = (await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh" },
+    }).catch((caught: unknown) => caught)) as PithyError;
+
+    expect(error.payload.code).toBe("validation/invalid_input");
+    expect(error.payload.action).toContain("--kind agent");
+    expect(registry.current()).toBe(before);
+  });
+
+  test("--update --purpose edits the purpose and leaves the principal and the kind as registered", async () => {
+    const registry = fakeRegistry(existing());
+    const principal = vi.fn(noSession);
+    const report = await connectDashboard({
+      ...base,
+      registry,
+      client: fakeClient(),
+      update: true,
+      principal,
+      workerUrl: undefined,
+      purpose: "The hosted dashboard, for billing support.",
+    });
+
+    expect(principal).not.toHaveBeenCalled();
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "grace@example.com",
+      actorKind: "dashboard",
+      purpose: "The hosted dashboard, for billing support.",
+    });
+    expect(report.purpose).toBe("The hosted dashboard, for billing support.");
+  });
+
+  test("a connection registered before principals still works, and may have its purpose set", async () => {
+    const registry = fakeRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null }));
+    await connectDashboard({
+      ...base,
+      registry,
+      client: fakeClient(),
+      update: true,
+      workerUrl: undefined,
+      purpose: "The hosted dashboard.",
+    });
+
+    expect(registry.current()).toMatchObject({ authorizedBy: null, actorKind: null, purpose: "The hosted dashboard." });
+  });
+
+  test("an update with no --purpose keeps the one registered", async () => {
+    const registry = fakeRegistry(existing());
+    const { purpose: _omitted, ...withoutPurpose } = base;
+    await connectDashboard({
+      ...withoutPurpose,
+      registry,
+      client: fakeClient(),
+      update: true,
+      scopes: ["manifest:read"],
+    });
+    expect(registry.current()?.purpose).toBe("The hosted dashboard.");
+  });
+});
+
+describe("parsePurpose", () => {
+  test("trims a sentence and keeps it", () => {
+    expect(parsePurpose("  Nightly refund sweep.  ")).toBe("Nightly refund sweep.");
+  });
+
+  test.each([
+    ["a terminal escape", "triage\u001b[31mred"],
+    ["a newline that forges a line of output", "triage\nAuthorized by  someone@else.example"],
+    ["a bidi override", "triage \u202eetator:syek"],
+    ["nothing at all", "   "],
+  ])("refuses %s, naming the remedy", (_name, hostile) => {
+    try {
+      parsePurpose(hostile);
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      expect((error as PithyError).payload.code).toBe("validation/invalid_input");
+      expect((error as PithyError).payload.action).toContain("--purpose");
+    }
+  });
+});
+
+describe("dashboardStatus — attribution", () => {
+  test("reports who authorized the connection, its kind, and its purpose", async () => {
+    const report = await dashboardStatus({ registry: fakeRegistry(existing()), environment: "prod", now: () => NOW });
+    expect(report).toMatchObject({
+      authorizedBy: "grace@example.com",
+      actorKind: "dashboard",
+      purpose: "The hosted dashboard.",
+    });
+  });
+
+  test("a connection registered before principals reports null on all three", async () => {
+    const report = await dashboardStatus({
+      registry: fakeRegistry(existing({ authorizedBy: null, actorKind: null, purpose: null })),
+      environment: "prod",
+      now: () => NOW,
+    });
+    expect(report).toMatchObject({ connected: true, authorizedBy: null, actorKind: null, purpose: null });
+  });
+
+  test("nothing registered reports null on all three", async () => {
+    const report = await dashboardStatus({ registry: fakeRegistry(), environment: "prod", now: () => NOW });
+    expect(report).toMatchObject({ authorizedBy: null, actorKind: null, purpose: null });
   });
 });

@@ -70,6 +70,9 @@ function connection(overrides: Partial<ControlPlaneConnection> = {}): ControlPla
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
     managementOrigin: null,
+    authorizedBy: "ada@example.com",
+    actorKind: "dashboard",
+    purpose: "The hosted dashboard.",
     scopes: [MANIFEST_READ_SCOPE],
     keys: [registeredKey()],
     createdAt: at(-DAY_SECONDS),
@@ -162,7 +165,19 @@ describe("verifyControlPlaneCall — the happy path", () => {
       grantedScopes: [MANIFEST_READ_SCOPE],
       keyId: KEY_ID,
       tokenId: "jti_happy",
+      actorKind: "dashboard",
     });
+  });
+
+  test("takes the actor kind from the adopter's row, so a connection registered before it carries none", async () => {
+    const token = await mint({ tokenId: "jti_legacy", scope: MANIFEST_READ_SCOPE });
+    const deps = makeDeps();
+    const legacy = await deps.loadConnection(CONNECTION_ID);
+    const context = await verifyControlPlaneCall(
+      { token, body: NO_BODY, requirement: MANIFEST_READ_SCOPE },
+      { ...deps, loadConnection: async () => (legacy === null ? null : { ...legacy, actorKind: null }) },
+    );
+    expect(context.actorKind).toBeNull();
   });
 });
 

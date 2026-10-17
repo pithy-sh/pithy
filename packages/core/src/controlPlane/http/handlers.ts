@@ -248,6 +248,11 @@ export function listKeysHandler(deps: ControlPlaneHandlerDeps) {
       connectionId: connection.id,
       environment: connection.environment,
       keys: connection.keys.map(publicKeyView),
+      // The review a credential listing exists for needs these, and it is the adopter's to perform —
+      // on their own side, from their own row (#721).
+      authorizedBy: connection.authorizedBy,
+      actorKind: connection.actorKind,
+      purpose: connection.purpose,
     } satisfies ControlPlaneKeysResponse);
   };
 }

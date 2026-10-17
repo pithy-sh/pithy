@@ -123,6 +123,10 @@ export async function recordAuditEvent(
             severity: event.severity,
             actorType: event.actorType,
             actorId: event.actorId ?? null,
+            // Named only when the event carries one (#721). A Worker deployed ahead of
+            // `audit_0002_actor_kind` then keeps recording every row it recorded before; only a call
+            // through a connection with a kind depends on the column being there.
+            ...(event.actorKind == null ? {} : { actorKind: event.actorKind }),
             sessionId: event.sessionId ?? null,
             resourceType: event.resourceType ?? null,
             resourceId: event.resourceId ?? null,

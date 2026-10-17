@@ -16,7 +16,8 @@ import { openConnectionRegistry } from "./registry";
  *
  * A first staging or prod deploy is the moment a management view pays off, and nothing said so. It is an
  * offer, not a `next`: connecting is the person's choice, and it opens a browser sign-in only they can
- * approve. So it lands in `offers`, and only on a fact the run established. Each of these is a no:
+ * approve, and it records what the connection is for in their words (#721). So it lands in `offers`, and only on
+ * a fact the run established. Each of these is a no:
  *
  * - **Not a named environment.** `dev` is the local store and a feature environment is gone at merge, so
  *   neither is worth a connection.
@@ -57,7 +58,9 @@ export async function dashboardOffers(options: DashboardOfferOptions): Promise<N
   const connected = await seams.connected(env, first).catch(() => undefined);
   if (connected !== false) return undefined;
 
-  const why = `${env} is not connected to a dashboard. Connecting opens a browser sign-in, so it is a person's to approve.`;
+  // The purpose is the person's words (#721), so the command cannot carry it: a placeholder is refused as
+  // unrunnable, and a purpose the program wrote is the one nobody gave. The `why` names the flag instead.
+  const why = `${env} is not connected to a dashboard. Connecting opens a browser sign-in and records what the connection is for, in a person's words, so both are theirs to give: at a terminal it asks, and a run that cannot ask adds --purpose with their answer.`;
   return workers.map((worker) => ({
     command: pithyCommand("dashboard connect", { flags: { "--env": env, "--worker": worker } }),
     why: workers.length > 1 ? `${why} Any one of these connects the project.` : why,

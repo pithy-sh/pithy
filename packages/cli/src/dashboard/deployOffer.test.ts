@@ -33,7 +33,7 @@ describe("dashboardOffers", () => {
     expect(await dashboardOffers({ ...base, env: "staging", seams: seams() })).toEqual([
       {
         command: "pithy dashboard connect --env staging --worker api",
-        why: "staging is not connected to a dashboard. Connecting opens a browser sign-in, so it is a person's to approve.",
+        why: "staging is not connected to a dashboard. Connecting opens a browser sign-in and records what the connection is for, in a person's words, so both are theirs to give: at a terminal it asks, and a run that cannot ask adds --purpose with their answer.",
       },
     ]);
   });

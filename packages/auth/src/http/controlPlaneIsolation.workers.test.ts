@@ -9,6 +9,7 @@ import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import {
   ANY_VERIFIED_CALLER,
   KEYS_ROTATE_SCOPE,
@@ -195,6 +196,9 @@ async function registerConnection(publicKey: Ed25519PublicJwk): Promise<void> {
         workerUrl: "https://worker.example.test",
         basePath: "/control-plane",
         managementOrigin: null,
+        authorizedBy: "ada@example.com",
+        actorKind: "dashboard",
+        purpose: "The hosted dashboard.",
         scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
         keys: [
           {
@@ -300,6 +304,7 @@ beforeEach(async () => {
       migrations: {
         "0001_init": controlplane_0001_init,
         "0002_management_origin": controlplane_0002_management_origin,
+        "0003_connection_principal": controlplane_0003_connection_principal,
       },
     },
   ]).app;
