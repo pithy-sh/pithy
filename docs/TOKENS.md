@@ -151,7 +151,7 @@ Override any mint with `--store`. A flag wins over the profile default, which wi
 
 ## Commands
 
-Every command runs non-interactively, takes `--json` and `--env`, and never prints a token value.
+Every command takes `--json` and `--env`, never prints a token value, and runs without a person. `forget` is the one that can ask: at a terminal, when it cannot read whether the token has been used, it confirms before dropping the local copy. A run that cannot ask drops it.
 
 ```bash
 # Mint (or reuse a still-valid one) and write it to the token's store.
@@ -174,7 +174,7 @@ pithy token revoke ci-system --env prod
 pithy token forget ci-system --env prod
 ```
 
-Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, revoke, and forget emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it). A `forget` without credentials has no client to write its event with, so that one goes unrecorded, and when the project composes audit it says so on stderr rather than in silence.
+Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, and revoke, and every forget that drops a value or is refused, emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it). A `forget` with nothing to drop emits nothing: no action was taken. A `forget` without credentials has no client to write its event with, so that one goes unrecorded too, and when the project composes audit it says so on stderr rather than in silence.
 
 ## Environments
 
