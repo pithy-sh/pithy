@@ -105,7 +105,9 @@ complete -c pithy -f -a '(__pithy_complete)'
 /**
  * PowerShell, 7 and Windows PowerShell 5.1 alike. The command's own text is cut at the cursor, and padded
  * with the spaces the parser left off its extent when the cursor sits past them. No `?:` or `??`, which
- * 5.1 does not parse.
+ * 5.1 does not parse. `-Native` covers `p.` too, though `pithy alias` makes it a function: a function with
+ * no `param` block binds nothing, and PowerShell hands its arguments to the native completer registered
+ * under its name. `scripts.test.ts` asks a real `pwsh` for both, where one is installed.
  */
 const POWERSHELL = `# Tab completion for pithy, in PowerShell. Load it with: ${printing("powershell")} | Out-String | Invoke-Expression
 Register-ArgumentCompleter -Native -CommandName 'p.', 'pithy' -ScriptBlock {

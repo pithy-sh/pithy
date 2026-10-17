@@ -72,11 +72,27 @@ function plain(values: readonly string[]): Candidate[] {
 }
 
 /**
- * The values one flag or positional takes. A fixed set the command declares comes first; then the four
- * sources, each attached to the names that take it. Anything else takes a value only its caller knows, so
- * it completes nothing — never a file name it did not ask for.
+ * **The characters a value may hold to be offered at all.** A shell inserts a candidate as typed text, and
+ * neither the bash shim nor the PowerShell one quotes it, so a value is live syntax on the line. A Worker is
+ * named by a directory in `apps/` and a branch by whoever pushed it: a cloned repository holding
+ * `apps/$(cmd)/` would otherwise put `$(cmd)` on the line after `--app <Tab>`, and Enter would run it. So a
+ * value is offered only when every character is one no shell reads as syntax — letters, digits, and
+ * `_ . + / : = -`. A name outside that set is not offered, and is still typed by hand.
+ */
+const SAFE_VALUE = /^[A-Za-z0-9_.+/:=-]+$/;
+
+/**
+ * The values one flag or positional takes, less any {@link SAFE_VALUE} refuses. A fixed set the command
+ * declares comes first; then the four sources, each attached to the names that take it. Anything else takes
+ * a value only its caller knows, so it completes nothing — never a file name it did not ask for.
  */
 export async function valuesFor(query: ValueQuery, cwd: string, sources: ValueSources): Promise<Candidate[]> {
+  const values = await unfilteredValuesFor(query, cwd, sources);
+  return values.filter((candidate) => SAFE_VALUE.test(candidate.value));
+}
+
+/** The values one flag or positional takes, before {@link SAFE_VALUE} is applied. */
+async function unfilteredValuesFor(query: ValueQuery, cwd: string, sources: ValueSources): Promise<Candidate[]> {
   if (query.enum !== undefined) return plain(query.enum);
   const command = query.path.join(" ");
   if (query.flag !== undefined) {

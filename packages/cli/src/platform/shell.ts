@@ -152,6 +152,12 @@ async function profileOf(
 const POSIX_ALIAS = "alias p.='pithy'";
 
 /**
+ * PowerShell's alias. `Set-Alias` rejects a `.` in the name, so it is a passthrough function — which
+ * `pithy completion powershell` relies on still completing as `pithy` does (`completion/scripts.test.ts`).
+ */
+export const POWERSHELL_ALIAS = "function p. { pithy @args }";
+
+/**
  * Detect the current shell and resolve where its `p.` alias belongs.
  *
  * Detection is `basename($SHELL)` plus platform checks, per docs/CLI.md §2.4. bash on macOS prefers
@@ -226,7 +232,7 @@ export async function detectShell(options: DetectShellOptions = {}): Promise<She
       kind: "powershell",
       rcPath: seven,
       extraRcPaths: five === null || five === seven ? [] : [five],
-      aliasSyntax: "function p. { pithy @args }",
+      aliasSyntax: POWERSHELL_ALIAS,
     };
   }
 

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { POWERSHELL_ALIAS } from "../platform/shell";
 import { COMPLETE_COMMAND } from "./complete";
 import { COMPLETION_SHELLS, completionScript, isCompletionShell, loadingLine } from "./scripts";
 
@@ -98,6 +99,34 @@ describe("the scripts", () => {
     const check = `$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile('${path}', [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }`;
     await run("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", check]);
   });
+
+  test.skipIf(!installed("pwsh"))(
+    "PowerShell completes pithy, and p. as pithy alias defines it, by asking the binary",
+    async () => {
+      const bin = await fakePithy("secrets\tSecrets\nsetup\n");
+      const path = join(dir, "completion.ps1");
+      await writeFile(path, completionScript("powershell"));
+      const probe = [
+        `. '${path}'`,
+        POWERSHELL_ALIAS,
+        "foreach ($line in 'pithy se', 'p. se') {",
+        "  $result = TabExpansion2 $line $line.Length",
+        "  ($result.CompletionMatches | ForEach-Object { $_.CompletionText }) -join ','",
+        "  Get-Content -Raw (Join-Path $env:PITHY_PROBE_DIR 'asked')",
+        "}",
+      ].join("\n");
+      const { stdout } = await run("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", probe], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PITHY_PROBE_DIR: dir },
+      });
+      expect(stdout.split(/\r?\n/).filter((line) => line !== "")).toEqual([
+        "secrets,setup",
+        "pithy se",
+        "secrets,setup",
+        "p. se",
+      ]);
+    },
+    60_000,
+  );
 
   test("bash hands the binary the line up to the cursor, and offers what comes back", async () => {
     const bin = await fakePithy("secrets\tSecrets\nsetup\n");

@@ -114,6 +114,34 @@ describe("valuesFor", () => {
     expect((await at({ path: ["env"], positional: "name" })).map((c) => c.value)).toEqual(["dev", "staging", "prod"]);
   });
 
+  test("a value a shell would read as syntax is never offered, so a Tab cannot type a command", async () => {
+    const hostile: ValueSources = {
+      ...sources,
+      workers: async () => ["api", "$(touch pwned)", "a b", "`id`", "x;y", "w|z", "q'uote", "@(1)", "a,b"],
+      featureBranches: async () => ["feature/1-x", "feature/$(id)", "feature/a&b"],
+    };
+    const values = async (query: Parameters<typeof valuesFor>[0]) =>
+      (await valuesFor(query, "/nowhere", hostile)).map((c) => c.value);
+    expect(await values({ path: ["dev"], flag: "app" })).toEqual(["api"]);
+    expect(await values({ path: ["feature", "destroy"], flag: "branch" })).toEqual(["feature/1-x"]);
+  });
+
+  test("the names a project really uses pass the filter", async () => {
+    const real: ValueSources = {
+      ...sources,
+      workers: async () => ["web", "api_v2", "docs.site"],
+      featureBranches: async () => ["feature/12-media-cli", "feature/7-auth+sso", "feature/v1.2:fix=x"],
+    };
+    const values = async (query: Parameters<typeof valuesFor>[0]) =>
+      (await valuesFor(query, "/nowhere", real)).map((c) => c.value);
+    expect(await values({ path: ["dev"], flag: "worker" })).toEqual(["web", "api_v2", "docs.site"]);
+    expect(await values({ path: ["feature", "destroy"], flag: "branch" })).toEqual([
+      "feature/12-media-cli",
+      "feature/7-auth+sso",
+      "feature/v1.2:fix=x",
+    ]);
+  });
+
   test("anything else completes nothing", async () => {
     expect(await at({ path: ["secrets", "create"], positional: "name" })).toEqual([]);
     expect(await at({ path: ["init"], flag: "dir" })).toEqual([]);
