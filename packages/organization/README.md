@@ -127,7 +127,7 @@ export const roles = defineRoles({
 
 No `nests`, because these four are not a chain: `coach` and `student` are siblings and neither is above the other. `nests` takes the roles that do form one — `["admin", "owner"]` would be a true claim here, and claiming it would be worth doing — but it never describes the whole set by assumption.
 
-No `unassignable`, so every role including `owner` may be handed to somebody, and the founder of an academy is its owner. Nothing about this catalog is a degraded case of the first one: it is a different shape, and the only thing the two share is the powers the kit's own routes gate on.
+No `unassignable`, so every role including `owner` may be handed to somebody, and the founder of an academy is its owner. Nothing about this catalog is a degraded case of the first one: it is a different shape, and the only thing the two share is tenancy's five.
 
 ## Routes
 

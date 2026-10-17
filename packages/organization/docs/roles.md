@@ -36,7 +36,7 @@ The three move at different speeds, and that is the point. The kit's seven are f
 
 A dashboard's `member`, `admin` and `owner` nest: every power a member holds an admin holds, and every power an admin holds an owner holds. A coaching academy's `coach` and `student` are parallel, and each holds what the other does not — a coach accepts sessions, a student requests them, and neither is a weaker version of the other.
 
-**A kit that assumed nesting would refuse the academy outright.** Both catalogs are in the [README](../README.md), side by side, and neither is a degraded case of the other. The only thing they share is the kit's powers above.
+**A kit that assumed nesting would refuse the academy outright.** Both catalogs are in the [README](../README.md), side by side, and neither is a degraded case of the other. The only thing they share is tenancy's five.
 
 ## Nesting is asserted where it is declared, never assumed
 
@@ -88,9 +88,9 @@ All of it at the moment the constant is written, because every one of these is a
 | A `nests` entry that is not a declared role | A claim about something that does not exist |
 | A `nests` pair where the stronger role is short a power | The nesting is asserted, not documented |
 | An `unassignable` entry that is not a declared role | Same |
+| Every role excluded from assignment | Nobody could ever be given one |
 
 One more is refused later, at compose, because only the composed Worker knows it: **a power a composed capability gates on that no role holds** — `media:manage` beside `media()`, `storage:manage` beside `storage()`. The refusal names the power and the capability.
-| Every role excluded from assignment | Nobody could ever be given one |
 
 One more is raised on the first founding rather than at boot: a catalog whose only administering roles are all excluded from assignment leaves nobody who could found an organization. `defineRoles` cannot know that this capability founds accounts, so the refusal lands where the fact is known — but it still names the catalog, not the request, because that is what is wrong.
 
