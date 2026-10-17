@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import type {
-  SettingsAccountReader,
-  SettingsCheckContext,
-  SettingsEnvironment,
-  SettingsFinding,
+import {
+  type SettingsAccountReader,
+  type SettingsCheckContext,
+  type SettingsEnvironment,
+  type SettingsFinding,
+  settingsFindingsBefore,
 } from "@pithy-sh/core/src/capability/settings";
 
 /**
@@ -217,7 +218,12 @@ export async function checkCapabilitySettings(options: CapabilitySettingsOptions
         for (const finding of await settings.account({ ...context, account: connection.reader })) {
           findings.push({ ...finding, worker, capability: capability.name, tier: "account" });
         }
-      } catch {
+      } catch (error) {
+        // A check that answered for some environments and not others hands back what it found. Those are
+        // faults like any other, and the tier is still unchecked: neither fact hides the other.
+        for (const finding of settingsFindingsBefore(error)) {
+          findings.push({ ...finding, worker, capability: capability.name, tier: "account" });
+        }
         unchecked.push({ worker, capability: capability.name, tier: "account" });
       }
     }

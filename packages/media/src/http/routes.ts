@@ -145,8 +145,11 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
       requireAuth(),
       validate("json", DuplicatesInput),
       async (c) => {
-        const result = await searchDuplicates(await resolve(c), c.req.valid("json"));
-        return c.json({ matches: result.matches.map((match) => ({ ...match, record: mediaView(match.record) })) });
+        const deps = await resolve(c);
+        const result = await searchDuplicates(deps, c.req.valid("json"));
+        return c.json({
+          matches: result.matches.map((match) => ({ ...match, record: mediaView(match.record, deps.caller) })),
+        });
       },
     );
 
@@ -198,8 +201,9 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
       validate("param", MediaIdParam),
       validate("json", FinalizeMediaInput),
       async (c) => {
-        const record = await finalizeMedia(await resolve(c), c.req.valid("param").id, c.req.valid("json"));
-        return c.json(mediaView(record));
+        const deps = await resolve(c);
+        const record = await finalizeMedia(deps, c.req.valid("param").id, c.req.valid("json"));
+        return c.json(mediaView(record, deps.caller));
       },
     );
 
@@ -236,8 +240,9 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
       }),
       validate("param", MediaIdParam),
       async (c) => {
-        const record = await getMedia(await resolve(c), c.req.valid("param").id);
-        return c.json(mediaView(record));
+        const deps = await resolve(c);
+        const record = await getMedia(deps, c.req.valid("param").id);
+        return c.json(mediaView(record, deps.caller));
       },
     );
 
@@ -254,8 +259,9 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
       validate("param", MediaIdParam),
       validate("json", UpdateMediaInput),
       async (c) => {
-        const record = await updateMedia(await resolve(c), c.req.valid("param").id, c.req.valid("json"));
-        return c.json(mediaView(record));
+        const deps = await resolve(c);
+        const record = await updateMedia(deps, c.req.valid("param").id, c.req.valid("json"));
+        return c.json(mediaView(record, deps.caller));
       },
     );
 
@@ -271,8 +277,9 @@ export function registerMediaRoutes(options: MediaRoutesOptions): (app: Hono<Pit
       requireAuth(),
       validate("query", ListMediaQuery),
       async (c) => {
-        const page = await listMedia(await resolve(c), c.req.valid("query"));
-        const items = page.items.map(mediaView);
+        const deps = await resolve(c);
+        const page = await listMedia(deps, c.req.valid("query"));
+        const items = page.items.map((record) => mediaView(record, deps.caller));
         return c.json(page.cursor === undefined ? { items } : { items, cursor: page.cursor });
       },
     );

@@ -5,6 +5,7 @@ import {
   type AccessCaller,
   type AccessLevel,
   accessLevel,
+  disclosedTenancy,
   keepReadable,
   type PermissionHook,
   readablePredicate,
@@ -134,13 +135,20 @@ export interface ShareView {
   createdAt: Date;
 }
 
-/** Drop the server-only fields. The single place a row becomes something a client may see. */
-function view(object: StorageObject): StorageObjectView {
+/**
+ * Drop the server-only fields. The single place a row becomes something a client may see.
+ *
+ * The owner and organization are the caller's to see only when they act for the file's organization
+ * ({@link disclosedTenancy}). A public file reached from anywhere else names neither: reading a file is not
+ * learning which organization its owner belongs to.
+ */
+function view(object: StorageObject, caller: AccessCaller): StorageObjectView {
+  const tenancy = disclosedTenancy(object, caller);
   return {
     id: object.id,
     path: object.path,
-    ownerId: object.ownerId,
-    organizationId: object.organizationId,
+    ownerId: tenancy.ownerId,
+    organizationId: tenancy.organizationId,
     contentType: object.contentType,
     size: object.size,
     visibility: object.visibility,
@@ -301,7 +309,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
     throw error;
   }
 
-  return { object: view(object), upload };
+  return { object: view(object, deps.caller), upload };
 }
 
 /**
@@ -334,7 +342,7 @@ export async function completeUpload(
   const object = await loadWritable(deps, id);
   // Completing twice is a no-op rather than an error: a client that retried a dropped response gets
   // the same answer, which is what makes the route safe to retry at all.
-  if (object.status === "stored") return view(object);
+  if (object.status === "stored") return view(object, deps.caller);
   if (object.status !== "pending") {
     throw new StorageUploadIncompleteError({ detail: `object ${id} is ${object.status} and cannot be completed` });
   }
@@ -374,7 +382,7 @@ export async function completeUpload(
   // An upload smaller than it declared claims nothing further, so it is written unconditionally. A
   // quota an adopter lowered under an in-flight upload must not turn a shrinking completion into a
   // deletion of bytes the owner was, at reservation time, granted.
-  if (overshoot <= 0) return view(await saveObject(deps, settled));
+  if (overshoot <= 0) return view(await saveObject(deps, settled), deps.caller);
 
   try {
     await updateSettlingQuota({
@@ -393,7 +401,7 @@ export async function completeUpload(
     await saveObject(deps, { ...object, status: "failed", uploadId: null, updatedAt: deps.now() });
     throw error;
   }
-  return view(settled);
+  return view(settled, deps.caller);
 }
 
 /**
@@ -424,7 +432,10 @@ export async function abortUpload(deps: HandlerDeps, id: string): Promise<Storag
   // too, so aborting never leaves an object the sweep has to find later.
   await deps.store.delete(object.key);
 
-  return view(await saveObject(deps, { ...object, status: "failed", uploadId: null, updatedAt: deps.now() }));
+  return view(
+    await saveObject(deps, { ...object, status: "failed", uploadId: null, updatedAt: deps.now() }),
+    deps.caller,
+  );
 }
 
 /** Where a resuming client stands: what R2 already holds, and a live URL for everything it does not. */
@@ -563,7 +574,7 @@ export async function listObjects(
     hook: deps.permission,
     env: deps.env,
   });
-  const objects = kept.map(view);
+  const objects = kept.map((object) => view(object, deps.caller));
   if (rows.length <= limit) return { objects };
   const last = page[page.length - 1];
   return last ? { objects, cursor: encodeCursor({ path: last.path, id: last.id }) } : { objects };
@@ -613,6 +624,7 @@ export async function updateObject(
       visibility,
       updatedAt: deps.now(),
     }),
+    deps.caller,
   );
 }
 
@@ -636,6 +648,17 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     additionalBytes: source.size ?? 0,
   });
 
+  const organizationId = deps.caller.acting?.organizationId ?? null;
+  // A copy starts private even when the source was public. Republishing is a decision, and a copy made to
+  // take a private working copy of your own public file should not re-publish it by default. Where the policy
+  // allows no private file, it starts at the policy's default instead. Either way the level goes through the
+  // one check every write does, so the kit never writes a file outside its own policy.
+  const visibility = resolveVisibility(
+    deps.config.visibility,
+    deps.config.visibility.allowed.includes("private") ? "private" : undefined,
+    organizationId,
+  );
+
   const key = deriveObjectKey();
   await deps.store.copy(source.key, key);
   const now = deps.now();
@@ -645,10 +668,8 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     key,
     path: input.path,
     ownerId: deps.caller.userId,
-    organizationId: deps.caller.acting?.organizationId ?? null,
-    // A copy starts private even when the source was public. Republishing is a decision, and a copy
-    // made to take a private working copy of your own public file should not re-publish it by default.
-    visibility: "private",
+    organizationId,
+    visibility,
     status: "stored",
     uploadId: null,
     createdAt: now,
@@ -670,7 +691,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     await deps.store.delete(key).catch(() => {});
     throw error;
   }
-  return view(copy);
+  return view(copy, deps.caller);
 }
 
 /**

@@ -5268,14 +5268,14 @@
                           "description": "The file's logical path, as the owner named it. Never an R2 key."
                         },
                         "ownerId": {
-                          "description": "The id of the user who owns the file, or null for a system-owned file.",
+                          "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                           "type": [
                             "string",
                             "null"
                           ]
                         },
                         "organizationId": {
-                          "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                          "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                           "type": [
                             "string",
                             "null"
@@ -5541,14 +5541,14 @@
                             "description": "The file's logical path, as the owner named it. Never an R2 key."
                           },
                           "ownerId": {
-                            "description": "The id of the user who owns the file, or null for a system-owned file.",
+                            "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "organizationId": {
-                            "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                            "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                             "type": [
                               "string",
                               "null"
@@ -5964,14 +5964,14 @@
                       "description": "The file's logical path, as the owner named it. Never an R2 key."
                     },
                     "ownerId": {
-                      "description": "The id of the user who owns the file, or null for a system-owned file.",
+                      "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -6105,14 +6105,14 @@
                       "description": "The file's logical path, as the owner named it. Never an R2 key."
                     },
                     "ownerId": {
-                      "description": "The id of the user who owns the file, or null for a system-owned file.",
+                      "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -6414,14 +6414,14 @@
                       "description": "The file's logical path, as the owner named it. Never an R2 key."
                     },
                     "ownerId": {
-                      "description": "The id of the user who owns the file, or null for a system-owned file.",
+                      "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -6864,14 +6864,14 @@
                       "description": "The file's logical path, as the owner named it. Never an R2 key."
                     },
                     "ownerId": {
-                      "description": "The id of the user who owns the file, or null for a system-owned file.",
+                      "description": "The id of the user who owns the file. Null for a system-owned file, and for any file read by someone not acting for its organization.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the file was written under. Null when none was in force, and for any file read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -7237,14 +7237,14 @@
                                 ]
                               },
                               "ownerId": {
-                                "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                                "description": "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
                                 "type": [
                                   "string",
                                   "null"
                                 ]
                               },
                               "organizationId": {
-                                "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                                "description": "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
                                 "type": [
                                   "string",
                                   "null"
@@ -7888,14 +7888,14 @@
                             ]
                           },
                           "ownerId": {
-                            "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                            "description": "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "organizationId": {
-                            "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                            "description": "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
                             "type": [
                               "string",
                               "null"
@@ -8201,14 +8201,14 @@
                       ]
                     },
                     "ownerId": {
-                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "description": "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -8535,14 +8535,14 @@
                       ]
                     },
                     "ownerId": {
-                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "description": "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
@@ -8811,14 +8811,14 @@
                       ]
                     },
                     "ownerId": {
-                      "description": "The user who owns the record. Null for a system-owned record; absent from a Worker that predates it.",
+                      "description": "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"
                       ]
                     },
                     "organizationId": {
-                      "description": "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+                      "description": "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
                       "type": [
                         "string",
                         "null"

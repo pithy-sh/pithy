@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import type {
-  CapabilitySettings,
-  SettingsAccountReader,
-  SettingsEnvironment,
+import {
+  type CapabilitySettings,
+  SettingsAccountIncomplete,
+  type SettingsAccountReader,
+  type SettingsEnvironment,
 } from "@pithy-sh/core/src/capability/settings";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -247,6 +248,24 @@ describe("the account tier, three outcomes", () => {
     expect(check?.account).toEqual({ state: "checked", reason: null });
     expect(check?.unchecked).toEqual([{ worker: "api", capability: "email", tier: "account" }]);
     expect(check?.findings).toEqual([]);
+  });
+
+  test("an account check that answered for some environments keeps their findings, and is unchecked too", async () => {
+    const staging = {
+      setting: "media visibility.allowed",
+      environment: "staging",
+      problem: "1 media record is public, which visibility.allowed (private) no longer allows: m1.",
+      action: "Change it.",
+    };
+    const check = await checkCapabilitySettings(
+      withAccount(async () => {
+        throw new SettingsAccountIncomplete([staging], [{ environment: "prod", cause: new Error("no database") }]);
+      }),
+    );
+    expect(check?.findings).toEqual([{ ...staging, worker: "api", capability: "email", tier: "account" }]);
+    expect(check?.unchecked).toEqual([{ worker: "api", capability: "email", tier: "account" }]);
+    // A fault outranks the unanswered question: there is something to fix.
+    expect(check?.state).toBe("faults");
   });
 
   test("nothing connects when no composed capability declares an account tier", async () => {

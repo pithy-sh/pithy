@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { InternalError } from "../error/pithyError";
 import type { HostEnvReport } from "../workflow/hostEnv";
 import { hostEnvProviderSentence } from "../workflow/hostEnv";
 
@@ -172,6 +173,56 @@ export interface AppRowsRequest {
 export interface SettingsAccountContext extends SettingsCheckContext {
   /** The account, as the closed set of questions above. */
   account: SettingsAccountReader;
+}
+
+/** One environment an account check could not answer for, and why. */
+export interface UnansweredEnvironment {
+  /** The environment id. */
+  readonly environment: string;
+  /** What the account, or the project, said instead of an answer. */
+  readonly cause: unknown;
+}
+
+/**
+ * An account check that answered for some environments and not for others.
+ *
+ * A check that asks per environment must not let one unanswerable environment cost the others their
+ * findings: staging stood up before prod is the ordinary bring-up, and a check that threw on prod's missing
+ * database would throw away what it had already found in staging. So it collects what it can, and throws
+ * this at the end carrying those findings. The runner reports them as findings and the tier as unchecked,
+ * both — a fault and an unanswered question are two facts, and neither hides the other.
+ */
+export class SettingsAccountIncomplete extends InternalError {
+  /** What the environments that did answer were found to have wrong. */
+  readonly findings: readonly SettingsFinding[];
+  /** The environments that did not answer, in the order they were asked. */
+  readonly unanswered: readonly string[];
+
+  constructor(findings: readonly SettingsFinding[], unanswered: readonly UnansweredEnvironment[]) {
+    const reasons = unanswered.map(({ environment, cause }) => `${environment}: ${describeCause(cause)}`).join("; ");
+    super(
+      {
+        message: `The account check could not answer for ${unanswered.map(({ environment }) => environment).join(", ")}.`,
+        detail: reasons,
+      },
+      { cause: unanswered[0]?.cause },
+    );
+    this.findings = findings;
+    this.unanswered = unanswered.map(({ environment }) => environment);
+  }
+}
+
+/** A cause, as one line. */
+function describeCause(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * The findings an account check reached before it threw — none for an ordinary throw, and what it had
+ * collected for a {@link SettingsAccountIncomplete}.
+ */
+export function settingsFindingsBefore(error: unknown): readonly SettingsFinding[] {
+  return error instanceof SettingsAccountIncomplete ? error.findings : [];
 }
 
 /**

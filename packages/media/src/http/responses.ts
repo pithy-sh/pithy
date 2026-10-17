@@ -35,13 +35,15 @@ export const MediaRecordResponse = z
       .string()
       .nullable()
       .optional()
-      .describe("The user who owns the record. Null for a system-owned record; absent from a Worker that predates it."),
+      .describe(
+        "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
+      ),
     organizationId: z
       .string()
       .nullable()
       .optional()
       .describe(
-        "The organization the record was written under. Null when none was in force; absent from a Worker that predates it.",
+        "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
       ),
     visibility: RecordVisibility.optional().describe(
       "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",

@@ -7,6 +7,7 @@ import {
   type AccessRecord,
   accessLevel,
   defaultAllows,
+  disclosedTenancy,
   keepReadable,
   type PermissionHook,
 } from "./access";
@@ -161,5 +162,35 @@ describe("keepReadable — a list asks the hook about each row on the page", () 
   test("no hook keeps every row", async () => {
     const rows = [record("private")];
     expect(await keepReadable(rows, { capability: "media", caller: owner, env: {} })).toEqual(rows);
+  });
+});
+
+describe("disclosedTenancy — who holds a record, as a reader may learn it", () => {
+  test("a reader acting for the record's organization sees its owner and organization", () => {
+    expect(disclosedTenancy(record("organization"), colleague)).toEqual({
+      ownerId: "u-owner",
+      organizationId: "org-a",
+    });
+    expect(disclosedTenancy(record("private"), manager)).toEqual({ ownerId: "u-owner", organizationId: "org-a" });
+  });
+
+  test("a public record read from another organization names neither — the pair would disclose a membership", () => {
+    expect(disclosedTenancy(record("public"), outsider)).toEqual({ ownerId: null, organizationId: null });
+    // Its own owner, acting elsewhere, is told no more than anyone else acting there.
+    expect(disclosedTenancy(record("public"), ownerElsewhere)).toEqual({ ownerId: null, organizationId: null });
+    expect(disclosedTenancy(record("public"), ownerNowhere)).toEqual({ ownerId: null, organizationId: null });
+  });
+
+  test("an anonymous reader is told nothing about who holds a public record", () => {
+    expect(disclosedTenancy(record("public"), anonymous)).toEqual({ ownerId: null, organizationId: null });
+    expect(disclosedTenancy(record("public", null), anonymous)).toEqual({ ownerId: null, organizationId: null });
+  });
+
+  test("a record written with no organization is disclosed to a reader acting for none, and to nobody else", () => {
+    expect(disclosedTenancy(record("public", null), { userId: "u-other", acting: null })).toEqual({
+      ownerId: "u-owner",
+      organizationId: null,
+    });
+    expect(disclosedTenancy(record("public", null), colleague)).toEqual({ ownerId: null, organizationId: null });
   });
 });

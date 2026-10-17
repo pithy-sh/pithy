@@ -1176,6 +1176,41 @@ describe("rename, copy, delete", () => {
     expect(await fetched.text()).toBe("hello");
   });
 
+  test("a copy is held to the policy: where no file may be private, it starts at the policy's default", async () => {
+    const app = makeApp({ visibility: { default: "public", allowed: ["public"] } });
+    const { id } = await storeFile(app, ADA, "public/a.txt", "hello");
+    const response = await app.request(`/storage/${id}/copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": ADA },
+      body: JSON.stringify({ path: "ada/copy.txt" }),
+    });
+    expect(response.status).toBe(201);
+    const copy = await conforming(response, StorageObjectResponse);
+    // Never a private file the policy refuses everyone else: the kit's own write stays inside it.
+    expect(copy.visibility).toBe("public");
+    const row = await db
+      .selectFrom(STORAGE_OBJECTS_TABLE)
+      .select("visibility")
+      .where("id", "=", copy.id)
+      .executeTakeFirst();
+    expect(row?.visibility).toBe("public");
+  });
+
+  test("a copy in an organization-only project is an organization file, in the copier's organization", async () => {
+    const app = makeApp({ visibility: { default: "organization", allowed: ["organization"] } });
+    const { id } = await storeFile(app, `${ADA}@org-a`, "a.txt", "hello");
+    const response = await app.request(`/storage/${id}/copy`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": `${ADA}@org-a` },
+      body: JSON.stringify({ path: "ada/copy.txt" }),
+    });
+    expect(response.status).toBe(201);
+    expect(await conforming(response, StorageObjectResponse)).toMatchObject({
+      visibility: "organization",
+      organizationId: "org-a",
+    });
+  });
+
   test("copy is owner-scoped: a reader of a public file cannot duplicate it onto the owner's bill", async () => {
     const app = makeApp();
     const { id } = await storeFile(app, ADA, "public/a.txt", "hello", "public");
@@ -1207,6 +1242,32 @@ describe("listing", () => {
     const response = await app.request("/storage", { headers: { "x-user": ADA } });
     const payload = await conforming(response, ObjectListResponse);
     expect(payload.objects.map((object) => object.path)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  test("a public file from another organization names neither its owner nor its organization", async () => {
+    const app = makeApp();
+    await storeFile(app, `${ADA}@org-b`, "b/public.txt", "b", "public");
+    await storeFile(app, `${GRACE}@org-a`, "a/own.txt", "a");
+
+    const outside = await app.request("/storage?includePublic=true", { headers: { "x-user": `${GRACE}@org-a` } });
+    const listed = await conforming(outside, ObjectListResponse);
+    // Org A reads the file, and does not learn that Ada belongs to org B.
+    expect(listed.objects.find((object) => object.path === "b/public.txt")).toMatchObject({
+      ownerId: null,
+      organizationId: null,
+    });
+    expect(listed.objects.find((object) => object.path === "a/own.txt")).toMatchObject({
+      ownerId: GRACE,
+      organizationId: "org-a",
+    });
+
+    // A member acting for org B is told who holds it there.
+    const inside = await app.request("/storage?includePublic=true", { headers: { "x-user": `user-lin@org-b` } });
+    const theirs = await conforming(inside, ObjectListResponse);
+    expect(theirs.objects.find((object) => object.path === "b/public.txt")).toMatchObject({
+      ownerId: ADA,
+      organizationId: "org-b",
+    });
   });
 
   test("a prefix narrows the listing, and a literal % in a path is not a wildcard", async () => {

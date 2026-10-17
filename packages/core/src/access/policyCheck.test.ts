@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test, vi } from "vitest";
-import type { AppRowsRequest, SettingsAccountContext } from "../capability/settings";
+import {
+  type AppRowsRequest,
+  type SettingsAccountContext,
+  SettingsAccountIncomplete,
+  settingsFindingsBefore,
+} from "../capability/settings";
 import { recordsOutsidePolicy } from "./policyCheck";
 import { VisibilityPolicy } from "./visibility";
 
@@ -79,13 +84,39 @@ describe("recordsOutsidePolicy", () => {
       policy: narrowed,
       remedy: "Change each",
     });
-    await expect(
-      check.account?.(
-        context(async () => {
-          throw new Error("no app database");
-        }),
-      ),
-    ).rejects.toThrow("no app database");
+    const refused = check.account?.(
+      context(async () => {
+        throw new Error("no app database");
+      }),
+    );
+    await expect(refused).rejects.toBeInstanceOf(SettingsAccountIncomplete);
+    await expect(refused).rejects.toMatchObject({
+      unanswered: ["staging", "prod"],
+      payload: { detail: "staging: no app database; prod: no app database" },
+    });
+  });
+
+  test("one unprovisioned environment does not cost the others their findings", async () => {
+    const check = recordsOutsidePolicy({
+      capability: "media",
+      noun: "media record",
+      table: "pithy_media_assets",
+      policy: narrowed,
+      remedy: "Change each",
+    });
+    // Staging stood up first, prod not yet: the ordinary bring-up.
+    const appRows = vi.fn(async (request: AppRowsRequest) => {
+      if (request.environment === "prod") throw new Error("prod names no DB database_id");
+      return ["m1"];
+    });
+    const error = await check.account?.(context(appRows)).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SettingsAccountIncomplete);
+    expect((error as SettingsAccountIncomplete).unanswered).toEqual(["prod"]);
+    // Staging's finding survives the throw, for the runner to report beside prod's "could not check".
+    expect(settingsFindingsBefore(error)).toEqual([
+      expect.objectContaining({ environment: "staging", problem: expect.stringContaining("m1") }),
+    ]);
+    expect(appRows.mock.calls.map(([request]) => request.environment)).toEqual(["staging", "prod"]);
   });
 
   test("the local tier says nothing — which records exist is the deployed database's to say", () => {

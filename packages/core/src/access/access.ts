@@ -136,6 +136,29 @@ export function defaultAllows(
   }
 }
 
+/** A record's owner and organization, as one reader may be told them. */
+export interface DisclosedTenancy {
+  readonly ownerId: string | null;
+  readonly organizationId: string | null;
+}
+
+/**
+ * Who holds a record, as this reader may learn it: the owner and organization when the reader is signed in
+ * and acts for the record's organization (none matching none), and neither otherwise.
+ *
+ * **Reading a record is not learning who holds it.** A public record is anyone's to read, but its owner's
+ * id beside its organization's id says that person belongs to that organization — and a list with
+ * `includePublic=true` reaches public records in every organization. An organization never learns that one
+ * of its people holds an account in another, so a record read from outside its organization, or by nobody
+ * in particular, names neither. Making a file public is a choice about the file, not about its owner.
+ *
+ * Every view a client sees of a media record or a stored file passes through this.
+ */
+export function disclosedTenancy(record: AccessRecord, caller: AccessCaller): DisclosedTenancy {
+  if (caller.userId === null || !actsForRecord(record, caller)) return { ownerId: null, organizationId: null };
+  return { ownerId: record.ownerId, organizationId: record.organizationId };
+}
+
 /** What {@link accessLevel} needs: the record, the caller, the capability's power, and the hook if any. */
 export interface AccessOptions {
   /** The record being reached. */

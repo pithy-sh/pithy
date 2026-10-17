@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { CapabilitySettings, SettingsFinding } from "../capability/settings";
+import {
+  type CapabilitySettings,
+  SettingsAccountIncomplete,
+  type SettingsFinding,
+  type UnansweredEnvironment,
+} from "../capability/settings";
 import { outsidePolicy, type VisibilityPolicy } from "./visibility";
 
 /**
@@ -15,7 +20,8 @@ import { outsidePolicy, type VisibilityPolicy } from "./visibility";
  *
  * The local tier says nothing: which records exist is a fact about a deployed database, which only the
  * account tier can read. An unprovisioned environment, or an account that cannot be reached, is unchecked
- * rather than clean.
+ * rather than clean — and only that environment is: the others are still asked, and what they hold is still
+ * named ({@link SettingsAccountIncomplete}).
  */
 export interface RecordsOutsidePolicyOptions {
   /** The capability, for the finding's wording — `media`, `storage`. */
@@ -38,15 +44,23 @@ export function recordsOutsidePolicy(options: RecordsOutsidePolicyOptions): Capa
     async account(context) {
       if (levels.length === 0) return [];
       const findings: SettingsFinding[] = [];
+      const unanswered: UnansweredEnvironment[] = [];
       for (const environment of context.environments) {
         if (environment.name === "dev") continue;
-        const ids = await context.account.appRows({
-          environment: environment.name,
-          workerDirectory: context.workerDirectory,
-          table: options.table,
-          column: "visibility",
-          values: levels,
-        });
+        let ids: readonly string[];
+        try {
+          ids = await context.account.appRows({
+            environment: environment.name,
+            workerDirectory: context.workerDirectory,
+            table: options.table,
+            column: "visibility",
+            values: levels,
+          });
+        } catch (cause) {
+          // Staging stood up before prod is the ordinary bring-up. Prod is unchecked; staging still answers.
+          unanswered.push({ environment: environment.name, cause });
+          continue;
+        }
         if (ids.length === 0) continue;
         const plural = ids.length === 1 ? options.noun : `${options.noun}s`;
         findings.push({
@@ -56,6 +70,7 @@ export function recordsOutsidePolicy(options: RecordsOutsidePolicyOptions): Capa
           action: `Nothing is rewritten for you. ${options.remedy}, or widen visibility.allowed in ${context.workerDirectory}'s pithy.config.ts.`,
         });
       }
+      if (unanswered.length > 0) throw new SettingsAccountIncomplete(findings, unanswered);
       return findings;
     },
   };

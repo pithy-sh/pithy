@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { type AccessCaller, disclosedTenancy } from "@pithy-sh/core/src/access/access";
 import type { MediaRecord } from "../record/store";
 
 /**
@@ -17,7 +18,13 @@ export function signingPending(record: MediaRecord): boolean {
   return (record.visibility !== "public") !== record.signedDelivery;
 }
 
-/** A record as a client sees it: every stored field, adopter extensions included, and its signing state. */
-export function mediaView(record: MediaRecord): MediaRecord & { signingPending: boolean } {
-  return { ...record, signingPending: signingPending(record) };
+/**
+ * A record as one caller sees it: every stored field, adopter extensions included, and its signing state.
+ *
+ * The owner and organization are the caller's to see only when they act for the record's organization
+ * ({@link disclosedTenancy}). A public record reached from anywhere else names neither: reading a file is not
+ * learning which organization its owner belongs to.
+ */
+export function mediaView(record: MediaRecord, caller: AccessCaller): MediaRecord & { signingPending: boolean } {
+  return { ...record, ...disclosedTenancy(record, caller), signingPending: signingPending(record) };
 }

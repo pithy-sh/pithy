@@ -277,6 +277,31 @@ describe("media routes — who may reach a record", () => {
     expect((await app.request("/media/fixed/url")).status).toBe(200);
   });
 
+  test("a public record names its owner and organization only to a reader acting for that organization", async () => {
+    const app = makeApp();
+    expect((await create(app, "public")).status).toBe(201);
+    const hidden = { ownerId: null, organizationId: null };
+
+    // Read by nobody in particular, or from another organization, the pair would disclose a membership.
+    expect(await conforming(await app.request("/media/fixed"), MediaRecordResponse)).toMatchObject(hidden);
+    const outsider = { "x-user": "stranger", "x-org": "org-b" };
+    expect(
+      await conforming(await app.request("/media/fixed", { headers: outsider }), MediaRecordResponse),
+    ).toMatchObject(hidden);
+    const listed = await conforming(
+      await app.request("/media?includePublic=true", { headers: outsider }),
+      MediaListResponse,
+    );
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]).toMatchObject(hidden);
+
+    // A colleague acting for org-a is told who holds it there.
+    const colleague = { "x-user": "colleague", "x-org": "org-a" };
+    expect(
+      await conforming(await app.request("/media/fixed", { headers: colleague }), MediaRecordResponse),
+    ).toMatchObject({ ownerId: "owner", organizationId: "org-a" });
+  });
+
   test("a private record is not found — never forbidden — without a session, or for anyone else", async () => {
     const app = makeApp();
     await create(app, "private");

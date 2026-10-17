@@ -87,6 +87,27 @@ describe("delivery", () => {
     });
     expect((await mediaDeliveryUrl(d, id, {})).url).toBe(`https://download.example/media/audio/${id}?ttl=3600`);
   });
+
+  test("a private R2 object is never signing-pending — its bucket keeps it private, with no setting to lag", async () => {
+    const storage = fakeStorage("r2");
+    const d = makeDeps(env.DB, OWNER, { storage });
+    const { id } = await createMedia(d, {
+      type: "audio",
+      name: "a",
+      filename: "a.mp3",
+      contentType: "audio/mpeg",
+      size: 9,
+    });
+    // What 0003_ownership leaves an existing R2 record as: private, with nothing recorded as signed.
+    await env.DB.prepare("UPDATE pithy_media_assets SET visibility = 'private', signed_delivery = 0 WHERE id = ?")
+      .bind(id)
+      .run();
+    const record = await getMedia(d, id);
+    expect(record).toMatchObject({ visibility: "private", storageBackend: "r2", signedDelivery: false });
+    expect(signingPending(record)).toBe(false);
+    // The same row on Cloudflare Images is exactly the state that is pending. Only the backend differs.
+    expect(signingPending({ ...record, storageBackend: "cf-images" })).toBe(true);
+  });
 });
 
 describe("a visibility change, in two systems", () => {
