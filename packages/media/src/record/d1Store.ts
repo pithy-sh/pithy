@@ -13,11 +13,11 @@ const DEFAULT_LIMIT = 50;
 type EncodedRow = Record<string, unknown>;
 
 /**
- * The D1-backed record store — the default. Records live in `pithy_media_assets`, one row each, read
- * and written through the effective schema's codecs (dates ↔ ms-epoch, booleans ↔ 0|1). Extension
- * columns ride along automatically: `schema.encode` includes them and Kysely writes every key present,
- * so an adopter's fields persist with no store changes. Derived text (`transcription`, `extractedText`)
- * is a real column, so it is queryable — the reason D1 is the default store.
+ * The record store. Records live in `pithy_media_assets`, one row each, read and written through the
+ * effective schema's codecs (dates ↔ ms-epoch, booleans ↔ 0|1). Extension columns ride along
+ * automatically: `schema.encode` includes them and Kysely writes every key present, so an adopter's fields
+ * persist with no store changes. Derived text, owners and organizations are real columns, so all of them
+ * are queryable.
  */
 export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordStore {
   /** Decode a raw D1 row into a validated record. */
@@ -64,10 +64,10 @@ export function d1RecordStore(db: MediaDatabase, schema: z.ZodObject): RecordSto
       await db.deleteFrom(MEDIA_ASSETS_TABLE).where("id", "=", id).execute();
     },
 
-    async list(options: ListRecordsOptions = {}) {
+    async list(options: ListRecordsOptions) {
       const limit = options.limit ?? DEFAULT_LIMIT;
       const offset = decodeCursor(options.cursor);
-      let query = table.selectAll();
+      let query = table.selectAll().where(options.readable);
       if (options.type) query = query.where("type", "=", options.type);
       const rows = await query
         .orderBy("createdAt", "desc")

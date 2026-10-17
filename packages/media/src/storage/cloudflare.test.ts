@@ -14,14 +14,32 @@ import { imageMinter, videoMinter } from "./cloudflare";
 
 const owner = { project: "acme", env: "prod" };
 
-function images(): { manager: CloudflareImageManager; create: ReturnType<typeof vi.fn> } {
+function images(): {
+  manager: CloudflareImageManager;
+  create: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
+} {
   const create = vi.fn().mockResolvedValue({ id: "img-1", uploadURL: "https://images/upload" });
-  return { manager: { createDirectUploadUrl: create } as unknown as CloudflareImageManager, create };
+  const update = vi.fn().mockResolvedValue({ id: "img-1" });
+  return {
+    manager: { createDirectUploadUrl: create, updateImage: update } as unknown as CloudflareImageManager,
+    create,
+    update,
+  };
 }
 
-function stream(): { manager: CloudflareStreamManager; create: ReturnType<typeof vi.fn> } {
+function stream(): {
+  manager: CloudflareStreamManager;
+  create: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
+} {
   const create = vi.fn().mockResolvedValue({ uid: "vid-1", uploadURL: "https://stream/upload" });
-  return { manager: { createDirectUpload: create } as unknown as CloudflareStreamManager, create };
+  const update = vi.fn().mockResolvedValue({ uid: "vid-1" });
+  return {
+    manager: { createDirectUpload: create, updateVideo: update } as unknown as CloudflareStreamManager,
+    create,
+    update,
+  };
 }
 
 describe("imageMinter", () => {
@@ -70,5 +88,40 @@ describe("videoMinter", () => {
       maxDurationSeconds: 21600,
       meta: { userId: "u-7", pithyProject: "acme", pithyEnv: "prod" },
     });
+  });
+});
+
+describe("signed delivery", () => {
+  test("a non-public image is minted requiring signed URLs, so it is never served plain", async () => {
+    const { manager, create } = images();
+    await imageMinter(manager, owner).mintDirectUpload(undefined, { requireSignedURLs: true });
+    expect(create).toHaveBeenCalledWith({
+      metadata: { pithyProject: "acme", pithyEnv: "prod" },
+      requireSignedURLs: true,
+    });
+  });
+
+  test("a public image is minted with no signing at all", async () => {
+    const { manager, create } = images();
+    await imageMinter(manager, owner).mintDirectUpload(undefined, { requireSignedURLs: false });
+    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("requireSignedURLs");
+  });
+
+  test("a non-public video is minted requiring signed playback", async () => {
+    const { manager, create } = stream();
+    await videoMinter(manager, owner).mintDirectUpload(undefined, { requireSignedURLs: true });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ requireSignedURLs: true }));
+  });
+
+  test("changing an image's signing is one Images update", async () => {
+    const { manager, update } = images();
+    await imageMinter(manager, owner).setSigning("img-1", true);
+    expect(update).toHaveBeenCalledWith("img-1", { requireSignedURLs: true });
+  });
+
+  test("changing a video's signing is one Stream update", async () => {
+    const { manager, update } = stream();
+    await videoMinter(manager, owner).setSigning("vid-1", false);
+    expect(update).toHaveBeenCalledWith("vid-1", { requireSignedURLs: false });
   });
 });

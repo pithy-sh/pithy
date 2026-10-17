@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RecordVisibility } from "@pithy-sh/core/src/access/visibility";
 import { SQLiteBoolean, SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 import { MediaStatus, MediaType, StorageBackend } from "./enums";
@@ -13,8 +14,14 @@ import { MediaStatus, MediaType, StorageBackend } from "./enums";
  * query code.
  *
  * The base fields are guaranteed for every configured backend and type. An adopter adds their own fields
- * (an owning `userId`, a tenant id, tags) by passing an extension schema to `media({ extend })`; the
- * mapping layer persists those to either store from that one schema — see `data/extend.ts`.
+ * (tags, an album) by passing an extension schema to `media({ extend })`; the mapping layer persists them
+ * as real columns from that one schema — see `data/extend.ts`.
+ *
+ * **Whose it is, first-class.** `ownerId` and `organizationId` follow `@pithy-sh/storage`'s `ownerId`
+ * exactly — nullable, from `AuthContext` and the acting-organization seam, null for a system-owned record
+ * — so one name answers *what is this account holding* in every project, readable without asking what an
+ * adopter called it. The organization is a column, not a join through current membership: it is the fact
+ * at the time of the write, so changing organization never re-attributes last quarter's media.
  *
  * `id` is a text UUID, not an autoincrement integer: a media id is handed to clients and embedded in
  * URLs, so it must not be enumerable (CLAUDE.md §Data layer — externally-exposed entities use a text id).
@@ -34,6 +41,22 @@ export const MediaAsset = z
       .int()
       .nullish()
       .describe("The object's size in bytes; null until the upload is finalized with a known length."),
+    ownerId: z
+      .string()
+      .nullable()
+      .describe("The authenticated user who owns the file, from AuthContext. Null for system-owned records."),
+    organizationId: z
+      .string()
+      .nullable()
+      .describe(
+        "The organization the owner was acting for when the file was written, from the acting-organization seam. Null when none was in force, and for system-owned records.",
+      ),
+    visibility: RecordVisibility.describe(
+      "Who may read this record and learn it exists: its owner, its organization's members, or anyone.",
+    ),
+    signedDelivery: SQLiteBoolean.describe(
+      "Whether the bytes are served only through signed URLs. Written once Cloudflare confirms the setting, never derived from visibility, so a change that failed halfway is a state the record names.",
+    ),
     storageBackend: StorageBackend.describe("The Cloudflare product the bytes live in — resolved from config."),
     storageKey: z
       .string()

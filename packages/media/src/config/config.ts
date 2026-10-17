@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { VisibilityPolicy } from "@pithy-sh/core/src/access/visibility";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 
 /**
@@ -96,6 +98,9 @@ export const MediaDocumentConfig = z
   .describe("Document storage (R2) and optional text extraction.");
 export type MediaDocumentConfig = z.output<typeof MediaDocumentConfig>;
 
+/** The default lifetime of a signed delivery URL: one hour, long enough to play a video through. */
+export const DEFAULT_SIGNED_URL_TTL_SECONDS = 60 * 60;
+
 /**
  * Public delivery configuration — the non-secret account values needed to build consumer URLs for stored
  * media (see `deliver/url.ts`). These are public identifiers (they appear in delivery URLs), so they live
@@ -119,37 +124,100 @@ export const MediaDelivery = z
       .string()
       .optional()
       .describe(
-        "A public base URL for R2 objects when the bucket is served publicly; otherwise consumers use a presigned download URL.",
+        "A public base URL for R2 objects when the bucket is served publicly. A public bucket serves every key in it, so this is refused unless `visibility.allowed` is `['public']`; otherwise consumers use a presigned download URL.",
+      ),
+    signedUrlTtlSeconds: z
+      .number()
+      .int()
+      .min(60)
+      .max(7 * 24 * 60 * 60)
+      .default(DEFAULT_SIGNED_URL_TTL_SECONDS)
+      .describe(
+        "How long a signed delivery URL for a non-public record stays valid, in seconds. One hour by default. A signed URL cannot be revoked, only outlived, so keep it short.",
       ),
   })
   .describe("Public delivery configuration for building consumer media URLs.");
 export type MediaDelivery = z.output<typeof MediaDelivery>;
 
 /**
- * The full media configuration. `recordStore` chooses where records live (D1 by default; a KV opt-in for
- * KV-only projects, with its query limitations documented). Each media type block picks a backend and
- * toggles its enrichment.
+ * How far duplicate detection looks. `tenant` — the default — is the organization when one is in force
+ * and the owner otherwise, because *do you have this file* is not a question one tenant may ask about
+ * another. `account` is every record in the account, and is the adopter saying so out loud.
+ */
+export const MediaDedup = z
+  .object({
+    scope: z
+      .enum(["tenant", "account"])
+      .default("tenant")
+      .describe(
+        "How far duplicate detection looks: `tenant` (default) is the organization in force, or the owner when none is; `account` is every record in the account. Only `account` lets one tenant learn another holds a file, so it is never the default.",
+      ),
+  })
+  .describe("The scope duplicate detection searches within.");
+export type MediaDedup = z.output<typeof MediaDedup>;
+
+/**
+ * The full media configuration. Records live in D1 — the only record store, because ownership, scoped
+ * dedup and per-owner rollups are all queries. Each media type block picks a backend and toggles its
+ * enrichment.
  */
 export const MediaConfig = z
   .object({
     recordStore: z
-      .enum(["d1", "kv"])
+      .literal("d1")
       .default("d1")
       .describe(
-        "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Duplicate detection always uses D1 either way.",
+        "Where media records live: `d1`, the only record store. Transcriptions and extracted text are queryable, and so are owners and organizations. The `kv` store was removed — it could not group, sum, or scope a read.",
       ),
+    visibility: VisibilityPolicy.prefault({}).describe(
+      "Which visibility levels a media record may carry, and the one it gets when an upload names none. Private by default.",
+    ),
+    dedup: MediaDedup.prefault({}).describe("How far duplicate detection searches."),
     delivery: MediaDelivery.prefault({}).describe("Public delivery configuration for building consumer media URLs."),
-    kvMetadata: z
-      .array(z.string())
-      .default(["type", "status", "hasTranscription", "hasExtractedText"])
-      .describe(
-        "For `recordStore: 'kv'` only: which record fields to also store as KV metadata. Metadata rides free on a KV `list` (no per-value read), so `list` filters, sorts, and renders from it — put the fields your list views need here (e.g. an owning `userId` for owner-scoped lists). KV caps metadata at 1024 bytes serialized, so keep it to small scalar fields. `type` and `createdAt` are always included (list filters by type and sorts by recency). Ignored in D1 mode.",
-      ),
     images: MediaImageConfig.prefault({}).describe("Image storage and enrichment settings."),
     video: MediaVideoConfig.prefault({}).describe("Video storage and enrichment settings."),
     audio: MediaAudioConfig.prefault({}).describe("Audio storage and enrichment settings."),
     documents: MediaDocumentConfig.prefault({}).describe("Document storage and enrichment settings."),
   })
-  .describe("Configuration for the media capability — record store plus per-type backend and enrichment.");
+  .describe(
+    "Configuration for the media capability — visibility, dedup scope, delivery, and per-type backend and enrichment.",
+  )
+  .check((ctx) => {
+    // A public bucket serves every key in it, so a private record stored there is public in all but name.
+    if (!ctx.value.delivery.r2PublicBaseUrl) return;
+    if (ctx.value.visibility.allowed.every((level) => level === "public")) return;
+    ctx.issues.push({
+      code: "custom",
+      input: ctx.value,
+      path: ["delivery", "r2PublicBaseUrl"],
+      message: `delivery.r2PublicBaseUrl serves every key in the bucket, and visibility.allowed (${ctx.value.visibility.allowed.join(", ")}) admits a record that is not public. Remove r2PublicBaseUrl and serve through signed URLs, or narrow visibility.allowed to ["public"].`,
+    });
+  });
 export type MediaConfig = z.output<typeof MediaConfig>;
 export type MediaConfigInput = z.input<typeof MediaConfig>;
+
+/**
+ * Refuse the options a release removed, by name, before the config is parsed.
+ *
+ * **Never read as an empty table.** `recordStore: 'kv'` used to keep records in KV; a Worker that still
+ * names it would otherwise parse as a type error at best, and at worst — had the key simply been dropped
+ * — boot against an empty D1 record table and serve nothing, which is the failure that costs somebody a
+ * day. `kvMetadata` was the KV store's alone. Both are refused with the remedy named.
+ */
+export function refuseRemovedMediaOptions(input: Record<string, unknown>): void {
+  if (input.recordStore === "kv") {
+    throw new ValidationError({
+      message: "The `kv` media record store was removed. Media records live in D1.",
+      action:
+        "Remove `recordStore: 'kv'` from media({ … }) in this Worker's pithy.config.ts, then migrate each environment so the record table exists.",
+      detail: "media({ recordStore: 'kv' }) names a record store this release no longer ships",
+    });
+  }
+  if ("kvMetadata" in input) {
+    throw new ValidationError({
+      message: "`kvMetadata` was the KV record store's, and that store was removed.",
+      action: "Remove `kvMetadata` from media({ … }) in this Worker's pithy.config.ts.",
+      detail: "media({ kvMetadata }) configures a record store this release no longer ships",
+    });
+  }
+}

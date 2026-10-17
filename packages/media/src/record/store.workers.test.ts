@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { readablePredicate } from "@pithy-sh/core/src/access/access";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { extendMediaAsset } from "../data/extend";
-import { MediaAsset } from "../data/mediaAsset";
 import { mediaDatabase } from "../data/tables";
-import { media_0001_init } from "../migrations/0001_init";
+import { caller, resetMediaTables } from "../test-utils/harness";
 import { d1RecordStore } from "./d1Store";
-import { kvRecordStore } from "./kvStore";
 import type { MediaRecord, RecordStore } from "./store";
 
 const schema = extendMediaAsset();
@@ -23,6 +22,10 @@ function makeRecord(overrides: Partial<MediaRecord> = {}): MediaRecord {
     filename: "a.png",
     contentType: "image/png",
     size: 10,
+    ownerId: "u-1",
+    organizationId: null,
+    visibility: "private",
+    signedDelivery: true,
     storageBackend: "cf-images",
     storageKey: "img-1",
     sha256: null,
@@ -41,25 +44,13 @@ function makeRecord(overrides: Partial<MediaRecord> = {}): MediaRecord {
   } as MediaRecord;
 }
 
-/** Reset D1: drop and recreate the media tables via the migration's `up`. */
-async function resetD1(): Promise<void> {
-  const migration = media_0001_init({ withAssets: true });
-  for (const table of ["pithy_media_assets", "pithy_media_hashes"]) {
-    await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
-  }
-  await migration.up(mediaDatabase(env.DB) as unknown as Parameters<typeof migration.up>[0]);
-}
+/** Everything the owner `u-1` may see while no organization is in force — every fixture record. */
+const OWNERS = readablePredicate(caller("u-1"), { managePower: "media:manage" });
 
-/** Reset KV: delete every key. */
-async function resetKv(): Promise<void> {
-  const { keys } = await env.MEDIA.list();
-  await Promise.all(keys.map((key) => env.MEDIA.delete(key.name)));
-}
-
-/** The behavioral contract both stores satisfy — run once per backend. */
-function storeContract(name: string, make: () => RecordStore, reset: () => Promise<void>): void {
+/** The record store's behavioral contract, against a real D1. */
+function storeContract(name: string, make: () => RecordStore): void {
   describe(`RecordStore — ${name}`, () => {
-    beforeEach(reset);
+    beforeEach(() => resetMediaTables(env.DB));
 
     test("create then get round-trips, with codecs (Date, boolean) preserved", async () => {
       const store = make();
@@ -109,30 +100,48 @@ function storeContract(name: string, make: () => RecordStore, reset: () => Promi
           createdAt: new Date(2000),
         }),
       );
-      const all = await store.list();
+      const all = await store.list({ readable: OWNERS });
       expect(all.items.map((r) => r.id)).toEqual(["b", "a"]);
-      const images = await store.list({ type: "image" });
+      const images = await store.list({ readable: OWNERS, type: "image" });
       expect(images.items.map((r) => r.id)).toEqual(["a"]);
     });
 
     test("an adopter extension field round-trips", async () => {
       // Build a store bound to an extended schema — the store validates and persists the extra field.
-      const extended = extendMediaAsset(z.object({ userId: z.string().describe("owner") }).describe("ext"));
-      // D1 needs the real column; KV needs nothing (the value is validated whole).
-      if (name === "D1") await env.DB.exec("ALTER TABLE pithy_media_assets ADD COLUMN user_id text");
-      const store =
-        name === "D1" ? d1RecordStore(mediaDatabase(env.DB, extended), extended) : kvRecordStore(env.MEDIA, extended);
-      await store.create(makeRecord({ userId: "u-7" }));
-      expect((await store.get("m1"))?.userId).toBe("u-7");
+      const extended = extendMediaAsset(z.object({ album: z.string().describe("album") }).describe("ext"));
+      await env.DB.exec("ALTER TABLE pithy_media_assets ADD COLUMN album text");
+      const store = d1RecordStore(mediaDatabase(env.DB, extended), extended);
+      await store.create(makeRecord({ album: "summer" }));
+      expect((await store.get("m1"))?.album).toBe("summer");
+    });
+
+    test("the owner, organization, visibility and signing round-trip", async () => {
+      const store = make();
+      await store.create(
+        makeRecord({ ownerId: "u-1", organizationId: "org-a", visibility: "organization", signedDelivery: true }),
+      );
+      expect(await store.get("m1")).toMatchObject({
+        ownerId: "u-1",
+        organizationId: "org-a",
+        visibility: "organization",
+        signedDelivery: true,
+      });
+    });
+
+    test("list reads only what the predicate admits — there is no unscoped list", async () => {
+      const store = make();
+      await store.create(makeRecord({ id: "mine" }));
+      await store.create(makeRecord({ id: "theirs", ownerId: "u-2" }));
+      const page = await store.list({ readable: OWNERS });
+      expect(page.items.map((r) => r.id)).toEqual(["mine"]);
     });
   });
 }
 
-storeContract("D1", () => d1RecordStore(mediaDatabase(env.DB, schema), schema), resetD1);
-storeContract("KV", () => kvRecordStore(env.MEDIA, schema), resetKv);
+storeContract("D1", () => d1RecordStore(mediaDatabase(env.DB, schema), schema));
 
 test("D1: an omitted optional extension field round-trips as null (no 500 on read)", async () => {
-  await resetD1();
+  await resetMediaTables(env.DB);
   // A plain `.optional()` field — the effective schema widens it to accept the NULL SQLite returns.
   const extended = extendMediaAsset(z.object({ tag: z.string().optional().describe("A tag.") }).describe("ext"));
   await env.DB.exec("ALTER TABLE pithy_media_assets ADD COLUMN tag text");
@@ -141,35 +150,4 @@ test("D1: an omitted optional extension field round-trips as null (no 500 on rea
   const read = await store.get("m1"); // must not throw on the NULL
   expect(read?.name).toBe("photo");
   expect(read?.tag ?? null).toBeNull();
-});
-
-test("KV: kvMetadata fields (including an adopter field) ride on the list-time metadata", async () => {
-  await resetKv();
-  const extended = extendMediaAsset(z.object({ userId: z.string().describe("owner") }).describe("ext"));
-  // Ask for `status` and the adopter's `userId` as metadata (type + createdAt are always included).
-  const store = kvRecordStore(env.MEDIA, extended, ["status", "userId"]);
-  await store.create(makeRecord({ id: "a", type: "image", userId: "u-1" }));
-
-  // The metadata is on the raw KV `list` — visible without reading the value.
-  const listed = await env.MEDIA.list();
-  const entry = listed.keys.find((k) => k.name === "media:a");
-  expect(entry?.metadata).toMatchObject({ type: "image", status: "pending", userId: "u-1" });
-
-  // The store's `list` still returns the full record.
-  const page = await store.list();
-  expect(page.items[0]?.userId).toBe("u-1");
-});
-
-test("KV: an extension metadata field survives a patch under the worker's passthrough schema", async () => {
-  await resetKv();
-  // The enrichment worker builds its store from a passthrough schema whose `shape` lacks the extension
-  // field. Metadata is derived by name from the value, so `userId` must still ride along after a patch.
-  const passthrough = MediaAsset.catchall(z.unknown());
-  const store = kvRecordStore(env.MEDIA, passthrough, ["userId"]);
-  await store.create(makeRecord({ id: "a", type: "image", userId: "u-1" }));
-  // Simulate an enrichment write-back (patch a derived field).
-  await store.patch("a", { altText: "a cat", hasTranscription: false });
-
-  const entry = (await env.MEDIA.list()).keys.find((k) => k.name === "media:a");
-  expect(entry?.metadata).toMatchObject({ userId: "u-1", type: "image" });
 });

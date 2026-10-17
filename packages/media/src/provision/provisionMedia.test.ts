@@ -8,13 +8,13 @@ import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
+import { MediaConfig } from "../config/config";
 import { MEDIA_CAPABILITY } from "../workflows/specs";
 import {
   deprovisionMedia,
   type MediaDeprovisioner,
   type MediaProvisioner,
   mediaBucketName,
-  mediaKvTitle,
   mediaWorkerName,
   provisionMedia,
 } from "./provisionMedia";
@@ -23,7 +23,7 @@ import {
 const PROJECT = "acme";
 
 /** A fake provisioner that records the call order and returns fixed resource ids. */
-function fakeProvisioner(kvNamespaceId: string | null = null): { provisioner: MediaProvisioner; calls: string[] } {
+function fakeProvisioner(unsigned: string[] = []): { provisioner: MediaProvisioner; calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
@@ -31,19 +31,22 @@ function fakeProvisioner(kvNamespaceId: string | null = null): { provisioner: Me
       async preflight() {
         calls.push("preflight");
       },
+      async unsignedVariants() {
+        calls.push("variants");
+        return unsigned;
+      },
       async ensureBucket(env: ManagedEnvironment) {
         calls.push(`ensureBucket:${env}`);
         return { bucketName: mediaBucketName(PROJECT, env) };
       },
-      async ensureKvNamespace(env: ManagedEnvironment) {
-        calls.push(`ensureKvNamespace:${env}`);
-        return kvNamespaceId ? { namespaceId: kvNamespaceId } : null;
-      },
       async writeCredentials(env, resources) {
-        calls.push(`credentials:${env}:${resources.bucketName}:${resources.kvNamespaceId ?? "-"}`);
+        calls.push(`credentials:${env}:${resources.bucketName}`);
+      },
+      async writeSigningKeys(env) {
+        calls.push(`signing:${env}`);
       },
       async deployWorker(env, resources) {
-        calls.push(`deploy:${env}:${resources.bucketName}:${resources.kvNamespaceId ?? "-"}`);
+        calls.push(`deploy:${env}:${resources.bucketName}`);
       },
     },
   };
@@ -56,25 +59,26 @@ describe("provisionMedia", () => {
 
     expect(calls).toEqual([
       "preflight",
+      "variants",
       "ensureBucket:staging",
-      "ensureKvNamespace:staging",
       "ensureBucket:prod",
-      "ensureKvNamespace:prod",
-      "credentials:staging:acme-staging-media:-",
-      "credentials:prod:acme-prod-media:-",
-      "deploy:staging:acme-staging-media:-",
-      "deploy:prod:acme-prod-media:-",
+      "credentials:staging:acme-staging-media",
+      "signing:staging",
+      "credentials:prod:acme-prod-media",
+      "signing:prod",
+      "deploy:staging:acme-staging-media",
+      "deploy:prod:acme-prod-media",
     ]);
     expect(result).toEqual({
       environments: [
-        { env: "staging", bucketName: "acme-staging-media", kvNamespaceId: null },
-        { env: "prod", bucketName: "acme-prod-media", kvNamespaceId: null },
+        { env: "staging", bucketName: "acme-staging-media" },
+        { env: "prod", bucketName: "acme-prod-media" },
       ],
     });
   });
 
-  test("each environment gets its own bucket and namespace, so staging cannot write into prod", async () => {
-    const { provisioner } = fakeProvisioner("kv-1");
+  test("each environment gets its own bucket, so staging cannot write into prod", async () => {
+    const { provisioner } = fakeProvisioner();
     const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
     const buckets = result.environments.map((entry) => entry.bucketName);
     expect(new Set(buckets).size).toBe(buckets.length);
@@ -89,12 +93,39 @@ describe("provisionMedia", () => {
     expect(Math.max(...credentialIndexes)).toBeLessThan(firstDeploy);
   });
 
-  test("threads the KV namespace id through to the secret and the deploy in KV mode", async () => {
-    const { provisioner, calls } = fakeProvisioner("kv-1");
-    const result = await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
-    expect(calls).toContain("credentials:staging:acme-staging-media:kv-1");
-    expect(calls).toContain("deploy:prod:acme-prod-media:kv-1");
-    expect(result.environments.every((entry) => entry.kvNamespaceId === "kv-1")).toBe(true);
+  test("every environment's signing keys land before any worker that signs with them boots", async () => {
+    const { provisioner, calls } = fakeProvisioner();
+    await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS);
+    const signing = calls.flatMap((call, index) => (call.startsWith("signing:") ? [index] : []));
+    expect(Math.max(...signing)).toBeLessThan(calls.findIndex((call) => call.startsWith("deploy:")));
+  });
+});
+
+describe("provisionMedia — a variant that serves unsigned", () => {
+  test("is refused, by name, before anything is created, while images could be private", async () => {
+    const { provisioner, calls } = fakeProvisioner(["thumb"]);
+    await expect(provisionMedia(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow(
+      /`thumb` serves every image unsigned/,
+    );
+    expect(calls).toEqual(["preflight", "variants"]);
+  });
+
+  test("names every one", async () => {
+    const { provisioner } = fakeProvisioner(["thumb", "avatar"]);
+    await expect(provisionMedia(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow(/`thumb`, `avatar` serve/);
+  });
+
+  test("is not asked about when every record is public — nothing private could leak", async () => {
+    const { provisioner, calls } = fakeProvisioner(["thumb"]);
+    const config = MediaConfig.parse({ visibility: { default: "public", allowed: ["public"] } });
+    await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS, { config });
+    expect(calls).not.toContain("variants");
+  });
+
+  test("is not asked about when images live in R2", async () => {
+    const { provisioner, calls } = fakeProvisioner(["thumb"]);
+    await provisionMedia(provisioner, DEFAULT_ENVIRONMENTS, { config: MediaConfig.parse({ images: { store: "r2" } }) });
+    expect(calls).not.toContain("variants");
   });
 });
 
@@ -104,54 +135,48 @@ describe("names", () => {
     expect(mediaWorkerName(PROJECT, "prod")).toBe("acme-prod-media");
   });
 
-  test("the bucket and the KV namespace carry the same scope", () => {
+  test("the bucket carries the same scope", () => {
     expect(mediaBucketName(PROJECT, "staging")).toBe("acme-staging-media");
-    expect(mediaKvTitle(PROJECT, "prod")).toBe("acme-prod-media");
   });
 
   test("two projects in one account never name the same bucket, so find-then-create cannot adopt", () => {
     expect(mediaBucketName("acme", "prod")).not.toBe(mediaBucketName("globex", "prod"));
-    expect(mediaKvTitle("acme", "prod")).not.toBe(mediaKvTitle("globex", "prod"));
     expect(mediaWorkerName("acme", "prod")).not.toBe(mediaWorkerName("globex", "prod"));
   });
 
-  test("all three come from the naming facade, each asking for its own kind of resource", () => {
-    // The point of the facade is that no call site picks a budget. A bucket asks for a bucket, a
-    // namespace title asks for a title, a Worker asks for a Worker — and each carries its own
-    // Cloudflare limit and its own refuse-or-truncate policy. Media names one thing three ways, so
-    // this is the assertion that keeps the three from drifting back onto one number.
+  test("both come from the naming facade, each asking for its own kind of resource", () => {
+    // The point of the facade is that no call site picks a budget. A bucket asks for a bucket and a
+    // Worker asks for a Worker — and each carries its own Cloudflare limit and its own
+    // refuse-or-truncate policy.
     const names = resourceNames(PROJECT).env("prod");
     expect(mediaBucketName(PROJECT, "prod")).toBe(names.r2(MEDIA_CAPABILITY));
-    expect(mediaKvTitle(PROJECT, "prod")).toBe(names.kv(MEDIA_CAPABILITY));
     expect(mediaWorkerName(PROJECT, "prod")).toBe(names.worker(MEDIA_CAPABILITY));
   });
 
-  test("the longest legal project still fits every one of the three namespaces", () => {
+  test("the longest legal project still fits both namespaces", () => {
     const longest = "a".repeat(MAX_PROJECT_NAME);
     const bucket = mediaBucketName(longest, "staging");
     expect(bucket.length).toBeLessThanOrEqual(NAMESPACE_LIMITS.r2.maxLength);
     expect(bucket.length).toBeGreaterThanOrEqual(NAMESPACE_LIMITS.r2.minLength);
     // R2's own charset rule: lowercase, digits, hyphens, starting and ending alphanumeric.
     expect(bucket).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
-    expect(mediaKvTitle(longest, "staging").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.kv.maxLength);
     expect(mediaWorkerName(longest, "staging").length).toBeLessThanOrEqual(NAMESPACE_LIMITS.worker.maxLength);
   });
 
   test("an environment this scheme does not accept is refused, so `production` cannot buy a fourth bucket", () => {
     // The cast is the test. `ManagedEnvironment` keeps the old spelling out of typed code, but the
     // value that reaches provisioning began life as a `--env` string, and the generic composer these
-    // three used to call validated only that the segment was non-empty — so `production` composed a
+    // used to call validated only that the segment was non-empty — so `production` composed a
     // perfectly legal `acme-production-media` and provisioning created it. The facade validates the
     // environment at `env()`, which is the last place that can still say no.
     const wrong = "production" as ManagedEnvironment;
     expect(() => mediaBucketName(PROJECT, wrong)).toThrow(ValidationError);
-    expect(() => mediaKvTitle(PROJECT, wrong)).toThrow(ValidationError);
     expect(() => mediaWorkerName(PROJECT, wrong)).toThrow(ValidationError);
   });
 
   test("a project name no Cloudflare namespace could carry is refused before anything is created", () => {
     expect(() => mediaBucketName("2026 launch", "staging")).toThrow(ValidationError);
-    expect(() => mediaKvTitle("a".repeat(MAX_PROJECT_NAME + 1), "staging")).toThrow(ValidationError);
+    expect(() => mediaWorkerName("a".repeat(MAX_PROJECT_NAME + 1), "staging")).toThrow(ValidationError);
     expect(() => mediaWorkerName("", "staging")).toThrow(ValidationError);
   });
 });
@@ -168,9 +193,6 @@ describe("deprovisionMedia", () => {
         async deleteBucket(env: ManagedEnvironment) {
           calls.push(`deleteBucket:${env}`);
         },
-        async deleteKvNamespace(env: ManagedEnvironment) {
-          calls.push(`deleteKvNamespace:${env}`);
-        },
       },
     };
   }
@@ -183,10 +205,10 @@ describe("deprovisionMedia", () => {
     expect(calls).toEqual(["deleteWorker:staging"]);
   });
 
-  test("a staging teardown with --storage deletes staging's bucket and namespace, after its worker, and never production's (#591)", async () => {
+  test("a staging teardown with --storage deletes staging's bucket, after its worker, and never production's (#591)", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionMedia(deprovisioner, staging, { deleteStorage: true });
-    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging", "deleteKvNamespace:staging"]);
+    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
   });
 
   test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {

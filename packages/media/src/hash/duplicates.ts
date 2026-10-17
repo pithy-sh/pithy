@@ -3,7 +3,7 @@
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { MediaType } from "../data/enums";
-import type { HashStore } from "../record/hashStore";
+import type { DedupScope, HashStore } from "../record/hashStore";
 
 /**
  * Duplicate detection — one exact key, one fuzzy key.
@@ -80,15 +80,17 @@ export interface FindDuplicatesParams {
   threshold?: number;
   /** Cap the number of candidates returned. Defaults to 10, closest first. */
   limit?: number;
+  /** Whose records to compare against — required, so no lookup is ever account-wide by accident. */
+  scope: DedupScope;
 }
 
 /**
- * Find the records that duplicate a new object. Runs two passes against the D1 {@link HashStore} — dedup
- * is always D1, whatever the record store (KV cannot serve these queries):
+ * Find the records that duplicate a new object, within one tenant's scope. Runs two passes against the
+ * {@link HashStore}:
  *
  * 1. **Exact.** Every record with the same SHA-256 is a byte-identical duplicate (`kind: "identical"`,
  *    `distance: 0`), for any media type.
- * 2. **Near.** Only for an `image` that carries a `phash`: compare against every stored image phash,
+ * 2. **Near.** Only for an `image` that carries a `phash`: compare against every image phash in scope,
  *    skipping records already matched exactly and any hash of a different length, and keep the ones whose
  *    Hamming distance is not `different` (`kind: "similar"`).
  *
@@ -100,7 +102,7 @@ export async function findDuplicates(hashes: HashStore, params: FindDuplicatesPa
   const limit = params.limit ?? 10;
 
   // Pass 1 — exact byte matches by SHA-256. The id → type map also lets pass 2 skip records already exact.
-  const exactMatches = await hashes.findBySha256(params.sha256);
+  const exactMatches = await hashes.findBySha256(params.sha256, params.scope);
   const exactIds = new Set<string>();
   for (const match of exactMatches) exactIds.add(match.mediaId);
 
@@ -115,7 +117,7 @@ export async function findDuplicates(hashes: HashStore, params: FindDuplicatesPa
   const near: DuplicateCandidate[] = [];
   if (params.type === "image" && params.phash) {
     const phash = params.phash;
-    for (const entry of await hashes.listImagePhashes()) {
+    for (const entry of await hashes.listImagePhashes(params.scope)) {
       if (exactIds.has(entry.mediaId)) continue;
       if (entry.phash.length !== phash.length) continue;
       const distance = hammingDistance(phash, entry.phash);

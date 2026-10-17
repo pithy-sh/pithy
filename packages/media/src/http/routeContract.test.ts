@@ -44,8 +44,9 @@ describe("media route contract", () => {
     const app = makeApp();
     expect(app.routes.length).toBeGreaterThan(0);
     const paramPaths = [...new Set(app.routes.filter((r) => pathParams(r.path).length > 0).map((r) => r.path))].sort();
-    // Media has exactly two `:segment`-bearing paths: fetch/delete one record, and finalize its upload.
-    expect(paramPaths).toEqual(["/media/:id", "/media/:id/finalize"]);
+    // Media has exactly three `:segment`-bearing paths: read, edit or delete one record, finalize its upload,
+    // and mint its delivery URL.
+    expect(paramPaths).toEqual(["/media/:id", "/media/:id/finalize", "/media/:id/url"]);
   });
 });
 

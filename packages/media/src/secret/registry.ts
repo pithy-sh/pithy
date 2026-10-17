@@ -6,8 +6,8 @@ import { r2CredentialsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { z } from "zod";
 
 /**
- * The secrets the media capability reads (CLAUDE.md §secrets). There are two, because they answer to
- * two different owners.
+ * The secrets the media capability reads (CLAUDE.md §secrets). There are four, and they answer to two
+ * different owners.
  *
  * `media-storage-credentials` is media's own: the scoped Cloudflare API token that mints Images and
  * Stream direct-upload URLs, and the account id it is scoped to. Nothing else.
@@ -19,9 +19,15 @@ import { z } from "zod";
  * `aggregateSecretRegistries` requires before it will let two capabilities share a name. So media
  * *names* the R2 secret and never handles an R2 key again.
  *
- * The values are **supplied, not minted**: Cloudflare exposes no API for creating an R2 S3 access-key
- * pair, and the permission catalog carries no Images or Stream keys, so the operator creates both and
- * hands them to `pithy media provision`. Pithy stores, scopes, and rotates them from there.
+ * `media-images-signing-key` and `media-stream-signing-key` are what a private record's bytes are
+ * delivered through: a non-public Images or Stream asset is uploaded with `requireSignedURLs`, and the
+ * Worker signs a short-lived URL for a caller who may read it (`deliver/sign.ts`). Both are **fetched by
+ * `pithy media provision`** with the Images and Stream token: Images keeps an account signing key, and a
+ * Stream key's private half is handed back once, at creation.
+ *
+ * The credentials are **supplied, not minted**: Cloudflare exposes no API for creating an R2 S3
+ * access-key pair, and the permission catalog carries no Images or Stream keys, so the operator creates
+ * both and hands them to `pithy media provision`. Pithy stores, scopes, and rotates them from there.
  */
 
 /** The name the Images + Stream credentials are stored and resolved under. */
@@ -41,6 +47,16 @@ export const MEDIA_STORAGE_SECRET = "media-storage-credentials";
  */
 const MEDIA_TOKEN_PAGE = "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/";
 const MEDIA_TOKEN_ROLL = "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/";
+
+/** The name the Cloudflare Images URL-signing key is stored under. */
+export const MEDIA_IMAGES_SIGNING_SECRET = "media-images-signing-key";
+
+/** The name the Cloudflare Stream signing key is stored under. */
+export const MEDIA_STREAM_SIGNING_SECRET = "media-stream-signing-key";
+
+/** Where Cloudflare documents signed delivery for each product — and where each key is rolled. */
+const IMAGES_SIGNING_PAGE = "https://developers.cloudflare.com/images/manage-images/serve-images/serve-private-images/";
+const STREAM_SIGNING_PAGE = "https://developers.cloudflare.com/stream/viewing-videos/securing-your-stream/";
 
 /** The name media's R2 bucket credentials are stored under — the name `objectStore` is pointed at. */
 export const MEDIA_R2_SECRET = "media-r2-credentials";
@@ -67,6 +83,37 @@ export const MediaStorageCredentials = z
   .describe("The credentials the media capability reads to mint Cloudflare Images and Stream direct-upload URLs.");
 export type MediaStorageCredentials = z.output<typeof MediaStorageCredentials>;
 
+/** The Images URL-signing key, as `pithy media provision` reads it off the account. */
+export const MediaImagesSigningKey = z
+  .object({
+    key: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe(
+        "The Cloudflare Images URL-signing key — the HMAC secret a private image's delivery URL is signed with.",
+      ),
+  })
+  .describe("The key media signs private Cloudflare Images delivery URLs with.");
+export type MediaImagesSigningKey = z.output<typeof MediaImagesSigningKey>;
+
+/** A Stream signing key, as `pithy media provision` creates it. */
+export const MediaStreamSigningKey = z
+  .object({
+    keyId: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe("The Stream signing key's id — the `kid` every signed playback token names."),
+    jwk: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe("The key's private half, as the base64-encoded JWK Cloudflare returns once, at creation."),
+  })
+  .describe("The key media signs private Cloudflare Stream playback tokens with.");
+export type MediaStreamSigningKey = z.output<typeof MediaStreamSigningKey>;
+
 /**
  * The R2 half of media's registry — one entry, built by `@pithy-sh/storage`'s factory. Exported on its
  * own so the provisioner can write the secret against the *declared* schema rather than a second copy
@@ -88,6 +135,24 @@ export const mediaSecretsRegistry = defineSecretRegistry({
     schema: MediaStorageCredentials,
     origin: { kind: "obtained", issuer: "cloudflare", documentation: MEDIA_TOKEN_PAGE },
     rotation: { kind: "provider", issuer: "cloudflare", documentation: MEDIA_TOKEN_ROLL },
+  },
+  [MEDIA_IMAGES_SIGNING_SECRET]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: MediaImagesSigningKey,
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: IMAGES_SIGNING_PAGE },
+    rotation: { kind: "provider", issuer: "cloudflare", documentation: IMAGES_SIGNING_PAGE },
+  },
+  [MEDIA_STREAM_SIGNING_SECRET]: {
+    backend: "d1",
+    scope: "environment",
+    rotatable: false,
+    valueType: "json",
+    schema: MediaStreamSigningKey,
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: STREAM_SIGNING_PAGE },
+    rotation: { kind: "provider", issuer: "cloudflare", documentation: STREAM_SIGNING_PAGE },
   },
   // Both axes arrive with the entry, from `@pithy-sh/storage`'s factory. Restating them here is how the
   // two declarations of one name would drift, and `aggregateSecretRegistries` is what would then refuse

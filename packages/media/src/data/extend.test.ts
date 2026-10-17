@@ -39,8 +39,7 @@ describe("extendMediaAsset", () => {
 
   test("widens an optional (undefined-only) extension field to accept null, for D1 read parity", () => {
     // A nullable D1 column returns SQLite NULL when omitted; a plain `.optional()` would throw on that
-    // null. The effective schema must accept null so the D1 read round-trips (KV omits undefined and is
-    // unaffected — this keeps the two stores in agreement).
+    // null. The effective schema must accept null so the D1 read round-trips.
     const effective = extendMediaAsset(z.object({ tag: z.string().optional().describe("A tag.") }).describe("ext"));
     expect(() => (effective.shape.tag as z.ZodType).parse(null)).not.toThrow();
     // A not-null field is left untouched (still rejects null).
@@ -63,6 +62,10 @@ describe("extendMediaAsset", () => {
       name: "n",
       filename: "n.png",
       contentType: "image/png",
+      ownerId: "u-1",
+      organizationId: null,
+      visibility: "private" as const,
+      signedDelivery: 1,
       storageBackend: "cf-images" as const,
       storageKey: "img1",
       hasTranscription: 0,
@@ -80,6 +83,18 @@ describe("extendMediaAsset", () => {
 describe("extensionColumns", () => {
   test("with no extension yields no columns", () => {
     expect(extensionColumns()).toEqual([]);
+  });
+
+  test("ownership is a base field — an extension cannot redefine the owner, organization or visibility", () => {
+    const extension = z
+      .object({
+        ownerId: z.number().describe("Ignored — the base owns it."),
+        organizationId: z.number().describe("Ignored."),
+        visibility: z.string().describe("Ignored."),
+      })
+      .describe("Colliding fields.");
+    expect(extensionColumns(extension)).toEqual([]);
+    expect(extendMediaAsset(extension).shape.ownerId).toBe(MediaAsset.shape.ownerId);
   });
 
   test("derives a column spec per extension field, skipping base-field names", () => {

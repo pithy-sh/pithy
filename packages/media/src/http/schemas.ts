@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RecordVisibility } from "@pithy-sh/core/src/access/visibility";
 import { z } from "zod";
 import { MediaType } from "../data/enums";
 
@@ -45,6 +46,9 @@ export const CreateMediaInput = z
     phash: z.string().regex(HEX).nullish().describe("Client-computed perceptual hash (hex) for near-duplicate images."),
     width: z.number().int().positive().nullish().describe("Original pixel width for images and video."),
     height: z.number().int().positive().nullish().describe("Original pixel height for images and video."),
+    visibility: RecordVisibility.optional().describe(
+      "Who may read the record. Defaults to the project's `visibility.default`; a level outside `visibility.allowed` is refused, never coerced.",
+    ),
   })
   .loose()
   .describe("The client-supplied fields for creating a media record; extra keys are adopter extension fields.");
@@ -82,9 +86,41 @@ export type DuplicatesInput = z.output<typeof DuplicatesInput>;
 export const ListMediaQuery = z
   .object({
     type: MediaType.optional().describe("Restrict the listing to one media type."),
+    includePublic: z
+      .enum(["true", "false"])
+      .optional()
+      .describe(
+        "`true` adds every public record to the caller's own and their organization's. Off by default, so nobody receives what they did not ask for.",
+      ),
     limit: z.coerce.number().int().min(1).max(100).optional().describe("Maximum records per page."),
     // Bounded, but no `.min(1)`: `?cursor=` (empty) already decodes to offset 0 today and must keep working.
     cursor: z.string().max(64).optional().describe("Continuation cursor from a previous page."),
   })
   .describe("Query parameters for the media list route.");
 export type ListMediaQuery = z.output<typeof ListMediaQuery>;
+
+/** What a record's owner, or a manager, may change. */
+export const UpdateMediaInput = z
+  .object({
+    name: z.string().min(1).optional().describe("A new display name."),
+    visibility: RecordVisibility.optional().describe(
+      "Who may read the record from now on. A level outside `visibility.allowed` is refused. Moving to or from `public` changes Cloudflare's signing setting too; a change that fails halfway is reported as pending and finished by sending it again.",
+    ),
+  })
+  .refine((input) => input.name !== undefined || input.visibility !== undefined, {
+    message: "Name what to change: `name`, `visibility`, or both.",
+  })
+  .describe("The fields of a media record its owner may change.");
+export type UpdateMediaInput = z.output<typeof UpdateMediaInput>;
+
+/** Query parameters for minting a delivery URL. */
+export const DeliveryUrlQuery = z
+  .object({
+    variant: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{1,64}$/)
+      .optional()
+      .describe("The Cloudflare Images variant to deliver. `public` by default; ignored for other backends."),
+  })
+  .describe("Query parameters for the delivery URL route.");
+export type DeliveryUrlQuery = z.output<typeof DeliveryUrlQuery>;

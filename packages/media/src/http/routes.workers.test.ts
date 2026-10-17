@@ -1,18 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { env } from "cloudflare:test";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { Hono } from "hono";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { MediaConfig } from "../config/config";
 import { extendMediaAsset } from "../data/extend";
-import type { MediaStorage } from "../storage/storage";
-import type { HandlerDeps } from "./handlers";
+import { caller, makeDeps, resetMediaTables } from "../test-utils/harness";
 import {
   DuplicatesResponse,
   MediaDeletedResponse,
+  MediaDeliveryUrlResponse,
   MediaListResponse,
   MediaRecordResponse,
   MediaUploadInitResponse,
@@ -21,44 +22,12 @@ import { registerMediaRoutes } from "./routes";
 
 const schema = extendMediaAsset();
 
-/** A fake storage seam. */
-const storage: MediaStorage = {
-  mintUpload: async (p) => ({ uploadUrl: `https://up/${p.id}`, storageBackend: "cf-images", storageKey: `k-${p.id}` }),
-  deleteObject: async () => {},
-  readR2Object: async () => new Uint8Array(),
-  presignedDownloadUrl: async (l) => `https://dl/${l.storageKey}`,
-};
+beforeEach(() => resetMediaTables(env.DB));
 
-/** An in-memory record store so the authorized path returns real data without D1. */
-function memStore() {
-  const map = new Map<string, Record<string, unknown>>();
-  return {
-    create: async (r: Record<string, unknown>) => {
-      map.set(String(r.id), r);
-      return r;
-    },
-    get: async (id: string) => map.get(id) ?? null,
-    patch: async (id: string, c: Record<string, unknown>) => {
-      const merged = { ...map.get(id), ...c };
-      map.set(id, merged);
-      return merged;
-    },
-    delete: async (id: string) => {
-      map.delete(id);
-    },
-    list: async () => ({ items: [...map.values()] }),
-  };
-}
-
-/** A no-op hash store — the route tests don't exercise dedup. */
-const hashes = {
-  upsert: async () => {},
-  deleteByMedia: async () => {},
-  findBySha256: async () => [],
-  listImagePhashes: async () => [],
-};
-
-/** Build a Hono app with the media routes, an auth middleware gated by an `x-user` header, and the error codec. */
+/**
+ * Build a Hono app with the media routes over a real D1, an auth middleware gated by an `x-user` header,
+ * an `x-org` header standing in for the organization in force, and the error codec.
+ */
 function makeApp() {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
@@ -69,17 +38,12 @@ function makeApp() {
     else c.set("auth", null);
     await next();
   });
-  const deps = {
-    store: memStore(),
-    hashes,
-    storage,
-    schema,
+  registerMediaRoutes({
     config: MediaConfig.parse({}),
-    dispatchEnrichment: async () => {},
-    newId: () => "fixed",
-    now: () => new Date(0),
-  } as unknown as HandlerDeps;
-  registerMediaRoutes({ config: MediaConfig.parse({}), schema, resolveDeps: async () => deps })(app);
+    schema,
+    resolveDeps: async (c) =>
+      makeDeps(env.DB, caller(c.var.auth?.userId ?? null, c.req.header("x-org") ?? null), { newId: () => "fixed" }),
+  })(app);
   return app;
 }
 
@@ -125,7 +89,7 @@ describe("media routes — verification strategy", () => {
     expect(res.status).toBe(201);
     const body = await conforming(res, MediaUploadInitResponse);
     expect(body.id).toBe("fixed");
-    expect(body.uploadUrl).toContain("https://up/");
+    expect(body.uploadUrl).toContain("https://upload.example/");
   });
 
   test("an authenticated GET of a missing record is a 404 with the media code", async () => {
@@ -256,7 +220,27 @@ describe("media routes — response shapes", () => {
 
     const one = await app.request("/media/fixed", { headers });
     expect(one.status).toBe(200);
-    expect(await conforming(one, MediaRecordResponse)).toMatchObject({ id: "fixed", status: "pending" });
+    expect(await conforming(one, MediaRecordResponse)).toMatchObject({
+      id: "fixed",
+      status: "pending",
+      ownerId: "u-1",
+      organizationId: null,
+      visibility: "private",
+      signedDelivery: true,
+      signingPending: false,
+    });
+
+    const url = await app.request("/media/fixed/url", { headers });
+    expect(url.status).toBe(200);
+    expect((await conforming(url, MediaDeliveryUrlResponse)).expiresAt).not.toBeNull();
+
+    const patched = await app.request("/media/fixed", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "renamed" }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await conforming(patched, MediaRecordResponse)).toMatchObject({ name: "renamed" });
 
     const list = await app.request("/media", { headers });
     expect(list.status).toBe(200);
@@ -273,5 +257,70 @@ describe("media routes — response shapes", () => {
     const deleted = await app.request("/media/fixed", { method: "DELETE", headers });
     expect(deleted.status).toBe(200);
     expect(await conforming(deleted, MediaDeletedResponse)).toEqual({ id: "fixed", deleted: true });
+  });
+});
+
+describe("media routes — who may reach a record", () => {
+  const create = (app: ReturnType<typeof makeApp>, visibility: string) =>
+    app.request("/media", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": "owner", "x-org": "org-a" },
+      body: JSON.stringify({ type: "image", name: "n", filename: "a.png", contentType: "image/png", visibility }),
+    });
+
+  test("a public record reads without signing in", async () => {
+    const app = makeApp();
+    expect((await create(app, "public")).status).toBe(201);
+    const res = await app.request("/media/fixed");
+    expect(res.status).toBe(200);
+    expect(await conforming(res, MediaRecordResponse)).toMatchObject({ id: "fixed", visibility: "public" });
+    expect((await app.request("/media/fixed/url")).status).toBe(200);
+  });
+
+  test("a private record is not found — never forbidden — without a session, or for anyone else", async () => {
+    const app = makeApp();
+    await create(app, "private");
+    const callers: Record<string, string>[] = [{}, { "x-user": "stranger" }, { "x-user": "owner", "x-org": "org-b" }];
+    for (const headers of callers) {
+      const read = await app.request("/media/fixed", { headers });
+      expect(read.status).toBe(404);
+      expect((await errorOf(read)).code).toBe("media/not_found");
+      const url = await app.request("/media/fixed/url", { headers });
+      expect(url.status).toBe(404);
+    }
+    const strangerDelete = await app.request("/media/fixed", { method: "DELETE", headers: { "x-user": "stranger" } });
+    expect(strangerDelete.status).toBe(404);
+    // Without a session a delete is refused before any record is looked up — a 401 that says nothing about it.
+    const anonymousDelete = await app.request("/media/fixed", { method: "DELETE" });
+    expect(anonymousDelete.status).toBe(401);
+    const list = await app.request("/media?includePublic=true", { headers: { "x-user": "stranger" } });
+    expect((await conforming(list, MediaListResponse)).items).toEqual([]);
+  });
+
+  test("a member who may read an organization record is forbidden to delete it", async () => {
+    const app = makeApp();
+    await create(app, "organization");
+    const res = await app.request("/media/fixed", {
+      method: "DELETE",
+      headers: { "x-user": "colleague", "x-org": "org-a" },
+    });
+    expect(res.status).toBe(403);
+    expect((await errorOf(res)).code).toBe("media/forbidden");
+  });
+
+  test("an upload naming a level outside the policy is a 400, not a quiet default", async () => {
+    const app = makeApp();
+    const res = await app.request("/media", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user": "owner" },
+      body: JSON.stringify({
+        type: "image",
+        name: "n",
+        filename: "a.png",
+        contentType: "image/png",
+        visibility: "organization",
+      }),
+    });
+    expect(res.status).toBe(400);
   });
 });

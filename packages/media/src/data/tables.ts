@@ -13,17 +13,9 @@ export const MEDIA_ASSETS_TABLE = "pithyMediaAssets";
 /** The dedup hash table. `CamelCasePlugin` snake-cases it to `pithy_media_hashes`. */
 export const MEDIA_HASHES_TABLE = "pithyMediaHashes";
 
-/**
- * The media tables map for a given effective schema. The hash table is always present (dedup is D1-only);
- * the record table is present for the D1 record store and omitted for `recordStore: 'kv'`.
- */
-export function mediaTables(
-  effective: z.ZodObject = MediaAsset,
-  options: { withAssets?: boolean } = {},
-): Record<string, z.ZodObject> {
-  const tables: Record<string, z.ZodObject> = { [MEDIA_HASHES_TABLE]: MediaHash };
-  if (options.withAssets !== false) tables[MEDIA_ASSETS_TABLE] = effective;
-  return tables;
+/** The media tables map for a given effective schema: the record table and the dedup hash table. */
+export function mediaTables(effective: z.ZodObject = MediaAsset): Record<string, z.ZodObject> {
+  return { [MEDIA_HASHES_TABLE]: MediaHash, [MEDIA_ASSETS_TABLE]: effective };
 }
 
 /** The typed Kysely database over the base media record table. Extension columns are read/written by schema. */

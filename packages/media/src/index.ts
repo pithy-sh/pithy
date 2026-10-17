@@ -9,7 +9,7 @@
  */
 
 export { isMediaCapability, MEDIA_MIGRATION_ORDER, type MediaCapability, type MediaOptions, media } from "./capability";
-export { MediaConfig, type MediaConfigInput, type MediaDelivery } from "./config/config";
+export { MediaConfig, type MediaConfigInput, MediaDedup, type MediaDelivery } from "./config/config";
 export {
   EXTRACTABLE_EXTENSIONS,
   isExtractableDocument,
@@ -25,6 +25,8 @@ export {
   buildStreamHlsUrl,
   buildStreamIframeUrl,
   buildStreamThumbnailUrl,
+  type DeliveryUrl,
+  deliveryUrl,
   mediaUrl,
 } from "./deliver/url";
 export {
@@ -35,5 +37,7 @@ export {
   SIMILAR_THRESHOLD,
 } from "./hash/duplicates";
 export { computeSha256 } from "./hash/sha256";
-export type { HashStore } from "./record/hashStore";
+export { MEDIA_MANAGE_POWER } from "./http/handlers";
+export { MEDIA_USAGE_READ_SCOPE } from "./http/scopes";
+export { type DedupScope, dedupScope, type HashStore } from "./record/hashStore";
 export type { MediaRecord, RecordStore } from "./record/store";
