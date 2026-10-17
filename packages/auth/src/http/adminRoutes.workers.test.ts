@@ -9,6 +9,7 @@ import { ControlPlaneConnection, type Ed25519PublicJwk } from "@pithy-sh/core/sr
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
@@ -170,6 +171,9 @@ async function registerConnection(publicKey: Ed25519PublicJwk, scopes: readonly 
         workerUrl: "https://worker.example.test",
         basePath: "/control-plane",
         managementOrigin: null,
+        authorizedBy: "ada@example.com",
+        actorKind: "dashboard",
+        purpose: "The hosted dashboard.",
         scopes: [...scopes],
         keys: [
           {
@@ -328,6 +332,7 @@ beforeEach(async () => {
       migrations: {
         "0001_init": controlplane_0001_init,
         "0002_management_origin": controlplane_0002_management_origin,
+        "0003_connection_principal": controlplane_0003_connection_principal,
       },
     },
   ]).app;

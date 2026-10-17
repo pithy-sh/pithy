@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { MiddlewareHandler } from "hono";
+import type { AuditEmit } from "../../audit/recorder";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { commandName, remedy } from "../../cli/command";
 import { type AmbientEnv, compositionEnvironment } from "../../env/ambient";
@@ -9,6 +10,7 @@ import { PithyError } from "../../error/pithyError";
 import { workerVersionMetadata } from "../../worker/identity";
 import { ControlPlaneAuditActions, safeEmit } from "../audit/actions";
 import type { ControlPlaneContext } from "../context";
+import type { ControlPlaneActorKind } from "../data/connection";
 import { ControlPlaneNotConnectedError } from "../error/errors";
 import type { ControlPlaneRequirement } from "../scope/scope";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
@@ -156,6 +158,11 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
     }
 
     c.set("controlPlane", context);
+    // Every control-plane row this call writes says which kind of client wrote it (#721). Stamped here,
+    // once, rather than at each of the dozens of emit sites across the capabilities, because a rule kept
+    // at the call sites regrows the moment someone adds one — and `actorType` alone names an agent, the
+    // dashboard and a script identically.
+    c.set("emit", stampActorKind(c.var.emit, context.actorKind));
     await safeEmit(
       c.var.emit,
       {
@@ -183,6 +190,20 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
   };
   (guard as unknown as Record<symbol, unknown>)[CONTROL_PLANE_GUARD] = true;
   return guard;
+}
+
+/**
+ * The recorder a verified call's handlers write through: the request's own, with the connection's actor
+ * kind added to every `control-plane` event that does not already carry one.
+ *
+ * Only `control-plane` events, because the kind describes a management client and nothing else — a
+ * handler recording what happened to a user is recording a user. An event that states a kind keeps it.
+ * A connection with no recorded kind adds nothing, so its rows read exactly as they did before.
+ */
+export function stampActorKind(emit: AuditEmit, actorKind: ControlPlaneActorKind | null): AuditEmit {
+  if (actorKind === null) return emit;
+  return (event) =>
+    emit(event.actorType === "control-plane" && event.actorKind == null ? { ...event, actorKind } : event);
 }
 
 /**

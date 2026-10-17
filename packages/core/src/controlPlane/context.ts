@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { ControlPlaneActorKind } from "./data/connection";
 import { ControlPlaneScope } from "./scope/scope";
 
 /**
@@ -56,6 +57,9 @@ export const ControlPlaneContext = z
     tokenId: z
       .string()
       .describe("The token's `jti`, already claimed in the replay set. Recorded to tie one audit event to one call."),
+    actorKind: ControlPlaneActorKind.nullable().describe(
+      "What kind of client the connection is for — `agent`, `dashboard` or `script` — read from the adopter's own row, never from the token. The gate stamps it onto every control-plane audit row this call writes. Null for a connection registered before the kind was recorded (#721).",
+    ),
   })
   .describe(
     "The verified control-plane caller for one request. Never an AuthContext: a management client is not a user of the adopter's app.",

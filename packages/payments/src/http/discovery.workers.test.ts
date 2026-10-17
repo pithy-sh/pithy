@@ -9,6 +9,7 @@ import { type AdminRoute, ControlPlaneManifest } from "@pithy-sh/core/src/contro
 import { namedConfigValues } from "@pithy-sh/core/src/controlPlane/discovery/configuration";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { controlplane_0002_management_origin } from "@pithy-sh/core/src/controlPlane/migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "@pithy-sh/core/src/controlPlane/migrations/0003_connection_principal";
 import { MANIFEST_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
@@ -136,6 +137,9 @@ async function connect(scopes: string[]): Promise<void> {
         workerUrl: `https://${PROJECT}-${WORKER}.workers.dev`,
         basePath: "/control-plane",
         managementOrigin: null,
+        authorizedBy: "ada@example.com",
+        actorKind: "dashboard",
+        purpose: "The hosted dashboard.",
         scopes,
         keys: [
           {
@@ -315,6 +319,7 @@ beforeEach(async () => {
   const db = createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
   await controlplane_0001_init.up(db);
   await controlplane_0002_management_origin.up(db);
+  await controlplane_0003_connection_principal.up(db);
   await payments_0001_purchases.up(db);
 });
 

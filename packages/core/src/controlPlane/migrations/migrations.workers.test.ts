@@ -10,6 +10,7 @@ import { ControlPlaneReplay } from "../data/replay";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, CONTROL_PLANE_REPLAYS_TABLE, controlPlaneDatabase } from "../data/tables";
 import { controlplane_0001_init } from "./0001_init";
 import { controlplane_0002_management_origin } from "./0002_management_origin";
+import { controlplane_0003_connection_principal } from "./0003_connection_principal";
 
 const db = () => createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
 
@@ -32,6 +33,9 @@ const connection: ControlPlaneConnection = {
   workerUrl: "https://api.example.com",
   basePath: "/control-plane",
   managementOrigin: null,
+  authorizedBy: "ada@example.com",
+  actorKind: "dashboard",
+  purpose: "Support triage.",
   scopes: ["manifest:read", "keys:rotate"],
   keys: [
     {
@@ -50,7 +54,8 @@ describe("controlplane_0001_init", () => {
   test("up creates both seam tables and their indexes", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     expect(await catalog()).toEqual([
       "pithy_controlplane_connections",
       "pithy_controlplane_connections_environment_idx",
@@ -62,7 +67,8 @@ describe("controlplane_0001_init", () => {
   test("the DDL and the codec agree — an encoded connection writes and reads back through real D1", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     const kysely = controlPlaneDatabase(env.DB);
 
     await kysely
@@ -84,7 +90,8 @@ describe("controlplane_0001_init", () => {
     // path, and then 404s on every call — with the operator diagnosing the wrong problem.
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     const kysely = controlPlaneDatabase(env.DB);
 
     await kysely
@@ -105,7 +112,8 @@ describe("controlplane_0001_init", () => {
     // path was necessarily using the default. The default states what was already true.
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     await env.DB.prepare(
       "INSERT INTO pithy_controlplane_connections (id, environment, issuer, worker_url, scopes, keys, created_at, updated_at) VALUES ('bare', 'prod', 'https://app.pithy.sh', 'https://api.example.com', '[]', '[]', 0, 0)",
     ).run();
@@ -118,7 +126,8 @@ describe("controlplane_0001_init", () => {
   test("the connection id is the primary key, so one connection cannot be registered twice", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     const kysely = controlPlaneDatabase(env.DB);
     const values = ControlPlaneConnection.encode(connection);
 
@@ -131,7 +140,8 @@ describe("controlplane_0001_init", () => {
   test("every connection column the seam reads is NOT NULL — a half-written registration is not a valid row", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     await expect(
       env.DB.prepare(
         "INSERT INTO pithy_controlplane_connections (id, environment, issuer, worker_url, scopes, keys, created_at, updated_at) VALUES ('c1', NULL, 'https://app.pithy.sh', 'https://api.example.com', '[]', '[]', 0, 0)",
@@ -147,7 +157,8 @@ describe("controlplane_0001_init", () => {
   test("a replay record round-trips through real D1", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     const kysely = controlPlaneDatabase(env.DB);
     const record: ControlPlaneReplay = {
       jti: "cpt_01HQZZ",
@@ -168,7 +179,8 @@ describe("controlplane_0001_init", () => {
   test("the jti is the primary key — and it is the jti alone, so a second connection cannot re-spend it", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     const kysely = controlPlaneDatabase(env.DB);
     const encode = (connectionId: string) =>
       ControlPlaneReplay.encode({ jti: "cpt_shared", connectionId, expiresAt: new Date(1) });
@@ -184,7 +196,8 @@ describe("controlplane_0001_init", () => {
   test("every replay column is NOT NULL — a half-written claim is not a claim", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     await expect(
       env.DB.prepare(
         "INSERT INTO pithy_controlplane_replays (jti, connection_id, expires_at) VALUES ('j1', NULL, 0)",
@@ -200,12 +213,14 @@ describe("controlplane_0001_init", () => {
   test("down is the exact inverse and up is re-runnable after it", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     await controlplane_0001_init.down?.(db());
     expect(await catalog()).toEqual([]);
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
-    // The codec describes the table as it stands, which is `0001` plus `0002` (#614).
+    await controlplane_0003_connection_principal.up(db());
+    // The codec describes the table as it stands: `0001`, `0002` (#614) and `0003` (#721).
     expect(await catalog()).toContain("pithy_controlplane_connections");
     expect(await catalog()).toContain("pithy_controlplane_replays");
   });
@@ -261,6 +276,7 @@ describe("controlplane_0002_management_origin", () => {
   test("an origin round-trips, which is the whole reason the column exists", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
 
     await controlPlaneDatabase(env.DB)
       .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
@@ -273,6 +289,7 @@ describe("controlplane_0002_management_origin", () => {
   test("down drops the column and leaves every credential on the row intact", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
     await controlPlaneDatabase(env.DB)
       .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
       .values(ControlPlaneConnection.encode({ ...connection, managementOrigin: "https://staging.app.pithy.sh" }))
@@ -291,6 +308,7 @@ describe("controlplane_0002_management_origin", () => {
   test("up after down leaves the column there again", async () => {
     await controlplane_0001_init.up(db());
     await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
     await controlplane_0002_management_origin.down?.(db());
     await controlplane_0002_management_origin.up(db());
 
@@ -300,5 +318,129 @@ describe("controlplane_0002_management_origin", () => {
       .execute();
 
     expect((await stored()).managementOrigin).toBe("https://moved.example");
+  });
+});
+
+/**
+ * Who sanctioned a connection, what kind of client it is, and what it is for — `#721`.
+ *
+ * The table has shipped, so the three arrive as nullable columns, and a row registered before them reads
+ * as registered before principals were recorded rather than as anything invented.
+ */
+describe("controlplane_0003_connection_principal", () => {
+  async function stored(): Promise<ControlPlaneConnection> {
+    const row = await controlPlaneDatabase(env.DB)
+      .selectFrom(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .selectAll()
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    return ControlPlaneConnection.parse(row);
+  }
+
+  /** The row as every released adopter holds it: `0001` and `0002`, written before this column existed. */
+  async function legacyRow(): Promise<void> {
+    await controlplane_0001_init.up(db());
+    await controlplane_0002_management_origin.up(db());
+    await env.DB.prepare(
+      `insert into pithy_controlplane_connections
+         (id, environment, issuer, worker_url, base_path, management_origin, scopes, keys, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        connection.id,
+        connection.environment,
+        connection.issuer,
+        connection.workerUrl,
+        connection.basePath,
+        null,
+        JSON.stringify(connection.scopes),
+        ControlPlaneConnection.shape.keys.encode([...connection.keys]),
+        connection.createdAt.getTime(),
+        connection.updatedAt.getTime(),
+      )
+      .run();
+  }
+
+  test("a connection registered before it still parses, with all three null and its keys intact", async () => {
+    await legacyRow();
+    await controlplane_0003_connection_principal.up(db());
+
+    const read = await stored();
+    expect(read.authorizedBy).toBeNull();
+    expect(read.actorKind).toBeNull();
+    expect(read.purpose).toBeNull();
+    // Nothing that works today breaks on upgrade: the credential is the credential it was.
+    expect(read.keys).toEqual(connection.keys);
+  });
+
+  test("no row is backfilled — most of the trail names a token, not a person", async () => {
+    await legacyRow();
+    await controlplane_0003_connection_principal.up(db());
+
+    expect(
+      await env.DB.prepare("select authorized_by, actor_kind, purpose from pithy_controlplane_connections").first(),
+    ).toEqual({ authorized_by: null, actor_kind: null, purpose: null });
+  });
+
+  test("all three round-trip through real D1", async () => {
+    await controlplane_0001_init.up(db());
+    await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode({ ...connection, actorKind: "agent", purpose: "Nightly refund sweep." }))
+      .execute();
+
+    const read = await stored();
+    expect(read.authorizedBy).toBe("ada@example.com");
+    expect(read.actorKind).toBe("agent");
+    expect(read.purpose).toBe("Nightly refund sweep.");
+  });
+
+  test("a legacy row may have its purpose set without a principal", async () => {
+    await legacyRow();
+    await controlplane_0003_connection_principal.up(db());
+    await controlPlaneDatabase(env.DB)
+      .updateTable(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .set({ purpose: "The hosted dashboard." })
+      .where("id", "=", connection.id)
+      .execute();
+
+    const read = await stored();
+    expect(read.purpose).toBe("The hosted dashboard.");
+    expect(read.authorizedBy).toBeNull();
+  });
+
+  test("down drops the three columns and leaves every credential on the row intact", async () => {
+    await controlplane_0001_init.up(db());
+    await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode(connection))
+      .execute();
+
+    await controlplane_0003_connection_principal.down?.(db());
+
+    const row = await env.DB.prepare("select * from pithy_controlplane_connections").first<Record<string, unknown>>();
+    expect(Object.keys(row ?? {})).not.toContain("authorized_by");
+    expect(Object.keys(row ?? {})).not.toContain("actor_kind");
+    expect(Object.keys(row ?? {})).not.toContain("purpose");
+    expect(row?.keys).toBe(ControlPlaneConnection.shape.keys.encode([...connection.keys]));
+    expect(row?.management_origin).toBeNull();
+  });
+
+  test("up after down leaves the columns there again", async () => {
+    await controlplane_0001_init.up(db());
+    await controlplane_0002_management_origin.up(db());
+    await controlplane_0003_connection_principal.up(db());
+    await controlplane_0003_connection_principal.down?.(db());
+    await controlplane_0003_connection_principal.up(db());
+    await controlPlaneDatabase(env.DB)
+      .insertInto(CONTROL_PLANE_CONNECTIONS_TABLE)
+      .values(ControlPlaneConnection.encode(connection))
+      .execute();
+
+    expect((await stored()).purpose).toBe("Support triage.");
   });
 });

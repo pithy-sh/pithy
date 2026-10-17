@@ -76,6 +76,9 @@ async function connection(scopes: readonly ControlPlaneScope[]): Promise<Control
     workerUrl: "https://acme.example",
     basePath: "/control-plane",
     managementOrigin: null,
+    authorizedBy: "ada@example.com",
+    actorKind: "dashboard",
+    purpose: "The hosted dashboard.",
     scopes: [...scopes],
     keys: [
       {

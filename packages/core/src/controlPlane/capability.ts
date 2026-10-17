@@ -24,6 +24,7 @@ import {
 } from "./migrationState/migrationState";
 import { controlplane_0001_init } from "./migrations/0001_init";
 import { controlplane_0002_management_origin } from "./migrations/0002_management_origin";
+import { controlplane_0003_connection_principal } from "./migrations/0003_connection_principal";
 import { d1ReplayGuard } from "./replay/d1Guard";
 import type { ReplayGuard } from "./replay/guard";
 import {
@@ -85,6 +86,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   const migrations: Record<string, Migration> = {
     "0001_init": controlplane_0001_init,
     "0002_management_origin": controlplane_0002_management_origin,
+    "0003_connection_principal": controlplane_0003_connection_principal,
   };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — the connections table lives here, beside auth's and audit's. Not the secrets

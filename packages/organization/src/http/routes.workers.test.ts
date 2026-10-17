@@ -229,6 +229,7 @@ function verifierFor(granted: readonly ControlPlaneScope[]): ControlPlaneVerifie
       grantedScopes: [...granted],
       keyId: "key-1",
       tokenId: "jti-1",
+      actorKind: null,
     } satisfies ControlPlaneContext;
   };
 }

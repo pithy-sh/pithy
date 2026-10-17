@@ -53,6 +53,7 @@ const CALLER: ControlPlaneContext = {
   grantedScopes: [...PAYMENTS_CONTROL_PLANE_SCOPES],
   keyId: "k-2026-01",
   tokenId: "b2f1c7e0-3a4d-4c19-8e77-1d6a0b53f942",
+  actorKind: null,
 };
 
 interface AppOptions {

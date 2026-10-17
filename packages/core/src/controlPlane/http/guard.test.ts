@@ -3,6 +3,7 @@
 
 import { Hono } from "hono";
 import { beforeAll, describe, expect, test } from "vitest";
+import type { AuditEventInput } from "../../audit/auditEvent";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pithyErrorHandler } from "../../error/http";
 import { PithyError } from "../../error/pithyError";
@@ -51,6 +52,9 @@ beforeAll(async () => {
     workerUrl: "https://api.example.com",
     basePath: "/control-plane",
     managementOrigin: null,
+    authorizedBy: "ada@example.com",
+    actorKind: "agent",
+    purpose: "Support triage.",
     scopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
     keys: [
       {
@@ -224,7 +228,83 @@ describe("requireControlPlane", () => {
         grantedScopes: [MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE],
         keyId: KEY_ID,
         tokenId: expect.any(String),
+        actorKind: "agent",
       },
+    });
+  });
+
+  describe("the actor kind (#721)", () => {
+    /** An app whose recorder keeps every event, and a route that emits one as each kind of actor. */
+    function recordingApp(events: AuditEventInput[]) {
+      const app = new Hono<PithyHonoEnv>();
+      app.onError(pithyErrorHandler);
+      app.use("*", async (c, next) => {
+        c.set("auth", null);
+        c.set("controlPlane", null);
+        c.set("controlPlaneVerifier", verifier());
+        c.set("emit", async (event) => {
+          events.push(event);
+        });
+        await next();
+      });
+      app.get("/control-plane/act", requireControlPlane(MANIFEST_READ_SCOPE), async (c) => {
+        await c.var.emit({ action: "payments/refund_issued", outcome: "success", actorType: "control-plane" });
+        await c.var.emit({ action: "auth/signin", outcome: "success", actorType: "user", actorId: "u1" });
+        await c.var.emit({
+          action: "payments/refund_issued",
+          outcome: "success",
+          actorType: "control-plane",
+          actorKind: "script",
+        });
+        return c.json({ ok: true });
+      });
+      return app;
+    }
+
+    async function call(events: AuditEventInput[]): Promise<void> {
+      const response = await recordingApp(events).request("/control-plane/act", {
+        headers: { [CONTROL_PLANE_HEADER]: await token({ scope: MANIFEST_READ_SCOPE }) },
+      });
+      expect(response.status).toBe(200);
+    }
+
+    test("the allowed-call row says which kind of client called", async () => {
+      const events: AuditEventInput[] = [];
+      await call(events);
+      expect(events[0]).toMatchObject({ action: "controlplane/call_allowed", actorKind: "agent" });
+    });
+
+    test("every control-plane row a handler writes after the gate carries it, with no handler saying so", async () => {
+      // Stamped by the gate rather than by each emit site, so a capability that never heard of the kind
+      // still writes a row that can tell an agent from the dashboard from a script.
+      const events: AuditEventInput[] = [];
+      await call(events);
+      expect(events[1]).toMatchObject({ action: "payments/refund_issued", actorKind: "agent" });
+    });
+
+    test("a row about a user is left alone — the kind describes a management client, not a person", async () => {
+      const events: AuditEventInput[] = [];
+      await call(events);
+      expect(events[2]).toEqual({ action: "auth/signin", outcome: "success", actorType: "user", actorId: "u1" });
+    });
+
+    test("a kind the emitter stated is not overwritten", async () => {
+      const events: AuditEventInput[] = [];
+      await call(events);
+      expect(events[3]).toMatchObject({ actorKind: "script" });
+    });
+
+    test("a connection registered before kinds were recorded writes rows with none", async () => {
+      const saved = connection;
+      connection = { ...connection, actorKind: null };
+      try {
+        const events: AuditEventInput[] = [];
+        await call(events);
+        expect(events[0]?.actorKind ?? null).toBeNull();
+        expect(events[1]?.actorKind ?? null).toBeNull();
+      } finally {
+        connection = saved;
+      }
     });
   });
 

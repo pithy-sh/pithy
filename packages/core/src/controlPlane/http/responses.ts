@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { Ed25519PublicJwk } from "../data/connection";
+import { ConnectionPrincipal, ConnectionPurpose, ControlPlaneActorKind, Ed25519PublicJwk } from "../data/connection";
 
 /**
  * What the seam's own routes return, as Zod objects a management client can validate against.
@@ -65,8 +65,25 @@ export const ControlPlaneKeysResponse = z
     connectionId: z.string().describe("The connection these keys belong to."),
     environment: z.string().describe("The environment that connection is bound to."),
     keys: z.array(PublicKeyView).describe("Every registered key, expired and revoked ones included."),
+    // Added (#721), so `.optional()` as well as `.nullable()`: a client validating against a Worker that
+    // predates the three columns receives none of them, and must still parse the answer.
+    authorizedBy: ConnectionPrincipal.nullable()
+      .optional()
+      .describe(
+        "Who sanctioned this connection — the signed-in session's email at registration. Null for a connection registered before principals were recorded; absent from a Worker older than the field.",
+      ),
+    actorKind: ControlPlaneActorKind.nullable()
+      .optional()
+      .describe(
+        "What kind of client this connection is for: `agent`, `dashboard` or `script`. Null for a connection registered before it was recorded; absent from an older Worker.",
+      ),
+    purpose: ConnectionPurpose.nullable()
+      .optional()
+      .describe(
+        "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for a connection registered before it was recorded; absent from an older Worker.",
+      ),
   })
-  .describe("Every key registered against this connection, with its window.");
+  .describe("Every key registered against this connection, with its window, and who authorized it for what.");
 export type ControlPlaneKeysResponse = z.output<typeof ControlPlaneKeysResponse>;
 
 /** `POST /control-plane/keys` — the appended key, and the set as it now stands. */

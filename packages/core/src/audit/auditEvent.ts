@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { ControlPlaneActorKind } from "../controlPlane/data/connection";
 
 /**
  * The audit-event seam. `AuditEvent` is the shape any capability hands to `emit()` (the request
@@ -95,6 +96,9 @@ export const AuditEvent = z
       .string()
       .nullish()
       .describe("The acting principal's stable id (user id, service/token name); null for `system`/`anonymous`."),
+    actorKind: ControlPlaneActorKind.nullish().describe(
+      "For a `control-plane` actor, what kind of management client acted — `agent`, `dashboard` or `script` — from the connection it called through (#721). `actorType` names all three alike; this is what tells them apart. Stamped by `requireControlPlane`, so an emit site does not set it; null for every other actor type, and for a connection registered before the kind was recorded.",
+    ),
     sessionId: z
       .string()
       .nullish()
