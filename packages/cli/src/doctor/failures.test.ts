@@ -5,7 +5,13 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { ReconcilePlan } from "../capabilities/reconcile";
-import { buildDoctorReport, type DoctorReport, doctorExitCode, renderDoctorJson } from "../commands/doctor";
+import {
+  buildDoctorReport,
+  type DoctorReport,
+  doctorExitCode,
+  renderDoctorJson,
+  renderDoctorText,
+} from "../commands/doctor";
 import { publishedPayload } from "../contract/commandContract";
 import { buildDocsCatalog } from "../docs/catalog";
 import { formatJsonLine } from "../terminal/output";
@@ -395,6 +401,28 @@ describe("project health, one entry per failing check", () => {
     expect(failuresOf(report).map(({ detail, fix }) => ({ detail, fix }))).toEqual([
       { detail: "api: 2 pending in dev.", fix: "pithy migrate --env dev" },
     ]);
+  });
+
+  test("on a checkout nothing has set up, dev's pending migrations name pithy setup (#764)", async () => {
+    const report = await healthyWith({
+      checkoutSetUp: () => false,
+      readLedger: ledgerStubPer({
+        api: {
+          dev: { state: "read", pending: 2, undeclared: [] },
+          staging: { state: "read", pending: 5, undeclared: [] },
+        },
+      }),
+    });
+    expect(failuresOf(report).map(({ detail, fix }) => ({ detail, fix }))).toEqual([
+      { detail: "api: 2 pending in dev.", fix: "pithy setup" },
+    ]);
+    // The text report's line and `--json`'s `fix` beside the finding name the same command, and a deployed
+    // environment keeps its own.
+    const text = renderDoctorText(report);
+    expect(text).toContain("dev: 2 pending — run: pithy setup");
+    expect(text).toContain("staging: 5 pending — run: pithy migrate --env staging");
+    const health = (renderDoctorJson(report).project as { health: { workers: { migrations: unknown }[] } }).health;
+    expect(JSON.stringify(health.workers[0]?.migrations)).toContain('"fix":"pithy setup"');
   });
 
   test("a migration dev applied and nobody declares is a local wipe, which no fix runs", async () => {

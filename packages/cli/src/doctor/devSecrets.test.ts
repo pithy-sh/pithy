@@ -403,6 +403,16 @@ describe("devSecretsHealthy", () => {
     expect(lines).not.toContain("<name>");
   });
 
+  // #764: a fresh clone composes secrets already, so the command that mints its key is setup, not an add.
+  test("on a checkout nothing has set up, the master key line names pithy setup", () => {
+    const lines = describeDevSecrets(
+      { ...clean, bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"], secretsWorker: dirOf("api") },
+      { setUp: false },
+    ).join("\n");
+    expect(lines).toContain("No dev value for SECRETS_ENCRYPTION_KEYS. Run `pithy setup` — it mints one into");
+    expect(lines).not.toContain("pithy add secrets");
+  });
+
   test("a missing secret is not a fault — four unset OAuth pairs must not drag every report verbose", () => {
     expect(devSecretsHealthy({ ...clean, missing: ["auth-google-credentials"] })).toBe(true);
   });

@@ -462,7 +462,7 @@ function mintWords(check: DevSecretsCheck, wrap: (add: string) => string): strin
  * The lines the report prints for this check, or none at all when there is nothing to say. Silence is
  * the healthy answer: a project with its secrets in the right file does not need a line telling it so.
  */
-export function describeDevSecrets(check: DevSecretsCheck): string[] {
+export function describeDevSecrets(check: DevSecretsCheck, options: { setUp?: boolean } = {}): string[] {
   const lines: string[] = [];
   if (check.unreadable) {
     // The loader's sentence, not a pointer at another command. It already names the secret and the
@@ -481,8 +481,15 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
     );
   }
   if (check.bootstrapMissing.length > 0) {
+    // On a checkout nothing has set up, `pithy setup` — which mints the key without touching
+    // `pithy.config.ts`, and does the rest a fresh clone lacks with it (#764). `pithy add secrets` composes
+    // the capability, which a clone already has.
+    const mint =
+      options.setUp === false
+        ? `Run \`${pithyCommand("setup")}\` — it mints one into ${check.path}.`
+        : mintWords(check, (add) => `Run ${add} — it mints one into ${check.path}.`);
     lines.push(
-      `No dev value for ${check.bootstrapMissing.join(", ")}. ${mintWords(check, (add) => `Run ${add} — it mints one into ${check.path}.`)} Until then the local SECRETS store cannot be opened.`,
+      `No dev value for ${check.bootstrapMissing.join(", ")}. ${mint} Until then the local SECRETS store cannot be opened.`,
     );
   }
   // Its own line, because its remedy is its own. `pithy add secrets` mints the master key and every
@@ -603,7 +610,7 @@ async function siblingsWithSecrets(configDir: string, ours: string): Promise<str
  */
 export function describeDevSecretsLocation(check: DevSecretsLocationCheck): string | null {
   if (check.present) return null;
-  if (check.orphans.length === 0) return `no file yet; ${commandName("add")} mints one when a capability needs it`;
+  if (check.orphans.length === 0) return `no file yet; ${commandName("setup")} mints one when a capability needs it`;
   // Named rather than diagnosed. This cannot tell a rename from two unrelated projects on one machine,
   // and guessing which would be worse than listing what is there and letting the reader recognize it.
   return `no file yet; secrets exist for ${check.orphans.join(", ")} — a renamed project leaves its old name here`;

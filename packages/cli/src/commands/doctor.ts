@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
@@ -124,6 +124,7 @@ import {
   describeWorkerNameConvention,
   type WorkerNameCheck,
 } from "../doctor/workerName";
+import { devConfigPath } from "../feature/devConfig";
 import {
   crossesBreakingBoundary,
   type DeclaredSpec,
@@ -427,6 +428,15 @@ export interface DoctorReport {
    */
   portsRegistry: PortsRegistryCheck | null;
   /**
+   * Whether this checkout has been set up: `pithy setup`, `pithy dev` or `pithy feature create` pinned its
+   * ports in `.dev.config.json`. `null` outside a project.
+   *
+   * It decides one thing, the action a finding names (#764). On a checkout nothing has set up, every local
+   * gap — no dev master key, `dev` unmigrated — has one remedy, `pithy setup`, and naming the narrower
+   * commands it replaces sends a newcomer through them one refusal at a time.
+   */
+  checkoutSetUp: boolean | null;
+  /**
    * Whether any declared `d1`-backed secret is still sitting in `.dev.vars`, and whether the secrets file
    * is readable by anyone but its owner. `null` outside a project that composes `secrets` — with no
    * registry there is no declared name, and so no misplaced one.
@@ -592,7 +602,7 @@ async function checkedProbe<T>(probe: () => Promise<T | null>): Promise<Checked<
  * consumer has to be able to tell apart from `null`. `null` is "this project composes no secrets";
  * `{ state: "could-not-check" }` is "it does and nobody could read the registry".
  */
-function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, unknown> | null {
+function jsonDevSecrets(value: Checked<DevSecretsCheck> | null, setUp: boolean): Record<string, unknown> | null {
   if (value === null) return null;
   const check = reported(value);
   if (check === null) return { state: "could-not-check" };
@@ -630,7 +640,7 @@ function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, 
     // a `devSecrets` object with no targets and a `null` one used to be the same answer, and an agent
     // reading either had no way to tell "no secrets" from "nothing loaded".
     unresolvable: check.unresolvable,
-    detail: describeDevSecrets(check),
+    detail: describeDevSecrets(check, { setUp }),
   };
 }
 
@@ -808,6 +818,8 @@ export interface DoctorReportOptions {
    * `env` the config directory is, so the line can never name a path this report did not resolve.
    */
   checkPortsRegistry?: (projectDir: string) => Promise<PortsRegistryCheck>;
+  /** Seam: whether this checkout has been set up. Defaults to whether its `.dev.config.json` exists. */
+  checkoutSetUp?: (projectDir: string) => boolean;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
   /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
@@ -1492,6 +1504,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     extensions,
     devPreferences,
     portsRegistry,
+    checkoutSetUp: inProject
+      ? (options.checkoutSetUp ?? ((dir: string) => existsSync(devConfigPath(dir))))(options.projectDir)
+      : null,
     devSecrets,
     secretBindings,
     settings,
@@ -1611,6 +1626,7 @@ interface MigrationSentence {
 function environmentMigrationLines(
   entry: EnvironmentMigrations,
   productionEnvironments: readonly string[],
+  setUp = true,
 ): MigrationSentence[] {
   const env = entry.env;
   switch (entry.state) {
@@ -1654,7 +1670,8 @@ function environmentMigrationLines(
   const sentences: MigrationSentence[] = [];
   if (counted.pending > 0) {
     sentences.push({
-      first: `${env}: ${counted.pending} pending — run: ${pithyCommand("migrate", { flags: { "--env": env } })}`,
+      // A checkout nothing has set up is `pithy setup`'s, which migrates along with the rest it lacks (#764).
+      first: `${env}: ${counted.pending} pending — run: ${!setUp && env === LOCAL_ENVIRONMENT ? pithyCommand("setup") : pithyCommand("migrate", { flags: { "--env": env } })}`,
       cont: [],
     });
   }
@@ -1696,10 +1713,10 @@ function hasMigrationNotes(worker: WorkerChecks): boolean {
  * label sits on the first line only; every other environment aligns beneath it, and a sentence's
  * continuation sits two columns further in.
  */
-function migrationLines(health: MigrationHealth, productionEnvironments: readonly string[]): string[] {
+function migrationLines(health: MigrationHealth, productionEnvironments: readonly string[], setUp = true): string[] {
   const lines: string[] = [];
   for (const entry of health.environments) {
-    for (const sentence of environmentMigrationLines(entry, productionEnvironments)) {
+    for (const sentence of environmentMigrationLines(entry, productionEnvironments, setUp)) {
       lines.push(healthLine(lines.length === 0 ? "migrations" : "", sentence.first));
       // Two further columns in, so a continuation reads as its environment's and not as the next one's.
       for (const text of sentence.cont) lines.push(`${HEALTH_CONT}  ${text}`);
@@ -1854,6 +1871,7 @@ function workerHealthLines(
   health: WorkerChecks,
   worker: WorkerDir,
   productionEnvironments: readonly string[],
+  setUp = true,
 ): string[] {
   const lines: string[] = [];
 
@@ -1925,7 +1943,7 @@ function workerHealthLines(
 
   // Every environment, whether or not the check passed: `ok` is `dev`'s alone, and a deployed environment
   // behind is reported rather than gated, so it has to print on a passing Worker too (#586).
-  lines.push(...migrationLines(health.migrations, productionEnvironments));
+  lines.push(...migrationLines(health.migrations, productionEnvironments, setUp));
 
   if (health.entitlements.ok) {
     lines.push(healthLine("entitlements", "no gated route without a provider ✓"));
@@ -2413,7 +2431,7 @@ function upgradeFirstLines(entry: { repointable: boolean; package: string }): st
   ].map((line) => `${HEALTH_INDENT}  ${line}`);
 }
 
-function healthBlock(health: ProjectHealth, productionEnvironments: readonly string[]): string {
+function healthBlock(health: ProjectHealth, productionEnvironments: readonly string[], setUp = true): string {
   const lines = ["Project health:"];
   // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
   // whose manifest could not be read contributes no drift to any check below it, so a project full of
@@ -2465,7 +2483,7 @@ function healthBlock(health: ProjectHealth, productionEnvironments: readonly str
       continue;
     }
     lines.push(`  ${worker.worker}:`);
-    lines.push(...workerHealthLines(worker, worker.directory, productionEnvironments));
+    lines.push(...workerHealthLines(worker, worker.directory, productionEnvironments, setUp));
   }
   return lines.join("\n");
 }
@@ -3065,7 +3083,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     // and a project whose every check passes is exactly the project they are about — gating the block on
     // `ok` alone would print their output on every report except the ones they are for.
     if (!report.project.health.ok || projectHasGreenFindings(report.project.health)) {
-      blocks.push(healthBlock(report.project.health, report.productionEnvironments));
+      blocks.push(healthBlock(report.project.health, report.productionEnvironments, report.checkoutSetUp !== false));
     }
   } else {
     blocks.push(`Project: no pithy.config.ts here — run \`${pithyCommand("init")}\`, or change to a project directory`);
@@ -3184,7 +3202,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
       // that Worker answers every request with a missing-binding error, and the lines below it are
       // usually why. Everything else here is a value in the wrong file; this one is a Worker with none.
       ...(devVars ? describeDevVars(devVars) : unchecked(".dev.vars:", report.devVars)),
-      ...(devSecrets ? describeDevSecrets(devSecrets) : unchecked("secrets.jsonc:", report.devSecrets)),
+      ...(devSecrets
+        ? describeDevSecrets(devSecrets, { setUp: report.checkoutSetUp !== false })
+        : unchecked("secrets.jsonc:", report.devSecrets)),
       // In the same block, because it is the same question asked of the file beside it: what is in a
       // git-ignored file that nothing else in the project knows about.
       ...(devVarsLocal ? describeDevVarsLocal(devVarsLocal) : unchecked(".dev.vars.local:", report.devVarsLocal)),
@@ -3255,7 +3275,11 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             capabilities: report.project.capabilities,
             // Each finding with its `fix` beside it (#697): the health is the domain type `upgrade` reuses,
             // so the field is added on the way out rather than to the type.
-            health: healthWithFixes(report.project.health, report.productionEnvironments),
+            health: healthWithFixes(
+              report.project.health,
+              report.productionEnvironments,
+              report.checkoutSetUp !== false,
+            ),
           }
         : null,
     cloudflare: {
@@ -3452,7 +3476,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // reproduce the wording from the fields. `mode` is octal-formatted here for the same reason: `420` is
     // not a permission anybody recognizes.
     devSecretsFile: report.devSecretsFile === null ? null : { ...report.devSecretsFile },
-    devSecrets: jsonDevSecrets(report.devSecrets),
+    devSecrets: jsonDevSecrets(report.devSecrets, report.checkoutSetUp !== false),
     // Same `null` discipline once more, and each finding carries its own sentence: one command writes
     // every one of them, and an agent must not have to reconstruct which from a binding name.
     secretBindings: report.secretBindings

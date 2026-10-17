@@ -280,7 +280,7 @@ export function describePortsRegistry(check: PortsRegistryCheck): string | null 
     return `${check.stray} is left over and nothing reads it — delete it`;
   }
   if (!check.present) {
-    return `no file yet; the first ${commandName("dev")} or ${commandName("feature create")} writes it`;
+    return `no file yet; the first ${commandName("setup")}, ${commandName("dev")} or ${commandName("feature create")} writes it`;
   }
   return null;
 }

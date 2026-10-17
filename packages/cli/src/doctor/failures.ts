@@ -15,7 +15,7 @@ import { isFixable, repointableIds } from "./bindingScope";
 import { describeCloudflareAccess } from "./cloudflare";
 import { describeDevPreferences } from "./devPreferences";
 import { describeEnvironmentDrift } from "./environments";
-import { capabilityReachFix, DoctorFix, migrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
+import { capabilityReachFix, DoctorFix, localMigrationFix, prerequisiteFix, upgradeFix } from "./findingFixes";
 import type { ProjectHealth, WorkerChecks } from "./health";
 import { describeProjectName } from "./projectName";
 import { describeSelfBinding } from "./selfBinding";
@@ -102,7 +102,12 @@ function sentence(text: string): string {
  * Worker whose `ok` is false and that matched none of them still gets an entry, so the list cannot be short
  * of the gate it replaces.
  */
-function workerFailures(worker: string, directory: WorkerDir, checks: WorkerChecks & { ok: boolean }): DoctorFailure[] {
+function workerFailures(
+  worker: string,
+  directory: WorkerDir,
+  checks: WorkerChecks & { ok: boolean },
+  setUp: boolean,
+): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
   const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: `${worker}: ${sentence(detail)}`, fix });
@@ -145,7 +150,7 @@ function workerFailures(worker: string, directory: WorkerDir, checks: WorkerChec
       }
     }
   }
-  failures.push(...devMigrationFailures(worker, checks));
+  failures.push(...devMigrationFailures(worker, checks, setUp));
   // Which capability resolves an entitlement is the adopter's decision, so no `fix` is named for it. The example
   // the sentence offers is the text report's, from the same builder, so it runs as written (#711).
   const gap = checks.entitlements.gap;
@@ -163,7 +168,7 @@ function workerFailures(worker: string, directory: WorkerDir, checks: WorkerChec
 }
 
 /** `dev`'s migrations: the one environment whose answer gates (see `MigrationHealth.ok`). */
-function devMigrationFailures(worker: string, checks: WorkerChecks): DoctorFailure[] {
+function devMigrationFailures(worker: string, checks: WorkerChecks, setUp: boolean): DoctorFailure[] {
   if (checks.migrations.ok) return [];
   const failures: DoctorFailure[] = [];
   const add = (detail: string, fix: Command | null) =>
@@ -174,7 +179,8 @@ function devMigrationFailures(worker: string, checks: WorkerChecks): DoctorFailu
     return failures;
   }
   const counted = local.ledger.state === "read" ? local.ledger : local.ledger.counted;
-  if (counted.pending > 0) add(`${counted.pending} pending in dev`, migrationFix(local, []));
+  // A checkout nothing has set up is `pithy setup`'s, which migrates along with the rest it lacks (#764).
+  if (counted.pending > 0) add(`${counted.pending} pending in dev`, localMigrationFix(local, [], setUp));
   // Wiping the local store is the remedy, and an agent does not delete a developer's local data unasked.
   if (counted.undeclared.length > 0) add(`dev: ${describeUndeclared(counted.undeclared)}`, null);
   if (local.ledger.state === "partial") {
@@ -185,7 +191,7 @@ function devMigrationFailures(worker: string, checks: WorkerChecks): DoctorFailu
 }
 
 /** The project health block's failures: the project-wide checks, then each Worker's. */
-function healthFailures(health: ProjectHealth): DoctorFailure[] {
+function healthFailures(health: ProjectHealth, setUp: boolean): DoctorFailure[] {
   const failures: DoctorFailure[] = [];
   const add = (detail: string, fix: Command | null) =>
     failures.push({ check: "project", detail: sentence(detail), fix });
@@ -229,7 +235,7 @@ function healthFailures(health: ProjectHealth): DoctorFailure[] {
       add(`${worker.worker} could not be checked: its pithy.config.ts or wrangler.jsonc would not read`, null);
       continue;
     }
-    failures.push(...workerFailures(worker.worker, worker.directory, worker));
+    failures.push(...workerFailures(worker.worker, worker.directory, worker, setUp));
   }
   if (!health.ok && failures.length === 0)
     add(`project health failed. Run ${pithyCommand("doctor")} for the lines`, null);
@@ -410,6 +416,7 @@ export function doctorFailures(report: DoctorReport): DoctorFailure[] {
     failures.push({ check: "settings", detail: sentence(describeSettingsFinding(finding)), fix: finding.fix ?? null });
   }
 
-  if (report.project && !report.project.health.ok) failures.push(...healthFailures(report.project.health));
+  if (report.project && !report.project.health.ok)
+    failures.push(...healthFailures(report.project.health, report.checkoutSetUp !== false));
   return failures;
 }
