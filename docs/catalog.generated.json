@@ -1541,6 +1541,14 @@
       "remedy": "Retry with backoff"
     },
     {
+      "code": "media/forbidden",
+      "status": 403,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
       "code": "media/not_found",
       "status": 404,
       "exitClass": "precondition",

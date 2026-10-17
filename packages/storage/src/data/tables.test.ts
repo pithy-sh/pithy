@@ -27,6 +27,7 @@ describe("StorageObject codec round-trip", () => {
     key: "obj/3f2504e0-4f89-41d3-9a0c-0305e82c3301",
     path: "invoices/2026/q3.pdf",
     ownerId: "u1",
+    organizationId: null,
     contentType: "application/pdf",
     size: 4096,
     visibility: "private",

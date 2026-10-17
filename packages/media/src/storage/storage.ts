@@ -43,6 +43,12 @@ export interface MintParams {
   /** The declared size in bytes, forwarded to the presigned R2 PUT; 0 when unknown. */
   size?: number;
   /**
+   * Whether the bytes are served only through signed URLs — true for every non-public record. Honored by
+   * Cloudflare Images and Stream at mint; an R2 object is private by being in a private bucket, so R2
+   * ignores it and is always read through a presigned URL.
+   */
+  signed?: boolean;
+  /**
    * Small metadata forwarded to the Cloudflare Images or Stream direct upload — the caller's own keys
    * (identity, album, whatever the adopter tracks). The minters merge the ownership stamp
    * (`pithyProject`/`pithyEnv`) over it, so nothing here can omit or displace it.
@@ -64,6 +70,12 @@ export interface MediaStorage {
   mintUpload(params: MintParams): Promise<UploadTarget>;
   /** Delete a stored object (best-effort cleanup when a record is deleted). */
   deleteObject(location: StorageLocation): Promise<void>;
+  /**
+   * Require, or stop requiring, signed URLs for a Cloudflare Images or Stream asset. Resolves once
+   * Cloudflare confirms — the only moment a record may say its bytes are signed. Throws
+   * `media/unsupported` for R2, whose objects are private by the bucket, not by a setting.
+   */
+  setSigning(location: StorageLocation, required: boolean): Promise<void>;
   /** Read a stored R2 object's bytes (enrichment reads audio/documents through the binding). */
   readR2Object(key: string): Promise<Uint8Array>;
   /**
@@ -71,7 +83,7 @@ export interface MediaStorage {
    * documents (and R2-stored images/video). Throws `media/unsupported` for a Cloudflare Images or Stream
    * record, which have their own delivery URLs (see `deliver/url.ts`).
    */
-  presignedDownloadUrl(location: StorageLocation): Promise<string>;
+  presignedDownloadUrl(location: StorageLocation, expiresInSeconds?: number): Promise<string>;
 }
 
 /** Build the storage seam over the injected minters, bucket binding, and config. */
@@ -80,12 +92,13 @@ export function mediaStorage(deps: StorageDeps): MediaStorage {
     async mintUpload(params) {
       const backend = backendForType(params.type, deps.config);
       try {
+        const options = { requireSignedURLs: params.signed === true };
         if (backend === "cf-images") {
-          const result = await deps.image.mintDirectUpload(params.metadata);
+          const result = await deps.image.mintDirectUpload(params.metadata, options);
           return { uploadUrl: result.uploadUrl, storageBackend: "cf-images", storageKey: result.id };
         }
         if (backend === "cf-stream") {
-          const result = await deps.video.mintDirectUpload(params.metadata);
+          const result = await deps.video.mintDirectUpload(params.metadata, options);
           return { uploadUrl: result.uploadUrl, storageBackend: "cf-stream", storageKey: result.uid };
         }
         const key = mediaR2Key(params.type, params.id);
@@ -106,6 +119,23 @@ export function mediaStorage(deps: StorageDeps): MediaStorage {
       }
     },
 
+    async setSigning(location, required) {
+      if (location.storageBackend === "r2") {
+        throw new MediaUnsupportedError({
+          detail: "setSigning is for Cloudflare Images and Stream; an R2 object is private by its bucket",
+        });
+      }
+      try {
+        if (location.storageBackend === "cf-images") return await deps.image.setSigning(location.storageKey, required);
+        return await deps.video.setSigning(location.storageKey, required);
+      } catch (error) {
+        throw new MediaStorageError(
+          { detail: `set signing ${required} failed for ${location.storageKey}` },
+          { cause: error },
+        );
+      }
+    },
+
     async readR2Object(key) {
       const object = await deps.bucket.get(key);
       if (!object) {
@@ -114,14 +144,14 @@ export function mediaStorage(deps: StorageDeps): MediaStorage {
       return new Uint8Array(await object.arrayBuffer());
     },
 
-    async presignedDownloadUrl(location) {
+    async presignedDownloadUrl(location, expiresInSeconds) {
       if (location.storageBackend !== "r2") {
         throw new MediaUnsupportedError({
           detail: `presignedDownloadUrl is R2-only; ${location.storageBackend} has its own delivery URL`,
         });
       }
       try {
-        return await deps.r2.mintDownload(location.storageKey);
+        return await deps.r2.mintDownload(location.storageKey, expiresInSeconds);
       } catch (error) {
         throw new MediaStorageError({ detail: `presign download failed for ${location.storageKey}` }, { cause: error });
       }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { RawBuilder, SqlBool } from "kysely";
 import type { MediaType } from "../data/enums";
 import type { MediaAsset } from "../data/mediaAsset";
 
@@ -11,8 +12,13 @@ import type { MediaAsset } from "../data/mediaAsset";
  */
 export type MediaRecord = MediaAsset & Record<string, unknown>;
 
-/** Options for listing records. Filtering by `type` is precise in D1 and a scan-filter in KV. */
+/** Options for listing records. */
 export interface ListRecordsOptions {
+  /**
+   * Which records the caller may see, as SQL — `readablePredicate` from core's access rules. Required:
+   * there is no list of every record in the account, and no parameter that could ask for one.
+   */
+  readable: RawBuilder<SqlBool>;
   /** Restrict to one media type. */
   type?: MediaType;
   /** Maximum records per page. Defaults to 50. */
@@ -30,21 +36,20 @@ export interface RecordPage {
 }
 
 /**
- * The record-store seam: one interface, two backends. `recordStore: 'd1'` (default) persists to the
- * `pithy_media_assets` table with queryable derived text; `recordStore: 'kv'` persists to a KV namespace
- * (key lookup; `list` scans, documented as such). Both validate every read and write against the effective
- * schema, so an adopter's extension fields survive with no backend-specific work. Duplicate detection is
- * NOT here — it always runs against the D1 {@link HashStore}, independent of the record store.
+ * The record-store seam, over the `pithy_media_assets` table. Every read and write is validated against
+ * the effective schema, so an adopter's extension fields survive with no extra work. Duplicate detection
+ * is NOT here — it runs against the {@link import("./hashStore").HashStore}, which carries its own copy of
+ * each record's tenant so its lookups are one scoped index read.
  */
 export interface RecordStore {
   /** Persist a new record. Returns the stored, re-validated record. */
   create(record: MediaRecord): Promise<MediaRecord>;
-  /** Read a record by id, or null on a miss. */
+  /** Read a record by id, or null on a miss. The caller decides whether the reader may see it. */
   get(id: string): Promise<MediaRecord | null>;
   /** Merge `changes` over the current record, validate, and write it back. Throws if the id is unknown. */
   patch(id: string, changes: Partial<MediaRecord>): Promise<MediaRecord>;
   /** Delete a record by id. A miss is a no-op. */
   delete(id: string): Promise<void>;
-  /** List records, newest first, optionally filtered by type. */
-  list(options?: ListRecordsOptions): Promise<RecordPage>;
+  /** List the records a caller may see, newest first, optionally filtered by type. */
+  list(options: ListRecordsOptions): Promise<RecordPage>;
 }

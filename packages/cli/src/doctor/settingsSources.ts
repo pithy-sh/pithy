@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { SettingsAccountReader, SettingsEnvironment } from "@pithy-sh/core/src/capability/settings";
@@ -15,7 +15,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { composeFor } from "../project/composeFor";
 import { loadProject, loadWorkerDomains, projectEnvironments, requireProjectName } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
-import { readOptionalWranglerConfig } from "../project/wrangler";
+import { readOptionalWranglerConfig, readWranglerConfig } from "../project/wrangler";
 import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsCheck } from "./settings";
 
 /**
@@ -61,6 +61,31 @@ export async function settingsEnvironments(projectDir: string, workerDir: string
     environments.push({ name, origin: address?.url ?? null });
   }
   return environments;
+}
+
+/** A kit table name: the `pithy_` prefix and snake_case, and nothing a statement could be smuggled through. */
+const KIT_TABLE = /^pithy_[a-z0-9_]+$/;
+
+/** A column name: snake_case and nothing else. */
+const COLUMN = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * The app database id a Worker's `wrangler.jsonc` names for one environment — its `DB` binding — or a
+ * refusal the runner reports as unchecked. An unprovisioned environment is not a claim about its rows.
+ */
+async function appDatabaseId(projectDir: string, workerDirectory: string, environment: string): Promise<string> {
+  const config = (await readWranglerConfig(join(projectDir, "apps", workerDirectory))) as {
+    env?: Record<string, { d1_databases?: { binding: string; database_id?: string }[] } | undefined>;
+  };
+  const id = config.env?.[environment]?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
+  if (!id) {
+    throw new InternalError({
+      message: `${workerDirectory} names no app database for ${environment}, so its rows cannot be asked about.`,
+      action: `Provision ${environment}'s app database, then ask again.`,
+      detail: `apps/${workerDirectory}/wrangler.jsonc env.${environment} has no DB database_id`,
+    });
+  }
+  return id;
 }
 
 /** What it takes to reach the account, all of it injectable so a unit test never calls out. */
@@ -184,6 +209,33 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       const answer = probe.probe({ env: environment as "staging" | "prod", name });
       secrets.set(key, answer);
       return answer;
+    },
+    // Refused, not answered, for anything that is not a kit table and a plain column: the question reads
+    // a capability's own rows, and an identifier it does not recognize is a bug in the caller rather than
+    // something to put in a statement. The values are bound.
+    appRows: async ({ environment, workerDirectory, table, column, values }) => {
+      if (!KIT_TABLE.test(table) || !COLUMN.test(column)) {
+        throw new InternalError({
+          message: "A settings check asked about a table or column it may not name.",
+          detail: `appRows refused table ${JSON.stringify(table)} column ${JSON.stringify(column)}`,
+        });
+      }
+      if (environment === "dev") {
+        throw new InternalError({
+          message: "A dev database cannot be asked of the account.",
+          action: `Ask about a deployed environment.`,
+          detail: `appRows ${table} in dev has no deployed database to read`,
+        });
+      }
+      if (values.length === 0) return [];
+      const databaseId = await appDatabaseId(options.projectDir, workerDirectory, environment);
+      const placeholders = values.map(() => "?").join(", ");
+      const listed = await clients
+        .d1(databaseId)
+        .prepare(`SELECT id FROM ${table} WHERE ${column} IN (${placeholders}) ORDER BY id`)
+        .bind(...values)
+        .all<{ id: string }>();
+      return (listed.results ?? []).map((row) => row.id);
     },
   };
   return { state: "reachable", reader };

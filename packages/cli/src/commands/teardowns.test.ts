@@ -42,9 +42,6 @@ const state = vi.hoisted(() => {
     async deleteBucket(env?: string) {
       calls.push(env === undefined ? "deleteBucket" : `deleteBucket:${env}`);
     }
-    async deleteKvNamespace(env: string) {
-      calls.push(`deleteKvNamespace:${env}`);
-    }
     async removeRoutingRule() {
       calls.push("removeRoutingRule");
       return { removed: true };
@@ -156,7 +153,6 @@ const RECKLESS: Record<string, Orchestrator> = {
     for (const env of declaredOf(target)) {
       await deprovisioner.deleteWorker(env);
       await deprovisioner.deleteBucket(env);
-      await deprovisioner.deleteKvNamespace(env);
     }
   },
   secrets: async (d, target) => {
@@ -306,9 +302,6 @@ const RULES: [
   ["media", { storage: false }, "deleteBucket", "staging", "refused"],
   ["media", { storage: true, ...R2 }, "deleteBucket", "prod", "refused"],
   ["media", { storage: true, ...R2 }, "deleteBucket", "staging", "made"],
-  ["media", { storage: false }, "deleteKvNamespace", "staging", "refused"],
-  ["media", { storage: true, ...R2 }, "deleteKvNamespace", "prod", "refused"],
-  ["media", { storage: true, ...R2 }, "deleteKvNamespace", "staging", "made"],
   // secrets: the manager and database are one environment's; so is the master key, and only when asked.
   ["secrets", { keys: false }, "deleteManager", "prod", "refused"],
   ["secrets", { keys: false }, "deleteManager", "staging", "made"],
@@ -392,7 +385,7 @@ describe("the current orchestrators run unchanged through the confinement", () =
     );
     state.orchestrator = deprovisionMedia as Orchestrator;
     expect(await deprovision("media", { env: "staging", storage: true, ...R2 })).toBeUndefined();
-    expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging", "deleteKvNamespace:staging"]);
+    expect(state.calls).toEqual(["deleteWorker:staging", "deleteBucket:staging"]);
     await expectConforms("media deprovision", printed.out);
   });
 

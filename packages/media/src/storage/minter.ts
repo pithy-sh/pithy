@@ -16,7 +16,17 @@
  * lets the object plane change shape without reaching into media.
  */
 
-/** Mints a one-time Cloudflare Images direct-upload URL and deletes stored images. */
+/**
+ * How a direct upload is minted. `requireSignedURLs` makes Cloudflare refuse to serve the bytes to
+ * anyone without a signed URL — set for every non-public record, at the moment the upload is minted, so
+ * there is never an interval in which a private asset is served plain.
+ */
+export interface MintOptions {
+  /** Serve this asset only through signed URLs. */
+  requireSignedURLs?: boolean;
+}
+
+/** Mints a one-time Cloudflare Images direct-upload URL, changes an image's signing, and deletes images. */
 export interface ImageMinter {
   /**
    * Mint a direct-upload URL; CF assigns the image id, returned as the storage key.
@@ -24,12 +34,17 @@ export interface ImageMinter {
    * The bag is the caller's own; the adapter merges the ownership keys over it, so what reaches
    * Cloudflare always names the owning project and environment (see `cloudflare.ts`).
    */
-  mintDirectUpload(metadata?: Record<string, string>): Promise<{ id: string; uploadUrl: string }>;
+  mintDirectUpload(
+    metadata?: Record<string, string>,
+    options?: MintOptions,
+  ): Promise<{ id: string; uploadUrl: string }>;
+  /** Require, or stop requiring, signed URLs for a stored image. Resolves once Cloudflare confirms. */
+  setSigning(id: string, required: boolean): Promise<void>;
   /** Delete a stored image by its CF Images id. */
   delete(id: string): Promise<void>;
 }
 
-/** Mints a Cloudflare Stream direct-upload URL and deletes stored videos. */
+/** Mints a Cloudflare Stream direct-upload URL, changes a video's signing, and deletes videos. */
 export interface VideoMinter {
   /**
    * Mint a direct-upload URL; CF assigns the video uid, returned as the storage key.
@@ -39,7 +54,12 @@ export interface VideoMinter {
    * is the only place ownership can live. The adapter merges the project and environment over
    * whatever the caller passes.
    */
-  mintDirectUpload(metadata?: Record<string, string>): Promise<{ uid: string; uploadUrl: string }>;
+  mintDirectUpload(
+    metadata?: Record<string, string>,
+    options?: MintOptions,
+  ): Promise<{ uid: string; uploadUrl: string }>;
+  /** Require, or stop requiring, signed playback for a stored video. Resolves once Cloudflare confirms. */
+  setSigning(uid: string, required: boolean): Promise<void>;
   /** Delete a stored video by its CF Stream uid. */
   delete(uid: string): Promise<void>;
 }
@@ -52,6 +72,9 @@ export interface VideoMinter {
 export interface R2Minter {
   /** Presigned PUT URL for a client to upload bytes straight to R2. */
   mintUpload(key: string, contentType: string, contentLength: number): Promise<string>;
-  /** Presigned GET URL for reading an object back (enrichment reads audio/documents this way). */
-  mintDownload(key: string): Promise<string>;
+  /**
+   * Presigned GET URL for reading an object back — a reader's delivery URL for a private R2 record, and
+   * how enrichment reads audio and documents. `expiresInSeconds` defaults to the store's hour.
+   */
+  mintDownload(key: string, expiresInSeconds?: number): Promise<string>;
 }

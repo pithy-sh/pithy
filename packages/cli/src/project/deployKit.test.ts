@@ -342,39 +342,19 @@ describe("deployKitWorkers", () => {
       // And it fails the command, because a run that skipped every kit Worker shipped none of them.
       expect(kitDeployFailed(report)).toBe(true);
     });
-
-    test("a KV namespace the adopter's configuration asks for and the environment has no id for", async () => {
-      const rows = await run({
-        composes: [media({ recordStore: "kv" })],
-        bindings: [
-          { binding: "DB", database_id: "db-1" },
-          { binding: "SECRETS", database_id: "sec-1" },
-        ],
-        readTemplate: readHostTemplate,
-      });
-      expect(rows[0]).toEqual({
-        capability: "media",
-        worker: null,
-        outcome: "skipped",
-        reason: "prod has no MEDIA namespace yet. Run pithy media provision --worker api.",
-      });
-      expect(deployed).toEqual([]);
-    });
   });
 
   /**
    * The blocker, through the command: `pithy deploy --kit` must ship the adopter's configuration, not
    * the capability's schema defaults.
    *
-   * Media is the sharpest case because the config decides a *binding*. On `recordStore: "kv"` the
-   * registry read `MediaConfig.parse({})`, saw `"d1"`, and dropped the `MEDIA` binding — which
-   * `pithy media provision` then bound again on its next run. Two commands, one Worker, each undoing
-   * the other, and nothing anywhere said so.
+   * The registry once read `MediaConfig.parse({})` for media, so the deployed host ran on schema
+   * defaults while `pithy media provision` deployed the adopter's — two commands, one Worker, each
+   * undoing the other, and nothing anywhere said so.
    */
-  test("ships the adopter's own capability configuration, bindings included", async () => {
+  test("ships the adopter's own capability configuration", async () => {
     const rows = await run({
-      composes: [media({ recordStore: "kv" })],
-      namespaces: [{ binding: "MEDIA", id: "kv-media-1" }],
+      composes: [media({ visibility: { default: "organization" }, images: { imageToText: true } })],
       bindings: [
         { binding: "DB", database_id: "db-1" },
         { binding: "SECRETS", database_id: "sec-1" },
@@ -383,8 +363,9 @@ describe("deployKitWorkers", () => {
     });
     expect(rows[0]).toMatchObject({ capability: "media", worker: "acme-prod-media", outcome: "deployed" });
     const config = deployed[0];
-    expect(config?.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-media-1" }]);
-    expect(JSON.parse(config?.vars?.MEDIA_CONFIG as string).recordStore).toBe("kv");
+    const shipped = JSON.parse(config?.vars?.MEDIA_CONFIG as string);
+    expect(shipped.visibility.default).toBe("organization");
+    expect(shipped.images.imageToText).toBe(true);
   });
 
   test("a capability that will not resolve fails, and the row carries both halves of the refusal", async () => {

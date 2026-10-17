@@ -143,9 +143,11 @@ describe("a config option that is a closed set says so in its manifest", () => {
 
   test("the sweep finds closed sets at all, so the assertions below are not vacuous", async () => {
     // Every check here compares against this list, and a comparison against an empty list passes. The
-    // sweep reaches six today; it is asserted as a floor, so a resolution that stopped working fails.
+    // sweep reaches four today — media's `recordStore` and storage's `defaultVisibility` left with #727, and
+    // the visibility policy that replaced them is an object, not a closed set. It is asserted as a floor,
+    // so a resolution that stopped working fails.
     const checked = await closedSets();
-    expect(checked.length).toBeGreaterThanOrEqual(6);
+    expect(checked.length).toBeGreaterThanOrEqual(4);
   });
 
   test("each one declares its choices, and declares them exactly", async () => {

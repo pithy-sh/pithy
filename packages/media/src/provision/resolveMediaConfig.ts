@@ -47,24 +47,16 @@ export interface MediaConfigParams {
   secretsDatabaseId: string;
   /** The CF Secrets Store id holding the per-env master key. */
   storeId: string;
-  /** The provisioned bucket and KV namespace the worker binds. */
+  /** The provisioned bucket the worker binds. */
   resources: MediaResources;
   /** The app's resolved media config — serialized into the worker's `MEDIA_CONFIG` var. */
   mediaConfig: MediaConfig;
 }
 
-/**
- * Fill the template for one environment.
- *
- * The one media-specific subtlety is the `MEDIA` KV binding: the template declares it unconditionally,
- * because a template describes every binding the capability *might* need. In `recordStore: 'd1'` mode no
- * namespace is ever created, so the binding is dropped rather than left pointing at nothing — a deploy
- * that binds a namespace which does not exist fails opaquely at the worker's first request.
- */
+/** Fill the template for one environment. */
 export function resolveMediaConfig(template: WorkflowHostTemplate, params: MediaConfigParams): WorkflowHostTemplate {
   const feature = params.feature;
   const { project, env, appDatabaseId, secretsDatabaseId, storeId, resources, mediaConfig } = params;
-  const kvNamespaceId = resources.kvNamespaceId;
 
   return resolveWorkflowHost(template, {
     project,
@@ -72,7 +64,6 @@ export function resolveMediaConfig(template: WorkflowHostTemplate, params: Media
     env,
     ...(feature ? { feature } : {}),
     databaseIds: { DB: appDatabaseId, SECRETS: secretsDatabaseId },
-    ...(kvNamespaceId ? { kvNamespaceIds: { MEDIA: kvNamespaceId } } : { omitKvBindings: ["MEDIA"] }),
     r2BucketNames: { MEDIA_BUCKET: resources.bucketName },
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.

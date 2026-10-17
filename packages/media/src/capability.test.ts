@@ -20,19 +20,20 @@ function migrationKeys(cap: ReturnType<typeof media>): string[] {
 }
 
 describe("media()", () => {
-  test("is a media capability contributing config, migrations, routes, and bindings (D1 default)", () => {
+  test("is a media capability contributing config, migrations, routes, and bindings", () => {
     const cap = media();
     expect(cap.name).toBe("media");
     expect(isMediaCapability(cap)).toBe(true);
     expect(cap.dependsOn).toContain("secrets");
     expect(cap.secretRegistry).toBeDefined();
     expect(cap.routes).toBeTypeOf("function");
-    // The D1 default contributes the app database with the one authored migration, hashes and records.
     expect(cap.databases?.app?.binding).toBe("DB");
     expect(cap.databases?.app?.migrationOrder).toBe(MEDIA_MIGRATION_ORDER);
-    expect(migrationKeys(cap)).toEqual(["0001_init"]);
+    expect(migrationKeys(cap)).toEqual(["0001_init", "0003_ownership"]);
     expect(bindingNames(cap)).toContain("DB");
     expect(bindingNames(cap)).toContain("MEDIA_BUCKET");
+    // No KV namespace: records live in D1 and nowhere else.
+    expect(bindingNames(cap)).not.toContain("MEDIA");
     expect(bindingNames(cap)).toEqual(
       expect.arrayContaining([
         "MEDIA_IMAGE_TO_TEXT",
@@ -43,39 +44,56 @@ describe("media()", () => {
     );
   });
 
-  test("KV record store still requires DB (dedup hashes are always D1) and adds the MEDIA binding", () => {
-    const cap = media({ recordStore: "kv" });
-    // The app database exists in KV mode too — for the hash table.
-    expect(cap.databases?.app?.binding).toBe("DB");
-    // The same one migration, told not to create the record table.
-    expect(migrationKeys(cap)).toEqual(["0001_init"]);
-    expect(bindingNames(cap)).toContain("DB");
-    expect(bindingNames(cap)).toContain("MEDIA");
+  test("a config naming the kv record store is refused with the remedy named, never booted", () => {
+    expect(() => media({ recordStore: "kv" } as never)).toThrow(/`kv` media record store was removed/);
+    expect(() => media({ kvMetadata: ["type"] } as never)).toThrow(/kvMetadata/);
+  });
+
+  test("declares media:manage, so tenancy can require a role to hold it once media is composed", () => {
+    expect(media().powers).toEqual(["media:manage"]);
+  });
+
+  test("advertises its usage read at the resolved mount path", () => {
+    expect(media({ basePath: "/files" }).adminRoutes).toEqual([
+      expect.objectContaining({ method: "GET", path: "/files/admin/usage", scope: "media:usage:read" }),
+    ]);
   });
 
   test("an extension adds a generated 0002_extend migration and widens the effective schema", () => {
-    const cap = media({ extend: z.object({ userId: z.string().describe("owner") }).describe("ext") });
-    expect(migrationKeys(cap)).toEqual(["0001_init", "0002_extend"]);
-    expect(cap.schema.shape).toHaveProperty("userId");
+    const cap = media({ extend: z.object({ album: z.string().describe("album") }).describe("ext") });
+    expect(migrationKeys(cap)).toEqual(["0001_init", "0003_ownership", "0002_extend"]);
+    expect(cap.schema.shape).toHaveProperty("album");
   });
 
   test("without an extension there is no 0002_extend migration", () => {
     expect(migrationKeys(media())).not.toContain("0002_extend");
   });
 
-  test("rejects a kvMetadata field that is not a record field", () => {
-    // A base field is fine.
-    expect(() => media({ recordStore: "kv", kvMetadata: ["status"] })).not.toThrow();
-    // An extension field is fine once declared.
-    expect(() =>
-      media({
-        recordStore: "kv",
-        extend: z.object({ userId: z.string().describe("o") }).describe("e"),
-        kvMetadata: ["userId"],
-      }),
-    ).not.toThrow();
-    // A typo / unknown field fails fast at construction.
-    expect(() => media({ recordStore: "kv", kvMetadata: ["usreId"] })).toThrow(/unknown kvMetadata field/i);
+  test("declares the doctor check that names records outside a narrowed policy", async () => {
+    const asked: string[] = [];
+    const cap = media({ visibility: { allowed: ["private"] } });
+    const findings = await cap.settings?.account?.({
+      project: "acme",
+      worker: "acme-api",
+      workerDirectory: "api",
+      environments: [{ name: "prod", origin: null }],
+      account: {
+        d1Databases: async () => [],
+        zone: async () => true,
+        vaultSecret: async () => true,
+        storeEntry: async () => true,
+        appRows: async (request) => {
+          asked.push(`${request.table}:${request.values.join(",")}`);
+          return ["m1"];
+        },
+      },
+    });
+    expect(asked).toEqual(["pithy_media_assets:organization,public"]);
+    expect(findings?.[0]?.problem).toContain("m1");
+  });
+
+  test("a visibility default outside allowed is refused at boot", () => {
+    expect(() => media({ visibility: { default: "public", allowed: ["private"] } })).toThrow();
   });
 });
 
@@ -104,7 +122,7 @@ describe("pithy.manifest.json — declared secrets", () => {
     }
   });
 
-  test("both are obtained from Cloudflare, and only the token rolls itself", () => {
+  test("the credentials are obtained from Cloudflare, and only the token rolls itself", () => {
     // The two owners, and the reason rotation is declared per secret rather than per issuer. A scoped API
     // token is replaced by asking Cloudflare, which returns the successor; an R2 S3 access-key pair has
     // no such call, so a human makes the next one.

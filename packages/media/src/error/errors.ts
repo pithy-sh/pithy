@@ -26,7 +26,10 @@ interface MediaErrorArgs {
   params?: MessageParams;
 }
 
-/** A requested media record does not exist (or was soft-deleted). */
+/**
+ * A requested media record does not exist — **or exists and is not the caller's to see.** One answer for
+ * both, so an id cannot be probed: a distinguishable refusal on a private record would confirm it exists.
+ */
 export class MediaNotFoundError extends PithyError {
   constructor(args: MediaErrorArgs = {}, options?: { cause?: unknown }) {
     super(
@@ -34,6 +37,26 @@ export class MediaNotFoundError extends PithyError {
         code: "media/not_found",
         status: 404,
         message: args.message ?? "That media does not exist.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * The caller may read the record but not change it. Only ever thrown after a read was allowed — a caller
+ * who cannot see a record is told it is not found — so it discloses nothing they did not already know.
+ */
+export class MediaForbiddenError extends PithyError {
+  constructor(args: MediaErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "media/forbidden",
+        status: 403,
+        message: args.message ?? "You can see this media, but it is not yours to change.",
         action: args.action,
         detail: args.detail,
         params: args.params,

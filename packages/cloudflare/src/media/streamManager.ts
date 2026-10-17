@@ -69,6 +69,19 @@ function parseDownloadStatus(response: unknown): StreamDownloadStatus {
 }
 
 /**
+ * A Stream signing key: what a signed playback token for a video uploaded with `requireSignedURLs` is
+ * signed with. The JWK is base64 of the key's JSON, as Cloudflare returns it — a single line, so it is
+ * the form stored, where the PEM is not.
+ */
+export const StreamSigningKey = z
+  .object({
+    id: z.string().min(1).describe("The key id — the `kid` a signed token names."),
+    jwk: z.string().min(1).describe("The RSA private key as base64-encoded JWK, as Cloudflare returns it."),
+  })
+  .describe("One Cloudflare Stream signing key.");
+export type StreamSigningKey = z.infer<typeof StreamSigningKey>;
+
+/**
  * Out-of-Worker Cloudflare Stream access over the REST API: delete, fetch, edit, direct uploads,
  * and download (MP4 + audio-only) management from a CLI/CI/provisioning context. Video metadata is
  * the SDK's own `Video` shape — this class imposes none of its own.
@@ -180,6 +193,27 @@ export class CloudflareStreamManager extends CloudflareManager {
     return cloudflareRequest("Stream create direct upload", () =>
       this.getClient().stream.directUpload.create({ account_id: this.accountId, ...params }, requestOptions),
     );
+  }
+
+  /**
+   * Create a signing key. Cloudflare returns the private half once, on creation, and never again — so the
+   * caller stores it, and a lost key is replaced by creating another.
+   */
+  async createSigningKey(): Promise<StreamSigningKey> {
+    return cloudflareRequest("Stream create signing key", async () => {
+      const response = await this.getClient().stream.keys.create(
+        { account_id: this.accountId, body: {} },
+        requestOptions,
+      );
+      const parsed = StreamSigningKey.safeParse(response);
+      if (!parsed.success) {
+        throw new CloudflareInvalidResponseError({
+          message: "A Stream signing-key response had an unexpected shape.",
+          detail: parsed.error.message,
+        });
+      }
+      return parsed.data;
+    });
   }
 
   getServiceType(): string {

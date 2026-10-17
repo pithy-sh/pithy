@@ -22,6 +22,8 @@ export { maxObjectBytes, StorageConfig, type StorageConfigInput, StorageQuota } 
 export { StorageShare } from "./data/share";
 export { StorageObject, StorageObjectStatus, StorageVisibility } from "./data/storageObject";
 export { STORAGE_OBJECTS_TABLE, STORAGE_SHARES_TABLE, type StorageDatabase, storageDatabase } from "./data/tables";
+export { STORAGE_MANAGE_POWER } from "./http/handlers";
+export { STORAGE_USAGE_READ_SCOPE } from "./http/scopes";
 export { deriveObjectKey, isDerivedObjectKey, OBJECT_KEY_PREFIX } from "./object/key";
 export { collectParts, MultipartPlan, needsMultipart, PartPlan, planMultipart, ReportedPart } from "./object/multipart";
 export {

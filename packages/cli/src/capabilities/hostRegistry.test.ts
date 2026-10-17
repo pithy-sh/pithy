@@ -72,7 +72,6 @@ function devContext(capability: Capability) {
     env: LOCAL_ENVIRONMENT,
     baseUrl: "http://localhost:8787",
     databaseId: (binding: string) => binding,
-    kvNamespaceId: (binding: string) => binding,
     // Dev's two answers, spelled out here as `pithy dev` spells them out at its own call site.
     storeId: () => "",
     accountId: () => "",

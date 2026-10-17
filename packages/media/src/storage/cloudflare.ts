@@ -35,11 +35,17 @@ const StreamUploadResponse = z.object({ uid: z.string(), uploadURL: z.string() }
 /** Adapt a {@link CloudflareImageManager} to the {@link ImageMinter} seam, stamped for one owner. */
 export function imageMinter(manager: CloudflareImageManager, owner: AssetOwner): ImageMinter {
   return {
-    async mintDirectUpload(metadata) {
+    async mintDirectUpload(metadata, options = {}) {
       const response = ImageUploadResponse.parse(
-        await manager.createDirectUploadUrl({ metadata: withAssetOwnership(owner, metadata) }),
+        await manager.createDirectUploadUrl({
+          metadata: withAssetOwnership(owner, metadata),
+          ...(options.requireSignedURLs ? { requireSignedURLs: true } : {}),
+        }),
       );
       return { id: response.id, uploadUrl: response.uploadURL };
+    },
+    async setSigning(id, required) {
+      await manager.updateImage(id, { requireSignedURLs: required });
     },
     delete: (id) => manager.deleteImage(id),
   };
@@ -48,14 +54,18 @@ export function imageMinter(manager: CloudflareImageManager, owner: AssetOwner):
 /** Adapt a {@link CloudflareStreamManager} to the {@link VideoMinter} seam, stamped for one owner. */
 export function videoMinter(manager: CloudflareStreamManager, owner: AssetOwner): VideoMinter {
   return {
-    async mintDirectUpload(metadata) {
+    async mintDirectUpload(metadata, options = {}) {
       const response = StreamUploadResponse.parse(
         await manager.createDirectUpload({
           maxDurationSeconds: STREAM_MAX_DURATION_SECONDS,
           meta: withAssetOwnership(owner, metadata),
+          ...(options.requireSignedURLs ? { requireSignedURLs: true } : {}),
         }),
       );
       return { uid: response.uid, uploadUrl: response.uploadURL };
+    },
+    async setSigning(uid, required) {
+      await manager.updateVideo(uid, { requireSignedURLs: required });
     },
     delete: (uid) => manager.deleteVideo(uid),
   };
@@ -66,12 +76,13 @@ export function videoMinter(manager: CloudflareStreamManager, owner: AssetOwner)
  *
  * Only the presign paths cross here. `deleteObject` and `readR2Object` stay on the `R2Bucket` binding
  * in `storage.ts`: a binding read needs no credential, makes no round trip to resolve one, and streams
- * its body, so routing it through the store would cost something and buy nothing. The store's default
- * expiry (one hour) is the one media wants for both URLs, so neither call names one.
+ * its body, so routing it through the store would cost something and buy nothing. An upload takes the
+ * store's default expiry (one hour); a download may name its own, which a reader's delivery URL does.
  */
 export function objectStoreMinter(store: ObjectStore): R2Minter {
   return {
     mintUpload: (key, contentType, contentLength) => store.presignPut(key, contentType, contentLength),
-    mintDownload: (key) => store.presignGet(key),
+    mintDownload: (key, expiresInSeconds) =>
+      store.presignGet(key, expiresInSeconds === undefined ? undefined : { expiresIn: expiresInSeconds }),
   };
 }

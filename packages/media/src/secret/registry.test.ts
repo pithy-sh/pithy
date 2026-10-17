@@ -6,11 +6,31 @@ import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { media } from "../capability";
-import { MEDIA_BUCKET_BINDING, MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "./registry";
+import {
+  MEDIA_BUCKET_BINDING,
+  MEDIA_IMAGES_SIGNING_SECRET,
+  MEDIA_R2_SECRET,
+  MEDIA_STORAGE_SECRET,
+  MEDIA_STREAM_SIGNING_SECRET,
+  mediaSecretsRegistry,
+} from "./registry";
 
 describe("mediaSecretsRegistry", () => {
-  test("declares both names — its own credentials and the R2 bundle it points objectStore at", () => {
-    expect(Object.keys(mediaSecretsRegistry).sort()).toEqual([MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET]);
+  test("declares its credentials, its two signing keys, and the R2 bundle it points objectStore at", () => {
+    expect(Object.keys(mediaSecretsRegistry).sort()).toEqual(
+      [MEDIA_IMAGES_SIGNING_SECRET, MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, MEDIA_STREAM_SIGNING_SECRET].sort(),
+    );
+  });
+
+  test("the signing keys are json bundles of single-line fields, read where provisioning writes them", () => {
+    for (const entry of [
+      mediaSecretsRegistry[MEDIA_IMAGES_SIGNING_SECRET],
+      mediaSecretsRegistry[MEDIA_STREAM_SIGNING_SECRET],
+    ] as SecretRegistryEntry[]) {
+      expect(entry.backend).toBe("d1");
+      expect(entry.valueType).toBe("json");
+      expect(entry.binding).toBeUndefined();
+    }
   });
 
   test("both live where provisioning actually puts them: encrypted rows in the secrets D1", () => {

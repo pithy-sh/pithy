@@ -3,6 +3,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { noActingOrganization } from "./access/acting";
 import { noopEmit } from "./audit/recorder";
 import { BindingSpec } from "./capability/bindings";
 import type {
@@ -238,6 +239,9 @@ export function createBackend<
       validated = true;
     }
     if (c.get("auth") === undefined) c.set("auth", null);
+    // Nothing in force until `@pithy-sh/organization`'s middleware publishes a resolver. Media and storage
+    // read it to scope every record, so a Worker with no tenancy answers null rather than throwing.
+    if (c.get("actingOrganization") === undefined) c.set("actingOrganization", noActingOrganization);
     // Null means nothing negotiated, which is not the same fact as "the default was chosen" — only
     // `@pithy-sh/i18n` ever sets it, and `c.var.t` works either way.
     if (c.get("locale") === undefined) c.set("locale", null);

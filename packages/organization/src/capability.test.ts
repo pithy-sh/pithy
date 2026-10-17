@@ -15,7 +15,7 @@ import { isOrganizationCapability, organization } from "./capability";
 import { MEMBERSHIPS_TABLE, organizationTables } from "./data/tables";
 import { ORGANIZATION_CONTROL_PLANE_SCOPES } from "./http/scopes";
 import { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
-import { defineRoles } from "./roles/roles";
+import { defineRoles, ORGANIZATION_POWERS } from "./roles/roles";
 
 /** The dashboard's catalog: three roles that nest, two powers of its own, `owner` unassignable. */
 const dashboard = defineRoles({
@@ -268,6 +268,35 @@ describe("composing alongside Better Auth's organization() plugin", () => {
       "utf8",
     );
     expect(source).toContain('kind: "better-auth-plugin"');
+  });
+});
+
+describe("the reserved powers a composed capability gates on", () => {
+  const MEDIA: Capability = { name: "media", requiredBindings: [], powers: ["media:manage"] };
+
+  test("a catalog without media:manage composes while media is not composed", () => {
+    const capability = organization(BASE);
+    expect(() => capability.compose?.({ capabilities: [EMAIL, capability] })).not.toThrow();
+  });
+
+  test("and is refused at compose, naming the power, once media is", () => {
+    const capability = organization(BASE);
+    expect(() => capability.compose?.({ capabilities: [EMAIL, MEDIA, capability] })).toThrow(
+      /No role holds `media:manage`, and `media` is composed/,
+    );
+  });
+
+  test("a catalog that places it composes beside media", () => {
+    const withMedia = defineRoles({
+      roles: { owner: [...ORGANIZATION_POWERS, "media:manage"], member: ["organization:read"] },
+      administrativePower: "organization:manage",
+    });
+    const capability = organization({ ...BASE, roles: withMedia });
+    expect(() => capability.compose?.({ capabilities: [EMAIL, MEDIA, capability] })).not.toThrow();
+  });
+
+  test("publishes the acting-organization seam as middleware", () => {
+    expect(organization(BASE).middleware).toHaveLength(1);
   });
 });
 

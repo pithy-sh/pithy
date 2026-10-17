@@ -12,21 +12,30 @@ import { mediaStorage } from "./storage";
 function fakes() {
   const calls: string[] = [];
   const metadata: Record<string, Record<string, string> | undefined> = {};
+  const signed: Record<string, boolean | undefined> = {};
   const image: ImageMinter = {
-    mintDirectUpload: async (bag) => {
+    mintDirectUpload: async (bag, options) => {
       calls.push("image");
       metadata.image = bag;
+      signed.image = options?.requireSignedURLs;
       return { id: "img-1", uploadUrl: "https://images/upload" };
+    },
+    setSigning: async (id, required) => {
+      calls.push(`image:signing:${id}:${required}`);
     },
     delete: async (id) => {
       calls.push(`image:delete:${id}`);
     },
   };
   const video: VideoMinter = {
-    mintDirectUpload: async (bag) => {
+    mintDirectUpload: async (bag, options) => {
       calls.push("video");
       metadata.video = bag;
+      signed.video = options?.requireSignedURLs;
       return { uid: "vid-1", uploadUrl: "https://stream/upload" };
+    },
+    setSigning: async (uid, required) => {
+      calls.push(`video:signing:${uid}:${required}`);
     },
     delete: async (uid) => {
       calls.push(`video:delete:${uid}`);
@@ -39,7 +48,7 @@ function fakes() {
     },
     mintDownload: async (key) => `https://r2/download/${key}`,
   };
-  return { calls, metadata, image, video, r2 };
+  return { calls, metadata, signed, image, video, r2 };
 }
 
 const bucket = {
@@ -106,10 +115,52 @@ describe("mediaStorage.mintUpload", () => {
       mintDirectUpload: async () => {
         throw new Error("cf down");
       },
+      setSigning: async () => {},
       delete: async () => {},
     };
     const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
     await expect(storage.mintUpload({ type: "image", id: "m1", contentType: "image/png" })).rejects.toMatchObject({
+      payload: { code: "media/storage_failed" },
+    });
+  });
+});
+
+describe("mediaStorage — signing", () => {
+  test("a signed mint reaches both Cloudflare stores, and an unsigned one asks for nothing", async () => {
+    const { signed, image, video, r2 } = fakes();
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    await storage.mintUpload({ type: "image", id: "m1", contentType: "image/png", signed: true });
+    await storage.mintUpload({ type: "video", id: "m2", contentType: "video/mp4" });
+    expect(signed).toEqual({ image: true, video: false });
+  });
+
+  test("setSigning routes to the asset's store", async () => {
+    const { calls, image, video, r2 } = fakes();
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    await storage.setSigning({ storageBackend: "cf-images", storageKey: "img-9" }, true);
+    await storage.setSigning({ storageBackend: "cf-stream", storageKey: "vid-9" }, false);
+    expect(calls).toEqual(["image:signing:img-9:true", "video:signing:vid-9:false"]);
+  });
+
+  test("setSigning refuses R2 — a private object is private by its bucket", async () => {
+    const { image, video, r2 } = fakes();
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    await expect(storage.setSigning({ storageBackend: "r2", storageKey: "media/audio/x" }, true)).rejects.toMatchObject(
+      { payload: { code: "media/unsupported" } },
+    );
+  });
+
+  test("a Cloudflare failure is media/storage_failed, never a silent success", async () => {
+    const { video, r2 } = fakes();
+    const image: ImageMinter = {
+      mintDirectUpload: async () => ({ id: "x", uploadUrl: "u" }),
+      setSigning: async () => {
+        throw new Error("cf down");
+      },
+      delete: async () => {},
+    };
+    const storage = mediaStorage({ image, video, r2, bucket, config: MediaConfig.parse({}) });
+    await expect(storage.setSigning({ storageBackend: "cf-images", storageKey: "img-1" }, true)).rejects.toMatchObject({
       payload: { code: "media/storage_failed" },
     });
   });

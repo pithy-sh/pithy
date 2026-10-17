@@ -83,4 +83,13 @@ export {
 export { requireMayAssign } from "./members/members";
 export { ORGANIZATION_MIGRATION_ORDER } from "./migrations/0001_init";
 export { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
-export { defineRoles, KIT_POWERS, KitPower, type RoleCatalog, type RoleCatalogInput } from "./roles/roles";
+export {
+  CAPABILITY_POWERS,
+  defineRoles,
+  KIT_POWERS,
+  KitPower,
+  ORGANIZATION_POWERS,
+  type RoleCatalog,
+  type RoleCatalogInput,
+  requireComposedPowers,
+} from "./roles/roles";

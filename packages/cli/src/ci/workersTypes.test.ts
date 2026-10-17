@@ -135,7 +135,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/matchmaking": 8,
   "packages/media": 7,
   "packages/multiplayer": 5,
-  "packages/organization": 6,
+  "packages/organization": 7,
   "packages/payments": 14,
   "packages/rating": 2,
   "packages/secrets": 4,

@@ -20,7 +20,6 @@ function template(): WorkflowHostTemplate {
       { binding: "DB", database_name: "pithy-app", database_id: "<filled-at-provision>" },
       { binding: "SECRETS", database_name: "pithy-secrets", database_id: "<filled-at-provision>" },
     ],
-    kv_namespaces: [{ binding: "MEDIA", id: "<filled-at-provision>" }],
     r2_buckets: [{ binding: "MEDIA_BUCKET", bucket_name: "<filled-at-provision>" }],
     ai: { binding: "AI" },
     secrets_store_secrets: [
@@ -65,7 +64,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media" },
     });
 
     expect(resolved.name).toBe("acme-staging-media");
@@ -81,7 +80,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "prod",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media" },
     });
 
     expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual([
@@ -99,31 +98,22 @@ describe("resolveMediaConfig", () => {
     ]);
   });
 
-  test("keeps the MEDIA binding, filled, when records live in KV", () => {
+  test("binds no KV namespace — media records live in D1 and nothing else", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
-    });
-    expect(resolved.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-1" }]);
-  });
-
-  test("drops the MEDIA binding entirely in D1 mode — never binds a namespace that was not created", () => {
-    const resolved = resolveMediaConfig(template(), {
-      ...BASE,
-      env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media" },
     });
     expect(resolved.kv_namespaces).toBeUndefined();
   });
 
   test("serializes the media config and stamps the environment", () => {
-    const mediaConfig = MediaConfig.parse({ recordStore: "kv", images: { imageToText: true } });
+    const mediaConfig = MediaConfig.parse({ images: { imageToText: true } });
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       mediaConfig,
       env: "prod",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media" },
     });
 
     expect(resolved.vars?.ENVIRONMENT).toBe("prod");
@@ -136,7 +126,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media" },
     });
     expect(resolved.vars?.PROJECT).toBe("acme");
 
@@ -149,7 +139,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: null },
+      resources: { bucketName: "acme-staging-media" },
     });
     expect(resolved.secrets_store_secrets?.[0]?.secret_name).toBe(masterKeySecretName("acme", "staging"));
   });
@@ -159,7 +149,7 @@ describe("resolveMediaConfig", () => {
       ...BASE,
       project: "globex",
       env: "prod",
-      resources: { bucketName: "globex-prod-media", kvNamespaceId: null },
+      resources: { bucketName: "globex-prod-media" },
     });
     expect(resolved.name).toBe("globex-prod-media");
     expect(resolved.workflows?.[0]?.name).toBe("globex-prod-media-image-to-text");
@@ -169,7 +159,7 @@ describe("resolveMediaConfig", () => {
     const resolved = resolveMediaConfig(template(), {
       ...BASE,
       env: "staging",
-      resources: { bucketName: "acme-staging-media", kvNamespaceId: "kv-1" },
+      resources: { bucketName: "acme-staging-media" },
     });
     expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
   });

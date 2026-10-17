@@ -1116,7 +1116,7 @@
       }
     },
     "media provision": {
-      "schemaVersion": 1,
+      "schemaVersion": 2,
       "payload": {
         "$": "object",
         "$.command": "\"media provision\"",
@@ -1124,7 +1124,6 @@
         "$.environments[]": "object",
         "$.environments[].env": "string",
         "$.environments[].bucketName": "string",
-        "$.environments[].kvNamespaceId": "null | string",
         "$.skippedEnvironments": "array",
         "$.skippedEnvironments[]": "object",
         "$.skippedEnvironments[].env": "string",

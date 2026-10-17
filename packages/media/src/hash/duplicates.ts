@@ -3,7 +3,7 @@
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { MediaType } from "../data/enums";
-import type { HashStore } from "../record/hashStore";
+import type { DedupScope, HashStore } from "../record/hashStore";
 
 /**
  * Duplicate detection — one exact key, one fuzzy key.
@@ -80,27 +80,34 @@ export interface FindDuplicatesParams {
   threshold?: number;
   /** Cap the number of candidates returned. Defaults to 10, closest first. */
   limit?: number;
+  /** Whose records to compare against — required, so no lookup is ever account-wide by accident. */
+  scope: DedupScope;
+  /**
+   * Keep only the candidates this accepts, applied closest first **before** the cap — so a match the
+   * caller may not see never takes a place in `limit` from one they may. Absent, every candidate counts.
+   */
+  accept?: (candidate: DuplicateCandidate) => boolean | Promise<boolean>;
 }
 
 /**
- * Find the records that duplicate a new object. Runs two passes against the D1 {@link HashStore} — dedup
- * is always D1, whatever the record store (KV cannot serve these queries):
+ * Find the records that duplicate a new object, within one tenant's scope. Runs two passes against the
+ * {@link HashStore}:
  *
  * 1. **Exact.** Every record with the same SHA-256 is a byte-identical duplicate (`kind: "identical"`,
  *    `distance: 0`), for any media type.
- * 2. **Near.** Only for an `image` that carries a `phash`: compare against every stored image phash,
+ * 2. **Near.** Only for an `image` that carries a `phash`: compare against every image phash in scope,
  *    skipping records already matched exactly and any hash of a different length, and keep the ones whose
  *    Hamming distance is not `different` (`kind: "similar"`).
  *
  * The two sets are combined — exact matches never double-counted as near — sorted closest first (exact
- * matches lead at distance `0`), and capped to `limit`. Inputs are not mutated.
+ * matches lead at distance `0`), filtered by `accept` when one is given, and capped to `limit`. Inputs are not mutated.
  */
 export async function findDuplicates(hashes: HashStore, params: FindDuplicatesParams): Promise<DuplicateCandidate[]> {
   const threshold = params.threshold ?? SIMILAR_THRESHOLD;
   const limit = params.limit ?? 10;
 
   // Pass 1 — exact byte matches by SHA-256. The id → type map also lets pass 2 skip records already exact.
-  const exactMatches = await hashes.findBySha256(params.sha256);
+  const exactMatches = await hashes.findBySha256(params.sha256, params.scope);
   const exactIds = new Set<string>();
   for (const match of exactMatches) exactIds.add(match.mediaId);
 
@@ -115,7 +122,7 @@ export async function findDuplicates(hashes: HashStore, params: FindDuplicatesPa
   const near: DuplicateCandidate[] = [];
   if (params.type === "image" && params.phash) {
     const phash = params.phash;
-    for (const entry of await hashes.listImagePhashes()) {
+    for (const entry of await hashes.listImagePhashes(params.scope)) {
       if (exactIds.has(entry.mediaId)) continue;
       if (entry.phash.length !== phash.length) continue;
       const distance = hammingDistance(phash, entry.phash);
@@ -124,6 +131,16 @@ export async function findDuplicates(hashes: HashStore, params: FindDuplicatesPa
     }
   }
 
-  // Combine, closest first, capped. A stable sort keeps the exact matches (distance 0) ahead of near ones.
-  return [...exact, ...near].sort((a, b) => a.distance - b.distance).slice(0, limit);
+  // Combine, closest first. A stable sort keeps the exact matches (distance 0) ahead of near ones.
+  const sorted = [...exact, ...near].sort((a, b) => a.distance - b.distance);
+  const accept = params.accept;
+  if (!accept) return sorted.slice(0, limit);
+
+  // Filter before the cap: walk closest first until `limit` candidates are accepted.
+  const kept: DuplicateCandidate[] = [];
+  for (const candidate of sorted) {
+    if (kept.length >= limit) break;
+    if (await accept(candidate)) kept.push(candidate);
+  }
+  return kept;
 }

@@ -3,7 +3,7 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
+import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
@@ -13,8 +13,11 @@ import { z } from "zod";
 import type { MediaAi } from "../ai/enrich";
 import { MediaConfig } from "../config/config";
 import { MediaAsset } from "../data/mediaAsset";
+import { mediaDatabase } from "../data/tables";
+import { resolveDeliverySigner } from "../deliver/resolve";
+import type { DeliverySigner } from "../deliver/sign";
 import { MediaEnrichmentError } from "../error/errors";
-import { resolveRecordStore } from "../record/resolve";
+import { d1RecordStore } from "../record/d1Store";
 import type { MediaRecord } from "../record/store";
 import { MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "../secret/registry";
 import {
@@ -26,6 +29,7 @@ import {
 } from "./enrich";
 import { fetchVideoAudio } from "./hls";
 import { mediaWorkflowRetry } from "./retryPolicy";
+import { enrichmentImageUrl, enrichmentPlaylistUrl } from "./sources";
 import { MEDIA_CAPABILITY } from "./specs";
 
 /**
@@ -46,12 +50,10 @@ import { MEDIA_CAPABILITY } from "./specs";
  * `@pithy-sh/core/src/workflow/hostEntry`.
  */
 
-/** The media worker's env: the record bindings, the R2 bucket, the AI binding, the secrets, and config. */
+/** The media worker's env: the record database, the R2 bucket, the AI binding, the secrets, and config. */
 export interface MediaWorkerEnv extends SecretsStoreEnv {
-  /** The app database the media table lives in (D1 record store). */
+  /** The app database the media table lives in. */
   DB: D1Database;
-  /** The KV namespace media records live in (KV record store). */
-  MEDIA: KVNamespace;
   /** The R2 bucket media objects are read from. */
   MEDIA_BUCKET: R2Bucket;
   /** The Workers AI binding. */
@@ -72,10 +74,14 @@ configureSharedSecrets({ registry: mediaSecretsRegistry });
 /** The passthrough record schema: base fields decode through codecs, extension fields ride along raw. */
 const LooseAsset = MediaAsset.catchall(z.unknown());
 
-/** Read a stored object's raw bytes: R2 through the binding, Cloudflare Images through its delivery URL. */
+/**
+ * Read a stored object's raw bytes: R2 through the binding, Cloudflare Images through its delivery URL —
+ * signed, when the record's bytes are (see `sources.ts`).
+ */
 async function readObjectBytes(
   env: MediaWorkerEnv,
   imagesAccountHash: string | undefined,
+  signer: () => Promise<DeliverySigner>,
   record: MediaRecord,
 ): Promise<Uint8Array> {
   if (record.storageBackend === "r2") {
@@ -84,12 +90,7 @@ async function readObjectBytes(
     return new Uint8Array(await object.arrayBuffer());
   }
   if (record.storageBackend === "cf-images") {
-    if (!imagesAccountHash) {
-      throw new MediaEnrichmentError({
-        detail: "delivery.imagesAccountHash is required to read image bytes for enrichment",
-      });
-    }
-    const url = `https://imagedelivery.net/${imagesAccountHash}/${record.storageKey}/public`;
+    const url = await enrichmentImageUrl(record, imagesAccountHash, signer);
     const response = await fetch(url);
     if (!response.ok) throw new MediaEnrichmentError({ detail: `image fetch failed (${response.status})` });
     return new Uint8Array(await response.arrayBuffer());
@@ -107,10 +108,16 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
   // Parsed once per run and threaded through — the models, the record store, and the delivery hash all
   // come from this one config.
   const config = MediaConfig.parse(env.MEDIA_CONFIG ? JSON.parse(env.MEDIA_CONFIG) : {});
-  const store = resolveRecordStore(env, config, LooseAsset);
+  const store = d1RecordStore(mediaDatabase(env.DB, LooseAsset), LooseAsset);
   const secrets = await sharedSecretsStore(env, mediaSecretsRegistry);
   const credentials = secrets.get(MEDIA_STORAGE_SECRET);
   const imagesAccountHash = config.delivery.imagesAccountHash;
+  // Resolved once, and only if a signed record needs it.
+  let signing: Promise<DeliverySigner> | undefined;
+  const signer = () => {
+    signing ??= resolveDeliverySigner(env);
+    return signing;
+  };
   const streamManager = new CloudflareStreamManager({
     apiToken: credentials.apiToken,
     accountId: credentials.accountId,
@@ -122,16 +129,16 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
       imageToText: config.images.model,
       transcribe: transcribeKind === "video" ? config.video.model : config.audio.model,
     },
-    readBytes: (record) => readObjectBytes(env, imagesAccountHash, record),
+    readBytes: (record) => readObjectBytes(env, imagesAccountHash, signer, record),
     readDocument: async (record) => ({
       name: record.filename,
-      blob: new Blob([await readObjectBytes(env, imagesAccountHash, record)]),
+      blob: new Blob([await readObjectBytes(env, imagesAccountHash, signer, record)]),
     }),
     fetchVideoAudio: async (record) => {
       const details = (await streamManager.getVideoDetails(record.storageKey)) as { playback?: { hls?: string } };
       const hls = details.playback?.hls;
       if (!hls) throw new MediaEnrichmentError({ detail: `video ${record.storageKey} has no HLS playback URL yet` });
-      return fetchVideoAudio(hls);
+      return fetchVideoAudio(await enrichmentPlaylistUrl(record, hls, signer));
     },
   };
 }

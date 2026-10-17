@@ -209,4 +209,90 @@ describe("reaching the account", () => {
     // than answered `false`, and the runner reports the capability's account tier as unchecked.
     await expect(answer.reader.vaultSecret({ name: "email-link-signing-key", environment: "dev" })).rejects.toThrow();
   });
+
+  describe("appRows — a capability's own rows, named", () => {
+    async function reachable(rows: { id: string }[] = []) {
+      await project(["dev", "prod"], { env: { prod: { d1_databases: [{ binding: "DB", database_id: "db-prod" }] } } });
+      const asked: { databaseId: string; sql: string; values: unknown[] }[] = [];
+      const answer = await settingsAccountConnection({
+        projectDir: dir,
+        account: null,
+        project: "acme",
+        offline: false,
+        env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+        homedir: dir,
+        connect: async () =>
+          ({
+            d1: (databaseId: string) => ({
+              prepare: (sql: string) => ({
+                bind: (...values: unknown[]) => ({
+                  all: async () => {
+                    asked.push({ databaseId, sql, values });
+                    return { results: rows };
+                  },
+                }),
+              }),
+            }),
+          }) as never,
+        probe: async () => ({ probe: async () => false }),
+      });
+      if (answer.state !== "reachable") throw new Error("expected reachable");
+      return { reader: answer.reader, asked };
+    }
+
+    test("reads the Worker's own app database for that environment, with every value bound", async () => {
+      const { reader, asked } = await reachable([{ id: "m1" }, { id: "m2" }]);
+      const ids = await reader.appRows({
+        environment: "prod",
+        workerDirectory: "api",
+        table: "pithy_media_assets",
+        column: "visibility",
+        values: ["public"],
+      });
+      expect(ids).toEqual(["m1", "m2"]);
+      expect(asked).toEqual([
+        {
+          databaseId: "db-prod",
+          sql: "SELECT id FROM pithy_media_assets WHERE visibility IN (?) ORDER BY id",
+          values: ["public"],
+        },
+      ]);
+    });
+
+    test("refuses a table that is not the kit's, or a column it cannot name, before any statement", async () => {
+      const { reader, asked } = await reachable();
+      const ask = (table: string, column: string) =>
+        reader.appRows({ environment: "prod", workerDirectory: "api", table, column, values: ["x"] });
+      await expect(ask("users", "visibility")).rejects.toThrow();
+      await expect(ask("pithy_media_assets; drop table x", "visibility")).rejects.toThrow();
+      await expect(ask("pithy_media_assets", "visibility = 1 or 1")).rejects.toThrow();
+      expect(asked).toEqual([]);
+    });
+
+    test("an environment with no app database is unchecked, not clean", async () => {
+      const { reader } = await reachable();
+      await expect(
+        reader.appRows({
+          environment: "staging",
+          workerDirectory: "api",
+          table: "pithy_media_assets",
+          column: "visibility",
+          values: ["public"],
+        }),
+      ).rejects.toThrow(/names no app database for staging/);
+    });
+
+    test("dev is refused — it has no deployed database", async () => {
+      const { reader } = await reachable();
+      await expect(
+        reader.appRows({
+          environment: "dev",
+          workerDirectory: "api",
+          table: "pithy_media_assets",
+          column: "visibility",
+          values: ["public"],
+        }),
+      ).rejects.toThrow();
+    });
+  });
 });

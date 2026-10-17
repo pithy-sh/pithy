@@ -11,11 +11,21 @@ const mockV1Edit = vi.fn();
 const mockV1Delete = vi.fn();
 const mockV2List = vi.fn();
 const mockDirectUploadsCreate = vi.fn();
+const mockKeysList = vi.fn();
+const mockKeysUpdate = vi.fn();
+const mockVariantsList = vi.fn();
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
     images = {
-      v1: { create: mockV1Create, get: mockV1Get, edit: mockV1Edit, delete: mockV1Delete },
+      v1: {
+        create: mockV1Create,
+        get: mockV1Get,
+        edit: mockV1Edit,
+        delete: mockV1Delete,
+        keys: { list: mockKeysList, update: mockKeysUpdate },
+        variants: { list: mockVariantsList },
+      },
       v2: { list: mockV2List, directUploads: { create: mockDirectUploadsCreate } },
     };
   },
@@ -142,6 +152,40 @@ describe("CloudflareImageManager", () => {
       expect(mockV2List).toHaveBeenCalledTimes(2);
       expect(mockV2List).toHaveBeenNthCalledWith(1, { account_id: "acct-1", continuation_token: undefined }, opts);
       expect(mockV2List).toHaveBeenNthCalledWith(2, { account_id: "acct-1", continuation_token: "t1" }, opts);
+    });
+  });
+
+  describe("signing keys", () => {
+    it("lists the account's URL-signing keys", async () => {
+      mockKeysList.mockResolvedValue({ keys: [{ name: "default", value: "secret" }] });
+      expect(await manager.signingKeys()).toEqual([{ name: "default", value: "secret" }]);
+      expect(mockKeysList).toHaveBeenCalledWith({ account_id: "acct-1" }, opts);
+    });
+
+    it("creates a named key and answers with every key", async () => {
+      mockKeysUpdate.mockResolvedValue({ keys: [{ name: "pithy", value: "fresh" }] });
+      expect(await manager.createSigningKey("pithy")).toEqual([{ name: "pithy", value: "fresh" }]);
+      expect(mockKeysUpdate).toHaveBeenCalledWith("pithy", { account_id: "acct-1" }, opts);
+    });
+
+    it("refuses a response it cannot read rather than handing back undefined", async () => {
+      mockKeysList.mockResolvedValue({ keys: [{ name: "default" }] });
+      await expect(manager.signingKeys()).rejects.toBeInstanceOf(PithyError);
+    });
+  });
+
+  describe("listVariants", () => {
+    it("reports each variant and whether it serves unsigned", async () => {
+      mockVariantsList.mockResolvedValue({
+        variants: {
+          public: { id: "public", options: {} },
+          thumb: { id: "thumb", options: {}, neverRequireSignedURLs: true },
+        },
+      });
+      expect(await manager.listVariants()).toEqual([
+        { id: "public", neverRequireSignedURLs: false },
+        { id: "thumb", neverRequireSignedURLs: true },
+      ]);
     });
   });
 

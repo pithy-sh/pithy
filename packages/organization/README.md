@@ -67,11 +67,11 @@ Five properties hold this together, and each of them is a decision rather than a
 
 In a module of your project, `src/organization/roles.ts`, scaffolded by `pithy add organization` and never overwritten once it exists. A module rather than a config literal, because your own route code imports the typed powers and importing from `pithy.config.ts` into a handler is backwards.
 
-`defineRoles` closes the kit's five power names, opens yours under your own names, and carries the literals through: `c.var.acting.role` narrows to the roles as written, and `requirePower` refuses a power nobody declared at compile time rather than denying everyone at runtime.
+`defineRoles` closes the kit's seven power names — tenancy's five, and `media:manage` and `storage:manage` — opens yours under your own names, and carries the literals through: `c.var.acting.role` narrows to the roles as written, and `requirePower` refuses a power nobody declared at compile time rather than denying everyone at runtime.
 
 ### A catalog that nests
 
-The dashboard's own, and its seven powers decompose with nothing left over — the kit's five, plus two that exist because that particular product calls customers' Workers.
+The dashboard's own, and its seven powers decompose with nothing left over — tenancy's five, plus two that exist because that particular product calls customers' Workers.
 
 ```ts
 import { defineRoles } from "@pithy-sh/organization/src/roles/roles";
@@ -127,7 +127,7 @@ export const roles = defineRoles({
 
 No `nests`, because these four are not a chain: `coach` and `student` are siblings and neither is above the other. `nests` takes the roles that do form one — `["admin", "owner"]` would be a true claim here, and claiming it would be worth doing — but it never describes the whole set by assumption.
 
-No `unassignable`, so every role including `owner` may be handed to somebody, and the founder of an academy is its owner. Nothing about this catalog is a degraded case of the first one: it is a different shape, and the only thing the two share is the five powers the kit's own routes gate on.
+No `unassignable`, so every role including `owner` may be handed to somebody, and the founder of an academy is its owner. Nothing about this catalog is a degraded case of the first one: it is a different shape, and the only thing the two share is tenancy's five.
 
 ## Routes
 

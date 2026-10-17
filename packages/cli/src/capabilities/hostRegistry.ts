@@ -52,10 +52,10 @@ import { capabilityLoadError } from "./loadFailure";
  * rather than optional so a new entry cannot grow one. Five branches did exactly that — media,
  * storage, support, testers and vector — written while this registry served `pithy dev` alone, where
  * a host on schema defaults was a local convenience nobody deployed. #537 pointed
- * `pithy deploy --kit` at the same entries and inherited the wrong half: an adopter on
- * `recordStore: "kv"` had `pithy deploy` strip the `MEDIA` KV binding their config asks for while
- * `pithy media provision` put it back, and testers' deployed host lost `EMAIL_FROM_ADDRESS`
- * entirely, because the entry passed `email: undefined` under a comment about local sending.
+ * `pithy deploy --kit` at the same entries and inherited the wrong half: media's deployed host lost
+ * a binding its config asked for while `pithy media provision` put it back, and testers' deployed host
+ * lost `EMAIL_FROM_ADDRESS` entirely, because the entry passed `email: undefined` under a comment
+ * about local sending.
  *
  * So the registry serves one master. A composed object that is not the shape its own package defines
  * is {@link ownCapability}'s refusal, never a default — the whole failure was a silent fallback, and
@@ -94,16 +94,6 @@ export interface HostResolveContext {
    * `pithy migrate --env dev` filled. A host answering anything else opens an empty database.
    */
   databaseId: (binding: string) => string;
-  /**
-   * The KV namespace id a binding resolves to, on the same rule {@link databaseId} states and for the
-   * same reason: wrangler's local key for a namespace is `id ?? binding`, so under `dev` this answers
-   * the **binding name** and a host answering anything else opens a namespace nothing wrote.
-   *
-   * Asked for rather than derived, because the only id a derivation could invent is the namespace's
-   * *title* — `acme-prod-media` — and a title is not an id. `pithy deploy --kit` reads the real one
-   * off the app Worker's own `wrangler.jsonc`, exactly as it reads a database id.
-   */
-  kvNamespaceId: (binding: string) => string;
   /**
    * The Secrets Store id, asked for rather than read, so a host that binds the store says so by
    * calling — exactly as it says which databases it needs by calling {@link databaseId}.
@@ -464,16 +454,6 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
           // vector entry composed `<project>-<env>-<index>` against the provisioner's
           // `<project>-<env>-vector-<index>` — a deployed Worker bound to an index nobody created.
           bucketName: bucketName(context, "MEDIA_BUCKET", () => mediaBucketName(context.project, context.env)),
-          // Records live in D1 by default, and in that mode the KV binding is dropped rather than
-          // pointed at a namespace nothing created. `recordStore` decides — **the adopter's, not the
-          // schema's**: this branch read `MediaConfig.parse({})`, so a project storing records in KV
-          // had its `MEDIA` binding deleted by `pithy deploy` and restored by `pithy media provision`,
-          // and the two commands fought over every deploy (#537).
-          //
-          // A KV namespace *does* have an account-minted id, so it is asked for rather than derived —
-          // the derivable value is the namespace's title, and binding a title as an id fails at the
-          // Worker's first read.
-          kvNamespaceId: mediaConfig.recordStore === "kv" ? context.kvNamespaceId("MEDIA") : null,
         },
         mediaConfig,
       });

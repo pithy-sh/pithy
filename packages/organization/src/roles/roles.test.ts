@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, expectTypeOf, test } from "vitest";
-import { defineRoles, isKitPower, KIT_POWERS, type KitPower } from "./roles";
+import {
+  CAPABILITY_POWERS,
+  defineRoles,
+  isKitPower,
+  KIT_POWERS,
+  type KitPower,
+  ORGANIZATION_POWERS,
+  requireComposedPowers,
+} from "./roles";
 
 /** The dashboard's catalog: three roles that nest, two powers of its own, `owner` unassignable. */
 const dashboard = defineRoles({
@@ -44,11 +52,31 @@ const academy = defineRoles({
   administrativePower: "organization:manage",
 });
 
-describe("the kit's five powers", () => {
-  test("are exactly five, and every one is recognized as reserved", () => {
-    expect(KIT_POWERS).toHaveLength(5);
+describe("the kit's reserved powers", () => {
+  test("are tenancy's five and the two media and storage gate on, and every one is reserved", () => {
+    expect(ORGANIZATION_POWERS).toHaveLength(5);
+    expect(CAPABILITY_POWERS).toEqual(["media:manage", "storage:manage"]);
+    expect(KIT_POWERS).toEqual([...ORGANIZATION_POWERS, ...CAPABILITY_POWERS]);
     for (const power of KIT_POWERS) expect(isKitPower(power)).toBe(true);
     expect(isKitPower("connections:read")).toBe(false);
+  });
+
+  test("a catalog placing neither capability power is valid — nothing composed asks for one", () => {
+    const tenancyOnly = defineRoles({
+      roles: { admin: [...ORGANIZATION_POWERS] },
+      administrativePower: "organization:manage",
+    });
+    expect(tenancyOnly.roleAllows("admin", "media:manage")).toBe(false);
+  });
+
+  test("a capability power cannot be redeclared either", () => {
+    expect(() =>
+      defineRoles({
+        powers: ["media:manage"],
+        roles: { admin: [...ORGANIZATION_POWERS] },
+        administrativePower: "organization:manage",
+      }),
+    ).toThrow(/`media:manage` is one of the kit's own powers/);
   });
 
   test("are in force whether or not an adopter declared any of their own", () => {
@@ -68,6 +96,43 @@ describe("the kit's five powers", () => {
         administrativePower: "organization:manage",
       }),
     ).toThrow(/`members:manage` is one of the kit's own powers/);
+  });
+});
+
+describe("requireComposedPowers — the conditional half", () => {
+  const tenancyOnly = defineRoles({
+    roles: { admin: [...ORGANIZATION_POWERS] },
+    administrativePower: "organization:manage",
+  });
+
+  test("a catalog omitting media:manage is not refused while media is not composed", () => {
+    expect(() => requireComposedPowers(tenancyOnly, [{ name: "auth" }, { name: "email", powers: [] }])).not.toThrow();
+  });
+
+  test("and is refused, naming the power and the capability, once media is", () => {
+    expect(() => requireComposedPowers(tenancyOnly, [{ name: "media", powers: ["media:manage"] }])).toThrow(
+      /No role holds `media:manage`, and `media` is composed/,
+    );
+  });
+
+  test("storage the same way", () => {
+    expect(() => requireComposedPowers(tenancyOnly, [{ name: "storage", powers: ["storage:manage"] }])).toThrow(
+      /No role holds `storage:manage`/,
+    );
+  });
+
+  test("a catalog placing the power passes", () => {
+    const withMedia = defineRoles({
+      roles: { admin: [...ORGANIZATION_POWERS, "media:manage"], member: ["organization:read"] },
+      administrativePower: "organization:manage",
+    });
+    expect(() => requireComposedPowers(withMedia, [{ name: "media", powers: ["media:manage"] }])).not.toThrow();
+  });
+
+  test("a power the catalog never declared is refused by name", () => {
+    expect(() => requireComposedPowers(tenancyOnly, [{ name: "app", powers: ["projects:manage"] }])).toThrow(
+      /`app` gates on `projects:manage`, which this role catalog does not declare/,
+    );
   });
 });
 
@@ -253,9 +318,15 @@ describe("the literal types flow through", () => {
     expect(loose.roleAllows("superuser", "organization:read")).toBe(false);
   });
 
-  test("the kit power type is the five names", () => {
+  test("the kit power type is the seven names", () => {
     expectTypeOf<KitPower>().toEqualTypeOf<
-      "organization:read" | "organization:manage" | "organization:delete" | "members:manage" | "billing:manage"
+      | "organization:read"
+      | "organization:manage"
+      | "organization:delete"
+      | "members:manage"
+      | "billing:manage"
+      | "media:manage"
+      | "storage:manage"
     >();
   });
 });

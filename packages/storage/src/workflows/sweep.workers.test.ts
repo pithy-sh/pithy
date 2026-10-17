@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { StorageObject, type StorageObjectStatus } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase, type StorageTables, storageDatabase } from "../data/tables";
 import { storage_0001_objects } from "../migrations/0001_objects";
+import { storage_0002_ownership } from "../migrations/0002_ownership";
 import { type ObjectStore, objectStore, type PresignedObjects } from "../object/store";
 import { sweepStorage } from "./sweep";
 
@@ -41,6 +42,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_storage_objects");
   db = storageDatabase(env.DB);
   await storage_0001_objects.up(db as unknown as Kysely<unknown>);
+  await storage_0002_ownership.up(db as unknown as Kysely<unknown>);
   bucket = env.STORAGE_BUCKET;
   for (const prefix of ["obj/", "other/"]) {
     const listing = await bucket.list({ prefix });
@@ -76,6 +78,7 @@ async function insertRow(options: {
     key: options.key,
     path: `${options.key}.bin`,
     ownerId: OWNER,
+    organizationId: null,
     contentType: "application/octet-stream",
     size: 4,
     visibility: "private",

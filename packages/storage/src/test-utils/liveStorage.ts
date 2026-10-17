@@ -12,6 +12,7 @@ import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore
 import { STORAGE_MIGRATION_ORDER } from "../capability";
 import { type StorageDatabase, storageDatabase } from "../data/tables";
 import { storage_0001_objects } from "../migrations/0001_objects";
+import { storage_0002_ownership } from "../migrations/0002_ownership";
 import { ObjectListing, ObjectMetadata, type ObjectStore, objectStore } from "../object/store";
 import { type R2StorageCredentials, STORAGE_R2_SECRET, storageSecretsRegistry } from "../secret/registry";
 
@@ -226,7 +227,7 @@ function storageMigrations() {
       database: "app",
       namespace: "storage",
       order: STORAGE_MIGRATION_ORDER,
-      migrations: { "0001_objects": storage_0001_objects },
+      migrations: { "0001_objects": storage_0001_objects, "0002_ownership": storage_0002_ownership },
     },
   ]);
   const provider = registry.app;

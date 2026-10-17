@@ -169,11 +169,14 @@ vi.mock("../capabilities/mediaProvisioner", async (importOriginal) => ({
     async ensureBucket(env: ManagedEnvironment) {
       return step("media:bucket", env, { bucketName: `acme-${env}-media`, created: true });
     }
-    async ensureKvNamespace(env: ManagedEnvironment) {
-      return step("media:kv", env, null);
+    async unsignedVariants() {
+      return [];
     }
     async writeCredentials(env: ManagedEnvironment) {
       return step("media:credentials", env, undefined);
+    }
+    async writeSigningKeys(env: ManagedEnvironment) {
+      return step("media:signing", env, undefined);
     }
     async deployWorker(env: ManagedEnvironment) {
       return step("media:deployWorker", env, undefined);

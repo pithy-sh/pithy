@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RecordVisibility } from "@pithy-sh/core/src/access/visibility";
 import { z } from "zod";
 import { MediaStatus, MediaType, StorageBackend } from "../data/enums";
 
@@ -30,6 +31,33 @@ export const MediaRecordResponse = z
     filename: z.string().describe("The original client filename, including extension."),
     contentType: z.string().describe("The MIME type of the stored bytes."),
     size: z.number().int().nullish().describe("The object's size in bytes, or null while it is not known."),
+    ownerId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "The user who owns the record. Null for a system-owned record, and for any record read by someone not acting for its organization; absent from a Worker that predates it.",
+      ),
+    organizationId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "The organization the record was written under. Null when none was in force, and for any record read by someone not acting for it; absent from a Worker that predates it.",
+      ),
+    visibility: RecordVisibility.optional().describe(
+      "Who may read the record. Absent from a Worker that predates visibility, where every signed-in user could.",
+    ),
+    signedDelivery: z
+      .boolean()
+      .optional()
+      .describe("Whether the bytes are served only through signed URLs, as Cloudflare last confirmed."),
+    signingPending: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether Cloudflare's signing setting has not yet caught up with the visibility: a change that failed halfway, or a record made private before signing was enforced. Send the visibility again to finish it.",
+      ),
     storageBackend: StorageBackend,
     storageKey: z
       .string()
@@ -77,7 +105,9 @@ export const MediaListResponse = z
     cursor: z
       .string()
       .optional()
-      .describe("Pass this back as `cursor` to read the next page. Absent on the last page."),
+      .describe(
+        "Pass this back as `cursor` to read the next page. Absent on the last page. A page may hold fewer records than asked for and still carry one — a permission hook removed some — so the cursor, not the count, says whether there is more.",
+      ),
   })
   .describe("One page of media records.");
 export type MediaListResponse = z.infer<typeof MediaListResponse>;
@@ -118,3 +148,15 @@ export const MediaDeletedResponse = z
   })
   .describe("The record was deleted.");
 export type MediaDeletedResponse = z.infer<typeof MediaDeletedResponse>;
+
+/** What minting a delivery URL returns. */
+export const MediaDeliveryUrlResponse = z
+  .object({
+    url: z.string().describe("The URL to load the bytes from. Signed and short-lived for a record that is not public."),
+    expiresAt: z.iso
+      .datetime()
+      .nullable()
+      .describe("When the URL stops working, ISO-8601. Null for a public record's plain URL, which does not expire."),
+  })
+  .describe("Where to load a record's bytes, and until when.");
+export type MediaDeliveryUrlResponse = z.infer<typeof MediaDeliveryUrlResponse>;

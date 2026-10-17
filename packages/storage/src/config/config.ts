@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { VisibilityPolicy } from "@pithy-sh/core/src/access/visibility";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import { StorageVisibility } from "../data/storageObject";
 import {
   DEFAULT_MULTIPART_THRESHOLD_BYTES,
   DEFAULT_PART_SIZE_BYTES,
@@ -25,8 +26,9 @@ import {
  * fixes the practical object ceiling: 10,000 × 64 MiB ≈ 625 GiB. Raise `partSizeBytes` to raise the
  * ceiling (R2's own object cap is 4.995 TiB); the cost is that every retry re-sends a larger part.
  *
- * **Default visibility is private.** The safe default is the one where forgetting to set a field
- * cannot leak a file.
+ * **Default visibility is private, and the project decides which levels exist.** The safe default is the
+ * one where forgetting to set a field cannot leak a file, and `visibility.allowed` — all three levels
+ * unless narrowed — is how a project promises that a file can never be published at all.
  */
 
 /** The largest single-part upload R2 accepts — 5 GiB, less 5 MiB. Above it, multipart is not optional. */
@@ -68,8 +70,8 @@ export const StorageConfig = z
       .describe(
         "Bytes per multipart part, for every part but the last. R2 allows at most 10,000 parts, so this fixes the largest object you can store: 64 MiB gives ~625 GiB. The floor is S3's 5 MiB rule for non-final parts.",
       ),
-    defaultVisibility: StorageVisibility.default("private").describe(
-      "Visibility for an upload that does not name one. Private, so a forgotten field can never publish a file.",
+    visibility: VisibilityPolicy.prefault({}).describe(
+      "Which visibility levels a file may carry, and the one an upload gets when it names none. Private by default; every level allowed unless narrowed.",
     ),
     pendingTtlSeconds: z
       .number()
@@ -80,7 +82,7 @@ export const StorageConfig = z
         "How long a `pending` row holds its quota reservation before the orphan sweep reclaims it. Long enough for a slow multipart upload to finish; short enough that an abandoned one does not hold a quota forever.",
       ),
   })
-  .describe("Configuration for the storage capability — quotas, multipart sizing, and default visibility.")
+  .describe("Configuration for the storage capability — quotas, multipart sizing, and the visibility policy.")
   .check((ctx) => {
     // A ceiling below the part size would mean the first "multipart" upload is a single short part,
     // which R2 accepts but which makes the threshold meaningless. Say so rather than silently allowing it.
@@ -102,4 +104,20 @@ export type StorageConfigInput = z.input<typeof StorageConfig>;
  */
 export function maxObjectBytes(config: StorageConfig): number {
   return config.partSizeBytes * MAX_UPLOAD_PARTS;
+}
+
+/**
+ * Refuse a config that still names an option a release renamed, naming the new one.
+ *
+ * `defaultVisibility` became `visibility.default`, beside `visibility.allowed`. Zod would strip the old key
+ * and parse the rest, so a project upgrading without the edit would quietly get the default it may have
+ * meant to change — refused here instead, before the config is parsed.
+ */
+export function refuseRenamedStorageOptions(input: Record<string, unknown>): void {
+  if (!("defaultVisibility" in input)) return;
+  throw new ValidationError({
+    message: "`defaultVisibility` was renamed `visibility.default`.",
+    action: `Replace \`defaultVisibility: ${JSON.stringify(input.defaultVisibility)}\` with \`visibility: { default: ${JSON.stringify(input.defaultVisibility)} }\` in storage({ … }) in this Worker's pithy.config.ts.`,
+    detail: "storage({ defaultVisibility }) names an option this release renamed",
+  });
 }

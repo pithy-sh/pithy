@@ -7,6 +7,7 @@ import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
+import { actingOrganizationMiddleware } from "./acting/seam";
 import { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 import { organizationTables } from "./data/tables";
 import { registerOrganizationRoutes } from "./http/routes";
@@ -15,7 +16,7 @@ import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./migrations/0001_init";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
 import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
-import type { RoleCatalog } from "./roles/roles";
+import { type RoleCatalog, requireComposedPowers } from "./roles/roles";
 import { organizationExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 
@@ -245,6 +246,10 @@ export function organization<const Power extends string = never, const Role exte
       // The refusal first, so a Worker holding two membership models never gets as far as wiring mail
       // for one of them.
       refuseSecondMembershipModel(capabilities);
+      // A composed capability that gates on a reserved power — media's `media:manage`, storage's
+      // `storage:manage` — needs a role that holds it, or what it gates is a route nobody can use. Asked
+      // here rather than in `defineRoles`, because only composition knows what else is in the Worker.
+      requireComposedPowers(roles, capabilities);
       const email = composedEmail(capabilities);
       // An invitation the config says to mail, in a Worker with no email to mail it through, used to be found
       // out by the first person to invite someone. Refused here instead, by name (#645 review).
@@ -260,6 +265,9 @@ export function organization<const Power extends string = never, const Role exte
       wiring.enqueue = email?.enqueue;
     },
     requiredBindings,
+    // Core's acting-organization seam, filled for every request: media and storage scope each record to
+    // the organization in force through it, and must never import this package to learn it.
+    middleware: [actingOrganizationMiddleware(roles)],
     databases: {
       [ORGANIZATION_DATABASE_NAME]: {
         binding: "DB",

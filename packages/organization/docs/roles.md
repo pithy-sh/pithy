@@ -6,15 +6,15 @@ Who may do what is declared once, by you, and read by every route. This page is 
 
 ## Three places, and they are different kinds of thing
 
-**The capability owns five power names.** It ships routes — invite, change a role, remove a member, transfer ownership, delete the account — and those routes gate on something, so that something is the kit's and is closed.
+**The kit owns seven power names.** Tenancy ships routes — invite, change a role, remove a member, transfer ownership, delete the account — and those routes gate on five of them. Media and storage gate on the other two. All seven are the kit's and are closed.
 
 **You declare your own powers and the whole matrix**, in `src/organization/roles.ts`, scaffolded by `pithy add organization` and never overwritten once it exists. A module rather than a config literal, because your own route code imports the typed powers and importing from `pithy.config.ts` into a handler is backwards. `defineRoles` is the house pattern — `defineErrorPayload`, `defineSecretRegistry`, `defineSupportCategories`.
 
 **D1 holds the instances.** A membership's `role` column is a string from the declared set. Text, because the catalog is yours and is not known when the schema compiles.
 
-The three move at different speeds, and that is the point. The kit's five are fixed by a release. Your matrix is a deploy. The instances are rows people are standing on.
+The three move at different speeds, and that is the point. The kit's seven are fixed by a release. Your matrix is a deploy. The instances are rows people are standing on.
 
-## The five the kit reserves
+## The seven the kit reserves
 
 | Power | What the capability's own routes gate on it |
 | --- | --- |
@@ -23,10 +23,12 @@ The three move at different speeds, and that is the point. The kit's five are fi
 | `organization:delete` | Ending the account, and everything belonging to it |
 | `members:manage` | Handing somebody a role that administers — by invitation or by a role change |
 | `billing:manage` | Whatever this product's billing relationship is. **Not the ownership routes** — those are gated on holding the account rather than on a power, because in a catalog where the conferred role is the sole holder of this power a founded account would have nobody who could volunteer for it |
+| `media:manage` | Editing, deleting and changing the visibility of any media record in the organization — `@pithy-sh/media`'s, so an organization can clean up after somebody who left |
+| `storage:manage` | The same for any stored file — `@pithy-sh/storage`'s |
 
 **Reserved, not merely taken.** Declaring one of these in your own `powers` is refused, naming it, on the same rule that reserves the kit's error domains: an adopter redeclaring one would be writing a second definition of a power this capability's own handlers already gate on, and the two definitions would then be kept in step by hand.
 
-**Every one of them has to be held by some role.** A catalog in which nothing holds `organization:delete` describes an account that can never be ended, by anybody, ever — and the day somebody tries is a bad day to find out. So it is refused at boot, naming the power, because that is a catalog mistake rather than a runtime state.
+**Every one of them has to be held by some role — where something gates on it.** A catalog in which nothing holds `organization:delete` describes an account that can never be ended, by anybody, ever — and the day somebody tries is a bad day to find out. So it is refused at boot, naming the power, because that is a catalog mistake rather than a runtime state. Tenancy's five are required always. `media:manage` and `storage:manage` are required only in a Worker that composes media or storage: each capability declares the powers it gates on, and a project with no media is not refused for not placing `media:manage`.
 
 `members:manage` is narrower than its name reads, and it is the one that surprises people. Running the roster day to day — inviting a reader, withdrawing an offer, removing somebody, demoting an administrator — is `organization:manage`. What `members:manage` gates is *minting another administrator*, and the reason is the escalation it closes: an administrator who could mint a second administrator could install a fourth party at their own level, and the two of them could then hand the account on between themselves.
 
@@ -34,7 +36,7 @@ The three move at different speeds, and that is the point. The kit's five are fi
 
 A dashboard's `member`, `admin` and `owner` nest: every power a member holds an admin holds, and every power an admin holds an owner holds. A coaching academy's `coach` and `student` are parallel, and each holds what the other does not — a coach accepts sessions, a student requests them, and neither is a weaker version of the other.
 
-**A kit that assumed nesting would refuse the academy outright.** Both catalogs are in the [README](../README.md), side by side, and neither is a degraded case of the other. The only thing they share is the five powers above.
+**A kit that assumed nesting would refuse the academy outright.** Both catalogs are in the [README](../README.md), side by side, and neither is a degraded case of the other. The only thing they share is tenancy's five.
 
 ## Nesting is asserted where it is declared, never assumed
 
@@ -76,17 +78,19 @@ All of it at the moment the constant is written, because every one of these is a
 
 | Refused | Because |
 | --- | --- |
-| A declared power colliding with one of the kit's five | Two definitions of a power the capability's own handlers gate on |
+| A declared power colliding with one of the kit's seven | Two definitions of a power the capability's own handlers gate on |
 | A power declared twice | One name, one meaning |
 | No roles at all | A membership has to hold something |
 | A role holding a power nobody declared | A typo is a role quietly holding nothing, which is invisible until somebody is refused |
 | An `administrativePower` that is not a declared power | The invariant would count over nothing |
-| A kit power no role holds | A route this capability ships that nobody could ever use |
+| One of tenancy's five that no role holds | A route this capability ships that nobody could ever use |
 | An `administrativePower` no role holds | An account nobody could administer |
 | A `nests` entry that is not a declared role | A claim about something that does not exist |
 | A `nests` pair where the stronger role is short a power | The nesting is asserted, not documented |
 | An `unassignable` entry that is not a declared role | Same |
 | Every role excluded from assignment | Nobody could ever be given one |
+
+One more is refused later, at compose, because only the composed Worker knows it: **a power a composed capability gates on that no role holds** — `media:manage` beside `media()`, `storage:manage` beside `storage()`. The refusal names the power and the capability.
 
 One more is raised on the first founding rather than at boot: a catalog whose only administering roles are all excluded from assignment leaves nobody who could found an organization. `defineRoles` cannot know that this capability founds accounts, so the refusal lands where the fact is known — but it still names the catalog, not the request, because that is what is wrong.
 

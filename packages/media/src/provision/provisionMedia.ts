@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames, type ScopedNames } from "@pithy-sh/core/src/naming/resourceNames";
 import {
@@ -10,18 +10,28 @@ import {
   type ManagedEnvironment,
   managedEnvironments,
 } from "@pithy-sh/secrets/src/scope";
+import { MediaConfig } from "../config/config";
 import { MEDIA_CAPABILITY } from "../workflows/specs";
 
 /**
  * The provisioning orchestration for the media capability — the live counterpart to `pithy add media`'s
  * config wiring. `pithy add` writes bindings; this stands up what those bindings point at: the R2 bucket
- * media objects live in, the `MEDIA` KV namespace when records live in KV, two per-environment secrets,
- * and the prebuilt media worker that hosts the four enrichment Workflows.
+ * media objects live in, the per-environment secrets, and the prebuilt media worker that hosts the four
+ * enrichment Workflows.
  *
- * **Two secrets, because media reads only one of them.** `media-storage-credentials` carries the Images
- * and Stream token media mints direct-upload URLs with. `media-r2-credentials` carries the R2 key pair
- * and bucket, and is read by `@pithy-sh/storage`'s `ObjectStore` — media declares the name and never
+ * **Two credentials, because media reads only one of them.** `media-storage-credentials` carries the
+ * Images and Stream token media mints direct-upload URLs with. `media-r2-credentials` carries the R2 key
+ * pair and bucket, and is read by `@pithy-sh/storage`'s `ObjectStore` — media declares the name and never
  * touches the values. Both are per environment, because the bucket is (see {@link mediaBucketName}).
+ *
+ * **Two signing keys, because private media is delivered signed.** A non-public Images or Stream asset
+ * is uploaded with `requireSignedURLs`, and the Worker signs a short-lived URL for a reader with
+ * `media-images-signing-key` or `media-stream-signing-key`. Both are read off the account here, and
+ * written only where some record could be anything but public.
+ *
+ * **A variant that serves unsigned is refused.** An Images variant set to `neverRequireSignedURLs` serves
+ * a private image to anyone holding its URL, so provisioning names each one and stops before anything is
+ * created, while a project's images could be private.
  *
  * The live Cloudflare/wrangler steps are behind the {@link MediaProvisioner} seam, so the orchestration
  * (order, idempotency contract, per-env fan-out) is unit-tested without touching Cloudflare. **Every step
@@ -37,11 +47,10 @@ import { MEDIA_CAPABILITY } from "../workflows/specs";
 /**
  * Every name media provisions under, for one project in one environment.
  *
- * One call to the facade, so the project is validated once and the environment once — the R2 bucket,
- * the KV namespace, and the host Worker then each ask for their own kind of resource and get that
- * namespace's own limit. Media names the same capability three times over, in three namespaces whose
- * caps are 63, 512, and 63; going through the facade is what stops one number standing in for all
- * three, and what refuses `production` here rather than quietly provisioning a fourth environment.
+ * One call to the facade, so the project is validated once and the environment once — the R2 bucket and
+ * the host Worker then each ask for their own kind of resource and get that namespace's own limit. Going
+ * through the facade is what stops one number standing in for both, and what refuses `production` here
+ * rather than quietly provisioning a fourth environment.
  */
 function mediaNames(project: string, env: ManagedEnvironment): ScopedNames {
   return resourceNames(project).env(env);
@@ -78,18 +87,6 @@ export function mediaBucketName(project: string, env: ManagedEnvironment): strin
 }
 
 /**
- * The title of the KV namespace media records live in when `recordStore: 'kv'`. Per project and per
- * environment, for the same reasons — KV titles are account-wide too, and reuse keys on the title.
- *
- * Same string as the bucket today, and deliberately asked for separately: a KV title may run to 512
- * characters and a bucket stops at 63, so the two are the same only for as long as the composed name
- * is short. Asking `kv` for a KV title is what keeps them right when it stops being.
- */
-export function mediaKvTitle(project: string, env: ManagedEnvironment): string {
-  return mediaNames(project, env).kv(MEDIA_CAPABILITY);
-}
-
-/**
  * The deployed Worker name for a project's environment — also its resolved config basename. Held to
  * the Worker rule (63, refused rather than truncated: a script cannot be renamed after a deploy
  * without orphaning it and every `service` binding pointing at it).
@@ -102,8 +99,6 @@ export function mediaWorkerName(project: string, env: ManagedEnvironment): strin
 export interface MediaResources {
   /** The R2 bucket media objects live in. */
   bucketName: string;
-  /** The `MEDIA` KV namespace id, or `null` when records live in D1 and the binding is dropped. */
-  kvNamespaceId: string | null;
 }
 
 /** The live Cloudflare/wrangler seam. Each step must be idempotent. */
@@ -116,12 +111,8 @@ export interface MediaProvisioner {
   preflight(): Promise<void>;
   /** Create (or reuse) this environment's R2 bucket; returns its name. Idempotent. */
   ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }>;
-  /**
-   * Create (or reuse) this environment's `MEDIA` KV namespace, but only when records live in KV;
-   * returns `null` otherwise so the resolver drops the binding rather than pointing it at a namespace
-   * that was never created. Idempotent.
-   */
-  ensureKvNamespace(env: ManagedEnvironment): Promise<{ namespaceId: string } | null>;
+  /** The names of every Cloudflare Images variant set to `neverRequireSignedURLs`. */
+  unsignedVariants(): Promise<string[]>;
   /**
    * Write this environment's two secrets: `media-storage-credentials` (the Images + Stream token and the
    * account id) and `media-r2-credentials` (the R2 key pair and this environment's bucket). Idempotent
@@ -129,8 +120,43 @@ export interface MediaProvisioner {
    * credentials fails on its first enrichment.
    */
   writeCredentials(env: ManagedEnvironment, resources: MediaResources): Promise<void>;
+  /**
+   * Write this environment's signing keys — `media-images-signing-key` when images live in Cloudflare
+   * Images, `media-stream-signing-key` when video lives in Stream. Idempotent: the Images key is the
+   * account's own and rewritten as found; a Stream key's private half is returned only at creation, so one
+   * is created only when the environment holds none.
+   */
+  writeSigningKeys(env: ManagedEnvironment): Promise<void>;
   /** Deploy the prebuilt media worker for this environment, wired to the provisioned resources. */
   deployWorker(env: ManagedEnvironment, resources: MediaResources): Promise<void>;
+}
+
+/** What {@link provisionMedia} is told about the project, beyond the environments. */
+export interface MediaProvisionOptions {
+  /** The app's resolved media config — decides which signing keys exist and whether variants matter. */
+  readonly config?: MediaConfig;
+}
+
+/** Whether any record this config admits could be anything but public. */
+export function admitsPrivateMedia(config: MediaConfig): boolean {
+  return config.visibility.allowed.some((level) => level !== "public");
+}
+
+/**
+ * Refuse, naming each, the Images variants that would serve a private image unsigned — but only while
+ * images live in Cloudflare Images and could be private. A project whose every record is public, or whose
+ * images are in R2, has nothing a variant could leak.
+ */
+export async function refuseUnsignedVariants(provisioner: MediaProvisioner, config: MediaConfig): Promise<void> {
+  if (config.images.store !== "cf-images" || !admitsPrivateMedia(config)) return;
+  const unsigned = await provisioner.unsignedVariants();
+  if (unsigned.length === 0) return;
+  throw new ValidationError({
+    message: `Cloudflare Images variant${unsigned.length === 1 ? "" : "s"} ${unsigned.map((name) => `\`${name}\``).join(", ")} serve${unsigned.length === 1 ? "s" : ""} every image unsigned, so a private image would be public through ${unsigned.length === 1 ? "it" : "them"}.`,
+    action:
+      'Turn off neverRequireSignedURLs on each in Images → Variants, or narrow visibility.allowed to ["public"] in media({ … }), then re-run.',
+    detail: `variants with neverRequireSignedURLs: ${unsigned.join(", ")}; visibility.allowed is ${config.visibility.allowed.join(", ")}`,
+  });
 }
 
 /** What provisioning produced, per environment. */
@@ -140,10 +166,10 @@ export interface MediaProvisionResult {
 }
 
 /**
- * Provision the media infrastructure: check the account, create the bucket and (in KV mode) the
- * namespace once, write every environment's credentials, then deploy every environment's worker. The
- * order is the contract — the resources exist before a secret names them, and the secrets exist before a
- * worker that reads them boots. Idempotent end to end (each step is).
+ * Provision the media infrastructure: check the account and its variants, create every environment's
+ * bucket, write every environment's credentials and signing keys, then deploy every environment's worker.
+ * The order is the contract — the resources exist before a secret names them, and the secrets exist
+ * before a worker that reads them boots. Idempotent end to end (each step is).
  *
  * `environments` is **what the caller determined it can act on**, which the CLI narrows from the project's
  * declaration (#241) to the environments whose app database exists (pithy-sh/pithy#512). Nothing is
@@ -153,8 +179,12 @@ export interface MediaProvisionResult {
 export async function provisionMedia(
   provisioner: MediaProvisioner,
   environments: DeclaredEnvironments | readonly string[],
+  options: MediaProvisionOptions = {},
 ): Promise<MediaProvisionResult> {
   await provisioner.preflight();
+  // Before anything is created: a variant that would serve a private image unsigned is a refusal, not a
+  // warning to read later.
+  await refuseUnsignedVariants(provisioner, options.config ?? MediaConfig.parse({}));
 
   // Resources first for every environment, then credentials, then workers — the ordering is the
   // contract. A secret must not name a bucket that does not exist, and a worker must not boot before
@@ -164,12 +194,12 @@ export async function provisionMedia(
   const resources = new Map<ManagedEnvironment, MediaResources>();
   for (const env of managedEnvironments(environments)) {
     const { bucketName } = await provisioner.ensureBucket(env);
-    const namespace = await provisioner.ensureKvNamespace(env);
-    resources.set(env, { bucketName, kvNamespaceId: namespace?.namespaceId ?? null });
+    resources.set(env, { bucketName });
   }
 
   for (const env of managedEnvironments(environments)) {
     await provisioner.writeCredentials(env, resourcesFor(resources, env));
+    await provisioner.writeSigningKeys(env);
   }
   for (const env of managedEnvironments(environments)) {
     await provisioner.deployWorker(env, resourcesFor(resources, env));
@@ -201,30 +231,27 @@ export interface MediaDeprovisioner {
    * anyone had used.
    */
   deleteBucket(env: ManagedEnvironment): Promise<void>;
-  /** Delete this environment's `MEDIA` KV namespace. **Destructive** — every KV-mode record is lost. Idempotent. */
-  deleteKvNamespace(env: ManagedEnvironment): Promise<void>;
 }
 
 /** Teardown options. By default the stored media is **kept** — only the workers come down. */
 export interface MediaDeprovisionOptions {
   /**
-   * Also delete the R2 bucket — with every object in it — and the `MEDIA` KV namespace. Off by default,
-   * because the objects and records they hold are the adopter's data and no deploy can restore them; the
-   * flag is the confirmation.
+   * Also delete the R2 bucket — with every object in it. Off by default, because the objects are the
+   * adopter's data and no deploy can restore them; the flag is the confirmation.
    */
   deleteStorage?: boolean;
 }
 
 /**
  * Tear down **one named environment's** media infrastructure, reversing {@link provisionMedia} for it: its
- * worker first (it binds the bucket and namespace), then — only when `deleteStorage` is set — its bucket,
- * objects and all, and its `MEDIA` namespace. Stored media is preserved unless explicitly requested.
+ * worker first (it binds the bucket), then — only when `deleteStorage` is set — its bucket, objects and
+ * all. Stored media is preserved unless explicitly requested.
  * Idempotent end to end.
  *
  * The environment is resolved by `@pithy-sh/secrets`' {@link deprovisionTarget}, before anything is deleted:
  * absent, or undeclared, it refuses and lists the project's set. This used to walk every declared environment,
- * so `pithy media deprovision --storage`, run to clear staging's media, deleted production's bucket and
- * namespace with it (#591).
+ * so `pithy media deprovision --storage`, run to clear staging's media, deleted production's bucket with it
+ * (#591).
  */
 export async function deprovisionMedia(
   deprovisioner: MediaDeprovisioner,
@@ -235,7 +262,6 @@ export async function deprovisionMedia(
   await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) {
     await deprovisioner.deleteBucket(env);
-    await deprovisioner.deleteKvNamespace(env);
   }
   return { env };
 }

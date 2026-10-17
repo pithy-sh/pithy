@@ -68,7 +68,7 @@ import { readOptionalWranglerConfig } from "./wrangler";
  *
  * **And the configuration is the adopter's, from that same discovery.** Reading `apps/` yields the
  * composed `Capability` objects, not just their names, so each host resolves against the project's own
- * `media({ recordStore: "kv" })` or `vector({ indexes })` — byte-identical to what
+ * `media({ basePath })` or `vector({ indexes })` — byte-identical to what
  * `pithy <capability> provision` would deploy. It did not, at first: five registry entries parsed
  * schema defaults, so this command and the provisioners deployed different configurations of the same
  * Worker and overwrote each other's (#537). `capabilities/hostRegistry.ts` is where that is now
@@ -240,19 +240,16 @@ async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza |
 }
 
 /**
- * Every binding of one kind this environment has an id for, across the project's app Workers.
+ * Every D1 binding this environment has an id for, across the project's app Workers.
  *
- * One reader for both kinds because it is one rule twice: the id is read off the tracked stanza,
- * nothing is created to learn it, and the first declaration wins — exactly as two Workers declaring
- * `DB` are backed by one D1, and two declaring `MEDIA` by one namespace.
+ * The id is read off the tracked stanza, nothing is created to learn it, and the first declaration wins
+ * — exactly as two Workers declaring `DB` are backed by one D1. No kit Worker binds a KV namespace by
+ * id since media's KV record store was removed (#727), so databases are the one kind there is to read.
  */
-function collectIds(stanzas: readonly KitStanza[], kind: "d1" | "kv"): Record<string, string> {
+function collectDatabaseIds(stanzas: readonly KitStanza[]): Record<string, string> {
   const ids: Record<string, string> = {};
   for (const stanza of stanzas) {
-    const entries: { binding?: string; id?: string }[] =
-      kind === "d1"
-        ? (stanza.d1_databases ?? []).map((entry) => ({ binding: entry.binding, id: entry.database_id }))
-        : (stanza.kv_namespaces ?? []);
+    const entries = (stanza.d1_databases ?? []).map((entry) => ({ binding: entry.binding, id: entry.database_id }));
     for (const entry of entries) {
       if (entry.binding && isId(entry.id) && ids[entry.binding] === undefined) ids[entry.binding] = entry.id as string;
     }
@@ -395,8 +392,7 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
   const stanzas = new Map<string, KitStanza | undefined>();
   for (const worker of workers) stanzas.set(worker.dir, await stanzaFor(worker, options.env));
   const declared = [...stanzas.values()].filter((stanza) => stanza !== undefined);
-  const databaseIds = collectIds(declared, "d1");
-  const kvNamespaceIds = collectIds(declared, "kv");
+  const databaseIds = collectDatabaseIds(declared);
 
   for (const host of hosts) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
@@ -407,7 +403,6 @@ async function runKitDeploy(options: DeployKitOptions, { rows, problems, planned
       readTemplate,
       readVars,
       databaseIds,
-      kvNamespaceIds,
       ...(owned ? { owned } : {}),
       stanza: stanzas.get(host.sourceDir),
       storeId: options.ids?.storeId ?? vars.SECRETS_STORE_ID,
@@ -468,7 +463,7 @@ async function workersVarsReader(credentials: { accountId: string; apiToken: str
  * reorders itself between releases is one nobody can grep a log for.
  */
 function readinessReason(input: {
-  missingIds: readonly { kind: "database" | "namespace"; binding: string }[];
+  missingIds: readonly { kind: "database"; binding: string }[];
   missingVars: readonly string[];
   capability: string;
   /** The `pithy add secrets` that records the account's values, on the Worker that composes it (#711). */
@@ -477,13 +472,9 @@ function readinessReason(input: {
   provision: string;
 }): string | undefined {
   const reasons: string[] = [];
-  const named = (kind: "database" | "namespace"): string[] =>
-    [...new Set(input.missingIds.filter((one) => one.kind === kind).map((one) => one.binding))].sort();
-  const clauses = (["database", "namespace"] as const)
-    .map((kind) => ({ kind, bindings: named(kind) }))
-    .filter((one) => one.bindings.length > 0)
-    .map((one) => `${one.bindings.join(", ")} ${one.kind}`);
-  if (clauses.length > 0) reasons.push(`${input.env} has no ${clauses.join(" and no ")} yet. ${input.provision}`);
+  const databases = [...new Set(input.missingIds.map((one) => one.binding))].sort();
+  if (databases.length > 0)
+    reasons.push(`${input.env} has no ${databases.join(", ")} database yet. ${input.provision}`);
   for (const name of [...new Set(input.missingVars)].sort()) {
     reasons.push(REQUIRED_VARS[name]?.(input.capability, input.recordWith) ?? `${name} is not set.`);
   }
@@ -499,7 +490,6 @@ async function deployOneKitWorker(input: {
   readTemplate: (projectDir: string, entry: string) => Promise<WorkflowHostTemplate>;
   readVars: ReadWorkerVars | undefined;
   databaseIds: Record<string, string>;
-  kvNamespaceIds: Record<string, string>;
   /** A feature's own databases and namespaces, id → name — what the host gate follows a bound id to (#643). */
   owned?: FeatureOwnedIds;
   stanza: KitStanza | undefined;
@@ -534,15 +524,15 @@ async function deployOneKitWorker(input: {
   // **Every id the resolver asks for must already be one, and asking is how it declares the need.**
   // It asks for exactly the bindings the capability declares as `requiredBindings` on the app Worker,
   // so a hole is provisioning that has not run for this environment — a skip naming the command, never
-  // a Worker deployed against a database, a namespace or a Secrets Store that does not exist.
+  // a Worker deployed against a database or a Secrets Store that does not exist.
   //
-  // The four accessors below are the whole readiness check, and it is deliberately *not* a list of
+  // The three accessors below are the whole readiness check, and it is deliberately *not* a list of
   // things this file knows each capability needs: a tenth host asking for an eleventh id is covered by
   // the accessor it calls. Before #537 only `databaseId` recorded anything, so the store id and the
   // account id passed through empty and the row printed `deployed`.
-  const missingIds: { kind: "database" | "namespace"; binding: string }[] = [];
+  const missingIds: { kind: "database"; binding: string }[] = [];
   const missingVars: string[] = [];
-  const required = (kind: "database" | "namespace", ids: Record<string, string>, binding: string): string => {
+  const required = (kind: "database", ids: Record<string, string>, binding: string): string => {
     const id = ids[binding];
     if (id === undefined) {
       missingIds.push({ kind, binding });
@@ -567,7 +557,6 @@ async function deployOneKitWorker(input: {
       env: options.env,
       baseUrl,
       databaseId: (binding) => required("database", input.databaseIds, binding),
-      kvNamespaceId: (binding) => required("namespace", input.kvNamespaceIds, binding),
       storeId: () => requiredVar("SECRETS_STORE_ID", input.storeId),
       accountId: () => requiredVar("CLOUDFLARE_ACCOUNT_ID", input.accountId),
       // **The adopter's own composed capability, which is the entire point of reading `apps/`.**

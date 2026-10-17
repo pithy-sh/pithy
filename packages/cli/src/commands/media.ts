@@ -41,9 +41,10 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 
 /**
  * `pithy media provision` / `deprovision` — the command the media manifest and wrangler template
- * have always pointed at. It creates the R2 bucket (and the `MEDIA` KV namespace in KV record-store mode),
- * writes the `media-storage-credentials` and `media-r2-credentials` secrets for every managed
- * environment, and deploys the prebuilt media worker that hosts the four enrichment Workflows.
+ * have always pointed at. It creates the R2 bucket, writes the `media-storage-credentials` and
+ * `media-r2-credentials` secrets and the two signing keys for every managed environment, and deploys the
+ * prebuilt media worker that hosts the four enrichment Workflows. It refuses, before creating anything,
+ * while an Images variant would serve a private image unsigned.
  *
  * Two secrets because two owners: the Images + Stream token is media's, and the R2 bundle belongs to
  * `@pithy-sh/storage`'s `ObjectStore`, which media presigns through and whose key pair media never sees.
@@ -132,10 +133,6 @@ const MediaProvisionPayload = z
           .object({
             env: z.string().describe("The environment."),
             bucketName: z.string().describe("The R2 bucket media objects live in."),
-            kvNamespaceId: z
-              .string()
-              .nullable()
-              .describe("The `MEDIA` KV namespace id, or `null` when records live in D1."),
           })
           .describe("One environment provisioned."),
       )
@@ -150,7 +147,7 @@ const MediaDeprovisionPayload = z
   .object({
     command: z.literal("media deprovision").describe('`"media deprovision"`.'),
     env: z.string().describe("The environment torn down."),
-    storageDeleted: z.boolean().describe("Whether its bucket and namespace were deleted with it."),
+    storageDeleted: z.boolean().describe("Whether its bucket was deleted with it."),
   })
   .describe("What `pithy media deprovision` removed.");
 
@@ -158,7 +155,7 @@ const provision = withContract(
   defineCommand({
     meta: {
       name: "provision",
-      description: "Create the media bucket and namespace, write the credentials, and deploy the enrichment workers",
+      description: "Create the media bucket, write the credentials and signing keys, and deploy the enrichment workers",
     },
     args: {
       worker: {
@@ -191,7 +188,7 @@ const provision = withContract(
     run: ({ args }) =>
       withErrorReporting(args.json, async () => {
         const projectDir = process.cwd();
-        // The leading segment of every name this run creates — the bucket, the KV namespace, the worker.
+        // The leading segment of every name this run creates — the bucket and the worker.
         // `requireProjectName` refuses to guess, because `deprovision` recomputes these same names to
         // find what to delete (docs/NAMING.md).
         const config = await loadProject(projectDir);
@@ -225,6 +222,7 @@ const provision = withContract(
           productionEnvironments: config.seed?.productionEnvironments,
         });
         const cf = await cloudflareClients({ accountId, apiToken });
+        const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
         const provisioner = new CloudflareMediaProvisioner({
           cf,
           projectDir,
@@ -240,14 +238,16 @@ const provision = withContract(
           r2Credentials,
           r2ApiToken: args["r2-api-token"] ?? apiToken,
           mediaConfig,
-          dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
+          dispatcher,
+          // The same manager answers whether a Stream signing key is already stored, so a re-run keeps it.
+          probe: dispatcher,
           resolveEnv: buildResolveEnv(readiness, cf, project, account),
           audit: await buildAudit(projectDir, accountId, apiToken),
         });
 
         // The ready list, not the declaration — every skipped environment is left with nothing created for
         // it at all, which is the point: a staging-only bring-up must not make a production bucket.
-        const result = await provisionMedia(provisioner, readiness.ready);
+        const result = await provisionMedia(provisioner, readiness.ready, { config: mediaConfig });
         const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
 
         // The caller's own run, as the refusal names it to run again: every flag it was given, and the Worker it
@@ -273,8 +273,7 @@ const provision = withContract(
           formatEnvironmentOutcomes(
             environmentOutcomes(readiness, (env) => {
               const entry = provisioned.get(env);
-              const namespace = entry?.kvNamespaceId ? " and its MEDIA namespace" : "";
-              return `bucket ${entry?.bucketName}${namespace} ready, worker deployed`;
+              return `bucket ${entry?.bucketName} ready, worker deployed`;
             }),
           ),
         );
@@ -284,7 +283,8 @@ const provision = withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: `kvNamespaceId` left each environment's entry with the KV record store (#727).
+    schemaVersion: 2,
     payload: MediaProvisionPayload,
     mutates: true,
     idempotent: true,
@@ -296,7 +296,7 @@ const deprovision = withContract(
   defineCommand({
     meta: {
       name: "deprovision",
-      description: "Remove one environment's media worker (and optionally its bucket and namespace)",
+      description: "Remove one environment's media worker (and optionally its bucket)",
     },
     args: {
       // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
@@ -305,8 +305,7 @@ const deprovision = withContract(
       storage: {
         type: "boolean",
         default: false,
-        description:
-          "Also delete the environment's R2 bucket with every object in it, and its MEDIA KV namespace (irreversible)",
+        description: "Also delete the environment's R2 bucket with every object in it (irreversible)",
       },
       "r2-access-key-id": {
         type: "string",
@@ -364,7 +363,6 @@ const deprovision = withContract(
           rules: {
             deleteWorker: "environment",
             deleteBucket: args.storage ? "environment" : "refused",
-            deleteKvNamespace: args.storage ? "environment" : "refused",
           },
         });
         await deprovisionMedia(confined, target, { deleteStorage: args.storage });
@@ -376,7 +374,7 @@ const deprovision = withContract(
           return;
         }
         process.stdout.write(
-          `${env}: media worker removed${args.storage ? ", with its bucket, its objects, and its namespace" : ""}.\n`,
+          `${env}: media worker removed${args.storage ? ", with its bucket and its objects" : ""}.\n`,
         );
         process.stdout.write(`${formatDone()}\n`);
       }),

@@ -5,15 +5,15 @@ import type { z } from "zod";
 import { MediaAsset } from "./mediaAsset";
 
 /**
- * The adopter-extension mechanism, and the single reason one Zod schema can persist to either record
- * store. An adopter extends a media type by passing a `z.ZodObject` of extra fields to `media({ extend })`
- * — an owning `userId`, a tenant id, tags. From that one schema the mapping layer derives everything:
+ * The adopter-extension mechanism. An adopter extends a media record by passing a `z.ZodObject` of extra
+ * fields to `media({ extend })` — tags, an album, a source system's id. From that one schema the mapping
+ * layer derives everything: {@link extensionColumns} turns each field into a real column (type +
+ * nullability), which the generated `0002_extend` migration adds to `pithy_media_assets`, and the
+ * effective schema then reads and writes those columns through the same codecs as the base fields.
  *
- *   - D1: {@link extensionColumns} turns each field into a real column (type + nullability), which the
- *     generated `0002_extend` migration adds to `pithy_media_assets`; the effective schema then reads and
- *     writes those columns through the same codecs as the base fields.
- *   - KV: the effective schema validates the extra fields as part of the stored value — no columns, no
- *     migration, no backend-specific work.
+ * **Ownership is not an extension.** `ownerId` and `organizationId` are base fields, so every project
+ * spells them the same way and anything outside the adopter's code can read them. An extension field is
+ * per-adopter and arbitrarily named, which is exactly what an owner must not be.
  *
  * The base fields are always guaranteed; an extension field that collides with a base column name is
  * ignored, so an adopter can never redefine or drop a base field.
@@ -94,8 +94,8 @@ export const BASE_COLUMN_NAMES: ReadonlySet<string> = new Set(Object.keys(MediaA
 /**
  * A nullable D1 column returns SQLite NULL when a record omitted the field, so its schema must accept
  * null on read. A plain `.optional()` field (undefined-only) would throw on that null, breaking every D1
- * read of a record that omitted it. Widen such a field to also accept null (`.nullable()`), keeping the
- * D1 and KV paths in agreement — a not-null column is left untouched.
+ * read of a record that omitted it. Widen such a field to also accept null (`.nullable()`) — a not-null
+ * column is left untouched.
  */
 function reconcileNullability(field: z.ZodType): z.ZodType {
   const { notNull } = sqliteColumnType(field);

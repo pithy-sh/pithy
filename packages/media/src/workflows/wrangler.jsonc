@@ -19,14 +19,14 @@
   // dispatch.
   "workers_dev": false,
 
-  // The app database (D1 record store) and the secrets database, read for the storage credentials.
+  // The app database the media records live in, and the secrets database, read for the storage
+  // credentials and the signing keys.
   "d1_databases": [
     { "binding": "DB", "database_name": "pithy-app", "database_id": "<filled-at-provision>" },
     { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
   ],
 
-  // The KV namespace (KV record store) and the R2 bucket the enrichment reads bytes from.
-  "kv_namespaces": [{ "binding": "MEDIA", "id": "<filled-at-provision>" }],
+  // The R2 bucket the enrichment reads bytes from.
   "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "<filled-at-provision>" }],
 
   // The Workers AI binding — image-to-text, whisper transcription, and toMarkdown all run through it.
