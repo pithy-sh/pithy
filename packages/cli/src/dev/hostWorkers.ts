@@ -302,9 +302,6 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
         env: LOCAL_ENVIRONMENT,
         baseUrl: options.baseUrl,
         databaseId: (binding) => binding,
-        // The same rule one line up: wrangler's local key for a KV namespace is `id ?? binding`, so
-        // the binding is what makes a host and the app Worker that composed it open one namespace.
-        kvNamespaceId: (binding) => binding,
         // **Dev's defaults, stated here rather than defaulted in the registry.** There is no Secrets
         // Store on a developer's machine — the master key arrives in `.dev.vars`, and `forLocalDev`
         // drops the `secrets_store_secrets` block below before this config reaches disk — so the empty

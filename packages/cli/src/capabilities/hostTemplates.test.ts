@@ -103,7 +103,7 @@ interface HostCoverage {
   readonly entry: string;
   /**
    * Every provisioning mode that resolves this template differently, keyed by name. A mode is a real
-   * branch — media with records in KV versus D1, testers with and without a sending identity — and each
+   * branch — testers with and without a sending identity, say — and each
    * one is a deploy an adopter can get, so each one has to come out clean.
    *
    * Takes `entry` back rather than closing over the specifier, so the module the template is found
@@ -183,17 +183,11 @@ const COVERAGE: readonly HostCoverage[] = [
         storeId: STORE_ID,
       };
       return {
-        // Records in D1 — the default. The `MEDIA` KV binding is dropped rather than filled.
-        "records in d1": resolveMediaConfig(template, {
+        // Records live in D1 — the only record store.
+        default: resolveMediaConfig(template, {
           ...base,
-          resources: { bucketName: `${PROJECT}-${env}-media`, kvNamespaceId: null },
-          mediaConfig: MediaConfig.parse({ recordStore: "d1" }),
-        }),
-        // Records in KV — the one mode where the namespace id has to arrive.
-        "records in kv": resolveMediaConfig(template, {
-          ...base,
-          resources: { bucketName: `${PROJECT}-${env}-media`, kvNamespaceId: "kv-1" },
-          mediaConfig: MediaConfig.parse({ recordStore: "kv" }),
+          resources: { bucketName: `${PROJECT}-${env}-media` },
+          mediaConfig: MediaConfig.parse({}),
         }),
       };
     },

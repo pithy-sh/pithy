@@ -7,7 +7,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { MediaConfig } from "@pithy-sh/media/src/config/config";
-import { mediaBucketName, mediaKvTitle, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
+import { mediaBucketName, mediaWorkerName } from "@pithy-sh/media/src/provision/provisionMedia";
 import { resolveMediaConfig } from "@pithy-sh/media/src/provision/resolveMediaConfig";
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
@@ -21,7 +21,6 @@ const PROJECT = "acme";
 
 /** Resources are per environment; staging stands in for both in these tests. */
 const STAGING_BUCKET = mediaBucketName(PROJECT, "staging");
-const STAGING_KV = mediaKvTitle(PROJECT, "staging");
 
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
@@ -33,17 +32,22 @@ function fakeCf() {
     calls.push("emptyBucket");
     return { objectsDeleted: 4, uploadsAborted: 2 };
   });
-  const findNamespaceByTitle = vi.fn();
-  const createNamespace = vi.fn();
-  const deleteNamespace = vi.fn();
   const getWorker = vi.fn();
   const deleteWorker = vi.fn();
   const accountSubdomain = vi.fn();
+  const signingKeys = vi.fn(async () => [{ name: "default", value: "images-secret" }]);
+  const createImagesKey = vi.fn(async () => [{ name: "pithy", value: "fresh-secret" }]);
+  const listVariants = vi.fn(async () => [
+    { id: "public", neverRequireSignedURLs: false },
+    { id: "thumb", neverRequireSignedURLs: true },
+  ]);
+  const createStreamKey = vi.fn(async () => ({ id: "kid-1", jwk: "eyJr" }));
   const cf = {
     r2Provisioner: () => ({ findBucketByName, createBucket, deleteBucket }),
     r2: () => ({ emptyBucket }),
-    kvProvisioner: () => ({ findNamespaceByTitle, createNamespace, deleteNamespace }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
+    images: () => ({ signingKeys, createSigningKey: createImagesKey, listVariants }),
+    stream: () => ({ createSigningKey: createStreamKey }),
   } as unknown as CloudflareClients;
   return {
     cf,
@@ -52,9 +56,10 @@ function fakeCf() {
     createBucket,
     deleteBucket,
     emptyBucket,
-    findNamespaceByTitle,
-    createNamespace,
-    deleteNamespace,
+    signingKeys,
+    createImagesKey,
+    listVariants,
+    createStreamKey,
     getWorker,
     deleteWorker,
     accountSubdomain,
@@ -120,31 +125,77 @@ describe("CloudflareMediaProvisioner", () => {
     expect(events).toEqual([]);
   });
 
-  test("ensureKvNamespace does nothing in D1 record-store mode", async () => {
-    const { cf, findNamespaceByTitle, createNamespace } = fakeCf();
-    const media = provisioner(cf, MediaConfig.parse({}), []);
-
-    expect(await media.ensureKvNamespace("staging")).toBeNull();
-    expect(findNamespaceByTitle).not.toHaveBeenCalled();
-    expect(createNamespace).not.toHaveBeenCalled();
+  test("unsignedVariants names every Images variant that serves an image unsigned", async () => {
+    const { cf } = fakeCf();
+    expect(await provisioner(cf, MediaConfig.parse({}), []).unsignedVariants()).toEqual(["thumb"]);
   });
 
-  test("ensureKvNamespace reuses or creates the namespace in KV record-store mode", async () => {
-    const { cf, findNamespaceByTitle, createNamespace } = fakeCf();
+  /** A provisioner recording every secret it writes, and answering whether one is held. */
+  function signing(config: MediaConfig, held: readonly string[] = []) {
+    const fake = fakeCf();
+    const writes: { name: string; value: unknown }[] = [];
     const events: CliAuditEvent[] = [];
-    const media = provisioner(cf, MediaConfig.parse({ recordStore: "kv" }), events);
+    const media = new CloudflareMediaProvisioner({
+      projectDir: KIT_ROOT,
+      project: PROJECT,
+      cf: fake.cf,
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      apiToken: "tok",
+      storeId: "store-1",
+      mediaApiToken: "media-tok",
+      r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
+      mediaConfig: config,
+      dispatcher: {
+        dispatch: async (request) => {
+          if (request.mode === "create")
+            writes.push({ name: request.name, value: JSON.parse(request.value ?? "null") });
+        },
+      },
+      probe: { probe: async ({ name }) => held.includes(name) },
+      environments: DEFAULT_ENVIRONMENTS,
+      resolveEnv: async () => {
+        throw new Error("not used by these tests");
+      },
+      audit: async (event) => void events.push(event),
+    });
+    return { ...fake, media, writes, events };
+  }
 
-    findNamespaceByTitle.mockResolvedValue(null);
-    createNamespace.mockResolvedValue({ id: "kv-1", title: STAGING_KV });
-    expect(await media.ensureKvNamespace("staging")).toEqual({ namespaceId: "kv-1" });
-    expect(events).toEqual([expect.objectContaining({ action: "media/kv_namespace_created", resourceId: "kv-1" })]);
+  test("writeSigningKeys stores the account's Images key and a new Stream key", async () => {
+    const { media, writes, events, createStreamKey } = signing(MediaConfig.parse({}));
+    await media.writeSigningKeys("staging");
+    expect(writes).toEqual([
+      { name: "media-images-signing-key", value: { key: "images-secret" } },
+      { name: "media-stream-signing-key", value: { keyId: "kid-1", jwk: "eyJr" } },
+    ]);
+    expect(createStreamKey).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([expect.objectContaining({ action: "media/signing_keys_written" })]);
+  });
 
-    events.length = 0;
-    createNamespace.mockClear();
-    findNamespaceByTitle.mockResolvedValue({ id: "kv-0", title: STAGING_KV });
-    expect(await media.ensureKvNamespace("staging")).toEqual({ namespaceId: "kv-0" });
-    expect(createNamespace).not.toHaveBeenCalled();
-    expect(events).toEqual([]);
+  test("a re-run keeps the stored Stream key rather than minting one nothing signs with", async () => {
+    const { media, writes, createStreamKey } = signing(MediaConfig.parse({}), ["media-stream-signing-key"]);
+    await media.writeSigningKeys("staging");
+    expect(createStreamKey).not.toHaveBeenCalled();
+    expect(writes.map((write) => write.name)).toEqual(["media-images-signing-key"]);
+  });
+
+  test("an account with no Images key gets one", async () => {
+    const { media, writes, signingKeys, createImagesKey } = signing(MediaConfig.parse({ video: { store: "r2" } }));
+    signingKeys.mockResolvedValueOnce([]);
+    await media.writeSigningKeys("staging");
+    expect(createImagesKey).toHaveBeenCalledWith("pithy");
+    expect(writes).toEqual([{ name: "media-images-signing-key", value: { key: "fresh-secret" } }]);
+  });
+
+  test("writes nothing where every record is public, or where nothing lives in Images or Stream", async () => {
+    const everyonePublic = signing(MediaConfig.parse({ visibility: { default: "public", allowed: ["public"] } }));
+    await everyonePublic.media.writeSigningKeys("staging");
+    expect(everyonePublic.writes).toEqual([]);
+
+    const allR2 = signing(MediaConfig.parse({ images: { store: "r2" }, video: { store: "r2" } }));
+    await allR2.media.writeSigningKeys("staging");
+    expect(allR2.writes).toEqual([]);
+    expect(allR2.events).toEqual([]);
   });
 
   test("writeCredentials upserts both secrets — create first, update on the re-run that create rejects", async () => {
@@ -174,7 +225,7 @@ describe("CloudflareMediaProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET, kvNamespaceId: null });
+    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
     // Both secrets, each upserted: the R2 bundle the ObjectStore reads, then media's own Images +
     // Stream token. One audit event covers the pair — nothing can write one and not the other.
     expect(writes).toEqual([
@@ -209,7 +260,7 @@ describe("CloudflareMediaProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await expect(media.writeCredentials("prod", { bucketName: STAGING_BUCKET, kvNamespaceId: null })).rejects.toThrow(
+    await expect(media.writeCredentials("prod", { bucketName: STAGING_BUCKET })).rejects.toThrow(
       /Could not write the media storage credentials to prod/,
     );
   });
@@ -220,16 +271,7 @@ describe("CloudflareMediaDeprovisioner", () => {
   const R2 = { accessKeyId: "ak", secretAccessKey: "sk" };
 
   test("deletes only what exists, and audits every deletion as a warning", async () => {
-    const {
-      cf,
-      calls,
-      getWorker,
-      deleteWorker,
-      findBucketByName,
-      deleteBucket,
-      findNamespaceByTitle,
-      deleteNamespace,
-    } = fakeCf();
+    const { cf, calls, getWorker, deleteWorker, findBucketByName, deleteBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     const media = new CloudflareMediaDeprovisioner({
       projectDir: KIT_ROOT,
@@ -242,31 +284,21 @@ describe("CloudflareMediaDeprovisioner", () => {
 
     getWorker.mockResolvedValue(null);
     findBucketByName.mockResolvedValue(null);
-    findNamespaceByTitle.mockResolvedValue(null);
     await media.deleteWorker("staging");
     await media.deleteBucket("staging");
-    await media.deleteKvNamespace("staging");
     expect(deleteWorker).not.toHaveBeenCalled();
     expect(deleteBucket).not.toHaveBeenCalled();
-    expect(deleteNamespace).not.toHaveBeenCalled();
     expect(events).toEqual([]);
 
     getWorker.mockResolvedValue({ id: mediaWorkerName(PROJECT, "staging") });
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
-    findNamespaceByTitle.mockResolvedValue({ id: "kv-1", title: STAGING_KV });
     await media.deleteWorker("staging");
     await media.deleteBucket("staging");
-    await media.deleteKvNamespace("staging");
     expect(deleteWorker).toHaveBeenCalledWith(mediaWorkerName(PROJECT, "staging"));
-    expect(deleteNamespace).toHaveBeenCalledWith("kv-1");
     // The bucket is emptied before it is deleted. R2 refuses to delete one that still holds an object or
     // a dangling multipart upload, so a delete-only teardown fails on every bucket that was ever used.
     expect(calls).toEqual(["emptyBucket", `deleteBucket:${STAGING_BUCKET}`]);
-    expect(events.map((event) => event.action)).toEqual([
-      "media/worker_deleted",
-      "media/bucket_deleted",
-      "media/kv_namespace_deleted",
-    ]);
+    expect(events.map((event) => event.action)).toEqual(["media/worker_deleted", "media/bucket_deleted"]);
     expect(events.every((event) => event.severity === "warning")).toBe(true);
     // The audit records what went, not merely that the bucket did.
     expect(events[1]?.metadata).toMatchObject({ objectsDeleted: 4, uploadsAborted: 2 });
@@ -294,20 +326,20 @@ describe("the committed media worker template", () => {
     return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
   }
 
-  test("resolves into a config with no placeholder left, in D1 mode", async () => {
+  test("resolves into a config with no placeholder left", async () => {
     const resolved = resolveMediaConfig(await committedTemplate(), {
       project: PROJECT,
       env: "staging",
       appDatabaseId: "app-1",
       secretsDatabaseId: "sec-1",
       storeId: "store-1",
-      resources: { bucketName: STAGING_BUCKET, kvNamespaceId: null },
+      resources: { bucketName: STAGING_BUCKET },
       mediaConfig: MediaConfig.parse({}),
     });
 
     expect(resolved.name).toBe("acme-staging-media");
     expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
-    // The template always declares MEDIA; D1 mode never creates a namespace, so the binding must go.
+    // Records live in D1 alone, so the host binds no KV namespace at all.
     expect(resolved.kv_namespaces).toBeUndefined();
     expect(resolved.workflows?.map((workflow) => workflow.name)).toEqual([
       "acme-staging-media-image-to-text",
@@ -315,21 +347,6 @@ describe("the committed media worker template", () => {
       "acme-staging-media-video-transcribe",
       "acme-staging-media-doc-extract",
     ]);
-  });
-
-  test("keeps the MEDIA binding, filled, in KV mode", async () => {
-    const resolved = resolveMediaConfig(await committedTemplate(), {
-      project: PROJECT,
-      env: "prod",
-      appDatabaseId: "app-1",
-      secretsDatabaseId: "sec-1",
-      storeId: "store-1",
-      resources: { bucketName: STAGING_BUCKET, kvNamespaceId: "kv-1" },
-      mediaConfig: MediaConfig.parse({ recordStore: "kv" }),
-    });
-
-    expect(resolved.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-1" }]);
-    expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
   });
 });
 

@@ -27,7 +27,7 @@ import { featureNameShapes } from "./slugBudget";
 
 const CAPABILITIES = [
   email({ fromAddress: "hello@replay.example", fromName: "Replay", baseUrl: "https://replay.example" }),
-  media({ recordStore: "kv" }),
+  media({}),
   secrets({ registry: {} }),
 ];
 

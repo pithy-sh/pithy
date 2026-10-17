@@ -9,7 +9,7 @@ import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import { dispatchSecretWrite, type SecretDispatcher, type SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -144,10 +144,16 @@ export interface CloudflareMediaProvisionerOptions {
    * matching what `pithy storage provision` does; supply an R2-scoped one for production.
    */
   r2ApiToken?: string;
-  /** The app's resolved media config — decides whether a KV namespace is needed, and fills `MEDIA_CONFIG`. */
+  /** The app's resolved media config — decides which signing keys are written, and fills `MEDIA_CONFIG`. */
   mediaConfig: MediaConfig;
   /** The secrets manager dispatcher — writes the credentials into a deployed env's managed store. */
   dispatcher: SecretDispatcher;
+  /**
+   * Whether a deployed environment already holds a secret — asked before a Stream signing key is created,
+   * because Cloudflare hands its private half back once and a re-run must not mint a second key nobody
+   * stored. Absent, every run creates one.
+   */
+  probe?: SecretProbe;
   /** Resolve the per-env app DB id and secrets DB id — injected so it is testable + decoupled. */
   resolveEnv: ResolveMediaEnv;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -169,6 +175,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #r2ApiToken: string;
   readonly #mediaConfig: MediaConfig;
   readonly #dispatcher: SecretDispatcher;
+  readonly #probe: SecretProbe | undefined;
   /**
    * The project's declared environments (#241) — what a `global` secret write fans out across. Carried
    * rather than assumed, so a shared secret reaches every environment the project deploys to.
@@ -189,6 +196,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     this.#r2ApiToken = options.r2ApiToken ?? options.apiToken;
     this.#mediaConfig = options.mediaConfig;
     this.#dispatcher = options.dispatcher;
+    this.#probe = options.probe;
     this.#environments = options.environments;
     this.#resolveEnv = options.resolveEnv;
     this.#audit = options.audit ?? (async () => {});
@@ -230,24 +238,71 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
     return { bucketName: created.name };
   }
 
-  /** Reuse or create this environment's `MEDIA` KV namespace — but only when records live in KV. */
-  async ensureKvNamespace(env: ManagedEnvironment): Promise<{ namespaceId: string } | null> {
-    if (this.#mediaConfig.recordStore !== "kv") return null;
-    const { mediaKvTitle } = await loadMedia(this.#projectDir);
-    const title = mediaKvTitle(this.#project, env);
-    const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
-    if (existing) return { namespaceId: existing.id };
-    const created = await this.#cf.kvProvisioner().createNamespace(title);
+  /** Every Images variant set to `neverRequireSignedURLs` — what would serve a private image unsigned. */
+  async unsignedVariants(): Promise<string[]> {
+    const variants = await this.#cf.images().listVariants();
+    return variants.filter((variant) => variant.neverRequireSignedURLs).map((variant) => variant.id);
+  }
+
+  /**
+   * Write this environment's signing keys, where some record could be private.
+   *
+   * **Images**: the account keeps URL-signing keys, `default` among them, so the key is read and written
+   * as found — the same value on every run. One is created only for an account that has none.
+   *
+   * **Stream**: Cloudflare returns a signing key's private half once, at creation. So a key is created only
+   * when the environment holds none, and a re-run leaves the stored one in place rather than minting a
+   * second key that nothing would sign with.
+   */
+  async writeSigningKeys(env: ManagedEnvironment): Promise<void> {
+    const {
+      admitsPrivateMedia,
+      MEDIA_IMAGES_SIGNING_SECRET,
+      MEDIA_STREAM_SIGNING_SECRET,
+      MediaImagesSigningKey,
+      MediaStreamSigningKey,
+    } = await loadMedia(this.#projectDir);
+    if (!admitsPrivateMedia(this.#mediaConfig)) return;
+    const written: string[] = [];
+
+    if (this.#mediaConfig.images.store === "cf-images") {
+      const existing = await this.#cf.images().signingKeys();
+      const keys = existing.length > 0 ? existing : await this.#cf.images().createSigningKey("pithy");
+      const key = keys.find((candidate) => candidate.name === "default") ?? keys[0];
+      if (!key) {
+        throw new InternalError({
+          message: "Cloudflare Images returned no URL-signing key.",
+          action: "Create one under Images → Keys in the dashboard, then re-run.",
+          detail: `images signing keys listing and creation both returned none for ${env}`,
+        });
+      }
+      await this.#upsertSecret(env, MEDIA_IMAGES_SIGNING_SECRET, MediaImagesSigningKey.parse({ key: key.value }));
+      written.push(MEDIA_IMAGES_SIGNING_SECRET);
+    }
+
+    if (this.#mediaConfig.video.store === "cf-stream") {
+      const held = (await this.#probe?.probe({ env, name: MEDIA_STREAM_SIGNING_SECRET })) ?? false;
+      if (!held) {
+        const created = await this.#cf.stream().createSigningKey();
+        await this.#upsertSecret(
+          env,
+          MEDIA_STREAM_SIGNING_SECRET,
+          MediaStreamSigningKey.parse({ keyId: created.id, jwk: created.jwk }),
+        );
+        written.push(MEDIA_STREAM_SIGNING_SECRET);
+      }
+    }
+
+    if (written.length === 0) return;
     await this.#audit({
       environment: env,
-      action: "media/kv_namespace_created",
+      action: "media/signing_keys_written",
       outcome: "success",
       severity: "info",
-      resourceType: "cf_kv_namespace",
-      resourceId: created.id,
-      metadata: { title },
+      resourceType: "secret",
+      resourceId: written[0] as string,
+      metadata: { secrets: written },
     });
-    return { namespaceId: created.id };
   }
 
   /**
@@ -414,8 +469,8 @@ export interface CloudflareMediaDeprovisionerOptions {
 
 /**
  * The live {@link MediaDeprovisioner} — removes each environment's media worker and, when asked, the R2
- * bucket with every object in it plus the `MEDIA` KV namespace. Every step is guarded so a missing
- * resource is a no-op: teardown is idempotent.
+ * bucket with every object in it. Every step is guarded so a missing resource is a no-op: teardown is
+ * idempotent.
  */
 export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   readonly #projectDir: string;
@@ -483,24 +538,6 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
         objectsDeleted: teardown.objectsDeleted,
         uploadsAborted: teardown.uploadsAborted,
       },
-    });
-  }
-
-  /** Delete this environment's `MEDIA` KV namespace if it exists — destructive, only on an explicit storage teardown. */
-  async deleteKvNamespace(env: ManagedEnvironment): Promise<void> {
-    const { mediaKvTitle } = await loadMedia(this.#projectDir);
-    const title = mediaKvTitle(this.#project, env);
-    const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
-    if (!existing) return;
-    await this.#cf.kvProvisioner().deleteNamespace(existing.id);
-    await this.#audit({
-      environment: env,
-      action: "media/kv_namespace_deleted",
-      outcome: "success",
-      severity: "warning",
-      resourceType: "cf_kv_namespace",
-      resourceId: existing.id,
-      metadata: { title },
     });
   }
 }

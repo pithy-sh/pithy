@@ -77,7 +77,7 @@ const FEATURE_LIMITERS: ReadonlyMap<string, string> = new Map([
 /** Every host-owning capability the registry knows, configured. The gate below checks this covers the registry. */
 const COMPOSED: Record<string, Capability> = {
   email: email({ fromAddress: "hello@replay.example", fromName: "Replay", baseUrl: "https://replay.example" }),
-  media: media({ recordStore: "kv" }),
+  media: media({}),
   storage: storage({}),
   payments: payments({ billingSubject: "user" }),
   // A mail-only inbox: the in-app channel needs auth in this Worker, and this fixture composes none (#645).

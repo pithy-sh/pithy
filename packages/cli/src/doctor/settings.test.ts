@@ -31,6 +31,7 @@ const reader: SettingsAccountReader = {
   zone: async () => true,
   vaultSecret: async () => false,
   storeEntry: async () => true,
+  appRows: async () => [],
 };
 
 const reachable: SettingsAccountConnection = { state: "reachable", reader };

@@ -82,9 +82,6 @@ const DATABASE_IDS: Record<string, string> = {
   EMAIL_SUPPRESSIONS: "db-suppression-1",
 };
 
-/** The KV namespace ids from that same stanza. Media binds one, and only in `recordStore: "kv"`. */
-const KV_IDS: Record<string, string> = { MEDIA: "kv-media-1" };
-
 /**
  * The composed capabilities this project has, **every one of them tuned away from its defaults**.
  *
@@ -99,8 +96,11 @@ const COMPOSED = {
     baseUrl: BASE_URL,
     theme: "midnight",
   }),
-  media: media({ recordStore: "kv", kvMetadata: ["type", "status"] }),
-  storage: storage({ defaultVisibility: "public", pendingTtlSeconds: 3600 }),
+  media: media({
+    visibility: { default: "organization", allowed: ["private", "organization"] },
+    images: { imageToText: true },
+  }),
+  storage: storage({ visibility: { default: "public" }, pendingTtlSeconds: 3600 }),
   payments: payments({ billingSubject: "user", basePath: "/billing", graceGrantsAccess: true }),
   support: support({ inboundAddresses: ["help@support.acme.example"] }),
   testers: testers({ snapshotHourUtc: 9, activeWithinDays: 7 }),
@@ -124,7 +124,6 @@ function deployContext(capability: Capability, siblings: readonly Capability[] =
     env: ENV,
     baseUrl: BASE_URL,
     databaseId: (binding) => DATABASE_IDS[binding] ?? `missing-${binding}`,
-    kvNamespaceId: (binding) => KV_IDS[binding] ?? `missing-${binding}`,
     storeId: () => STORE_ID,
     accountId: () => ACCOUNT_ID,
     capability,
@@ -169,15 +168,11 @@ const VIA_PROVISION: Record<keyof typeof COMPOSED, () => Promise<WorkflowHostTem
       theme: COMPOSED.email.emailConfig.theme,
       messages: COMPOSED.email.hostCatalogs(),
     }),
-  // `mediaProvisioner.ts:325`, with the bucket from `ensureBucket` and the namespace from
-  // `ensureKvNamespace` — which answers `null` unless the adopter's config says records live in KV.
+  // `mediaProvisioner.ts`, with the bucket from `ensureBucket`.
   media: async () =>
     resolveMediaConfig(await template("@pithy-sh/media/src/workflows/worker"), {
       ...SECRET_HOST,
-      resources: {
-        bucketName: mediaBucketName(PROJECT, ENV),
-        kvNamespaceId: COMPOSED.media.mediaConfig.recordStore === "kv" ? (KV_IDS.MEDIA as string) : null,
-      },
+      resources: { bucketName: mediaBucketName(PROJECT, ENV) },
       mediaConfig: COMPOSED.media.mediaConfig,
     }),
   // `storageProvisioner.ts:284`.
@@ -257,10 +252,13 @@ describe("pithy deploy --kit resolves what pithy <capability> provision resolves
  * what broke rather than only that something did.
  */
 describe("what the adopter's configuration decides", () => {
-  test("media in kv mode keeps the MEDIA binding, at the namespace id the project declared", async () => {
+  test("media deploys the project's visibility policy, not the schema's", async () => {
     const config = await viaKit("media");
-    expect(config.kv_namespaces).toEqual([{ binding: "MEDIA", id: KV_IDS.MEDIA }]);
-    expect(JSON.parse(config.vars?.MEDIA_CONFIG as string).recordStore).toBe("kv");
+    expect(config.kv_namespaces).toBeUndefined();
+    expect(JSON.parse(config.vars?.MEDIA_CONFIG as string).visibility).toEqual({
+      default: "organization",
+      allowed: ["private", "organization"],
+    });
   });
 
   test("testers deploys the project's sending identity, not a host that silently never mails", async () => {
