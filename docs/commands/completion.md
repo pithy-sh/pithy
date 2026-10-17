@@ -51,6 +51,8 @@ No shell and no flag installs. `--remove` and `--status` are mutually exclusive,
 
 `--env=st<Tab>` completes in the spelling it was typed in. A flag whose value only you know, and a positional such as a secret's name, complete nothing rather than a file name nobody asked for.
 
+**Only shell-safe values are offered.** A shell inserts a candidate as typed text, and a Worker is named by a directory in `apps/` and a branch by whoever pushed it. So a value is offered only when every character is a letter, a digit or one of `_ . + / : = -`. A name with any other character never completes, so a cloned repository's `apps/$(cmd)/` cannot put `$(cmd)` on your line. Type such a name by hand.
+
 **Offline, always.** A Tab never resolves a credential, never reaches a Cloudflare account and never writes a file. Values that need a network — secret names in a Secrets Store, Cloudflare resources, deployed versions — are not offered. Outside a Pithy project, the project's values complete nothing. A failure of any kind completes nothing and prints nothing.
 
 **`p.` too.** The scripts cover `p.`, the shortcut `pithy alias` installs, and call `pithy` for it: `p. <Tab>` completes as `pithy <Tab>` does. bash, zsh and PowerShell register `p.` by name; fish's `alias p. pithy` wraps `pithy` and inherits its completion.
