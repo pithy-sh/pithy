@@ -166,6 +166,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "devSecrets/edit.ts": ["@pithy-sh/secrets"],
   "devSecrets/file.ts": ["@pithy-sh/secrets"],
   "devSecrets/generate.ts": ["@pithy-sh/secrets"],
+  "devSecrets/masterKey.ts": ["@pithy-sh/secrets"],
   "devSecrets/seed.ts": ["@pithy-sh/secrets"],
   "devSecrets/store.ts": ["@pithy-sh/secrets"],
   "devSecrets/targets.ts": ["@pithy-sh/secrets"],
@@ -182,6 +183,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "provision/secretBindings.ts": ["@pithy-sh/secrets"],
   "seed/prepare.ts": ["@pithy-sh/secrets"],
   "seed/run.ts": ["@pithy-sh/secrets"],
+  "setup/mint.ts": ["@pithy-sh/secrets"],
   "ui/react.ts": ["@pithy-sh/ui-react"],
 };
 
