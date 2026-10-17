@@ -155,9 +155,15 @@ function addressAndGrantChanges(
       ? {}
       : { basePath: { from: stored.basePath, to: connection.basePath } }),
     ...(before.join(" ") === after.join(" ") ? {} : { scopes: { from: before, to: after } }),
-    // The one attribution field an update may change (#721). The principal and the kind are facts of the
-    // registration, and a change to either is a new connection, recorded as one.
+    // An update may change the purpose (#721). The principal and the kind change only when a key is
+    // registered on a connection with nothing live, which credits whoever sanctioned the new key.
     ...(stored.purpose === connection.purpose ? {} : { purpose: { from: stored.purpose, to: connection.purpose } }),
+    ...(stored.authorizedBy === connection.authorizedBy
+      ? {}
+      : { authorizedBy: { from: stored.authorizedBy, to: connection.authorizedBy } }),
+    ...(stored.actorKind === connection.actorKind
+      ? {}
+      : { actorKind: { from: stored.actorKind, to: connection.actorKind } }),
   };
 }
 

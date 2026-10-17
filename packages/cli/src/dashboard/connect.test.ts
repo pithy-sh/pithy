@@ -726,7 +726,7 @@ describe("connectDashboard — the offline path", () => {
       registry,
       client: undefined,
       authorize: undefined,
-      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh" },
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "script" },
     });
 
     expect(report.connectionId).toBe(CONNECTION_ID);
@@ -1136,6 +1136,64 @@ describe("connectDashboard — the principal, the kind and the purpose", () => {
       publicKey: { keyId: "key_1", publicKey: JWK, issuer: "https://app.pithy.sh" },
     });
     expect(principal).not.toHaveBeenCalled();
+  });
+
+  /** The registry row once every key it trusted has been revoked: the recovery case, where the CLI appends. */
+  function dead(overrides: Partial<ControlPlaneConnection> = {}): ControlPlaneConnection {
+    const row = existing(overrides);
+    return { ...row, keys: [{ ...(row.keys[0] as RegisteredKey), revokedAt: new Date("2026-02-01T00:00:00.000Z") }] };
+  }
+
+  test("a new key on a connection with nothing live is a registration, so no session refuses it", async () => {
+    const registry = fakeRegistry(dead());
+    const before = registry.current();
+    await expect(
+      connectDashboard({
+        ...base,
+        registry,
+        client: undefined,
+        authorize: undefined,
+        update: true,
+        principal: noSession,
+        publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "agent" },
+      }),
+    ).rejects.toMatchObject({ payload: { code: "core/precondition_failed" } });
+    expect(registry.current()).toBe(before);
+  });
+
+  test("a new key on a connection with nothing live records who sanctioned it, its kind and its purpose", async () => {
+    const registry = fakeRegistry(dead());
+    const report = await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh", kind: "agent" },
+    });
+
+    expect(registry.current()).toMatchObject({
+      authorizedBy: "ada@example.com",
+      actorKind: "agent",
+      purpose: "Support triage, reading threads and replying.",
+    });
+    expect(registry.current()?.keys.map((k) => k.keyId)).toEqual(["key_1", "own_2"]);
+    expect(report).toMatchObject({ authorizedBy: "ada@example.com", actorKind: "agent" });
+  });
+
+  test("a new key on a connection with nothing live needs --kind, and nothing is written without it", async () => {
+    const registry = fakeRegistry(dead());
+    const before = registry.current();
+    const error = (await connectDashboard({
+      ...base,
+      registry,
+      client: undefined,
+      authorize: undefined,
+      publicKey: { keyId: "own_2", publicKey: JWK, issuer: "https://app.pithy.sh" },
+    }).catch((caught: unknown) => caught)) as PithyError;
+
+    expect(error.payload.code).toBe("validation/invalid_input");
+    expect(error.payload.action).toContain("--kind agent");
+    expect(registry.current()).toBe(before);
   });
 
   test("--update --purpose edits the purpose and leaves the principal and the kind as registered", async () => {

@@ -325,6 +325,20 @@ describe("a write records itself", () => {
     });
   });
 
+  test("a new principal and kind, as a key registered on a dead connection records them, say what they were", async () => {
+    const { events, record } = recorder();
+    const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);
+    const original = connection();
+    await registry.save(original);
+    await registry.save({ ...original, authorizedBy: "grace@example.com", actorKind: "script" });
+
+    expect(metadata(events, 1)).toMatchObject({
+      changed: ["authorizedBy", "actorKind"],
+      authorizedBy: { from: "ada@example.com", to: "grace@example.com" },
+      actorKind: { from: "agent", to: "script" },
+    });
+  });
+
   test("a purpose set on a connection registered before principals is recorded from null", async () => {
     const { events, record } = recorder();
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod", undefined, record);

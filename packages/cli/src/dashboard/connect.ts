@@ -455,6 +455,21 @@ async function registration(options: ConnectDashboardOptions, actorKind: Control
 }
 
 /**
+ * The kind of client holding a key the operator registered themselves, which `--kind` must say.
+ *
+ * Required, never defaulted: `agent` and `script` are the two questions an incident asks apart, and a
+ * default would answer one of them for the operator.
+ */
+function requireKind(offline: OfflinePublicKey): Exclude<ControlPlaneActorKind, "dashboard"> {
+  if (offline.kind !== undefined) return offline.kind;
+  throw new ValidationError({
+    message: "--public-key needs --kind.",
+    action:
+      "Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.",
+  });
+}
+
+/**
  * The purpose a new connection is registered with: `--purpose`, else asked at a terminal, else refused.
  *
  * **Required, and refused when absent**, because a review listing credentials by key id cannot support
@@ -488,16 +503,7 @@ async function connectOffline(
   const offline = options.publicKey as OfflinePublicKey;
 
   if (!existing) {
-    // The kind is the operator's to say on this path, and saying it is required: `agent` and `script` are
-    // the two questions an incident asks apart, and a default would answer one of them for them.
-    if (offline.kind === undefined) {
-      throw new ValidationError({
-        message: "--public-key needs --kind.",
-        action:
-          "Pass --kind agent for a client acting on its own judgment, or --kind script for automation doing one fixed thing.",
-      });
-    }
-    const attribution = await registration(options, offline.kind);
+    const attribution = await registration(options, requireKind(offline));
     const connection: ControlPlaneConnection = {
       id: crypto.randomUUID(),
       environment: options.environment,
@@ -565,6 +571,12 @@ async function connectOffline(
     }
   }
 
+  // A new key on a connection with nothing live is a new standing credential, so it is registered on the
+  // same terms as the first one: a signed-in session, a kind said out loud, a purpose (#721). The row then
+  // credits whoever sanctioned *this* key — the old principal sanctioned a key that is now dead. Settled
+  // before any write, so a refusal leaves the connection exactly as it was, `--update` included.
+  const attribution = registered ? null : await registration(options, requireKind(offline));
+
   const updated = options.update
     ? {
         ...existing,
@@ -577,12 +589,14 @@ async function connectOffline(
         updatedAt: now,
       }
     : existing;
-  if (options.update) await options.registry.save(updated);
+  const attributed = attribution ? { ...updated, ...attribution, updatedAt: now } : updated;
+  // The keys are untouched here, so the registry's gate lets this through; the key itself goes in below.
+  if (options.update || attribution) await options.registry.save(attributed);
 
   // Nothing live, so nothing could have signed a registration: this is the recovery case, and the CLI
   // is the only thing that can put a key back. The same exemption as first connect, for the same reason.
   const connection = registered
-    ? updated
+    ? attributed
     : await options.registry.appendKey(
         { keyId: offline.keyId, publicKey: offline.publicKey, validFrom: now, validUntil: null, revokedAt: null },
         now,
