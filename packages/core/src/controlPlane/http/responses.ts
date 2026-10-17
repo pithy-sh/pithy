@@ -119,10 +119,10 @@ export const MigrationGroupPositionView = z
         state: z
           .literal("top")
           .describe(
-            "The group's migrations are the contiguous tip of this database's chain. `pithy migrate --rollback --group <value>` would accept it.",
+            "The group's migrations are the contiguous tip of this database's chain. Not a promise that `pithy migrate --rollback --group <value>` runs: the CLI also refuses an undeclared migration in the ledger, and keeps back or refuses a database another environment binds.",
           ),
       })
-      .describe("A group that can still be reversed by name."),
+      .describe("A group nothing on this database's ledger sits over."),
     z
       .object({
         state: z

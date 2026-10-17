@@ -259,7 +259,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 - `applied` — every applied migration, in the order the ledger applied them.
 - `pending` — declared by this build and not applied, in the order they would run.
 - `undeclared` — applied and not declared by this Worker. Kysely reads one as a corrupted chain and applies nothing, so this is not drift a later run works around.
-- `lastGroup` — the newest group with anything still applied: its value, when it applied, what it applied there, and its `position`. `top` means `pithy migrate --rollback --group <value>` would accept it. `buried` names what is in the way: the groups `above` it and the `ungrouped` migrations over it.
+- `lastGroup` — the newest group with anything still applied: its value, when it applied, what it applied there, and its `position`. `top` means the group is the tip of this database's ledger, with nothing applied over it. It is not a promise that `pithy migrate --rollback --group <value>` will run: the CLI also refuses while the ledger holds an undeclared migration, and keeps back or refuses a database another environment binds. `buried` names what is in the way: the groups `above` it and the `ungrouped` migrations over it.
 
 **Every migration names its namespace.** A namespace is a capability's name, which the manifest reports in `capabilities[]`. Compare the two and your own migrations are told from a composed capability's, with no convention and no list kept anywhere. `namespace` is `null` only for an undeclared migration whose name no Pithy registry could have composed.
 
@@ -271,7 +271,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 
 The seam's own manifest entry carries two counts behind the same scope, so a client sees *this environment is behind* on the read it already makes (§14). `pendingMigrations` declares `nominal: { atMost: 0 }`. `undeclaredMigrations` declares none, for the reason above: graded, it would report a corrupted chain on a shared database that is fine. Both are totals across every bound database, and one database that cannot be read makes both unavailable rather than a partial total.
 
-`migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it, and a bare `--update` leaves the grant as it is. [`pithy dashboard connect --update --scope migrations:read`](commands/dashboard.md), with every scope the connection already holds passed beside it, adds it. So does `--update --scope all`.
+`migrations:read` is a read — every route requiring it is a `GET` — so `pithy dashboard connect` grants it by default. A connection made before it existed does not hold it, and an `--update` without `--scope` leaves the grant as it is. [`pithy dashboard connect --update --scope migrations:read`](commands/dashboard.md), with every scope the connection already holds passed beside it, adds it. So does `--update --scope all`.
 
 ---
 

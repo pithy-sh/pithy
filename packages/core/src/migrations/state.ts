@@ -23,7 +23,7 @@ import { readMigrationLedger } from "./runner";
 /** Whether the last group can still be taken back by name — {@link readGroupPosition}, minus `absent`. */
 export type MigrationGroupStanding =
   | {
-      /** The group's migrations are the contiguous tip. `pithy migrate --rollback --group` would accept it. */
+      /** The group's migrations are the contiguous tip of this ledger. The CLI's rollback has refusals of its own. */
       state: "top";
     }
   | {
