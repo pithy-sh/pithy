@@ -18,10 +18,12 @@ import {
   type TokenProfile,
   type TokenStore,
 } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import { commandName } from "@pithy-sh/core/src/cli/command";
+import { commandName, pithyCommand } from "@pithy-sh/core/src/cli/command";
+import { PithyError, PreconditionFailedError } from "@pithy-sh/core/src/error/pithyError";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { StatePathOptions } from "../notifier/state";
+import { forgetMintedToken, holdsMintedToken, mintedTokensPath } from "./mintedTokens";
 import { type ResolvedRouteZone, routeZoneIds } from "./routeZones";
 import { type SinkTarget, writeTokenToSink } from "./sinks";
 
@@ -42,6 +44,8 @@ export const TokenAuditActions = {
   minted: "cloudflare/token_minted",
   rotated: "cloudflare/token_rotated",
   revoked: "cloudflare/token_revoked",
+  /** A minted value's local copy was dropped and the token left live (`pithy token forget`, #762). */
+  forgotten: "cloudflare/token_forgotten",
 } as const;
 
 /** One token-lifecycle audit event. Never carries the token value — only its id and where it went. */
@@ -170,7 +174,7 @@ export interface TokenResult {
 }
 
 /** Emit a lifecycle event through the audit sink; non-fatal — an audit failure never breaks the action. */
-async function emit(engine: TokenEngine, event: TokenAuditEvent): Promise<void> {
+async function emit(engine: Pick<TokenEngine, "audit">, event: TokenAuditEvent): Promise<void> {
   if (!engine.audit) return;
   try {
     await engine.audit(event);
@@ -585,27 +589,205 @@ export async function rotateProfileToken(
   }
 }
 
-/** The outcome of a revoke — how many tokens of the profile's name were deleted. */
+/**
+ * What happened to a profile's local copy in `tokens.json` (#762), one word for both commands that touch it.
+ *
+ * A string rather than a boolean on purpose, because #235 is this payload's own history: `revoked` was a
+ * yes/no in one command and a count in another, and the falsy value of each meant something different.
+ * Here there are three answers and none of them is falsy.
+ */
+export type LocalCopy =
+  /** A value was there, and it is gone. */
+  | "forgotten"
+  /** There was nothing to drop: no file, or no value for that key in that environment. */
+  | "absent"
+  /**
+   * The cleanup could not run — the file would not read, or the profile would not resolve — so a value
+   * may still be there. Only a revoke says this: its delete is the operation and the cleanup cannot fail
+   * it. A `forget` that cannot read the file refuses instead, because the drop is all it does.
+   */
+  | "uncleared";
+
+/** The outcome of a revoke — how many tokens of the profile's name were deleted, and what became of the local copy. */
 export interface RevokeResult {
   profile: string;
   env: string;
   name: string;
   revoked: number;
+  /** What became of the profile's value in `tokens.json` for this environment. */
+  localCopy: LocalCopy;
+  /** The `tokens.json` path. Never a value. */
+  location: string;
+  /** Why the cleanup could not run, when it could not — the refusal's own message, which never quotes the file. */
+  localCopyProblem?: string;
 }
 
 /**
  * Revoke the profile's token(s) for an environment — deletes **every** account token of that name.
  * Audited. The name is project-scoped, which is what keeps that sweep inside this project: an unscoped
  * name would make one project's revoke delete every other project's token of the same profile.
+ *
+ * **Then it drops the profile's local copy (#762)**, because a deleted token's plaintext has no argument
+ * for staying: it would sit under its variable key looking exactly like a live credential. That step comes
+ * after the delete and is never load-bearing — see {@link clearLocalCopy}.
  */
 export async function revokeProfileToken(engine: TokenEngine, profileName: string, env: string): Promise<RevokeResult> {
   const name = tokenName(engine.project, env, profileName);
+  let revoked: number;
   try {
-    const revoked = await engine.tokens.deleteTokensByName(name);
+    revoked = await engine.tokens.deleteTokensByName(name);
     await emit(engine, { action: TokenAuditActions.revoked, outcome: "success", profile: profileName, env });
-    return { profile: profileName, env, name, revoked };
   } catch (error) {
     await emit(engine, { action: TokenAuditActions.revoked, outcome: "failure", profile: profileName, env });
+    throw error;
+  }
+  return { profile: profileName, env, name, revoked, ...(await clearLocalCopy(engine, profileName, env)) };
+}
+
+/**
+ * Drop a revoked profile's local value, and say what happened — **never throwing**.
+ *
+ * The account-side delete has already happened when this runs, and it is the operation. So every way this
+ * can fail is an answer rather than an error: an unreadable `tokens.json`, and a profile registry that
+ * cannot be built. The second matters as much as the first. `revoke` deliberately works when the project's
+ * capability set is unknowable — it is the command a credential leak needs — and resolving the profile's
+ * variable key is the one step here that reads the registry, so it is the step that is allowed to fail.
+ */
+async function clearLocalCopy(
+  engine: TokenEngine,
+  profileName: string,
+  env: string,
+): Promise<Pick<RevokeResult, "localCopy" | "location" | "localCopyProblem">> {
+  const paths = engine.paths ?? {};
+  const location = mintedTokensPath(engine.project, paths);
+  try {
+    const profile = resolveProfile(engine.profiles, profileName);
+    const { forgotten } = await forgetMintedToken(engine.project, env, profile.secret, paths);
+    return { localCopy: forgotten ? "forgotten" : "absent", location };
+  } catch (error) {
+    // A refusal's message names the file and never a line of it. Anything else gets this sentence rather
+    // than its own, which nothing has vetted.
+    const problem = error instanceof PithyError ? error.payload.message : `Pithy could not clear ${location}.`;
+    return { localCopy: "uncleared", location, localCopyProblem: problem };
+  }
+}
+
+/**
+ * What {@link forgetProfileToken} needs: the engine minus the Cloudflare credential, which is optional here.
+ *
+ * `forget` is a local file operation that *consults* the account, so a run with no credentials, or one
+ * that is offline, still has a command — it falls back to asking. Everything a revoke or a mint needs to
+ * write to the account is absent from this type, so a forget cannot reach it.
+ */
+export type ForgetEngine = Pick<TokenEngine, "project" | "profiles" | "paths" | "audit"> & {
+  /** The account's token list, when there are credentials to read it with. */
+  tokens?: Pick<AccountTokenControl, "listTokens">;
+};
+
+/**
+ * What Cloudflare said about whether the token has been used, which is what decides a forget.
+ *
+ * - `used` — every live token of the name reports a `last_used_on`, so something already holds a copy.
+ * - `never-used` — one reports `null`: nothing has ever authenticated with it, and the file may be its only copy.
+ * - `no-live-token` — the account holds no token of the name, so the value opens nothing.
+ * - `unreadable` — the check could not run: no credentials, a failed call, or a response that did not say.
+ * - `skipped` — not asked: `--force`, or there was nothing to forget.
+ */
+export type UsageCheck = "used" | "never-used" | "no-live-token" | "unreadable" | "skipped";
+
+/** Options for `pithy token forget`. */
+export interface ForgetOptions {
+  /** `--force`: skip the check, and with it the refusal and the prompt. */
+  force?: boolean;
+  /**
+   * Ask a person whether to drop a value whose use could not be checked. Resolves on a yes and ends the
+   * run on a no. Absent when nobody can be asked, which is a drop (see {@link forgetProfileToken}).
+   */
+  confirm?: () => Promise<void>;
+}
+
+/** The outcome of a forget. Never carries the value. */
+export interface ForgetResult {
+  profile: string;
+  env: string;
+  /** `forgotten` or `absent` — a forget that cannot clear the file refuses rather than answering `uncleared`. */
+  localCopy: Exclude<LocalCopy, "uncleared">;
+  /** The `tokens.json` path. */
+  location: string;
+  /** What the account said, which is why the drop went ahead. */
+  usage: UsageCheck;
+}
+
+/** Read whether the token of this name has been used — never throwing, since "cannot say" is an answer. */
+async function usageOf(engine: ForgetEngine, name: string): Promise<Exclude<UsageCheck, "skipped">> {
+  if (!engine.tokens) return "unreadable";
+  let tokens: AccountTokenSummary[];
+  try {
+    tokens = (await engine.tokens.listTokens()).filter((token) => token.name === name);
+  } catch {
+    return "unreadable";
+  }
+  if (tokens.length === 0) return "no-live-token";
+  // `rotate --keep-previous` leaves two tokens of one name, and the file holds the newer. Which one that is
+  // cannot be told from here, so a single unused one refuses: the cost of being wrong is `--force`, and
+  // the cost of the other reading is a stranded credential.
+  if (tokens.some((token) => token.last_used_on === null)) return "never-used";
+  if (tokens.some((token) => token.last_used_on === undefined)) return "unreadable";
+  return "used";
+}
+
+/**
+ * Drop a minted token's local copy and leave the token live in Cloudflare (#762) — for a `ci-system` token
+ * that is already in CI, where the file's copy has no reader left.
+ *
+ * **The check is the account's own.** Cloudflare never returns a token's secret after creation, so
+ * dropping the local copy of a token nothing has used strands it, and `pithy token rotate` becomes the
+ * only way to a working value. `last_used_on` answers exactly that: `null` is refused. Every other way the
+ * answer can go missing — no credentials, offline, a response that did not say — is permission rather than
+ * a stop. It asks when someone can be asked, and drops when nobody can, because a local file operation
+ * that failed for being offline would be a worse command than an occasional unwanted drop that rotate
+ * recovers.
+ *
+ * **Its argument is a profile and the file is keyed by variable name**, so the profile is resolved to its
+ * `secret` the way the sink did on the way in. Nothing to forget asks nothing and calls nothing, so a
+ * second run is the same run. Audited on a drop and on a refusal, never with the value.
+ */
+export async function forgetProfileToken(
+  engine: ForgetEngine,
+  profileName: string,
+  env: string,
+  options: ForgetOptions = {},
+): Promise<ForgetResult> {
+  const profile = resolveProfile(engine.profiles, profileName);
+  const paths = engine.paths ?? {};
+  const location = mintedTokensPath(engine.project, paths);
+  const result = { profile: profileName, env, location };
+  try {
+    if (!(await holdsMintedToken(engine.project, env, profile.secret, paths))) {
+      return { ...result, localCopy: "absent", usage: "skipped" };
+    }
+    const usage = options.force ? "skipped" : await usageOf(engine, tokenName(engine.project, env, profileName));
+    if (usage === "never-used") {
+      throw new PreconditionFailedError({
+        message: `${profileName}'s ${env} token has never been used, so ${location} may hold its only copy.`,
+        action: `Put the value where it is going and let it authenticate once, or pass --force. A copy dropped by mistake comes back only as a new token: ${pithyCommand("token rotate", { args: [profileName], flags: { "--env": env } })}`,
+        detail: `last_used_on is null for ${tokenName(engine.project, env, profileName)}`,
+      });
+    }
+    if (usage === "unreadable") await options.confirm?.();
+    const { forgotten } = await forgetMintedToken(engine.project, env, profile.secret, paths);
+    if (forgotten) {
+      await emit(engine, {
+        action: TokenAuditActions.forgotten,
+        outcome: "success",
+        profile: profileName,
+        env,
+        store: "dev-vars",
+      });
+    }
+    return { ...result, localCopy: forgotten ? "forgotten" : "absent", usage };
+  } catch (error) {
+    await emit(engine, { action: TokenAuditActions.forgotten, outcome: "failure", profile: profileName, env });
     throw error;
   }
 }

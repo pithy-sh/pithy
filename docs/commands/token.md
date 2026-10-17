@@ -2,7 +2,7 @@
 
 _The site renders this for readers: [pithy.sh/docs/cli/commands/token](https://pithy.sh/docs/cli/commands/token). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
 
-Mint, list, rotate, and revoke the scoped, least-privilege, account-owned Cloudflare API tokens a project needs.
+Mint, list, rotate, revoke, and forget the scoped, least-privilege, account-owned Cloudflare API tokens a project needs.
 
 ## Synopsis
 
@@ -11,19 +11,21 @@ pithy token mint <profile> [--env <env>] [--store <store>] [--permission <key>]�
 pithy token list [--env <env>] [--json]
 pithy token rotate <profile> [--env <env>] [--store <store>] [--permission <key>]… [--keep-previous] [--json]
 pithy token revoke <profile> [--env <env>] [--json]
+pithy token forget <profile> [--env <env>] [--force] [--json]
 ```
 
-The model behind these four commands — the bootstrap token, the delegation rule, what `ci-system` is, what a worker-consumer profile is, and where each store puts a value — is [`TOKENS.md`](../TOKENS.md). This page is the command surface.
+The model behind these five commands — the bootstrap token, the delegation rule, what `ci-system` is, what a worker-consumer profile is, and where each store puts a value — is [`TOKENS.md`](../TOKENS.md). This page is the command surface.
 
 ## Flags
 
 | Subcommand | Flag | Meaning |
 |---|---|---|
-| `mint`, `rotate`, `revoke` | `<profile>` (positional, required) | The token profile: `ci-system`, or a capability's worker-consumer profile. |
+| `mint`, `rotate`, `revoke`, `forget` | `<profile>` (positional, required) | The token profile: `ci-system`, or a capability's worker-consumer profile. |
 | all | `--env <env>` | Target environment: `dev`, `staging`, `prod`. Default `dev`. |
 | `mint`, `rotate` | `--store <store>` | Override where the value is written: `secrets-store`, `dev-vars`, `ephemeral`. |
 | `mint`, `rotate` | `--permission <key>` | Override the permission set. **Repeatable** — every occurrence is collected. |
 | `rotate` | `--keep-previous` | Keep the old token as a grace window instead of deleting it. Default `false`. |
+| `forget` | `--force` | Drop the local copy without checking whether the token has been used, and without asking. Default `false`. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
 The permission keys `--permission` accepts are fixed and named in the flag's own help. An unknown key is refused before anything is minted, so a typo cannot produce a mis-scoped credential.
@@ -32,7 +34,7 @@ A `--store` on the command line wins over the profile's `defaultStore`, which wi
 
 ## What it does
 
-**No subcommand ever prints a token value.** Not on stdout, not in `--json`, not in an audit event, not in an error. That is a property to rely on: the value goes to the store the profile resolves, and the output says only which store and where. `dev-vars` is how a value gets out to a person — `<config>/<project>/tokens.json`, mode `0600`, keyed by environment. **Nothing in the CLI reads that file.** It is a handoff: you open it, copy the value, and paste it into your CI provider's secrets. `secrets-store` writes to the CF Secrets Store for a Worker to read through its binding, with no human in the loop. `ephemeral` writes nothing at all.
+**No subcommand ever prints a token value.** Not on stdout, not in `--json`, not in an audit event, not in an error. That is a property to rely on: the value goes to the store the profile resolves, and the output says only which store and where. `dev-vars` is how a value gets out to a person — `<config>/<project>/tokens.json`, mode `0600`, keyed by environment. **Nothing in the CLI reads a credential out of that file.** It is a handoff: you open it, copy the value, and paste it into your CI provider's secrets. `forget` and `revoke` take a value out of it; nothing uses one. `secrets-store` writes to the CF Secrets Store for a Worker to read through its binding, with no human in the loop. `ephemeral` writes nothing at all.
 
 `mint` **rolls in place.** The token name is a stable `(project, env, profile)` identity — `<project>-<env>-<profile>` — and each mint regenerates the value with the profile's *current* permissions. So composing a capability that contributes `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. The permissions are the ones `--env`'s own composition contributes: each Worker's `pithy.config.ts` is evaluated under that environment's `ENVIRONMENT`, so a capability a config composes for production alone widens the production token and no other. It does not reuse a stored value; that would pin the token to its old scope.
 
@@ -40,9 +42,13 @@ A `--store` on the command line wins over the profile's `defaultStore`, which wi
 
 `rotate` is the proven two-step Cloudflare has no single call for: mint a new token under the same name and policies, store the value, then delete the tokens that predate it. `--keep-previous` leaves the old one standing as a grace window while a Worker consumer picks up the new value — redeploy first.
 
-`revoke` deletes **every** account token of the profile's computed name for that environment. The project scope in that name is what keeps the sweep inside this project.
+`revoke` deletes **every** account token of the profile's computed name for that environment. The project scope in that name is what keeps the sweep inside this project. **Then it drops the profile's local copy** for that environment from `tokens.json`, because a deleted token's value would otherwise sit there looking exactly like a live one. The delete is the operation and the cleanup is reported, never load-bearing: an absent file, an unreadable one, or one holding no such key leaves the revoke a success, and `localCopy` says which happened.
 
-Every mint, rotate, and revoke emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`) carrying the token's id and its store, never its value — and only when the project composes `@pithy-sh/audit`. It is a no-op otherwise; the CLI never hard-depends on audit, and an audit write never breaks the token action it records.
+`forget` drops the profile's local copy for one environment and **leaves the Cloudflare token live**. It is for a token that is already where it is going, usually a `ci-system` value pasted into CI. The file is keyed by variable name, so the profile is resolved to its secret, `CF_TOKEN_CI_SYSTEM`, the way the mint wrote it.
+
+Cloudflare never returns a token's value after creation, so dropping the copy of a token nothing has used strands it. `forget` asks the account first. The token list reports `last_used_on`, and a `null` there means nothing has ever authenticated with the token, so `forget` refuses and drops nothing. When that field cannot be read — no credentials, offline, or a response that does not say — `forget` asks at a terminal and drops the value when nobody can be asked. A local file operation does not fail for being offline, and `pithy token rotate` recovers an unwanted drop. `--force` skips the check, the refusal and the prompt. A token the account no longer holds is dropped without asking: its value opens nothing. With nothing to forget, it asks nobody and calls nothing, so a second run is the same run.
+
+Every mint, rotate, and revoke, and every forget that drops a value or is refused, emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) carrying the token's id or profile, never its value — and only when the project composes `@pithy-sh/audit`. A mint, rotate or forget that succeeds also names its store. It is a no-op otherwise; the CLI never hard-depends on audit, and an audit write never breaks the token action it records. A `forget` with nothing to drop emits nothing, because it took no action. A `forget` without credentials goes unrecorded too: there is no client to write the event with, and when the project composes audit `forget` says so on stderr (`audit event not recorded`) rather than dropping the value in silence.
 
 Credentials come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account. They are account-scoped, not per project, and the account is resolved from the project's own config *before* the credentials are read — minting into a file the project did not select would create a real token in someone else's account. A profile bound here by `pithy cloudflare connect` outranks the file, and the audit events then name the person who signed in rather than a token. `PITHY_OFFLINE` refuses ambient credentials, so an offline run fails with "Cloudflare credentials are missing" rather than reaching an account nobody in the session named.
 
@@ -90,6 +96,21 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | `env` | string | The environment it was revoked for. |
 | `name` | string | The composed Cloudflare token name the sweep matched. |
 | `revokedCount` | number | How many account tokens of that name were deleted. `0` is an ordinary answer. |
+| `localCopy` | string | The profile's local copy for this environment: `"forgotten"` (dropped), `"absent"` (there was none), or `"uncleared"` (the cleanup could not run, so one may still be there). A word, not a boolean, for the reason `revokedCount` is a count. |
+| `location` | string | The `tokens.json` path the local copy lives in. |
+| `localCopyProblem` | string, optional | Why the cleanup could not run. Present only with `"uncleared"`. Never a line of the file. |
+
+### `token forget`
+
+| key | type | meaning |
+|---|---|---|
+| `command` | string | `"token forget"`. |
+| `schemaVersion` | integer | The version of this payload's shape. Bumped only when a key is removed or retyped; `pithy schema` publishes the current one. |
+| `profile` | string | The profile whose copy was forgotten. |
+| `env` | string | The environment it was forgotten for. |
+| `localCopy` | string | `"forgotten"` when a value was dropped, `"absent"` when there was none. |
+| `location` | string | The `tokens.json` path. |
+| `usage` | string | What Cloudflare said about the token's use, which is why the drop went ahead: `"used"`, `"no-live-token"`, `"unreadable"`, or `"skipped"` (`--force`, or nothing to forget). `"never-used"` is a refusal and never reaches this line. |
 
 ## Errors
 
@@ -102,6 +123,8 @@ The token's value and its composed Cloudflare name are both on the internal resu
 - **The secret is declared `d1`.** A token whose value is read outside the Worker cannot live in the encrypted D1 store. Same two fixes.
 - **`No CF Secrets Store is configured for the secrets-store store.`** Run `pithy add secrets --worker api` to record `SECRETS_STORE_ID`, naming the Worker that composes `secrets`, or mint with `--store dev-vars`. In a project with several Workers the action names one command per Worker — ``Run `pithy add secrets --worker api` or `pithy add secrets --worker web` to record …`` — because a bare `pithy add secrets` is refused there.
 - **No project name.** The root `pithy.config.ts` needs `name`. Every token name and Secrets Store entry starts with it, and `revoke` deletes every account token of the name it computes — a guess would point that sweep at another project's credentials.
+- **`<profile>'s <env> token has never been used, so <path> may hold its only copy.`** `forget` read `last_used_on: null` and dropped nothing. Put the value where it is going and let it authenticate once, or pass `--force`. A copy dropped by mistake comes back only as a new token, through `pithy token rotate <profile> --env <env>`.
+- **`Cannot update <path>: …`** `forget` will not rewrite a `tokens.json` it could not read, parse or make sense of — every other environment's value is still in it. Fix the file, or move it aside. `revoke` reports the same sentence as `localCopyProblem` and still succeeds.
 - **`--env` is validated at the flag.** `production` is answered with `prod`; anything over seven characters or outside the charset is refused before a single Cloudflare call.
 
 ## Examples
@@ -119,15 +142,19 @@ pithy token list --env prod --json
 # Rotate a worker-consumer token, holding the old one as a grace window. Redeploy, then revoke.
 pithy token rotate secrets --env prod --keep-previous --json
 
-# Revoke.
+# Revoke. The local copy goes with it.
 pithy token revoke ci-system --env staging --json
+
+# Forget the local copy once CI has the value. The token stays live.
+pithy token forget ci-system --env prod --json
 ```
 
 ```json
 {"command":"token mint","schemaVersion":1,"profile":"ci-system","env":"prod","tokenId":"<token-id>","store":"dev-vars","location":"/home/you/.config/pithy/acme/tokens.json"}
 {"command":"token list","schemaVersion":1,"env":"prod","tokens":[{"profile":"ci-system","env":"prod","name":"acme-prod-ci-system","tokenId":"<token-id>","status":"active"}]}
 {"command":"token rotate","schemaVersion":1,"profile":"secrets","env":"prod","tokenId":"<token-id>","store":"secrets-store","location":"CF Secrets Store"}
-{"command":"token revoke","schemaVersion":1,"profile":"ci-system","env":"staging","name":"acme-staging-ci-system","revoked":1}
+{"command":"token revoke","schemaVersion":1,"profile":"ci-system","env":"staging","name":"acme-staging-ci-system","revokedCount":1,"localCopy":"forgotten","location":"/home/you/.config/pithy/acme/tokens.json"}
+{"command":"token forget","schemaVersion":1,"profile":"ci-system","env":"prod","localCopy":"forgotten","location":"/home/you/.config/pithy/acme/tokens.json","usage":"used"}
 ```
 
 Every value above that looks like an identifier is a placeholder. No payload on this page can carry a token value, whatever is substituted in.

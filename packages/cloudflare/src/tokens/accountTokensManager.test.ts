@@ -137,6 +137,37 @@ describe("CloudflareAccountTokensManager", () => {
     ]);
   });
 
+  /**
+   * `last_used_on` is read because `pithy token forget` acts on it (#762): a token nothing has ever
+   * authenticated with is one whose only copy may be the local file, so dropping that copy strands it.
+   *
+   * **Three states, and `null` is one of them.** Every other optional field here reads `null` as absent;
+   * this one cannot, because Cloudflare's `null` is the answer — never used — and absent is "this response
+   * did not say". Collapsing them would turn an unanswerable check into a refusal or, worse, the reverse.
+   */
+  it("listTokens keeps last_used_on: a timestamp, an explicit null, and absent are three facts", async () => {
+    mockTokenList.mockReturnValue(
+      paginator([
+        { id: "used", name: "a", last_used_on: "2026-10-14T00:40:19Z" },
+        { id: "never", name: "b", last_used_on: null },
+        { id: "unsaid", name: "c" },
+      ]),
+    );
+    const [used, never, unsaid] = await manager.listTokens();
+    expect(used?.last_used_on).toBe("2026-10-14T00:40:19Z");
+    expect(never?.last_used_on).toBeNull();
+    expect(unsaid?.last_used_on).toBeUndefined();
+  });
+
+  it("an undecodable last_used_on costs the field, never the token — no duplicate mint", async () => {
+    // `safeParse` drops an entry that fails, and a dropped entry is a roll that mints a second credential
+    // of the same name. A shape this does not model reads as "did not say", which is never a refusal.
+    mockTokenList.mockReturnValue(paginator([{ id: "t1", name: "acme-staging-ci-system", last_used_on: 12345 }]));
+    const [token] = await manager.listTokens();
+    expect(token?.id).toBe("t1");
+    expect(token?.last_used_on).toBeUndefined();
+  });
+
   it("resolvePermissionGroups maps names to id references", async () => {
     expect(await manager.resolvePermissionGroups(["Secrets Store Read", "Secrets Store Write"])).toEqual([
       { id: "pg-read" },

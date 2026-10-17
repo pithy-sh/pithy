@@ -1986,6 +1986,34 @@ export const COMMANDS = {
     },
     "groups": []
   },
+  "token forget": {
+    "positionals": [
+      {
+        "name": "profile",
+        "required": true,
+        "variadic": false
+      }
+    ],
+    "flags": {
+      "--env": {
+        "type": "string",
+        "required": false,
+        "repeatable": false,
+        "default": "dev"
+      },
+      "--force": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      },
+      "--json": {
+        "type": "boolean",
+        "required": false,
+        "repeatable": false
+      }
+    },
+    "groups": []
+  },
   "token list": {
     "positionals": [],
     "flags": {
