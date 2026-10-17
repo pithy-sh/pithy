@@ -25,6 +25,13 @@ export const StorageObjectResponse = z
     id: z.string().describe("The file's id. What every other route takes as `:id`."),
     path: z.string().describe("The file's logical path, as the owner named it. Never an R2 key."),
     ownerId: z.string().nullable().describe("The id of the user who owns the file, or null for a system-owned file."),
+    organizationId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "The organization the file was written under. Null when none was in force; absent from a Worker that predates it.",
+      ),
     contentType: z
       .string()
       .describe("The file's MIME type: as declared at upload, replaced at completion by the type R2 stored."),

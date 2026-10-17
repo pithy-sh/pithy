@@ -3,16 +3,18 @@
 
 import { env } from "cloudflare:test";
 import type { R2Bucket } from "@cloudflare/workers-types";
+import { accessCaller, type PermissionHook } from "@pithy-sh/core/src/access/access";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import type { z } from "zod";
 import { StorageConfig, type StorageConfigInput } from "../config/config";
 import { STORAGE_OBJECTS_TABLE, STORAGE_SHARES_TABLE, type StorageDatabase, storageDatabase } from "../data/tables";
 import { storage_0001_objects } from "../migrations/0001_objects";
+import { storage_0002_ownership } from "../migrations/0002_ownership";
 import { collectParts, planMultipart } from "../object/multipart";
 import { type ObjectStore, objectStore, type PresignedObjects } from "../object/store";
 import type { UploadedPart } from "../object/uploadedPart";
@@ -80,6 +82,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_storage_objects");
   db = storageDatabase(env.DB);
   await storage_0001_objects.up(db as unknown as Kysely<unknown>);
+  await storage_0002_ownership.up(db as unknown as Kysely<unknown>);
   bucket = env.STORAGE_BUCKET;
   uploadedParts.clear();
   openedUploads.length = 0;
@@ -161,7 +164,12 @@ let tokenCounter = 0;
 let clock = new Date("2026-01-01T00:00:00.000Z");
 
 /** Build the app with an auth middleware gated on an `x-user` header, and deterministic ids. */
-function makeApp(configInput: StorageConfigInput = {}) {
+/**
+ * The routes over real D1 and R2. `x-user` signs a caller in: `ada` alone, or `ada@org-a` acting for an
+ * organization, with `x-powers` naming what their role there holds. That stands in for auth and tenancy,
+ * which fill the same two seams.
+ */
+function makeApp(configInput: StorageConfigInput = {}, permission?: PermissionHook) {
   idCounter = 0;
   tokenCounter = 0;
   clock = new Date("2026-01-01T00:00:00.000Z");
@@ -170,15 +178,21 @@ function makeApp(configInput: StorageConfigInput = {}) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   app.use("*", async (c, next) => {
-    const user = c.req.header("x-user");
+    const [user, organizationId] = (c.req.header("x-user") ?? "").split("@");
+    const powers = (c.req.header("x-powers") ?? "").split(",");
     c.set("auth", user ? { userId: user, sessionId: "s1", scopes: [] } : null);
+    c.set("actingOrganization", async () =>
+      organizationId ? { organizationId, roleAllows: (power: string) => powers.includes(power) } : null,
+    );
     await next();
   });
-  const resolveDeps = async (c: { var: { auth: { userId: string } | null } }): Promise<HandlerDeps> => ({
+  const resolveDeps = async (c: Context<PithyHonoEnv>): Promise<HandlerDeps> => ({
     db,
     store,
     config,
-    ownerId: c.var.auth?.userId ?? null,
+    caller: await accessCaller(c.var),
+    ...(permission ? { permission } : {}),
+    env: {},
     newId: () => {
       idCounter += 1;
       return `00000000-0000-4000-8000-${String(idCounter).padStart(12, "0")}`;
@@ -189,10 +203,7 @@ function makeApp(configInput: StorageConfigInput = {}) {
     },
     now: () => clock,
   });
-  registerStorageRoutes({
-    config,
-    resolveDeps: resolveDeps as unknown as NonNullable<Parameters<typeof registerStorageRoutes>[0]["resolveDeps"]>,
-  })(app);
+  registerStorageRoutes({ config, resolveDeps })(app);
   return app;
 }
 
@@ -1320,5 +1331,135 @@ describe("share links", () => {
 
     expect(await db.selectFrom(STORAGE_SHARES_TABLE).selectAll().where("token", "=", token).execute()).toEqual([]);
     expect((await app.request(`/s/${token}`)).status).toBe(404);
+  });
+});
+
+describe("who may reach a file", () => {
+  const ADA_A = `${ADA}@org-a`;
+  const GRACE_A = `${GRACE}@org-a`;
+  const ADA_B = `${ADA}@org-b`;
+  const MANAGER_A = "user-mgr@org-a";
+
+  /** What one caller's read, list, rename and delete answer for a file, as statuses. */
+  async function reach(app: Hono<PithyHonoEnv>, id: string, user?: string, powers?: string) {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (user) headers["x-user"] = user;
+    if (powers) headers["x-powers"] = powers;
+    const read = (await app.request(`/storage/${id}`, { headers })).status;
+    const listed = user
+      ? (await conforming(await app.request("/storage?includePublic=true", { headers }), ObjectListResponse)).objects
+          .map((object) => object.id)
+          .includes(id)
+      : false;
+    const rename = (
+      await app.request(`/storage/${id}`, { method: "PATCH", headers, body: JSON.stringify({ path: "moved.txt" }) })
+    ).status;
+    return { read, listed, rename };
+  }
+
+  test("a private file is not found — not forbidden — for another user, for its owner elsewhere, and anonymously", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA_A, "a.txt", "hello");
+    for (const who of [GRACE_A, ADA_B, ADA, undefined]) {
+      const { read, listed, rename } = await reach(app, id, who);
+      expect(read).toBe(404);
+      expect(listed).toBe(false);
+      // Anonymous never reaches the record at all: the session guard answers first, and names nothing.
+      expect(rename).toBe(who ? 404 : 401);
+      if (who) {
+        const deleted = await app.request(`/storage/${id}`, { method: "DELETE", headers: { "x-user": who } });
+        expect(deleted.status).toBe(404);
+      }
+    }
+    expect(await reach(app, id, ADA_A)).toEqual({ read: 200, listed: true, rename: 200 });
+  });
+
+  test("an organization file reads for a member acting for it, is not found for anyone else, and is not theirs to change", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA_A, "team.txt", "hello", "organization");
+    expect(await reach(app, id, GRACE_A)).toEqual({ read: 200, listed: true, rename: 403 });
+    for (const who of [ADA_B, `${GRACE}@org-b`, undefined]) expect((await reach(app, id, who)).read).toBe(404);
+  });
+
+  test("a role holding storage:manage in the file's organization edits and deletes it; elsewhere it reaches nothing", async () => {
+    const app = makeApp();
+    const { id } = await storeFile(app, ADA_A, "private.txt", "hello");
+    expect(await reach(app, id, "user-mgr@org-b", "storage:manage")).toEqual({ read: 404, listed: false, rename: 404 });
+    expect(await reach(app, id, MANAGER_A, "media:manage")).toEqual({ read: 404, listed: false, rename: 404 });
+    expect(await reach(app, id, MANAGER_A, "storage:manage")).toEqual({ read: 200, listed: true, rename: 200 });
+    const deleted = await app.request(`/storage/${id}`, {
+      method: "DELETE",
+      headers: { "x-user": MANAGER_A, "x-powers": "storage:manage" },
+    });
+    expect(deleted.status).toBe(200);
+  });
+
+  test("records its owner and the organization in force, and a level outside the policy is refused", async () => {
+    const app = makeApp({ visibility: { allowed: ["private", "organization"] } });
+    const created = await init(app, ADA_A, { path: "x.txt", contentType: "text/plain", size: 1 });
+    const object = (created.json as unknown as { object: { ownerId: string; organizationId: string } }).object;
+    expect(object).toMatchObject({ ownerId: ADA, organizationId: "org-a" });
+    const refused = await init(app, ADA_A, { path: "y.txt", contentType: "text/plain", size: 1, visibility: "public" });
+    expect(refused.status).toBe(400);
+    const noOrg = await init(app, ADA, {
+      path: "z.txt",
+      contentType: "text/plain",
+      size: 1,
+      visibility: "organization",
+    });
+    expect(noOrg.status).toBe(400);
+  });
+
+  test("a list returns own and organization files; includePublic adds public ones, and nothing else does", async () => {
+    const app = makeApp();
+    const own = await storeFile(app, ADA_A, "own.txt", "1");
+    const shared = await storeFile(app, GRACE_A, "shared.txt", "2", "organization");
+    const elsewhere = await storeFile(app, "user-zed@org-z", "elsewhere.txt", "3", "public");
+    await storeFile(app, "user-zed@org-z", "secret.txt", "4");
+    const ids = async (query: string) =>
+      (
+        await conforming(await app.request(`/storage${query}`, { headers: { "x-user": ADA_A } }), ObjectListResponse)
+      ).objects
+        .map((object) => object.id)
+        .sort();
+    expect(await ids("")).toEqual([own.id, shared.id].sort());
+    expect(await ids("?includePublic=true")).toEqual([own.id, shared.id, elsewhere.id].sort());
+  });
+
+  test("the hook: an allow admits by id, a deny removes from read, list and delete, and none leaves the rules", async () => {
+    const plain = makeApp();
+    const { id } = await storeFile(plain, ADA_A, "a.txt", "hello");
+    const share = makeApp({}, ({ caller, action }) =>
+      caller.userId === GRACE && action === "read" ? "allow" : "default",
+    );
+    expect((await share.request(`/storage/${id}`, { headers: { "x-user": GRACE_A } })).status).toBe(200);
+    // A grant does not list.
+    const listed = await conforming(
+      await share.request("/storage", { headers: { "x-user": GRACE_A } }),
+      ObjectListResponse,
+    );
+    expect(listed.objects).toEqual([]);
+
+    const hold = makeApp({}, ({ record }) => (record.id === id ? "deny" : "default"));
+    expect((await hold.request(`/storage/${id}`, { headers: { "x-user": ADA_A } })).status).toBe(404);
+    const held = await conforming(await hold.request("/storage", { headers: { "x-user": ADA_A } }), ObjectListResponse);
+    expect(held.objects).toEqual([]);
+    expect((await hold.request(`/storage/${id}`, { method: "DELETE", headers: { "x-user": ADA_A } })).status).toBe(404);
+
+    expect((await plain.request(`/storage/${id}`, { headers: { "x-user": ADA_A } })).status).toBe(200);
+  });
+
+  test("a page the hook shortens still carries a cursor that says there is more", async () => {
+    const plain = makeApp();
+    const first = await storeFile(plain, ADA_A, "a.txt", "1");
+    await storeFile(plain, ADA_A, "b.txt", "2");
+    await storeFile(plain, ADA_A, "c.txt", "3");
+    const hold = makeApp({}, ({ record }) => (record.id === first.id ? "deny" : "default"));
+    const page = await conforming(
+      await hold.request("/storage?limit=2", { headers: { "x-user": ADA_A } }),
+      ObjectListResponse,
+    );
+    expect(page.objects.map((object) => object.path)).toEqual(["b.txt"]);
+    expect(page.cursor).toBeDefined();
   });
 });

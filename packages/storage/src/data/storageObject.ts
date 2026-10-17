@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RecordVisibility } from "@pithy-sh/core/src/access/visibility";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { z } from "zod";
 
@@ -20,13 +21,20 @@ import { z } from "zod";
  * `size` is declared by the client at init and *confirmed* against R2 at completion. It is nullable
  * because a caller may not know it up front; a null size reserves no quota, which is why the handler
  * requires it whenever a quota is configured.
+ *
+ * **Whose it is.** `ownerId` is the authenticated user and `organizationId` the organization they were
+ * acting for when the file was written — the same two columns, in the same terms, as a media record, so
+ * one name answers *what is this account holding* across both. The organization is the fact at the time
+ * of the write, never a join through current membership.
  */
 
-export const StorageVisibility = z
-  .enum(["private", "public"])
-  .describe(
-    "Who may read an object without a share link: `private` is the owner alone, `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private.",
-  );
+/**
+ * Who may read an object without a share link — core's three levels, the same ones media uses. Visibility
+ * is authorization, not a bucket setting: the bucket itself stays private.
+ */
+export const StorageVisibility = RecordVisibility.describe(
+  "Who may read an object without a share link: `private` is its owner, acting for its organization; `organization` is any member acting for it; `public` is anyone with the id. Visibility is authorization, not a bucket setting — the bucket itself stays private.",
+);
 export type StorageVisibility = z.infer<typeof StorageVisibility>;
 
 export const StorageObjectStatus = z
@@ -51,6 +59,12 @@ export const StorageObject = z
       .string()
       .nullable()
       .describe("The authenticated user who owns the file, from AuthContext. Null for system-owned objects."),
+    organizationId: z
+      .string()
+      .nullable()
+      .describe(
+        "The organization the owner was acting for when the file was written, from the acting-organization seam. Null when none was in force, and for system-owned objects.",
+      ),
     contentType: z
       .string()
       .min(1)
@@ -63,7 +77,9 @@ export const StorageObject = z
       .nonnegative()
       .nullable()
       .describe("Byte count. Declared at init so the pending row reserves quota; confirmed against R2 at completion."),
-    visibility: StorageVisibility.describe("Whether anyone with the id may read this object, or only its owner."),
+    visibility: StorageVisibility.describe(
+      "Who may read this object: its owner, its organization's members, or anyone with the id.",
+    ),
     checksum: z
       .string()
       .nullable()

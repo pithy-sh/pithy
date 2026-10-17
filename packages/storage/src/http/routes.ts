@@ -2,15 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+import { accessCaller, type PermissionHook } from "@pithy-sh/core/src/access/access";
+import { UsageQuery, UsageResponse, usageRollup } from "@pithy-sh/core/src/access/usage";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describeRoute, type RouteResponse } from "@pithy-sh/core/src/http/routeSpec";
 import { validate } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
+import type { Kysely } from "kysely";
 import type { StorageConfig } from "../config/config";
-import { storageDatabase } from "../data/tables";
+import { STORAGE_OBJECTS_TABLE, storageDatabase } from "../data/tables";
 import { objectStore } from "../object/store";
 import { STORAGE_R2_SECRET } from "../secret/registry";
 import { requireAuth } from "./guard";
@@ -51,6 +55,7 @@ import {
   ShareTokenParam,
   UpdateObjectInput,
 } from "./schemas";
+import { STORAGE_USAGE_READ_SCOPE } from "./scopes";
 import {
   parseConditions,
   parseRangeHeader,
@@ -65,8 +70,10 @@ import {
  *
  *   POST   /storage                 → start an upload            (bearer | session)
  *                                     json: CreateUploadInput
- *   GET    /storage                 → list your files            (bearer | session, owner-scoped)
+ *   GET    /storage                 → list the files you may see (bearer | session)
  *                                     query: ListObjectsQuery
+ *   GET    /storage/admin/usage     → files and bytes held       (control-plane, storage:usage:read)
+ *                                     query: UsageQuery
  *   DELETE /storage/shares/:token   → revoke a share             (bearer | session, owner-scoped)
  *                                     param: ShareTokenParam
  *   POST   /storage/:id/complete    → finalize a multipart       (bearer | session, owner-scoped)
@@ -82,7 +89,7 @@ import {
  *   GET    /storage/:id/url         → presigned direct URL       (bearer | session, owner-or-public)
  *                                     param: ObjectIdParam
  *   GET    /storage/:id             → stream the bytes           (public when `visibility: 'public'`,
- *                                                                 otherwise bearer | session + owner)
+ *                                                                 otherwise bearer | session + readable)
  *                                     param: ObjectIdParam, query: ObjectReadQuery
  *   HEAD   /storage/:id             → metadata only              (bearer | session, owner-scoped)
  *                                     param: ObjectIdParam
@@ -97,6 +104,12 @@ import {
  * 401, never a 400 — shape is not something a caller learns before being verified. `POST
  * /storage/:id/abort` carries no json validator because it reads no body: adding one would 400 the
  * bodyless POST every client sends today.
+ *
+ * **"Owner-scoped" above means the access rules, not the owner alone.** Every route reads a file only if its
+ * visibility admits the caller — its owner acting for its organization, any member for `organization`,
+ * anyone for `public` — and changes one only for its owner or a role holding `storage:manage` in its
+ * organization, with the adopter's permission hook asked about both. A file the caller may not read is
+ * not found, never forbidden (`handlers.ts`).
  *
  * `GET /storage/:id` is the one route with two strategies, because a public file must be readable by
  * someone with no session at all. It is therefore **not** wrapped in {@link requireAuth}: the guard
@@ -118,6 +131,8 @@ export interface StorageRoutesOptions {
   basePath?: string;
   /** Where share fetches mount. Defaults to `/s` — short, because the whole URL gets pasted around. */
   sharePath?: string;
+  /** The adopter's permission hook: allow, deny, or the default rules, asked on every file read and write. */
+  permission?: PermissionHook;
   /** Test seam: resolve handler deps from the request. Defaults to the env-based resolver. */
   resolveDeps?: (c: Context<PithyHonoEnv>) => Promise<HandlerDeps>;
 }
@@ -147,7 +162,10 @@ function requireBinding<T>(env: unknown, name: string, kind: string): T {
 }
 
 /** Build the default per-request dependency resolver from the resolved config. */
-function defaultResolveDeps(config: StorageConfig): (c: Context<PithyHonoEnv>) => Promise<HandlerDeps> {
+function defaultResolveDeps(
+  config: StorageConfig,
+  permission: PermissionHook | undefined,
+): (c: Context<PithyHonoEnv>) => Promise<HandlerDeps> {
   return async (c) => {
     const env = c.env as unknown as StorageEnv;
     const bucket = requireBinding<R2Bucket>(env, "STORAGE_BUCKET", "an R2 bucket");
@@ -158,7 +176,9 @@ function defaultResolveDeps(config: StorageConfig): (c: Context<PithyHonoEnv>) =
       // binding never touches the secrets store.
       store: objectStore({ bucket, env, secretName: STORAGE_R2_SECRET }),
       config,
-      ownerId: c.var.auth?.userId ?? null,
+      caller: await accessCaller(c.var),
+      ...(permission ? { permission } : {}),
+      env: c.env,
       newId: () => crypto.randomUUID(),
       // 32 bytes of CSPRNG output, base64url. The token *is* the credential for a share link, so its
       // entropy is the only thing standing between a link and anyone guessing one.
@@ -193,7 +213,7 @@ const BYTE_RESPONSES: Readonly<Record<number, RouteResponse>> = {
 export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono<PithyHonoEnv>) => void {
   const base = options.basePath ?? "/storage";
   const share = options.sharePath ?? "/s";
-  const resolve = options.resolveDeps ?? defaultResolveDeps(options.config);
+  const resolve = options.resolveDeps ?? defaultResolveDeps(options.config, options.permission);
 
   /** Stream one object, honoring `Range` and `If-None-Match`. Shared by the id route and the share route. */
   const stream = async (
@@ -244,7 +264,9 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
     app.get(
       base,
       describeRoute({
-        summary: "List the caller's files.",
+        summary: "List the files the caller may see.",
+        description:
+          "The caller's own files and their organization's, by path. `includePublic=true` adds every public file.",
         verification: AUTHENTICATED,
         responses: { 200: ObjectListResponse },
       }),
@@ -256,6 +278,25 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
     );
 
     // Static before `:id` — see the file doc comment.
+    app.get(
+      `${base}/admin/usage`,
+      describeRoute({
+        summary: "Count files held, per organization or per owner.",
+        description:
+          "Stored files and their bytes. A per-owner read names its organization, so no figure ever spans two.",
+        verification: "control-plane",
+        scopes: [STORAGE_USAGE_READ_SCOPE],
+        responses: { 200: UsageResponse },
+      }),
+      requireControlPlane(STORAGE_USAGE_READ_SCOPE),
+      validate("query", UsageQuery),
+      async (c) => {
+        const d1 = requireBinding<D1Database>(c.env, "DB", "a D1 database");
+        const db = storageDatabase(d1) as unknown as Kysely<unknown>;
+        return c.json((await usageRollup(db, STORAGE_OBJECTS_TABLE, c.req.valid("query"))) satisfies UsageResponse);
+      },
+    );
+
     app.delete(
       `${base}/shares/:token`,
       describeRoute({
@@ -355,8 +396,7 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
       `${base}/:id/url`,
       describeRoute({
         summary: "Mint a direct download URL.",
-        description:
-          "For a public file or one the caller owns. The URL cannot be revoked, so it lapses in five minutes.",
+        description: "For a file the caller may read. The URL cannot be revoked, so it lapses in five minutes.",
         verification: AUTHENTICATED,
         responses: { 200: PresignedUrlResponse },
       }),
@@ -373,7 +413,7 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
       describeRoute({
         summary: "Read a file's bytes.",
         description:
-          "Public files need no credential. A private file needs the owner's bearer token or session, and reads as missing to anyone else. Honors `Range` and `If-None-Match`.",
+          "Public files need no credential. Any other needs the bearer token or session of someone it is visible to, and reads as missing to anyone else. Honors `Range` and `If-None-Match`.",
         verification: ["public", "bearer", "session"],
         responses: BYTE_RESPONSES,
       }),

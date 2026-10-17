@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { DEFAULT_MULTIPART_THRESHOLD_BYTES, DEFAULT_PART_SIZE_BYTES, MAX_UPLOAD_PARTS } from "../object/multipart";
-import { maxObjectBytes, StorageConfig } from "./config";
+import { maxObjectBytes, refuseRenamedStorageOptions, StorageConfig } from "./config";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -12,7 +12,7 @@ describe("StorageConfig defaults", () => {
   test("an empty config is valid, private by default, and unlimited", () => {
     const config = StorageConfig.parse({});
     expect(config.quota.bytesPerOwner).toBe(null);
-    expect(config.defaultVisibility).toBe("private");
+    expect(config.visibility).toEqual({ default: "private", allowed: ["private", "organization", "public"] });
     expect(config.multipartThresholdBytes).toBe(DEFAULT_MULTIPART_THRESHOLD_BYTES);
     expect(config.partSizeBytes).toBe(DEFAULT_PART_SIZE_BYTES);
     expect(config.pendingTtlSeconds).toBe(86_400);
@@ -43,6 +43,33 @@ describe("StorageConfig validation", () => {
   test("rejects a zero or negative quota", () => {
     expect(StorageConfig.safeParse({ quota: { bytesPerOwner: 0 } }).success).toBe(false);
     expect(StorageConfig.safeParse({ quota: { bytesPerOwner: -1 } }).success).toBe(false);
+  });
+});
+
+describe("the visibility policy", () => {
+  test("allowed defaults to all three, so public uploads are not narrowed by the policy existing", () => {
+    expect(StorageConfig.parse({ visibility: { default: "public" } }).visibility.allowed).toContain("public");
+  });
+
+  test("a default outside allowed is refused at boot", () => {
+    expect(StorageConfig.safeParse({ visibility: { default: "public", allowed: ["private"] } }).success).toBe(false);
+  });
+
+  test("a config still naming defaultVisibility is refused, with visibility.default named", () => {
+    let thrown: unknown;
+    try {
+      refuseRenamedStorageOptions({ defaultVisibility: "public" });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      payload: {
+        code: "validation/invalid_input",
+        message: "`defaultVisibility` was renamed `visibility.default`.",
+        action: expect.stringContaining('visibility: { default: "public" }'),
+      },
+    });
+    expect(() => refuseRenamedStorageOptions({ visibility: { default: "public" } })).not.toThrow();
   });
 });
 

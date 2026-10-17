@@ -128,8 +128,11 @@ export interface ServeOptions {
   metadata: ObjectMetadata;
   /** The logical path — its last segment becomes the download filename. */
   path: string;
-  /** Whether anyone may read the object, which decides whether a shared cache may hold it. */
-  visibility: "private" | "public";
+  /**
+   * Who may read the object, which decides whether a shared cache may hold it: only a public object may
+   * be cached publicly, so an organization's file is as uncacheable as a private one.
+   */
+  visibility: "private" | "organization" | "public";
   /** Serve as a download (`attachment`) rather than inline. */
   download?: boolean;
 }

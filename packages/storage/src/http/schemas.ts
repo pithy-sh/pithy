@@ -120,7 +120,7 @@ export const CreateUploadInput = z
         "The exact byte count. Required: the presigned PUT signs Content-Length, and the pending row reserves these bytes against the owner's quota the moment it is written.",
       ),
     visibility: StorageVisibility.optional().describe(
-      "Who may read the file once stored. Omitted takes the configured default, which is private.",
+      "Who may read the file once stored. Omitted takes the configured `visibility.default`, which is private; a level outside `visibility.allowed` is refused, never coerced.",
     ),
   })
   .describe("A request to start an upload — what the file is called, what it is, and how big it is.");
@@ -149,7 +149,7 @@ export const UpdateObjectInput = z
   .object({
     path: logicalPath.optional(),
     visibility: StorageVisibility.optional().describe(
-      "Change who may read the file. Takes effect on the next request.",
+      "Change who may read the file. Takes effect on the next request. A level outside `visibility.allowed` is refused.",
     ),
   })
   .describe("A rename, a visibility change, or both. At least one field must be present.")
@@ -196,7 +196,13 @@ export const ListObjectsQuery = z
       .string()
       .max(MAX_OBJECT_KEY_BYTES)
       .optional()
-      .describe("Only files whose logical path starts with this. Omitted lists everything you own."),
+      .describe("Only files whose logical path starts with this. Omitted lists everything you may see."),
+    includePublic: z
+      .enum(["true", "false"])
+      .optional()
+      .describe(
+        "`true` adds every public file to your own and your organization's. Off by default, so nobody receives what they did not ask for.",
+      ),
     cursor: z
       .string()
       .min(1)
@@ -210,5 +216,5 @@ export const ListObjectsQuery = z
       .optional()
       .describe("Files per page. Defaults to 50, capped at 100 so one request cannot scan an entire owner's files."),
   })
-  .describe("Query parameters for the owner's file listing.");
+  .describe("Query parameters for the file listing: your own files, your organization's, and public ones on request.");
 export type ListObjectsQuery = z.output<typeof ListObjectsQuery>;

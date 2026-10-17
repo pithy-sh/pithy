@@ -1,6 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import {
+  type AccessCaller,
+  type AccessLevel,
+  accessLevel,
+  keepReadable,
+  type PermissionHook,
+  readablePredicate,
+} from "@pithy-sh/core/src/access/access";
+import { resolveVisibility } from "@pithy-sh/core/src/access/visibility";
 import type { StorageConfig } from "../config/config";
 import { StorageShare } from "../data/share";
 import { StorageObject } from "../data/storageObject";
@@ -42,11 +51,24 @@ import type {
  * addresses, so a key in a response body is a capability leak waiting for the first adopter who logs
  * their API responses.
  *
- * **A file you cannot see reads as missing.** `assertOwner` answers `storage/not_found` for a private
- * object owned by someone else and `storage/forbidden` only when the object is already public —
- * because a 403 on a private object confirms it exists, which is exactly the oracle an enumeration
- * attack wants. Public objects have nothing left to hide, so there the honest answer is the useful one.
+ * **Whose a file is, and who may reach it.** Every file is written with its owner, the organization in
+ * force, and a visibility — `private`, `organization` or `public` — from the project's policy. Every route
+ * asks core's access rules, and the adopter's permission hook if they supplied one, before it acts:
+ * reading is the visibility's, and changing a file — completing, aborting, copying, renaming,
+ * re-scoping, sharing, deleting — is its owner's, acting for its organization, or a role holding
+ * `storage:manage` there.
+ *
+ * **A file you cannot see reads as missing.** A caller who may not read a file gets `storage/not_found`,
+ * and `storage/forbidden` only when they may read it but not change it — because a 403 on a file they
+ * cannot see confirms it exists, which is exactly the oracle an enumeration attack wants. A file they
+ * can already read has nothing left to hide, so there the honest answer is the useful one.
  */
+
+/** The power a role holds to edit, delete and re-scope any file in its own organization. */
+export const STORAGE_MANAGE_POWER = "storage:manage";
+
+/** The capability's name, as the permission hook sees it. */
+const CAPABILITY = "storage";
 
 /** Everything a handler needs, all injectable. */
 export interface HandlerDeps {
@@ -54,10 +76,14 @@ export interface HandlerDeps {
   db: StorageDatabase;
   /** The object plane — presigning, the multipart lifecycle, and binding-backed reads. */
   store: ObjectStore;
-  /** The resolved storage config: quota, multipart sizing, default visibility. */
+  /** The resolved storage config: quota, multipart sizing, the visibility policy. */
   config: StorageConfig;
-  /** The authenticated caller from the core `AuthContext` seam, or null for an unauthenticated read. */
-  ownerId: string | null;
+  /** Who is asking: the signed-in user from `AuthContext`, if any, and the organization they act for. */
+  caller: AccessCaller;
+  /** The adopter's permission hook, if they supplied one. */
+  permission?: PermissionHook;
+  /** The Worker env, handed to the permission hook. */
+  env: Record<string, unknown>;
   /** Mints an object id. */
   newId: () => string;
   /** Mints a share token. */
@@ -71,9 +97,10 @@ export interface StorageObjectView {
   id: string;
   path: string;
   ownerId: string | null;
+  organizationId: string | null;
   contentType: string;
   size: number | null;
-  visibility: "private" | "public";
+  visibility: StorageObject["visibility"];
   checksum: string | null;
   status: "pending" | "stored" | "failed";
   createdAt: Date;
@@ -113,6 +140,7 @@ function view(object: StorageObject): StorageObjectView {
     id: object.id,
     path: object.path,
     ownerId: object.ownerId,
+    organizationId: object.organizationId,
     contentType: object.contentType,
     size: object.size,
     visibility: object.visibility,
@@ -129,33 +157,56 @@ async function findObject(deps: HandlerDeps, id: string): Promise<StorageObject 
   return row ? StorageObject.parse(row) : null;
 }
 
-/** Load one row or throw `storage/not_found`. */
+/**
+ * Load one row or throw `storage/not_found`, asking nobody whether the caller may see it — for a share
+ * link, where the token is the credential and the rules have already been spent by whoever minted it.
+ */
 async function loadObject(deps: HandlerDeps, id: string): Promise<StorageObject> {
   const object = await findObject(deps, id);
   if (!object) throw new StorageNotFoundError({ detail: `no storage object ${id}` });
   return object;
 }
 
-/**
- * Require the caller to own the object. A private object they do not own is reported as **missing**,
- * so the route cannot be used to test whether an id exists. A public object is reported as
- * **forbidden**, because its existence is already public knowledge and "missing" would just be a lie.
- */
-function assertOwner(object: StorageObject, ownerId: string | null): void {
-  if (ownerId !== null && object.ownerId === ownerId) return;
-  if (object.visibility === "public") {
-    throw new StorageForbiddenError({ detail: `object ${object.id} is owned by ${object.ownerId ?? "the system"}` });
-  }
-  throw new StorageNotFoundError({ detail: `object ${object.id} is not owned by ${ownerId ?? "an anonymous caller"}` });
+/** What the caller may do with one file, asking the rules and the hook. */
+function levelOf(deps: HandlerDeps, object: StorageObject): Promise<AccessLevel> {
+  return accessLevel({
+    record: object,
+    caller: deps.caller,
+    capability: CAPABILITY,
+    managePower: STORAGE_MANAGE_POWER,
+    hook: deps.permission,
+    env: deps.env,
+  });
 }
 
-/** Require the caller to be allowed to *read* the object: it is public, or it is theirs. */
-function assertReadable(object: StorageObject, ownerId: string | null): void {
-  if (object.visibility === "public") return;
-  if (ownerId !== null && object.ownerId === ownerId) return;
-  throw new StorageNotFoundError({
-    detail: `object ${object.id} is not readable by ${ownerId ?? "an anonymous caller"}`,
-  });
+/** Who is asking, for a log line. */
+function callerName(deps: HandlerDeps): string {
+  return deps.caller.userId ?? "an anonymous caller";
+}
+
+/** Load a file the caller may read, or answer not found — for a file that is absent and one they cannot see alike. */
+async function loadReadable(deps: HandlerDeps, id: string): Promise<StorageObject> {
+  const object = await findObject(deps, id);
+  if (!object || (await levelOf(deps, object)) === "none") {
+    throw new StorageNotFoundError({ detail: `no storage object ${id} readable by ${callerName(deps)}` });
+  }
+  return object;
+}
+
+/**
+ * Load a file the caller may change. Not found when they cannot read it; forbidden only when they can,
+ * because by then they already know it exists.
+ */
+async function loadWritable(deps: HandlerDeps, id: string): Promise<StorageObject> {
+  const object = await findObject(deps, id);
+  const level = object ? await levelOf(deps, object) : "none";
+  if (!object || level === "none") {
+    throw new StorageNotFoundError({ detail: `no storage object ${id} readable by ${callerName(deps)}` });
+  }
+  if (level !== "write") {
+    throw new StorageForbiddenError({ detail: `${callerName(deps)} may read object ${id} but not change it` });
+  }
+  return object;
 }
 
 /** Require the object's bytes to actually be there. A `pending` row has a record but no content. */
@@ -186,10 +237,14 @@ async function saveObject(deps: HandlerDeps, object: StorageObject): Promise<Sto
  */
 export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): Promise<UploadInitResult> {
   const now = deps.now();
+  // Whose it is comes from the request, never the body, and a level the policy does not allow is
+  // refused before a byte of R2 is reserved.
+  const organizationId = deps.caller.acting?.organizationId ?? null;
+  const visibility = resolveVisibility(deps.config.visibility, input.visibility, organizationId);
 
   await assertWithinQuota({
     db: deps.db,
-    ownerId: deps.ownerId,
+    ownerId: deps.caller.userId,
     limitBytes: deps.config.quota.bytesPerOwner,
     additionalBytes: input.size,
   });
@@ -220,10 +275,11 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
     id: deps.newId(),
     key,
     path: input.path,
-    ownerId: deps.ownerId,
+    ownerId: deps.caller.userId,
+    organizationId,
     contentType: input.contentType,
     size: input.size,
-    visibility: input.visibility ?? deps.config.defaultVisibility,
+    visibility,
     checksum: null,
     status: "pending",
     uploadId,
@@ -233,7 +289,7 @@ export async function initUpload(deps: HandlerDeps, input: CreateUploadInput): P
   try {
     await insertReservingQuota({
       db: deps.db,
-      ownerId: deps.ownerId,
+      ownerId: deps.caller.userId,
       limitBytes: deps.config.quota.bytesPerOwner,
       additionalBytes: input.size,
       record: StorageObject.encode(object),
@@ -275,8 +331,7 @@ export async function completeUpload(
   id: string,
   input: CompleteUploadInput,
 ): Promise<StorageObjectView> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
   // Completing twice is a no-op rather than an error: a client that retried a dropped response gets
   // the same answer, which is what makes the route safe to retry at all.
   if (object.status === "stored") return view(object);
@@ -356,8 +411,7 @@ export async function completeUpload(
  * than sheltered forever by a row that counts toward no quota (`workflows/sweep.ts`).
  */
 export async function abortUpload(deps: HandlerDeps, id: string): Promise<StorageObjectView> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
   if (object.status === "stored") {
     throw new StorageUploadIncompleteError({
       message: "That upload already finished.",
@@ -396,8 +450,7 @@ export interface UploadPartsResult {
  * its parts discarded — re-presigning against either would hand out URLs addressing nothing.
  */
 export async function listUploadParts(deps: HandlerDeps, id: string): Promise<UploadPartsResult> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
   const uploadId = object.uploadId;
   if (object.status !== "pending" || !uploadId) {
     throw new StorageUploadIncompleteError({
@@ -461,8 +514,10 @@ function decodeCursor(value: string | undefined): ListCursor | null {
 const DEFAULT_LIST_LIMIT = 50;
 
 /**
- * One page of the caller's files, ordered by logical path. Scoped to the authenticated owner: there
- * is no way to list another owner's files, and no parameter that could be made to.
+ * One page of the files the caller may see, ordered by logical path: their own, their organization's,
+ * and — only when `includePublic=true` — every public file. The rules run in SQL, so there is no
+ * parameter that lists anyone else's private files; the hook is asked about each row on the page and may
+ * remove one, so a page can come back short while its cursor still says there is more.
  */
 export async function listObjects(
   deps: HandlerDeps,
@@ -474,7 +529,12 @@ export async function listObjects(
   let statement = deps.db
     .selectFrom(STORAGE_OBJECTS_TABLE)
     .selectAll()
-    .where("ownerId", "=", deps.ownerId)
+    .where(
+      readablePredicate(deps.caller, {
+        managePower: STORAGE_MANAGE_POWER,
+        includePublic: query.includePublic === "true",
+      }),
+    )
     .orderBy("path", "asc")
     .orderBy("id", "asc")
     // One extra row is what distinguishes "this page is full" from "there is another page", without
@@ -495,16 +555,23 @@ export async function listObjects(
 
   const rows = await statement.execute();
   const page = rows.slice(0, limit).map((row) => StorageObject.parse(row));
-  const objects = page.map(view);
+  // The cursor is the page's, computed before the hook runs: a row the hook removes is still a row the
+  // next page must start after.
+  const kept = await keepReadable(page, {
+    capability: CAPABILITY,
+    caller: deps.caller,
+    hook: deps.permission,
+    env: deps.env,
+  });
+  const objects = kept.map(view);
   if (rows.length <= limit) return { objects };
   const last = page[page.length - 1];
   return last ? { objects, cursor: encodeCursor({ path: last.path, id: last.id }) } : { objects };
 }
 
-/** Load an object for reading, enforcing public-or-owner and that its bytes exist. */
+/** Load an object for reading, enforcing who may read it and that its bytes exist. */
 export async function readableObject(deps: HandlerDeps, id: string): Promise<StorageObject> {
-  const object = await loadObject(deps, id);
-  assertReadable(object, deps.ownerId);
+  const object = await loadReadable(deps, id);
   assertStored(object);
   return object;
 }
@@ -525,19 +592,25 @@ export async function presignObject(deps: HandlerDeps, id: string): Promise<{ ur
   return { url, expiresInSeconds: PRESIGNED_URL_TTL_SECONDS };
 }
 
-/** Rename a file, change who may read it, or both. The key never moves — only the row changes. */
+/**
+ * Rename a file, change who may read it, or both. The key never moves — only the row changes. A level the
+ * policy does not allow is refused, and `organization` on a file written with no organization is too.
+ */
 export async function updateObject(
   deps: HandlerDeps,
   id: string,
   input: UpdateObjectInput,
 ): Promise<StorageObjectView> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
+  const visibility =
+    input.visibility === undefined
+      ? object.visibility
+      : resolveVisibility(deps.config.visibility, input.visibility, object.organizationId);
   return view(
     await saveObject(deps, {
       ...object,
       path: input.path ?? object.path,
-      visibility: input.visibility ?? object.visibility,
+      visibility,
       updatedAt: deps.now(),
     }),
   );
@@ -547,19 +620,18 @@ export async function updateObject(
  * Copy a file server-side. The bytes are copied by R2 and never enter the Worker; the copy is a new
  * object with its own id, its own key, and its own share links — it is not an alias.
  *
- * Owner-scoped, like every other mutating route: you may copy your own files. Copying a *public* file
+ * A change, like every other mutating route: you may copy a file you may change. Copying a *public* file
  * you do not own is a plausible feature and deliberately not this one — it would let any reader
  * duplicate bytes into their own quota on the owner's storage bill, which is a decision an adopter
- * should make explicitly rather than inherit.
+ * should make explicitly rather than inherit. The copy is the caller's, in the organization they act for.
  */
 export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjectInput): Promise<StorageObjectView> {
-  const source = await loadObject(deps, id);
-  assertOwner(source, deps.ownerId);
+  const source = await loadWritable(deps, id);
   assertStored(source);
 
   await assertWithinQuota({
     db: deps.db,
-    ownerId: deps.ownerId,
+    ownerId: deps.caller.userId,
     limitBytes: deps.config.quota.bytesPerOwner,
     additionalBytes: source.size ?? 0,
   });
@@ -572,7 +644,8 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     id: deps.newId(),
     key,
     path: input.path,
-    ownerId: deps.ownerId,
+    ownerId: deps.caller.userId,
+    organizationId: deps.caller.acting?.organizationId ?? null,
     // A copy starts private even when the source was public. Republishing is a decision, and a copy
     // made to take a private working copy of your own public file should not re-publish it by default.
     visibility: "private",
@@ -586,7 +659,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
     // owner, and concurrent copies of one 1 GiB file against a 1 GiB quota must not all pass.
     await insertReservingQuota({
       db: deps.db,
-      ownerId: deps.ownerId,
+      ownerId: deps.caller.userId,
       limitBytes: deps.config.quota.bytesPerOwner,
       additionalBytes: source.size ?? 0,
       record: StorageObject.encode(copy),
@@ -609,8 +682,7 @@ export async function copyObject(deps: HandlerDeps, id: string, input: CopyObjec
  * sweep collects an object whose row went first.
  */
 export async function deleteObject(deps: HandlerDeps, id: string): Promise<{ id: string; deleted: true }> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
   if (object.uploadId) await deps.store.abortMultipart(object.key, object.uploadId).catch(() => {});
   await deps.store.delete(object.key).catch(() => {});
   await deps.db.deleteFrom(STORAGE_OBJECTS_TABLE).where("id", "=", id).execute();
@@ -619,8 +691,7 @@ export async function deleteObject(deps: HandlerDeps, id: string): Promise<{ id:
 
 /** Mint a revocable share link for one file. */
 export async function createShare(deps: HandlerDeps, id: string, input: CreateShareInput): Promise<ShareView> {
-  const object = await loadObject(deps, id);
-  assertOwner(object, deps.ownerId);
+  const object = await loadWritable(deps, id);
   assertStored(object);
 
   const now = deps.now();
@@ -646,8 +717,7 @@ export async function revokeShare(deps: HandlerDeps, token: string): Promise<{ t
   const row = await deps.db.selectFrom(STORAGE_SHARES_TABLE).selectAll().where("token", "=", token).executeTakeFirst();
   if (!row) throw new StorageNotFoundError({ detail: `no share token ${token}` });
   const share = StorageShare.parse(row);
-  const object = await loadObject(deps, share.objectId);
-  assertOwner(object, deps.ownerId);
+  await loadWritable(deps, share.objectId);
   if (share.revokedAt) return { token, revokedAt: share.revokedAt };
 
   const revokedAt = deps.now();

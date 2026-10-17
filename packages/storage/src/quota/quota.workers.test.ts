@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { StorageObject, type StorageObjectRow, type StorageObjectStatus } from "../data/storageObject";
 import { STORAGE_OBJECTS_TABLE, type StorageDatabase, storageDatabase } from "../data/tables";
 import { storage_0001_objects } from "../migrations/0001_objects";
+import { storage_0002_ownership } from "../migrations/0002_ownership";
 import { assertWithinQuota, insertReservingQuota, updateSettlingQuota, usedBytes } from "./quota";
 
 const MIB = 1024 * 1024;
@@ -18,6 +19,7 @@ beforeEach(async () => {
   await env.DB.exec("DROP TABLE IF EXISTS pithy_storage_objects");
   db = storageDatabase(env.DB);
   await storage_0001_objects.up(db as unknown as Kysely<unknown>);
+  await storage_0002_ownership.up(db as unknown as Kysely<unknown>);
 });
 
 /** Encode one row through the codec, exactly as a handler would before it writes. */
@@ -32,6 +34,7 @@ function encodeRow(
     key: `obj/${id}`,
     path: `${id}.bin`,
     ownerId,
+    organizationId: null,
     contentType: "application/octet-stream",
     size,
     visibility: "private",

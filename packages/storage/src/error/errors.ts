@@ -47,8 +47,8 @@ export class StorageForbiddenError extends PithyError {
       {
         code: "storage/forbidden",
         status: 403,
-        message: args.message ?? "That file is not yours.",
-        action: args.action ?? "Sign in as the owner, or ask them for a share link.",
+        message: args.message ?? "You can see that file, but it is not yours to change.",
+        action: args.action ?? "Sign in as the owner, or ask a role holding storage:manage in its organization.",
         detail: args.detail,
         params: args.params,
       },

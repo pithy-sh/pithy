@@ -58,7 +58,37 @@ describe("storage capability", () => {
   test("sorts after matchmaking in the app database, on an order nothing else has taken", () => {
     expect(STORAGE_MIGRATION_ORDER).toBe(800);
     expect(storage().databases?.app?.migrationOrder).toBe(800);
-    expect(Object.keys(storage().databases?.app?.migrations ?? {})).toEqual(["0001_objects"]);
+    expect(Object.keys(storage().databases?.app?.migrations ?? {})).toEqual(["0001_objects", "0002_ownership"]);
+  });
+
+  test("declares the doctor check that names files outside a narrowed policy", async () => {
+    const findings = await storage({ visibility: { allowed: ["private"] } }).settings?.account?.({
+      project: "acme",
+      worker: "acme-api",
+      workerDirectory: "api",
+      environments: [{ name: "prod", origin: null }],
+      account: {
+        d1Databases: async () => [],
+        zone: async () => true,
+        vaultSecret: async () => true,
+        storeEntry: async () => true,
+        appRows: async (request) => (request.table === "pithy_storage_objects" ? ["f1"] : []),
+      },
+    });
+    expect(findings?.map((finding) => finding.setting)).toEqual(["storage visibility.allowed"]);
+    expect(findings?.[0]?.problem).toContain("f1");
+  });
+
+  test("a config still naming defaultVisibility is refused, with the new key named", () => {
+    expect(() => storage({ defaultVisibility: "public" } as never)).toThrow(/renamed `visibility.default`/);
+  });
+
+  test("declares storage:manage, and advertises its usage read at the resolved mount path", () => {
+    const capability = storage({ basePath: "/files" });
+    expect(capability.powers).toEqual(["storage:manage"]);
+    expect(capability.adminRoutes).toEqual([
+      expect.objectContaining({ method: "GET", path: "/files/admin/usage", scope: "storage:usage:read" }),
+    ]);
   });
 
   test("rejects an impossible config at assembly, not on the first upload", () => {

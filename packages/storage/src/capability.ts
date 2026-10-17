@@ -1,16 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { PermissionHook } from "@pithy-sh/core/src/access/access";
+import { recordsOutsidePolicy } from "@pithy-sh/core/src/access/policyCheck";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
-import { StorageConfig, type StorageConfigInput } from "./config/config";
+import { refuseRenamedStorageOptions, StorageConfig, type StorageConfigInput } from "./config/config";
 import { storageTables } from "./data/tables";
+import { STORAGE_MANAGE_POWER } from "./http/handlers";
 import { registerStorageRoutes } from "./http/routes";
+import { storageAdminRoutes } from "./http/scopes";
 import { storage_0001_objects } from "./migrations/0001_objects";
+import { storage_0002_ownership } from "./migrations/0002_ownership";
 import { STORAGE_BUCKET_BINDING, storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
@@ -25,6 +30,12 @@ export const STORAGE_MIGRATION_ORDER = 800;
 export type StorageOptions = StorageConfigInput & {
   /** Mount the object routes somewhere other than `/storage`. */
   basePath?: string;
+  /**
+   * Asked on every read and write of a stored file: `allow`, `deny`, or `default` for the rules. Sharing a
+   * file with one person is an allow; a legal hold is a deny. No hook is the rules, unchanged. Share
+   * links are unchanged by it, and usage rollups keep their non-disclosure rule whatever it answers.
+   */
+  permission?: PermissionHook;
   /** Mount share fetches somewhere other than `/s`. Short by default — the whole URL gets pasted around. */
   sharePath?: string;
 };
@@ -51,17 +62,25 @@ export interface StorageCapability
  *
  * `dependsOn: ["secrets"]` is real: the R2 credential bundle is read through the aggregated registry
  * at startup, so a project composing storage without `@pithy-sh/secrets` must fail at assembly, not at
- * the first presign. Auth is *not* listed — it is a seam. Ownership scoping reads `c.var.auth.userId`,
- * so without `@pithy-sh/auth` every owner-scoped route denies rather than opens, which is the right
- * failure and needs no dependency edge. It belongs in the manifest's `optionalCapabilities`.
+ * the first presign. Auth is *not* listed — it is a seam. Ownership reads `c.var.auth.userId`, so without
+ * `@pithy-sh/auth` every write denies rather than opens, which is the right failure and needs no
+ * dependency edge. Tenancy is a seam too: the organization a file belongs to comes from core's
+ * acting-organization resolver, so `@pithy-sh/organization` is optional, never imported, and declared on
+ * `powers` only through `storage:manage`. Both belong in the manifest's `optionalCapabilities`.
  */
 export function storage(options: StorageOptions = {}): StorageCapability {
-  const { basePath, sharePath, ...configInput } = options;
+  const { basePath, sharePath, permission, ...configInput } = options;
+  // A renamed option is refused by name before anything parses, so it cannot quietly mean the default.
+  refuseRenamedStorageOptions(configInput as Record<string, unknown>);
   // Parse at assembly — an out-of-range part size or a threshold below it fails on deploy, not on the
   // first large upload.
   const resolved = StorageConfig.parse(configInput);
+  const mountPath = basePath ?? "/storage";
 
-  const migrations: Record<string, Migration> = { "0001_objects": storage_0001_objects };
+  const migrations: Record<string, Migration> = {
+    "0001_objects": storage_0001_objects,
+    "0002_ownership": storage_0002_ownership,
+  };
   const requiredBindings: BindingSpecInput[] = [
     // The app database — the objects and shares tables live here.
     { type: "d1", name: "DB" },
@@ -87,6 +106,9 @@ export function storage(options: StorageOptions = {}): StorageCapability {
     workflows: storageWorkflows,
     requiredBindings,
     config: StorageConfig,
+    // The power a role holds to edit, delete and re-scope any file in its own organization. Declared so
+    // tenancy can refuse a role catalog that places it nowhere — but only in a Worker that composes storage.
+    powers: [STORAGE_MANAGE_POWER],
     databases: {
       app: {
         binding: "DB",
@@ -95,7 +117,23 @@ export function storage(options: StorageOptions = {}): StorageCapability {
         migrations,
       },
     },
-    routes: registerStorageRoutes({ config: resolved, basePath, sharePath }),
+    // Built from the resolved mount path, never the default, so the manifest names this Worker's paths.
+    adminRoutes: storageAdminRoutes(mountPath),
+    // `pithy doctor` names every file a narrowed `visibility.allowed` no longer admits. Nothing rewrites
+    // them: making a public file private breaks every link already published.
+    settings: recordsOutsidePolicy({
+      capability: "storage",
+      noun: "file",
+      table: "pithy_storage_objects",
+      policy: resolved.visibility,
+      remedy: `Move each with PATCH ${mountPath}/:id`,
+    }),
+    routes: registerStorageRoutes({
+      config: resolved,
+      basePath: mountPath,
+      sharePath,
+      ...(permission ? { permission } : {}),
+    }),
     seeds: [storageExampleSeed],
   });
 
