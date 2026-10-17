@@ -185,6 +185,18 @@ export const AccountTokenSummary = z
       .describe(
         "The token's access policies, when the list response carries them. **A live token's own scope is the record of how it was minted** — it is how a `ci-system` token minted before zone-scoped routes (#651) can be told from one minted after, without reading the token record (which needs a grant these least-privilege tokens deliberately lack). Absent and empty are different facts: a response that says nothing means the scope could not be read, never that the token has none.",
       ),
+    // **Not `nullAsAbsent`, and that is the field.** Everywhere else a `null` means the response did not say;
+    // here it is Cloudflare's answer — nothing has ever authenticated with this token. Absent stays "did
+    // not say", and a shape this does not model degrades to absent rather than dropping the token, for the
+    // reason `policies` gives.
+    last_used_on: z
+      .string()
+      .nullable()
+      .optional()
+      .catch(undefined)
+      .describe(
+        "When something last authenticated with the token, as Cloudflare measures it against the live account. Read because `pithy token forget` acts on it (#762): `null` means never, so a local copy may be its only one. Absent means the response did not say, which is not a claim either way.",
+      ),
   })
   .describe("An existing account-owned API token's metadata (never its secret value).");
 export type AccountTokenSummary = z.output<typeof AccountTokenSummary>;
