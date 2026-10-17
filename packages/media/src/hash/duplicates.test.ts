@@ -120,6 +120,55 @@ describe("findDuplicates", () => {
     expect(found).toHaveLength(2);
   });
 
+  test("accept filters before the cap, so a rejected candidate never takes a place in the limit", async () => {
+    const hashes = fakeHashes({
+      matches: [
+        { mediaId: "hidden-1", mediaType: "image" },
+        { mediaId: "hidden-2", mediaType: "image" },
+        { mediaId: "mine", mediaType: "image" },
+      ],
+      phashes: [{ mediaId: "close", phash: "ffff0001" }],
+    });
+    const asked: string[] = [];
+    const found = await findDuplicates(hashes, {
+      scope: SCOPE,
+      sha256: "same",
+      phash: "ffff0000",
+      type: "image",
+      threshold: 5,
+      limit: 2,
+      accept: async (candidate) => {
+        asked.push(candidate.id);
+        return !candidate.id.startsWith("hidden");
+      },
+    });
+    expect(found.map((candidate) => candidate.id)).toEqual(["mine", "close"]);
+    expect(asked).toEqual(["hidden-1", "hidden-2", "mine", "close"]);
+  });
+
+  test("accept stops once the limit is filled", async () => {
+    const hashes = fakeHashes({
+      matches: [
+        { mediaId: "a", mediaType: "image" },
+        { mediaId: "b", mediaType: "image" },
+        { mediaId: "c", mediaType: "image" },
+      ],
+    });
+    const asked: string[] = [];
+    const found = await findDuplicates(hashes, {
+      scope: SCOPE,
+      sha256: "same",
+      type: "image",
+      limit: 1,
+      accept: (candidate) => {
+        asked.push(candidate.id);
+        return true;
+      },
+    });
+    expect(found.map((candidate) => candidate.id)).toEqual(["a"]);
+    expect(asked).toEqual(["a"]);
+  });
+
   test("phashes of a different length are skipped", async () => {
     const hashes = fakeHashes({ phashes: [{ mediaId: "wrong-len", phash: "ffff" }] });
     const found = await findDuplicates(hashes, { scope: SCOPE, sha256: "nomatch", phash: "ffff0000", type: "image" });

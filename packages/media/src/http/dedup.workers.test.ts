@@ -95,6 +95,14 @@ describe("within a tenant", () => {
     await upload(VICTIM, "private");
     expect(await search(VICTIM_COLLEAGUE)).toEqual([shared]);
   });
+
+  test("a colleague's private matches never crowd the caller's own out of the limit", async () => {
+    for (let i = 0; i < 3; i++) await upload(VICTIM, "private");
+    const own = await upload(VICTIM_COLLEAGUE, "private");
+    const deps = makeDeps(env.DB, VICTIM_COLLEAGUE);
+    const { matches } = await searchDuplicates(deps, { type: "image", sha256: SHA, phash: NEAR, limit: 2 });
+    expect(matches.map((match) => match.id)).toEqual([own]);
+  });
 });
 
 describe("account-wide detection", () => {

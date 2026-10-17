@@ -82,6 +82,11 @@ export interface FindDuplicatesParams {
   limit?: number;
   /** Whose records to compare against — required, so no lookup is ever account-wide by accident. */
   scope: DedupScope;
+  /**
+   * Keep only the candidates this accepts, applied closest first **before** the cap — so a match the
+   * caller may not see never takes a place in `limit` from one they may. Absent, every candidate counts.
+   */
+  accept?: (candidate: DuplicateCandidate) => boolean | Promise<boolean>;
 }
 
 /**
@@ -95,7 +100,7 @@ export interface FindDuplicatesParams {
  *    Hamming distance is not `different` (`kind: "similar"`).
  *
  * The two sets are combined — exact matches never double-counted as near — sorted closest first (exact
- * matches lead at distance `0`), and capped to `limit`. Inputs are not mutated.
+ * matches lead at distance `0`), filtered by `accept` when one is given, and capped to `limit`. Inputs are not mutated.
  */
 export async function findDuplicates(hashes: HashStore, params: FindDuplicatesParams): Promise<DuplicateCandidate[]> {
   const threshold = params.threshold ?? SIMILAR_THRESHOLD;
@@ -126,6 +131,16 @@ export async function findDuplicates(hashes: HashStore, params: FindDuplicatesPa
     }
   }
 
-  // Combine, closest first, capped. A stable sort keeps the exact matches (distance 0) ahead of near ones.
-  return [...exact, ...near].sort((a, b) => a.distance - b.distance).slice(0, limit);
+  // Combine, closest first. A stable sort keeps the exact matches (distance 0) ahead of near ones.
+  const sorted = [...exact, ...near].sort((a, b) => a.distance - b.distance);
+  const accept = params.accept;
+  if (!accept) return sorted.slice(0, limit);
+
+  // Filter before the cap: walk closest first until `limit` candidates are accepted.
+  const kept: DuplicateCandidate[] = [];
+  for (const candidate of sorted) {
+    if (kept.length >= limit) break;
+    if (await accept(candidate)) kept.push(candidate);
+  }
+  return kept;
 }

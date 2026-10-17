@@ -397,6 +397,10 @@ export async function mediaDeliveryUrl(deps: HandlerDeps, id: string, query: Del
  */
 export async function searchDuplicates(deps: HandlerDeps, input: DuplicatesInput) {
   const scope = dedupScope(deps.caller, deps.config.dedup);
+  const accountWide = "account" in scope;
+  // Hydrate and judge each candidate before the cap, so a record the caller may not read never takes
+  // a place in `limit` from one they may.
+  const records = new Map<string, MediaRecord>();
   const candidates = await findDuplicates(deps.hashes, {
     scope,
     type: input.type,
@@ -404,14 +408,17 @@ export async function searchDuplicates(deps: HandlerDeps, input: DuplicatesInput
     phash: input.phash,
     threshold: input.threshold,
     limit: input.limit,
+    accept: async (candidate) => {
+      const record = await deps.store.get(candidate.id);
+      if (!record) return false;
+      if (!accountWide && !defaultAllows("read", record, deps.caller, MEDIA_MANAGE_POWER)) return false;
+      records.set(candidate.id, record);
+      return true;
+    },
   });
-  const accountWide = "account" in scope;
-  const matches = [];
-  for (const candidate of candidates) {
-    const record = await deps.store.get(candidate.id);
-    if (!record) continue;
-    if (!accountWide && !defaultAllows("read", record, deps.caller, MEDIA_MANAGE_POWER)) continue;
-    matches.push({ id: candidate.id, distance: candidate.distance, kind: candidate.kind, record });
-  }
+  const matches = candidates.flatMap((candidate) => {
+    const record = records.get(candidate.id);
+    return record ? [{ id: candidate.id, distance: candidate.distance, kind: candidate.kind, record }] : [];
+  });
   return { matches };
 }

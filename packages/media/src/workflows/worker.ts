@@ -16,7 +16,6 @@ import { MediaAsset } from "../data/mediaAsset";
 import { mediaDatabase } from "../data/tables";
 import { resolveDeliverySigner } from "../deliver/resolve";
 import type { DeliverySigner } from "../deliver/sign";
-import { buildImageUrl } from "../deliver/url";
 import { MediaEnrichmentError } from "../error/errors";
 import { d1RecordStore } from "../record/d1Store";
 import type { MediaRecord } from "../record/store";
@@ -30,6 +29,7 @@ import {
 } from "./enrich";
 import { fetchVideoAudio } from "./hls";
 import { mediaWorkflowRetry } from "./retryPolicy";
+import { enrichmentImageUrl, enrichmentPlaylistUrl } from "./sources";
 import { MEDIA_CAPABILITY } from "./specs";
 
 /**
@@ -74,12 +74,9 @@ configureSharedSecrets({ registry: mediaSecretsRegistry });
 /** The passthrough record schema: base fields decode through codecs, extension fields ride along raw. */
 const LooseAsset = MediaAsset.catchall(z.unknown());
 
-/** How long a URL the worker signs for itself lives: long enough for one fetch, and no longer. */
-const ENRICHMENT_URL_TTL_MS = 5 * 60 * 1000;
-
 /**
  * Read a stored object's raw bytes: R2 through the binding, Cloudflare Images through its delivery URL —
- * signed, when the record's bytes are, because a private image answers nobody at its plain URL.
+ * signed, when the record's bytes are (see `sources.ts`).
  */
 async function readObjectBytes(
   env: MediaWorkerEnv,
@@ -93,15 +90,7 @@ async function readObjectBytes(
     return new Uint8Array(await object.arrayBuffer());
   }
   if (record.storageBackend === "cf-images") {
-    if (!imagesAccountHash) {
-      throw new MediaEnrichmentError({
-        detail: "delivery.imagesAccountHash is required to read image bytes for enrichment",
-      });
-    }
-    const plain = buildImageUrl(record.storageKey, imagesAccountHash);
-    const url = record.signedDelivery
-      ? await (await signer()).signImageUrl(plain, new Date(Date.now() + ENRICHMENT_URL_TTL_MS))
-      : plain;
+    const url = await enrichmentImageUrl(record, imagesAccountHash, signer);
     const response = await fetch(url);
     if (!response.ok) throw new MediaEnrichmentError({ detail: `image fetch failed (${response.status})` });
     return new Uint8Array(await response.arrayBuffer());
@@ -149,10 +138,7 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
       const details = (await streamManager.getVideoDetails(record.storageKey)) as { playback?: { hls?: string } };
       const hls = details.playback?.hls;
       if (!hls) throw new MediaEnrichmentError({ detail: `video ${record.storageKey} has no HLS playback URL yet` });
-      if (!record.signedDelivery) return fetchVideoAudio(hls);
-      // A signed video plays only with a token, which takes the uid's place in its playback URL.
-      const token = await (await signer()).streamToken(record.storageKey, new Date(Date.now() + ENRICHMENT_URL_TTL_MS));
-      return fetchVideoAudio(hls.replace(`/${record.storageKey}/`, `/${token}/`));
+      return fetchVideoAudio(await enrichmentPlaylistUrl(record, hls, signer));
     },
   };
 }
