@@ -217,10 +217,10 @@ export function corsMiddleware(
 /**
  * Mount one `app.use(path, …)` per entry.
  *
- * **Called from the capability's `middleware` hook, never its `routes` hook, and that is load-bearing.**
- * `createBackend` runs every capability's `middleware` hook before **any** capability's `routes` hook
- * (`createBackend.ts:262-267`), which is what makes this independent of the order an adopter happens to
- * list their capabilities in.
+ * **Called from `createBackend` ahead of every capability's `middleware`, never from a `routes` hook,
+ * and that is load-bearing.** Registered there, it is independent of the order an adopter happens to
+ * list their capabilities in, and it can put a header on whatever a capability's middleware or a
+ * readiness guard short-circuits.
  *
  * From `routes` it looks like it works and does not. The preflight still answers — an `OPTIONS` has no
  * route handler to lose to, so this `use` is the only thing that matches it — but a capability composed

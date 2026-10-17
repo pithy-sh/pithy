@@ -18,6 +18,7 @@ import { validateBindings } from "./capability/validateBindings";
 import { pithyCommandOf } from "./cli/command";
 import { isControlPlaneCapability } from "./controlPlane/capability";
 import { allowedOriginSet, corsSurface, registerControlPlaneCors } from "./controlPlane/http/cors";
+import { registerReadinessGuards } from "./controlPlane/http/readiness";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { ValidationError } from "./error/pithyError";
@@ -205,15 +206,19 @@ export function createBackend<
   // not here). Defaults to the CF-native Mode 2 logger — structured records to Workers Logs, zero-config.
   const baseLogger = options.logger ?? createWorkerLogger();
 
+  // Every composed capability's `adminRoutes`, folded per path: the surface CORS answers for, and the
+  // surface no readiness guard may refuse. One computation, so the two cannot disagree.
+  const adminSurface = corsSurface(all);
+
   // **CORS first — before this Worker's own base middleware and before every capability's.**
   //
   // Hono runs middleware in registration order, so whatever registers first is the only thing that can
   // put a header on a response somebody else short-circuits. Capabilities short-circuit for real
-  // reasons: `@pithy-sh/vector`'s `provisionGuard` is an `app.use("*")` that throws on every request
-  // when the provision record disagrees with config. Register CORS after that and a misprovisioned
-  // Worker answers a management call with no `Access-Control-Allow-Origin`, so the dashboard sees the
-  // opaque `fetch` TypeError this exists to remove — on precisely the misconfiguration where the
-  // operator most needs to read the real message. Ahead of `validateBindings` for the same reason.
+  // reasons: a rate limit, or a readiness guard like `@pithy-sh/vector`'s `provisionGuard`, which
+  // throws on every request off the admin surface when the provision record disagrees with config.
+  // Register CORS after either and the refusal reaches a browser with no `Access-Control-Allow-Origin`,
+  // so the dashboard sees the opaque `fetch` TypeError this exists to remove instead of the reason.
+  // Ahead of `validateBindings` for the same reason.
   //
   // It lives here rather than in the capability's `middleware` hook because that hook runs inside the
   // loop below, in the adopter's composition order, and this must not depend on where they listed
@@ -222,7 +227,7 @@ export function createBackend<
   const controlPlane = all.find(isControlPlaneCapability);
   if (controlPlane) {
     const cors = controlPlane.controlPlaneConfig;
-    registerControlPlaneCors(app, corsSurface(all), allowedOriginSet(cors), cors.corsMaxAgeSeconds);
+    registerControlPlaneCors(app, adminSurface, allowedOriginSet(cors), cors.corsMaxAgeSeconds);
   }
 
   let validated = false;
@@ -316,6 +321,15 @@ export function createBackend<
   for (const cap of all) {
     for (const middleware of cap.middleware ?? []) middleware(app);
   }
+  // Readiness guards after every capability's middleware, so the verifier, `emit` and every rate limit
+  // are in place, and before any capability's routes, so a terminal handler cannot outrun them. Each is
+  // skipped on the admin surface: the control plane answers whatever else is wrong with the Worker,
+  // because it is how a management client finds out what that is (#763).
+  registerReadinessGuards(
+    app,
+    adminSurface,
+    all.flatMap((cap) => cap.readiness ?? []),
+  );
   // Each hook's slice of the route table is noted as it mounts, so the OpenAPI contract can tag every
   // operation with the capability that owns it (`openapi/routeGroups.ts`).
   for (const cap of all) {

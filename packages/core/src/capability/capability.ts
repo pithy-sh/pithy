@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
-import type { Hono } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
@@ -131,6 +131,12 @@ export interface PithyVars {
 export type PithyHonoEnv = { Bindings: Record<string, unknown>; Variables: PithyVars };
 
 export type PithyMiddleware = (app: Hono<PithyHonoEnv>) => void;
+
+/**
+ * One readiness guard: a handler that refuses because **this Worker** is in a bad state. See
+ * {@link Capability.readiness} for where it runs and where it does not.
+ */
+export type PithyReadinessGuard = MiddlewareHandler<PithyHonoEnv>;
 
 /**
  * The structural seam for one capability's secret-registry slice — secret name → its declaration.
@@ -539,8 +545,30 @@ export interface Capability<
    * parsed with. A capability with no socket leaves it unset.
    */
   sockets?: readonly SocketChannel[];
-  /** Composable middleware (e.g. turnstile(), requireAuth()). */
+  /**
+   * Composable middleware (e.g. turnstile(), requireAuth()). Runs on every request, the control-plane
+   * surface included. A refusal that protects a route — a rate limit, authentication, a CSRF check —
+   * belongs here. A refusal because the Worker itself is broken belongs in {@link Capability.readiness}.
+   */
   middleware?: PithyMiddleware[];
+  /**
+   * Guards that refuse because **this Worker is misconfigured or unprovisioned** — `@pithy-sh/vector`'s
+   * `provisionGuard`, when the deployed index disagrees with config. Not for protecting a route: a rate
+   * limit, authentication and a CSRF check refuse a *caller*, and they belong in
+   * {@link Capability.middleware}.
+   *
+   * `createBackend` mounts every readiness guard after every capability's `middleware` and before any
+   * capability's routes, so the verifier, `emit` and every rate limit are already in place. It skips
+   * each guard on the admin surface — every composed capability's `adminRoutes`, the seam's own
+   * included, the set CORS is derived from. The control plane is the diagnostic surface, so it cannot
+   * sit behind the faults it diagnoses. Every other request meets the guard, `GET /health` aside, which
+   * is registered ahead of all of it.
+   *
+   * A handler rather than a registrar like `middleware`, because core decides where it mounts. A guard
+   * that wanted its own path would be deciding the exemption by path shape, which is the thing this
+   * exists to take away from it.
+   */
+  readiness?: PithyReadinessGuard[];
   /**
    * Whether this capability fills the entitlement seam — replaces `c.var.entitlements` with a real
    * resolver. `@pithy-sh/payments` declares it; nothing else does today.
