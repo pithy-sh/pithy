@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { AuditActorType, AuditMetadata, AuditOutcome, AuditSeverity } from "@pithy-sh/core/src/audit/auditEvent";
+import { ControlPlaneActorKind } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { z } from "zod";
 
 /**
@@ -49,6 +50,12 @@ export const AuditEventView = z
     severity: AuditSeverity.describe("How serious it is, orthogonal to the outcome."),
     actorType: AuditActorType.describe("The kind of principal that acted."),
     actorId: z.string().nullable().describe("The acting principal's stable id, or null."),
+    // Added (#721), so `.optional()` too: a client reading an older Worker receives no such field.
+    actorKind: ControlPlaneActorKind.nullable()
+      .optional()
+      .describe(
+        "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+      ),
     sessionId: z.string().nullable().describe("The session the action belongs to — a row id, never a token — or null."),
     resourceType: z.string().nullable().describe("The kind of thing acted on, or null."),
     resourceId: z.string().nullable().describe("The thing acted on, or null."),

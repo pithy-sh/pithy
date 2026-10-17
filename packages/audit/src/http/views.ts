@@ -61,6 +61,9 @@ export function auditEventView(row: AuditEventRow): AuditEventView {
     severity: row.severity,
     actorType: row.actorType,
     actorId: row.actorId,
+    // In the listing: it is what tells an agent's action from the dashboard's, which is the first thing
+    // a reader after an incident filters on, and it is no more personal than `actorType` beside it.
+    actorKind: row.actorKind,
     sessionId: row.sessionId,
     resourceType: row.resourceType,
     resourceId: row.resourceId,

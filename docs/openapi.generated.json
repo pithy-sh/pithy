@@ -528,7 +528,7 @@
         "summary": "Read the connection's key registration state.",
         "responses": {
           "200": {
-            "description": "Every key registered against this connection, with its window.",
+            "description": "Every key registered against this connection, with its window, and who authorized it for what.",
             "content": {
               "application/json": {
                 "schema": {
@@ -621,6 +621,52 @@
                         "description": "One registered public key and its validity window. Two live at once during a rotation overlap."
                       },
                       "description": "Every registered key, expired and revoked ones included."
+                    },
+                    "authorizedBy": {
+                      "description": "Who sanctioned this connection — the signed-in session's email at registration. Null for a connection registered before principals were recorded; absent from a Worker older than the field.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 254,
+                          "format": "email",
+                          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                          "description": "The email address of the person who sanctioned this connection, read from their signed-in Cloudflare session at registration. Never typed, so never asserted."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "actorKind": {
+                      "description": "What kind of client this connection is for: `agent`, `dashboard` or `script`. Null for a connection registered before it was recorded; absent from an older Worker.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "agent",
+                            "dashboard",
+                            "script"
+                          ],
+                          "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "purpose": {
+                      "description": "What the client is for, in the registering operator's words. Untrusted text: render it escaped. Null for a connection registered before it was recorded; absent from an older Worker.",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200,
+                          "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control or bidi characters. Written by a customer and rendered elsewhere, so validated at the boundary."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -628,7 +674,7 @@
                     "environment",
                     "keys"
                   ],
-                  "description": "Every key registered against this connection, with its window."
+                  "description": "Every key registered against this connection, with its window, and who authorized it for what."
                 }
               }
             }
@@ -4631,6 +4677,20 @@
             }
           },
           {
+            "name": "actorKind",
+            "in": "query",
+            "required": false,
+            "description": "Filter to one kind of management client: `agent`, `dashboard` or `script`. What `actorType=control-plane` cannot say on its own.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "agent",
+                "dashboard",
+                "script"
+              ]
+            }
+          },
+          {
             "name": "action",
             "in": "query",
             "required": false,
@@ -4850,6 +4910,23 @@
                               "null"
                             ]
                           },
+                          "actorKind": {
+                            "description": "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "agent",
+                                  "dashboard",
+                                  "script"
+                                ],
+                                "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "sessionId": {
                             "description": "The session the action belongs to — a row id, never a token — or null.",
                             "type": [
@@ -5049,6 +5126,23 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "actorKind": {
+                          "description": "For a `control-plane` actor, which kind of management client acted — `agent`, `dashboard` or `script` — or null. Absent from a Worker older than the field.",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "agent",
+                                "dashboard",
+                                "script"
+                              ],
+                              "description": "What kind of client a connection is for: `agent` (an automated client acting on its own judgment, often unattended), `dashboard` (a management dashboard a person drives, registered through the device-code flow), or `script` (an operator's own automation, doing one fixed thing)."
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "sessionId": {
