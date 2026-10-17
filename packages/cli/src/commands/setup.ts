@@ -87,7 +87,7 @@ const SetupPayload = z
             state: z
               .enum(["seeded", "planned", "held", "media", "none"])
               .describe(
-                "`seeded` — fixtures written into an empty dev. `planned` — `--dry-run`, into an empty dev. `held` — dev holds rows, so it was left alone. `media` — a fixture uploads media, which setup never reaches, so nothing was seeded. `none` — nothing composes a fixture.",
+                "`seeded` — fixtures written into an empty dev. `planned` — `--dry-run`, into an empty dev. `held` — dev holds rows, so it was left alone. `media` — a fixture uploads media, which setup never reaches, so nothing was seeded. `none` — nothing was written: nothing composes a fixture, or dev already holds everything one writes.",
               ),
             held: z
               .array(

@@ -19,6 +19,8 @@ export interface SeedKvResult {
   store: string;
   /** The number of entries validated (and, unless `dryRun`, considered for writing). */
   entries: number;
+  /** The number of entries this call put. An existing key is left alone and not counted (#764). Always `0` under `dryRun`. */
+  written: number;
 }
 
 /**
@@ -87,13 +89,15 @@ export async function seedKvGroup<V extends z.ZodType, K extends z.ZodObject, M 
   });
 
   if (options.dryRun) {
-    return { store: group.store, entries: group.entries.length };
+    return { store: group.store, entries: group.entries.length, written: 0 };
   }
 
+  let written = 0;
   for (const entry of group.entries) {
     // Never overwrite an existing key — the KV counterpart of D1's INSERT OR IGNORE.
     if (await keyExists(store, entry.key)) continue;
     await store.put(entry.key, entry.value, entry.metadata !== undefined ? { metadata: entry.metadata } : {});
+    written += 1;
   }
-  return { store: group.store, entries: group.entries.length };
+  return { store: group.store, entries: group.entries.length, written };
 }

@@ -56,7 +56,7 @@ export type SeedOutcome =
   | { readonly state: "held"; readonly held: readonly HeldTable[] }
   /** A fixture uploads media, which reaches an account, and this run reaches none. Nothing was seeded. */
   | { readonly state: "media" }
-  /** Nothing composes a fixture for `dev`. */
+  /** Nothing was written: nothing composes a fixture for `dev`, or `dev` already holds everything one writes. */
   | { readonly state: "none" };
 
 /** Everything one setup run did, or under `dryRun` would do. */
@@ -195,15 +195,22 @@ function uploadsMedia(report: SeedRunReport): boolean {
   return report.workers.some((worker) => worker.sets.some((set) => set.media.length > 0));
 }
 
-/** Whether a seed run wrote a row, an entry, an object or an asset anywhere. */
+/**
+ * Whether a seed run wrote a row, an entry, an object or an asset anywhere.
+ *
+ * Judged on what landed, never on what was planned: every seed write is non-destructive, so a run over
+ * fixtures `dev` already holds plans the same rows and writes none of them. KV and R2, and rows in a
+ * retained table, are outside what {@link devDataHeld} asks, so a second run reaches the seed — and must
+ * still say it changed nothing (#764).
+ */
 function wroteAnything(report: SeedRunReport): boolean {
   return report.workers.some((worker) =>
     worker.sets.some(
       (set) =>
-        set.d1.some((table) => table.rows > 0) ||
-        set.kv.some((store) => store.entries > 0) ||
-        set.r2.length > 0 ||
-        set.media.length > 0,
+        set.d1.some((table) => (table.written ?? 0) > 0) ||
+        set.kv.some((store) => (store.written ?? 0) > 0) ||
+        set.r2.some((object) => object.written === true) ||
+        set.media.some((asset) => asset.action !== "skip"),
     ),
   );
 }

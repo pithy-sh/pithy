@@ -6,6 +6,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { retainedTableName } from "@pithy-sh/core/src/migrations/retained";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { localDevStorePath, localResourceRoot } from "../devSecrets/store";
+import { inLocalStateCopy } from "../migrations/localStateCopy";
 import type { WorkerScope } from "../migrations/run";
 import { resolveStoreIds } from "../seed/drivers";
 
@@ -18,8 +19,11 @@ import { resolveStoreIds } from "../seed/drivers";
  * credentials, a suppression list), so they are never what a fixture writes, and the secrets vault holds
  * the dev secrets setup itself seeds a step earlier. Counting it would make every first run look seeded.
  *
- * Read-only, and local: the stores are the Miniflare ones every `dev` command persists under the project
- * root, opened the way the seed driver opens them, and closed before this returns.
+ * Local, and **read-only by construction**: the stores are the Miniflare ones every `dev` command persists
+ * under the project root, asked through the copy `pithy migrate --dry-run` reads, under the system temp
+ * directory and gone before this returns. Opening the real store would write into it even for a read:
+ * Miniflare touches each database's WAL and SHM, its object metadata and its cache, and creates the sqlite
+ * of a database nobody has migrated yet. `pithy setup --dry-run` promises it writes nothing (#764).
  */
 
 /** One table that holds at least one row, through the binding a Worker reaches it by. */
@@ -67,32 +71,34 @@ export async function devDataHeld(options: DevDataHeldOptions): Promise<HeldTabl
       }
     }
   }
-  // No local store at all is a checkout nothing has migrated or seeded yet. Opening one would create it,
-  // which a dry run must not do, and there is nothing in it to find.
+  // No local store at all is a checkout nothing has migrated or seeded yet: there is nothing in it to find.
   if (probes.size === 0 || !existsSync(localDevStorePath(options.projectDir))) return [];
 
-  // Loaded here rather than at module scope, as every opener of a local store is: `miniflare` costs
-  // ~290 ms to import, and `ci/lazyHeavyImports.test.ts` holds the property.
-  const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
-  const miniflare = new Miniflare(
-    convertV4MiniflareOptions({
-      modules: true,
-      script: "export default {};",
-      d1Databases: Object.fromEntries([...probes.keys()].map((id) => [id, id])),
-      resourcePersistencePath: localResourceRoot(options.projectDir),
-    }),
-  );
-  try {
-    const held: HeldTable[] = [];
-    for (const [id, probe] of probes) {
-      const database = (await miniflare.getD1Database(id)) as unknown as D1Database;
-      const table = await firstHeld(database, [...probe.tables].sort());
-      if (table !== null) held.push({ worker: probe.worker, binding: probe.binding, table });
+  // The copy is what Miniflare opens, so whatever a read writes lands there, never in the project's store.
+  return inLocalStateCopy(options.projectDir, async (root) => {
+    // Loaded here rather than at module scope, as every opener of a local store is: `miniflare` costs
+    // ~290 ms to import, and `ci/lazyHeavyImports.test.ts` holds the property.
+    const { convertV4MiniflareOptions, Miniflare } = await import("miniflare");
+    const miniflare = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: "export default {};",
+        d1Databases: Object.fromEntries([...probes.keys()].map((id) => [id, id])),
+        resourcePersistencePath: localResourceRoot(root),
+      }),
+    );
+    try {
+      const held: HeldTable[] = [];
+      for (const [id, probe] of probes) {
+        const database = (await miniflare.getD1Database(id)) as unknown as D1Database;
+        const table = await firstHeld(database, [...probe.tables].sort());
+        if (table !== null) held.push({ worker: probe.worker, binding: probe.binding, table });
+      }
+      return held;
+    } finally {
+      await miniflare.dispose();
     }
-    return held;
-  } finally {
-    await miniflare.dispose();
-  }
+  });
 }
 
 /** The first of `tables` present in the database with a row in it, or `null`. */

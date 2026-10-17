@@ -20,6 +20,8 @@ export interface SeedPlanD1Entry {
   table: string;
   /** The number of rows the fixture would write (idempotent — existing rows are ignored). */
   rows: number;
+  /** A real run only: the rows that landed. An existing row is ignored, so a re-run writes `0` (#764). */
+  written?: number;
 }
 
 /** One store's line in the plan: which store in which namespace, and how many entries would be written. */
@@ -30,6 +32,8 @@ export interface SeedPlanKvEntry {
   store: string;
   /** The number of entries the fixture would write. */
   entries: number;
+  /** A real run only: the entries put. An existing key is left alone, so a re-run writes `0` (#764). */
+  written?: number;
 }
 
 /** One object's line in the plan: the bucket binding and key that would be written. */
@@ -38,6 +42,8 @@ export interface SeedPlanR2Entry {
   binding: string;
   /** The object key. */
   key: string;
+  /** A real run only: whether the object was put. An existing key is left alone (#764). */
+  written?: boolean;
 }
 
 /**

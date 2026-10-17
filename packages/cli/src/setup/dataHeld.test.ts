@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { Migration } from "kysely/migration";
 import { describe, expect, test } from "vitest";
+import { localResourceRoot } from "../devSecrets/store";
 import { migrateProject } from "../migrations/run";
 import { seedProject } from "../seed/run";
 import { dataCapability, localWrangler, seedHarness, Things } from "../test-utils/seedHarness";
@@ -43,6 +46,18 @@ const vault = defineCapability({
     },
   },
 });
+
+/** Every file under `root`, with its size and modification time: what "nothing was written" is checked against. */
+async function snapshot(root: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    const info = await stat(path);
+    files[path.slice(root.length)] = `${info.size}:${info.mtimeMs}`;
+  }
+  return files;
+}
 
 describe("devDataHeld", () => {
   const h = seedHarness();
@@ -92,5 +107,17 @@ describe("devDataHeld", () => {
     expect(await devDataHeld({ projectDir: h.projectDir, workers })).toEqual([
       { worker: "api", binding: "DB", table: "things" },
     ]);
+  });
+
+  test("asking writes nothing into the local store, which a dry run relies on (#764)", async () => {
+    await h.writeWrangler(localWrangler);
+    const workers = [h.api([vault, dataCapability()])];
+    await migrateProject({ account: null, workers, projectDir: h.projectDir, env: "dev", project: "acme" });
+    const root = localResourceRoot(h.projectDir);
+    const before = await snapshot(root);
+
+    expect(await devDataHeld({ projectDir: h.projectDir, workers })).toEqual([]);
+
+    expect(await snapshot(root)).toEqual(before);
   });
 });

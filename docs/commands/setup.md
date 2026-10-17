@@ -81,7 +81,7 @@ $ pithy setup --json
 | `ports` | `object` | `allocated`, whether a Worker gained a port; `workers`, each pinned member's `port` and `origin`. `workers` is empty under `--dry-run`, which pins none |
 | `devVarsWritten` | `string[]` | Workers whose generated `.dev.vars` this run wrote, relative to the checkout. Empty when every one already held its bytes |
 | `seededSecrets` | `string[]` | Dev secrets seeded into the local `SECRETS` store this run |
-| `seed` | `object` | How the seed step ended. `state` is `seeded`, `planned`, `held` (dev holds rows, left alone), `media` (a fixture uploads media, which setup never reaches) or `none` (nothing to seed). `held` lists a table per database that holds rows, empty otherwise |
+| `seed` | `object` | How the seed step ended. `state` is `seeded`, `planned`, `held` (dev holds rows, left alone), `media` (a fixture uploads media, which setup never reaches) or `none` (nothing written: nothing to seed, or dev already holds every fixture). `held` lists a table per database that holds rows, empty otherwise |
 | `externalSecrets` | `string[]` | Every secret somebody else issues with no value here. `pithy secrets edit` opens the file each goes in |
 | `notes` | `string[]` | What the steps had to say, in order: a `.dev.vars` left alone, a store that would not open |
 | `blocked` | `string` | Present only under `blocked`: why nothing after the install could be planned, in the project check's own words |

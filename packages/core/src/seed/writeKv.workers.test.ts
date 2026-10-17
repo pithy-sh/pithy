@@ -50,7 +50,7 @@ beforeEach(async () => {
 describe("seedKvGroup", () => {
   test("writes each entry through the typed store", async () => {
     const result = await seedKvGroup(store(), group, spec);
-    expect(result).toEqual({ store: "images", entries: 2 });
+    expect(result).toEqual({ store: "images", entries: 2, written: 2 });
     expect(await store().get({ uuid: UUID_A })).toEqual({ url: "https://e/a", bytes: 1 });
   });
 
@@ -60,9 +60,15 @@ describe("seedKvGroup", () => {
     expect(await keyCount()).toBe(2);
   });
 
+  test("a re-run counts the entries it planned and reports that it wrote none (#764)", async () => {
+    await seedKvGroup(store(), group, spec);
+    const again = await seedKvGroup(store(), group, spec);
+    expect(again).toEqual({ store: "images", entries: 2, written: 0 });
+  });
+
   test("dryRun counts but writes nothing", async () => {
     const result = await seedKvGroup(store(), group, spec, { dryRun: true });
-    expect(result).toEqual({ store: "images", entries: 2 });
+    expect(result).toEqual({ store: "images", entries: 2, written: 0 });
     expect(await keyCount()).toBe(0);
   });
 
@@ -88,7 +94,7 @@ describe("seedKvGroup", () => {
     await store().put({ uuid: UUID_A }, { url: "https://existing", bytes: 99 });
 
     const result = await seedKvGroup(store(), group, spec);
-    expect(result).toEqual({ store: "images", entries: 2 });
+    expect(result).toEqual({ store: "images", entries: 2, written: 1 });
     // Key A is left untouched; only the genuinely new key B is written.
     expect(await store().get({ uuid: UUID_A })).toEqual({ url: "https://existing", bytes: 99 });
     expect(await store().get({ uuid: UUID_B })).toEqual({ url: "https://e/b", bytes: 2 });

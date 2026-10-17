@@ -38,6 +38,17 @@ const ROWS = [
   { name: "1000_app_demo", d1: [{ database: "app", table: "things", rows: 2 }], kv: [], r2: [], media: [] },
 ];
 
+/** {@link ROWS} as a real run reports it: every planned row written. */
+const WROTE = [
+  {
+    name: "1000_app_demo",
+    d1: [{ database: "app", table: "things", rows: 2, written: 2 }],
+    kv: [],
+    r2: [],
+    media: [],
+  },
+];
+
 /** A fresh clone: nothing minted, migrations pending, no ports, an empty database. */
 function freshClone(log: string[], overrides: SetupSteps = {}): SetupSteps {
   const record =
@@ -88,7 +99,7 @@ function freshClone(log: string[], overrides: SetupSteps = {}): SetupSteps {
     seed: async ({ dryRun, account }) => {
       log.push(dryRun ? "planSeed" : "seed");
       expect(account).toBeNull();
-      return seedReport(ROWS, dryRun);
+      return seedReport(dryRun ? ROWS : WROTE, dryRun);
     },
     external: record("external", ["auth-github-client-secret"]),
     ...overrides,
@@ -188,6 +199,37 @@ describe("setupCheckout", () => {
 
     const result = report(await setupCheckout({ projectDir: DIR, account: null, steps }));
 
+    expect(result.seed).toEqual({ state: "none" });
+    expect(result.changed).toBe(false);
+  });
+
+  test("a second run over fixtures dev already holds, outside any table the guard asks, is no change", async () => {
+    // KV and R2 fixtures, and rows in a retained table, are not what `held` probes, so the seed runs again.
+    // Every one of its writes is non-destructive and finds its key already there: it plans what it did
+    // the first time and writes none of it.
+    const log: string[] = [];
+    const again = [
+      {
+        name: "1000_app_demo",
+        d1: [{ database: "app", table: "pithy_vault_items", rows: 1, written: 0 }],
+        kv: [{ namespace: "assets", store: "images", entries: 2, written: 0 }],
+        r2: [{ binding: "FILES", key: "logo.svg", written: false }],
+        media: [],
+      },
+    ];
+    const steps = freshClone(log, {
+      mint: async () => ({ path: SECRETS, minted: [], adopted: [], refused: [] }),
+      migrate: async () => [],
+      prepare: async () => prepared(),
+      seed: async ({ dryRun }) => {
+        log.push(dryRun ? "planSeed" : "seed");
+        return seedReport(again, dryRun);
+      },
+    });
+
+    const result = report(await setupCheckout({ projectDir: DIR, account: null, steps }));
+
+    expect(log).toContain("seed");
     expect(result.seed).toEqual({ state: "none" });
     expect(result.changed).toBe(false);
   });

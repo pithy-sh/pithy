@@ -61,7 +61,7 @@ describe("seedProject", () => {
         {
           name: "2000_collab_rooms",
           d1: [],
-          kv: [{ namespace: "cache", store: "rooms", entries: 1 }],
+          kv: [{ namespace: "cache", store: "rooms", entries: 1, written: 1 }],
           r2: [],
           media: [],
         },

@@ -41,8 +41,8 @@ describe("seedProject", () => {
     expect(report.workers[0]?.sets).toEqual([
       {
         name: "1000_app_demo",
-        d1: [{ database: "app", table: "things", rows: 2 }],
-        kv: [{ namespace: "cache", store: "notes", entries: 1 }],
+        d1: [{ database: "app", table: "things", rows: 2, written: 2 }],
+        kv: [{ namespace: "cache", store: "notes", entries: 1, written: 1 }],
         r2: [],
         media: [],
       },
@@ -54,8 +54,8 @@ describe("seedProject", () => {
       expect(count?.n).toBe(2);
       expect(await store.kv.get("notes:a")).toBe(JSON.stringify({ body: "hello" }));
 
-      // Re-running seeds nothing new: INSERT OR IGNORE keeps the row count at 2.
-      await seedProject({
+      // Re-running seeds nothing new: INSERT OR IGNORE keeps the row count at 2, and the report says so.
+      const rerun = await seedProject({
         account: null,
         project: "acme",
         workers: [h.api(capabilities)],
@@ -64,6 +64,8 @@ describe("seedProject", () => {
       });
       const again = await store.d1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
       expect(again?.n).toBe(2);
+      expect(rerun.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2, written: 0 }]);
+      expect(rerun.workers[0]?.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1, written: 0 }]);
     } finally {
       await store.dispose();
     }
@@ -226,8 +228,10 @@ describe("seedProject", () => {
           remoteD1: () => remoteD1,
           remoteKv: () => remoteKv,
         });
-        expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2 }]);
-        expect(report.workers[0]?.sets[0]?.kv).toEqual([{ namespace: "cache", store: "notes", entries: 1 }]);
+        expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 2, written: 2 }]);
+        expect(report.workers[0]?.sets[0]?.kv).toEqual([
+          { namespace: "cache", store: "notes", entries: 1, written: 1 },
+        ]);
 
         const count = await remoteD1.prepare("SELECT count(*) AS n FROM things").first<{ n: number }>();
         expect(count?.n).toBe(2);

@@ -100,6 +100,34 @@ describe("syncFeatureDevConfig", () => {
     expect(second.dev).toEqual(first.dev);
   });
 
+  test("a capability host keeps the port pithy dev pinned it: a sync reconciles the whole dev set (#764)", async () => {
+    // `pithy dev`, and `pithy setup` through it, pin every member of the dev set — the app Workers and the
+    // capability hosts they compose. A sync that rebuilt the config from `apps/` alone would release every
+    // host, and the setup step after it would pin them again: no sync could ever report that nothing moved.
+    const [api] = await workerTargets(worktreePath, ["api"]);
+    const email = { name: "email", dir: join(worktreePath, "node_modules", "@pithy-sh", "email") };
+    const resolveSet = async () => ({
+      project: "acme",
+      members: [
+        { worker: api as WorkerTarget, kind: "app" as const, autostart: true, autostartLocal: false },
+        { worker: email, kind: "host" as const, autostart: true, autostartLocal: false },
+      ],
+      hosts: [],
+      hostNames: new Set(["email"]),
+      notes: [],
+    });
+    const run = () =>
+      syncFeatureDevConfig({ mainRoot, registryPath, worktreePath, branch: "feature/69-demo", resolveSet });
+
+    const first = await run();
+    const second = await run();
+
+    expect(first.added.sort()).toEqual(["api", "email"]);
+    expect(second.added).toEqual([]);
+    expect(second.removed).toEqual([]);
+    expect(second.dev).toEqual(first.dev);
+  });
+
   test("a second feature never draws from the first feature's block", async () => {
     await sync(["api"]);
 

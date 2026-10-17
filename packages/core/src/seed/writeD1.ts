@@ -17,8 +17,14 @@ export interface SeedD1Options {
 export interface SeedD1Result {
   /** The table seeded. */
   table: string;
-  /** The number of rows validated (and, unless `dryRun`, written). */
+  /** The number of rows the fixture holds, every one validated. */
   rows: number;
+  /**
+   * The number of rows this call inserted. Under `INSERT OR IGNORE` a row whose key is already there is
+   * not, so a re-run writes none, and says so here rather than repeating `rows` (#764). Always `0` under
+   * `dryRun`.
+   */
+  written: number;
 }
 
 /**
@@ -89,15 +95,18 @@ export async function seedD1Group(
   });
 
   if (options.dryRun || encoded.length === 0) {
-    return { table: group.table, rows: encoded.length };
+    return { table: group.table, rows: encoded.length, written: 0 };
   }
 
+  let written = 0n;
   for (const chunk of chunkRowsByBoundParameters(encoded, columnsPerRow(encoded))) {
-    await db
+    const results = await db
       .insertInto(group.table)
       .orIgnore()
       .values(chunk as never)
       .execute();
+    // D1's `meta.changes`: the rows the statement inserted, which an ignored conflict is not.
+    for (const result of results) written += result.numInsertedOrUpdatedRows ?? 0n;
   }
-  return { table: group.table, rows: encoded.length };
+  return { table: group.table, rows: encoded.length, written: Number(written) };
 }

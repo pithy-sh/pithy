@@ -287,15 +287,15 @@ async function r2ObjectExists(target: R2SeedTarget, key: string): Promise<boolea
  * Non-destructive: an object that already exists at the key is left untouched (R2's analog of D1's
  * `INSERT OR IGNORE`), so a re-run never overwrites data that shares a key.
  */
-async function writeR2Object(target: R2SeedTarget, item: R2SeedItem): Promise<void> {
-  if (await r2ObjectExists(target, item.key)) return;
+async function writeR2Object(target: R2SeedTarget, item: R2SeedItem): Promise<boolean> {
+  if (await r2ObjectExists(target, item.key)) return false;
 
   if (target.kind === "local") {
     await target.bucket.put(item.key, item.body, {
       httpMetadata: { contentType: item.contentType },
       ...(item.metadata !== undefined ? { customMetadata: item.metadata } : {}),
     });
-    return;
+    return true;
   }
 
   // Remote R2 has no in-Worker binding: presign a one-hour PUT and upload the bytes. Custom metadata
@@ -309,6 +309,7 @@ async function writeR2Object(target: R2SeedTarget, item: R2SeedItem): Promise<vo
       detail: `Presigned PUT for "${item.key}" returned ${response.status}.`,
     });
   }
+  return true;
 }
 
 /**
@@ -833,7 +834,12 @@ async function writeWorker(
         const db = createDatabase(driver.d1(dbGroup.binding), dbGroup.items);
         startStep(`Seeding ${group.table} on ${dbGroup.binding} for ${worker}`);
         const result = await seedD1Group(db, group, schema);
-        setReport.d1.push({ database: group.database, table: result.table, rows: result.rows });
+        setReport.d1.push({
+          database: group.database,
+          table: result.table,
+          rows: result.rows,
+          written: result.written,
+        });
       }
 
       for (const group of kvGroups) {
@@ -856,13 +862,18 @@ async function writeWorker(
         const store = new TypedKv(namespace, spec);
         startStep(`Seeding ${group.store} on ${nsGroup.binding} for ${worker}`);
         const result = await seedKvGroup(store, group, spec);
-        setReport.kv.push({ namespace: group.namespace, store: result.store, entries: result.entries });
+        setReport.kv.push({
+          namespace: group.namespace,
+          store: result.store,
+          entries: result.entries,
+          written: result.written,
+        });
       }
 
       for (const item of resolved.set.r2 ?? []) {
         startStep(`Seeding ${item.key} on ${item.binding} for ${worker}`);
-        await writeR2Object(driver.r2(item.binding), item);
-        setReport.r2.push({ binding: item.binding, key: item.key });
+        const written = await writeR2Object(driver.r2(item.binding), item);
+        setReport.r2.push({ binding: item.binding, key: item.key, written });
       }
 
       // Relative media paths resolve against the set's own module dir; the project root is the fallback.
