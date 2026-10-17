@@ -661,7 +661,7 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 200,
-                          "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control or bidi characters. Written by a customer and rendered elsewhere, so validated at the boundary."
+                          "description": "What this connection's client is for, in the registering operator's words — one line of plain text, 200 characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary."
                         },
                         {
                           "type": "null"

@@ -176,6 +176,11 @@ describe("a purpose is validated at the boundary", () => {
     );
   });
 
+  it("keeps the joiners a script needs to be written at all", () => {
+    expect(ConnectionPurpose.safeParse("\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645").success).toBe(true);
+    expect(ConnectionPurpose.safeParse("\u0915\u094d\u200d\u0937").success).toBe(true);
+  });
+
   it("refuses an empty one, since an empty purpose is a missing one", () => {
     expect(ConnectionPurpose.safeParse("").success).toBe(false);
     expect(ConnectionPurpose.safeParse("   ").success).toBe(false);
@@ -193,6 +198,12 @@ describe("a purpose is validated at the boundary", () => {
     ["a carriage return that overwrites the line", "harmless\rkeys:rotate"],
     ["a bidi override that reorders what is read", "triage \u202eetator:syek"],
     ["a bidi isolate", "triage \u2066x\u2069"],
+    ["a right-to-left mark", "triage \u200fsyek"],
+    ["a left-to-right mark", "triage \u200esyek"],
+    ["an Arabic letter mark", "triage \u061csyek"],
+    ["a zero-width space that hides a break in a word", "keys\u200b:rotate"],
+    ["a byte-order mark inside the text", "keys\ufeff:rotate"],
+    ["a word joiner", "keys\u2060:rotate"],
     ["a line separator", "triage\u2028more"],
     ["a NUL", "triage\u0000"],
   ])("refuses %s", (_name, hostile) => {

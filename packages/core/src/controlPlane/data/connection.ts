@@ -107,15 +107,18 @@ export const MAX_CONNECTION_PURPOSE = 200;
 
 /**
  * Characters a purpose may not carry: every C0 and C1 control (so no terminal escape, no newline and no
- * carriage return), the Unicode line and paragraph separators, and the bidi embeddings, overrides and
- * isolates that let text render in a different order from the one it is stored in.
+ * carriage return), the Unicode line and paragraph separators, every `Bidi_Control` character — the
+ * embeddings, overrides and isolates, and the LRM, RLM and ALM marks — that lets text render in a
+ * different order from the one it is stored in, and the invisible zero-width space, word joiner and
+ * byte-order mark that split a word without showing it. The zero-width joiner and non-joiner stay: Persian
+ * and the Indic scripts cannot be written without them.
  *
  * Each of those is a way for a sentence to look like something else once it reaches a renderer: a line
  * in `pithy dashboard status` forged beneath the real one, a screen cleared, a scope name read backwards.
  * Escaping them at every renderer is a promise each renderer has to keep. Refusing them at the boundary
  * is one promise, kept here.
  */
-const UNRENDERABLE = /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069]/u;
+const UNRENDERABLE = /[\p{Cc}\p{Bidi_Control}\u2028\u2029\u200B\u2060\uFEFF]/u;
 
 /**
  * What a connection is for, in the words of whoever registered it (#721).
@@ -129,9 +132,12 @@ export const ConnectionPurpose = z
   .trim()
   .min(1, "Say what this client is for.")
   .max(MAX_CONNECTION_PURPOSE, `A purpose is ${MAX_CONNECTION_PURPOSE} characters at most.`)
-  .refine((purpose) => !UNRENDERABLE.test(purpose), "A purpose is one line of plain text: no control characters.")
+  .refine(
+    (purpose) => !UNRENDERABLE.test(purpose),
+    "A purpose is one line of plain text: no control, bidi or invisible characters.",
+  )
   .describe(
-    `What this connection's client is for, in the registering operator's words — one line of plain text, ${MAX_CONNECTION_PURPOSE} characters at most, with no control or bidi characters. Written by a customer and rendered elsewhere, so validated at the boundary.`,
+    `What this connection's client is for, in the registering operator's words — one line of plain text, ${MAX_CONNECTION_PURPOSE} characters at most, with no control, bidi or invisible characters. Written by a customer and rendered elsewhere, so validated at the boundary.`,
   );
 export type ConnectionPurpose = z.output<typeof ConnectionPurpose>;
 
