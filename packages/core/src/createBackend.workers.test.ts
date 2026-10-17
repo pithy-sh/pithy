@@ -302,4 +302,17 @@ describe("createBackend", () => {
     const res = await app.request("/whoami", {}, env);
     expect(await res.json()).toEqual({ auth: null, db: {}, kv: {} });
   });
+
+  test("with no organization capability composed, no organization is ever in force", async () => {
+    const acting = defineCapability({
+      name: "acting",
+      requiredBindings: [],
+      routes: (a) => {
+        a.get("/acting", async (c) => c.json({ acting: await c.var.actingOrganization() }));
+      },
+    });
+    const app = createBackend({ capabilities: [acting] });
+    const res = await app.request("/acting", {}, env);
+    expect(await res.json()).toEqual({ acting: null });
+  });
 });

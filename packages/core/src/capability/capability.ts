@@ -4,6 +4,7 @@
 import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
 import type { Hono, MiddlewareHandler } from "hono";
 import type { z } from "zod";
+import type { ActingOrganizationResolver } from "../access/acting";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
@@ -31,6 +32,19 @@ import type { CapabilitySettings } from "./settings";
 export interface PithyVars {
   /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * Which organization this request acts for, and what the caller's role there allows — a resolver,
+   * populated by `@pithy-sh/organization`'s middleware. With no organization capability composed it is
+   * {@link import("../access/acting").noActingOrganization}, which answers `null`: nothing is in force,
+   * every record a request writes carries a null organization, and every rule that admits by organization
+   * admits nobody.
+   *
+   * **A seam beside {@link auth}, never a field on it.** `auth` says who is signed in; this says what they
+   * may do *here*, and a capability that gates on it — media, storage — must not import the capability
+   * that computes it. Lazy, because resolving it is a D1 read most requests never need; read it with
+   * `await c.var.actingOrganization()`, or through `accessCaller` in `access/access.ts`.
+   */
+  actingOrganization: ActingOrganizationResolver;
   /**
    * The resolved request locale, populated by `@pithy-sh/i18n`'s middleware; `null` in a Worker that
    * does not compose it — which is what "nothing was negotiated" looks like, as distinct from "the
@@ -627,6 +641,17 @@ export interface Capability<
    * time, and read by `pithy doctor`.
    */
   extensions?: readonly CapabilityExtension[];
+  /**
+   * The role powers this capability's own routes gate on, through the acting-organization seam —
+   * `media:manage`, `storage:manage`. Omit it when a capability asks no power, which is the normal case.
+   *
+   * **Declared so the catalog requirement can be conditional.** `@pithy-sh/organization` refuses a role
+   * catalog in which no role holds a power a composed capability gates on — a route nobody could ever use
+   * — and a project that composes no media must not be refused for not placing `media:manage`. The
+   * organization capability reads this list at compose, across every composed capability, rather than
+   * importing any of them.
+   */
+  powers?: readonly string[];
   /** Bindings this capability needs in the env (normalized — `optional` is always set). */
   requiredBindings: BindingSpec[];
 }
