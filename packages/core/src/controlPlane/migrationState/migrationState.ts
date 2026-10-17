@@ -26,7 +26,9 @@ import { MIGRATIONS_READ_SCOPE } from "../scope/scope";
  *
  * Two halves. At assembly, {@link composeMigrationDatabases} builds what this Worker declares per bound
  * database, through `collectMigrationSets` — the function `pithy migrate` composes with, so the route and
- * `pithy doctor` cannot disagree about one environment. Per request, {@link readDatabaseMigrations} reads
+ * `pithy doctor` compose the same way. Not always from the same inputs: on a D1 two Workers share, the CLI
+ * merges both Workers' sets and the route holds only its own, so `pending` and `undeclared` can differ
+ * there. On a database one Worker binds alone they agree. Per request, {@link readDatabaseMigrations} reads
  * one database for the route and {@link readMigrationHealth} totals all of them for the manifest.
  *
  * **Read-only.** Nothing here runs, reverses or resets a migration. A screen somebody opened to ask must

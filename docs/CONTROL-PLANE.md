@@ -267,7 +267,7 @@ Denials are audited too. `denied` is a first-class outcome, and this is the surf
 
 **A database that cannot be read says so, and costs only itself.** It comes back `unreadable` with its name and binding and no lists at all, never empty ones, because `pending: []` reads as up to date. The other databases still answer, and the route still answers 200. What D1 said goes to the Worker's log, not the response.
 
-**It is read-only.** Nothing over the seam runs, reverses or resets a migration. The Worker composes the provider with `collectMigrationSets` from `@pithy-sh/core/src/migrations/capabilitySets`, the function `pithy migrate` composes with, so the route and `pithy doctor` cannot disagree about one environment.
+**It is read-only.** Nothing over the seam runs, reverses or resets a migration. The Worker composes the provider with `collectMigrationSets` from `@pithy-sh/core/src/migrations/capabilitySets`, the function `pithy migrate` composes with, so the route and `pithy doctor` compose the same way. They do not always compose the same inputs. On a D1 that two Workers share, `pithy doctor` merges every co-bound Worker's migrations and the route sees only its own Worker's, so their `pending` and `undeclared` can differ. On a database one Worker binds alone, they agree.
 
 The seam's own manifest entry carries two counts behind the same scope, so a client sees *this environment is behind* on the read it already makes (§14). `pendingMigrations` declares `nominal: { atMost: 0 }`. `undeclaredMigrations` declares none, for the reason above: graded, it would report a corrupted chain on a shared database that is fine. Both are totals across every bound database, and one database that cannot be read makes both unavailable rather than a partial total.
 

@@ -140,7 +140,8 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
 
   // Every database this Worker binds and what this build declares for it (#729), composed by the same hook
   // through `collectMigrationSets` — the function `pithy migrate` uses, so the route and `pithy doctor`
-  // compose the identical provider from the identical sets.
+  // compose the same way. The inputs differ on a D1 two Workers share: the CLI merges every co-bound
+  // Worker's sets and this Worker holds only its own, so `pending` and `undeclared` can differ there.
   let migrationDatabases: readonly ComposedMigrationDatabase[] = [];
 
   const capability = defineCapability({
