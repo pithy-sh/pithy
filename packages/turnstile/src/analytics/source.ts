@@ -25,7 +25,8 @@ const PROVISION = pithyCommandOf("turnstile provision", {}, { runtime: true });
  *
  * Both are read through the one secrets reader. The token is the `runtime` profile's, declared through
  * `@pithy-sh/secrets`' factory with turnstile's own need. An environment holding no account is refused by
- * name: the read cannot ask Cloudflare anything without it, and the fix is one provision away.
+ * name: the read cannot ask Cloudflare anything without it, and the fix is one provision away. The
+ * message names that provision, because `clientError` strips `action` before a control-plane caller sees it.
  */
 export function turnstileAnalyticsConfig(env: SecretsStoreEnv): () => Promise<CloudflareManagerConfig> {
   let resolved: Promise<CloudflareManagerConfig> | undefined;
@@ -41,7 +42,8 @@ export function turnstileAnalyticsConfig(env: SecretsStoreEnv): () => Promise<Cl
       if (account === null) {
         throw new TurnstileConfigError(
           {
-            message: "This environment holds no record of the Cloudflare account its widgets live in.",
+            // The remedy is in the message: a control-plane caller gets the wire shape, which drops `action`.
+            message: `This environment holds no record of the Cloudflare account its widgets live in. Run \`${PROVISION}\` to record it.`,
             action: `Run \`${PROVISION}\`. It writes ${TURNSTILE_ACCOUNT_SECRET} for dev, staging and prod.`,
             detail: `reading "${TURNSTILE_ACCOUNT_SECRET}" ${unreadable instanceof Error ? `failed: ${unreadable.message}` : "found nothing"}`,
           },

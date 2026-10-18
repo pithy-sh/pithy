@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
+import { clientError } from "@pithy-sh/core/src/error/client";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { stubSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
@@ -26,10 +27,13 @@ describe("turnstileAnalyticsConfig (#731)", () => {
     stubSecrets(turnstileCapabilitySecretsRegistry, { [RUNTIME_TOKEN_SECRET]: "runtime-token" });
     const error = (await turnstileAnalyticsConfig(env)().catch((e) => e)) as PithyError;
     expect(error.payload.code).toBe("turnstile/config");
-    expect(error.payload.message).toBe(
-      "This environment holds no record of the Cloudflare account its widgets live in.",
-    );
-    expect(error.payload.action).toContain("turnstile provision");
+    // The control-plane caller reads the wire shape, which drops `action` and `detail`. The provision
+    // is the remedy, so the message itself has to name it.
+    const wire = clientError(error.payload);
+    expect(wire).not.toHaveProperty("action");
+    expect(wire.code).toBe("turnstile/config");
+    expect(wire.message).toContain("turnstile provision");
+    expect(wire.message).toMatch(/^This environment holds no record of the Cloudflare account its widgets live in\./);
   });
 
   test("resolves once, and only when asked", async () => {
