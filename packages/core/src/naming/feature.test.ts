@@ -7,6 +7,8 @@ import {
   assertFeatureProject,
   assertFeatureSlugFits,
   canonicalIssue,
+  FEATURE_KIND_SEGMENT,
+  FEATURE_RESOURCE_KINDS,
   type FeatureIdentity,
   type FeatureNameShape,
   type FeatureResourceKind,
@@ -19,10 +21,10 @@ import {
   maxFeatureSlug,
   parseFeatureName,
 } from "./feature";
-import { MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
+import { FEATURE_DERIVED_PROJECT_NAME, MAX_FEATURE_KIND, MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
 import { MAX_PROJECT_NAME } from "./resource";
 
-const KINDS: FeatureResourceKind[] = ["d1", "kv", "r2"];
+const KINDS: readonly FeatureResourceKind[] = FEATURE_RESOURCE_KINDS;
 
 /** R2's charset, the strictest of the three kinds: lowercase, digits, inner hyphens, alphanumeric at both ends. */
 const R2_BUCKET = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
@@ -44,7 +46,24 @@ describe("featureResourceName", () => {
     expect(featureResourceName(base, "MY_DB", "d1")).toBe("acme-f69-media-cli--my-db-d1");
   });
 
-  it("stays inside R2's bucket rules for every kind, because one shape serves all three", () => {
+  it("spells a queue's kind q, so a fourth kind costs no project-name budget (#662)", () => {
+    expect(featureResourceName(base, "JOBS", "queue")).toBe("acme-f69-media-cli--jobs-q");
+    expect(FEATURE_KIND_SEGMENT.queue).toBe("q");
+  });
+
+  it("holds every kind's segment to MAX_FEATURE_KIND, which holds the project budget at 26", () => {
+    // `MAX_FEATURE_KIND` is a term in `FEATURE_DERIVED_PROJECT_NAME`, and a project name is stable forever once
+    // anything is provisioned. A longer kind segment must fail here, never shrink every adopter's budget.
+    expect(FEATURE_RESOURCE_KINDS).toEqual(["d1", "kv", "r2", "queue"]);
+    for (const kind of FEATURE_RESOURCE_KINDS) {
+      expect(FEATURE_KIND_SEGMENT[kind].length, kind).toBeLessThanOrEqual(MAX_FEATURE_KIND);
+    }
+    expect(MAX_FEATURE_KIND).toBe(2);
+    expect(FEATURE_DERIVED_PROJECT_NAME).toBe(26);
+    expect(MAX_PROJECT_NAME).toBe(26);
+  });
+
+  it("stays inside R2's bucket rules for every kind, because one shape serves all of them", () => {
     const identity = {
       project: "a".repeat(MAX_PROJECT_NAME),
       issue: "9".repeat(MAX_ISSUE_DIGITS),

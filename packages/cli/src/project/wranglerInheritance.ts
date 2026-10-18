@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { BindingType, type SeedPolicy, seedPolicy } from "@pithy-sh/core/src/capability/bindings";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { FEATURE_ENVIRONMENT, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
+import { WRANGLER_KEYS } from "./bindingEntries";
 
 /**
  * **What an `env.<name>` stanza does not inherit from the top level of a `wrangler.jsonc`** (#581).
@@ -229,20 +231,23 @@ export function describeUnrepeatedKey(found: UnrepeatedKey): string {
 }
 
 /**
- * **The value a brand-new stanza starts that key at** — the top level's, with every list of entries
- * emptied.
+ * **The value a brand-new stanza starts a key at when no binding kind speaks for it** — the top level's, with
+ * every list of entries emptied.
  *
- * Repeating a key is not the same as duplicating its value, and the difference is the whole of this
- * function. (The one list carried whole is {@link CARRIED_WHOLE}'s, and it says why.) `vars` and `version_metadata` say the same thing in every environment, so they come down
- * verbatim. A `d1_databases` entry does not: it names one Cloudflare database by id, and carrying dev's
- * id into a stanza for `staging` would point staging at the database dev writes to. That is a *worse*
- * defect than the absent binding this module exists to fix — an absent binding fails loudly on the first
- * request, a shared one corrupts quietly — so a list starts empty and the writer fills in this
- * environment's own entries.
+ * The fallback, and only the fallback. A key a {@link BindingType} lives in takes its kind's {@link seedPolicy}
+ * instead ({@link CARRIED_WHOLE}, {@link CARRIED_INTO_FEATURE}), because what an entry names is a fact about the
+ * kind, not about the JSON shape wrangler gives it: `analytics_engine_datasets` is an array and names an
+ * account-level dataset every environment shares, and was emptied by this rule until #662. For a key the kit does
+ * not model, a shape is still the only thing there is to read.
  *
- * **Shape, not a table of key names.** "A list of entries is a list of this environment's resources" is
- * read off the value, so it holds for the forty-one keys wrangler has today and for the one it adds next.
- * The nested pass is for the two shapes that wrap their list in an object — `durable_objects.bindings`,
+ * Repeating a key is not the same as duplicating its value, and the difference is the whole of this function.
+ * `vars` and `version_metadata` say the same thing in every environment, so they come down verbatim. A
+ * `d1_databases` entry does not: it names one Cloudflare database by id, and carrying dev's id into a stanza for
+ * `staging` would point staging at the database dev writes to. That is a *worse* defect than the absent binding
+ * this module exists to fix — an absent binding fails loudly on the first request, a shared one corrupts quietly —
+ * so a list starts empty and the writer fills in this environment's own entries.
+ *
+ * The nested pass is for the shapes that wrap their list in an object — `durable_objects.bindings`,
  * `queues.producers` / `.consumers` — which are lists by any other name.
  */
 function seedValue(value: unknown): unknown {
@@ -254,36 +259,43 @@ function seedValue(value: unknown): unknown {
   );
 }
 
+/** The wrangler keys whose binding kind takes one of `policies`, in `BindingType`'s order. */
+function keysWithPolicy(...policies: SeedPolicy[]): readonly string[] {
+  return BindingType.options
+    .map((option) => option.value)
+    .filter((kind) => policies.includes(seedPolicy(kind)))
+    .map((kind) => WRANGLER_KEYS[kind]);
+}
+
 /**
- * **The non-inherited lists whose entries are the same in every environment — carried into a new stanza whole
- * (#643).**
+ * **The non-inherited keys whose entries are the same in every environment — carried into every new stanza whole
+ * (#643, #662).**
  *
- * {@link seedValue} empties every list, because a list's entries are almost always this environment's own
- * resources, and carrying `dev`'s database into `staging` would be the quiet corruption it exists to prevent. A
- * rate limiter is the exception, and it is one by the kit's own rule: `pithy add` derives a limiter's
- * `namespace_id` from its binding name alone (`rateLimitNamespaceId`), identical in every environment, and its
- * `simple` policy is the adopter's, stated once. Nothing in the entry names a resource an environment owns. So
- * an emptied `ratelimits` was not caution — it was a feature stanza with no `AUTH_RATE_LIMITER`, and auth
- * refusing every request on `Missing required bindings`.
+ * Derived, never listed: the keys of every kind whose {@link seedPolicy} is `carry`, through {@link WRANGLER_KEYS}.
+ * It held one hand-written name, `ratelimits`, added after auth refused every request in a feature (#650), and a
+ * table of names is a table that misses the next kind — `analytics_engine_datasets`, `mtls_certificates` and
+ * `dispatch_namespaces` all name account-level resources, were all emptied by {@link seedValue}'s shape rule, and
+ * all failed silently, because no capability's `requiredBindings` named them.
  *
- * **`send_email` was the second for a day, and taking it back out is the rule stated properly (#650 review).**
- * An entry names no resource an environment owns — it is a binding name and an address verified once at the
- * account — so by the paragraph above it reads like a limiter. What it carries that a limiter does not is a
- * *decision*: where this environment's mail goes. Seeding `env.prod` from the top level therefore wrote the
- * address on a developer's laptop into production's first stanza, where the next deploy would mail real users
- * from it. This list runs for **every** stanza this module creates, declared environments included, so it is the
- * wrong instrument for "a feature may inherit dev's". `provision/wranglerEnv.ts` refills a feature's
- * `send_email` explicitly, where the scope is known and the choice is a feature's to make.
- *
- * A name table rather than a shape rule, because no shape tells a limiter's `namespace_id` — a counter label —
- * from a namespace's `id`, nor a routing decision from a policy. Every key here must also be one
- * {@link NOT_INHERITED_BY_ENVIRONMENTS} names, which `wranglerInheritance.test.ts` holds. `workflows` is
- * deliberately not here: its entries name `dev`'s Workflows, and a scope that needs them writes its own
- * (`feature/hosts.ts`, `project/appWorkflows.ts`). `queues` and `analytics_engine_datasets` are not here either,
- * and for the opposite reason to `workflows`: each entry names a resource an environment owns, nothing derives
- * one per environment, and a feature carrying the top level's would bind production's queue.
+ * A rate limiter is the model. `pithy add` derives its `namespace_id` from its binding name alone, identical in
+ * every environment, and its `simple` policy is the adopter's, stated once. Nothing in the entry names a resource
+ * an environment owns. `send_email`, `hyperdrive` and `pipelines` are not here: each kind's policy is `branch`
+ * ({@link CARRIED_INTO_FEATURE}), because the top level's entry is dev's mail routing, dev's Postgres or dev's sink.
+ * `workflows` and `queues` are not here either: a Workflow entry names `dev`'s Workflow, and a producer names
+ * `dev`'s queue, so each is `provision` and refilled by the writer that owns its scope.
  */
-export const CARRIED_WHOLE: readonly string[] = ["ratelimits"];
+export const CARRIED_WHOLE: readonly string[] = keysWithPolicy("carry");
+
+/**
+ * **What a feature's stanza carries whole: every `carry` key and every `branch` one (#662).**
+ *
+ * A feature is a branch of `dev`, so it takes dev's decisions the way it takes `vars` — where its mail goes
+ * included, and the database and sink dev reads and writes. A declared environment is not, so a `branch` key starts
+ * empty there: seeding `env.prod` from the top level once wrote the address on a developer's laptop into
+ * production's first stanza (#650 review), and would have pointed production at dev's Postgres (#662).
+ * `provision/wranglerEnv.ts` reads this too, to refill a tracked `env.feature` that predates an entry.
+ */
+export const CARRIED_INTO_FEATURE: readonly string[] = keysWithPolicy("carry", "branch");
 
 /** A config far enough to reach its stanzas. The caller casts back to whatever slice it cares about. */
 interface StanzaHost {
@@ -310,6 +322,10 @@ interface StanzaHost {
  * project has needs no branch of its own. Three writers had spelled that branch out for themselves; the
  * fourth would have got it wrong.
  *
+ * **What a seeded stanza starts with is its binding kinds' {@link seedPolicy}** (#662): a `carry` kind's entries
+ * whole, a `provision` kind's emptied for the provisioner to refill, and a `branch` kind's whole in a feature and
+ * emptied in a declared environment. A key no kind lives in falls back to {@link seedValue}'s shape rule.
+ *
  * The seeded `ENVIRONMENT` var is this environment's own, where the top level stamps one at all. Copying
  * `ENVIRONMENT: "dev"` into `env.staging` would leave every composition in staging reporting itself as dev
  * — repeating the key while breaking the thing it is read for. Where an adopter stamps no `ENVIRONMENT`,
@@ -331,9 +347,11 @@ export function stanzaFor(config: unknown, env: string): Record<string, unknown>
   // it back would put every caller's `stanza.vars ??= {}` on a null. It is treated as the absence it is.
   const existing = asRecord(host.env[env]);
   if (existing !== null) return existing;
+  // A feature carries `branch` keys too; a declared environment carries `carry` keys alone (#662).
+  const carried = env === FEATURE_ENVIRONMENT ? CARRIED_INTO_FEATURE : CARRIED_WHOLE;
   const seeded: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(topLevelKeysToRepeat(host))) {
-    seeded[key] = CARRIED_WHOLE.includes(key) ? value : seedValue(value);
+    seeded[key] = carried.includes(key) ? value : seedValue(value);
   }
   const vars = asRecord(seeded.vars);
   if (vars !== null && typeof vars[ENVIRONMENT_VAR] === "string") vars[ENVIRONMENT_VAR] = env;

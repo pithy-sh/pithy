@@ -19,6 +19,7 @@ const emptyProvisioners: ResourceProvisioners = {
   d1: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
   kv: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
   r2: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
+  queue: { find: async () => null, create: async () => ({ id: "x" }), delete: async () => {} },
 };
 
 /** A trivial capability — destroy recomputes this feature's resource names from its bindings. */

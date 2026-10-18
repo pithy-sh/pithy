@@ -18,20 +18,23 @@ export interface ProvisionableBinding {
 }
 
 /**
- * The subset of {@link BindingType}s `pithy feature` provisions as standalone, per-feature resources.
- * D1 databases, KV namespaces, and R2 buckets each get their own ephemeral resource. Every other
- * binding kind is either account-scoped (`ai`), wired in config rather than provisioned (`durable_object`,
- * `service`, `workflow`, `queue`), or owned by another capability's provisioner (`secret`, `email`) — so
- * `provision` skips them. Extend this map (and the CF provisioners) to grow the provisionable set.
+ * The subset of {@link BindingType}s `pithy provision` creates as standalone resources, per environment and per
+ * feature. D1 databases, KV namespaces, R2 buckets and queues each get their own. A queue joined them in #662: a
+ * `queues.producers` entry names its queue and `wrangler deploy` refuses one that does not exist, so writing the
+ * entry is honest only because this creates it. Every other binding kind is account-level and carried
+ * (`ai`, `hyperdrive`, …), wired in config rather than provisioned (`durable_object`, `service`, `workflow`), or
+ * owned by another capability's provisioner (`secret`, `email`) — so `provision` skips them. Extend this map (and
+ * the CF provisioners) to grow the provisionable set.
  */
 const PROVISIONABLE: Partial<Record<BindingType, FeatureResourceKind>> = {
   d1: "d1",
   kv: "kv",
   r2: "r2",
+  queue: "queue",
 };
 
 /**
- * The provisionable resources for a set of enabled capabilities: every `d1`/`kv`/`r2` binding they
+ * The provisionable resources for a set of enabled capabilities: every `d1`/`kv`/`r2`/`queue` binding they
  * declare, deduplicated by binding name (two capabilities may share one binding — one resource backs it),
  * in a stable order. Non-provisionable binding kinds are dropped. This is the auto-discovered set
  * `provision` creates one CF resource per and `destroy` reconciles against.

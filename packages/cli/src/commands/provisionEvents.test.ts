@@ -158,7 +158,7 @@ describe("pithy provision --json --events", () => {
     }
     expect(JSON.parse(lines[0] as string)).toEqual({
       command: "provision",
-      schemaVersion: 1,
+      schemaVersion: 2,
       event: "start",
       what: "acme-staging-db",
       binding: "DB",
@@ -201,7 +201,7 @@ describe("pithy provision --json --events", () => {
 
     const result = records.at(-1) as Record<string, unknown>;
     expect(result).not.toHaveProperty("event");
-    expect(result).toMatchObject({ command: "provision", schemaVersion: 1, env: "staging" });
+    expect(result).toMatchObject({ command: "provision", schemaVersion: 2, env: "staging" });
     expect(result.resources).toEqual([
       { kind: "d1", binding: "DB", name: "acme-staging-db", id: "d1-1", created: true },
     ]);

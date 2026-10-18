@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { validateBindings } from "@pithy-sh/core/src/capability/validateBindings";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
@@ -9,6 +14,7 @@ import {
   type ReconcilePlan,
 } from "../capabilities/reconcile";
 import type { ProjectLedger } from "../migrations/run";
+import { scaffoldProject } from "../project/scaffold";
 import { checkedWorker } from "../test-utils/doctorHarness";
 import { dirOf } from "../test-utils/workerDir";
 import { type BuildPlan, buildProjectHealth, defaultBuildPlan, type ProjectHealthOptions } from "./health";
@@ -765,5 +771,47 @@ describe("buildProjectHealth — capability resolution", () => {
       { ...api, capabilities: [] },
       { ...collab, capabilities: [] },
     ]);
+  });
+});
+
+/**
+ * **A binding the app declares and nothing supplies is doctor's finding, before it is the Worker's refusal to boot
+ * (#662).** The app has no manifest, and the plan walked manifests, so `pithy doctor` was silent about exactly the
+ * binding `validateBindings` would throw on at the first request.
+ */
+describe("buildProjectHealth — the Worker's own app", () => {
+  let projectDir: string;
+  beforeEach(async () => {
+    projectDir = await mkdtemp(join(tmpdir(), "pithy-doctor-app-"));
+    await scaffoldProject({ targetDir: projectDir, appName: "doctor-app" });
+  });
+  afterEach(async () => {
+    await rm(projectDir, { recursive: true, force: true });
+  });
+
+  test("names a binding the app declares and no stanza supplies, the one the Worker would refuse to boot on", async () => {
+    const app = defineCapability({
+      name: "board",
+      requiredBindings: [{ type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" }],
+    });
+    // What the deployed Worker would do with the env this stanza gives it.
+    expect(() => validateBindings({}, app.requiredBindings)).toThrow(/hyperdrive:HYPERDRIVE/);
+
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir,
+      environments: [],
+      remoteSkip: null,
+      composeWorker: async () => ({ capabilities: [app], config: { capabilities: [], app } }),
+      workers: [{ name: "api", dir: join(projectDir, "apps", "api") }],
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readBindingScope: async () => ({ ok: true, split: [], divergent: [], partial: false }),
+      readCapabilityReach: async () => ({ ok: true, reachable: [], unreachable: [], split: [] }),
+      readLedger: async () => ({ state: "read", pending: 0, undeclared: [] }),
+    });
+    expect(checkedWorker(health).bindings.ok).toBe(false);
+    expect(checkedWorker(health).bindings.missing).toContainEqual(
+      expect.objectContaining({ name: "HYPERDRIVE", type: "hyperdrive" }),
+    );
   });
 });

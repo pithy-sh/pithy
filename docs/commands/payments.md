@@ -89,7 +89,7 @@ The second line is on stderr, and stdout is empty.
 
 ```
 $ pithy payments reconcile --env staging --json
-{"command":"payments reconcile","schemaVersion":1,"env":"staging","dryRun":false,"report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
+{"command":"payments reconcile","schemaVersion":2,"env":"staging","dryRun":false,"report":{"pages":3,"scanned":214,"unchanged":198,"drifted":4,"superseded":11,"skipped":1,"failed":0,"truncated":false,"dryRun":false}}
 ```
 
 | key | type | meaning |

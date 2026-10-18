@@ -7,7 +7,8 @@ import { portsRegistryPath } from "../feature/ports";
 import type { PruneReport } from "../feature/prune";
 import type { SyncReport } from "../feature/sync";
 import { Plan } from "../plan/plan";
-import { expectConforms, runCaptured } from "../test-utils/payloadContract";
+import { AUDIT_RESOURCE_TYPE, type TeardownKind } from "../provision/resources";
+import { contractAt, expectConforms, runCaptured } from "../test-utils/payloadContract";
 
 /**
  * **What `pithy feature create`, `sync` and `prune` write under `--json`, held to the schemas `pithy schema
@@ -112,5 +113,29 @@ describe("pithy feature --json conforms to its published payloads", () => {
     const real = JSON.parse((await runCaptured("feature prune", ["--json"])).join("")) as Record<string, unknown>;
     expect(real.dryRun).toBe(false);
     expect("plan" in real).toBe(false);
+  });
+
+  test("destroy publishes every kind teardown deletes, queues among them, at schemaVersion 2", async () => {
+    // `deprovisionFeature` reports each deletion under a `TeardownKind`, and the command spreads that
+    // report into `deletedResources` unfiltered. A kind the schema leaves out is a line it does not describe.
+    const contract = await contractAt("feature destroy");
+    expect(contract.schemaVersion).toBe(2);
+    const kinds = Object.keys(AUDIT_RESOURCE_TYPE) as TeardownKind[];
+    expect(kinds).toContain("queue");
+    for (const kind of kinds) {
+      const line = JSON.stringify({
+        command: "feature.destroy",
+        schemaVersion: 2,
+        deletedResources: [{ kind, name: `acme-12-media-cli-${kind}`, id: `${kind}-1` }],
+        remote: true,
+        portsFreed: true,
+        branch: DEV.branch,
+        worktreePruned: false,
+        branchDeleted: false,
+        manifestRead: true,
+        manifestPath: "/home/you/acme/.worktrees/12-media-cli/.pithy-feature.json",
+      });
+      await expectConforms("feature destroy", `${line}\n`);
+    }
   });
 });

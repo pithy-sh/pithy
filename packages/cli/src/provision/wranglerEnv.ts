@@ -16,7 +16,7 @@ import { writeJsonc } from "../project/jsonc";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { inheritAddressKeys, resolveWorkerAddress } from "../project/workerAddress";
 import { readWranglerConfig } from "../project/wrangler";
-import { stanzaFor } from "../project/wranglerInheritance";
+import { CARRIED_INTO_FEATURE, stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, featureConfigPath, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
 
@@ -88,6 +88,8 @@ interface EnvBindings {
   durable_objects?: { bindings?: DurableObjectEntry[] };
   /** One Email Sending binding: its name in the env, and whatever the adopter says about where mail may go. */
   send_email?: { name: string; [field: string]: unknown }[];
+  /** A queue binding's producer entries — the queue this scope created for each — and any consumers. */
+  queues?: { producers?: BindingEntry[]; consumers?: unknown[] };
   triggers?: { crons?: string[] };
 }
 
@@ -117,24 +119,50 @@ function upsertSecretBindings(stanza: EnvBindings, entries: readonly SecretStore
   }
 }
 
-/** The `EnvBindings` keys holding a binding array — the only ones an id is upserted into. */
-type BindingArrayKey = "d1_databases" | "kv_namespaces" | "r2_buckets";
-
 /**
- * The wrangler key and the fields provisioning owns for each resource kind.
+ * The wrangler array and the fields provisioning owns for each resource kind.
  *
  * **D1 carries its name as well as its id**, and that is not decoration: `pithy add` proposes a
  * `database_name` offline, before any account has been reached, and provisioning is the step that makes
  * the proposal true. Writing only the id would leave a stanza asserting one name while addressing a
  * database that may carry another — the two must be written by the same step or they drift.
+ *
+ * **A queue's array is `queues.producers`, one level down (#662).** A producer names its queue by name, not by
+ * id, so the name this scope created it under is what is written; the consumers beside it are left alone.
  */
 const KIND_TO_WRANGLER: Record<
   FeatureResource["kind"],
-  { array: BindingArrayKey; fields: (r: FeatureResource) => Record<string, string> }
+  { array: (stanza: EnvBindings) => BindingEntry[]; fields: (r: FeatureResource) => Record<string, string> }
 > = {
-  d1: { array: "d1_databases", fields: (r) => ({ database_name: r.name, database_id: r.id }) },
-  kv: { array: "kv_namespaces", fields: (r) => ({ id: r.id }) },
-  r2: { array: "r2_buckets", fields: (r) => ({ bucket_name: r.id }) },
+  d1: {
+    array: (stanza) => {
+      stanza.d1_databases ??= [];
+      return stanza.d1_databases;
+    },
+    fields: (r) => ({ database_name: r.name, database_id: r.id }),
+  },
+  kv: {
+    array: (stanza) => {
+      stanza.kv_namespaces ??= [];
+      return stanza.kv_namespaces;
+    },
+    fields: (r) => ({ id: r.id }),
+  },
+  r2: {
+    array: (stanza) => {
+      stanza.r2_buckets ??= [];
+      return stanza.r2_buckets;
+    },
+    fields: (r) => ({ bucket_name: r.id }),
+  },
+  queue: {
+    array: (stanza) => {
+      stanza.queues ??= {};
+      stanza.queues.producers ??= [];
+      return stanza.queues.producers;
+    },
+    fields: (r) => ({ queue: r.name }),
+  },
 };
 
 /**
@@ -257,29 +285,59 @@ interface RatelimitEntry {
   [field: string]: unknown;
 }
 
+/** The name an entry of a carried array binds under: `binding`, or `name` where wrangler spells it so. */
+function entryName(entry: unknown): unknown {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const record = entry as Record<string, unknown>;
+  return record.binding ?? record.name;
+}
+
 /**
- * **A feature binds every rate limiter the top level declares, each in a namespace of its own (#643).**
+ * **A feature binds every carried entry the top level declares, a tracked `env.feature` included (#643, #662).**
  *
- * Wrangler does not inherit `ratelimits` into an environment, and `stanzaFor` copies them only into a stanza it
- * creates — so a tracked `env.feature` without them deployed a Worker with no `AUTH_RATE_LIMITER`, and auth
- * refused every request. Each top-level entry the stanza does not already bind by name is copied.
+ * `stanzaFor` carries every `carry` and `branch` kind's entries into a stanza it creates. A tracked `env.feature`
+ * is not one it creates — it is the adopter's, handed back untouched — so an entry added to the top level after it
+ * was written reached no feature: a tracked stanza without `ratelimits` deployed a Worker with no
+ * `AUTH_RATE_LIMITER`, and auth refused every request; one without `send_email` read `env.NOTIFY` as `undefined`.
+ * Every key in {@link CARRIED_INTO_FEATURE} is refilled here, by binding name, and an entry the stanza already
+ * binds is the adopter's and is kept.
  *
- * **And every entry is then given the feature namespace for its limiter**, the copied ones and any declared under
- * a tracked `env.feature` alike: `featureNamespaceId`, the declared namespace offset into the range reserved for
+ * **One function, the policy's rather than a kind's.** `send_email` had a bespoke rescue of its own here (#650
+ * review), and the next kind to go missing would have needed another. A key is in the list because its kind's `seedPolicy`
+ * says a feature inherits it; nothing here knows what any one of them is.
+ *
+ * Object-shaped kinds (`ai`, `browser`, `images`) are one binding per Worker, so the stanza's own is kept whole and
+ * the top level's is copied only where the stanza has none.
+ */
+function featureCarried(stanza: Record<string, unknown>, top: Record<string, unknown>): void {
+  for (const key of CARRIED_INTO_FEATURE) {
+    const declared = top[key];
+    if (declared === undefined) continue;
+    if (!Array.isArray(declared)) {
+      if (stanza[key] === undefined) stanza[key] = structuredClone(declared);
+      continue;
+    }
+    const own = Array.isArray(stanza[key]) ? (stanza[key] as unknown[]) : undefined;
+    const bound = new Set((own ?? []).map(entryName));
+    const missing = declared.filter((entry) => !bound.has(entryName(entry))).map((entry) => structuredClone(entry));
+    if (missing.length === 0) continue;
+    // In place when the array is there, so comment-json keeps the adopter's comments on it.
+    if (own) own.push(...missing);
+    else stanza[key] = missing;
+  }
+}
+
+/**
+ * **A feature's rate limiters each take a namespace of their own (#643).**
+ *
+ * {@link featureCarried} has already given the stanza every limiter the top level declares. **Every entry is then
+ * given the feature namespace for its limiter**, the copied ones and any declared under a tracked `env.feature`
+ * alike: `featureNamespaceId`, the declared namespace offset into the range reserved for
  * features, which no staging or production config may declare (`feature/ratelimits.ts`). Every feature binds the
  * same id for the same limiter; a limiter two Workers share in production is one here, and two are two. A limiter
  * that cannot map is refused rather than keep an id another environment holds.
  */
-function featureRatelimits(stanza: Record<string, unknown>, top: Record<string, unknown>): void {
-  const declared = Array.isArray(top.ratelimits) ? (top.ratelimits as RatelimitEntry[]) : [];
-  const own = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
-  const bound = new Set(own.map((entry) => entry.name));
-  const missing = declared.filter((entry) => typeof entry.name === "string" && !bound.has(entry.name));
-  // In place when the array is there, so comment-json keeps the adopter's comments on it.
-  if (missing.length > 0) {
-    if (Array.isArray(stanza.ratelimits)) own.push(...missing.map((entry) => structuredClone(entry)));
-    else stanza.ratelimits = missing.map((entry) => structuredClone(entry));
-  }
+function featureRatelimits(stanza: Record<string, unknown>): void {
   const entries = Array.isArray(stanza.ratelimits) ? (stanza.ratelimits as RatelimitEntry[]) : [];
   for (const entry of entries) entry.namespace_id = featureNamespaceId(entry);
 }
@@ -397,33 +455,6 @@ function featureServices(
   });
   entries.length = 0;
   entries.push(...kept);
-}
-
-/**
- * **A feature binds every Email Sending destination the top level declares (#650 review).**
- *
- * A `send_email` entry is `{ name, destination_address? | allowed_destination_addresses? }`: a binding name and
- * an address verified once at the Cloudflare account. Nothing in it is a resource an environment owns, and
- * `email` is in neither `isWrittenBinding` nor `isProvisionedBinding`, so an emptied one is refilled by nothing
- * anywhere — a hand-written `NOTIFY` came back as `env.NOTIFY is undefined` at the first send.
- *
- * **Refilled here rather than through `CARRIED_WHOLE`, and the difference is which environments it reaches.**
- * A feature seeds from the top level by design — that is what a branch of `dev` is — so carrying dev's
- * destination into it is the same decision `vars` already makes. A **declared** environment is not: seeding
- * `env.prod` from the top level would write dev's routing into production's first stanza, where the adopter's
- * next deploy mails real users at the address their laptop uses. A declared environment's stanza is created
- * with an empty list instead — `seedValue`'s "this environment has none", which they fill in with the address
- * that environment should send from.
- */
-function featureSendEmail(stanza: EnvBindings, top: Record<string, unknown>): void {
-  const declared = (top as EnvBindings).send_email ?? [];
-  if (declared.length === 0) return;
-  const own = stanza.send_email;
-  const bound = new Set((own ?? []).map((entry) => entry.name));
-  const missing = declared.filter((entry) => !bound.has(entry.name)).map((entry) => structuredClone(entry));
-  if (missing.length === 0) return;
-  if (own) own.push(...missing);
-  else stanza.send_email = missing;
 }
 
 /**
@@ -582,14 +613,15 @@ export async function applyProvisionedEnv(options: {
     if (!options.scope.source) {
       const routes = stripFeatureRoutes(stanza, top);
       if (routes.length > 0) options.onRoutesDropped?.(routes);
-      featureRatelimits(stanza as Record<string, unknown>, top);
+      // Every carried kind first, so the limiters below are renumbered whichever stanza they came from.
+      featureCarried(stanza as Record<string, unknown>, top);
+      featureRatelimits(stanza as Record<string, unknown>);
       // One resolver and one list for both keys that name a sibling script, so a feature cannot bind the
       // Durable Object and drop the RPC to the same Worker (#650 review).
       const scopedScript = options.scopedScript ?? (() => undefined);
       const dropped: string[] = [];
       featureDurableObjects(stanza, top, scopedScript, dropped);
       featureServices(stanza, top, scopedScript, dropped);
-      featureSendEmail(stanza, top);
       if (dropped.length > 0) options.onBindingsDropped?.(dropped);
       // The app's own Workflows, named for this scope — see `app` above for why only here, and
       // `project/appWorkflows.ts` for the one derivation both this and `pithy worker sync` write from (#650).
@@ -602,8 +634,7 @@ export async function applyProvisionedEnv(options: {
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then
       // mutate in place — never replace it with a filtered plain array, which would strip
       // comment-json's symbols.
-      stanza[array] ??= [];
-      upsertByBinding(stanza[array], resource.binding, fields(resource));
+      upsertByBinding(array(stanza), resource.binding, fields(resource));
     }
     // The self binding last, so it is written from the `name` this edit has already settled and so the
     // kit's own constant wins over anything else that claimed it. Nothing is written for a project that

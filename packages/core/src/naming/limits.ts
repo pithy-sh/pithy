@@ -108,6 +108,14 @@ export const NAMESPACE_LIMITS = {
    */
   kv: { label: "a KV namespace title", maxLength: 512, minLength: 1, policy: "truncate", source: "cloudflare" },
   /**
+   * A Queue name: **1 to 63 characters**, lowercase letters, digits and dashes, starting and ending with a letter
+   * or number ([Queues · Get started](https://developers.cloudflare.com/queues/get-started/), verified
+   * 2026-10-18). Truncated rather than refused: Pithy recomputes a queue's name from its binding on every run,
+   * as it does a bucket's, so a deterministic hash is safe (#662). The same 63 as R2, so a feature's queue fits
+   * the shape {@link FEATURE_DERIVED_PROJECT_NAME} is derived against and moves no budget.
+   */
+  queue: { label: "a Queue name", maxLength: 63, minLength: 1, policy: "truncate", source: "cloudflare" },
+  /**
    * A D1 database name: `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` in the OpenAPI schema, and **no documented
    * length cap** — the limits page has no row for it. So the ceiling here is {@link MAX_PITHY_NAME}.
    */
@@ -196,7 +204,10 @@ export const FEATURE_TAIL_SEPARATOR = "--";
  */
 export const MIN_VERBATIM_BINDING = 12;
 
-/** The longest feature resource kind — `d1`, `kv`, `r2` are all two characters. `feature.test.ts` pins it. */
+/**
+ * The longest feature resource kind segment — `d1`, `kv`, `r2`, and a queue's `q` (#662). `feature.test.ts` pins
+ * every kind's `FEATURE_KIND_SEGMENT` to it, so a longer segment fails rather than shrinking every project's budget.
+ */
 export const MAX_FEATURE_KIND = 2;
 
 /**
@@ -217,7 +228,7 @@ export const WORKFLOW_DERIVED_PROJECT_NAME =
 
 /**
  * What the longest feature resource name leaves a project — `<project>-f<issue>-<slug>--<binding>-<kind>`,
- * against R2's 63 (the strictest of the three kinds a feature provisions, and the same number a
+ * against R2's 63 (the strictest of the kinds a feature provisions, a queue's number too, and the same number a
  * feature Worker script gets).
  *
  * ```
@@ -226,7 +237,7 @@ export const WORKFLOW_DERIVED_PROJECT_NAME =
  *   -  6   the issue number, six digits — `f999999` (MAX_ISSUE_DIGITS)
  *   - 12   `-` + a legible slug (MIN_LEGIBLE_SLUG)
  *   - 14   `--` + a binding kept whole (FEATURE_TAIL_SEPARATOR, MIN_VERBATIM_BINDING)
- *   -  3   `-` + the kind, `d1` | `kv` | `r2`
+ *   -  3   `-` + the kind, `d1` | `kv` | `r2` | `q`
  *   ----
  *     26
  * ```

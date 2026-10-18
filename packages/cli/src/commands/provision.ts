@@ -1070,7 +1070,8 @@ export default withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: a resource's `kind`, in the report, the plan and the events, takes `queue` (#662).
+    schemaVersion: 2,
     payload: ProvisionPayload,
     events: ProvisionEvents,
     mutates: true,

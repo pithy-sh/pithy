@@ -68,7 +68,7 @@ function account(existing: Record<string, string>) {
       writes.push(`delete ${id}`);
     },
   });
-  return { writes, provisioners: { d1: kind(), kv: kind(), r2: kind() } as ResourceProvisioners };
+  return { writes, provisioners: { d1: kind(), kv: kind(), r2: kind(), queue: kind() } as ResourceProvisioners };
 }
 
 let dir: string;
@@ -299,6 +299,8 @@ describe("the seams a plan hands the run", () => {
     expect(await planned.kv.create("replay-staging-cache")).toEqual({ id: "<new kv replay-staging-cache>" });
     // R2 has no id but its name, so the plan writes the name the run would.
     expect(await planned.r2.create("replay-staging-assets")).toEqual({ id: "replay-staging-assets" });
+    // A queue has an id of its own, and its producer entry names it by name, so the placeholder is written nowhere.
+    expect(await planned.queue.create("replay-staging-jobs")).toEqual({ id: "<new queue replay-staging-jobs>" });
     await expect(planned.d1.delete("d1-real")).rejects.toBeInstanceOf(PithyError);
     expect(writes).toEqual([]);
   });

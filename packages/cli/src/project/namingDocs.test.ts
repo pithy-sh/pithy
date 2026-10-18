@@ -86,6 +86,7 @@ const ROW_LABEL: Record<Namespace, string> = {
   r2: "R2 bucket",
   vectorizeIndex: "Vectorize index",
   kv: "KV namespace title",
+  queue: "Queue",
   d1: "D1 database",
   secretEntry: "Secrets Store entry",
   apiToken: "Cloudflare API token",

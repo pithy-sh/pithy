@@ -15,6 +15,7 @@ import { CloudflareKVProvisioner } from "../kv/kvProvisioner";
 import { CloudflareImageManager } from "../media/imageManager";
 import { CloudflareStreamManager } from "../media/streamManager";
 import { CloudflareQueueManager } from "../queue/queueManager";
+import { CloudflareQueueProvisioner } from "../queue/queueProvisioner";
 import type { R2Credentials } from "../r2/r2Credentials";
 import { CloudflareR2Manager } from "../r2/r2Manager";
 import { CloudflareR2Provisioner } from "../r2/r2Provisioner";
@@ -83,6 +84,8 @@ export class CloudflareClients {
   private kvProvisionerManager?: CloudflareKVProvisioner;
 
   private r2ProvisionerManager?: CloudflareR2Provisioner;
+
+  private queueProvisionerManager?: CloudflareQueueProvisioner;
 
   private vectorizeProvisionerManager?: CloudflareVectorizeProvisioner;
 
@@ -216,6 +219,12 @@ export class CloudflareClients {
   r2Provisioner(): CloudflareR2Provisioner {
     this.r2ProvisionerManager ??= new CloudflareR2Provisioner(this.config);
     return this.r2ProvisionerManager;
+  }
+
+  /** The account-scoped Queues control plane — create, find, and delete queues. */
+  queueProvisioner(): CloudflareQueueProvisioner {
+    this.queueProvisionerManager ??= new CloudflareQueueProvisioner(this.config);
+    return this.queueProvisionerManager;
   }
 
   /** The account-scoped Vectorize control plane — create, find, list, and delete indexes and their metadata indexes. */

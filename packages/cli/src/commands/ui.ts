@@ -220,7 +220,8 @@ const add = withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    schemaVersion: 2,
     payload: UiAddPayload,
     mutates: true,
     // A second identical add is refused with `core/conflict`: a Worker that already carries this front end

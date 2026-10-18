@@ -57,6 +57,8 @@ export interface ScopedNames {
   kv(binding: string): string;
   /** An R2 bucket. Cloudflare's 63 — the one namespace where that number was always right. */
   r2(binding: string): string;
+  /** A Queue. Cloudflare's 63, truncated with a stable hash like a bucket (#662). */
+  queue(binding: string): string;
   /** A Vectorize index. 64 bytes, refused rather than truncated: a renamed index has no vectors. */
   vectorizeIndex(index: string): string;
   /** A Secrets Store entry. No Cloudflare cap; Pithy's ceiling. */
@@ -67,7 +69,7 @@ export interface ScopedNames {
 
 /** The names a feature environment provisions under, with the project already bound. */
 export interface FeatureNames {
-  /** A feature's D1, KV, or R2 resource — `<project>-f<issue>-<slug>-<binding>-<kind>`. */
+  /** A feature's D1, KV, R2 or Queue resource — `<project>-f<issue>-<slug>--<binding>-<kind>`. */
   resource(binding: string, kind: FeatureResourceKind): string;
   /**
    * A feature's Worker script — `<project>-f<issue>-<slug>-<app>`, from the `apps/<app>` directory and
@@ -142,6 +144,7 @@ function scopedNames(project: string, scope: string): ScopedNames {
     d1: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.d1),
     kv: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.kv),
     r2: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.r2),
+    queue: (binding) => scopedName(project, scope, binding, NAMESPACE_LIMITS.queue),
     vectorizeIndex: (index) => scopedName(project, scope, index, NAMESPACE_LIMITS.vectorizeIndex),
     secretEntry: (secret) => scopedName(project, scope, secret, NAMESPACE_LIMITS.secretEntry),
     apiToken: (profile) => scopedName(project, scope, profile, NAMESPACE_LIMITS.apiToken),

@@ -6,6 +6,7 @@ import { MAX_ENVIRONMENT_NAME } from "./environment";
 import {
   FEATURE_DERIVED_PROJECT_NAME,
   MAX_CAPABILITY_JOB,
+  MAX_FEATURE_KIND,
   MAX_ISSUE_DIGITS,
   MAX_PITHY_NAME,
   MIN_LEGIBLE_SLUG,
@@ -26,6 +27,9 @@ describe("NAMESPACE_LIMITS", () => {
     expect(NAMESPACE_LIMITS.r2.minLength).toBe(3);
     expect(NAMESPACE_LIMITS.vectorizeIndex.maxLength).toBe(64);
     expect(NAMESPACE_LIMITS.kv.maxLength).toBe(512);
+    // Queues · Get started: 1 to 63 characters, dashes only, starting and ending alphanumeric (#662).
+    expect(NAMESPACE_LIMITS.queue.maxLength).toBe(63);
+    expect(NAMESPACE_LIMITS.queue.minLength).toBe(1);
   });
 
   it("holds the Workflow and Worker caps apart, because they are genuinely different numbers", () => {
@@ -42,7 +46,7 @@ describe("NAMESPACE_LIMITS", () => {
       expect(NAMESPACE_LIMITS[namespace].source).toBe("pithy");
       expect(NAMESPACE_LIMITS[namespace].maxLength).toBe(MAX_PITHY_NAME);
     }
-    for (const namespace of ["workflow", "worker", "r2", "vectorizeIndex", "kv"] as const) {
+    for (const namespace of ["workflow", "worker", "r2", "vectorizeIndex", "kv", "queue"] as const) {
       expect(NAMESPACE_LIMITS[namespace].source).toBe("cloudflare");
     }
   });
@@ -54,7 +58,8 @@ describe("NAMESPACE_LIMITS", () => {
     expect(NAMESPACE_LIMITS.workflow.policy).toBe("refuse");
     expect(NAMESPACE_LIMITS.worker.policy).toBe("refuse");
     expect(NAMESPACE_LIMITS.vectorizeIndex.policy).toBe("refuse");
-    for (const namespace of ["d1", "kv", "r2", "secretEntry", "apiToken"] as const) {
+    // A queue is recomputed from its binding on every run, exactly like a bucket, so it truncates too.
+    for (const namespace of ["d1", "kv", "r2", "queue", "secretEntry", "apiToken"] as const) {
       expect(NAMESPACE_LIMITS[namespace].policy).toBe("truncate");
     }
   });
@@ -83,6 +88,9 @@ describe("MAX_PROJECT_NAME", () => {
     expect(FEATURE_DERIVED_PROJECT_NAME).toBe(
       NAMESPACE_LIMITS.r2.maxLength - 2 - MAX_ISSUE_DIGITS - (1 + MIN_LEGIBLE_SLUG) - (2 + MIN_VERBATIM_BINDING) - 3,
     );
+    // The kind segment is two characters for every kind, a queue's `q` included (#662). Spelled `queue`, it
+    // would take this to 23 and orphan every resource of a project named against 26.
+    expect(MAX_FEATURE_KIND).toBe(2);
     // The separator took a character from the slug, not from any project name already accepted (#643).
     expect(MIN_LEGIBLE_SLUG).toBe(11);
     expect(FEATURE_DERIVED_PROJECT_NAME).toBe(26);

@@ -30,8 +30,9 @@ export interface ResourceProvisioner {
 export type ResourceProvisioners = Record<FeatureResourceKind, ResourceProvisioner>;
 
 /**
- * The default provisioners, backed by the `@pithy-sh/cloudflare` control-plane clients. For D1 and KV the
- * id is the CF-assigned uuid/namespace id; for R2, which has no separate id, the bucket name is the id.
+ * The default provisioners, backed by the `@pithy-sh/cloudflare` control-plane clients. For D1, KV and a queue
+ * the id is the CF-assigned uuid, namespace id or queue id; for R2, which has no separate id, the bucket name is
+ * the id.
  *
  * **`find` is where a not-found becomes a creation, so it is where the account has to be settled (#378).**
  * Both callers are find-or-create: `provisionEnvironment` creates whatever `find` did not return, and
@@ -51,6 +52,7 @@ export function cloudflareProvisioners(clients: CloudflareClients, account: Conf
   const d1 = clients.d1Provisioner();
   const kv = clients.kvProvisioner();
   const r2 = clients.r2Provisioner();
+  const queue = clients.queueProvisioner();
   return {
     d1: {
       find: async (name) => {
@@ -87,6 +89,19 @@ export function cloudflareProvisioners(clients: CloudflareClients, account: Conf
       },
       create: async (name) => ({ id: (await r2.createBucket(name)).name }),
       delete: (id) => r2.deleteBucket(id),
+    },
+    // A queue's id is the CF-assigned `queue_id`, which teardown deletes by; its producer entry names it (#662).
+    queue: {
+      find: async (name) => {
+        const found = await findOnConfirmedAccount({
+          ...account,
+          what: `the ${name} queue`,
+          find: () => queue.findQueueByName(name),
+        });
+        return found ? { id: found.id } : null;
+      },
+      create: async (name) => ({ id: (await queue.createQueue(name)).id }),
+      delete: (id) => queue.deleteQueue(id),
     },
   };
 }
@@ -203,6 +218,7 @@ export const AUDIT_RESOURCE_TYPE: Record<TeardownKind, string> = {
   d1: "cf_d1",
   kv: "cf_kv",
   r2: "cf_r2",
+  queue: "cf_queue",
   // The type every capability deprovisioner already records a removed Worker under.
   worker: "cf_worker",
   // A Workflow definition a feature's scripts hosted, deleted by name (#643).

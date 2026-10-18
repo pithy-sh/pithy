@@ -57,11 +57,17 @@ function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner
 
 /** A full fake provisioner set plus the backing stores, so a test can pre-seed or inspect them. */
 function fakeProvisioners() {
-  const stores = { d1: new Map<string, string>(), kv: new Map<string, string>(), r2: new Map<string, string>() };
+  const stores = {
+    d1: new Map<string, string>(),
+    kv: new Map<string, string>(),
+    r2: new Map<string, string>(),
+    queue: new Map<string, string>(),
+  };
   const provisioners = {
     d1: fakeKind("d1", stores.d1),
     kv: fakeKind("kv", stores.kv),
     r2: fakeKind("r2", stores.r2),
+    queue: fakeKind("queue", stores.queue),
   };
   return { stores, provisioners: provisioners as unknown as ResourceProvisioners, typed: provisioners };
 }
@@ -532,6 +538,41 @@ describe("provisionFeature / deprovisionFeature", () => {
     await expect(stat(manifestPath(dir))).rejects.toThrow();
   });
 
+  /**
+   * **A queue is the fourth kind a feature creates and reaps (#662).** A producer entry names a queue and a deploy
+   * refuses one that does not exist, so the feature creates its own — and destroying the feature deletes it, by
+   * the id it was created under or, unrecorded, by its exact recomputed name. Both directions re-run clean.
+   */
+  test("creates the feature's own queue, reaps it on destroy, and both re-run clean", async () => {
+    const { stores, provisioners, typed } = fakeProvisioners();
+    const withQueue = [defineCapability({ name: "app", requiredBindings: [{ type: "queue", name: "JOBS" }] })];
+    const provision = () =>
+      provisionFeature({ ...noBackend, projectDir: dir, capabilities: withQueue, identity, provisioners });
+    const queue = featureResourceName(identity, "JOBS", "queue");
+    expect(queue).toBe("acme-f69-demo--jobs-q");
+
+    const first = await provision();
+    expect(first.resources.map((x) => [x.kind, x.name, x.created])).toEqual([["queue", queue, true]]);
+    const again = await provision();
+    expect(again.resources.map((x) => [x.kind, x.name, x.created])).toEqual([["queue", queue, false]]);
+    expect(typed.queue.creates).toBe(1);
+
+    const destroy = () =>
+      deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities: withQueue,
+        env: "feature",
+        provisioners,
+      });
+    const id = stores.queue.get(queue);
+    expect(id).toBe("queue-1");
+    expect((await destroy()).deleted).toEqual([{ kind: "queue", name: queue, id }]);
+    expect(stores.queue.size).toBe(0);
+    expect((await destroy()).deleted).toEqual([]);
+  });
+
   test("destroy reconciles an un-manifested resource by its exact expected name, sparing foreign ones", async () => {
     const { stores, provisioners } = fakeProvisioners();
     // A partial provision that created CACHE's resource but never wrote a manifest.
@@ -751,6 +792,41 @@ describe("provisionFeature / deprovisionFeature", () => {
 
       expect(report.deleted).toEqual([{ kind: "d1", name, id: "our-d1" }]);
       expect(stores.d1.size).toBe(0);
+    });
+
+    test("destroy deletes the id the account answers for the composed name, never the id the file states", async () => {
+      const { stores, provisioners } = fakeProvisioners();
+      // The feature's own composed name, matched to production's queue id. The name check passes, so only the
+      // account's answer for that name can keep teardown off production's queue (#662).
+      stores.queue.set("acme-prod-jobs", "prod-queue-id");
+      const name = featureResourceName(identity, "JOBS", "queue");
+      await writeCraftedManifest([{ kind: "queue", binding: "JOBS", name, id: "prod-queue-id" }]);
+
+      const absent = await deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
+      expect(absent.deleted).toEqual([]);
+      expect(stores.queue.get("acme-prod-jobs")).toBe("prod-queue-id");
+
+      // With the feature's own queue standing too, only that one goes.
+      stores.queue.set(name, "our-queue-id");
+      await writeCraftedManifest([{ kind: "queue", binding: "JOBS", name, id: "prod-queue-id" }]);
+      const present = await deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities,
+        env: "feature",
+        provisioners,
+      });
+      expect(present.deleted).toEqual([{ kind: "queue", name, id: "our-queue-id" }]);
+      expect(stores.queue.get("acme-prod-jobs")).toBe("prod-queue-id");
+      expect(stores.queue.has(name)).toBe(false);
     });
 
     test("a manifest whose header names another feature is refused outright, not silently ignored", async () => {

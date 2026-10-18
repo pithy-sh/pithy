@@ -65,7 +65,7 @@ One line, one outcome.
 
 ```
 $ pithy setup --json
-{"command":"setup","schemaVersion":1,"outcome":"ready","dryRun":false,"project":"acme","install":{"packageManager":"bun","lockfile":"bun.lock","command":"bun install --frozen-lockfile"},"localSecrets":{"path":"/home/you/.config/pithy/acme/secrets.jsonc","minted":["SECRETS_ENCRYPTION_KEYS","auth-session-secret"],"adopted":[]},"appliedMigrations":["0100_secrets_0001_init","0300_auth_0001_init"],"ports":{"allocated":true,"workers":{"acme-api":{"port":8787,"origin":"http://localhost:8787"}}},"devVarsWritten":["apps/api"],"seededSecrets":["auth-session-secret"],"seed":{"state":"seeded","held":[]},"externalSecrets":["auth-github-client-secret"],"notes":[],"next":[{"command":"pithy dev","why":"Setup starts nothing. The Workers run under pithy dev."}]}
+{"command":"setup","schemaVersion":2,"outcome":"ready","dryRun":false,"project":"acme","install":{"packageManager":"bun","lockfile":"bun.lock","command":"bun install --frozen-lockfile"},"localSecrets":{"path":"/home/you/.config/pithy/acme/secrets.jsonc","minted":["SECRETS_ENCRYPTION_KEYS","auth-session-secret"],"adopted":[]},"appliedMigrations":["0100_secrets_0001_init","0300_auth_0001_init"],"ports":{"allocated":true,"workers":{"acme-api":{"port":8787,"origin":"http://localhost:8787"}}},"devVarsWritten":["apps/api"],"seededSecrets":["auth-session-secret"],"seed":{"state":"seeded","held":[]},"externalSecrets":["auth-github-client-secret"],"notes":[],"next":[{"command":"pithy dev","why":"Setup starts nothing. The Workers run under pithy dev."}]}
 ```
 
 | key | type | meaning |

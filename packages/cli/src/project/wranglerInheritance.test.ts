@@ -4,9 +4,12 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { BindingType, seedPolicy } from "@pithy-sh/core/src/capability/bindings";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { WRANGLER_KEYS } from "./bindingEntries";
 import {
+  CARRIED_INTO_FEATURE,
   CARRIED_WHOLE,
   describeUnrepeatedKey,
   NOT_INHERITED_BY_ENVIRONMENTS,
@@ -284,6 +287,49 @@ describe("stanzaFor", () => {
   });
 
   /**
+   * **A key Pithy does not model follows wrangler's inheritance, not a blanket rule (#662 review).** `docs/CLI.md`
+   * states what these pin: an inherited key is written once and neither copied nor reported, a non-inherited one is
+   * reported where a stanza leaves it out, and a new stanza empties every list in it — nested one level in an
+   * object as well as bare — while a flat value comes down whole.
+   */
+  describe("a key Pithy does not model", () => {
+    const unmodeled = () => ({
+      placement: { mode: "smart" },
+      limits: { cpu_ms: 50 },
+      tail_consumers: [{ service: "acme-tail" }],
+      unsafe: { bindings: [{ name: "RAW", type: "x" }], metadata: { tier: "a" } },
+      define: { BUILD: '"1"' },
+      env: {} as Record<string, Record<string, unknown> | undefined>,
+    });
+
+    test("an inherited one is written once: no stanza copies it and doctor reports none", () => {
+      const config = unmodeled();
+      const stanza = stanzaFor(config, "feature");
+      expect(stanza).not.toHaveProperty("placement");
+      expect(stanza).not.toHaveProperty("limits");
+      config.env.prod = {};
+      expect(unrepeatedKeys(config).map((finding) => finding.key)).not.toEqual(
+        expect.arrayContaining(["placement", "limits"]),
+      );
+    });
+
+    test("a non-inherited one is reported in a stanza that does not repeat it", () => {
+      const config = unmodeled();
+      config.env.prod = {};
+      expect(unrepeatedKeys(config).map((finding) => finding.key)).toEqual(
+        expect.arrayContaining(["tail_consumers", "unsafe", "define"]),
+      );
+    });
+
+    test("a new stanza empties its lists, nested in an object or bare, and copies a flat value whole", () => {
+      const stanza = stanzaFor(unmodeled(), "feature");
+      expect(stanza.tail_consumers).toEqual([]);
+      expect(stanza.unsafe).toEqual({ bindings: [], metadata: { tier: "a" } });
+      expect(stanza.define).toEqual({ BUILD: '"1"' });
+    });
+  });
+
+  /**
    * **A rate limiter is the same in every environment, so a new stanza carries it (#643).** Its `namespace_id`
    * is derived from the binding name alone and its policy is the adopter's, so nothing in it is an environment's
    * own resource. Emptied, a feature's generated stanza bound no `AUTH_RATE_LIMITER` and auth refused every
@@ -312,6 +358,82 @@ describe("stanzaFor", () => {
 
   test("carries whole only keys an environment does not inherit — the rest need no carrying", () => {
     for (const key of CARRIED_WHOLE) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+    for (const key of CARRIED_INTO_FEATURE) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+    // And every key a binding kind lives in is one, which is why a new stanza has to be told what to start with.
+    for (const key of Object.values(WRANGLER_KEYS)) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+  });
+
+  test("derives what it carries whole from seedPolicy, never a list of names (#662)", () => {
+    const kinds = BindingType.options.map((option) => option.value);
+    const keysWith = (...policies: string[]) =>
+      kinds.filter((kind) => policies.includes(seedPolicy(kind))).map((kind) => WRANGLER_KEYS[kind]);
+    expect([...CARRIED_WHOLE].sort()).toEqual(keysWith("carry").sort());
+    expect([...CARRIED_INTO_FEATURE].sort()).toEqual(keysWith("carry", "branch").sort());
+    expect(CARRIED_WHOLE).toContain("ratelimits");
+    expect(CARRIED_WHOLE).not.toContain("send_email");
+    expect(CARRIED_INTO_FEATURE).toContain("send_email");
+  });
+
+  /**
+   * **Every account-level kind comes down whole; every environment-owned one starts empty (#662).** Before this,
+   * what survived into a new stanza turned on wrangler's value *shape*: `browser` (an object) survived and
+   * `hyperdrive` (an array) was emptied, though neither names anything an environment owns.
+   */
+  test("carries a carry kind's entries into a new stanza, and still empties a provision kind's", () => {
+    const carried = {
+      ai: { binding: "AI" },
+      browser: { binding: "BROWSER" },
+      images: { binding: "IMAGES" },
+      analytics_engine_datasets: [{ binding: "EVENTS", dataset: "acme_events" }],
+      mtls_certificates: [{ binding: "CERT", certificate_id: "efwu2n6s" }],
+      dispatch_namespaces: [{ binding: "DISPATCHER", namespace: "customers" }],
+    };
+    for (const env of ["prod", "feature"]) {
+      const config = {
+        ...starter(),
+        ...structuredClone(carried),
+        queues: { producers: [{ binding: "JOBS", queue: "acme-dev-jobs" }] },
+      };
+      const stanza = stanzaFor(config, env);
+      for (const [key, value] of Object.entries(carried)) expect(stanza[key], `${env} ${key}`).toEqual(value);
+      expect(stanza.d1_databases).toEqual([]);
+      expect(stanza.queues).toEqual({ producers: [] });
+    }
+  });
+
+  /**
+   * **A feature is a branch of `dev`; a declared environment is not (#650 review, #662).** `send_email` names an
+   * address verified once at the account and carries a decision about where mail goes. A feature inherits dev's
+   * decision, the way it inherits `vars`; `prod` starts with none, so a laptop's address never reaches its users.
+   */
+  test("carries a branch kind into a feature and leaves a declared environment's empty", () => {
+    const mail = [{ name: "NOTIFY", destination_address: "dev@acme.test" }];
+    const feature = stanzaFor({ ...starter(), send_email: structuredClone(mail) }, "feature");
+    expect(feature.send_email).toEqual(mail);
+    const prod = stanzaFor({ ...starter(), send_email: structuredClone(mail) }, "prod");
+    expect(prod.send_email).toEqual([]);
+  });
+
+  /**
+   * **A Hyperdrive config and a pipeline stream are one environment's, though the account holds them (#662).** A
+   * Hyperdrive config is one origin database's connection, and a stream feeds one sink. The top level is dev, so a
+   * declared environment seeded from it would read and write dev's Postgres and dev's sink, and nothing would fail.
+   */
+  test("carries a Hyperdrive config and a pipeline stream into a feature, never into a declared environment", () => {
+    const branched = {
+      hyperdrive: [{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }],
+      pipelines: [{ binding: "CLICKS", stream: "clicks" }],
+    };
+    const feature = stanzaFor({ ...starter(), ...structuredClone(branched) }, "feature");
+    expect(feature.hyperdrive).toEqual(branched.hyperdrive);
+    expect(feature.pipelines).toEqual(branched.pipelines);
+    expect(CARRIED_WHOLE).not.toContain("hyperdrive");
+    expect(CARRIED_WHOLE).not.toContain("pipelines");
+    for (const env of ["staging", "prod"]) {
+      const stanza = stanzaFor({ ...starter(), ...structuredClone(branched) }, env);
+      expect(stanza.hyperdrive, env).toEqual([]);
+      expect(stanza.pipelines, env).toEqual([]);
+    }
   });
 
   test("leaves a stanza that is already there exactly as it is", () => {

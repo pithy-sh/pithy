@@ -192,7 +192,12 @@ export interface ProvisionScope {
 }
 
 /** The wrangler binding array a resource kind's name is composed for. */
-const KIND_NAMER: Record<FeatureResourceKind, "d1" | "kv" | "r2"> = { d1: "d1", kv: "kv", r2: "r2" };
+const KIND_NAMER: Record<FeatureResourceKind, "d1" | "kv" | "r2" | "queue"> = {
+  d1: "d1",
+  kv: "kv",
+  r2: "r2",
+  queue: "queue",
+};
 
 /**
  * The one branch every scope shares: a `global` secret resolves to the project's single

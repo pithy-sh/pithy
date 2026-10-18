@@ -70,7 +70,7 @@ ciPermissions: ["email:routing"]
 ciPermissions: ["kv:write"]
 ```
 
-`ci-system`'s scope is `base ∪ (every capability's ciPermissions)`, so adding a capability grows what the CI token *should* carry with no hand-editing of scopes. **Applying that to a token that already exists is `pithy token rotate`** — see below: a mint rolls the value and leaves the policies where they are. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per run with `--permission`.
+`ci-system`'s scope is `base ∪ (every capability's ciPermissions) ∪ queues:write where any composed capability binds a queue`, so adding a capability grows what the CI token *should* carry with no hand-editing of scopes. The queue grant is read off the binding, not declared: `pithy provision` creates the queue behind every `queue` binding, your own app's included, so declaring one grows the CI scope too. **Applying that to a token that already exists is `pithy token rotate`** — see below: a mint rolls the value and leaves the policies where they are. Adopters override the whole set in `pithy.config.ts` (`tokens.overrides["ci-system"]`) or per run with `--permission`.
 
 ### Your declared domains, and the route CI attaches
 

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
+import { type BindingSpec, type BindingType, TARGET_KINDS } from "@pithy-sh/core/src/capability/bindings";
 import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
@@ -56,10 +56,50 @@ interface WorkflowBindingEntry {
   script_name: string;
 }
 
-/** A Durable Object class migration — a versioned tag registering (or dropping) DO classes. */
+/** One entry of an array-shaped carried kind: the binding, and the resource it addresses where it states one. */
+interface CarriedEntry {
+  binding: string;
+  [field: string]: string | boolean;
+}
+
+/** One `queues.producers` entry: the binding, and the queue `pithy provision` creates under that name. */
+interface QueueProducer {
+  binding: string;
+  queue?: string;
+  remote?: boolean;
+}
+
+/** One `send_email` entry. `name` is the binding, as in `ratelimits`; the rest is the adopter's routing. */
+interface SendEmailBinding {
+  name: string;
+  [field: string]: unknown;
+}
+
+/**
+ * A Durable Object class migration — a versioned tag registering (or dropping) DO classes. The kit writes
+ * only `new_sqlite_classes`; the other verbs are read, because an adopter writes them by hand.
+ */
 interface DurableObjectMigration {
   tag: string;
   new_sqlite_classes?: string[];
+  new_classes?: string[];
+  renamed_classes?: { from: string; to: string }[];
+  transferred_classes?: { from: string; from_script: string; to: string }[];
+  deleted_classes?: string[];
+}
+
+/**
+ * Every class a tag brings into the script, whichever verb brings it. A class an adopter created with
+ * `new_classes`, renamed into place or transferred in already exists, and a second create for it is one
+ * wrangler refuses (#662).
+ */
+function classesRegisteredBy(migration: DurableObjectMigration): string[] {
+  return [
+    ...(migration.new_sqlite_classes ?? []),
+    ...(migration.new_classes ?? []),
+    ...(migration.renamed_classes ?? []).map((rename) => rename.to),
+    ...(migration.transferred_classes ?? []).map((transfer) => transfer.to),
+  ];
 }
 
 /**
@@ -75,12 +115,59 @@ export interface WranglerStanza {
   kv_namespaces?: BindingEntry[];
   r2_buckets?: BindingEntry[];
   ai?: BindingEntry;
+  browser?: { binding: string; remote?: boolean };
+  images?: { binding: string; remote?: boolean };
+  hyperdrive?: CarriedEntry[];
+  analytics_engine_datasets?: CarriedEntry[];
+  pipelines?: CarriedEntry[];
+  mtls_certificates?: CarriedEntry[];
+  dispatch_namespaces?: CarriedEntry[];
+  queues?: { producers?: QueueProducer[]; consumers?: unknown[] };
+  send_email?: SendEmailBinding[];
   ratelimits?: RateLimitBinding[];
   workflows?: WorkflowBindingEntry[];
   durable_objects?: { bindings: DurableObjectBinding[] };
   migrations?: DurableObjectMigration[];
   env?: Record<string, WranglerStanza | undefined>;
 }
+
+/**
+ * **The `wrangler.jsonc` key each binding kind lives under, spelled the way wrangler spells it (#662).**
+ *
+ * The one table from a {@link BindingType} to the file. `project/wranglerInheritance.ts` derives what a new stanza
+ * carries from it and `seedPolicy`, and `wranglerInheritance.test.ts` holds every value to a key wrangler does not
+ * inherit — which is every key a binding lives in, and the reason a stanza has to be told what to start with.
+ * Total, so a kind added to `BindingType` without its key is a type error here.
+ */
+export const WRANGLER_KEYS: Readonly<Record<BindingType, string>> = {
+  d1: "d1_databases",
+  kv: "kv_namespaces",
+  r2: "r2_buckets",
+  ai: "ai",
+  vectorize: "vectorize",
+  queue: "queues",
+  ratelimit: "ratelimits",
+  email: "send_email",
+  secret: "secrets_store_secrets",
+  workflow: "workflows",
+  service: "services",
+  durable_object: "durable_objects",
+  hyperdrive: "hyperdrive",
+  browser: "browser",
+  images: "images",
+  analytics_engine_datasets: "analytics_engine_datasets",
+  pipelines: "pipelines",
+  mtls_certificates: "mtls_certificates",
+  dispatch_namespaces: "dispatch_namespaces",
+};
+
+/** The array-shaped carried kinds, each an entry of `binding` plus the field its `target` is written as. */
+type CarriedArrayKind =
+  | "hyperdrive"
+  | "analytics_engine_datasets"
+  | "pipelines"
+  | "mtls_certificates"
+  | "dispatch_namespaces";
 
 /**
  * What one call to {@link appendBinding} did.
@@ -99,7 +186,7 @@ export type BindingWrite =
   | { outcome: "written"; proposed?: ProposedName }
   /** The stanza already declares this binding. Left exactly as the adopter has it. */
   | { outcome: "present" }
-  /** A kind this module writes no array for — a `secret`, a `vectorize` index, a `queue`, an `email` send binding, a `service`. */
+  /** A kind this module writes no array for — a `secret`, a `vectorize` index, a `service`. */
   | { outcome: "unsupported" }
   /** The entry could not be composed honestly. Nothing was written, and this says what was missing. */
   | { outcome: "skipped"; reason: string };
@@ -265,7 +352,7 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
  * there would leave that stanza the single stanza pointing at nothing, in the one case where every
  * stanza has to point at the same thing.
  */
-function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv"): string | undefined {
+function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv" | "queue"): string | undefined {
   const { project } = scope;
   if (project === undefined) return undefined;
   if (binding.scope !== GLOBAL_SCOPE && !isValidEnvironment(scope.env)) return undefined;
@@ -320,8 +407,8 @@ function workflowEntry(scope: BindingScope, binding: BindingSpec): WorkflowBindi
 
 /**
  * Whether a stanza already declares a binding. `null` means the kind has no `wrangler.jsonc` array this
- * module writes — a `secret`, a `vectorize` index, a `queue`, an `email` send binding, a `service` — so
- * there is nothing to look for and nothing to report missing.
+ * module writes — a `secret`, a `vectorize` index, a `service` — so there is nothing to look for and nothing
+ * to report missing.
  *
  * The presence check keys on the **binding name alone**, deliberately. Comparing the derived value too
  * would read an adopter's renamed database, retuned rate limit, or repointed Workflow as a missing
@@ -343,9 +430,37 @@ export function stanzaHasBinding(stanza: WranglerStanza, binding: BindingSpec): 
       return (stanza.ratelimits ?? []).some((entry) => entry.name === binding.name);
     case "workflow":
       return (stanza.workflows ?? []).some((entry) => entry.binding === binding.name);
+    case "queue":
+      return (stanza.queues?.producers ?? []).some((entry) => entry.binding === binding.name);
+    case "email":
+      return (stanza.send_email ?? []).some((entry) => entry.name === binding.name);
+    case "browser":
+    case "images":
+      // One per Worker, an object like `ai`, but present only under this name: `validateBindings` reads
+      // `env[binding.name]`, so one bound as anything else leaves this binding unbound at boot.
+      return stanza[binding.type]?.binding === binding.name;
+    case "hyperdrive":
+    case "analytics_engine_datasets":
+    case "pipelines":
+    case "mtls_certificates":
+    case "dispatch_namespaces":
+      return (stanza[binding.type] ?? []).some((entry) => entry.binding === binding.name);
     default:
       return null;
   }
+}
+
+/**
+ * The entry for an array-shaped carried kind: the binding, the account-level resource written into the field
+ * wrangler names for it, and the spec's `remote` where wrangler takes one. `BindingSpec` refuses a kind that
+ * requires a `target` without one, so a missing one here is a dataset left to wrangler's default.
+ */
+function carriedEntry(binding: BindingSpec, kind: CarriedArrayKind): CarriedEntry {
+  const field = TARGET_KINDS[kind]?.field;
+  const entry: CarriedEntry = { binding: binding.name };
+  if (field !== undefined && binding.target !== undefined) entry[field] = binding.target;
+  // Analytics Engine and Hyperdrive take no `remote`; wrangler refuses the key on both.
+  return kind === "analytics_engine_datasets" || kind === "hyperdrive" ? entry : withRemote(entry, binding);
 }
 
 /**
@@ -422,9 +537,52 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
       stanza.workflows.push(entry);
       return { outcome: "written" };
     }
+    case "queue": {
+      // The queue `pithy provision` creates, named by the same composer. A producer naming no queue is an entry
+      // `wrangler deploy` cannot bind, so a queue this cannot name is skipped and said, never half-written.
+      if (scope.project === undefined) return { outcome: "skipped", reason: "no project name is resolved" };
+      const name = proposeName(scope, binding, "queue");
+      if (name === undefined) {
+        return { outcome: "skipped", reason: `the naming scheme does not accept the environment "${scope.env}"` };
+      }
+      stanza.queues ??= {};
+      stanza.queues.producers ??= [];
+      stanza.queues.producers.push(withRemote({ binding: binding.name, queue: name }, binding));
+      return { outcome: "written" };
+    }
+    case "email":
+      // The binding and nothing else. `destination_address` and `allowed_*` are where this environment's mail
+      // may go, which is the adopter's to state per environment — `seedPolicy`'s `branch`, from the other end.
+      stanza.send_email ??= [];
+      stanza.send_email.push(withRemote({ name: binding.name }, binding));
+      return { outcome: "written" };
+    case "browser":
+    case "images": {
+      // One per Worker, like `ai`. One already bound under another name is the adopter's, and overwriting
+      // it would unbind their code; the presence check above has reported this one missing, so say why.
+      const existing = stanza[binding.type];
+      if (existing !== undefined) {
+        return {
+          outcome: "skipped",
+          reason: `this Worker already binds ${binding.type} as ${existing.binding}, and a Worker takes one`,
+        };
+      }
+      stanza[binding.type] = withRemote({ binding: binding.name }, binding);
+      return { outcome: "written" };
+    }
+    case "hyperdrive":
+    case "analytics_engine_datasets":
+    case "pipelines":
+    case "mtls_certificates":
+    case "dispatch_namespaces": {
+      stanza[binding.type] ??= [];
+      stanza[binding.type]?.push(carriedEntry(binding, binding.type));
+      return { outcome: "written" };
+    }
     default:
-      // `queue`, `email`, `secret`, `service`, and `vectorize`. Nothing is emitted, and for two different
-      // reasons: a `secret` has no wrangler array at all, and a `vectorize` entry needs the provisioned
+      // `secret`, `service`, and `vectorize`. Nothing is emitted, and for three different
+      // reasons: a `secret` has no wrangler array at all, a `service` entry is `pithy provision`'s to write
+      // out of the target Worker's scoped script name, and a `vectorize` entry needs the provisioned
       // `index_name` — wrangler's validator requires it, so a binding-only entry stops `wrangler dev` and
       // `wrangler deploy` both. `capabilities/requiredBindings.test.ts` fails any capability that requires
       // a kind neither this writer nor a provisioner covers. Unreachable: `stanzaHasBinding` already
@@ -464,8 +622,9 @@ export function appendDurableObjectMigrations(config: WranglerStanza, bindings: 
   config.migrations ??= [];
   // A class any existing tag already names is registered, whether or not that tag has been deployed yet.
   // This is the whole of the idempotency: a second `pithy add` of the same capability finds nothing new
-  // and returns without touching the file.
-  const registered = new Set(config.migrations.flatMap((migration) => migration.new_sqlite_classes ?? []));
+  // and returns without touching the file. Any verb counts, not only the one the kit writes: an app's own
+  // class reaches this writer too, and an adopter registered it by hand (#662).
+  const registered = new Set(config.migrations.flatMap(classesRegisteredBy));
   const fresh = [...new Set(classes)].filter((className) => !registered.has(className));
   if (fresh.length === 0) return;
 

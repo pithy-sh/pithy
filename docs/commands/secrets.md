@@ -475,8 +475,8 @@ pithy secrets deprovision --env staging --json
 {"command":"secrets create","schemaVersion":1,"name":"STRIPE_SECRET_KEY","environments":["prod"]}
 {"command":"secrets update","schemaVersion":1,"name":"partner-webhook-secret","environments":["staging","canary"],"interrupted":true}
 {"command":"secrets ls","schemaVersion":1,"secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
-{"command":"secrets rotate","schemaVersion":1,"name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
-{"command":"secrets rotate","schemaVersion":1,"name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
+{"command":"secrets rotate","schemaVersion":2,"name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
+{"command":"secrets rotate","schemaVersion":2,"name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
 {"command":"secrets edit","schemaVersion":1,"path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
 {"command":"secrets provision","schemaVersion":1,"environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
 {"command":"secrets deprovision","schemaVersion":2,"env":"staging","keysDeleted":false,"runtimeTokenDeleted":true}

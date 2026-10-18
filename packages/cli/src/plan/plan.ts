@@ -55,7 +55,7 @@ export type PlanFile = z.infer<typeof PlanFile>;
 export const PlanResource = z
   .object({
     kind: z
-      .enum(["d1", "kv", "r2", "vectorize", "worker", "workflow", "secrets_store"])
+      .enum(["d1", "kv", "r2", "queue", "vectorize", "worker", "workflow", "secrets_store"])
       .describe("The kind of Cloudflare resource."),
     name: z.string().describe("Its name in the account."),
     binding: z.string().optional().describe("The Worker binding it backs, when it backs one."),

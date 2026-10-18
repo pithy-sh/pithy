@@ -876,7 +876,14 @@ const rotate = withContract(
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { ...MANAGED, payload: SecretsRotatePayload, mutates: true, idempotent: false },
+  {
+    ...MANAGED,
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    schemaVersion: 2,
+    payload: SecretsRotatePayload,
+    mutates: true,
+    idempotent: false,
+  },
 );
 
 /**

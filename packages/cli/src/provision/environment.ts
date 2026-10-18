@@ -899,13 +899,20 @@ export async function provisionTargets(options: {
   const declines: { worker: ProvisionWorker; resolved: BindingDeclines }[] = [];
   // Every Worker's manifests, kept rather than dropped: they are also where a binding's `scope` and
   // `resource` are declared, and re-reading `node_modules` a second time to ask is a second answer.
-  const declared: CapabilityManifest[] = [];
+  const declared: BindingDeclaration[] = [];
   // Deduped by package, because manifests resolve per Worker from two directories and every Worker in a
   // project sees the root's copy: a project with three Workers and one broken package must say it once.
   const faults = new Map<string, ManifestFault>();
   for (const worker of workers) {
     const { manifests, faults: workerFaults } = await composedManifests(options.projectDir, worker.dir);
     declared.push(...manifests);
+    // **And the Worker's own app, which declares bindings and ships no manifest (#662).** Its composed instance
+    // is the declaration, so a `scope: "global"` or `resource:` on an app binding names the resource exactly as
+    // it would on a capability's. A manifest of the same name is the capability's, and wins.
+    const app = worker.config?.app;
+    if (app !== undefined && !manifests.some((manifest) => manifest.name === app.name)) {
+      declared.push({ name: app.name, requiredBindings: app.requiredBindings });
+    }
     for (const fault of workerFaults) if (!faults.has(fault.package)) faults.set(fault.package, fault);
     const resolved = workerDeclines({ manifests, capabilities: worker.capabilities, workerConfig: worker.config });
     declines.push({ worker, resolved });
@@ -937,9 +944,9 @@ export async function provisionTargets(options: {
     scope: options.scope,
   });
   const bindings = wanted.map(({ binding, kind }) => {
-    // A binding no manifest declares keeps the generic name it has always had. That is the adopter's own
-    // `app` capability, which has bindings and no npm package to ship a manifest — and a fork whose
-    // manifest was removed. Neither is a missing declaration; both are "nothing to say", which is `{}`.
+    // A binding nothing declares keeps the generic name it has always had: a fork whose manifest was removed.
+    // That is not a missing declaration; it is "nothing to say", which is `{}`. The app's own bindings are
+    // declared — by its composed instance, above (#662).
     const declared = namings.get(binding);
     const declaredNaming = declared?.naming ?? {};
     return {
@@ -956,6 +963,9 @@ export async function provisionTargets(options: {
   });
   return { bindings, declines, wantedPerWorker, manifestFaults: [...faults.values()] };
 }
+
+/** Who declares a set of bindings: a capability's manifest, or a Worker's own app, which has none (#662). */
+type BindingDeclaration = Pick<CapabilityManifest, "name" | "requiredBindings">;
 
 /** One binding's declared naming, and who declared it — everything a refusal below needs to name. */
 interface DeclaredNaming {
@@ -976,14 +986,15 @@ interface DeclaredNaming {
  * fields that can break that identity from either end, so both ends are checked here, once, before the
  * first Cloudflare call — a refusal after the third resource is created is a half-provisioned account.
  *
- * The manifest is the only source, and only for capabilities this environment actually composes.
+ * The manifests are the source — and the Worker's own app, whose composed instance is its declaration (#662) —
+ * and only for capabilities this environment actually composes.
  * Something installed under `node_modules` that no Worker composes declares nothing about this run, and a
  * binding no Worker will provision cannot collide with one that will — so a project is never refused for
  * a conflict it could not reach.
  */
 function resolveBindingNamings(options: {
-  /** Every composed Worker's manifests, as read from its own `node_modules` and the root's. */
-  manifests: readonly CapabilityManifest[];
+  /** Every composed Worker's manifests, as read from its own `node_modules` and the root's, and its app's own. */
+  manifests: readonly BindingDeclaration[];
   /** The capability names this environment composes — manifests outside it are not this run's business. */
   capabilities: ReadonlySet<string>;
   /** The bindings this run will provision, after declines. Nothing outside it can collide with anything. */

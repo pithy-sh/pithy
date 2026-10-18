@@ -444,6 +444,8 @@ async function reconcileWorkers(options: UpgradeRunOptions): Promise<UpgradeRun>
         account: options.account,
         ...(project === undefined ? {} : { project }),
         capabilities: worker.capabilities,
+        // The Worker's own app, whose bindings the plan reported with no manifest behind them (#662).
+        ...(worker.config?.app ? { app: worker.config.app } : {}),
         ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
         productionEnvironments,
       });
@@ -1006,7 +1008,8 @@ export default withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    schemaVersion: 2,
     payload: UpgradePayload,
     mutates: true,
     idempotent: true,

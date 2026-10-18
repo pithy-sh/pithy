@@ -720,6 +720,29 @@ const config = { domains: DOMAINS, capabilities: [ … ], app };
 
 Name it for the Worker, not for the capability that asked first. The first project to write this called it `AUTH_BASE_URL`, and that is part of why `email` and `payments` kept their hardcoded URLs for days — the constant read as auth's private business when it is the Worker's address.
 
+#### Declaring a binding on your own app
+
+Your Worker's `app` is a capability like any other, so it declares the Cloudflare bindings it needs the same way — in `requiredBindings`. `createBackend` refuses to boot without them, `pithy upgrade` writes them into every stanza of `wrangler.jsonc`, and `pithy doctor` names any stanza that lacks one.
+
+```ts
+const app = defineCapability({
+  name: "board",
+  requiredBindings: [
+    { type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" },
+    { type: "queue", name: "JOBS" },
+    { type: "browser", name: "BROWSER" },
+  ],
+});
+```
+
+**Pithy creates what it owns and carries what you own.** A `d1`, `kv`, `r2` or `queue` binding gets its resource from `pithy provision`, per environment and per feature, named `<project>-<env>-<thing>` and honoring `scope: "global"` and `resource` exactly as a capability's do ([`docs/NAMING.md`](NAMING.md)). A queue is reaped by `pithy feature destroy` with the rest. Only its producer is written; a consumer is yours.
+
+The other kinds name something you stand up yourself, once, at the account: `hyperdrive`, `browser`, `images`, `analytics_engine_datasets`, `pipelines`, `mtls_certificates`, `dispatch_namespaces`, `ai`, `ratelimit` and `email`. `target` is the resource the entry addresses — the Hyperdrive config id, the certificate id, the stream, the dispatch namespace, or the dataset — and it is required wherever wrangler requires it. Each of these is written into every environment and carried whole into a feature. A declared `target` is one id, so every environment gets that id; to point production at its own Hyperdrive config, give `env.prod` its own entry, and Pithy leaves it alone. A stanza Pithy creates is seeded from the top level, which is `dev`. Most of these kinds name the same resource everywhere, so the new stanza takes dev's entry. Three do not: `email`, `hyperdrive` and `pipelines`. A `send_email` entry is where mail goes, a Hyperdrive config is one database's connection, and a stream feeds one sink. A feature inherits dev's. A declared environment starts with none of them, so an entry written for dev is never copied into production. A binding you declare is still written there, with its declared `target`, which is why production's own config goes in `env.prod`.
+
+Deleting the declaration is how you decline one of your own bindings. `declinedBindings` is about what a capability declares.
+
+**A wrangler key Pithy does not model is yours to write by hand.** Put it in `wrangler.jsonc` at the top level. Most such keys, like `placement` or `limits`, are inherited by every environment, so once is enough: no stanza needs a copy, Pithy writes none, and `pithy doctor` asks for none. The rest are keys wrangler does not inherit, such as `tail_consumers`, `containers` or `vpc_services`. Repeat each of those in every `env.<name>` stanza; `pithy doctor` reports a stanza that does not. A stanza Pithy creates copies them from the top level by the value's shape. A flat value comes down whole. A list starts empty, and so does every list one level inside an object, so `"unsafe": {"bindings": [ … ]}` arrives as `{"bindings": []}`. A feature loses those lists; repeat them under `env.feature` if your features need them.
+
 #### Declining an optional binding
 
 A capability marks a binding `optional` when its own code has a path for the binding's absence — `@pithy-sh/support`'s `SUPPORT_BUCKET` is one, and `resolveStore` answering `undefined` is that path. Most of the time you never think about it: a capability declares an optional binding only when its config asks for the feature behind it, so turning the feature off makes the binding disappear and there is nothing to decide.
@@ -1192,7 +1215,7 @@ That line is the difference between `upgrade` and `doctor` agreeing and not. Rep
 
 ```
 $ pithy add --list --json
-{"command":"add","schemaVersion":1,"capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":true}],"manifestFaults":[{"package":"@pithy-sh/leaderboard","reason":"configOptions[0].key: not a bare identifier"}]}
+{"command":"add","schemaVersion":2,"capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":true}],"manifestFaults":[{"package":"@pithy-sh/leaderboard","reason":"configOptions[0].key: not a bare identifier"}]}
 ```
 
 ### 5.8 Testing checklist

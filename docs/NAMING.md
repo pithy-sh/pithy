@@ -12,7 +12,7 @@ Kebab-case, project first, environment second. No namespace is exempt.
 
 ## Why there is a rule at all
 
-Every Cloudflare namespace Pithy writes into is flat and account-wide: D1 databases, KV namespaces, R2 buckets, Vectorize indexes, Worker scripts, Workflows, the Secrets Store, the API-token list. None of them can be partitioned. So the name is the partition, and the project segment is the only thing keeping two Pithy projects in one account from adopting or overwriting each other's resources.
+Every Cloudflare namespace Pithy writes into is flat and account-wide: D1 databases, KV namespaces, R2 buckets, queues, Vectorize indexes, Worker scripts, Workflows, the Secrets Store, the API-token list. None of them can be partitioned. So the name is the partition, and the project segment is the only thing keeping two Pithy projects in one account from adopting or overwriting each other's resources.
 
 Provisioning finds a resource by name and reuses it. Without a project segment, "find then create" means a second project silently inherits the first's database.
 
@@ -114,7 +114,7 @@ An ephemeral feature environment is an environment, so it occupies the environme
 <project>-f<issue>-<slug>--<binding>-<kind>
 ```
 
-`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
+`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone. And it is trusted for its name and nothing else. The id `destroy` deletes is the one the account answers for that name, never the id the entry states, so an entry that pairs the feature's own name with production's id reaches nothing.
 
 There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
 
@@ -182,12 +182,13 @@ Cloudflare's limits differ by namespace, and they differ a lot. Pithy holds each
 | Worker script | 63 | 255 in general, **63 once workers.dev is on**. Alphanumeric and dashes, no leading or trailing dash | 42 | Refused | Cloudflare |
 | R2 bucket | 63 | 3 to 63 characters. Lowercase, digits, hyphens; must start **and** end alphanumeric | 42 | Truncated | Cloudflare |
 | Vectorize index | 64 | 64 bytes. `^([a-z]+[a-z0-9_-]*[a-z0-9]+)$` — must start with a letter | 43 | Refused | Cloudflare |
+| Queue | 63 | 1 to 63 characters. Lowercase letters, digits and dashes; must start **and** end with a letter or number | 42 | Truncated | Cloudflare |
 | KV namespace title | 512 | 512 characters, and no pattern at all. Spaces and mixed case are accepted | 491 | Truncated | Cloudflare |
 | D1 database | 128 | **No documented length cap.** Charset only: `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` | 107 | Truncated | Pithy |
 | Secrets Store entry | 128 | **No documented length cap.** "Cannot contain spaces"; wrangler enforces `[A-z0-9-_]+` | 107 | Truncated | Pithy |
 | Cloudflare API token | 128 | **No documented cap.** A free-text label | 107 | Truncated | Pithy |
 
-Sources, all verified 2026-07-31: the [Workflows limits page](https://developers.cloudflare.com/workflows/reference/limits/), Cloudflare's OpenAPI schema (`maxLength: 64`) and wrangler's `MAX_WORKFLOW_NAME_LENGTH`; [workers.dev subdomains](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/); [creating R2 buckets](https://developers.cloudflare.com/r2/buckets/create-buckets/); [Vectorize limits](https://developers.cloudflare.com/vectorize/platform/limits/); the OpenAPI schema's `workers-kv_namespace_title.maxLength` and `d1_database-name.pattern`; [managing Secrets Store secrets](https://developers.cloudflare.com/secrets-store/manage-secrets/).
+Sources, all verified 2026-07-31: the [Workflows limits page](https://developers.cloudflare.com/workflows/reference/limits/), Cloudflare's OpenAPI schema (`maxLength: 64`) and wrangler's `MAX_WORKFLOW_NAME_LENGTH`; [workers.dev subdomains](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/); [creating R2 buckets](https://developers.cloudflare.com/r2/buckets/create-buckets/); [Vectorize limits](https://developers.cloudflare.com/vectorize/platform/limits/); the OpenAPI schema's `workers-kv_namespace_title.maxLength` and `d1_database-name.pattern`; [managing Secrets Store secrets](https://developers.cloudflare.com/secrets-store/manage-secrets/). The queue row was verified 2026-10-18 against [Queues · Get started](https://developers.cloudflare.com/queues/get-started/).
 
 **Read the last column.** Three of these caps are ours, not Cloudflare's. D1 database names, Secrets Store entry names, and API token labels have no published length limit, and no published limit is not the same as no limit — a name is read by humans in listings that cannot be filtered, echoed in CLI output, and pasted into wrangler configs, so it needs an end. Pithy stops them at **128 characters**: twice the longest cap Cloudflare does publish, and roughly twice the longest name Pithy can compose today. If Cloudflare ever documents a real number for one of these, that number replaces ours.
 
@@ -199,7 +200,7 @@ Which one a namespace gets is not a style choice. It follows from whether the na
 
 **Refused** where renaming orphans something. A Workflow name is the address of every instance running under it. A Worker script name is the address of the deployment and of every `service` binding pointing at it. A Vectorize index name is the address of vectors that cannot be re-embedded for free. In all three, a build error naming the limit is strictly better than a silent rename.
 
-**Truncated** where Pithy recomputes the name from the same inputs on every command — D1, KV, R2, secret entries, tokens. Truncation is deterministic and hash-disambiguated, so `provision` and `destroy` still agree on the string, and a long binding name does not fail a CI run.
+**Truncated** where Pithy recomputes the name from the same inputs on every command — D1, KV, R2, queues, secret entries, tokens. Truncation is deterministic and hash-disambiguated, so `provision` and `destroy` still agree on the string, and a long binding name does not fail a CI run.
 
 **Except in a feature's names, where nothing is truncated (#643).** A feature name is refused whole when it does not fit, in every namespace. A fitted slug is a short hash, and one branch's hash can be another branch's whole slug.
 
@@ -233,7 +234,7 @@ The second is a feature resource, the tightest shape of all.
  -  6   the issue number, at 6 digits — `f999999`
  - 12   `-` plus a slug still legible at 11 characters
  - 14   `--` plus a binding kept whole at 12 characters
- -  3   `-` plus the kind, `d1` | `kv` | `r2`
+ -  3   `-` plus the kind, `d1` | `kv` | `r2` | `q`
  ----
  = 26
 ```
@@ -256,7 +257,7 @@ This is the tightest shape Pithy composes, so it is worth the arithmetic.
 <project>-f<issue>-<slug>--<binding>-<kind>
 ```
 
-Held to R2's 63 — the strictest of the three kinds a feature provisions — so one shape is legal for the bucket, the database, and the KV namespace alike. Six literal characters (`-`, `f`, and four more hyphens) plus a two-character kind is 8, which leaves 55 to divide.
+Held to R2's 63 — the strictest of the kinds a feature provisions, and a queue's cap too — so one shape is legal for the bucket, the database, the KV namespace and the queue alike. Six literal characters (`-`, `f`, and four more hyphens) plus a kind of at most two characters is 8, which leaves 55 to divide. A queue's kind is `q`, not `queue`: three more characters there would come out of every project name.
 
 ```
 project + issue + slug + binding = 55

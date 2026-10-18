@@ -446,7 +446,7 @@ describe("pithy secrets rotate, with the real binary", () => {
     const result = await cli(["secrets", "rotate", "REPLAY_PROVIDER_TOKEN", "--env", "prod", "--json"], refusing);
     expect(JSON.parse(result.stdout.trim())).toEqual({
       command: "secrets rotate",
-      schemaVersion: 1,
+      schemaVersion: 2,
       name: "REPLAY_PROVIDER_TOKEN",
       dryRun: false,
       rotations: [

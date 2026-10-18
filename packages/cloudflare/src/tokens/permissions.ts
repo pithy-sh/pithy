@@ -65,6 +65,10 @@ export const PERMISSION_GROUPS = {
   // `runtime` token a deployed application holds, never by `ci-system`.
   "images:write": ["Images Write"],
   "stream:write": ["Stream Write"],
+  // **Creating and deleting the queue behind a `queue` binding (#662).** `pithy provision` creates one per
+  // binding and `pithy feature destroy` deletes a feature's, so `ci-system` carries it wherever a composition
+  // binds a queue. A Worker sends through its producer binding and needs no API token for it.
+  "queues:write": ["Queues Write"],
 } as const;
 
 /** A known permission key — one of {@link PERMISSION_GROUPS}'s keys. */
@@ -106,6 +110,7 @@ export const OAUTH_SCOPES = {
   "analytics:read": ["account-analytics.read"],
   "images:write": ["images.write"],
   "stream:write": ["stream.write"],
+  "queues:write": ["queues.write"],
 } as const satisfies Record<PermissionKey, readonly string[]>;
 
 /**

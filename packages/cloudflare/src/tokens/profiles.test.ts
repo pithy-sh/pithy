@@ -38,6 +38,18 @@ describe("resolveTokenProfiles — ci-system aggregation", () => {
     expect(perms.filter((p) => p === "d1:read")).toHaveLength(1);
   });
 
+  test("a composed queue binding puts queues:write on ci-system, because provisioning creates the queue (#662)", () => {
+    // `pithy provision` creates every queue a composition binds, in CI under this token, and a session's scopes
+    // are derived from what the profiles carry — so the permission comes from the binding, not a list.
+    const app = defineCapability({ name: "app", requiredBindings: [{ type: "queue", name: "JOBS" }] });
+    const once = defineCapability({ name: "other", requiredBindings: [{ type: "queue", name: "MAIL" }] });
+    const perms = resolveTokenProfiles([app, once])[CI_SYSTEM_PROFILE]?.permissions ?? [];
+    expect(perms.filter((p) => p === "queues:write")).toEqual(["queues:write"]);
+    expect(resolveTokenProfiles([])[CI_SYSTEM_PROFILE]?.permissions).not.toContain("queues:write");
+    // Never on the runtime token: a Worker sends through its producer binding, which needs no API token.
+    expect(resolveTokenProfiles([app])[RUNTIME_PROFILE]).toBeUndefined();
+  });
+
   test("an unknown ciPermissions key fails loudly", () => {
     const bad = defineCapability({ name: "bad", requiredBindings: [], ciPermissions: ["d1:destroy"] });
     expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);

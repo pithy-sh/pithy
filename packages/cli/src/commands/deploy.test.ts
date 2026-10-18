@@ -727,10 +727,10 @@ describe("what the command says while it works", () => {
 
     const records = await expectEventsConform("deploy", out);
     expect(records.slice(0, -1)).toEqual([
-      { command: "deploy", schemaVersion: 1, event: "start", what: "acme-api" },
+      { command: "deploy", schemaVersion: 2, event: "start", what: "acme-api" },
       {
         command: "deploy",
-        schemaVersion: 1,
+        schemaVersion: 2,
         event: "settled",
         line: "acme-api: deployed. https://api.acme.example v1",
         worker: { name: "acme-api", ok: true, url: "https://api.acme.example", versionId: "v1" },
