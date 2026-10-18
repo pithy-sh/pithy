@@ -10,6 +10,8 @@ import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 import type { StoreVerification } from "../admin/verifyStore";
 import type {
   PreflightSecretDispatcher,
+  SecretFieldProbe,
+  SecretFieldProbeRequest,
   SecretProbe,
   SecretProbeRequest,
   SecretRotationCloseRequest,
@@ -79,7 +81,7 @@ const REDEPLOY = remedy("secrets provision");
  * project provisioned the account last.
  */
 export class WorkflowSecretDispatcher
-  implements PreflightSecretDispatcher, SecretProbe, SecretRotationRecorder, SecretStoreVerifier
+  implements PreflightSecretDispatcher, SecretProbe, SecretFieldProbe, SecretRotationRecorder, SecretStoreVerifier
 {
   readonly #client: Pick<CloudflareWorkflowsClient, "dispatchAndPoll">;
   readonly #project: string;
@@ -204,6 +206,32 @@ export class WorkflowSecretDispatcher
       });
     }
     return parsed.data.outcome === "present";
+  }
+
+  /**
+   * Ask one environment's manager whether a stored `json` secret still carries one top-level field (#728).
+   * The same Workflow, in its probe mode, with the field named — so the answer comes from the store the
+   * writes go to, and is a bit. The value is opened inside the manager and never leaves it.
+   *
+   * **An old manager answers the name, not the field.** One deployed before this mode existed ignores the
+   * field and says `present` or `absent`; `present` would read as "carries" and is refused instead, naming
+   * the redeploy. `absent` is true of every manager — nothing stored carries nothing.
+   */
+  async carries(request: SecretFieldProbeRequest): Promise<boolean> {
+    const output = await this.#client.dispatchAndPoll(this.#writeWorkflow(request.env), {
+      mode: "probe",
+      name: request.name,
+      field: request.field,
+    });
+    const parsed = WriteWorkflowResult.safeParse(output);
+    const outcome = parsed.success ? parsed.data.outcome : undefined;
+    if (outcome === "carries") return true;
+    if (outcome === "lacks" || outcome === "absent") return false;
+    throw new UpstreamError({
+      message: `The ${request.env} secrets manager cannot say what '${request.name}' carries.`,
+      action: `${REDEPLOY.say((command) => `Redeploy the manager with ${command}.`)} Once it is redeployed, run this again.`,
+      detail: `probe ${request.name}.${request.field} in ${request.env}: outcome ${outcome ?? "unreadable"}, which a manager predating field probes answers`,
+    });
   }
 
   /**

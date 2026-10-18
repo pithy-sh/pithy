@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { afterEach, describe, expect, test } from "vitest";
-import { isSecretsCapability, masterKeyRegistryEntry, secrets, secretsTokenProfile } from "./capability";
+import { isSecretsCapability, masterKeyRegistryEntry, secrets } from "./capability";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
-import { managerRegistry } from "./manager/managerRegistry";
+import { managerRegistry, SECRETS_RUNTIME_PERMISSIONS } from "./manager/managerRegistry";
 import { defineSecretRegistry, isMintableSecret, isProvisionableSecret, type SecretRegistryEntry } from "./registry";
 import { resetSharedSecrets, sharedSecretsStore } from "./sharedSecretsStore";
 
@@ -203,18 +204,26 @@ describe("pithy.manifest.json", () => {
   });
 });
 
-describe("the Cloudflare token the manager runs on", () => {
-  test("needs exactly what the token profile mints, and nothing downstream repeats it", () => {
+describe("the Cloudflare token the manager runs on (#728)", () => {
+  test("is the runtime token, and the capability adds exactly Secrets Store read and write to it", () => {
+    // No token profile of its own: the manager's needs union into the one `runtime` token, beside every
+    // other capability's. The manager's only live-CF write is the at-rest rotation's config write-back.
+    const capability = cap();
+    expect(capability.runtimePermissions).toEqual(["secrets:read", "secrets:write"]);
+    expect("tokenProfiles" in capability).toBe(false);
+  });
+
+  test("needs exactly what the capability declares, and nothing downstream repeats it", () => {
     // The drift this declaration exists to end: a dashboard composing `pithy token mint …` used to hold
     // its own copy of these. One list, two readers, and a test that they are the same list.
-    const origin = managerRegistry.CLOUDFLARE_API_TOKEN.origin;
+    const origin = managerRegistry[RUNTIME_TOKEN_SECRET].origin;
     expect(origin?.kind).toBe("helped");
-    expect(origin?.kind === "helped" && origin.needs.cloudflare).toEqual(secretsTokenProfile.permissions);
+    expect(origin?.kind === "helped" && origin.needs.cloudflare).toEqual([...SECRETS_RUNTIME_PERMISSIONS]);
   });
 
   test("is helped to create and provider to rotate — the pair one axis cannot express", () => {
     // We cannot mint it: that needs credentials for their account. Cloudflare can roll it and return the
     // new value, so it can still replace itself. Neither fact follows from the other.
-    expect(managerRegistry.CLOUDFLARE_API_TOKEN.rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
+    expect(managerRegistry[RUNTIME_TOKEN_SECRET].rotation).toMatchObject({ kind: "provider", issuer: "cloudflare" });
   });
 });

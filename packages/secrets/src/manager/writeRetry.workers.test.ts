@@ -54,7 +54,7 @@ function managerEnv(): SecretsManagerEnv {
     SECRETS: env.SECRETS,
     SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
     AT_REST_ROTATION: { create: async () => undefined },
-    CLOUDFLARE_API_TOKEN: "unused",
+    RUNTIME_CF_API_TOKEN: "unused",
     CLOUDFLARE_ACCOUNT_ID: "unused",
     SECRETS_STORE_ID: "unused",
     ENVIRONMENT: "staging",

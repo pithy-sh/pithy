@@ -49,8 +49,11 @@ export const SecretValueType = z
   );
 export type SecretValueType = z.output<typeof SecretValueType>;
 
-/** Fields shared by every registry entry, regardless of value type. */
-interface SecretRegistryEntryBase {
+/**
+ * Fields shared by every registry entry, regardless of value type. Exported so a registry built by a
+ * factory in another package — the runtime token's (#728) — can be named in that package's declarations.
+ */
+export interface SecretRegistryEntryBase {
   /** Storage backend — drives how the value is read and written. */
   backend: SecretBackend;
   /** Whether the value is shared across environments or differs per environment. */

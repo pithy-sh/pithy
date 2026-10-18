@@ -2,52 +2,36 @@
 // SPDX-License-Identifier: MIT
 
 import { defineSecretRegistry } from "../registry";
+import { runtimeTokenRegistry } from "../tokens/runtimeTokenRegistry";
+
+/**
+ * What the secrets manager's Worker calls Cloudflare with: Secrets Store read and write, nothing else
+ * (#728). Its one live-Cloudflare write is the at-rest rotation's write-back of the new key set; the D1
+ * re-encryption runs through the `SECRETS` binding.
+ *
+ * The capability declares it as `runtimePermissions`, so it unions into the one `runtime` token the
+ * application holds, beside every other capability's. The manager has no token of its own, and the profile
+ * it once had — `secrets`, minted into `SECRETS_MANAGER_CF_API_TOKEN` — is superseded by `runtime`. Stated
+ * here rather than on the capability, so the manager's bundle reads it without importing the capability.
+ */
+export const SECRETS_RUNTIME_PERMISSIONS = ["secrets:read", "secrets:write"] as const;
 
 /**
  * The secrets-manager worker's own secret registry. The manager reads it the seam's standard way —
- * `sharedSecretsStore(env, managerRegistry)`, then `.get("CLOUDFLARE_API_TOKEN")` at the point of need, so
- * every secret use is a visible, grep-able call site. The token is read as a `cf-secrets-store`
- * binding, never a plaintext env string.
+ * `sharedSecretsStore(env, managerRegistry)`, then `.get(RUNTIME_TOKEN_SECRET)` at the point of need, so
+ * every secret use is a visible, grep-able call site. The token is read as a `cf-secrets-store` binding,
+ * never a plaintext env string.
  *
- * `CLOUDFLARE_API_TOKEN` is `global` (one value, written once canonically via prod, bound the
- * same way by every manager) and `rotatable` (forward-looking — a future value-rotator may self-roll
- * it; no value-rotation logic ships now). Provisioning owns the store-entry-name → binding-var
- * mapping out of band: the entry lives in the account's one flat Secrets Store under the
- * project-scoped name `<project>-global-secrets-manager-cf-api-token` (`managerCfApiTokenSecretName`)
- * and binds into each manager as `CLOUDFLARE_API_TOKEN`, so this registry stays keyed by the binding
- * var — which is not scoped, and must not be (see `provision/provisionSecrets`).
+ * **It is the application's one `runtime` token (#728)**, the same value every other Worker of this
+ * environment that calls Cloudflare reads. Per environment: each manager binds its own environment's entry,
+ * `<project>-<env>-runtime-cf-api-token`, so revoking staging's token leaves production rotating.
+ * Provisioning owns the entry-name → binding mapping out of band (`provision/resolveManagerConfig`), so
+ * this registry stays keyed by the binding, which is not scoped and must not be.
  *
- * **Least privilege — this token needs Secrets Store edit access and nothing else.** The manager's
- * only runtime use of the token is the at-rest rotation's config write-back (`CloudflareSecretsStoreManager.putSecret`
- * → list + delete + create on the store). The rotation's D1 re-encryption runs entirely through the
- * `SECRETS` binding, so the token grants no D1 or Workers access. Scope it to **Account › Secrets
- * Store › Edit** on the one store. (It is distinct from the broad bootstrap token the CLI uses to
- * deploy and provision — see `provision/provisionSecrets` for that boundary.)
+ * **What the manager needs of it is Secrets Store read and write, and nothing else.** Its only runtime use
+ * is the at-rest rotation's config write-back (`CloudflareSecretsStoreManager.putSecret` → list + delete +
+ * create on the store). The rotation's D1 re-encryption runs entirely through the `SECRETS` binding.
  */
 export const managerRegistry = defineSecretRegistry({
-  CLOUDFLARE_API_TOKEN: {
-    backend: "cf-secrets-store",
-    scope: "global",
-    rotatable: true,
-    valueType: "text",
-    // `helped` to create, `provider` to rotate — the case a single axis cannot express, and the reason
-    // #322 has two. We cannot mint a Cloudflare token: that needs credentials for their account, which
-    // this product must never hold. We can say exactly what one needs, so nothing downstream keeps its
-    // own table of permission groups — `needs.cloudflare` is `secretsTokenProfile.permissions`, and
-    // `capability.test.ts` holds the two to each other rather than trusting this copy.
-    origin: {
-      kind: "helped",
-      issuer: "cloudflare",
-      needs: { cloudflare: ["secrets:read", "secrets:write"] },
-      documentation: "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/",
-    },
-    // Cloudflare rolls a token and returns the new value, so this one can replace itself. Declared per
-    // secret and never per issuer: some Cloudflare secrets roll and some do not, and `issuer` says
-    // nothing about which.
-    rotation: {
-      kind: "provider",
-      issuer: "cloudflare",
-      documentation: "https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/",
-    },
-  },
+  ...runtimeTokenRegistry(SECRETS_RUNTIME_PERMISSIONS),
 });

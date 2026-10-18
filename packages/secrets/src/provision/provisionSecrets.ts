@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
@@ -9,13 +10,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { generateKeyB64 } from "../rotation/keyRotation";
-import {
-  type DeprovisionTarget,
-  deprovisionTarget,
-  type ManagedEnvironment,
-  managedEnvironments,
-  otherEnvironmentsRunning,
-} from "../scope";
+import { type DeprovisionTarget, deprovisionTarget, type ManagedEnvironment, managedEnvironments } from "../scope";
 
 /**
  * The CF Secrets Store entry name holding an environment's master key — `<project>-<env>-secrets-encryption-keys`.
@@ -43,41 +38,47 @@ export function masterKeySecretName(project: string, env: ManagedEnvironment, fe
 }
 
 /**
- * The profile/`.dev.vars` **secret name** the manager's CF API token is known by — the registry join
- * key, not a Secrets Store entry name. Deliberately unscoped: it is a variable key, and scoping it
- * would rename an environment variable rather than partition an account-wide namespace.
+ * **The application's one Cloudflare API token, in this environment's Secrets Store (#728)** —
+ * `<project>-<env>-runtime-cf-api-token`, bound into the manager as `RUNTIME_CF_API_TOKEN` and into every
+ * other Worker of the environment that calls Cloudflare. The same entry `pithy token mint runtime --env
+ * <env>` writes, composed by the same facade call, so a mint and a provision cannot land on two entries.
+ *
+ * Per environment: revoking staging's token leaves production's manager rotating. A feature's manager
+ * holds none (#643).
+ */
+export function runtimeTokenSecretName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).secretEntry(RUNTIME_TOKEN_SECRET);
+}
+
+/**
+ * The account-token **name** the runtime token is minted, rolled and revoked under —
+ * `<project>-<env>-runtime`, the identity `pithy token` keys the `runtime` profile on. Distinct from
+ * {@link runtimeTokenSecretName}, the entry holding its value.
+ */
+export function runtimeTokenName(project: string, env: ManagedEnvironment): string {
+  return resourceNames(project).env(env).apiToken(RUNTIME_PROFILE);
+}
+
+/**
+ * The secret name the manager's own CF API token was known by, before `runtime` superseded it (#728).
+ * Kept so an upgraded project's leftover can be found and named; nothing binds or mints it now.
  */
 export const MANAGER_CF_API_TOKEN_SECRET = "SECRETS_MANAGER_CF_API_TOKEN";
 
 /**
- * The CF Secrets Store entry name holding the scoped CF API token, bound into each manager as
- * `CLOUDFLARE_API_TOKEN` — `<project>-global-secrets-manager-cf-api-token`.
- *
- * The token is `global` (one value, written once canonically and bound the same way by every manager
- * of this project), so the literal `global` fills the environment slot rather than being omitted — the
- * naming rule has no exception to remember. The facade makes that a property rather than a string:
- * `names.global` is the same interface an environment gets, so no call site can typo the scope into a
- * near-miss of a real environment. Provisioning owns this store-entry-name → binding-var mapping out of
- * band; the manager registry stays keyed by the binding var (see `manager/managerRegistry`).
+ * The Secrets Store entry the superseded manager token was written to —
+ * `<project>-global-secrets-manager-cf-api-token`. **Superseded by {@link runtimeTokenSecretName}**, and
+ * kept only so `pithy doctor` and `pithy token list` can say an upgraded project still holds it.
  */
 export function managerCfApiTokenSecretName(project: string): string {
-  // Never a feature's (#643): a feature's manager holds no Cloudflare API token, so there is no entry to name.
   return resourceNames(project).global.secretEntry(MANAGER_CF_API_TOKEN_SECRET);
 }
 
 /**
- * The Cloudflare account-token **name** under which provisioning mints the manager's runtime
- * credential — `<project>-global-secrets-manager`. Distinct from
- * {@link managerCfApiTokenSecretName}, the Secrets Store entry name that holds the token's value:
- * this is the token's identity in the account's API-token list, the key idempotent re-mint and
- * teardown match on.
- *
- * The account's token list is flat too, and teardown deletes **every** token of this name. An
- * unscoped name would therefore make one project's `pithy secrets deprovision` revoke every other
- * project's manager credential in the same account — every one of their rotations failing at once.
- *
- * Named as an **API token** through the facade, which is the only reason the two functions can differ
- * in budget as well as in suffix: a token label is a free-text field Cloudflare puts no cap on.
+ * The account-token name the superseded manager token was minted under — `<project>-global-secrets-manager`.
+ * **Superseded by {@link runtimeTokenName}.** Provisioning no longer mints it and teardown no longer
+ * deletes it: the upgrade path is mint `runtime`, deploy, then revoke this, and nothing is revoked
+ * automatically. Kept so the leftover can be named, by its exact identity, and revoked by the operator.
  */
 export function managerCfApiTokenName(project: string): string {
   return resourceNames(project).global.apiToken("secrets-manager");
@@ -112,13 +113,13 @@ export interface SecretsProvisioner {
    */
   preflight(): Promise<void>;
   /**
-   * Ensure the manager's least-privilege CF API token (Secrets Store Read + Write) and write it into
-   * the Secrets Store as the manager's runtime credential — once, before any per-env work, since the
-   * token is `global`. Runs first so a bootstrap token that **cannot** mint account tokens fails the
-   * whole provision fast and clean, before any resource is created. Idempotent: reuse the stored token
-   * if present, otherwise roll the existing manager token's value in place (or mint one if none exists).
+   * Ensure this environment's runtime token — the application's one Cloudflare API token, which the
+   * manager's rotation write-back runs on (#728) — and write it into the Secrets Store entry the manager
+   * binds. Runs for every environment before any other resource, so a bootstrap credential that **cannot**
+   * mint account tokens fails the whole provision fast and clean. Idempotent: reuse the stored token if
+   * present, otherwise roll the existing runtime token's value in place (or mint one if none exists).
    */
-  ensureManagerToken(): Promise<void>;
+  ensureRuntimeToken(env: ManagedEnvironment): Promise<void>;
   /** Create (or reuse) the per-env secrets D1; returns its id. Idempotent. */
   ensureDatabase(env: ManagedEnvironment): Promise<{ databaseId: string }>;
   /**
@@ -139,11 +140,11 @@ export interface ProvisionResult {
 }
 
 /**
- * Provision every managed environment in order: mint the global manager token, then per env create
- * the D1, mint the master key, migrate, deploy the manager. The order matters — the manager token is
- * minted first (one global credential, and a bootstrap token that cannot mint fails fast before
- * anything is created), the database and key exist before migrations run, and the manager is deployed
- * last, once its resources are in place. Idempotent end to end (each step is).
+ * Provision every managed environment in order: ensure each environment's runtime token, then per env
+ * create the D1, mint the master key, migrate, deploy the manager. The order matters — the tokens come
+ * first (a bootstrap credential that cannot mint fails fast, before anything else is created), the
+ * database and key exist before migrations run, and the manager is deployed last, once its resources and
+ * the token it binds are in place. Idempotent end to end (each step is).
  *
  * `environments` is the project's declaration, and **the loop is over all of it**: an environment the
  * project deploys to and this skips is one whose secrets have no master key — the exact silence #241
@@ -154,7 +155,7 @@ export async function provisionSecrets(
   environments: DeclaredEnvironments | readonly string[],
 ): Promise<ProvisionResult> {
   await provisioner.preflight();
-  await provisioner.ensureManagerToken();
+  for (const env of managedEnvironments(environments)) await provisioner.ensureRuntimeToken(env);
   const perEnv: ProvisionResult["perEnv"] = [];
   for (const env of managedEnvironments(environments)) {
     const { databaseId } = await provisioner.ensureDatabase(env);
@@ -169,7 +170,7 @@ export async function provisionSecrets(
 /**
  * The teardown seam — the inverse of {@link SecretsProvisioner}, removing one environment's secrets
  * infrastructure. Behind the seam so the orchestration (the target, the retained-row refusal, order, the
- * key-deletion guard, when the shared token goes) is unit-tested without Cloudflare; the live implementation
+ * key-deletion guard, which environment's runtime token goes) is unit-tested without Cloudflare; the live implementation
  * is verified by the integration suite. Every deletion is idempotent — a missing resource is a no-op.
  */
 export interface SecretsDeprovisioner {
@@ -178,8 +179,6 @@ export interface SecretsDeprovisioner {
    * Read-only, and empty when the database is absent or holds nothing retained.
    */
   countRetained(env: ManagedEnvironment): Promise<RetainedRows[]>;
-  /** Whether the env's manager Worker is deployed. What decides if the shared manager token is still in use. */
-  hasManager(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's manager worker. Idempotent (a missing worker is a no-op). */
   deleteManager(env: ManagedEnvironment): Promise<void>;
   /**
@@ -194,14 +193,13 @@ export interface SecretsDeprovisioner {
    */
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
   /**
-   * Remove the manager's CF API token entirely: delete the minted account token from Cloudflare
-   * **and** its `<project>-global-secrets-manager-cf-api-token` entry from the Secrets Store. Both
-   * names are project-scoped, so this never reaches another project's credential. It is `global` —
-   * one token every manager binds — so it is removed only once no declared environment runs a manager.
-   * Safe and ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
-   * secrets. Idempotent (a missing token or entry is a no-op).
+   * Remove this environment's runtime token entirely: delete the minted account token from Cloudflare
+   * **and** its `<project>-<env>-runtime-cf-api-token` entry from the Secrets Store. Both names are
+   * project- and environment-scoped, so this never reaches another environment's token or another
+   * project's. Safe and ungated: the token is a re-mintable access credential, not a key, so removing it
+   * orphans no secrets. Resolves whether either existed. Idempotent (a missing token or entry is a no-op).
    */
-  deleteManagerToken(): Promise<void>;
+  deleteRuntimeToken(env: ManagedEnvironment): Promise<boolean>;
 }
 
 /** Teardown options. By default the master key is **kept** — deleting it is irreversible. */
@@ -219,8 +217,8 @@ export interface DeprovisionOptions {
 export interface DeprovisionResult {
   /** The one environment torn down. */
   environment: ManagedEnvironment;
-  /** Whether the shared manager token went too — only when no declared environment still runs a manager. */
-  managerTokenDeleted: boolean;
+  /** Whether this run removed the environment's runtime token — `false` when it was already gone. */
+  runtimeTokenDeleted: boolean;
 }
 
 /**
@@ -234,8 +232,8 @@ export interface DeprovisionResult {
  *    an environment holding a vault and nothing to rotate it.
  * 3. Delete the manager Worker (it binds the other resources), then — only when `deleteKeys` is set — the
  *    master key, then the D1.
- * 4. Delete the shared manager token only when no declared environment still runs a manager: it is `global`,
- *    and removing it for staging's teardown would fail every rotation in production.
+ * 4. Delete this environment's runtime token. It is per environment, so another environment's manager keeps
+ *    rotating on its own.
  */
 export async function deprovisionSecrets(
   deprovisioner: SecretsDeprovisioner,
@@ -249,11 +247,5 @@ export async function deprovisionSecrets(
   if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
   await deprovisioner.deleteDatabase(env);
 
-  // The token is kept, not refused: it is a re-mintable credential, not data, so there is nothing to protect by
-  // stopping the run. The parts that are data refuse instead, through `assertSharedLeavesLast`.
-  if ((await otherEnvironmentsRunning(env, target.declared, (other) => deprovisioner.hasManager(other))).length > 0) {
-    return { environment: env, managerTokenDeleted: false };
-  }
-  await deprovisioner.deleteManagerToken();
-  return { environment: env, managerTokenDeleted: true };
+  return { environment: env, runtimeTokenDeleted: await deprovisioner.deleteRuntimeToken(env) };
 }

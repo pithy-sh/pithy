@@ -6,7 +6,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
 import type { ManagedEnvironment } from "../scope";
-import { managerCfApiTokenSecretName, masterKeySecretName } from "./provisionSecrets";
+import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 import {
   type ManagerWranglerTemplate,
   managerWorkerName,
@@ -25,7 +25,7 @@ function template(): ManagerWranglerTemplate {
     d1_databases: [{ binding: "SECRETS", database_name: "pithy-secrets", database_id: "<filled-at-provision>" }],
     secrets_store_secrets: [
       { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
-      { binding: "CLOUDFLARE_API_TOKEN", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
+      { binding: "RUNTIME_CF_API_TOKEN", store_id: "<filled-at-provision>", secret_name: "<filled-at-provision>" },
     ],
     workflows: [
       { binding: "SECRETS_WRITE", name: "pithy-secrets-write", class_name: "SecretsWriteWorkflow" },
@@ -82,14 +82,16 @@ describe("resolveManagerConfig", () => {
       store_id: "store-abc",
       secret_name: masterKeySecretName("acme", "staging"),
     });
-    // The CF API token is global — one entry per project, so `global` fills the environment slot. It is
-    // resolved here, not passed through: the template literal is a placeholder, and binding a name
-    // provisioning never wrote would deploy a manager that dies on its first token read.
+    // The application's one runtime token, this environment's (#728) — the entry `pithy token mint runtime
+    // --env staging` writes. It is resolved here, not passed through: the template literal is a
+    // placeholder, and binding a name provisioning never wrote would deploy a manager that dies on its
+    // first token read.
     expect(resolved.secrets_store_secrets[1]).toEqual({
-      binding: "CLOUDFLARE_API_TOKEN",
+      binding: "RUNTIME_CF_API_TOKEN",
       store_id: "store-abc",
-      secret_name: managerCfApiTokenSecretName("acme"),
+      secret_name: runtimeTokenSecretName("acme", "staging"),
     });
+    expect(resolved.secrets_store_secrets[1]?.secret_name).toBe("acme-staging-runtime-cf-api-token");
     // The write Workflow name is the CLI's dispatch target; both are composed from the binding, so the
     // template's unscoped literals never reach a deploy.
     expect(resolved.workflows.map((w) => w.name)).toEqual([

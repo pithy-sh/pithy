@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
@@ -9,7 +10,7 @@ import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowHostName } from "@pithy-sh/core/src/workflow/naming";
 import { SECRETS_CAPABILITY, secretsRotateWorkflowName, secretsWriteWorkflowName } from "../manager/dispatcher";
 import { type ManagedEnvironment, managedEnvironments } from "../scope";
-import { managerCfApiTokenSecretName, masterKeySecretName } from "./provisionSecrets";
+import { masterKeySecretName, runtimeTokenSecretName } from "./provisionSecrets";
 
 /**
  * The manager's `wrangler.jsonc` template shape — only the fields provisioning resolves. The
@@ -30,8 +31,11 @@ export interface ManagerWranglerTemplate {
   vars: Record<string, string>;
 }
 
-/** The manager's Secrets Store binding for its CF API token — the one a feature's manager never has (#643). */
-const MANAGER_TOKEN_BINDING = "CLOUDFLARE_API_TOKEN";
+/**
+ * The manager's Secrets Store binding for the application's runtime token (#728) — the one a feature's
+ * manager never has (#643).
+ */
+const MANAGER_TOKEN_BINDING = RUNTIME_TOKEN_SECRET;
 
 /** The manager's at-rest rotation Workflow binding — the Workflow a feature's manager never hosts (#643). */
 const ROTATION_BINDING = "AT_REST_ROTATION";
@@ -193,9 +197,9 @@ export function resolveManagerConfig(
 }
 
 /**
- * The Secrets Store entry name behind one of the manager's store bindings. The master key is
- * per-environment; the CF API token is `global`. Both are project-scoped, because the account has
- * one flat Secrets Store and the name is the only partition in it.
+ * The Secrets Store entry name behind one of the manager's store bindings. Both are per environment —
+ * the master key, and the application's runtime token (#728). Both are project-scoped, because the
+ * account has one flat Secrets Store and the name is the only partition in it.
  */
 function managerStoreEntryName(
   binding: string,
@@ -208,7 +212,7 @@ function managerStoreEntryName(
       return masterKeySecretName(project, env, feature);
     case MANAGER_TOKEN_BINDING:
       // Never reached for a feature: its manager's config has no token binding to resolve (#643).
-      return managerCfApiTokenSecretName(project);
+      return runtimeTokenSecretName(project, env);
     default:
       throw new InternalError({
         message: "The secrets manager template declares a Secrets Store binding provisioning never writes.",

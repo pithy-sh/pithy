@@ -188,6 +188,23 @@ export interface SecretProbe {
   probe(request: SecretProbeRequest): Promise<boolean>;
 }
 
+/** One field question, asked of one environment's manager about one `json` secret. Names, never a value. */
+export interface SecretFieldProbeRequest extends SecretProbeRequest {
+  /** The top-level field to ask about. */
+  field: string;
+}
+
+/**
+ * **Whether a stored `json` secret still carries one field (#728)** — a presence bit one level down. The
+ * value is opened inside the manager and never leaves it. Asked to find a `media-storage-credentials` bundle
+ * still holding the Cloudflare token an operator supplied before the runtime token replaced it.
+ *
+ * Resolves `false` for a secret that is not stored at all, since it carries nothing.
+ */
+export interface SecretFieldProbe {
+  carries(request: SecretFieldProbeRequest): Promise<boolean>;
+}
+
 /** One store verification, asked of one environment's manager. Carries no name and no value. */
 export interface SecretStoreVerifyRequest {
   /** Which environment's store. The store is per environment, like the master key that opens it. */
