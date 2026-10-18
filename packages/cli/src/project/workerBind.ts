@@ -3,9 +3,12 @@
 
 import { basename, join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { commandName, workerDirOf } from "@pithy-sh/core/src/cli/command";
 import { ConflictError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { SELF_BINDING } from "@pithy-sh/core/src/worker/identity";
+import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import { addAction, addPlan, projectAddFacts } from "../capabilities/addCommand";
 import { HOST_WORKERS, hostWorkerFor } from "../capabilities/hostRegistry";
 import { writeFileAtomic } from "./atomic";
@@ -49,13 +52,17 @@ import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./
 /** What a target is: another `apps/` Worker, or a kit Worker named by its capability. */
 export type ServiceTargetKind = "app" | "kit";
 
+/** A binding as the clash check reads it: what it is, by what name, and where a service binding points. */
+type DeclaredBinding = Pick<BindingSpec, "type" | "name" | "service">;
+
 /** One Worker of the project, with what it declares. */
 export interface ServiceWorker extends ServiceWorkerNames {
   /**
-   * Every binding its capabilities declare, the app's included, or `null` when its config would not load — a
-   * binding name is checked for a clash against this.
+   * Every binding its env already carries by name — its capabilities' `requiredBindings`, the app's included, and
+   * each Workflow binding their jobs declare — or `null` when its config would not load. A new binding name is
+   * checked for a clash against this.
    */
-  bindings: BindingSpec[] | null;
+  bindings: DeclaredBinding[] | null;
   /** The service bindings its own app declares: from the loaded config, or from the source when that failed. */
   services: ServiceDeclaration[];
   /** The capabilities it composes, by name. Empty when its config would not load. */
@@ -89,6 +96,14 @@ function appServices(config: WorkerConfig): ServiceDeclaration[] {
   );
 }
 
+/**
+ * Each Workflow binding a composed capability's jobs declare. They reach the env through `app.workflows` and
+ * `pithy worker sync`, never through `requiredBindings`, so a clash check that read only those would miss them.
+ */
+function jobBindings(capabilities: readonly Capability[]): DeclaredBinding[] {
+  return capabilities.flatMap((capability) => workflowBindings(capability.workflows ?? {}));
+}
+
 /** A config's literal service declarations, read off the file, for a Worker whose config would not load. */
 async function sourceServices(dir: string): Promise<ServiceDeclaration[]> {
   const source = await readOptionalFile(join(dir, "pithy.config.ts"));
@@ -115,7 +130,10 @@ export async function readServiceProject(options: ServiceProjectOptions): Promis
         const capabilities = allCapabilities(config);
         found.push({
           ...names,
-          bindings: capabilities.flatMap((capability) => capability.requiredBindings),
+          bindings: [
+            ...capabilities.flatMap((capability) => capability.requiredBindings),
+            ...jobBindings(capabilities),
+          ],
           services: appServices(config),
           capabilities: capabilities.map((capability) => capability.name),
         });
@@ -133,6 +151,14 @@ export async function readServiceProject(options: ServiceProjectOptions): Promis
     }
     return found;
   });
+  // **A target named by its deploy name is the same Worker (#617).** `pithy provision` has always resolved a
+  // service binding by either name, so every reader here sees one: the directory name, which is what `bind`
+  // writes, what the loop check and the deploy order key on, and what `worker remove` asks about.
+  const directoryOf = (target: string): string =>
+    workers.find((worker) => worker.app === target || worker.deployedAs === target)?.app ?? target;
+  for (const worker of workers) {
+    worker.services = worker.services.map((service) => ({ ...service, target: directoryOf(service.target) }));
+  }
   const composed = new Set(workers.flatMap((worker) => worker.capabilities));
   return {
     workers,
@@ -231,7 +257,7 @@ export interface BindWorkerOptions extends ServiceProjectOptions {
 }
 
 /** The binder's config, or the reason it would not load, thrown. `bind` and `unbind` both edit it. */
-function requireLoaded(worker: ServiceWorker): BindingSpec[] {
+function requireLoaded(worker: ServiceWorker): DeclaredBinding[] {
   if (worker.bindings !== null) return worker.bindings;
   throw worker.loadError instanceof PithyError
     ? worker.loadError
@@ -295,6 +321,12 @@ export async function bindWorker(options: BindWorkerOptions): Promise<ServiceBin
       action: "Pass --binding in SCREAMING_SNAKE_CASE, like APP_B.",
     });
   }
+  if (binding === SELF_BINDING) {
+    throw new ConflictError({
+      message: `${SELF_BINDING} is the binding ${commandName("provision")} writes for administersItself (#616).`,
+      action: "Pass a different --binding.",
+    });
+  }
   const bindings = requireLoaded(from);
   const report = { from: from.app, to: target.name, kind: target.kind };
 
@@ -349,11 +381,12 @@ export async function unbindWorker(options: UnbindWorkerOptions): Promise<Servic
   const project = await readServiceProject(options);
   const from = resolveBinder(project, options.from);
   requireLoaded(from);
+  // `--to` by either name: `bind` stores the directory name, and `readServiceProject` normalized every target to it.
+  const to = options.to === undefined ? null : (appWorker(project, options.to)?.app ?? options.to);
   const found = from.services.find((service) =>
-    options.binding !== undefined ? service.binding === options.binding : service.target === options.to,
+    options.binding !== undefined ? service.binding === options.binding : service.target === to,
   );
   if (!found) {
-    const to = options.to === undefined ? null : (appWorker(project, options.to)?.app ?? options.to);
     const kind: ServiceTargetKind | null = to === null ? null : hostWorkerFor(to) ? "kit" : "app";
     return {
       from: from.app,

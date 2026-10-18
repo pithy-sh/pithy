@@ -7,7 +7,15 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { bindersOf, bindWorker, boundRefusal, readServiceProject, unbindWorker } from "./workerBind";
+import {
+  bindersOf,
+  bindsKitWorker,
+  bindWorker,
+  boundRefusal,
+  declaredServices,
+  readServiceProject,
+  unbindWorker,
+} from "./workerBind";
 
 let projectDir: string;
 
@@ -108,6 +116,29 @@ describe("bindWorker", () => {
     expect(action).toBe("Pass a different --binding.");
   });
 
+  test("SELF is refused: provision writes it for a Worker that administers itself", async () => {
+    const { message } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b", binding: "SELF" }));
+    expect(message).toBe("SELF is the binding pithy provision writes for administersItself (#616).");
+  });
+
+  test("a name the app's own Workflow binds is refused", async () => {
+    await writeApp(
+      "app-a",
+      configSource("app-a").replace(
+        "requiredBindings: [],",
+        'requiredBindings: [],\n  workflows: { rotate: { binding: "KEY_ROTATION", className: "KeyRotation" } },',
+      ),
+    );
+    const { message } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b", binding: "KEY_ROTATION" }));
+    expect(message).toBe("app-a already binds KEY_ROTATION, to a Workflow.");
+  });
+
+  test("a target named by its deploy name binds the Worker by its directory name", async () => {
+    const report = await bindWorker({ projectDir, from: "app-a", to: "acme-app-b" });
+    expect(report.to).toBe("app-b");
+    expect((await wranglerOf("app-a")).env.prod?.services).toEqual([{ binding: "APP_B", service: "acme-prod-app-b" }]);
+  });
+
   test("a second binding to the same target under another name is refused", async () => {
     await bindWorker({ projectDir, from: "app-a", to: "app-b" });
     const { message } = await refusal(bindWorker({ projectDir, from: "app-a", to: "app-b", binding: "OTHER" }));
@@ -181,6 +212,98 @@ describe("unbindWorker", () => {
     expect(await configOf("app-a")).toBe(before);
     const again = await unbindWorker({ projectDir, from: "app-a", binding: "APP_B" });
     expect(again).toEqual({ from: "app-a", to: null, binding: "APP_B", kind: null, changed: false });
+  });
+});
+
+describe("a declaration that names its target by deploy name", () => {
+  beforeEach(async () => {
+    await writeApp("app-a", configSource("app-a", [SERVICE("BEE", "acme-app-b")]));
+  });
+
+  test("is an edge to the Worker's directory name, so remove, deploy and doctor see it", async () => {
+    const project = await readServiceProject({ projectDir });
+    expect(project.edges).toEqual([{ from: "app-a", binding: "BEE", to: "app-b" }]);
+    expect(bindersOf(project, "app-b")).toEqual(["app-a"]);
+    expect(bindersOf(project, "acme-app-b")).toEqual(["app-a"]);
+  });
+
+  test("closes a loop the same as one by directory name", async () => {
+    const { message } = await refusal(bindWorker({ projectDir, from: "app-b", to: "app-a" }));
+    expect(message).toBe("app-b -> app-a would close a loop: app-a -> app-b -> app-a.");
+  });
+
+  test("is not bound a second time under the directory name", async () => {
+    const report = await bindWorker({ projectDir, from: "app-a", to: "app-b" });
+    expect(report).toMatchObject({ binding: "BEE", changed: false });
+  });
+});
+
+describe("unbindWorker by deploy name", () => {
+  test("--to given the deploy name removes the binding bind wrote", async () => {
+    const before = await configOf("app-a");
+    await bindWorker({ projectDir, from: "app-a", to: "app-b" });
+    const report = await unbindWorker({ projectDir, from: "app-a", to: "acme-app-b" });
+    expect(report).toEqual({ from: "app-a", to: "app-b", binding: "APP_B", kind: "app", changed: true });
+    expect(await configOf("app-a")).toBe(before);
+  });
+});
+
+describe("readServiceProject, per Worker", () => {
+  test("a config that broke keeps the Worker, its literal declarations and the reason", async () => {
+    await writeApp("app-a", configSource("app-a", [SERVICE("APP_B", "app-b")]));
+    const broken = new Error("syntax");
+    const project = await readServiceProject({
+      projectDir,
+      loadConfig: async (dir, options) => {
+        if (dir.endsWith("app-a")) throw broken;
+        const { loadWorkerConfig } = await import("./config");
+        return loadWorkerConfig(dir, options);
+      },
+    });
+    const appA = project.workers.find((worker) => worker.app === "app-a");
+    expect(appA).toMatchObject({ bindings: null, capabilities: [], loadError: broken });
+    expect(appA?.services).toEqual([{ binding: "APP_B", target: "app-b" }]);
+    expect(bindersOf(project, "app-b")).toEqual(["app-a"]);
+  });
+
+  test("no pithy.config.ts at all is a Worker with nothing declared, and no fault", async () => {
+    await rm(join(projectDir, "apps", "app-b", "pithy.config.ts"));
+    const project = await readServiceProject({ projectDir });
+    const appB = project.workers.find((worker) => worker.app === "app-b");
+    expect(appB).toEqual({
+      app: "app-b",
+      dir: join(projectDir, "apps", "app-b"),
+      deployedAs: "acme-app-b",
+      bindings: [],
+      services: [],
+      capabilities: [],
+    });
+  });
+});
+
+describe("bindsKitWorker", () => {
+  test("is true only once an app binds a kit Worker", async () => {
+    expect(await bindsKitWorker({ projectDir })).toBe(false);
+    await bindWorker({ projectDir, from: "app-a", to: "app-b" });
+    expect(await bindsKitWorker({ projectDir })).toBe(false);
+    await bindWorker({ projectDir, from: "app-a", to: "email" });
+    expect(await bindsKitWorker({ projectDir })).toBe(true);
+  });
+
+  test("is false, never a throw, for a project it cannot read", async () => {
+    const discoverWorkers = async () => {
+      throw new Error("unreadable");
+    };
+    expect(await bindsKitWorker({ projectDir, discoverWorkers })).toBe(false);
+  });
+});
+
+describe("declaredServices", () => {
+  test("lists the app's service bindings, and nothing for a config that will not load", async () => {
+    await bindWorker({ projectDir, from: "app-a", to: "app-b" });
+    expect(await declaredServices(join(projectDir, "apps", "app-a"))).toEqual([{ binding: "APP_B", target: "app-b" }]);
+    await writeFile(join(projectDir, "apps", "app-b", "pithy.config.ts"), "export default {;\n");
+    expect(await declaredServices(join(projectDir, "apps", "app-b"))).toEqual([]);
   });
 });
 

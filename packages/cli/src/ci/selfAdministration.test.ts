@@ -103,6 +103,10 @@ const SELF_BINDING_MODULES = new Map<string, string>([
   ["provision/wranglerEnv.ts", "the writer — it composes the entry from the `name` it writes in the same edit"],
   ["doctor/selfBinding.ts", "the reader — it reports a declared project whose stanza does not carry it"],
   [
+    "project/workerBind.ts",
+    "the refuser — `pithy worker bind` refuses the name as a --binding, so an app binding cannot overwrite the entry the writer composes. It composes nothing.",
+  ],
+  [
     "project/workerCommand.ts",
     "the mover — a rename carries the entry to the renamed script through `renamedScript`, the same helper that moves the `name` it was composed from. It composes nothing: a target that does not carry the worker segment is left alone.",
   ],

@@ -65,6 +65,15 @@ describe("checkServiceBindings", () => {
     expect(serviceBindingFix(check.faults[0] as never)).toBe("pithy worker unbind --from app-a --binding APP_Z");
   });
 
+  test("a target named by its deploy name is that Worker, and a loop through it is still a loop", async () => {
+    await app("app-a", [["APP_B", "acme-app-b"]]);
+    await app("app-b");
+    expect(await checkServiceBindings({ projectDir })).toEqual({ state: "ok", faults: [] });
+    await app("app-b", [["APP_A", "app-a"]]);
+    const check = await checkServiceBindings({ projectDir });
+    expect(check.faults.map((fault) => fault.kind)).toEqual(["loop"]);
+  });
+
   test("a kit target whose capability nothing composes any more is reported", async () => {
     await app("app-a", [["EMAIL", "email"]]);
     const check = await checkServiceBindings({ projectDir });

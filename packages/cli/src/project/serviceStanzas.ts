@@ -27,7 +27,7 @@ import { stanzaFor } from "./wranglerInheritance";
 
 /** One Worker of the project, by both of its names, and where it lives. */
 export interface ServiceWorkerNames {
-  /** Its `apps/<app>` directory name — what a service binding targets it by. */
+  /** Its `apps/<app>` directory name — what `pithy worker bind` targets it by. Its deploy name works too. */
   app: string;
   /** Its directory. */
   dir: string;
@@ -56,7 +56,8 @@ export async function serviceScripts(project: string, workers: readonly ServiceW
     }
   }
   return (target, env) => {
-    const worker = workers.find((candidate) => candidate.app === target);
+    // By either name: `pithy provision` has always taken a deploy name here, and a declaration may carry one.
+    const worker = workers.find((candidate) => candidate.app === target || candidate.deployedAs === target);
     if (worker) {
       if (env === LOCAL_ENVIRONMENT) return worker.deployedAs;
       return environmentScope(project, env).worker(

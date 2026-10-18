@@ -842,7 +842,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   for (const member of set.members) {
     if (member.kind !== "app") continue;
     const pinned = config.workers[member.worker.name];
-    if (pinned) appOrigins[basename(member.worker.dir)] = pinned.origin;
+    // By both names, as `pithy provision` resolves a target: a declaration may name the Worker either way.
+    if (pinned) {
+      appOrigins[basename(member.worker.dir)] = pinned.origin;
+      appOrigins[member.worker.name] = pinned.origin;
+    }
     const declared = await (options.serviceBindingsFor ?? declaredServices)(member.worker.dir);
     if (declared.length > 0) declaredServicesOf.set(member.worker.name, declared);
   }
@@ -1684,6 +1688,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     const env = childEnvFor(
       spawnsUnderSession ? withCurrentSessionToken(childEnv, { cwd: projectDir }) : childEnv,
       ownOrigin,
+      services,
     );
     const child = spawn(command, args, { cwd: worker.dir, env, detached: hasSetsid });
     // Replaced in place on a restart, so `shutdown` signals the child that is actually running and the

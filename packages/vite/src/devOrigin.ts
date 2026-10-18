@@ -3,6 +3,7 @@
 
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { ENVIRONMENT_VAR, WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
+import { SERVICE_ORIGINS_VAR } from "@pithy-sh/core/src/worker/serviceLoopback";
 
 /**
  * The slice of `@cloudflare/vite-plugin`'s worker config this touches.
@@ -50,6 +51,11 @@ export type WorkerVarValue = string | number | boolean | null | WorkerVarValue[]
  * checkout signed tokens as the first one and its own seam denied every call, 401, with every stored
  * value agreeing (#462, `pithy-sh/dashboard#95`).
  *
+ * **It also hands on where each service binding answers (#617).** `pithy dev` publishes the Worker's
+ * {@link SERVICE_ORIGINS_VAR} into this process's environment, for the reason it publishes the origin there:
+ * no argv. Passed on as the var of the same name, it is what core's `withLocalServices` reads to send
+ * `env.<BINDING>.fetch()` to the target's pinned port. A Worker that binds nothing is handed nothing.
+ *
  * **Outside `pithy dev` it does nothing at all.** A plain `vite dev`, a build, or CI has no
  * {@link WORKER_ORIGIN_VAR} in its environment, and the Worker keeps whatever `wrangler.jsonc` says —
  * which for a deployed environment is the value `applyDomains` generated from `domains`, and is
@@ -58,10 +64,15 @@ export type WorkerVarValue = string | number | boolean | null | WorkerVarValue[]
 export function devWorkerConfig(env: NodeJS.ProcessEnv = process.env): (config: WorkerVars) => WorkerVars {
   return (config) => {
     const origin = env[WORKER_ORIGIN_VAR];
+    const services = env[SERVICE_ORIGINS_VAR];
     // Absent, blank, or whitespace is "nobody allocated one", never "use the empty string". An empty
     // `BASE_URL` is worse than a wrong one: it fails a URL parse somewhere far from here rather than
     // being denied at the seam with the origin named.
-    if (origin === undefined || origin.trim() === "") return {};
+    const given = {
+      ...(origin === undefined || origin.trim() === "" ? {} : { BASE_URL: origin }),
+      ...(services === undefined || services.trim() === "" ? {} : { [SERVICE_ORIGINS_VAR]: services }),
+    };
+    if (Object.keys(given).length === 0) return {};
     // And never over a config that says, itself, that it is not dev.
     //
     // The customizer is applied on `build` as well as on `serve`, and it beats the `vars` the file
@@ -76,6 +87,6 @@ export function devWorkerConfig(env: NodeJS.ProcessEnv = process.env): (config: 
     // the fix from the dev run it exists for — the failure this whole issue was.
     const environment = config.vars?.[ENVIRONMENT_VAR];
     if (typeof environment === "string" && environment !== LOCAL_ENVIRONMENT) return {};
-    return { vars: { ...config.vars, BASE_URL: origin } };
+    return { vars: { ...config.vars, ...given } };
   };
 }

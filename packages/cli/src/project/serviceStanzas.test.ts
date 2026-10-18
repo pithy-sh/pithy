@@ -54,6 +54,13 @@ describe("serviceScripts", () => {
     expect(scripts("app-b", "staging")).toBe("acme-app-b-staging");
   });
 
+  test("an apps/ target named by its deploy name resolves the same, as provision has always taken it", async () => {
+    const scripts = await serviceScripts("acme", [appA, appB]);
+    expect(scripts("acme-app-b", "dev")).toBe("acme-app-b");
+    expect(scripts("acme-app-b", "prod")).toBe("acme-prod-app-b");
+    expect(scripts("acme-app-b", "staging")).toBe("acme-app-b-staging");
+  });
+
   test("a kit Worker resolves to its host's script in that environment", async () => {
     const scripts = await serviceScripts("acme", [appA]);
     expect(scripts("email", "staging")).toBe("acme-staging-email");
