@@ -106,7 +106,14 @@ function assertPermissionKeys(keys: readonly string[], where: string): Permissio
   return keys as PermissionKey[];
 }
 
-/** Build the aggregating `ci-system` profile: the base permissions ∪ every capability's `ciPermissions`. */
+/**
+ * Build the aggregating `ci-system` profile: the base permissions ∪ every capability's `ciPermissions` ∪
+ * `queues:write` where a composed capability binds a queue.
+ *
+ * **The queue permission is derived from the binding, not declared (#662).** `pithy provision` creates the queue
+ * behind every `queue` binding it composes, the adopter's own app's included, and the app has no `ciPermissions`
+ * anyone would think to write. A permission read off the binding cannot be forgotten by whoever declares it.
+ */
 function ciSystemProfile(capabilities: readonly Capability[]): TokenProfile {
   const permissions: PermissionKey[] = [...CI_SYSTEM_BASE];
   for (const capability of capabilities) {
@@ -114,6 +121,10 @@ function ciSystemProfile(capabilities: readonly Capability[]): TokenProfile {
       if (!permissions.includes(key)) permissions.push(key);
     }
   }
+  const bindsQueue = capabilities.some((capability) =>
+    capability.requiredBindings.some((binding) => binding.type === "queue"),
+  );
+  if (bindsQueue && !permissions.includes("queues:write")) permissions.push("queues:write");
   return {
     name: CI_SYSTEM_PROFILE,
     permissions,
