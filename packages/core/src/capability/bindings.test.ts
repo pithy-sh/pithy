@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { BindingSpec, BindingType } from "./bindings";
+import {
+  BindingSpec,
+  BindingType,
+  isProvisionedBinding,
+  isWrittenBinding,
+  type SeedPolicy,
+  seedPolicy,
+} from "./bindings";
 
 describe("BindingType", () => {
   test("accepts each known resource kind", () => {
@@ -19,6 +26,13 @@ describe("BindingType", () => {
       "workflow",
       "service",
       "durable_object",
+      "hyperdrive",
+      "browser",
+      "images",
+      "analytics_engine_datasets",
+      "pipelines",
+      "mtls_certificates",
+      "dispatch_namespaces",
     ]) {
       expect(BindingType.parse(t)).toBe(t);
     }
@@ -26,6 +40,74 @@ describe("BindingType", () => {
 
   test("rejects an unknown kind", () => {
     expect(() => BindingType.parse("banana")).toThrow();
+  });
+});
+
+/**
+ * The answer `seedPolicy` gives for every kind, written out here so a member added to `BindingType` without one
+ * fails this file rather than inheriting a default (#662).
+ */
+const SEED_POLICIES: Record<string, SeedPolicy> = {
+  ai: "carry",
+  ratelimit: "carry",
+  browser: "carry",
+  images: "carry",
+  hyperdrive: "carry",
+  analytics_engine_datasets: "carry",
+  mtls_certificates: "carry",
+  dispatch_namespaces: "carry",
+  pipelines: "carry",
+  d1: "provision",
+  kv: "provision",
+  r2: "provision",
+  vectorize: "provision",
+  queue: "provision",
+  durable_object: "provision",
+  workflow: "provision",
+  service: "provision",
+  secret: "provision",
+  email: "branch",
+};
+
+describe("seedPolicy", () => {
+  test("answers for every BindingType member, and the answer is the one this file states", () => {
+    for (const option of BindingType.options) {
+      const type = option.value;
+      expect(SEED_POLICIES[type], `no stated seed policy for ${type}`).toBeDefined();
+      expect(seedPolicy(type)).toBe(SEED_POLICIES[type]);
+    }
+    expect(Object.keys(SEED_POLICIES).sort()).toEqual(BindingType.options.map((option) => option.value).sort());
+  });
+
+  test("is three-valued: a feature inherits dev's mail routing, a declared environment does not", () => {
+    // `send_email` proved a boolean is too few (#650 review). Carrying it everywhere wrote a laptop's address
+    // into production's first stanza; emptying it everywhere left a feature with no `NOTIFY`.
+    expect(new Set(BindingType.options.map((option) => seedPolicy(option.value)))).toEqual(
+      new Set(["carry", "provision", "branch"]),
+    );
+  });
+});
+
+describe("isWrittenBinding", () => {
+  test("writes every pure-wrangler-entry kind, and provisions none of them", () => {
+    for (const type of [
+      "hyperdrive",
+      "browser",
+      "images",
+      "analytics_engine_datasets",
+      "pipelines",
+      "mtls_certificates",
+      "dispatch_namespaces",
+    ] as const) {
+      expect(isWrittenBinding(type), type).toBe(true);
+      expect(isProvisionedBinding(type), type).toBe(false);
+    }
+  });
+
+  test("writes a queue's producer entry and an email's send_email entry", () => {
+    // Both were in neither set, so `appendBinding` answered `unsupported` and nothing anywhere wrote them.
+    expect(isWrittenBinding("queue")).toBe(true);
+    expect(isWrittenBinding("email")).toBe(true);
   });
 });
 
@@ -121,6 +203,46 @@ describe("BindingSpec", () => {
     }
   });
 
+  test("takes the account-level resource a carried kind addresses, and requires it where wrangler does", () => {
+    expect(
+      BindingSpec.parse({ type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" }),
+    ).toEqual({ type: "hyperdrive", name: "HYPERDRIVE", optional: false, target: "a76a99bc342644deb02c38d66082262a" });
+    // Wrangler refuses each of these entries without the resource it names, so the spec refuses it first,
+    // attributed to the binding, before any writer could emit a config that will not load.
+    for (const type of ["hyperdrive", "mtls_certificates", "pipelines", "dispatch_namespaces"]) {
+      expect(() => BindingSpec.parse({ type, name: "THING" }), type).toThrow(/THING.*target/);
+    }
+    // A dataset is optional to wrangler, so it is optional here.
+    expect(BindingSpec.parse({ type: "analytics_engine_datasets", name: "EVENTS" })).toEqual({
+      type: "analytics_engine_datasets",
+      name: "EVENTS",
+      optional: false,
+    });
+  });
+
+  test("refuses a target that is not an id or a resource name", () => {
+    for (const target of ['x", "evil": "', "two words", "-leading"]) {
+      expect(() => BindingSpec.parse({ type: "hyperdrive", name: "HYPERDRIVE", target }), target).toThrow(/target/);
+    }
+  });
+
+  test("refuses a target on a kind that addresses no account-level resource by it", () => {
+    for (const type of ["d1", "browser", "images", "ai", "queue"]) {
+      expect(() => BindingSpec.parse({ type, name: "THING", target: "x" }), type).toThrow(/THING.*target/);
+    }
+  });
+
+  test("names a queue's resource like a d1's: scope and resource are honored", () => {
+    // A queue is the fourth kind Pithy names and creates (#662), so the two naming fields mean something on it.
+    expect(BindingSpec.parse({ type: "queue", name: "JOBS", scope: "global", resource: "jobs" })).toEqual({
+      type: "queue",
+      name: "JOBS",
+      optional: false,
+      scope: "global",
+      resource: "jobs",
+    });
+  });
+
   test("ignores a key it has never heard of, so an older kit can still read a newer manifest", () => {
     // A manifest ships in the capability's package and is parsed by whatever CLI the adopter has. A field
     // a later release adds must degrade to "not stated" in an earlier one — refusing it would take a
@@ -135,7 +257,7 @@ describe("BindingSpec", () => {
 
 describe("BindingType descriptions", () => {
   test("every option carries a non-empty description (self-documenting)", () => {
-    expect(BindingType.options).toHaveLength(12);
+    expect(BindingType.options).toHaveLength(19);
     for (const option of BindingType.options) {
       expect(option.description).toBeTruthy();
     }

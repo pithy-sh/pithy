@@ -34,11 +34,26 @@ import { assertValidProjectName, kebab } from "./resource";
  * implementation rather than two that drift.
  */
 
-/** A Cloudflare resource kind a feature can provision. All two characters — `MAX_FEATURE_KIND` in `./limits`. */
-export type FeatureResourceKind = "d1" | "kv" | "r2";
+/** A Cloudflare resource kind Pithy names and creates — in a feature, and in every declared environment. */
+export type FeatureResourceKind = "d1" | "kv" | "r2" | "queue";
 
 /** Every feature resource kind, for tests and for callers that enumerate. */
-export const FEATURE_RESOURCE_KINDS: readonly FeatureResourceKind[] = ["d1", "kv", "r2"];
+export const FEATURE_RESOURCE_KINDS: readonly FeatureResourceKind[] = ["d1", "kv", "r2", "queue"];
+
+/**
+ * **The segment each kind ends a feature resource's name with — never more than `MAX_FEATURE_KIND` (#662).**
+ *
+ * `d1`, `kv` and `r2` spell themselves. A queue is `q`, and that is load-bearing: `MAX_FEATURE_KIND` is a term in
+ * `FEATURE_DERIVED_PROJECT_NAME`, so spelling it `queue` would take the project budget from 26 to 23 — and a
+ * project name is stable forever once anything is provisioned, so a smaller budget orphans every resource of a
+ * project already named against the old one. `feature.test.ts` fails on a segment longer than the budget.
+ */
+export const FEATURE_KIND_SEGMENT: Readonly<Record<FeatureResourceKind, string>> = {
+  d1: "d1",
+  kv: "kv",
+  r2: "r2",
+  queue: "q",
+};
 
 /** The identity of a feature — everything a feature name is derived from. */
 export interface FeatureIdentity {
@@ -292,10 +307,11 @@ export function assertFeatureSlugFits(identity: FeatureIdentity, shapes: readonl
 }
 
 /**
- * The full Cloudflare resource name for a feature's binding — `<project>-f<issue>-<slug>--<binding>-<kind>`.
+ * The full Cloudflare resource name for a feature's binding — `<project>-f<issue>-<slug>--<binding>-<kind>`, the
+ * kind spelled by {@link FEATURE_KIND_SEGMENT}.
  *
- * Held to **R2's 63**, the strictest of the three kinds a feature provisions, so one shape is legal for
- * all of them: lowercase, hyphenated, alphanumeric at both ends. A D1 or KV name could be longer, but a
+ * Held to **R2's 63**, the strictest of the kinds a feature provisions and a queue's number too, so one shape is
+ * legal for all of them: lowercase, hyphenated, alphanumeric at both ends. A D1 or KV name could be longer, but a
  * feature that provisions a bucket and a database wants them recognizably the same name.
  */
 export function featureResourceName(identity: FeatureIdentity, binding: string, kind: FeatureResourceKind): string {
@@ -303,7 +319,7 @@ export function featureResourceName(identity: FeatureIdentity, binding: string, 
     identity,
     kebab(identity.slug),
     kebab(binding),
-    `-${kind}`,
+    `-${FEATURE_KIND_SEGMENT[kind]}`,
     NAMESPACE_LIMITS.r2.maxLength,
     NAMESPACE_LIMITS.r2.label,
   );

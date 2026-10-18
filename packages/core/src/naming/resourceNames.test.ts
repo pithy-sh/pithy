@@ -30,6 +30,21 @@ describe("resourceNames", () => {
   });
 });
 
+describe("a queue's name (#662)", () => {
+  it("is held to Cloudflare's 63 and truncated, like a bucket, because it is recomputed on every run", () => {
+    const long = resourceNames("a".repeat(MAX_PROJECT_NAME)).env("staging").queue("q".repeat(80));
+    expect(long.length).toBe(NAMESPACE_LIMITS.queue.maxLength);
+    expect(long).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
+  });
+
+  it("composes the project-global queue and a feature's own", () => {
+    expect(names.global.queue("JOBS")).toBe("acme-global-jobs");
+    expect(names.feature({ issue: "69", slug: "media-cli" }).resource("JOBS", "queue")).toBe(
+      "acme-f69-media-cli--jobs-q",
+    );
+  });
+});
+
 describe("an environment's names", () => {
   const prod = names.env("prod");
 
@@ -39,6 +54,7 @@ describe("an environment's names", () => {
     expect(prod.d1("DB")).toBe("acme-prod-db");
     expect(prod.kv("SESSIONS")).toBe("acme-prod-sessions");
     expect(prod.r2("STORAGE_BUCKET")).toBe("acme-prod-storage-bucket");
+    expect(prod.queue("JOBS")).toBe("acme-prod-jobs");
     expect(prod.vectorizeIndex("docs")).toBe("acme-prod-docs");
     expect(prod.secretEntry("secrets-encryption-keys")).toBe("acme-prod-secrets-encryption-keys");
     expect(prod.apiToken("ci-system")).toBe("acme-prod-ci-system");

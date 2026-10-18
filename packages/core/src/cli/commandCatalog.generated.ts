@@ -2137,7 +2137,8 @@ export const COMMANDS = {
           "routes:write",
           "analytics:read",
           "images:write",
-          "stream:write"
+          "stream:write",
+          "queues:write"
         ]
       },
       "--json": {
@@ -2217,7 +2218,8 @@ export const COMMANDS = {
           "routes:write",
           "analytics:read",
           "images:write",
-          "stream:write"
+          "stream:write",
+          "queues:write"
         ]
       },
       "--keep-previous": {
