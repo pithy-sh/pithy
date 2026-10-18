@@ -52,6 +52,7 @@ function harness(
   const corpus: CorpusState = {
     embedding: vi.fn(async () => ({ declaredModel: 3, otherModel: 1, unembedded: 0 })),
     namespaces: vi.fn(async () => 2),
+    hasStale: vi.fn(async () => true),
   };
   const verify: ControlPlaneVerifier = async (_request, requirement) => {
     if (typeof requirement === "string" && !granted.includes(requirement)) throw new Error(`ungranted ${requirement}`);

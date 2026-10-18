@@ -14,10 +14,10 @@ import { VECTOR_INDEXES_READ_SCOPE } from "../http/scopes";
 import { filterable } from "../index/filter";
 import { VECTOR_PROVISIONED_VAR, type VectorProvisionRecord } from "../index/provisioned";
 import {
-  STALE_VECTOR_DOCUMENTS,
-  staleDocuments,
+  corpusEmbedding,
   UNPROVISIONED_VECTOR_INDEXES,
   unprovisionedIndexes,
+  VECTOR_CORPUS_EMBEDDING,
   vectorHealth,
 } from "./health";
 
@@ -38,12 +38,16 @@ const config = VectorConfig.parse({
   },
 });
 
-const corpus = (counts: Record<string, { declaredModel: number; otherModel: number; unembedded: number }>) =>
+/** A corpus where the named indexes hold a row off their declared model. The counts must never be read. */
+const corpus = (staleIndexes: readonly string[]) =>
   ({
-    embedding: vi.fn(
-      async (indexName: string) => counts[indexName] ?? { declaredModel: 0, otherModel: 0, unembedded: 0 },
-    ),
-    namespaces: vi.fn(async () => 0),
+    embedding: vi.fn(async () => {
+      throw new Error("the manifest must not count the corpus: a count reads every row an index holds");
+    }),
+    namespaces: vi.fn(async () => {
+      throw new Error("the manifest must not count namespaces");
+    }),
+    hasStale: vi.fn(async (indexName: string) => staleIndexes.includes(indexName)),
   }) satisfies CorpusState;
 
 function keyed(name: string): HealthSummaryKey {
@@ -55,12 +59,19 @@ function keyed(name: string): HealthSummaryKey {
 describe("the health declaration (#730)", () => {
   test("declares exactly the two keys, both behind the index read's own scope", () => {
     const keys = vectorHealth(config).keys;
-    expect(keys.map((key) => key.key)).toEqual([STALE_VECTOR_DOCUMENTS, UNPROVISIONED_VECTOR_INDEXES]);
+    expect(keys.map((key) => key.key)).toEqual([VECTOR_CORPUS_EMBEDDING, UNPROVISIONED_VECTOR_INDEXES]);
     for (const key of keys) expect(key.scope).toBe(VECTOR_INDEXES_READ_SCOPE);
   });
 
-  test("staleVectorDocuments is a count, zero is nominal, answered by the (indexName, model) index", () => {
-    expect(keyed(STALE_VECTOR_DOCUMENTS)).toMatchObject({ kind: "count", nominal: { atMost: 0 }, cost: "indexed" });
+  test("vectorCorpusEmbedding is a state, current is nominal, answered by bounded seeks on the (indexName, model) index", () => {
+    // A state and not a count: `indexed` means the rows read are bounded by a declaration, and a count of
+    // stale rows reads every row an index holds. The count is the index read's to report.
+    expect(keyed(VECTOR_CORPUS_EMBEDDING)).toMatchObject({
+      kind: "state",
+      states: ["current", "stale"],
+      nominal: ["current"],
+      cost: "indexed",
+    });
   });
 
   test("unprovisionedVectorIndexes is a count, zero is nominal, read from a var already in hand", () => {
@@ -72,19 +83,17 @@ describe("the health declaration (#730)", () => {
   });
 });
 
-describe("staleDocuments (#730)", () => {
-  test("sums rows on another model and rows on none, across every declared index", async () => {
-    const counts = corpus({
-      docs: { declaredModel: 5, otherModel: 2, unembedded: 1 },
-      faqs: { declaredModel: 1, otherModel: 4, unembedded: 0 },
-    });
-    expect(await staleDocuments(config, counts)).toBe(7);
-    expect(counts.embedding).toHaveBeenCalledWith("docs", "current");
-    expect(counts.embedding).toHaveBeenCalledWith("faqs", "faq-model");
+describe("corpusEmbedding (#730)", () => {
+  test("is stale when any declared index holds a row off its declared model, probing each against its own", async () => {
+    const probes = corpus(["faqs"]);
+    expect(await corpusEmbedding(config, probes)).toBe("stale");
+    expect(probes.hasStale).toHaveBeenCalledWith("docs", "current");
+    expect(probes.hasStale).toHaveBeenCalledWith("faqs", "faq-model");
+    expect(probes.embedding).not.toHaveBeenCalled();
   });
 
-  test("a corpus wholly on its declared models is zero", async () => {
-    expect(await staleDocuments(config, corpus({ docs: { declaredModel: 9, otherModel: 0, unembedded: 0 } }))).toBe(0);
+  test("a corpus wholly on its declared models is current", async () => {
+    expect(await corpusEmbedding(config, corpus([]))).toBe("current");
   });
 });
 
@@ -119,15 +128,15 @@ describe("the health read (#730)", () => {
 
   test("produces both keys from the Worker's env and the corpus", async () => {
     const record: VectorProvisionRecord = { indexes: { docs: { indexName: "app-prod-docs", metadataIndexes: [] } } };
-    const health = vectorHealth(config, () => corpus({ docs: { declaredModel: 0, otherModel: 3, unembedded: 0 } }));
+    const health = vectorHealth(config, () => corpus(["docs"]));
     expect(await health.read(context({ [VECTOR_PROVISIONED_VAR]: JSON.stringify(record) }))).toEqual({
-      [STALE_VECTOR_DOCUMENTS]: 3,
+      [VECTOR_CORPUS_EMBEDDING]: "stale",
       [UNPROVISIONED_VECTOR_INDEXES]: 1,
     });
   });
 
   test("an unreadable record throws, so the seam reports the summary unavailable rather than a zero", async () => {
-    const health = vectorHealth(config, () => corpus({}));
+    const health = vectorHealth(config, () => corpus([]));
     await expect(health.read(context({ [VECTOR_PROVISIONED_VAR]: "{not json" }))).rejects.toThrow();
   });
 });
@@ -137,20 +146,20 @@ describe("the health summary on the manifest (#730)", () => {
   const source = capabilityHealthSources([vector({ indexes: { docs: { model: "m", dimensions: 3 } } })]).get("vector");
 
   test("passes the seam's assembly check: both keys sit behind a scope vector's own admin route requires", () => {
-    expect(source?.keys.map((key) => key.key)).toEqual([STALE_VECTOR_DOCUMENTS, UNPROVISIONED_VECTOR_INDEXES]);
+    expect(source?.keys.map((key) => key.key)).toEqual([VECTOR_CORPUS_EMBEDDING, UNPROVISIONED_VECTOR_INDEXES]);
   });
 
   test("a caller without vector:indexes:read gets no value rather than a zero, and nothing is read", async () => {
-    const produce = vi.fn(async () => ({ [STALE_VECTOR_DOCUMENTS]: 0, [UNPROVISIONED_VECTOR_INDEXES]: 0 }));
+    const produce = vi.fn(async () => ({ [VECTOR_CORPUS_EMBEDDING]: "current", [UNPROVISIONED_VECTOR_INDEXES]: 0 }));
     expect(await readCapabilityHealth(source, ["manifest:read"], produce)).toEqual({ state: "withheld" });
     expect(produce).not.toHaveBeenCalled();
   });
 
-  test("a caller with it gets both counts, zero included", async () => {
-    const produce = async () => ({ [STALE_VECTOR_DOCUMENTS]: 0, [UNPROVISIONED_VECTOR_INDEXES]: 2 });
+  test("a caller with it gets both values, zero included", async () => {
+    const produce = async () => ({ [VECTOR_CORPUS_EMBEDDING]: "current", [UNPROVISIONED_VECTOR_INDEXES]: 2 });
     expect(await readCapabilityHealth(source, [VECTOR_INDEXES_READ_SCOPE], produce)).toEqual({
       state: "reported",
-      values: { [STALE_VECTOR_DOCUMENTS]: 0, [UNPROVISIONED_VECTOR_INDEXES]: 2 },
+      values: { [VECTOR_CORPUS_EMBEDDING]: "current", [UNPROVISIONED_VECTOR_INDEXES]: 2 },
     });
   });
 });

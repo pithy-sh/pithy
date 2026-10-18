@@ -25,10 +25,10 @@ describe("vector()", () => {
     ]);
   });
 
-  it("reports two health counts behind the index read's scope, and adds nothing to the runtime token (#730)", () => {
+  it("reports two health values behind the index read's scope, and adds nothing to the runtime token (#730)", () => {
     const capability = vector(options);
     expect(capability.health?.keys.map((key) => [key.key, key.scope])).toEqual([
-      ["staleVectorDocuments", VECTOR_INDEXES_READ_SCOPE],
+      ["vectorCorpusEmbedding", VECTOR_INDEXES_READ_SCOPE],
       ["unprovisionedVectorIndexes", VECTOR_INDEXES_READ_SCOPE],
     ]);
     // The read is the binding, the corpus and a var. No Cloudflare API call, so no permission on `runtime`.

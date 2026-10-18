@@ -14,9 +14,15 @@ import { VECTOR_INDEXES_READ_SCOPE } from "../http/scopes";
 import { readProvisionRecord, type VectorProvisionRecord } from "../index/provisioned";
 
 /**
- * What vector contributes to its manifest entry: two counts, so a management client can say *this corpus is
- * mixed* and *this index was never provisioned* from the read it already made, and call
- * `GET {basePath}/indexes` to see which (#730).
+ * What vector contributes to its manifest entry: a state and a count, so a management client can say *this
+ * corpus is stale* and *this index was never provisioned* from the read it already made, and call
+ * `GET {basePath}/indexes` to see which and how many (#730).
+ *
+ * **The stale key is a state, not a count.** `cost: "indexed"` means the rows a value reads are bounded by a
+ * declaration, never by the adopter's data. A count of stale rows reads every entry an index holds, even through
+ * `(indexName, model)`, so it would grow with the corpus on every manifest read. Whether *any* row is stale is
+ * three seeks per declared index that each stop at one row. The number belongs to the index read, which a
+ * person asks for once.
  *
  * Both are behind `vector:indexes:read`, the scope the index read already requires, so a caller without it
  * gets no value rather than a zero. `defineCapabilityHealth` checks that at assembly.
@@ -25,21 +31,26 @@ import { readProvisionRecord, type VectorProvisionRecord } from "../index/provis
  * folding it into the unprovisioned count would give one number two meanings. The index read names it.
  */
 
-/** Documents not on their index's declared model: embedded under another, or never embedded. */
-export const STALE_VECTOR_DOCUMENTS = "staleVectorDocuments";
+/** Whether any document is off its index's declared model: embedded under another, or never embedded. */
+export const VECTOR_CORPUS_EMBEDDING = "vectorCorpusEmbedding";
+
+/** The values {@link VECTOR_CORPUS_EMBEDDING} takes. `current` is nominal. */
+export const CORPUS_EMBEDDING_STATES = ["current", "stale"] as const;
+export type CorpusEmbeddingState = (typeof CORPUS_EMBEDDING_STATES)[number];
 
 /** Declared indexes the provision record does not name. */
 export const UNPROVISIONED_VECTOR_INDEXES = "unprovisionedVectorIndexes";
 
 /**
- * Every declared index's stale rows, summed: the set `pithy vector reprocess` re-embeds by default, rows on
- * another model and rows on none. One statement per declared index, so the bound is the config's index count.
+ * `stale` when any declared index holds a row `pithy vector reprocess` would re-embed by default: one on another
+ * model or on none. One statement per declared index, each reading at most three rows, so the bound is the
+ * config's index count and not the corpus.
  */
-export async function staleDocuments(config: VectorConfig, corpus: CorpusState): Promise<number> {
-  const counts = await Promise.all(
-    Object.entries(config.indexes).map(([name, index]) => corpus.embedding(name, index.model)),
+export async function corpusEmbedding(config: VectorConfig, corpus: CorpusState): Promise<CorpusEmbeddingState> {
+  const stale = await Promise.all(
+    Object.entries(config.indexes).map(([name, index]) => corpus.hasStale(name, index.model)),
   );
-  return counts.reduce((sum, count) => sum + count.otherModel + count.unembedded, 0);
+  return stale.some(Boolean) ? "stale" : "current";
 }
 
 /** How many declared indexes the record does not name. No network: the record is a var. */
@@ -68,16 +79,16 @@ export function vectorHealth(
   return defineCapabilityHealth({
     keys: [
       {
-        key: STALE_VECTOR_DOCUMENTS,
-        kind: "count",
-        states: null,
+        key: VECTOR_CORPUS_EMBEDDING,
+        kind: "state",
+        states: [...CORPUS_EMBEDDING_STATES],
         scope: VECTOR_INDEXES_READ_SCOPE,
-        // One count per declared index over `pithyVectorDocumentsModelIdx` on `(indexName, model)`, the
-        // index the migration built for exactly this read. Bounded by how many indexes config declares.
+        // Three `LIMIT 1` seeks per declared index on `pithyVectorDocumentsModelIdx`, `(indexName, model)`.
+        // Rows read: at most three per index config declares, at any corpus size. The workers suite pins the plan.
         cost: "indexed",
-        // Zero is the good answer: every row is in its index's declared embedding space.
-        nominal: { atMost: 0 },
-        summary: `Documents embedded under a model other than the one their index declares, or never embedded. \`${commandName("vector reprocess")}\` re-embeds them.`,
+        // `current` is the good answer: every row is in its index's declared embedding space.
+        nominal: ["current"],
+        summary: `Whether any document is embedded under a model other than the one its index declares, or never embedded. \`${commandName("vector reprocess")}\` re-embeds them.`,
       },
       {
         key: UNPROVISIONED_VECTOR_INDEXES,
@@ -94,7 +105,7 @@ export function vectorHealth(
       // The record first: an unreadable one throws, and the seam reports the summary unavailable.
       const record = readProvisionRecord(c.env as Record<string, unknown>);
       return {
-        [STALE_VECTOR_DOCUMENTS]: await staleDocuments(config, corpus(c)),
+        [VECTOR_CORPUS_EMBEDDING]: await corpusEmbedding(config, corpus(c)),
         [UNPROVISIONED_VECTOR_INDEXES]: unprovisionedIndexes(config, record),
       };
     },

@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { vector_0001_documents } from "../migrations/0001_documents";
-import { vectorCorpusState } from "./corpusState";
+import { staleProbe, vectorCorpusState } from "./corpusState";
 import type { VectorDocument } from "./document";
 import { vectorDocuments } from "./documents";
 import { vectorDatabase } from "./tables";
@@ -78,5 +78,40 @@ describe("vectorCorpusState (#730)", () => {
     const namespaces = await corpus().namespaces("docs");
     expect(namespaces).toBe(2);
     expect(typeof namespaces).toBe("number");
+  });
+
+  test("hasStale answers whether any row is off the declared model, scoped to one index", async () => {
+    expect(await corpus().hasStale("docs", "current")).toBe(false);
+    await documents().put([document("a", { model: "current" }), document("b", { indexName: "faqs", model: "old" })]);
+    expect(await corpus().hasStale("docs", "current")).toBe(false);
+    expect(await corpus().hasStale("faqs", "current")).toBe(true);
+    // Either side of the declared model in sort order, and a row never embedded, are each stale.
+    for (const model of ["aaa-earlier", "zzz-later", null]) {
+      await env.DB.exec("DELETE FROM pithy_vector_documents");
+      await documents().put([document("a", { model: "current" }), document("b", { model })]);
+      expect(await corpus().hasStale("docs", "current")).toBe(true);
+    }
+  });
+
+  test("hasStale is three seeks on the (indexName, model) index, each stopped at its first row, and no scan", async () => {
+    // What makes the health key `indexed`: the rows it reads are bounded by declarations, never by the
+    // corpus. A count over the same index walks every entry for the index name; these probes stop at one.
+    const compiled = staleProbe(vectorDatabase(env.DB), "docs", "current").compile();
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${compiled.sql}`)
+      .bind(...compiled.parameters)
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail);
+    // `CamelCasePlugin` snake-cases the names, so the plan reads `pithy_vector_documents_model_idx`.
+    const searches = details.filter((detail) => detail.includes("pithy_vector_documents_model_idx"));
+    expect(searches).toEqual([
+      expect.stringMatching(/^SEARCH .*\(index_name=\? AND model=\?\)$/),
+      expect.stringMatching(/^SEARCH .*\(index_name=\? AND model<\?\)$/),
+      expect.stringMatching(/^SEARCH .*\(index_name=\? AND model>\?\)$/),
+    ]);
+    // The only scan is SQLite's constant row for a select with no `FROM`. None touches the corpus.
+    expect(details.filter((detail) => detail.includes("pithy_vector_documents") && detail.startsWith("SCAN"))).toEqual(
+      [],
+    );
+    expect(compiled.sql.match(/limit \?/g)).toHaveLength(3);
   });
 });

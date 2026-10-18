@@ -65,6 +65,7 @@ const corpus: CorpusState = {
       : { declaredModel: 0, otherModel: 0, unembedded: 0 },
   ),
   namespaces: vi.fn(async (indexName: string) => (indexName === "docs" ? 3 : 0)),
+  hasStale: vi.fn(async (indexName: string) => indexName === "docs"),
 };
 
 function deps(overrides: Partial<IndexReadDeps> = {}): IndexReadDeps {
