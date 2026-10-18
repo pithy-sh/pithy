@@ -48,7 +48,7 @@ export const LedgerConfig = z
       .min(1)
       .default("ledger:admin")
       .describe(
-        "The AuthContext scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative — mint this scope for your trusted server's token, never a player's. Players can always read their own balance without it.",
+        "The AuthContext scope a session must carry to credit or debit another player's balance over HTTP. Balance-moving writes are server-authoritative. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`, never for a player's device. Players can always read their own balance without it.",
       ),
   })
   .describe("Configuration for the ledger capability — the set of currencies an app's economy runs on.")

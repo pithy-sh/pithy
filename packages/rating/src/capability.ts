@@ -4,6 +4,7 @@
 import "./algorithm/builtins";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { scopeGatesOf } from "@pithy-sh/core/src/http/scopeGates";
 import type { Migration } from "kysely/migration";
 import { RatingConfig, type RatingConfigInput, type ResolvedRatingGame, validateRatingGames } from "./config/config";
 import { ratingTables } from "./data/tables";
@@ -57,6 +58,7 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
   const migrations: Record<string, Migration> = { "0001_rating": rating_0001_rating };
   const requiredBindings: BindingSpecInput[] = [{ type: "d1", name: "DB" }];
 
+  const routes = registerRatingRoutes({ games, config: resolved, basePath });
   const capability = defineCapability({
     name: "rating",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -75,7 +77,10 @@ export function rating(options: RatingOptions = { games: [] }): RatingCapability
         migrations,
       },
     },
-    routes: registerRatingRoutes({ games, config: resolved, basePath }),
+    routes,
+    // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
+    // this config mounted — a gate the config switched off is not here (#560).
+    scopeGates: scopeGatesOf(routes),
     seeds: [ratingExampleSeed],
   });
 

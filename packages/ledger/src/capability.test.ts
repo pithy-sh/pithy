@@ -26,6 +26,20 @@ const currencies = [{ code: "chips", name: "Casino Chips" }];
  * from `wallet` while unpublished precisely so those names could still move; these assertions are what
  * stop them moving again.
  */
+describe("ledger() scope gates (#560)", () => {
+  it("declares the two balance-moving routes it gates on the admin scope, and no control-plane route", () => {
+    expect(ledger({ currencies }).scopeGates).toEqual([
+      { scope: "ledger:admin", route: "POST /ledger/:currency/credit" },
+      { scope: "ledger:admin", route: "POST /ledger/:currency/debit" },
+    ]);
+  });
+
+  it("names the scope the config chose", () => {
+    const gates = ledger({ currencies, adminScope: "bank:teller" }).scopeGates ?? [];
+    expect(new Set(gates.map((gate) => gate.scope))).toEqual(new Set(["bank:teller"]));
+  });
+});
+
 describe("ledger()", () => {
   it("names itself so the migration namespace, table prefix, and error domain line up", () => {
     expect(ledger({ currencies }).name).toBe("ledger");

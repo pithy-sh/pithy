@@ -64,6 +64,11 @@ export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
  *
  * Reads `c.var.auth`, so it gates the **player-facing** trusted-server routes and nothing else. A
  * control-plane caller has no `AuthContext` by design and can never satisfy it — see the file comment.
+ *
+ * **A scope is an attestation about the caller, not a permission granted to the user.** It says this
+ * request came from the adopter's own backend. `@pithy-sh/auth`'s `resolveScopes` makes that call on every
+ * request, from something the request proves. There is no toggle here, so with no resolver composed the
+ * credit and debit routes refuse every caller (#560).
  */
 export function requireAdmin(scope: string): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
