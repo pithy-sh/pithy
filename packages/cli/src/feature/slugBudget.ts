@@ -21,7 +21,7 @@ import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities } from "../project/workerScope";
 import { provisionWorkerNames } from "../provision/environment";
-import { boundSecretNames, workerSecretRegistry } from "../provision/secretBindings";
+import { boundSecretNames, scopeHoldsSecret, workerSecretRegistry } from "../provision/secretBindings";
 import { provisionableBindings } from "./bindings";
 import { featureHostCapabilities, featureHostScripts, featureIndexesFor } from "./hosts";
 
@@ -89,7 +89,7 @@ export async function featureNameShapes(sources: FeatureNameSources): Promise<Fe
   if (registry) {
     for (const secret of boundSecretNames(registry)) {
       const entry = registry[secret];
-      if (entry) add("secretEntry", scope.secretEntry(secret, entry.scope));
+      if (entry && scopeHoldsSecret(scope, secret)) add("secretEntry", scope.secretEntry(secret, entry.scope));
     }
   }
   if (featureHostCapabilities(sources.capabilities).includes("secrets")) {

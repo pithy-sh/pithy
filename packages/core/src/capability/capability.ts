@@ -250,30 +250,6 @@ export type SecretBranchSeam = Record<string, readonly string[]>;
 export type InapplicableSecretSeam = Record<string, string>;
 
 /**
- * The structural seam for one capability's token-profile slice — profile name → the scoped CF API
- * token that capability's code needs. Declared next to the code that uses it (alongside
- * {@link Capability.secretRegistry}), so a capability owns its token's least-privilege scope and where
- * the minted value lands. Core carries only the structural axes (never interpreted here); the concrete
- * `TokenProfile`, the permission catalog, `defineTokenProfile`, and the mint engine live in
- * `@pithy-sh/cloudflare`/the CLI. `pithy token` aggregates every capability's slice into one registry.
- */
-export interface TokenProfileSeam {
-  /** The CF permissions the token grants, as short catalog keys (`d1:read`, `secrets:write`). */
-  readonly permissions: readonly string[];
-  /** The resource scope: `"account"` (the whole account, the default) or an explicit CF resource map. */
-  readonly resources?: "account" | Record<string, string>;
-  /** The secret-registry name the minted value is stored under — its backend decides the destination. */
-  readonly secret?: string;
-  /** A built-in destination override (`dev-vars` | `ephemeral` | `secrets-store`) for a tooling profile. */
-  readonly defaultStore?: string;
-  /** Why the profile exists / what consumes it — surfaced in `pithy token` help and docs. */
-  readonly description?: string;
-}
-
-/** A capability's token-profile slice: profile name → {@link TokenProfileSeam}. */
-export type TokenProfileSeamMap = Record<string, TokenProfileSeam>;
-
-/**
  * One thing an **adopter** plugged into a capability — the capability's own name for something the kit
  * did not ship and cannot enumerate. `@pithy-sh/auth` declares one per additional Better Auth plugin
  * (`{ kind: "better-auth-plugin", id: "organization", tables: ["organization", "member", "invitation"] }`).
@@ -400,19 +376,26 @@ export interface Capability<
    */
   inapplicableSecrets?: InapplicableSecretSeam;
   /**
-   * The scoped CF API tokens this capability's code needs, as a token-profile slice (profile name →
-   * {@link TokenProfileSeam}). Additive and optional, and declared next to {@link Capability.secretRegistry}
-   * — the value of a minted token lands in the secret the profile names. `pithy token` aggregates every
-   * capability's slice with the built-in tooling profiles into one registry.
-   */
-  tokenProfiles?: TokenProfileSeamMap;
-  /**
    * Extra CF permissions this capability needs the **CI system token** to hold, as short catalog keys
    * (e.g. `email:routing` for email provisioning, `kv:write` for a module that seeds KV in CI). They
    * union into the one `ci-system` token `pithy token mint ci-system` produces — so a new capability
    * extends what CI can do without the adopter hand-editing token scopes. Additive and optional.
    */
   ciPermissions?: readonly string[];
+  /**
+   * The CF permissions this capability's **deployed Workers** call Cloudflare with, as short catalog keys
+   * (`secrets:write`, `images:write`, `analytics:read`). The runtime counterpart of {@link ciPermissions}.
+   *
+   * **A deployed application holds one Cloudflare API token, and this is the only way into it (#728).**
+   * Every composed capability's keys union into the project-level `runtime` profile, minted per
+   * environment into the Secrets Store and read by every Worker of that environment through one binding,
+   * the way every capability's `ciPermissions` union into the one `ci-system` token. A capability cannot
+   * declare a token of its own. A project whose composition declares none mints no runtime token.
+   *
+   * Build it from the resolved config, as `secretRegistry` is built: a capability configured to call
+   * nothing on Cloudflare declares nothing, and adds nothing to the token. Additive and optional.
+   */
+  runtimePermissions?: readonly string[];
   /**
    * The admin routes this capability contributes behind the `control-plane` strategy, described well
    * enough for a management client to call them — full mounted path, required scope, and a one-line

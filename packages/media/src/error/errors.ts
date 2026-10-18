@@ -116,3 +116,44 @@ export class MediaEnrichmentError extends PithyError {
     );
   }
 }
+
+/**
+ * A delivery-analytics window Cloudflare cannot answer: older than the dataset keeps, or wider than one
+ * read may ask for. The message names the cap in days, so the caller can choose a window that works.
+ */
+export class MediaAnalyticsWindowError extends PithyError {
+  constructor(args: MediaErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "media/analytics_window",
+        status: 400,
+        message: args.message ?? "That window is outside what Cloudflare keeps.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * Cloudflare does not serve the delivery analytics this read needs to this account. Under a Customer
+ * Metadata Boundary outside the US it serves none of them — a different fact from "nothing was watched",
+ * and the reason this is a refusal rather than an empty answer.
+ */
+export class MediaAnalyticsUnavailableError extends PithyError {
+  constructor(args: MediaErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "media/analytics_unavailable",
+        status: 409,
+        message: args.message ?? "Cloudflare does not serve these analytics to this account.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

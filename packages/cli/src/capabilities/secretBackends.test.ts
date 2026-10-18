@@ -4,9 +4,12 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { media } from "@pithy-sh/media/src/capability";
+import { secrets } from "@pithy-sh/secrets/src/capability";
 import { isBindingName, secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
+import { boundSecretNames, workerSecretRegistry } from "../provision/secretBindings";
 
 /**
  * A secret's declared `backend` must be where the value physically goes.
@@ -248,18 +251,32 @@ function boundStoreBindings(): string[] {
   return [...new Set(templates().flatMap((t) => t.store))].sort();
 }
 
+/**
+ * **The store-backed secrets an adopter's app Worker reads, and the capability whose app Worker binds each
+ * one (#728).**
+ *
+ * A capability's own host is bound by its committed template. The runtime token is read there — by the
+ * secrets manager and the media host — and also by the app Worker that serves media's routes, whose
+ * `wrangler.jsonc` is the adopter's: no template in the kit is it. Its stanza is written by provisioning,
+ * from `boundSecretNames` over the Worker's composed registry. So the guarantee is held where it is made:
+ * each one here must be in the stanza provisioning writes for a Worker composing it.
+ */
+const APP_WORKER_SECRETS: Readonly<Record<string, () => Parameters<typeof workerSecretRegistry>[0]>> = {
+  RUNTIME_CF_API_TOKEN: () => [secrets({ registry: {} }), media({})],
+};
+
 /** The master key's binding name — fixed, and the same in every template that reads secrets. */
 const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
 
 describe("a secret's declared backend is where the value actually goes", () => {
   test("the scan finds every declaration there is, named", () => {
     // Exact, not `> 0`. The kit declares three store-backed secrets: the at-rest master key, the
-    // manager's Cloudflare token, and — since #596 — email's link-signing key, which the email host and
+    // application's one runtime token (#728), and — since #596 — email's link-signing key, which the email host and
     // the app Worker both bind. `> 0` was satisfied by finding one of two — and it *was* finding one of
     // two, because `masterKeyRegistryEntry` is a standalone const rather than an inline key and the old
     // regex could not see it. A guard a broken scan still passes is not a guard.
     expect(declaredStoreBackedKeys()).toEqual([
-      "CLOUDFLARE_API_TOKEN",
+      "RUNTIME_CF_API_TOKEN",
       "SECRETS_ENCRYPTION_KEYS",
       "email-link-signing-key",
     ]);
@@ -275,12 +292,21 @@ describe("a secret's declared backend is where the value actually goes", () => {
   test("every `cf-secrets-store` secret's binding is bound by some wrangler template", () => {
     const bound = new Set(boundStoreBindings());
     const unbound = declaredStoreBackedKeys()
+      .filter((key) => !(key in APP_WORKER_SECRETS))
       .map((key) => secretBindingName(key))
       .filter((binding) => !bound.has(binding));
     // An unbound store-backed secret resolves to a binding that does not exist at runtime. Either add
     // the `secrets_store_secrets` entry — under the derived binding, never the registry key — or declare
     // the secret `d1`, whichever is actually true.
     expect(unbound).toEqual([]);
+  });
+
+  test("a store-backed secret an app Worker reads is in the stanza provisioning writes for it", () => {
+    for (const [key, composed] of Object.entries(APP_WORKER_SECRETS)) {
+      // Declared, so the exemption above names something real rather than a typo.
+      expect(declaredStoreBackedKeys(), key).toContain(key);
+      expect(boundSecretNames(workerSecretRegistry(composed()) ?? {}), key).toContain(key);
+    }
   });
 
   /**

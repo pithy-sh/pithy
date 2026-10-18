@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { callerOf, rerunCommand } from "@pithy-sh/core/src/cli/command";
 import { isErrorCode } from "@pithy-sh/core/src/error/extend";
 import { NotFoundError, PithyError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -17,6 +18,7 @@ import {
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
+import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
@@ -79,6 +81,7 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { DRY_RUN_ARG, PlanKey } from "../plan/plan";
+import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import { confineTeardown } from "../project/teardown";
@@ -97,6 +100,7 @@ import {
   formatList,
   withErrorReporting,
 } from "../terminal/output";
+import { tokenOverrideResolver } from "../tokens/config";
 
 /**
  * The secret registry for the whole project: every Worker's, merged by secret name.
@@ -699,7 +703,9 @@ const SecretsDeprovisionPayload = z
     command: z.literal("secrets deprovision").describe('`"secrets deprovision"`.'),
     env: z.string().describe("The one environment torn down."),
     keysDeleted: z.boolean().describe("Whether the environment's master key was deleted with the rest."),
-    managerTokenDeleted: z.boolean().describe("Whether the shared manager token was removed."),
+    runtimeTokenDeleted: z
+      .boolean()
+      .describe("Whether this run removed the environment's runtime token. `false` when it was already gone."),
   })
   .describe("What `pithy secrets deprovision` removed.");
 
@@ -1121,8 +1127,10 @@ const provision = withContract(
         // Never `resolveProjectName`: every Secrets Store entry and the manager's token name derive from
         // this, and deprovision has to recompute them exactly. A guessed name would name resources
         // teardown can never find again.
-        const project = requireProjectName(await loadProject(projectDir));
+        const config = await loadProject(projectDir);
+        const project = requireProjectName(config);
         const cf = await cloudflareClients({ accountId, apiToken });
+        const override = tokenOverrideResolver(config);
         // Provisioning spans every managed environment, not one — "dev" is the fallback the audit
         // database resolves against when a command has no single target env (mirrors `pithy feature`).
         const provisioner = new CloudflareSecretsProvisioner({
@@ -1132,6 +1140,17 @@ const provision = withContract(
           storeId,
           deploy: buildManagerDeploy({ accountId, apiToken, cf, project, projectDir }),
           audit: await buildAudit(projectDir, "dev"),
+          // The `runtime` profile as each environment composes it (#728): one token, carrying every
+          // composed capability's needs, minted exactly as `pithy token mint runtime` would mint it.
+          // Loaded here: the profile registry reaches the Cloudflare SDK, which `pithy secrets --help` must not pay for.
+          runtimePermissions: async (env) => {
+            const { runtimePermissions } = await import("../tokens/workerProfiles");
+            return runtimePermissions(
+              await resolveWorkerSetFor(env, { projectDir }),
+              override(RUNTIME_PROFILE),
+              SECRETS_RUNTIME_PERMISSIONS,
+            );
+          },
         });
 
         const environments = await projectEnvironments(projectDir);
@@ -1284,20 +1303,18 @@ const deprovision = withContract(
         });
 
         // Held here as well as in `deprovisionSecrets`: whichever copy runs deletes only what was typed, for this
-        // environment alone, and the shared token only once no other environment runs a manager (#591).
+        // environment alone (#591) — its runtime token included, which is per environment (#728).
         const confined = await confineTeardown({
           kit: "@pithy-sh/secrets",
           target: environment,
           declared,
-          runs: (other) => deprovisioner.hasManager(other),
           deprovisioner,
           rules: {
             countRetained: "read",
-            hasManager: "read",
             deleteManager: "environment",
             deleteMasterKey: args.keys ? "environment" : "refused",
             deleteDatabase: "environment",
-            deleteManagerToken: "last",
+            deleteRuntimeToken: "environment",
           },
         });
         const result = await deprovisionSecrets(
@@ -1312,7 +1329,7 @@ const deprovision = withContract(
               command: "secrets deprovision",
               env: result.environment,
               keysDeleted: args.keys,
-              managerTokenDeleted: result.managerTokenDeleted,
+              runtimeTokenDeleted: result.runtimeTokenDeleted,
             })}\n`,
           );
           return;
@@ -1321,14 +1338,22 @@ const deprovision = withContract(
           `${result.environment}: manager and database removed${args.keys ? ", and the master key" : ""}.\n`,
         );
         process.stdout.write(
-          result.managerTokenDeleted
-            ? "Manager token removed. No environment runs a manager.\n"
-            : "Manager token kept. Another environment still runs a manager.\n",
+          result.runtimeTokenDeleted
+            ? `${result.environment}: runtime token revoked.\n`
+            : `${result.environment}: no runtime token to revoke.\n`,
         );
         process.stdout.write(`${formatDone()}\n`);
       }),
   }),
-  { ...MANAGED, payload: SecretsDeprovisionPayload, mutates: true, idempotent: true },
+  {
+    ...MANAGED,
+    // 2: `managerTokenDeleted` became `runtimeTokenDeleted` — the environment's runtime token, not the
+    // manager's own (#728).
+    schemaVersion: 2,
+    payload: SecretsDeprovisionPayload,
+    mutates: true,
+    idempotent: true,
+  },
 );
 
 export default defineCommand({

@@ -125,6 +125,28 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
     expect(await store.getValue("absent-one")).toBeUndefined();
   });
 
+  test("a field probe answers carries or lacks, and its output carries nothing of the value (#728)", async () => {
+    await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "media-storage-credentials",
+      value: JSON.stringify({ apiToken: "hand-made", accountId: "acct-1" }),
+      valueType: "json",
+      rotatable: false,
+    });
+
+    const carried = await runWriteWorkflow(managerEnv(), {
+      mode: "probe",
+      name: "media-storage-credentials",
+      field: "apiToken",
+      audit: true,
+    });
+    expect(carried).toEqual({ outcome: "carries" });
+    expect(JSON.stringify(carried)).not.toContain("hand-made");
+    expect(
+      await runWriteWorkflow(managerEnv(), { mode: "probe", name: "media-storage-credentials", field: "bucket" }),
+    ).toEqual({ outcome: "lacks" });
+  });
+
   test("delete removes the secret", async () => {
     await runWriteWorkflow(managerEnv(), {
       mode: "create",
@@ -289,7 +311,7 @@ describe("the manager cron", () => {
       ENVIRONMENT: "staging",
       PROJECT: "acme",
       CLOUDFLARE_ACCOUNT_ID: "acct",
-      CLOUDFLARE_API_TOKEN: "token",
+      RUNTIME_CF_API_TOKEN: "token",
       SECRETS_STORE_ID: "store",
       AT_REST_ROTATION: { create: async () => undefined },
       ...overrides,

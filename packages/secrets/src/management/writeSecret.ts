@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { initialVersionedValue } from "../crypto/versionedValue";
+import { currentValue, initialVersionedValue } from "../crypto/versionedValue";
 import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
 import type { SecretValueType } from "../registry";
 import type { RotationTracker } from "../store/rotationTracker";
@@ -54,6 +54,14 @@ export type WriteSecretParams =
        */
       mode: "probe";
       name: string;
+      /**
+       * **Does a `json` secret still carry this top-level field? (#728)** Asked of `media-storage-credentials`,
+       * which held a supplied Cloudflare token until the runtime token replaced it, so an upgrade can be told
+       * the old token is still stored. The answer is `carries` or `lacks` — a bit, like presence — and the
+       * value is opened inside this worker and never returned. A text secret, or one that is not a JSON
+       * object, lacks every field.
+       */
+      field?: string;
     }
   | { mode: "delete"; name: string };
 
@@ -67,9 +75,9 @@ export type WriteSecretParams =
  * instance's `output` and is decoded on the far side like every other external input.
  */
 export const WriteSecretOutcome = z
-  .enum(["written", "present", "absent", "deleted"])
+  .enum(["written", "present", "absent", "deleted", "carries", "lacks"])
   .describe(
-    "What a management write did: wrote a new value, found the name already present, found it absent, or removed it.",
+    "What a management write did: wrote a new value, found the name already present, found it absent, or removed it — or, for a probe of one field, found the stored secret `carries` it or `lacks` it.",
   );
 export type WriteSecretOutcome = z.output<typeof WriteSecretOutcome>;
 
@@ -87,7 +95,12 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
 
   const exists = await deps.store.has(params.name);
   // The read, and only the read. Nothing is written, nothing is decrypted, and the answer is one bit.
-  if (params.mode === "probe") return exists ? "present" : "absent";
+  if (params.mode === "probe" && params.field === undefined) return exists ? "present" : "absent";
+  // A field probe opens the value, inside this worker, and still answers one bit.
+  if (params.mode === "probe") {
+    if (!exists) return "absent";
+    return carriesField(await deps.store.getValue(params.name), params.field as string) ? "carries" : "lacks";
+  }
   if (params.mode === "create" && exists) {
     throw new SecretAlreadyExistsError({
       message: `Secret '${params.name}' already exists.`,
@@ -130,4 +143,16 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
     await deps.tracker.recordBaseline(params.name);
   }
   return "written";
+}
+
+/** Whether a stored value's current version is a JSON object holding `field` at its top level. */
+function carriesField(stored: Awaited<ReturnType<SystemSecretsStore["getValue"]>>, field: string): boolean {
+  if (stored === undefined) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(currentValue(stored));
+  } catch {
+    return false;
+  }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && Object.hasOwn(parsed, field);
 }

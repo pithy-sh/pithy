@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { resolveTokenProfiles, type TokenProfile } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import {
+  type ProfileOverride,
+  resolveTokenProfiles,
+  type TokenProfile,
+} from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { isUnknown, projectCapabilities, type WorkerSet } from "../project/workerScope";
@@ -31,4 +37,21 @@ export function tokenProfiles(workers: WorkerSet): Record<string, TokenProfile> 
       `${workers.unknown} Fix it — ${commandName("doctor")} names the fault — and re-run. Token permissions come from ` +
       "the composed capabilities, so minting from a partial set narrows what CI can do.",
   });
+}
+
+/**
+ * **What the `runtime` token carries for this Worker set (#728)** — the profile's permissions, or a
+ * standing `tokens.overrides.runtime` in their place, exactly as `pithy token mint runtime` would mint
+ * them. `fallback` when the set composes nothing that declares `runtimePermissions`: the secrets manager
+ * is provisioned whatever the app Workers compose, and it needs its own grants either way.
+ *
+ * Refused, like {@link tokenProfiles}, when the set cannot be read — never narrowed to the fallback.
+ */
+export function runtimePermissions(
+  workers: WorkerSet,
+  override: ProfileOverride | undefined,
+  fallback: readonly PermissionKey[],
+): PermissionKey[] {
+  const profile = tokenProfiles(workers)[RUNTIME_PROFILE];
+  return [...(override?.permissions ?? profile?.permissions ?? fallback)];
 }

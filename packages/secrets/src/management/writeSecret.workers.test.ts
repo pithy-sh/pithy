@@ -124,6 +124,51 @@ describe("runWriteSecret", () => {
   });
 
   /**
+   * **A probe can ask whether a json secret still carries one field (#728)**, and still answers a bit. It is
+   * how `pithy doctor` and `pithy token list` find a `media-storage-credentials` bundle still holding the token
+   * an operator supplied before the runtime token replaced it: the value is sealed under a key that never
+   * leaves this worker, so only the manager can look — and it says `carries` or `lacks`, never what is there.
+   */
+  test("probe of a field answers whether a json secret carries it, and returns nothing of the value", async () => {
+    const d = deps();
+    const bundle = JSON.stringify({ apiToken: "hand-made", accountId: "acct-1" });
+    await runWriteSecret(d, {
+      mode: "create",
+      name: "media-storage-credentials",
+      value: bundle,
+      valueType: "json",
+      rotatable: false,
+    });
+
+    expect(await runWriteSecret(d, { mode: "probe", name: "media-storage-credentials", field: "apiToken" })).toBe(
+      "carries",
+    );
+    expect(await runWriteSecret(d, { mode: "probe", name: "media-storage-credentials", field: "bucket" })).toBe(
+      "lacks",
+    );
+    expect(await d.store.getValue("media-storage-credentials")).toEqual({
+      currentVersion: "1",
+      versions: { "1": bundle },
+    });
+  });
+
+  test("probe of a field on a secret that is not there is absent, and on a text secret lacks it", async () => {
+    const d = deps();
+    expect(await runWriteSecret(d, { mode: "probe", name: "media-storage-credentials", field: "apiToken" })).toBe(
+      "absent",
+    );
+
+    await runWriteSecret(d, {
+      mode: "create",
+      name: "session",
+      value: "apiToken",
+      valueType: "text",
+      rotatable: false,
+    });
+    expect(await runWriteSecret(d, { mode: "probe", name: "session", field: "apiToken" })).toBe("lacks");
+  });
+
+  /**
    * The other half of the model, and the one that closes the race probing cannot: two runs both find a
    * global secret absent, and the loser must be refused rather than fanning its own value onward.
    */

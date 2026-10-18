@@ -12,9 +12,9 @@ import {
   resolveProfile,
   resolveTokenProfiles,
   routePermissions,
-  type TokenProfileSeamInput,
   tokenSecretName,
 } from "./profiles";
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "./runtime";
 
 describe("resolveTokenProfiles — ci-system aggregation", () => {
   test("ci-system carries the base CI permissions and defaults to the dev-vars store", () => {
@@ -44,62 +44,61 @@ describe("resolveTokenProfiles — ci-system aggregation", () => {
   });
 });
 
-describe("resolveTokenProfiles — worker-consumer federation", () => {
-  test("merges a capability's tokenProfiles slice alongside ci-system", () => {
-    // Declared as its own const, the way a capability declares it — `secretScope` is additive on top
-    // of core's structural seam, so an inline literal would trip the excess-property check.
-    const managerProfile = {
-      permissions: ["secrets:read", "secrets:write"],
-      secret: "SECRETS_MANAGER_CF_API_TOKEN",
-      secretScope: "global",
+describe("resolveTokenProfiles — the one runtime token (#728)", () => {
+  const runtime = (name: string, runtimePermissions: string[]) =>
+    defineCapability({ name, requiredBindings: [], runtimePermissions });
+  const plain = defineCapability({ name: "widgets", requiredBindings: [] });
+
+  test("a project composing nothing with runtimePermissions resolves ci-system alone", () => {
+    expect(Object.keys(resolveTokenProfiles([]))).toEqual(["ci-system"]);
+    expect(Object.keys(resolveTokenProfiles([plain]))).toEqual(["ci-system"]);
+    // An empty declaration is the same as none: a capability configured to call nothing mints nothing.
+    expect(Object.keys(resolveTokenProfiles([runtime("media", [])]))).toEqual(["ci-system"]);
+  });
+
+  test("secrets, media and a second claimant of analytics:read resolve exactly ci-system and runtime", () => {
+    const profiles = resolveTokenProfiles([
+      runtime("secrets", ["secrets:read", "secrets:write"]),
+      runtime("media", ["images:write", "stream:write", "analytics:read"]),
+      runtime("turnstile", ["analytics:read"]),
+    ]);
+    expect(Object.keys(profiles).sort()).toEqual(["ci-system", "runtime"]);
+    expect(profiles[RUNTIME_PROFILE]).toMatchObject({
+      name: "runtime",
+      // The union, each key once, in first-declared order.
+      permissions: ["secrets:read", "secrets:write", "images:write", "stream:write", "analytics:read"],
+      secret: RUNTIME_TOKEN_SECRET,
       defaultStore: "secrets-store",
-      description: "The secrets manager runtime credential.",
-    } as const satisfies TokenProfileSeamInput;
-    const secrets = defineCapability({
-      name: "secrets",
-      requiredBindings: [],
-      tokenProfiles: { secrets: managerProfile },
-    });
-    const profiles = resolveTokenProfiles([secrets]);
-    expect(Object.keys(profiles).sort()).toEqual(["ci-system", "secrets"]);
-    expect(profiles.secrets).toMatchObject({
-      secret: "SECRETS_MANAGER_CF_API_TOKEN",
-      // Carried through from the seam: it decides the environment segment of the Secrets Store entry
-      // the minted value lands in, so losing it here would silently write to an entry nothing binds.
-      secretScope: "global",
-      defaultStore: "secrets-store",
     });
   });
 
-  test("defaults secretScope to undefined (per-environment) and rejects an unknown one", () => {
-    const plain = defineCapability({
-      name: "widgets",
-      requiredBindings: [],
-      tokenProfiles: { widgets: { permissions: ["d1:read"] } },
-    });
-    expect(resolveTokenProfiles([plain]).widgets?.secretScope).toBeUndefined();
+  test("runtime's secret is the one binding every Worker of an environment reads it through", () => {
+    const profile = resolveTokenProfiles([runtime("secrets", ["secrets:write"])])[RUNTIME_PROFILE];
+    expect(profile?.secret).toBe("RUNTIME_CF_API_TOKEN");
+    expect(profile?.description).toMatch(/one Cloudflare API token/);
+  });
 
-    const rogue = { permissions: ["d1:read"], secretScope: "worldwide" } as const satisfies TokenProfileSeamInput;
-    const bad = defineCapability({ name: "bad", requiredBindings: [], tokenProfiles: { bad: rogue } });
+  test("ci-system is unchanged by a runtime declaration — a Worker's needs add nothing to CI", () => {
+    expect(resolveTokenProfiles([runtime("media", ["analytics:read"])])[CI_SYSTEM_PROFILE]).toEqual(
+      resolveTokenProfiles([])[CI_SYSTEM_PROFILE],
+    );
+  });
+
+  test("an unknown runtimePermissions key is refused, naming the capability and the key", () => {
+    const bad = runtime("bad", ["analytics:write"]);
     expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);
+    expect(() => resolveTokenProfiles([bad])).toThrow(/bad.*analytics:write/);
   });
 
-  test("a capability profile clashing with ci-system fails loudly", () => {
-    const bad = defineCapability({
-      name: "bad",
-      requiredBindings: [],
-      tokenProfiles: { "ci-system": { permissions: ["d1:read"] } },
-    });
-    expect(() => resolveTokenProfiles([bad])).toThrow(PithyError);
+  test("a zone-scoped key is refused at assembly — a Worker's token is account-scoped", () => {
+    expect(() => resolveTokenProfiles([runtime("bad", ["routes:write"])])).toThrow(/routes:write/);
   });
 
-  test("defaults a missing secret name to CF_TOKEN_<PROFILE>", () => {
-    const cap = defineCapability({
-      name: "widgets",
-      requiredBindings: [],
-      tokenProfiles: { widgets: { permissions: ["d1:read"] } },
-    });
-    expect(resolveTokenProfiles([cap]).widgets?.secret).toBe("CF_TOKEN_WIDGETS");
+  test("its one policy is account-scoped and carries exactly the union", () => {
+    const profiles = resolveTokenProfiles([runtime("media", ["images:write", "analytics:read"])]);
+    expect(profilePermissions(resolveProfile(profiles, RUNTIME_PROFILE), "acct-1")).toEqual([
+      { permissionGroupNames: ["Images Write", "Account Analytics Read"], resources: accountResource("acct-1") },
+    ]);
   });
 });
 

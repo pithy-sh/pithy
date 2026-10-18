@@ -5,6 +5,7 @@ import type { PermissionHook } from "@pithy-sh/core/src/access/access";
 import { recordsOutsidePolicy } from "@pithy-sh/core/src/access/policyCheck";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { allSettings } from "@pithy-sh/core/src/capability/settings";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
@@ -16,7 +17,8 @@ import { registerStorageRoutes } from "./http/routes";
 import { storageAdminRoutes } from "./http/scopes";
 import { storage_0001_objects } from "./migrations/0001_objects";
 import { storage_0002_ownership } from "./migrations/0002_ownership";
-import { STORAGE_BUCKET_BINDING, storageSecretsRegistry } from "./secret/registry";
+import { bundleTokenCheck } from "./secret/bundleToken";
+import { STORAGE_BUCKET_BINDING, STORAGE_R2_SECRET, storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
 import { storageWorkflows } from "./workflows/specs";
@@ -120,14 +122,18 @@ export function storage(options: StorageOptions = {}): StorageCapability {
     // Built from the resolved mount path, never the default, so the manifest names this Worker's paths.
     adminRoutes: storageAdminRoutes(mountPath),
     // `pithy doctor` names every file a narrowed `visibility.allowed` no longer admits. Nothing rewrites
-    // them: making a public file private breaks every link already published.
-    settings: recordsOutsidePolicy({
-      capability: "storage",
-      noun: "file",
-      table: "pithy_storage_objects",
-      policy: resolved.visibility,
-      remedy: `Move each with PATCH ${mountPath}/:id`,
-    }),
+    // them: making a public file private breaks every link already published. And it names an R2 bundle
+    // still holding the Cloudflare API token provisioning once stored beside the key pair (#728).
+    settings: allSettings(
+      recordsOutsidePolicy({
+        capability: "storage",
+        noun: "file",
+        table: "pithy_storage_objects",
+        policy: resolved.visibility,
+        remedy: `Move each with PATCH ${mountPath}/:id`,
+      }),
+      bundleTokenCheck({ secret: STORAGE_R2_SECRET, provision: "storage provision" }),
+    ),
     routes: registerStorageRoutes({
       config: resolved,
       basePath: mountPath,

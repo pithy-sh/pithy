@@ -71,6 +71,8 @@ describe("storage capability", () => {
         d1Databases: async () => [],
         zone: async () => true,
         vaultSecret: async () => true,
+        vaultSecretField: async () => false,
+        accountToken: async () => false,
         storeEntry: async () => true,
         appRows: async (request) => (request.table === "pithy_storage_objects" ? ["f1"] : []),
       },

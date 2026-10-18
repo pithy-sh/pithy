@@ -1096,22 +1096,12 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
-      "--api-token": {
-        "type": "string",
-        "required": false,
-        "repeatable": false
-      },
       "--r2-access-key-id": {
         "type": "string",
         "required": false,
         "repeatable": false
       },
       "--r2-secret-access-key": {
-        "type": "string",
-        "required": false,
-        "repeatable": false
-      },
-      "--r2-api-token": {
         "type": "string",
         "required": false,
         "repeatable": false
@@ -1661,11 +1651,6 @@ export const COMMANDS = {
         "required": false,
         "repeatable": false
       },
-      "--api-token": {
-        "type": "string",
-        "required": false,
-        "repeatable": false
-      },
       "--r2-access-key-id": {
         "type": "string",
         "required": false,
@@ -2149,7 +2134,10 @@ export const COMMANDS = {
           "vectorize:write",
           "ai:read",
           "zone:read",
-          "routes:write"
+          "routes:write",
+          "analytics:read",
+          "images:write",
+          "stream:write"
         ]
       },
       "--json": {
@@ -2226,7 +2214,10 @@ export const COMMANDS = {
           "vectorize:write",
           "ai:read",
           "zone:read",
-          "routes:write"
+          "routes:write",
+          "analytics:read",
+          "images:write",
+          "stream:write"
         ]
       },
       "--keep-previous": {

@@ -160,3 +160,96 @@ export const MediaDeliveryUrlResponse = z
   })
   .describe("Where to load a record's bytes, and until when.");
 export type MediaDeliveryUrlResponse = z.infer<typeof MediaDeliveryUrlResponse>;
+
+/** Why a type's delivery cannot be reported here, as a code a client branches on. */
+export const DeliveryUnavailableReason = z
+  .enum(["stored-in-r2"])
+  .describe(
+    "Why a type's delivery is not reported: `stored-in-r2` — this Worker stores that type in R2, where Cloudflare Images and Stream count nothing.",
+  );
+export type DeliveryUnavailableReason = z.infer<typeof DeliveryUnavailableReason>;
+
+/** A type whose delivery this Worker cannot report, and the sentence that says why. */
+export const DeliveryUnavailable = z
+  .object({
+    state: z.literal("unavailable").describe("This type's delivery is not reported here."),
+    reason: DeliveryUnavailableReason,
+    message: z.string().describe("Why, in a sentence an operator can act on."),
+  })
+  .describe("A type whose delivery cannot be read, and why. Never reported as zero.");
+export type DeliveryUnavailable = z.infer<typeof DeliveryUnavailable>;
+
+/** One video's minutes delivered in the window. */
+export const VideoDeliveryItem = z
+  .object({
+    id: z.string().describe("The media record's id."),
+    name: z.string().describe("The record's display name."),
+    storageKey: z.string().describe("The Cloudflare Stream uid the minutes were joined on."),
+    minutesViewed: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("Minutes of video Cloudflare delivered for this asset in the window. `0` when nobody watched."),
+  })
+  .describe("Minutes of one video delivered in the window.");
+export type VideoDeliveryItem = z.infer<typeof VideoDeliveryItem>;
+
+/** One image's delivery requests in the window. */
+export const ImageDeliveryItem = z
+  .object({
+    id: z.string().describe("The media record's id."),
+    name: z.string().describe("The record's display name."),
+    storageKey: z.string().describe("The Cloudflare Images id the requests were joined on."),
+    requests: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("Delivery requests Cloudflare Images served for this asset in the window, every variant counted."),
+  })
+  .describe("Delivery requests for one image in the window.");
+export type ImageDeliveryItem = z.infer<typeof ImageDeliveryItem>;
+
+/** Video delivery: per asset, or unavailable and why. */
+export const VideoDelivery = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("reported").describe("Read from Cloudflare Stream's analytics."),
+        assets: z
+          .array(VideoDeliveryItem)
+          .describe("Every stored Stream video in this environment, most watched first."),
+      })
+      .describe("Minutes delivered, per video."),
+    DeliveryUnavailable,
+  ])
+  .describe("Minutes of video delivered in the window, per asset — or why they cannot be read.");
+export type VideoDelivery = z.infer<typeof VideoDelivery>;
+
+/** Image delivery: per asset, or unavailable and why. */
+export const ImageDelivery = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("reported").describe("Read from Cloudflare Images' analytics."),
+        assets: z
+          .array(ImageDeliveryItem)
+          .describe("Every stored Cloudflare Images asset in this environment, most served first."),
+      })
+      .describe("Delivery requests, per image."),
+    DeliveryUnavailable,
+  ])
+  .describe("Images served in the window, per asset — or why they cannot be read. Never an account total.");
+export type ImageDelivery = z.infer<typeof ImageDelivery>;
+
+/** What the delivery read returns. */
+export const MediaDeliveryResponse = z
+  .object({
+    since: z.string().describe("The window's start, inclusive, as ISO-8601."),
+    until: z.string().describe("The window's end, exclusive, as ISO-8601."),
+    video: VideoDelivery,
+    images: ImageDelivery,
+  })
+  .describe(
+    "What this environment's media was served in the window, read from Cloudflare's analytics and joined to its own assets.",
+  );
+export type MediaDeliveryResponse = z.infer<typeof MediaDeliveryResponse>;

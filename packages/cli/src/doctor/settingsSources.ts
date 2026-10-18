@@ -7,7 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { SettingsAccountReader, SettingsEnvironment } from "@pithy-sh/core/src/capability/settings";
 import { pithyCommand } from "@pithy-sh/core/src/cli/command";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import type { SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
+import type { SecretFieldProbe, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { addAction, addSecretsPlan } from "../capabilities/addCommand";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { cloudflareClients } from "../cloudflare/clients";
@@ -104,8 +104,14 @@ export interface SettingsAccountOptions {
   homedir?: string;
   /** Cloudflare client seam. */
   connect?: (credentials: { accountId: string; apiToken: string }) => Promise<CloudflareClients>;
-  /** Secret-probe seam — the manager Workflow that answers whether a `d1` secret has a value. */
-  probe?: (credentials: { accountId: string; apiToken: string }, project: string) => Promise<SecretProbe>;
+  /**
+   * Secret-probe seam — the manager Workflow that answers whether a `d1` secret has a value, and whether a `json`
+   * one still carries a field (#728).
+   */
+  probe?: (
+    credentials: { accountId: string; apiToken: string },
+    project: string,
+  ) => Promise<SecretProbe & SecretFieldProbe>;
 }
 
 /**
@@ -146,7 +152,9 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
   let databases: Promise<readonly string[]> | undefined;
   const zones = new Map<string, Promise<boolean>>();
   const secrets = new Map<string, Promise<boolean>>();
+  const fields = new Map<string, Promise<boolean>>();
   const storeEntries = new Map<string, Promise<boolean>>();
+  const accountTokens = new Map<string, Promise<boolean>>();
 
   const reader: SettingsAccountReader = {
     d1Databases: () => {
@@ -208,6 +216,33 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
       if (existing) return existing;
       const answer = probe.probe({ env: environment as "staging" | "prod", name });
       secrets.set(key, answer);
+      return answer;
+    },
+    // The same refusal of `dev` as `vaultSecret`, for its reason: no manager there to open the value.
+    vaultSecretField: async ({ name, environment, field }) => {
+      if (environment === "dev") {
+        throw new InternalError({
+          message: "A dev secret cannot be asked of the account.",
+          action: `Ask about a deployed environment, or read the local value through ${pithyCommand("secrets edit")}.`,
+          detail: `secret ${name}.${field} in dev has no manager Worker to answer`,
+        });
+      }
+      const key = `${environment}\u0000${name}\u0000${field}`;
+      const existing = fields.get(key);
+      if (existing) return existing;
+      const answer = probe.carries({ env: environment as "staging" | "prod", name, field });
+      fields.set(key, answer);
+      return answer;
+    },
+    // By the exact name, through the account's token list. Memoized like the rest.
+    accountToken: async (name) => {
+      const existing = accountTokens.get(name);
+      if (existing) return existing;
+      const answer = clients
+        .accountTokens()
+        .findTokenByName(name)
+        .then((token) => token !== null);
+      accountTokens.set(name, answer);
       return answer;
     },
     // Refused, not answered, for anything that is not a kit table and a plain column: the question reads

@@ -6,21 +6,22 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
+import { RUNTIME_PROFILE } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { commandName } from "@pithy-sh/core/src/cli/command";
 import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
 import { encodeVersionedValue, initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { secretsRetainedTables } from "@pithy-sh/secrets/src/data/tables";
+import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import {
   initialMasterKeyConfig,
-  managerCfApiTokenName,
-  managerCfApiTokenSecretName,
   masterKeySecretName,
+  runtimeTokenName,
+  runtimeTokenSecretName,
   type SecretsDeprovisioner,
   type SecretsProvisioner,
 } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -94,17 +95,24 @@ export interface CloudflareSecretsProvisionerOptions {
   /**
    * **The feature this provisions for, when it provisions for one (#643).** It creates the feature's own
    * master-key entry, and nothing else: a feature's manager holds no Cloudflare API token, so
-   * {@link CloudflareSecretsProvisioner.ensureManagerToken} refuses a feature outright. Absent, the project's
+   * {@link CloudflareSecretsProvisioner.ensureRuntimeToken} refuses a feature outright. Absent, the project's
    * declared environments are what it provisions, as it always was.
    */
   feature?: FeatureIdentity;
   /**
    * **Does Cloudflare honor this token value now?** — `GET /accounts/{id}/tokens/verify` made *with* the value,
-   * in a real run. The seam `ensureManagerToken` settles a race with (#643): a run is finished only once the value
+   * in a real run. The seam `ensureRuntimeToken` settles a race with (#643): a run is finished only once the value
    * it stored is still the live one. Resolves `false` for a revoked value, and throws for anything else, since an
    * outage is not an answer.
    */
   honors?: (value: string) => Promise<boolean>;
+  /**
+   * **What this environment's runtime token carries (#728)** — the `runtime` profile's permissions as the
+   * project composes them there: every composed capability's `runtimePermissions`, unioned, with a standing
+   * `tokens.overrides.runtime` applied. The command reads it from the project, which this class cannot.
+   * Absent, the manager's own need, which is the least any composition holding a secrets manager has.
+   */
+  runtimePermissions?: (env: ManagedEnvironment) => Promise<readonly PermissionKey[]>;
 }
 
 /**
@@ -131,24 +139,26 @@ async function tokenIsHonored(accountId: string, value: string): Promise<boolean
   return false;
 }
 
-/** How many times one run rolls the manager token before it stops: each extra one means another run rolled too. */
+/** The audit `kind` a write or removal of the runtime token records, so a trail can tell it from a key. */
+const RUNTIME_TOKEN_KIND = `${RUNTIME_PROFILE}_token`;
+
+/** How many times one run rolls the runtime token before it stops: each extra one means another run rolled too. */
 const MAX_TOKEN_ROLLS = 5;
 
 /**
- * The least-privilege permissions the manager's minted token carries: Secrets Store Read + Write,
- * scoped to this account. Derived from the predefined `secrets` token profile — the one source of the
- * standard defaults each package needs (`pithy token`) — so the manager's scope and the profile never
- * drift. The manager's only live-CF use is the rotation config write-back; its D1 work runs through
- * the `SECRETS` binding, not this token — so nothing wider is granted.
+ * The policy the runtime token is minted with: the given permission keys, scoped to this account. The
+ * keys are the `runtime` profile's (#728) — every composed capability's `runtimePermissions` — so a mint
+ * here and a `pithy token mint runtime` grant exactly the same thing.
  */
-export async function managerTokenPermissions(accountId: string): Promise<TokenPermission[]> {
+export async function runtimeTokenPermissions(
+  accountId: string,
+  keys: readonly PermissionKey[],
+): Promise<TokenPermission[]> {
   // Loaded here rather than at module scope. `tokens/profiles` is a pure policy module, but it reaches
   // the Cloudflare SDK through one value import of `accountResource`, which puts ~355 ms on the static
   // graph of `pithy add`, `pithy provision` and `pithy secrets` — to print their flag lists (#482).
-  // The CLI's copy. `@pithy-sh/cloudflare` is not a capability an adopter installs, and this computes
-  // the permission list for a token **the CLI mints** — that policy is the CLI's, not the project's (#533).
   const { permissionsForKeys } = await import("@pithy-sh/cloudflare/src/tokens/profiles");
-  return permissionsForKeys([...secretsTokenProfile.permissions] as PermissionKey[], accountId);
+  return permissionsForKeys([...keys], accountId);
 }
 
 /**
@@ -166,6 +176,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #audit: CliAuditEmit;
   readonly #feature: FeatureIdentity | undefined;
   readonly #honors: (value: string) => Promise<boolean>;
+  readonly #runtimePermissions: (env: ManagedEnvironment) => Promise<readonly PermissionKey[]>;
 
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
@@ -176,6 +187,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     this.#audit = options.audit ?? (async () => {});
     this.#feature = options.feature;
     this.#honors = options.honors ?? ((value) => tokenIsHonored(options.account.accountId, value));
+    this.#runtimePermissions = options.runtimePermissions ?? (async () => SECRETS_RUNTIME_PERMISSIONS);
   }
 
   /** Require a registered `workers.dev` subdomain — Cloudflare needs one to deploy the managers. */
@@ -189,19 +201,20 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   }
 
   /**
-   * Ensure the manager's runtime CF API token. Reuse the value already in the Secrets Store if present
-   * (Cloudflare never returns a token's secret twice, so a stored token is trusted as-is); otherwise
-   * get a fresh secret via `rollToken` — roll the existing manager token's value in place if one exists,
-   * else mint a new least-privilege token — and write it into the store. A bootstrap token that cannot
-   * mint fails here, before any resource is created, with an actionable error.
+   * Ensure this environment's runtime token — the application's one Cloudflare API token (#728), which the
+   * manager's at-rest rotation writes back with and every other Worker of the environment reads. Reuse the
+   * value already in the Secrets Store if present (Cloudflare never returns a token's secret twice, so a
+   * stored token is trusted as-is); otherwise get a fresh secret via `rollToken` — roll the existing
+   * `<project>-<env>-runtime` token's value in place if one exists, else mint one carrying the `runtime`
+   * profile's permissions — and write it into the store. A bootstrap credential that cannot mint fails
+   * here, before any resource is created, with an actionable error.
    *
-   * **A roll here changes the value and not the scope**, which is `rollToken`'s contract again rather
-   * than a special case this path asks for (#651). It briefly was one: a re-scoping mint would have
-   * rewritten this *live runtime credential*'s policies up to {@link MAX_TOKEN_ROLLS} times inside the
-   * loop below, so this path took a separate value-only seam. That seam then had the opposite problem —
-   * the manager token's name is not a profile name, so nothing could re-scope it at all and a newly
-   * required permission would never land. With re-scoping gone from mint entirely, there is one
-   * behavior again and no second method to keep in step.
+   * **The same token `pithy token mint runtime` makes**, under the same name and into the same entry, so
+   * the two paths cannot leave an environment holding two.
+   *
+   * **A roll here changes the value and not the scope**, which is `rollToken`'s contract (#651). A token
+   * minted before a capability widened the profile keeps its old policies; `pithy token list` says so,
+   * and `pithy token rotate runtime` re-scopes it.
    *
    * **Never check-then-overwrite (#643).** Two runs that both find the entry absent both roll, and each roll
    * revokes the value before it. Whichever write landed last used to win, so the store could keep a value
@@ -211,39 +224,39 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    *
    * **Never for a feature.** A feature's manager holds no token (#643), so this refuses one rather than mint it.
    */
-  async ensureManagerToken(): Promise<void> {
+  async ensureRuntimeToken(env: ManagedEnvironment): Promise<void> {
     if (this.#feature) {
       throw new InternalError({
         message: "A feature's secrets manager holds no Cloudflare API token.",
-        detail: `ensureManagerToken called for feature ${this.#feature.project}-f${this.#feature.issue}-${this.#feature.slug}`,
+        detail: `ensureRuntimeToken called for feature ${this.#feature.project}-f${this.#feature.issue}-${this.#feature.slug}`,
       });
     }
-    const entry = managerCfApiTokenSecretName(this.#project);
+    const entry = runtimeTokenSecretName(this.#project, env);
+    const name = runtimeTokenName(this.#project, env);
     const store = this.#cf.secrets(this.#storeId);
     if (await store.exists(entry)) return;
+    const permissions = await runtimeTokenPermissions(this.#account.accountId, await this.#runtimePermissions(env));
     for (let roll = 1; ; roll += 1) {
-      const minted = await this.#cf
-        .accountTokens()
-        .rollToken(managerCfApiTokenName(this.#project), await managerTokenPermissions(this.#account.accountId));
-      await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
+      const minted = await this.#cf.accountTokens().rollToken(name, permissions);
+      await writeRuntimeToken(this.#cf, { storeId: this.#storeId, project: this.#project, env }, minted.value);
       if (await this.#honors(minted.value)) break;
       if (roll >= MAX_TOKEN_ROLLS) {
         throw new UpstreamError({
-          message: "The secrets manager's token kept being rolled by another run.",
+          message: `The ${env} runtime token kept being rolled by another run.`,
           action: `Wait for the other ${commandName("secrets provision")} to finish, then run this again.`,
-          detail: `${managerCfApiTokenName(this.#project)}: rolled ${roll} times, and each value was revoked before this run could keep it`,
+          detail: `${name}: rolled ${roll} times, and each value was revoked before this run could keep it`,
         });
       }
     }
-    // Never the minted value — just that the manager's own runtime credential was (re)written.
+    // Never the minted value — just that the environment's runtime credential was (re)written.
     await this.#audit({
-      environment: "global",
+      environment: env,
       action: "secrets/set",
       outcome: "success",
       severity: "warning",
       resourceType: "secret",
       resourceId: entry,
-      metadata: { name: entry, kind: "manager_token" },
+      metadata: { name: entry, kind: RUNTIME_TOKEN_KIND },
     });
   }
 
@@ -319,20 +332,20 @@ function managerDir(projectDir: string): string {
 }
 
 /**
- * Write the scoped CF API token into the Secrets Store as the entry the manager binds at runtime.
- * The value is the uniform versioned-value envelope (a one-entry envelope on first write), so the
- * manager's `secretsStore` read decodes it exactly like every other secret. The token is `global` —
- * one entry per project, written once and bound the same way by every one of that project's managers —
- * so this is idempotent and re-runnable: `putSecret` upserts, and a re-deploy rewrites the same entry.
+ * Write a runtime token's value into its environment's Secrets Store entry, as the uniform envelope every
+ * reader decodes — the entry the manager's and every Worker's `RUNTIME_CF_API_TOKEN` binding names.
  */
-export async function writeManagerCfApiToken(
+export async function writeRuntimeToken(
   cf: CloudflareClients,
-  target: { storeId: string; project: string },
+  target: { storeId: string; project: string; env: ManagedEnvironment },
   apiToken: string,
 ): Promise<void> {
   await cf
     .secrets(target.storeId)
-    .putSecret(managerCfApiTokenSecretName(target.project), encodeVersionedValue(initialVersionedValue(apiToken)));
+    .putSecret(
+      runtimeTokenSecretName(target.project, target.env),
+      encodeVersionedValue(initialVersionedValue(apiToken)),
+    );
 }
 
 /**
@@ -342,9 +355,9 @@ export async function writeManagerCfApiToken(
  *
  * **Two distinct tokens, by design.** `apiToken` is the broad bootstrap token (`.dev.vars`
  * `CLOUDFLARE_API_TOKEN`) that authenticates the deploy itself — it can create Workers, D1, and so on.
- * The manager's **least-privilege** runtime token (scoped to Secrets Store Read + Write) is minted and
- * written into the Secrets Store earlier, by `ensureManagerToken`, so the worker's `CLOUDFLARE_API_TOKEN`
- * binding already resolves by deploy time. The broad token never reaches the worker; the minted token
+ * The application's **least-privilege** runtime token is minted and written into the Secrets Store
+ * earlier, by `ensureRuntimeToken`, so the worker's `RUNTIME_CF_API_TOKEN` binding already resolves by
+ * deploy time. The broad token never reaches the worker; the minted token
  * never deploys. Auth flows through env vars, not `wrangler login` (CLAUDE.md §CF token bootstrap).
  */
 export function buildManagerDeploy(options: {
@@ -448,18 +461,6 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
     return database ? countDatabaseRetained(database) : [];
   }
 
-  /** Whether the env's manager Worker is deployed — settled on a confirmed account, like every lookup here. */
-  async hasManager(env: ManagedEnvironment): Promise<boolean> {
-    const name = managerWorkerName(this.#project, env);
-    return Boolean(
-      await findOnConfirmedAccount({
-        ...this.#account,
-        what: `the ${name} Worker`,
-        find: () => this.#cf.workers().getWorker(name),
-      }),
-    );
-  }
-
   /**
    * Delete the env's manager worker if it is deployed. Guarded, so teardown is idempotent — which is
    * also why `project` must be the value provisioning used: a mismatch finds nothing, deletes nothing,
@@ -515,30 +516,29 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   }
 
   /**
-   * Remove this project's manager token entirely — the inverse of `ensureManagerToken`. Delete the
-   * minted account token from Cloudflare (every same-named token, so a re-minted duplicate is swept
-   * too), then its Secrets Store entry. Both guarded: a missing token or entry is a no-op, so teardown
-   * is idempotent.
+   * Remove this environment's runtime token entirely — the inverse of `ensureRuntimeToken`. Delete the
+   * minted account token from Cloudflare (every same-named token, so a re-minted duplicate is swept too),
+   * then its Secrets Store entry. Both guarded: a missing token or entry is a no-op, so teardown is
+   * idempotent. Resolves whether either was there.
    *
-   * `deleteTokensByName` is a name sweep over the whole account, so the project scope on the name is
-   * the containment: unscoped, one project's `pithy secrets deprovision` would revoke every other
-   * project's manager credential in the account and break all of their rotations at once.
+   * `deleteTokensByName` is a name sweep over the whole account, so the project and environment on the
+   * name are the containment: this reaches neither another environment's token nor another project's.
    */
-  async deleteManagerToken(): Promise<void> {
-    await this.#cf.accountTokens().deleteTokensByName(managerCfApiTokenName(this.#project));
-    const entry = managerCfApiTokenSecretName(this.#project);
+  async deleteRuntimeToken(env: ManagedEnvironment): Promise<boolean> {
+    const swept = await this.#cf.accountTokens().deleteTokensByName(runtimeTokenName(this.#project, env));
+    const entry = runtimeTokenSecretName(this.#project, env);
     const store = this.#cf.secrets(this.#storeId);
-    if (await store.exists(entry)) {
-      await store.deleteSecret(entry);
-      await this.#audit({
-        environment: "global",
-        action: "secrets/removed",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "secret",
-        resourceId: entry,
-        metadata: { name: entry, kind: "manager_token" },
-      });
-    }
+    if (!(await store.exists(entry))) return swept > 0;
+    await store.deleteSecret(entry);
+    await this.#audit({
+      environment: env,
+      action: "secrets/removed",
+      outcome: "success",
+      severity: "warning",
+      resourceType: "secret",
+      resourceId: entry,
+      metadata: { name: entry, kind: RUNTIME_TOKEN_KIND },
+    });
+    return true;
   }
 }

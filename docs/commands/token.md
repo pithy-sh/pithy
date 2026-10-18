@@ -14,13 +14,13 @@ pithy token revoke <profile> [--env <env>] [--json]
 pithy token forget <profile> [--env <env>] [--force] [--json]
 ```
 
-The model behind these five commands — the bootstrap token, the delegation rule, what `ci-system` is, what a worker-consumer profile is, and where each store puts a value — is [`TOKENS.md`](../TOKENS.md). This page is the command surface.
+The model behind these five commands — the bootstrap token, the delegation rule, what `ci-system` and `runtime` are, and where each store puts a value — is [`TOKENS.md`](../TOKENS.md). This page is the command surface.
 
 ## Flags
 
 | Subcommand | Flag | Meaning |
 |---|---|---|
-| `mint`, `rotate`, `revoke`, `forget` | `<profile>` (positional, required) | The token profile: `ci-system`, or a capability's worker-consumer profile. |
+| `mint`, `rotate`, `revoke`, `forget` | `<profile>` (positional, required) | The token profile: `ci-system`, the CI credential, or `runtime`, the one token a deployed application holds. `revoke` also takes a superseded profile, `secrets`, to remove the manager token `runtime` replaced. |
 | all | `--env <env>` | Target environment: `dev`, `staging`, `prod`. Default `dev`. |
 | `mint`, `rotate` | `--store <store>` | Override where the value is written: `secrets-store`, `dev-vars`, `ephemeral`. |
 | `mint`, `rotate` | `--permission <key>` | Override the permission set. **Repeatable** — every occurrence is collected. |
@@ -36,11 +36,13 @@ A `--store` on the command line wins over the profile's `defaultStore`, which wi
 
 **No subcommand ever prints a token value.** Not on stdout, not in `--json`, not in an audit event, not in an error. That is a property to rely on: the value goes to the store the profile resolves, and the output says only which store and where. `dev-vars` is how a value gets out to a person — `<config>/<project>/tokens.json`, mode `0600`, keyed by environment. **Nothing in the CLI reads a credential out of that file.** It is a handoff: you open it, copy the value, and paste it into your CI provider's secrets. `forget` and `revoke` take a value out of it; nothing uses one. `secrets-store` writes to the CF Secrets Store for a Worker to read through its binding, with no human in the loop. `ephemeral` writes nothing at all.
 
-`mint` **rolls in place.** The token name is a stable `(project, env, profile)` identity — `<project>-<env>-<profile>` — and each mint regenerates the value with the profile's *current* permissions. So composing a capability that contributes `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. The permissions are the ones `--env`'s own composition contributes: each Worker's `pithy.config.ts` is evaluated under that environment's `ENVIRONMENT`, so a capability a config composes for production alone widens the production token and no other. It does not reuse a stored value; that would pin the token to its old scope.
+`mint` **rolls in place.** The token name is a stable `(project, env, profile)` identity — `<project>-<env>-<profile>` — so re-minting never orphans a token. A first mint creates the token with the profile's *current* permissions. A later mint rolls the value and keeps the token's policies, so a permission added since — a capability's `ciPermissions` or `runtimePermissions` — takes effect on the next `rotate`, never the next mint. The permissions are the ones `--env`'s own composition contributes: each Worker's `pithy.config.ts` is evaluated under that environment's `ENVIRONMENT`, so a capability a config composes for production alone widens the production token and no other. It does not reuse a stored value.
 
-`list` reports **this project's** tokens for one environment, identities only. Two gates decide what appears: the `<project>-<env>-` prefix, because Cloudflare's account token list is flat and account-wide and includes other projects' credentials and your own; and a reverse lookup from the known profile names, because the naming facade may truncate a long trailing segment, so slicing the prefix off would hand back a string `rotate` and `revoke` cannot resolve. A prefixed token no profile claims is therefore not listed.
+`list` reports **this project's** tokens for one environment, identities only. Two gates decide what appears: the `<project>-<env>-` prefix, because Cloudflare's account token list is flat and account-wide and includes other projects' credentials and your own; and a reverse lookup from the known profile names, because the naming facade may truncate a long trailing segment, so slicing the prefix off would hand back a string `rotate` and `revoke` cannot resolve. A prefixed token no profile claims is therefore not listed. Each row also says whether the token carries every permission its profile names, read from the token's own policies. A token missing one is named with the `rotate` that fixes it, because a mint would keep the old policies.
 
-`rotate` is the proven two-step Cloudflare has no single call for: mint a new token under the same name and policies, store the value, then delete the tokens that predate it. `--keep-previous` leaves the old one standing as a grace window while a Worker consumer picks up the new value — redeploy first.
+`list` also names the tokens `runtime` superseded that are still there, because nothing revokes them for you: the secrets manager's own token, `<project>-global-secrets-manager` or `<project>-<env>-secrets`, from the account's token list, and the Images and Stream token supplied to `pithy media provision` (your bootstrap token, unless you passed `--api-token`), when this environment composes media and its `media-storage-credentials` still carries it. That one is asked of the environment's secrets manager, which opens the bundle and answers a bit. A manager that cannot answer costs that line, never the listing. [`TOKENS.md`](../TOKENS.md) has the upgrade path.
+
+`rotate` is the proven two-step Cloudflare has no single call for: mint a new token under the same name with the profile's current policies, store the value, then delete the tokens that predate it. `--keep-previous` leaves the old one standing as a grace window while a Worker consumer picks up the new value — redeploy first.
 
 `revoke` deletes **every** account token of the profile's computed name for that environment. The project scope in that name is what keeps the sweep inside this project. **Then it drops the profile's local copy** for that environment from `tokens.json`, because a deleted token's value would otherwise sit there looking exactly like a live one. The delete is the operation and the cleanup is reported, never load-bearing: an absent file, an unreadable one, or one holding no such key leaves the revoke a success, and `localCopy` says which happened.
 
@@ -85,6 +87,16 @@ The token's value and its composed Cloudflare name are both on the internal resu
 | `tokens[].tokenId` | string | Cloudflare's id for the token. |
 | `tokens[].status` | string, optional | The token's lifecycle status as Cloudflare reports it: `"active"`, `"disabled"`, or `"expired"`. Absent when the account API returned none. |
 | `tokens[].routeScope` | string | Whether the token can attach the routes this environment's declared domains need: `"not-required"`, `"scoped"`, `"stale"`, `"overridden"`, `"inactive"`, or `"unknown"`. |
+| `tokens[].grants` | string, optional | Whether the token carries every permission its profile names: `"current"`, `"missing"` (run `pithy token rotate`; a mint keeps the old policies), `"inactive"`, or `"unknown"`. |
+| `superseded` | object[], optional | The credentials `runtime` superseded that are still present. Empty when there are none. |
+| `superseded[].kind` | string | `"account-token"`, by its name, or `"stored"`, a token inside a secret, by the secret's name. |
+| `superseded[].name` | string | The account token's name, or the secret that stores one. |
+| `superseded[].tokenId` | string, optional | Cloudflare's id, for an account token. |
+| `superseded[].status` | string, optional | The account token's status, when Cloudflare returned one. |
+| `superseded[].env` | string, optional | The environment whose vault stores it, for a stored token. |
+| `superseded[].was` | string | What it was, in the operator's words. |
+| `superseded[].supersededBy` | string | `"runtime"`. |
+| `supersededAsked` | boolean, optional | `false` when the environment's secrets manager could not say whether a supplied media token is still stored. |
 
 ### `token revoke`
 
@@ -139,8 +151,8 @@ pithy token mint ci-system --env prod --store ephemeral --permission workers:wri
 # List this project's tokens for an environment. Ids and profiles, never values.
 pithy token list --env prod --json
 
-# Rotate a worker-consumer token, holding the old one as a grace window. Redeploy, then revoke.
-pithy token rotate secrets --env prod --keep-previous --json
+# Rotate the runtime token, holding the old one as a grace window. Redeploy, then revoke.
+pithy token rotate runtime --env prod --keep-previous --json
 
 # Revoke. The local copy goes with it.
 pithy token revoke ci-system --env staging --json
@@ -151,8 +163,8 @@ pithy token forget ci-system --env prod --json
 
 ```json
 {"command":"token mint","schemaVersion":1,"profile":"ci-system","env":"prod","tokenId":"<token-id>","store":"dev-vars","location":"/home/you/.config/pithy/acme/tokens.json"}
-{"command":"token list","schemaVersion":1,"env":"prod","tokens":[{"profile":"ci-system","env":"prod","name":"acme-prod-ci-system","tokenId":"<token-id>","status":"active"}]}
-{"command":"token rotate","schemaVersion":1,"profile":"secrets","env":"prod","tokenId":"<token-id>","store":"secrets-store","location":"CF Secrets Store"}
+{"command":"token list","schemaVersion":1,"env":"prod","tokens":[{"profile":"ci-system","env":"prod","name":"acme-prod-ci-system","tokenId":"<token-id>","status":"active"}],"superseded":[],"supersededAsked":true}
+{"command":"token rotate","schemaVersion":1,"profile":"runtime","env":"prod","tokenId":"<token-id>","store":"secrets-store","location":"CF Secrets Store"}
 {"command":"token revoke","schemaVersion":1,"profile":"ci-system","env":"staging","name":"acme-staging-ci-system","revokedCount":1,"localCopy":"forgotten","location":"/home/you/.config/pithy/acme/tokens.json"}
 {"command":"token forget","schemaVersion":1,"profile":"ci-system","env":"prod","localCopy":"forgotten","location":"/home/you/.config/pithy/acme/tokens.json","usage":"used"}
 ```

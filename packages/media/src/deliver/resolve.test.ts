@@ -5,19 +5,28 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { SecretsAccessor } from "@pithy-sh/secrets/src/secretsStore";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { afterEach, describe, expect, test } from "vitest";
-import { MEDIA_IMAGES_SIGNING_SECRET, MEDIA_STREAM_SIGNING_SECRET, mediaSecretsRegistry } from "../secret/registry";
+import {
+  MEDIA_IMAGES_SIGNING_SECRET,
+  MEDIA_STREAM_SIGNING_SECRET,
+  mediaOwnSecretsRegistry,
+  mediaSecretsRegistry,
+} from "../secret/registry";
 import { resolveDeliverySigner } from "./resolve";
 
 const EXPIRES = new Date("2026-10-16T13:00:00.000Z");
 const ENV = {} as SecretsStoreEnv;
 
 /** Configure the shared accessor to hold exactly these values, and to fail reading these names. */
-function holding(resolved: Record<string, unknown>, failures: Record<string, Error> = {}): void {
+function holding(
+  resolved: Record<string, unknown>,
+  failures: Record<string, Error> = {},
+  registry: typeof mediaOwnSecretsRegistry = mediaSecretsRegistry,
+): void {
   configureSharedSecrets({
-    registry: mediaSecretsRegistry,
+    registry,
     resolve: async () =>
       new SecretsAccessor(
-        mediaSecretsRegistry,
+        registry,
         Object.fromEntries(
           Object.entries(resolved).map(([name, current]) => [
             name,
@@ -66,5 +75,15 @@ describe("resolveDeliverySigner", () => {
     await expect(signer.streamToken("uid-1", EXPIRES)).rejects.toMatchObject({
       payload: { code: "media/unsupported" },
     });
+  });
+});
+
+describe("resolveDeliverySigner in a Worker that declares no runtime token (#728)", () => {
+  test("reads the signing keys alone, so an R2-only composition still resolves a signer", async () => {
+    // An R2-only `media()` declares its own secrets and no token; reading through the full registry would
+    // ask the shared reader for a name the Worker never declared, and every delivery URL would 500.
+    holding({ [MEDIA_IMAGES_SIGNING_SECRET]: { key: "images-secret" } }, {}, mediaOwnSecretsRegistry);
+    const signer = await resolveDeliverySigner(ENV);
+    await expect(signer.signImageUrl("https://imagedelivery.net/h/img-1/public", EXPIRES)).resolves.toContain("sig=");
   });
 });

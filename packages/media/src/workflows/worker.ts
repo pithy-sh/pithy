@@ -8,7 +8,7 @@ import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamMa
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
-import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
 import type { MediaAi } from "../ai/enrich";
 import { MediaConfig } from "../config/config";
@@ -19,7 +19,8 @@ import type { DeliverySigner } from "../deliver/sign";
 import { MediaEnrichmentError } from "../error/errors";
 import { d1RecordStore } from "../record/d1Store";
 import type { MediaRecord } from "../record/store";
-import { MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "../secret/registry";
+import { mediaSecretsRegistry } from "../secret/registry";
+import { mediaCloudflareConfig } from "../storage/resolve";
 import {
   type EnrichDeps,
   runAudioTranscription,
@@ -109,8 +110,9 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
   // come from this one config.
   const config = MediaConfig.parse(env.MEDIA_CONFIG ? JSON.parse(env.MEDIA_CONFIG) : {});
   const store = d1RecordStore(mediaDatabase(env.DB, LooseAsset), LooseAsset);
-  const secrets = await sharedSecretsStore(env, mediaSecretsRegistry);
-  const credentials = secrets.get(MEDIA_STORAGE_SECRET);
+  // The application's runtime token and media's account, read only by the job that asks Stream (#728) —
+  // an image, an audio file or a document never reads a Cloudflare token here.
+  const cloudflare = mediaCloudflareConfig(env, config);
   const imagesAccountHash = config.delivery.imagesAccountHash;
   // Resolved once, and only if a signed record needs it.
   let signing: Promise<DeliverySigner> | undefined;
@@ -118,10 +120,6 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
     signing ??= resolveDeliverySigner(env);
     return signing;
   };
-  const streamManager = new CloudflareStreamManager({
-    apiToken: credentials.apiToken,
-    accountId: credentials.accountId,
-  });
   return {
     store,
     ai: env.AI,
@@ -135,6 +133,7 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
       blob: new Blob([await readObjectBytes(env, imagesAccountHash, signer, record)]),
     }),
     fetchVideoAudio: async (record) => {
+      const streamManager = new CloudflareStreamManager(await cloudflare());
       const details = (await streamManager.getVideoDetails(record.storageKey)) as { playback?: { hls?: string } };
       const hls = details.playback?.hls;
       if (!hls) throw new MediaEnrichmentError({ detail: `video ${record.storageKey} has no HLS playback URL yet` });

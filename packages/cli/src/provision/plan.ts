@@ -7,7 +7,7 @@ import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/
 import type { ManifestFault } from "../capabilities/manifests";
 import { dim } from "../terminal/style";
 import { type ProvisionWorker, provisionTargets } from "./environment";
-import { boundSecretNames, workerSecretRegistry } from "./secretBindings";
+import { boundSecretNames, scopeHoldsSecret, workerSecretRegistry } from "./secretBindings";
 
 /**
  * **What a provisioning run is about to do, said before it does any of it (#515).**
@@ -110,7 +110,7 @@ function plannedSecrets(workers: readonly ProvisionWorker[], scope: ProvisionSco
     if (!registry) continue;
     for (const secret of boundSecretNames(registry)) {
       const entry = registry[secret];
-      if (!entry) continue;
+      if (!entry || !scopeHoldsSecret(scope, secret)) continue;
       const name = scope.secretEntry(secret, entry.scope as SecretNameScope);
       if (seen.has(name)) continue;
       seen.add(name);

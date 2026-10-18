@@ -42,7 +42,9 @@ function fakeCf() {
     { id: "thumb", neverRequireSignedURLs: true },
   ]);
   const createStreamKey = vi.fn(async () => ({ id: "kid-1", jwk: "eyJr" }));
+  const secretExists = vi.fn(async (_name: string) => true);
   const cf = {
+    secrets: () => ({ exists: secretExists }),
     r2Provisioner: () => ({ findBucketByName, createBucket, deleteBucket }),
     r2: () => ({ emptyBucket }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
@@ -63,6 +65,7 @@ function fakeCf() {
     getWorker,
     deleteWorker,
     accountSubdomain,
+    secretExists,
   };
 }
 
@@ -75,7 +78,6 @@ function provisioner(cf: CloudflareClients, config: MediaConfig, events: CliAudi
     account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     storeId: "store-1",
-    mediaApiToken: "media-tok",
     r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
     mediaConfig: config,
     dispatcher: { dispatch: async () => {} },
@@ -93,10 +95,10 @@ describe("CloudflareMediaProvisioner", () => {
     const media = provisioner(cf, MediaConfig.parse({}), []);
 
     accountSubdomain.mockResolvedValue(null);
-    await expect(media.preflight()).rejects.toThrow(/workers\.dev subdomain/);
+    await expect(media.preflight(["staging"])).rejects.toThrow(/workers\.dev subdomain/);
 
     accountSubdomain.mockResolvedValue("acme");
-    await expect(media.preflight()).resolves.toBeUndefined();
+    await expect(media.preflight(["staging"])).resolves.toBeUndefined();
   });
 
   test("ensureBucket audits a create, and records nothing when it reuses the bucket", async () => {
@@ -142,7 +144,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: config,
       dispatcher: {
@@ -198,6 +199,49 @@ describe("CloudflareMediaProvisioner", () => {
     expect(allR2.events).toEqual([]);
   });
 
+  test("writes media's account and nothing else — no Images or Stream token is asked for or stored (#728)", async () => {
+    const { media, writes } = signing(MediaConfig.parse({}));
+    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
+    expect(writes.find((write) => write.name === "media-storage-credentials")?.value).toEqual({ accountId: "acct-1" });
+  });
+
+  test("writes the R2 bundle with the key pair and no Cloudflare API token — never the bootstrap one (#728)", async () => {
+    const { media, writes } = signing(MediaConfig.parse({}));
+    await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
+    expect(writes.find((write) => write.name === "media-r2-credentials")?.value).toEqual({
+      accountId: "acct-1",
+      accessKeyId: "ak",
+      secretAccessKey: "sk",
+      bucket: STAGING_BUCKET,
+    });
+  });
+
+  test("preflight refuses, before any bundle is rewritten, an environment that holds no runtime token (#728)", async () => {
+    // The enrichment worker binds the runtime token's store entry. A project upgraded from the manager's
+    // own token has none until it mints one. Refusing at the deploy was too late: by then every bundle had
+    // been rewritten without the token the still-running old kit requires.
+    const { cf, accountSubdomain, secretExists } = fakeCf();
+    accountSubdomain.mockResolvedValue("acme");
+    secretExists.mockImplementation(async (name: string) => name !== "acme-prod-runtime-cf-api-token");
+    const media = provisioner(cf, MediaConfig.parse({}), []);
+    await expect(media.preflight(["staging", "prod"])).rejects.toMatchObject({
+      payload: {
+        message: expect.stringContaining("acme-prod-runtime-cf-api-token"),
+        action: expect.stringContaining("pithy token mint runtime --env prod"),
+      },
+    });
+    expect(secretExists).toHaveBeenCalledWith("acme-staging-runtime-cf-api-token");
+  });
+
+  test("preflight asks for no runtime token when both types are stored in R2 — the host binds none", async () => {
+    const { cf, accountSubdomain, secretExists } = fakeCf();
+    accountSubdomain.mockResolvedValue("acme");
+    secretExists.mockResolvedValue(false);
+    const media = provisioner(cf, MediaConfig.parse({ images: { store: "r2" }, video: { store: "r2" } }), []);
+    await expect(media.preflight(["staging", "prod"])).resolves.toBeUndefined();
+    expect(secretExists).not.toHaveBeenCalled();
+  });
+
   test("writeCredentials upserts both secrets — create first, update on the re-run that create rejects", async () => {
     const { cf } = fakeCf();
     const events: CliAuditEvent[] = [];
@@ -209,7 +253,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: MediaConfig.parse({}),
       dispatcher: {
@@ -226,8 +269,8 @@ describe("CloudflareMediaProvisioner", () => {
     });
 
     await media.writeCredentials("staging", { bucketName: STAGING_BUCKET });
-    // Both secrets, each upserted: the R2 bundle the ObjectStore reads, then media's own Images +
-    // Stream token. One audit event covers the pair — nothing can write one and not the other.
+    // Both secrets, each upserted: the R2 bundle the ObjectStore reads, then media's own account. One
+    // audit event covers the pair — nothing can write one and not the other.
     expect(writes).toEqual([
       "create:media-r2-credentials",
       "update:media-r2-credentials",
@@ -246,7 +289,6 @@ describe("CloudflareMediaProvisioner", () => {
       account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
-      mediaApiToken: "media-tok",
       r2Credentials: { accessKeyId: "ak", secretAccessKey: "sk" },
       mediaConfig: MediaConfig.parse({}),
       dispatcher: {

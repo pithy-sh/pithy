@@ -33,10 +33,28 @@ const LIST_PARTS_PAGE_SIZE = 1000;
  * the bucket it targets. R2 signs presigned URLs with the S3 keys, not the CF API token — both
  * come from config (no environment coupling).
  */
-export interface R2ManagerConfig extends CloudflareManagerConfig, R2Credentials {
+export interface R2ManagerConfig extends Omit<CloudflareManagerConfig, "apiToken">, R2Credentials {
   /** The R2 bucket all object operations target. */
   bucketName: string;
+  /**
+   * A Cloudflare API token, for the one call here that is not S3: {@link CloudflareR2Manager.validateServiceAccess}.
+   *
+   * **Absent in a Worker (#728).** Every object operation is S3, signed with the key pair, so a Worker's
+   * object store holds no API token: the application's one is `runtime`, and R2 needs none of it. Without
+   * one, `validateServiceAccess` answers `false` and nothing calls the Cloudflare API. An empty string is
+   * still refused, because that is an unresolved value rather than a decision.
+   */
+  apiToken?: string;
 }
+
+/**
+ * What the base client is built with when the config carries no API token. Never sent: {@link noApiToken}
+ * is the provider, and the base reads the token through it at every call and refuses an empty one.
+ */
+const S3_ONLY = "r2-s3-only";
+
+/** The token provider of an S3-only manager: no token, so any Cloudflare API call is refused before it is sent. */
+const noApiToken = (): string => "";
 
 /** How long a presigned URL stays valid. Shared by every presign method so the option reads the same. */
 export interface PresignOptions {
@@ -168,8 +186,15 @@ export class CloudflareR2Manager extends CloudflareManager {
 
   private s3Client: S3Client | null = null;
 
+  private readonly s3Only: boolean;
+
   constructor(config: R2ManagerConfig) {
-    super(config);
+    super(
+      config.apiToken === undefined
+        ? { ...config, apiToken: S3_ONLY, tokenProvider: noApiToken }
+        : { ...config, apiToken: config.apiToken },
+    );
+    this.s3Only = config.apiToken === undefined;
     if (!config.bucketName) {
       throw new CloudflareNotConfiguredError({ detail: "Missing bucketName for R2 access." });
     }
@@ -538,6 +563,8 @@ export class CloudflareR2Manager extends CloudflareManager {
    * not merely that an S3 client could be built. Never throws.
    */
   async validateServiceAccess(): Promise<boolean> {
+    // An S3-only manager holds no API token to read the bucket record with.
+    if (this.s3Only) return false;
     try {
       await this.getClient().r2.buckets.get(this.bucketName, { account_id: this.accountId });
       return true;

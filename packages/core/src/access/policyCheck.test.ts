@@ -25,6 +25,8 @@ function context(appRows: (request: AppRowsRequest) => Promise<readonly string[]
       d1Databases: async () => [],
       zone: async () => true,
       vaultSecret: async () => true,
+      vaultSecretField: async () => false,
+      accountToken: async () => false,
       storeEntry: async () => true,
       appRows,
     },

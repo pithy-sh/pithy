@@ -4,6 +4,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { AT_REST_ROTATION_NAME } from "../data/secretRotations";
@@ -38,7 +39,7 @@ const DEFAULT_ROTATION_INTERVAL_DAYS = 30;
 
 // This is a standalone worker, not assembled by `createBackend`, so its `compose` hook never runs.
 // Configure the shared per-invocation accessor directly from the manager's own registry, so reads go
-// through the one cached path (a rotation run reads `CLOUDFLARE_API_TOKEN` once) like every other worker.
+// through the one cached path (a rotation run reads the runtime token once) like every other worker.
 configureSharedSecrets({ registry: managerRegistry });
 
 /** The manager worker's env: the secrets D1 + key binding, the rotation Workflow binding, CF creds for the write-back. */
@@ -55,11 +56,12 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
    */
   AT_REST_ROTATION: { create(options?: { id?: string }): Promise<unknown> };
   /**
-   * The scoped CF API token for the at-rest config write-back — the only live-CF write. A
-   * `cf-secrets-store` binding read via `sharedSecretsStore(env, managerRegistry).get("CLOUDFLARE_API_TOKEN")`,
-   * a string from `.dev.vars` in local dev. Never a plaintext env var.
+   * The application's one Cloudflare API token (#728), for the at-rest config write-back — the only
+   * live-CF write. A `cf-secrets-store` binding read via
+   * `sharedSecretsStore(env, managerRegistry).get(RUNTIME_TOKEN_SECRET)`, a string from `.dev.vars` in
+   * local dev. Never a plaintext env var.
    */
-  CLOUDFLARE_API_TOKEN: SecretBinding | string;
+  RUNTIME_CF_API_TOKEN: SecretBinding | string;
   CLOUDFLARE_ACCOUNT_ID: string;
   SECRETS_STORE_ID: string;
   /**
@@ -114,7 +116,7 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
     const secrets = await sharedSecretsStore(this.env, managerRegistry);
     const manager = new CloudflareSecretsStoreManager({
       accountId: this.env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: secrets.get("CLOUDFLARE_API_TOKEN"),
+      apiToken: secrets.get(RUNTIME_TOKEN_SECRET),
       storeId: this.env.SECRETS_STORE_ID,
     });
     // The writer targets the project- and env-scoped master-key entry this worker actually binds

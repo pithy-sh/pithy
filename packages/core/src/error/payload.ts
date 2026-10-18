@@ -577,6 +577,30 @@ const MediaEnrichmentFailedPublic = z
   })
   .describe("A media AI-enrichment step failed (500).");
 
+const MediaAnalyticsWindowPublic = z
+  .object({
+    code: z
+      .literal("media/analytics_window")
+      .describe(
+        "The requested delivery window reaches past what Cloudflare keeps, or is wider than one read may ask for.",
+      ),
+    status: z.literal(400).describe("Bad Request — narrow the window or move it later."),
+    ...publicFields,
+  })
+  .describe("A delivery-analytics window outside Cloudflare's retention or range (400).");
+
+const MediaAnalyticsUnavailablePublic = z
+  .object({
+    code: z
+      .literal("media/analytics_unavailable")
+      .describe(
+        "Cloudflare does not serve the delivery analytics this read needs to this account — a Customer Metadata Boundary outside the US carries none of them.",
+      ),
+    status: z.literal(409).describe("Conflict — the account's configuration rules the read out."),
+    ...publicFields,
+  })
+  .describe("Delivery analytics are not served to this account (409).");
+
 // --- @pithy-sh/leaderboard: optional ranking capability codes ---
 
 const LeaderboardBoardNotFoundPublic = z
@@ -1662,6 +1686,8 @@ export const KitPublicErrorPayload = z
     MediaUnsupportedPublic,
     MediaStorageFailedPublic,
     MediaEnrichmentFailedPublic,
+    MediaAnalyticsWindowPublic,
+    MediaAnalyticsUnavailablePublic,
     LeaderboardBoardNotFoundPublic,
     LeaderboardEntryNotFoundPublic,
     LeaderboardScoreRejectedPublic,
@@ -1848,6 +1874,12 @@ const MediaStorageFailed = MediaStorageFailedPublic.extend(internalFields).descr
 );
 const MediaEnrichmentFailed = MediaEnrichmentFailedPublic.extend(internalFields).describe(
   MediaEnrichmentFailedPublic.description ?? "",
+);
+const MediaAnalyticsWindow = MediaAnalyticsWindowPublic.extend(internalFields).describe(
+  MediaAnalyticsWindowPublic.description ?? "",
+);
+const MediaAnalyticsUnavailable = MediaAnalyticsUnavailablePublic.extend(internalFields).describe(
+  MediaAnalyticsUnavailablePublic.description ?? "",
 );
 const LeaderboardBoardNotFound = LeaderboardBoardNotFoundPublic.extend(internalFields).describe(
   LeaderboardBoardNotFoundPublic.description ?? "",
@@ -2170,6 +2202,8 @@ export const KitErrorPayload = z
     MediaUnsupported,
     MediaStorageFailed,
     MediaEnrichmentFailed,
+    MediaAnalyticsWindow,
+    MediaAnalyticsUnavailable,
     LeaderboardBoardNotFound,
     LeaderboardEntryNotFound,
     LeaderboardScoreRejected,

@@ -11,16 +11,23 @@ import type {
   TokenPermission,
 } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import { resolveProfile, resolveTokenProfiles } from "@pithy-sh/cloudflare/src/tokens/profiles";
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
-import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
-import { managerCfApiTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { media } from "@pithy-sh/media/src/capability";
+import { SECRETS_RUNTIME_PERMISSIONS } from "@pithy-sh/secrets/src/manager/managerRegistry";
+import {
+  MANAGER_CF_API_TOKEN_SECRET,
+  runtimeTokenName,
+  runtimeTokenSecretName,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type AccountTokenControl,
   forgetProfileToken,
   listProfileTokens,
+  listSupersededTokens,
   mintProfileToken,
   revokeProfileToken,
   rotateProfileToken,
@@ -83,14 +90,14 @@ function fakeControl(overrides: Partial<AccountTokenControl> = {}): AccountToken
 }
 
 /**
- * A capability declaring a worker-consumer profile stored in CF Secrets Store. It uses the **real**
- * `secretsTokenProfile`, not a copy, so a change to the manager token's declared secret or scope shows
- * up here as a failing store-entry assertion rather than as a mint quietly writing to a dead entry.
+ * A capability whose Worker calls Cloudflare, so the `runtime` profile resolves (#728). It uses the
+ * **real** `SECRETS_RUNTIME_PERMISSIONS`, not a copy, so a change to what the manager needs shows up here
+ * as a failing assertion rather than as a mint quietly carrying the wrong grants.
  */
 const secretsCap = defineCapability({
   name: "secrets",
   requiredBindings: [],
-  tokenProfiles: { secrets: secretsTokenProfile },
+  runtimePermissions: SECRETS_RUNTIME_PERMISSIONS,
 });
 
 /** The project every engine in this suite is scoped to. */
@@ -136,13 +143,13 @@ describe("tokenPrefix", () => {
 });
 
 describe("tokenStoreEntryName", () => {
-  test("a global profile resolves the same entry provisioning wrote, in every environment", () => {
-    // `pithy token mint secrets` and `pithy secrets provision` must land on one entry — the one the
-    // manager's CLOUDFLARE_API_TOKEN binding reads. Diverge and the operator rolls a credential the
-    // manager never sees.
-    const profile = resolveProfile(resolveTokenProfiles([secretsCap]), "secrets");
-    for (const env of ["staging", "prod"]) {
-      expect(tokenStoreEntryName(PROJECT, env, profile)).toBe(managerCfApiTokenSecretName(PROJECT));
+  test("the runtime profile resolves the entry provisioning writes, one per environment (#728)", () => {
+    // `pithy token mint runtime` and `pithy secrets provision` must land on one entry — the one every
+    // Worker's RUNTIME_CF_API_TOKEN binding reads. Diverge and the operator rolls a credential no Worker sees.
+    const profile = resolveProfile(resolveTokenProfiles([secretsCap]), RUNTIME_PROFILE);
+    for (const env of ["staging", "prod"] as const) {
+      expect(tokenStoreEntryName(PROJECT, env, profile)).toBe(runtimeTokenSecretName(PROJECT, env));
+      expect(tokenName(PROJECT, env, RUNTIME_PROFILE)).toBe(runtimeTokenName(PROJECT, env));
     }
   });
 
@@ -186,14 +193,15 @@ describe("mintProfileToken", () => {
     });
   });
 
-  test("a worker-consumer profile writes to CF Secrets Store under the project-scoped entry name", async () => {
+  test("the runtime profile writes to CF Secrets Store under the environment's project-scoped entry (#728)", async () => {
     const tokens = fakeControl();
     const putSecret = vi.fn(async () => {});
-    const result = await mintProfileToken(engineWith(dir, tokens, { putSecret }), "secrets", "prod");
+    const result = await mintProfileToken(engineWith(dir, tokens, { putSecret }), "runtime", "prod");
 
-    // The entry provisioning wrote and the manager binds — not the profile's `.dev.vars` variable key.
-    expect(putSecret).toHaveBeenCalledWith(managerCfApiTokenSecretName(PROJECT), "value-acme-prod-secrets");
-    expect(putSecret).not.toHaveBeenCalledWith(secretsTokenProfile.secret, expect.anything());
+    // The entry provisioning writes and every Worker binds — not the profile's binding name.
+    expect(putSecret).toHaveBeenCalledWith(runtimeTokenSecretName(PROJECT, "prod"), "value-acme-prod-runtime");
+    expect(putSecret).not.toHaveBeenCalledWith(RUNTIME_TOKEN_SECRET, expect.anything());
+    expect(tokens.rolled).toEqual([runtimeTokenName(PROJECT, "prod")]);
     expect(result.sink.sink).toBe("secrets-store");
   });
 
@@ -217,18 +225,13 @@ describe("mintProfileToken", () => {
 
   test("a profile with no store and no declared secret backend fails with actionable guidance", async () => {
     const tokens = fakeControl();
-    // A capability profile with no defaultStore; secretBackend returns undefined (not declared).
-    const cap = defineCapability({
-      name: "widgets",
-      requiredBindings: [],
-      tokenProfiles: { widgets: { permissions: ["d1:read"] } },
-    });
+    // A profile with no defaultStore; secretBackend returns undefined (not declared).
     const engine: TokenEngine = {
       accountId: "acct-1",
       project: PROJECT,
       projectDir: dir,
       tokens,
-      profiles: resolveTokenProfiles([cap]),
+      profiles: { widgets: { name: "widgets", permissions: ["d1:read"], secret: "CF_TOKEN_WIDGETS", description: "" } },
       secretBackend: () => undefined,
     };
     await expect(mintProfileToken(engine, "widgets", "staging")).rejects.toThrow(PithyError);
@@ -273,6 +276,8 @@ describe("listProfileTokens", () => {
         status: "active",
         // No declared domain in this fixture, so there is no route to attach and no zone to scope.
         routeScope: "not-required",
+        // The fixture's tokens carry no policies, so what they grant cannot be said either way.
+        grants: "unknown",
       },
     ]);
     expect(JSON.stringify(list)).not.toContain("value");
@@ -305,20 +310,32 @@ describe("listProfileTokens", () => {
     // each known profile's name and matching exactly is what survives. Sized off the budget, not a
     // literal, so it keeps testing truncation if the ceiling moves.
     const long = "a-worker-consumer-profile-".repeat(NAMESPACE_LIMITS.apiToken.maxLength).slice(0, 200);
-    const cap = defineCapability({
-      name: "verbose",
-      requiredBindings: [],
-      tokenProfiles: { [long]: { permissions: ["d1:read"], defaultStore: "ephemeral" } },
-    });
+    const profiles = {
+      [long]: {
+        name: long,
+        permissions: ["d1:read" as const],
+        secret: "CF_TOKEN_LONG",
+        defaultStore: "ephemeral" as const,
+        description: "",
+      },
+    };
     const wireName = tokenName(PROJECT, "staging", long);
     expect(wireName).not.toContain(long); // truncated — the slice-based parse could not recover this
     const tokens = fakeControl({
       listTokens: vi.fn(async () => [{ id: "t1", name: wireName, status: "active" as const }]),
     });
 
-    const list = await listProfileTokens(engineWith(".", tokens, { profiles: resolveTokenProfiles([cap]) }), "staging");
+    const list = await listProfileTokens(engineWith(".", tokens, { profiles }), "staging");
     expect(list).toEqual([
-      { profile: long, env: "staging", name: wireName, tokenId: "t1", status: "active", routeScope: "not-required" },
+      {
+        profile: long,
+        env: "staging",
+        name: wireName,
+        tokenId: "t1",
+        status: "active",
+        routeScope: "not-required",
+        grants: "unknown",
+      },
     ]);
   });
 });
@@ -410,6 +427,24 @@ describe("revokeProfileToken", () => {
 
     await expect(revokeProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/rate limited/);
     expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "prod-value" } });
+  });
+
+  /**
+   * `secrets` left the registry when `runtime` replaced it (#728), and `pithy doctor` still names
+   * `token revoke secrets --env <env>` for the old token. Its local copy is keyed by the variable the
+   * retired profile wrote, so the cleanup knows that key without the registry.
+   */
+  test("a superseded profile's revoke clears its local copy too", async () => {
+    const engine = engineWith(dir, fakeControl());
+    await writeMintedToken(PROJECT, "prod", MANAGER_CF_API_TOKEN_SECRET, "old-manager-value", engine.paths);
+    await writeMintedToken(PROJECT, "prod", "CF_TOKEN_CI_SYSTEM", "ci-value", engine.paths);
+
+    const result = await revokeProfileToken(engine, "secrets", "prod");
+
+    expect(result).toMatchObject({ revoked: 1, localCopy: "forgotten", location: tokensFile(dir) });
+    expect(result.localCopyProblem).toBeUndefined();
+    expect(JSON.parse(await readFile(tokensFile(dir), "utf8"))).toEqual({ prod: { CF_TOKEN_CI_SYSTEM: "ci-value" } });
+    expect(await revokeProfileToken(engine, "secrets", "staging")).toMatchObject({ revoked: 1, localCopy: "absent" });
   });
 
   test("deletes every token of the profile's name and audits the revoke", async () => {
@@ -634,12 +669,12 @@ describe("forgetProfileToken", () => {
   });
 
   test("the key is the profile's secret, verbatim — never the project-scoped store entry", async () => {
-    // `tokens.json` is keyed by what a pipeline reads, `CF_TOKEN_SECRETS_MANAGER`, so that is what goes.
-    const profile = resolveProfile(resolveTokenProfiles([secretsCap]), "secrets");
+    // `tokens.json` is keyed by what a pipeline reads, `RUNTIME_CF_API_TOKEN`, so that is what goes.
+    const profile = resolveProfile(resolveTokenProfiles([secretsCap]), RUNTIME_PROFILE);
     const engine = { ...engineWith(dir, fakeControl()), tokens: undefined };
     await writeMintedToken(PROJECT, "prod", profile.secret, "v", engine.paths);
 
-    await forgetProfileToken(engine, "secrets", "prod");
+    await forgetProfileToken(engine, RUNTIME_PROFILE, "prod");
 
     expect(await held()).toEqual({});
   });
@@ -888,12 +923,12 @@ describe("mintProfileToken — route zones", () => {
     expect(tokens.policies[0]).toHaveLength(2);
   });
 
-  test("a worker-consumer profile gets no route policy — it does not deploy", async () => {
+  test("the runtime profile gets no route policy — it does not deploy", async () => {
     const tokens = fakeControl();
     const routeZones = zonesResolving(["zone-a"]);
     await mintProfileToken(
       engineWith(dir, tokens, { routeZones, putSecret: vi.fn(async () => {}) }),
-      "secrets",
+      RUNTIME_PROFILE,
       "prod",
     );
     expect(tokens.policies[0]).toHaveLength(1);
@@ -910,6 +945,136 @@ describe("mintProfileToken — route zones", () => {
     expect(tokens.policies[0]?.[1]).toEqual({
       permissionGroupNames: ["Workers Routes Write"],
       resources: { "com.cloudflare.api.account.zone.zone-a": "*" },
+    });
+  });
+});
+
+describe("listProfileTokens — grants (#728)", () => {
+  /** A project composing secrets and media, so the runtime profile carries both. */
+  const profiles = resolveTokenProfiles([secretsCap, media({})]);
+  const RUNTIME_GROUPS = [
+    "Secrets Store Read",
+    "Secrets Store Write",
+    "Images Write",
+    "Stream Write",
+    "Account Analytics Read",
+  ];
+  const accountPolicy = (...groups: string[]) => ({
+    permission_groups: groups.map((group) => ({ id: `pg:${group}` })),
+    resources: { "com.cloudflare.api.account.acct-1": "*" },
+  });
+
+  function listing(token: Partial<AccountTokenSummary>) {
+    return fakeControl({
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => [
+          { id: "t1", name: "acme-prod-runtime", status: "active", ...token },
+        ],
+      ),
+    });
+  }
+
+  test("a runtime token minted before media was composed reads as missing — rotate, not mint", async () => {
+    // A mint rolls the value and leaves the policies where they are, so it would hand back a fresh
+    // secret that still cannot mint an upload or run the query. The listing says so before anyone tries.
+    const tokens = listing({ policies: [accountPolicy("Secrets Store Read", "Secrets Store Write")] });
+    const rows = await listProfileTokens(engineWith(".", tokens, { profiles }), "prod");
+    expect(rows).toEqual([expect.objectContaining({ profile: "runtime", grants: "missing" })]);
+  });
+
+  test("a token carrying every group its profile names reads as current", async () => {
+    const tokens = listing({ policies: [accountPolicy(...RUNTIME_GROUPS)] });
+    const rows = await listProfileTokens(engineWith(".", tokens, { profiles }), "prod");
+    expect(rows[0]?.grants).toBe("current");
+  });
+
+  test("a deny is the opposite of a grant", async () => {
+    const tokens = listing({
+      policies: [accountPolicy(...RUNTIME_GROUPS), { ...accountPolicy("Account Analytics Read"), effect: "deny" }],
+    });
+    const rows = await listProfileTokens(engineWith(".", tokens, { profiles }), "prod");
+    expect(rows[0]?.grants).toBe("missing");
+  });
+
+  test("a disabled token is inactive whatever it carries", async () => {
+    const tokens = listing({ status: "disabled", policies: [accountPolicy(...RUNTIME_GROUPS)] });
+    const rows = await listProfileTokens(engineWith(".", tokens, { profiles }), "prod");
+    expect(rows[0]?.grants).toBe("inactive");
+  });
+
+  test("policies Cloudflare did not return say unknown, never missing", async () => {
+    const rows = await listProfileTokens(engineWith(".", listing({}), { profiles }), "prod");
+    expect(rows[0]?.grants).toBe("unknown");
+  });
+
+  test("a group lookup that fails costs the column, never the listing", async () => {
+    const tokens = listing({ policies: [accountPolicy("D1 Read")] });
+    tokens.resolvePermissionGroups = vi.fn(async () => {
+      throw new Error("no API Tokens Read");
+    });
+    const rows = await listProfileTokens(engineWith(".", tokens, { profiles }), "prod");
+    expect(rows).toEqual([expect.objectContaining({ profile: "runtime", grants: "unknown" })]);
+  });
+
+  test("a standing override is what the token must carry, since that is what a rotate would mint", async () => {
+    const tokens = listing({ policies: [accountPolicy("D1 Read")] });
+    const rows = await listProfileTokens(
+      engineWith(".", tokens, {
+        profiles,
+        override: (profile) => (profile === RUNTIME_PROFILE ? { permissions: ["d1:read"] } : undefined),
+      }),
+      "prod",
+    );
+    expect(rows[0]?.grants).toBe("current");
+  });
+});
+
+describe("listSupersededTokens (#728)", () => {
+  const listing = (...names: string[]) =>
+    fakeControl({
+      listTokens: vi.fn(
+        async (): Promise<AccountTokenSummary[]> => names.map((name) => ({ id: `id-${name}`, name, status: "active" })),
+      ),
+    });
+
+  test("names the manager's own tokens still in the account, beside a stored media token", async () => {
+    const stored = {
+      kind: "stored" as const,
+      name: "media-storage-credentials",
+      env: "prod",
+      was: "x",
+      supersededBy: "runtime" as const,
+    };
+    const result = await listSupersededTokens(
+      engineWith(".", listing("acme-global-secrets-manager", "acme-prod-runtime"), {
+        storedSuperseded: async () => stored,
+      }),
+      "prod",
+    );
+    expect(result.unasked).toBeNull();
+    expect(result.found.map((token) => token.name)).toEqual([
+      "acme-global-secrets-manager",
+      "media-storage-credentials",
+    ]);
+  });
+
+  test("a manager that cannot answer costs the stored line, never the listing", async () => {
+    const result = await listSupersededTokens(
+      engineWith(".", listing("acme-prod-secrets"), {
+        storedSuperseded: async () => {
+          throw new ValidationError({ message: "The prod secrets manager cannot say what it carries." });
+        },
+      }),
+      "prod",
+    );
+    expect(result.found.map((token) => token.name)).toEqual(["acme-prod-secrets"]);
+    expect(result.unasked).toBe("The prod secrets manager cannot say what it carries.");
+  });
+
+  test("nothing superseded, nothing named", async () => {
+    expect(await listSupersededTokens(engineWith(".", listing("acme-prod-runtime")), "prod")).toEqual({
+      found: [],
+      unasked: null,
     });
   });
 });
@@ -1177,7 +1342,7 @@ describe("listProfileTokens — reporting never fails on what it reports", () =>
             status: "active",
             policies: [{ resources: { "com.cloudflare.api.account.acct-1": "*" } }],
           },
-          { id: "t2", name: "acme-staging-secrets", status: "active" },
+          { id: "t2", name: "acme-staging-runtime", status: "active" },
         ],
       ),
     });
@@ -1195,7 +1360,7 @@ describe("listProfileTokens — reporting never fails on what it reports", () =>
       }),
       "staging",
     );
-    expect(rows.map((row) => row.profile)).toEqual(["ci-system", "secrets"]);
+    expect(rows.map((row) => row.profile)).toEqual(["ci-system", "runtime"]);
     expect(rows[0]?.routeScope).toBe("unknown");
   });
 

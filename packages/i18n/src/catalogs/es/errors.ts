@@ -98,6 +98,8 @@ export const esErrors: MessageCatalog = {
   "media/unsupported": "Ese tipo de archivo no es compatible con esta operación.",
   "media/storage_failed": "No se ha podido guardar el archivo.",
   "media/enrichment_failed": "No se ha podido analizar el archivo.",
+  "media/analytics_window": "Ese periodo queda fuera de lo que Cloudflare conserva.",
+  "media/analytics_unavailable": "Cloudflare no ofrece estas estadísticas a esta cuenta.",
 
   // Leaderboards.
   "leaderboard/board_not_found": "Esa clasificación no existe.",

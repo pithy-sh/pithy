@@ -30,7 +30,6 @@ const credentials: R2StorageCredentials = {
   accessKeyId: "ak-1",
   secretAccessKey: "sk-1",
   bucket: "pithy-storage",
-  apiToken: "tok-1",
 };
 
 /** A resolved accessor over `registry`, every name carrying `credentials`, for the fake resolver to return. */
@@ -121,10 +120,18 @@ describe("R2StorageCredentials", () => {
     expect(Object.keys(R2StorageCredentials.shape).sort()).toEqual([
       "accessKeyId",
       "accountId",
-      "apiToken",
       "bucket",
       "secretAccessKey",
     ]);
+  });
+
+  /**
+   * **The bundle carries no Cloudflare API token (#728).** A deployed application holds one, `runtime`. A
+   * bundle written before this still holds the one an operator supplied: it parses, and the parse drops it.
+   */
+  test("holds no API token, and a bundle written before #728 parses without one", () => {
+    const written = { ...credentials, apiToken: "an-old-broad-token" };
+    expect(R2StorageCredentials.parse(written)).toEqual(credentials);
   });
 
   test("rejects an empty key — an unresolved credential fails here, not as an opaque SigV4 fault", () => {

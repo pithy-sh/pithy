@@ -2,13 +2,15 @@
 
 _The reader's version of this page is [pithy.sh/docs/core-concepts/cloudflare-tokens](https://pithy.sh/docs/core-concepts/cloudflare-tokens). This copy stays in the kit because `packages/cli/src/doctor/cloudflare.ts` sends an adopter to it by name._
 
-`pithy token` mints the scoped, least-privilege, account-owned Cloudflare API tokens your project needs, so you never hand-craft a token in the dashboard. There are two kinds: the one **`ci-system`** credential your CI pipeline runs under, and **worker-consumer** tokens a deployed Worker reads via its binding (e.g. the secrets manager's runtime token).
+`pithy token` mints the scoped, least-privilege, account-owned Cloudflare API tokens your project needs, so you never hand-craft a token in the dashboard. There are two, and only two: the one **`ci-system`** credential your CI pipeline runs under, and the one **`runtime`** credential your deployed application runs under.
+
+**A deployed application holds one Cloudflare API token, and no more.** Every Worker of an environment that calls Cloudflare reads the same `runtime` token, through one binding. No capability can add a second.
 
 ## The bootstrap token
 
 Everything starts from one credential. You no longer have to make it by hand.
 
-**Sign in: `pithy cloudflare connect`.** It opens Cloudflare's consent screen in your browser and keeps a session for the directory you ran it in. The session asks for what this project's tokens carry — `ci-system` and every capability's profile, in every environment — and a small base: who you are, your account and its zones, renewal without a browser, and Account API Tokens Write, so it can mint them. Nothing a capability the project does not compose would need. Cloudflare lists that one under "Sensitive scopes", switched off: turn it on before you approve. Every audit row the CLI writes under a session names the person who signed in. Registering a dashboard connection takes one: `pithy dashboard connect` records that person as who authorized it, and refuses an account token ([`commands/dashboard.md`](commands/dashboard.md)). [`commands/cloudflare.md`](commands/cloudflare.md) has the flow.
+**Sign in: `pithy cloudflare connect`.** It opens Cloudflare's consent screen in your browser and keeps a session for the directory you ran it in. The session asks for what this project's tokens carry — `ci-system` and `runtime`, in every environment — and a small base: who you are, your account and its zones, renewal without a browser, and Account API Tokens Write, so it can mint them. Nothing a capability the project does not compose would need. Cloudflare lists that one under "Sensitive scopes", switched off: turn it on before you approve. Every audit row the CLI writes under a session names the person who signed in. Registering a dashboard connection takes one: `pithy dashboard connect` records that person as who authorized it, and refuses an account token ([`commands/dashboard.md`](commands/dashboard.md)). [`commands/cloudflare.md`](commands/cloudflare.md) has the flow.
 
 **Or set an account token:** `CLOUDFLARE_API_TOKEN` (plus `CLOUDFLARE_ACCOUNT_ID`) in `<config>/cloudflare.json` — account-scoped, outside every checkout, written by `pithy init` — or the same env vars, which overlay it per key and are how CI supplies them. CI has no browser, so CI always runs this way, under the `ci-system` token `pithy token mint` made for it. Audit rows written under an account token name the token, not a person.
 
@@ -22,9 +24,9 @@ A profile bound to a directory wins over the file and the environment there, and
 
 ## Token names are project-scoped
 
-A minted token is named `<project>-<env>-<profile>` — `acme-production-ci-system`, `acme-staging-secrets`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters on the `<project>-<env>-` prefix and shows nothing outside it.
+A minted token is named `<project>-<env>-<profile>` — `acme-prod-ci-system`, `acme-staging-runtime`. Cloudflare's token list is account-wide and flat, so the project segment is what keeps two Pithy projects in one account from listing, rotating, and revoking each other's credentials. `pithy token list` filters its `tokens` on the `<project>-<env>-` prefix and shows no other token there. Its `superseded` list is the one exception: it also names this project's old secrets manager token, `<project>-global-secrets-manager`, by its exact name, so an upgraded project can find it and revoke it.
 
-The store entry a token's value is written to is scoped the same way. The **variable name is not** — `CF_TOKEN_CI_SYSTEM` stays as it is, because it is a variable key your pipeline reads, not a name in a shared namespace.
+The store entry a token's value is written to is scoped the same way. The **variable name is not** — `CF_TOKEN_CI_SYSTEM` and `RUNTIME_CF_API_TOKEN` stay as they are, because each is a variable key or a binding name, not a name in a shared namespace.
 
 `<project>` is `name` in the root `pithy.config.ts`. See [`NAMING.md`](NAMING.md) for the rule and its length budget.
 
@@ -119,32 +121,62 @@ pithy token rotate ci-system --env prod
 
 **Mint deliberately does not re-scope.** It briefly did, and Cloudflare's token update is a full representation — so doing it meant every mint had to resend the whole token correctly, and a bug there silently cleared a hand-set expiry or IP allowlist, or re-enabled a token you had disabled. Rotate was always the operation that replaces a token; mint is the one you can rely on to change exactly one thing.
 
-## Worker-consumer tokens
+## `runtime` — the one token a deployed application holds
 
-Some tokens are read by a deployed Worker, not by CI — the secrets manager's runtime credential is the example. A capability declares one as a token profile next to its secret registry:
+CI runs under one token. So does the application. `runtime` is the credential every deployed Worker of an environment reads when it calls Cloudflare — the secrets manager rotating its key, media minting an upload or reading what it served — and it is the only one.
+
+**Its permissions are composed, never listed.** A capability declares what its Workers call Cloudflare with as `runtimePermissions`, next to its code, the way it declares `ciPermissions`:
 
 ```ts
-// the secrets capability, next to its code:
-tokenProfiles: {
-  secrets: {
-    permissions: ["secrets:read", "secrets:write"],
-    secret: "SECRETS_MANAGER_CF_API_TOKEN",  // the registry key — also the Worker's binding name
-    secretScope: "global",                   // one credential for the whole project, not one per env
-    defaultStore: "secrets-store"
-  }
-}
+// the secrets capability:
+runtimePermissions: ["secrets:read", "secrets:write"]
+// media, built from its resolved config:
+runtimePermissions: ["images:write", "stream:write", "analytics:read"]
 ```
 
-Its value is written to the **CF Secrets Store**, and the Worker reads it via its binding.
+`runtime`'s scope is the union of every composed capability's `runtimePermissions`, each key once. A capability declares no token of its own: there is no field for one. A project composing nothing that declares runtime permissions resolves `ci-system` alone and mints no runtime token.
 
-`secret` is the registry key, unscoped and unchanged. The **store entry** it lands in is `<project>-<env>-<secret>`, or `<project>-global-<secret>` when `secretScope` is `global` — so this profile writes to `acme-global-secrets-manager-cf-api-token`. `secretScope` is load-bearing rather than documentation: it is what makes `pithy token mint secrets` land on the exact entry provisioning wired the Worker to read.
+| Capability | `runtimePermissions` | What the Worker does with them |
+|---|---|---|
+| `@pithy-sh/secrets` | `secrets:read`, `secrets:write` | The manager's at-rest rotation writes the new key set back to the Secrets Store. |
+| `@pithy-sh/media` | `images:write` while images are in Cloudflare Images, `stream:write` while video is in Stream, `analytics:read` while either is | Mints direct uploads, changes signing, deletes, and reads what was served. Both in R2: nothing. |
+
+**One token per environment.** `runtime` is minted into the Secrets Store at `<project>-<env>-runtime-cf-api-token` and bound into every Worker of that environment that calls Cloudflare as `RUNTIME_CF_API_TOKEN` — the secrets manager, the media host, and your app Worker. Revoking staging's leaves production reading. `pithy secrets provision` mints it for each environment, and `pithy token mint runtime --env <env>` writes the same entry under the same token name, so the two cannot leave an environment holding two.
+
+**One token is fewer credentials, not less privilege per Worker.** `runtime` is the union, and every Worker it is bound into holds all of it. Compose secrets and media, and the manager holds Images, Stream and analytics grants it never calls, while the media host and your app Worker hold Secrets Store Write. That store is flat and account-wide: every environment's entries live in it, production's master key included. Before `runtime`, only the manager held that write. A compromised app Worker can now rewrite any entry in the account's Secrets Store, so treat app Worker code as holding the manager's authority. What the rule buys is one credential per environment to mint, rotate and revoke, and none built by hand. A feature's Workers bind no runtime token at all: nothing mints one for a feature, so branch code never holds it.
+
+```bash
+pithy token mint runtime --env prod
+```
+
+**It reads the whole account's analytics, not one environment's.** `analytics:read` is Account Analytics Read, and that is Cloudflare's grain: a staging token and a production token read the same numbers. A capability narrows what it returns itself. Media joins Stream minutes and Images requests to this environment's own assets, which live in this environment's own database, so an account-wide dataset answers for this environment and nothing else.
+
+Two things to know before you mint it:
+
+- **The minter must hold every runtime permission too.** Cloudflare refuses to delegate a permission the caller does not hold, so the bootstrap token needs the groups, or the signed-in session needs their scopes. `pithy cloudflare connect` asks for every scope the composition needs, so a session made after you add media can mint it. A session made before cannot: connect again.
+- **A token that already exists needs a rotate, not a mint.** Compose media after `runtime` was minted for secrets alone, and the token lacks Images Write, Stream Write and Account Analytics Read. A mint hands back a fresh value with the old policies. `pithy token list` reports it as missing a grant and names the rotate.
+
+### Upgrading to one token
+
+Before `runtime`, an application held up to three: the secrets manager's own token (`<project>-global-secrets-manager`, minted by `pithy secrets provision`, or `<project>-<env>-secrets`, by `pithy token mint secrets`), and the Images and Stream token `pithy media provision` stored in `media-storage-credentials`. That was the token you passed as `--api-token`, and your bootstrap `CLOUDFLARE_API_TOKEN` when you passed none. Both are superseded. Move without a gap, in this order:
+
+1. **Mint `runtime`.** `pithy secrets provision` mints it for every environment, and redeploys each manager to read it.
+2. **Deploy your app Workers on this kit.** `pithy provision --env <env>` binds `runtime` into them; then `pithy deploy`. This kit reads a bundle that still holds a token, and a Worker on the old kit cannot read one without it, so the app moves before any bundle is rewritten.
+3. **Rewrite the bundles.** `pithy media provision` redeploys the media host and rewrites `media-storage-credentials` with the account id and nothing else, and `media-r2-credentials` without a token. `pithy storage provision` rewrites `storage-r2-credentials` the same way.
+4. **Revoke the manager's tokens.** Nothing is revoked for you. `pithy token revoke secrets --env <env>` removes a per-environment manager token. The global one is revoked where it was made: the Cloudflare dashboard, under Manage Account → Account API Tokens. Revoke the media token there too, but only if you made it for media. If you passed no `--api-token`, it is your bootstrap token, which you keep.
+
+`pithy token list --env <env>` names each superseded token still present, beside the tokens it lists. `pithy doctor` names each one still present once `runtime` is minted.
+
+### R2's key pair is outside the rule
+
+The rule is about Cloudflare API tokens a Worker calls the Cloudflare API with. R2's S3 access-key pair is not one: Cloudflare offers no API to mint it, it addresses one bucket over the S3 protocol, and a Worker reaches its bucket through a binding wherever it can. `pithy storage provision` and `pithy media provision` still take it. The bundle that stores it holds the account id, the pair and the bucket, and no Cloudflare API token: the object store signs every call with the pair. A bundle written before #728 also holds a token: the bootstrap one unless you passed another, and the one you passed was the R2 token the key pair derives from. Once your app Workers run this kit, re-run the provision to rewrite the bundle without it. Keep the token. Revoking the pair's parent breaks the pair the bundle still signs with. `pithy doctor` names each bundle still holding one once `runtime` is minted.
 
 ## Where a token is written — the store
 
 A minted value never prints. It is written to one of:
 
-- **`secrets-store`** — the CF Secrets Store; a Worker reads it via its binding. The destination for a worker-consumer token. If a profile doesn't name a store, the destination comes from the token's **declared secret** in your secret registry (`defineSecretRegistry`) — the registry, not a flag, decides where a store-backed token lives (CLAUDE.md §secrets). A token can't live in the encrypted D1 store (Worker-only); declare it `cf-secrets-store`.
-- **`dev-vars`** — `<config>/<project>/tokens.json`, keyed by environment, mode `0600` and outside every checkout. **A handoff to you, not to a later command.** Nothing in the CLI resolves a credential from this file: you open it, copy the value, and paste it into CI. It is the `ci-system` default for exactly that reason, and a worker-consumer token does not belong here — that one goes to `secrets-store`, where the Worker reads it through its binding without a human in the loop. The flag name is kept because it is public.
+- **`secrets-store`** — the CF Secrets Store; a Worker reads it via its binding. The destination for `runtime`. If a profile doesn't name a store, the destination comes from the token's **declared secret** in your secret registry (`defineSecretRegistry`) — the registry, not a flag, decides where a store-backed token lives (CLAUDE.md §secrets). A token can't live in the encrypted D1 store (Worker-only); declare it `cf-secrets-store`.
+- **`dev-vars`** — `<config>/<project>/tokens.json`, keyed by environment, mode `0600` and outside every checkout. **A handoff to you, not to a later command.** Nothing in the CLI resolves a credential from this file: you open it, copy the value, and paste it into CI. It is the `ci-system` default for exactly that reason, and `runtime` does not belong here — that one goes to `secrets-store`, where the Worker reads it through its binding without a human in the loop. The flag name is kept because it is public.
 - **`ephemeral`** — nothing is written; the value is used in-process.
 
 Override any mint with `--store`. A flag wins over the profile default, which wins over the registry backend.
@@ -157,7 +189,7 @@ Every command takes `--json` and `--env`, never prints a token value, and runs w
 # Mint (or reuse a still-valid one) and write it to the token's store.
 pithy token mint ci-system --env prod
 
-# Redirect the store for this mint. Every mint regenerates the value, so there is no --refresh.
+# Redirect the store for this mint. Every mint rolls the value, so there is no --refresh.
 pithy token mint ci-system --env prod --store ephemeral
 
 # List minted tokens for an environment — ids and profiles, never values.
@@ -165,7 +197,7 @@ pithy token list --env prod
 
 # Rotate: mint a new token, store it, delete the old one. --keep-previous holds the old one
 # as a grace window while a Worker consumer picks up the new value (redeploy first).
-pithy token rotate secrets --env prod --keep-previous
+pithy token rotate runtime --env prod --keep-previous
 
 # Revoke: delete the profile's token for an environment, and its local copy with it.
 pithy token revoke ci-system --env prod
@@ -174,7 +206,9 @@ pithy token revoke ci-system --env prod
 pithy token forget ci-system --env prod
 ```
 
-Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, and revoke, and every forget that drops a value or is refused, emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it). A `forget` with nothing to drop emits nothing: no action was taken. A `forget` without credentials has no client to write its event with, so that one goes unrecorded too, and when the project composes audit it says so on stderr rather than in silence.
+Minting rolls in place: the token name is a stable `(profile, env)` identity, so re-minting never orphans a token. A first mint creates the token with the profile's **current** permissions. A later one rolls the value and keeps the policies, so a permission added since — a capability's `ciPermissions` or `runtimePermissions` — takes effect on the next **rotate** (see above).
+
+`pithy token list` reads each token's own policies against its profile. A token missing a group its profile names reports `grants: "missing"` and the listing names the rotate that fixes it. A `disabled` or `expired` token reports `inactive`. When the policies or the account's group ids cannot be read it reports `unknown`, and never takes the listing down with it. Every mint, rotate, and revoke, and every forget that drops a value or is refused, emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`, `…_forgotten`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it). A `forget` with nothing to drop emits nothing: no action was taken. A `forget` without credentials has no client to write its event with, so that one goes unrecorded too, and when the project composes audit it says so on stderr rather than in silence.
 
 ## Environments
 

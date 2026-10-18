@@ -100,6 +100,25 @@ describe("OAUTH_SCOPES — the third column (#759)", () => {
     expect(oauthScopesFor(["routes:write"])).toEqual(["workers-routes.write"]);
   });
 
+  test("analytics:read is the account-level group and its account-level scope, not the zone one (#728)", () => {
+    // `GET /oauth/scopes` holds both `account-analytics.read` ("Account Analytics Read") and
+    // `analytics.read` ("Analytics Read"). The Stream and Images datasets are account-level, so the zone
+    // one would grant a token that answers every query with nothing (measured 2026-10-16 and 2026-10-17).
+    expect(resolvePermissionKeys(["analytics:read"])).toEqual(["Account Analytics Read"]);
+    expect(oauthScopesFor(["analytics:read"])).toEqual(["account-analytics.read"]);
+    expect(isZoneScopedPermission("analytics:read")).toBe(false);
+  });
+
+  test("images:write and stream:write are the groups and scopes a runtime token mints uploads with (#728)", () => {
+    // Confirmed against the live catalog and account, 2026-10-18: `images.write` is "Images Write" and
+    // `stream.write` is "Stream Write", each one account-scoped group. Media's direct uploads, signing
+    // changes and deletes run on them, so the catalog can mint the token an operator used to make by hand.
+    expect(resolvePermissionKeys(["images:write", "stream:write"])).toEqual(["Images Write", "Stream Write"]);
+    expect(oauthScopesFor(["images:write", "stream:write"])).toEqual(["images.write", "stream.write"]);
+    expect(isZoneScopedPermission("images:write")).toBe(false);
+    expect(isZoneScopedPermission("stream:write")).toBe(false);
+  });
+
   test("resolves keys to scopes de-duped in first-seen order, and refuses an unknown key as the group resolver does", () => {
     expect(oauthScopesFor(["d1:read", "d1:write", "d1:read"])).toEqual(["d1.read", "d1.write"]);
     expect(() => oauthScopesFor(["d1:destroy"])).toThrow(PithyError);

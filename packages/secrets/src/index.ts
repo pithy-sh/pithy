@@ -17,13 +17,13 @@ export {
   type SecretsCapability,
   type SecretsConfig,
   secrets,
-  secretsTokenProfile,
 } from "./capability";
 export { type SecretsTables, secretsTables } from "./data/tables";
 // A keyspace member's stored name. Exported because the app that mints per-tenant credentials writes
 // them, and composing that name by hand is exactly the mistake `keyedSecretName` exists to prevent.
 export { keyedSecretName, SecretKey } from "./keyspace";
 export type { KeyedWriteMode } from "./keyspaceWrite";
+export { SECRETS_RUNTIME_PERMISSIONS } from "./manager/managerRegistry";
 export {
   defineSecretRegistry,
   type KeyedSecretName,

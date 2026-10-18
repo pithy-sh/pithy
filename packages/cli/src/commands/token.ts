@@ -19,7 +19,14 @@ import { withContract } from "../contract/commandContract";
 import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import { type CapabilitySet, capabilitySetOf, isUnknown, type ResolvedWorker } from "../project/workerScope";
+import { kitImport } from "../project/kitResolve";
+import {
+  type CapabilitySet,
+  capabilitySetOf,
+  isUnknown,
+  projectCapabilities,
+  type ResolvedWorker,
+} from "../project/workerScope";
 import { canceled, EXIT } from "../terminal/exitClass";
 import { mayPrompt } from "../terminal/inputMode";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -29,6 +36,7 @@ import {
   type ForgetResult,
   forgetProfileToken,
   listProfileTokens,
+  listSupersededTokens,
   mintProfileToken,
   type RevokeResult,
   revokeProfileToken,
@@ -39,6 +47,7 @@ import {
   type TokenResult,
 } from "../tokens/engine";
 import { declaredRouteZones, resolveRouteZones } from "../tokens/routeZones";
+import { type StoredTokenField, supersededNotice, supersededStoredToken } from "../tokens/superseded";
 import { tokenProfiles } from "../tokens/workerProfiles";
 
 /** The rotation that replaces one profile's token in one environment. */
@@ -268,7 +277,37 @@ async function buildEngine(projectDir: string, env: string, options: { consent?:
       exactly what it minted before.
     */
     routeZones: () => resolveRouteZones(declaredRouteZones(workers, env), cf.zones()),
+    // The media token an operator supplied before `runtime` replaced it (#728), asked of this environment's
+    // manager only when this environment composes media. Lazy, so a mint never reaches a manager.
+    storedSuperseded: async () => {
+      const media = await suppliedMediaTokenField(projectDir, workers);
+      if (media === null) return null;
+      const { buildSecretDispatcher } = await import("../capabilities/secretsDispatcher");
+      const dispatcher = await buildSecretDispatcher(accountId, apiToken, requireProjectName(config));
+      return supersededStoredToken({ env, media, carries: (request) => dispatcher.carries(request) });
+    },
   };
+}
+
+/**
+ * Where a composed media capability stored the Images and Stream token `runtime` superseded (#728), or `null`
+ * when nothing here composes media. Read off the project's own `@pithy-sh/media`, the copy that wrote it: a
+ * media older than the field names none, and is asked nothing.
+ */
+async function suppliedMediaTokenField(
+  projectDir: string,
+  workers: readonly ResolvedWorker[],
+): Promise<StoredTokenField | null> {
+  const composed = projectCapabilities(workers).find((capability) => capability.name === "media");
+  if (composed === undefined) return null;
+  const registry = await kitImport<{ MEDIA_STORAGE_SECRET?: string; MEDIA_SUPPLIED_TOKEN_FIELD?: string }>(
+    projectDir,
+    "@pithy-sh/media/src/secret/registry",
+  );
+  const secret = registry.MEDIA_STORAGE_SECRET;
+  const field = registry.MEDIA_SUPPLIED_TOKEN_FIELD;
+  if (secret === undefined || field === undefined || !(secret in (composed.secretRegistry ?? {}))) return null;
+  return { secret, field };
 }
 
 /**
@@ -408,11 +447,46 @@ export function routeScopeNotice(tokens: readonly TokenListItem[], env: string):
   );
 }
 
+/**
+ * What `pithy token list` adds for a token that lacks a grant its profile names (#728), or nothing.
+ *
+ * The same remedy as the route notice and for the same reason: a mint rolls the value and leaves the
+ * policy set alone, so it cannot add a grant. Rotate replaces the token with the profile's current
+ * policies. The shared `analytics` token is the case it was written for — one minted before a claimant
+ * widened it, or by hand — but it holds for every profile.
+ *
+ * `inactive` is not said here. A dead token is one fact, said once, by {@link inactiveNotice}.
+ */
+export function grantsNotice(tokens: readonly TokenListItem[], env: string): string | null {
+  const missing = tokens.filter((token) => token.grants === "missing");
+  const first = missing[0];
+  if (first === undefined) return null;
+  return (
+    `${missing.map((token) => token.profile).join(", ")}: does not carry every permission its profile names, so it cannot do its job.\n` +
+    `A mint only rolls the value. Rotate replaces the token — new value, old one deleted — with the current scope.\n` +
+    `Run: ${rotateCommand(first.profile, env)}\n`
+  );
+}
+
+/**
+ * A token Cloudflare will refuse whatever it carries, for a profile the route notice does not already
+ * speak for — so a dead `ci-system` token is reported once, and a dead `analytics` one is reported at all.
+ */
+export function inactiveNotice(tokens: readonly TokenListItem[], env: string): string | null {
+  const inactive = tokens.filter((token) => token.grants === "inactive" && token.routeScope !== "inactive");
+  const first = inactive[0];
+  if (first === undefined) return null;
+  return (
+    `${inactive.map((token) => token.profile).join(", ")}: disabled or expired, so Cloudflare refuses it.\n` +
+    `Re-enable it on the account, or replace it: ${rotateCommand(first.profile, env)}\n`
+  );
+}
+
 const profileArg = {
   profile: {
     type: "positional",
     required: true,
-    description: "Token profile: ci-system (the CI credential), or a capability's worker-consumer profile",
+    description: "Token profile: ci-system (the CI credential) or runtime (the one token a deployed application holds)",
   },
 } as const;
 const envArgs = { env: ENV_ARG } as const;
@@ -471,10 +545,40 @@ const TokenListPayload = z
             routeScope: z
               .enum(["not-required", "scoped", "stale", "overridden", "inactive", "unknown"])
               .describe("Whether the token can attach the routes this environment's declared domains need."),
+            grants: z
+              .enum(["current", "missing", "inactive", "unknown"])
+              .optional()
+              .describe(
+                "Whether the token carries every permission its profile names. `missing` is fixed by `pithy token rotate`, never by a mint, which only rolls the value.",
+              ),
           })
           .describe("One minted token."),
       )
       .describe("This project's tokens for that environment."),
+    superseded: z
+      .array(
+        z
+          .object({
+            kind: z
+              .enum(["account-token", "stored"])
+              .describe("An account token, by its name, or a token stored inside a secret, by the secret's name."),
+            name: z.string().describe("The account token's name, or the secret that stores one."),
+            tokenId: TokenId.optional(),
+            status: z.string().optional().describe("The account token's status, when Cloudflare returned one."),
+            env: z.string().optional().describe("The environment whose vault stores it, for a stored token."),
+            was: z.string().describe("What it was, in the operator's words."),
+            supersededBy: z.literal("runtime").describe("The profile that replaced it."),
+          })
+          .describe("One credential the runtime token replaced that is still there. Nothing revokes it for you."),
+      )
+      .optional()
+      .describe("The credentials `runtime` superseded that are still present (#728): revoke each once it is deployed."),
+    supersededAsked: z
+      .boolean()
+      .optional()
+      .describe(
+        "Whether every place a superseded token could still be was asked. `false` when the environment's secrets manager could not say whether a supplied media token is still stored.",
+      ),
   })
   .describe("This project's tokens, never their values.");
 
@@ -576,19 +680,28 @@ const list = withContract(
         const env = requireEnvironment(args.env);
         const engine = await buildEngine(process.cwd(), env);
         const tokens = await listProfileTokens(engine, env);
+        // What `runtime` replaced and is still there (#728). Nothing revokes it for you, so the listing says.
+        const superseded = await listSupersededTokens(engine, env);
         if (args.json) {
-          process.stdout.write(`${formatJsonLine({ command: "token list", env, tokens })}\n`);
+          process.stdout.write(
+            `${formatJsonLine({ command: "token list", env, tokens, superseded: superseded.found, supersededAsked: superseded.unasked === null })}\n`,
+          );
           return;
         }
-        if (tokens.length === 0) {
-          process.stdout.write(`No minted tokens for ${env}.\n`);
-          return;
+        if (tokens.length === 0) process.stdout.write(`No minted tokens for ${env}.\n`);
+        else {
+          process.stdout.write(
+            `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
+          );
         }
-        process.stdout.write(
-          `${formatList(tokens.map((token) => ({ name: token.profile, description: `${token.tokenId}${token.status ? ` · ${token.status}` : ""}` })))}\n`,
-        );
-        const notice = routeScopeNotice(tokens, env);
-        if (notice) process.stdout.write(notice);
+        for (const notice of [
+          routeScopeNotice(tokens, env),
+          grantsNotice(tokens, env),
+          inactiveNotice(tokens, env),
+          supersededNotice(superseded.found, superseded.unasked),
+        ]) {
+          if (notice) process.stdout.write(notice);
+        }
       }),
   }),
   {

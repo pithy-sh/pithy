@@ -20,9 +20,10 @@ import { MEDIA_CAPABILITY } from "../workflows/specs";
  * enrichment Workflows.
  *
  * **Two credentials, because media reads only one of them.** `media-storage-credentials` carries the
- * Images and Stream token media mints direct-upload URLs with. `media-r2-credentials` carries the R2 key
- * pair and bucket, and is read by `@pithy-sh/storage`'s `ObjectStore` — media declares the name and never
- * touches the values. Both are per environment, because the bucket is (see {@link mediaBucketName}).
+ * account media's Images and Stream assets live in, and nothing else: media mints their uploads with the
+ * application's one `runtime` token (#728), which this asks for nowhere. `media-r2-credentials` carries the
+ * R2 key pair and bucket, and is read by `@pithy-sh/storage`'s `ObjectStore` — media declares the name and
+ * never touches the values. Both are per environment, because the bucket is (see {@link mediaBucketName}).
  *
  * **Two signing keys, because private media is delivered signed.** A non-public Images or Stream asset
  * is uploaded with `requireSignedURLs`, and the Worker signs a short-lived URL for a reader with
@@ -38,10 +39,10 @@ import { MEDIA_CAPABILITY } from "../workflows/specs";
  * is idempotent** — find-then-create for resources, create-then-update for the secret, and a deploy that
  * overwrites — so re-running provisioning is a no-op on an already-provisioned account.
  *
- * **What it does not do.** Cloudflare exposes no API for minting an R2 S3 access-key pair, and the
- * permission catalog carries no Images or Stream keys, so nothing here mints a credential. The scoped API
- * token and the R2 key pair are supplied by the operator (flags, or `R2_CREDENTIALS` in `.dev.vars`) and
- * written into the secrets as given. Minting them is a follow-up, not a promise this command keeps today.
+ * **What it does not do.** Cloudflare exposes no API for minting an R2 S3 access-key pair, so the pair is
+ * supplied by the operator (flags, or `R2_CREDENTIALS` in `.dev.vars`) and written into the secret as given.
+ * Nothing here mints a Cloudflare API token: the runtime token is `pithy secrets provision`'s and
+ * `pithy token mint runtime`'s, and every Worker of the environment reads that one.
  */
 
 /**
@@ -107,15 +108,19 @@ export interface MediaProvisioner {
    * Verify account prerequisites before any resource is created — most importantly a registered
    * `workers.dev` subdomain, which Cloudflare requires to deploy the Workflow-hosting media worker.
    * Throws a clear, actionable error so provisioning fails fast and clean rather than mid-deploy.
+   *
+   * Told every environment the run will write, because a refusal that needs one — an environment with no
+   * runtime token while the host binds one (#728) — must land before {@link writeCredentials} rewrites any
+   * bundle. A still-deployed Worker on the old kit cannot read a bundle rewritten without its token.
    */
-  preflight(): Promise<void>;
+  preflight(environments: readonly ManagedEnvironment[]): Promise<void>;
   /** Create (or reuse) this environment's R2 bucket; returns its name. Idempotent. */
   ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }>;
   /** The names of every Cloudflare Images variant set to `neverRequireSignedURLs`. */
   unsignedVariants(): Promise<string[]>;
   /**
-   * Write this environment's two secrets: `media-storage-credentials` (the Images + Stream token and the
-   * account id) and `media-r2-credentials` (the R2 key pair and this environment's bucket). Idempotent
+   * Write this environment's two secrets: `media-storage-credentials` (the account id) and
+   * `media-r2-credentials` (the R2 key pair and this environment's bucket). Idempotent
    * (create, else update). Runs before any worker is deployed: a worker that boots without its
    * credentials fails on its first enrichment.
    */
@@ -181,7 +186,7 @@ export async function provisionMedia(
   environments: DeclaredEnvironments | readonly string[],
   options: MediaProvisionOptions = {},
 ): Promise<MediaProvisionResult> {
-  await provisioner.preflight();
+  await provisioner.preflight(managedEnvironments(environments));
   // Before anything is created: a variant that would serve a private image unsigned is a refusal, not a
   // warning to read later.
   await refuseUnsignedVariants(provisioner, options.config ?? MediaConfig.parse({}));

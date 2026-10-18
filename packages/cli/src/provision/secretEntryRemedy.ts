@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { RUNTIME_PROFILE, RUNTIME_TOKEN_SECRET } from "@pithy-sh/cloudflare/src/tokens/runtime";
 import { type Command, pithyCommand, remedy } from "@pithy-sh/core/src/cli/command";
 import type { SecretScope } from "@pithy-sh/secrets/src/registry";
 
@@ -91,6 +92,12 @@ const PROVISION_REMEDY = `${remedy("secrets provision").say((command) => `Run ${
  * which has exactly one entry and refuses to be narrowed.
  */
 export function supplyStoreEntryCommand(entry: MissingStoreEntry): Command {
+  // The runtime token's entry is filled by minting the profile (#728): the mint writes the store entry this
+  // binding names, with exactly the grants the composition carries. A pasted value would carry whatever the
+  // person who made it ticked.
+  if (entry.secret === RUNTIME_TOKEN_SECRET) {
+    return pithyCommand("token mint", { args: [RUNTIME_PROFILE], flags: { "--env": entry.env } });
+  }
   return pithyCommand("secrets create", {
     args: [entry.secret],
     ...(entry.scope === "global" ? {} : { flags: { "--env": entry.env } }),

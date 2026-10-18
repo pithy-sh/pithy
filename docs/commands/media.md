@@ -7,7 +7,7 @@ Stands up what `pithy add media` only wired: the per-environment R2 bucket, the 
 ## Synopsis
 
 ```
-pithy media provision [--worker <name>] [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--r2-api-token <token>] [--json]
+pithy media provision [--worker <name>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
@@ -22,10 +22,8 @@ pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>
 | Flag | Default | Purpose |
 |---|---|---|
 | `--worker <name>` | the project's only Worker | The app Worker whose `media(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
-| `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token the media Worker mints Images and Stream direct-upload URLs with. The default is a broad token; supply a scoped Images + Stream one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
-| `--r2-api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token carried beside the R2 key pair so the object store can prove bucket access |
 | `--json` | `false` | Machine-readable output — one line, one object |
 
 `pithy media deprovision`
@@ -40,13 +38,15 @@ pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>
 
 ## What it does
 
-**The credentials are supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key pair, and the permission catalog carries no Images or Stream keys. The pair and the scoped token come from the flags or from `R2_CREDENTIALS` in the account config, and are written into the secret as given.
+**No Images or Stream token is asked for.** Media mints uploads, changes signing and reads what was served with the application's one `runtime` token, which `pithy secrets provision` mints per environment ([`TOKENS.md`](../TOKENS.md)). The run refuses before it writes anything, while any environment's Secrets Store holds no runtime token, and names `pithy token mint runtime --env <env>`: a bundle rewritten first would break a Worker still on the old kit. A project storing both types in R2 calls Cloudflare for nothing, so its media host binds no runtime token and the run asks for none.
+
+**The R2 pair is supplied, not minted.** Cloudflare exposes no API for creating an R2 S3 access-key pair. It comes from the flags or from `R2_CREDENTIALS` in the account config, and is written into the secret as given. It is the object store's credential, outside the one-token rule. No Cloudflare API token is stored beside it: the object store signs every call with the pair.
 
 `provision` runs in phases across every managed environment rather than one environment end to end, so a failure in `prod` stops the run before `staging` is deployed against a half-provisioned account:
 
 1. **Preflight.** Verify the account can host a Workflow at all — most importantly a registered `workers.dev` subdomain. Then, while images live in Cloudflare Images and `visibility.allowed` admits anything but `public`, refuse if any Images variant is set to `neverRequireSignedURLs`, naming each: such a variant serves a private image to anyone holding its URL. Nothing has been created yet.
 2. **Resources.** Create or reuse each environment's R2 bucket. Records live in D1, so no KV namespace is created.
-3. **Credentials.** Write each environment's two secrets. Two, because there are two owners: `media-storage-credentials` is media's Images + Stream token, and `media-r2-credentials` belongs to `@pithy-sh/storage`'s `ObjectStore`, which media presigns through and whose key pair media never sees.
+3. **Credentials.** Write each environment's two secrets. Two, because there are two owners: `media-storage-credentials` is media's account id and nothing else, and `media-r2-credentials` belongs to `@pithy-sh/storage`'s `ObjectStore`, which media presigns through and whose key pair media never sees.
 4. **Signing keys.** Where some record could be private, write `media-images-signing-key` — the account's Images URL-signing key, read as found, or created as `pithy` when the account has none — and `media-stream-signing-key`, a Stream signing key. Cloudflare hands a Stream key's private half back once, at creation, so one is created only when the environment holds none; a re-run keeps the stored key. A non-public Images or Stream asset is uploaded with `requireSignedURLs`, and the Worker signs a short-lived URL with these for a caller who may read it.
 5. **Workers.** Deploy the prebuilt media worker per ready environment, wired to the resources the secrets already name.
 
@@ -189,10 +189,10 @@ The prod secrets database (acme-prod-secrets) does not exist.
 
 ## Examples
 
-Provision every environment with a scoped Images + Stream token:
+Provision every environment:
 
 ```
-$ pithy media provision --api-token $MEDIA_TOKEN
+$ pithy media provision
   staging  bucket acme-staging-media ready, worker deployed
   prod     bucket acme-prod-media ready, worker deployed
 Done.

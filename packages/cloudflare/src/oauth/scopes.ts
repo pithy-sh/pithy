@@ -10,8 +10,8 @@ import { oauthScopesFor } from "../tokens/permissions";
  *   the person who signed in.
  * - `offline_access` — the only way Cloudflare issues a refresh token. Without it a session dies at the
  *   hour and every command after it opens a browser (measured 2026-10-15).
- * - `account-api-tokens.write` — the mint. A session mints `ci-system` and every worker-consumer token
- *   the project declares, so the hand-made bootstrap token stops being a setup step.
+ * - `account-api-tokens.write` — the mint. A session mints `ci-system` and `runtime` as the project
+ *   composes them, so the hand-made bootstrap token stops being a setup step.
  * - `account-settings.read` — `GET /accounts`, so the account is discovered rather than stored. On its own
  *   it lists the account; `d1.write` alone listed nothing (both measured 2026-10-15), so discovery must not
  *   lean on whichever other scope a project happens to request.

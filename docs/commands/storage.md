@@ -7,7 +7,7 @@ Stands up what `pithy add storage` only wired: the per-environment R2 bucket, th
 ## Synopsis
 
 ```
-pithy storage provision [--worker <name>] [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
+pithy storage provision [--worker <name>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 pithy storage deprovision --env <environment> [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
@@ -22,7 +22,6 @@ pithy storage deprovision --env <environment> [--storage] [--r2-access-key-id <i
 | Flag | Default | Purpose |
 |---|---|---|
 | `--worker <name>` | the project's only Worker | The app Worker whose `storage(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the sweep Workflow binding. Required when a project has several |
-| `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token carried beside the R2 key pair, so the object store can prove bucket access. The default is a broad token; supply an R2-scoped one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
 | `--json` | `false` | Machine-readable output — one line, one object |
@@ -45,7 +44,7 @@ pithy storage deprovision --env <environment> [--storage] [--r2-access-key-id <i
 
 1. **Preflight.** Verify the account can host a Workflow at all — most importantly a registered `workers.dev` subdomain.
 2. **Buckets.** Create or reuse each environment's R2 bucket.
-3. **Credentials.** Write each environment's `storage-r2-credentials` secret: the account id, the S3 key pair, the scoped token, and the bucket name the object store presigns with. Before the worker, because a worker that boots without its credentials fails on its first multipart abort.
+3. **Credentials.** Write each environment's `storage-r2-credentials` secret: the account id, the S3 key pair, and the bucket name the object store presigns with. No Cloudflare API token: the object store signs every call with the pair. Before the worker, because a worker that boots without its credentials fails on its first multipart abort.
 4. **Workers.** Deploy the prebuilt sweep worker per environment, wired to the provisioned bucket.
 5. **Bindings.** Write the sweep Workflow binding into the app worker's `wrangler.jsonc`, per environment. `pithy add storage` cannot: wrangler requires both a `name` and a `class_name` on every `workflows` entry, and the deployed name is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole config, so `add` emits none and this run completes it.
 

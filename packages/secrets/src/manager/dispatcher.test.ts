@@ -103,6 +103,43 @@ describe("WorkflowSecretDispatcher", () => {
   );
 
   /**
+   * **A field probe (#728).** Whether a stored json secret still carries one field — the supplied token in a
+   * `media-storage-credentials` bundle written before the runtime token replaced it. The manager answers a
+   * bit; a manager predating the mode answers the name instead, and that `present` must not read as yes.
+   */
+  test("asks whether a json secret carries a field, naming the field and nothing else", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "carries" });
+    const dispatcher = new WorkflowSecretDispatcher(client, "acme");
+
+    expect(await dispatcher.carries({ env: "prod", name: "media-storage-credentials", field: "apiToken" })).toBe(true);
+    expect(dispatchAndPoll).toHaveBeenCalledWith("acme-prod-secrets-write", {
+      mode: "probe",
+      name: "media-storage-credentials",
+      field: "apiToken",
+    });
+  });
+
+  test.each([{ outcome: "lacks" }, { outcome: "absent" }])("%j carries nothing", async (output) => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue(output);
+    expect(await new WorkflowSecretDispatcher(client, "acme").carries({ env: "prod", name: "x", field: "f" })).toBe(
+      false,
+    );
+  });
+
+  test.each([{ outcome: "present" }, undefined, { outcome: "maybe" }])(
+    "a manager that answers the name rather than the field is told to redeploy: %j",
+    async (output) => {
+      const { client, dispatchAndPoll } = stubClient();
+      dispatchAndPoll.mockResolvedValue(output);
+      await expect(
+        new WorkflowSecretDispatcher(client, "acme").carries({ env: "prod", name: "x", field: "f" }),
+      ).rejects.toMatchObject({ payload: { action: expect.stringContaining("Once it is redeployed") } });
+    },
+  );
+
+  /**
    * **The rotation ledger over the same wire (`#379`).** A row addressed by an id, so the id is the thing
    * that must not be guessed at: a `rotation-open` whose answer cannot be read leaves the close pointing at
    * nothing, and a row that never closes reads as a rotation still running long after it ended.

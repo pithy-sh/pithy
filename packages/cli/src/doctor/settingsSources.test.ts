@@ -123,7 +123,7 @@ describe("reaching the account", () => {
           d1Provisioner: () => ({ listDatabases }),
           zones: () => ({ findZoneForHostname }),
         }) as never,
-      probe: async () => ({ probe: secretProbe }),
+      probe: async () => ({ probe: secretProbe, carries: async () => false }),
     });
     if (answer.state !== "reachable") throw new Error(`expected reachable, got ${answer.reason}`);
 
@@ -138,6 +138,35 @@ describe("reaching the account", () => {
     // Doctor judges every environment's composition of a capability, and each asks the manager this again.
     expect(await answer.reader.vaultSecret({ name: "email-link-signing-key", environment: "prod" })).toBe(true);
     expect(secretProbe).toHaveBeenCalledTimes(1);
+  });
+
+  test("a field and an account token are asked once each, of the manager and the token list (#728)", async () => {
+    const carries = vi.fn(async () => true);
+    const findTokenByName = vi.fn(async (name: string) =>
+      name === "acme-global-secrets-manager" ? { id: "t" } : null,
+    );
+    const answer = await settingsAccountConnection({
+      projectDir: dir,
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      homedir: dir,
+      connect: async () => ({ accountTokens: () => ({ findTokenByName }) }) as never,
+      probe: async () => ({ probe: async () => true, carries }),
+    });
+    if (answer.state !== "reachable") throw new Error("expected reachable");
+
+    const field = { name: "media-storage-credentials", environment: "prod", field: "apiToken" };
+    expect(await answer.reader.vaultSecretField(field)).toBe(true);
+    expect(await answer.reader.vaultSecretField(field)).toBe(true);
+    expect(carries).toHaveBeenCalledTimes(1);
+    expect(carries).toHaveBeenCalledWith({ env: "prod", name: "media-storage-credentials", field: "apiToken" });
+
+    expect(await answer.reader.accountToken("acme-global-secrets-manager")).toBe(true);
+    expect(await answer.reader.accountToken("acme-global-secrets-manager")).toBe(true);
+    expect(await answer.reader.accountToken("acme-prod-secrets")).toBe(false);
+    expect(findTokenByName).toHaveBeenCalledTimes(2);
   });
 
   test("a Secrets Store entry is asked of the project's store, by the name it was created under", async () => {
@@ -157,7 +186,7 @@ describe("reaching the account", () => {
             return { exists };
           },
         }) as never,
-      probe: async () => ({ probe: async () => false }),
+      probe: async () => ({ probe: async () => false, carries: async () => false }),
     });
     if (answer.state !== "reachable") throw new Error("expected reachable");
     expect(await answer.reader.storeEntry("acme-prod-email-link-signing-key")).toBe(true);
@@ -177,7 +206,7 @@ describe("reaching the account", () => {
       env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
       homedir: dir,
       connect: async () => ({ secrets: () => ({ exists: async () => false }) }) as never,
-      probe: async () => ({ probe: async () => false }),
+      probe: async () => ({ probe: async () => false, carries: async () => false }),
     });
     if (answer.state !== "reachable") throw new Error("expected reachable");
     // `false` would report every entry missing on a machine that simply never recorded the id. A refusal is
@@ -202,12 +231,18 @@ describe("reaching the account", () => {
         probe: async () => {
           throw new Error("the probe should not be asked about dev");
         },
+        carries: async () => {
+          throw new Error("the probe should not be asked about dev");
+        },
       }),
     });
     if (answer.state !== "reachable") throw new Error("expected reachable");
     // `dev` is local Miniflare — there is no manager Worker to ask, so the question is refused rather
     // than answered `false`, and the runner reports the capability's account tier as unchecked.
     await expect(answer.reader.vaultSecret({ name: "email-link-signing-key", environment: "dev" })).rejects.toThrow();
+    await expect(
+      answer.reader.vaultSecretField({ name: "media-storage-credentials", environment: "dev", field: "apiToken" }),
+    ).rejects.toThrow(/dev secret cannot be asked/);
   });
 
   describe("appRows — a capability's own rows, named", () => {
@@ -234,7 +269,7 @@ describe("reaching the account", () => {
               }),
             }),
           }) as never,
-        probe: async () => ({ probe: async () => false }),
+        probe: async () => ({ probe: async () => false, carries: async () => false }),
       });
       if (answer.state !== "reachable") throw new Error("expected reachable");
       return { reader: answer.reader, asked };

@@ -9,8 +9,9 @@ import { secretsRetainedTables, secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";
 import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
+import { SECRETS_RUNTIME_PERMISSIONS } from "./manager/managerRegistry";
 import { secrets_0001_init } from "./migrations/0001_init";
-import { MANAGER_CF_API_TOKEN_SECRET } from "./provision/provisionSecrets";
+import { supersededManagerToken } from "./provision/supersededToken";
 import { defineSecretRegistry, type SecretRegistry, type SecretRegistryEntry } from "./registry";
 import {
   aggregateSecretRegistries,
@@ -18,26 +19,6 @@ import {
   DEFAULT_SECRETS_CACHE_TTL_SECONDS,
 } from "./sharedSecretsStore";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.generated";
-
-/**
- * The secrets manager's own token profile — the standard default for its least-privilege runtime
- * credential. Declared here, next to the capability, and consumed as the single source of that scope
- * (the CLI provisioner mints the manager token from it). Secrets Store read + write, nothing else.
- *
- * `secretScope: "global"` is load-bearing, not documentation. It puts the literal `global` in the
- * environment slot of the store entry the minted value is written to, so `pithy token mint secrets`
- * lands on `<project>-global-secrets-manager-cf-api-token` — byte-identical to what
- * `managerCfApiTokenSecretName` provisions and what the manager's `CLOUDFLARE_API_TOKEN` binding
- * reads. Drop it and a mint writes a per-environment entry nothing binds, leaving the manager on a
- * credential the operator believes they just rolled.
- */
-export const secretsTokenProfile = {
-  permissions: ["secrets:read", "secrets:write"],
-  secret: MANAGER_CF_API_TOKEN_SECRET,
-  secretScope: "global",
-  defaultStore: "secrets-store",
-  description: "The secrets manager's runtime credential — reads and writes CF Secrets Store from its Worker.",
-} as const;
 
 /**
  * The master key, declared as what it already is: a `cf-secrets-store` secret, one value for the whole
@@ -183,7 +164,11 @@ export function secrets(config: SecretsConfig): SecretsCapability {
     version: PACKAGE_VERSION,
     package: PACKAGE_NAME,
     secretRegistry: registry,
-    tokenProfiles: { secrets: secretsTokenProfile },
+    // The manager's needs, unioned into the one `runtime` token. Never a token of its own (#728).
+    runtimePermissions: SECRETS_RUNTIME_PERMISSIONS,
+    // `pithy doctor` names the manager token `runtime` superseded while it is still in the account, since
+    // nothing revokes it for you (#728).
+    settings: supersededManagerToken(),
     requiredBindings: [
       { type: "d1", name: "SECRETS" },
       { type: "secret", name: "SECRETS_ENCRYPTION_KEYS" },

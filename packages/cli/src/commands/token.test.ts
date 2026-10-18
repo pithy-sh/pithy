@@ -4,13 +4,16 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { tokenProfiles } from "../tokens/workerProfiles";
+import { runtimePermissions, tokenProfiles } from "../tokens/workerProfiles";
 import {
   collectPermissionFlags,
   deadTokenNotice,
   forgetLines,
+  grantsNotice,
+  inactiveNotice,
   localCopyLine,
   parsePermissions,
   parseStore,
@@ -145,6 +148,71 @@ describe("tokenProfiles", () => {
   });
 });
 
+describe("runtimePermissions (#728)", () => {
+  const worker = (capabilities: unknown[]) =>
+    ({ name: "api", dir: "/proj/apps/api", config: { capabilities }, capabilities, target: {} }) as never;
+  const capability = (name: string, keys: string[]) =>
+    defineCapability({ name, requiredBindings: [], runtimePermissions: keys });
+
+  test("is the union every composed capability declares, as a mint of runtime carries it", () => {
+    const set = [
+      worker([capability("secrets", ["secrets:read", "secrets:write"]), capability("media", ["images:write"])]),
+    ];
+    expect(runtimePermissions(set, undefined, [])).toEqual(["secrets:read", "secrets:write", "images:write"]);
+  });
+
+  test("a standing override replaces it, as it replaces the mint's", () => {
+    const set = [worker([capability("secrets", ["secrets:read", "secrets:write"])])];
+    expect(runtimePermissions(set, { permissions: ["secrets:write"] }, [])).toEqual(["secrets:write"]);
+  });
+
+  test("a set composing nothing that declares any falls back to what the caller needs", () => {
+    expect(runtimePermissions([worker([])], undefined, ["secrets:read"])).toEqual(["secrets:read"]);
+  });
+
+  test("an unknowable set is refused, never narrowed to the fallback", () => {
+    expect(() => runtimePermissions({ unknown: "No pithy.config.ts in collab." }, undefined, [])).toThrow(
+      /capability set is unknown/i,
+    );
+  });
+});
+
+describe("grantsNotice (#728)", () => {
+  const row = (profile: string, grants: "current" | "missing" | "inactive" | "unknown") => ({
+    profile,
+    env: "prod",
+    name: `acme-prod-${profile}`,
+    tokenId: "t1",
+    routeScope: "not-required" as const,
+    grants,
+  });
+
+  test("a pre-existing token missing a grant is sent to rotate, never to mint", () => {
+    const notice = grantsNotice([row("runtime", "missing")], "prod");
+    expect(notice).toContain("runtime");
+    expect(notice).toContain("pithy token rotate runtime --env prod");
+    expect(notice).toMatch(/mint only rolls the value/i);
+  });
+
+  test("says nothing for a current token, and nothing it cannot know", () => {
+    expect(grantsNotice([row("runtime", "current")], "prod")).toBeNull();
+    expect(grantsNotice([row("runtime", "unknown")], "prod")).toBeNull();
+    // Inactive is the route notice's to say, once, so a dead token is not reported twice.
+    expect(grantsNotice([row("runtime", "inactive")], "prod")).toBeNull();
+  });
+
+  test("a dead token is reported once, by whichever check found it", () => {
+    expect(inactiveNotice([row("runtime", "inactive")], "prod")).toContain("pithy token rotate runtime --env prod");
+    expect(inactiveNotice([{ ...row("ci-system", "inactive"), routeScope: "inactive" as const }], "prod")).toBeNull();
+    expect(inactiveNotice([row("runtime", "current")], "prod")).toBeNull();
+  });
+
+  test("names every missing profile, and the command for the first", () => {
+    const notice = grantsNotice([row("runtime", "missing"), row("ci-system", "missing")], "prod");
+    expect(notice).toContain("runtime, ci-system");
+  });
+});
+
 describe("routeScopeNotice", () => {
   const row = (
     profile: string,
@@ -155,6 +223,7 @@ describe("routeScopeNotice", () => {
     name: `acme-staging-${profile}`,
     tokenId: "t1",
     routeScope,
+    grants: "unknown" as const,
   });
 
   test("names the stale profile and the one command that fixes it — rotate, not mint", () => {

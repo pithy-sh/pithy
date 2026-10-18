@@ -16,6 +16,8 @@ import {
   managerCfApiTokenSecretName,
   masterKeySecretName,
   provisionSecrets,
+  runtimeTokenName,
+  runtimeTokenSecretName,
   type SecretsDeprovisioner,
   type SecretsProvisioner,
 } from "./provisionSecrets";
@@ -26,8 +28,8 @@ class StubProvisioner implements SecretsProvisioner {
   async preflight() {
     this.calls.push("preflight");
   }
-  async ensureManagerToken() {
-    this.calls.push("token");
+  async ensureRuntimeToken(env: ManagedEnvironment) {
+    this.calls.push(`token:${env}`);
   }
   async ensureDatabase(env: ManagedEnvironment) {
     this.calls.push(`db:${env}`);
@@ -46,14 +48,15 @@ class StubProvisioner implements SecretsProvisioner {
 }
 
 describe("provisionSecrets", () => {
-  test("mints the manager token first, then provisions both environments in order: db → key → migrate → deploy", async () => {
+  test("mints each environment's runtime token first, then provisions both in order: db → key → migrate → deploy", async () => {
     const provisioner = new StubProvisioner();
 
     const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
 
     expect(provisioner.calls).toEqual([
       "preflight",
-      "token",
+      "token:staging",
+      "token:prod",
       "db:staging",
       "key:staging",
       "migrate:staging:d1-staging",
@@ -123,15 +126,15 @@ describe("provisionSecrets", () => {
     expect(provisioner.calls).toEqual(["preflight"]);
   });
 
-  test("a manager-token mint failure aborts before any resource is created", async () => {
+  test("a runtime-token mint failure aborts before any resource is created", async () => {
     const provisioner = new StubProvisioner();
-    provisioner.ensureManagerToken = async () => {
-      provisioner.calls.push("token");
+    provisioner.ensureRuntimeToken = async (env) => {
+      provisioner.calls.push(`token:${env}`);
       throw new Error("cannot mint account tokens");
     };
 
     await expect(provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS)).rejects.toThrow("cannot mint account tokens");
-    expect(provisioner.calls).toEqual(["preflight", "token"]);
+    expect(provisioner.calls).toEqual(["preflight", "token:staging"]);
   });
 });
 
@@ -174,6 +177,30 @@ describe("masterKeySecretName", () => {
   });
 });
 
+describe("runtimeTokenSecretName (#728)", () => {
+  test("is <project>-<env>-runtime-cf-api-token — the entry `pithy token mint runtime` writes", () => {
+    expect(runtimeTokenSecretName("acme", "staging")).toBe("acme-staging-runtime-cf-api-token");
+    expect(runtimeTokenSecretName("acme", "prod")).not.toBe(runtimeTokenSecretName("acme", "staging"));
+    expect(runtimeTokenSecretName("acme", "prod")).not.toBe(runtimeTokenSecretName("globex", "prod"));
+  });
+
+  test("stays verbatim at the longest legal project name", () => {
+    const longest = "a".repeat(MAX_PROJECT_NAME);
+    expect(runtimeTokenSecretName(longest, "staging")).toBe(`${longest}-staging-runtime-cf-api-token`);
+  });
+});
+
+describe("runtimeTokenName (#728)", () => {
+  test("is <project>-<env>-runtime — the name `pithy token mint runtime` mints and rolls under", () => {
+    expect(runtimeTokenName("acme", "staging")).toBe("acme-staging-runtime");
+    expect(runtimeTokenName("acme", "staging")).not.toBe(runtimeTokenName("globex", "staging"));
+  });
+});
+
+/**
+ * The manager's own token, which `runtime` superseded (#728). Its names are kept because an upgraded
+ * project still holds it until the operator revokes it, and `pithy token list` and `pithy doctor` name it.
+ */
 describe("managerCfApiTokenSecretName", () => {
   test("puts the literal global in the environment slot — one entry per project, not per env", () => {
     expect(managerCfApiTokenSecretName("acme")).toBe("acme-global-secrets-manager-cf-api-token");
@@ -204,19 +231,15 @@ describe("deprovisionSecrets", () => {
   }
 
   /**
-   * Records every destructive call. `rows` is what each environment's secrets database holds; `managers` is
-   * which environments still run a manager Worker once the run's own deletions have landed.
+   * Records every destructive call. `rows` is what each environment's secrets database holds.
    */
   function recordingDeprovisioner(
     calls: string[],
-    state: { rows?: Partial<Record<string, number>>; managers?: string[] } = {},
+    state: { rows?: Partial<Record<string, number>> } = {},
   ): SecretsDeprovisioner {
-    const managers = new Set(state.managers ?? []);
     return {
       countRetained: vi.fn(async (env: ManagedEnvironment) => vaultRows(env, state.rows?.[env] ?? 0)),
-      hasManager: vi.fn(async (env: ManagedEnvironment) => managers.has(env)),
       deleteManager: vi.fn(async (env: ManagedEnvironment) => {
-        managers.delete(env);
         calls.push(`manager:${env}`);
       }),
       deleteMasterKey: vi.fn(async (env: ManagedEnvironment) => {
@@ -225,8 +248,9 @@ describe("deprovisionSecrets", () => {
       deleteDatabase: vi.fn(async (env: ManagedEnvironment) => {
         calls.push(`db:${env}`);
       }),
-      deleteManagerToken: vi.fn(async () => {
-        calls.push("token");
+      deleteRuntimeToken: vi.fn(async (env: ManagedEnvironment) => {
+        calls.push(`token:${env}`);
+        return true;
       }),
     };
   }
@@ -253,12 +277,12 @@ describe("deprovisionSecrets", () => {
 
   test("deletes the named environment and no other — production is not reached by naming staging", async () => {
     const calls: string[] = [];
-    const deprovisioner = recordingDeprovisioner(calls, { managers: ["staging", "prod"] });
+    const deprovisioner = recordingDeprovisioner(calls);
 
     const result = await deprovisionSecrets(deprovisioner, { environment: "staging", declared: DEFAULT_ENVIRONMENTS });
 
-    expect(calls).toEqual(["manager:staging", "db:staging"]);
-    expect(result).toEqual({ environment: "staging", managerTokenDeleted: false });
+    expect(calls).toEqual(["manager:staging", "db:staging", "token:staging"]);
+    expect(result).toEqual({ environment: "staging", runtimeTokenDeleted: true });
   });
 
   test("an environment the project does not declare is refused by name, with nothing deleted", async () => {
@@ -269,25 +293,19 @@ describe("deprovisionSecrets", () => {
     expect(calls).toEqual([]);
   });
 
-  test("keeps the shared manager token while any declared environment still runs a manager", async () => {
-    // The token is `global`: prod's manager rotates with it. Deleting it for staging's teardown would break
-    // every rotation in production at once.
+  test("removes the environment's runtime token last, and only that environment's (#728)", async () => {
+    // Per environment, so production's manager keeps rotating on production's token whatever staging does.
     const calls: string[] = [];
-    await deprovisionSecrets(recordingDeprovisioner(calls, { managers: ["staging", "prod"] }), {
-      environment: "staging",
-      declared: DEFAULT_ENVIRONMENTS,
-    });
-    expect(calls).not.toContain("token");
+    await deprovisionSecrets(recordingDeprovisioner(calls), { environment: "prod", declared: DEFAULT_ENVIRONMENTS });
+    expect(calls).toEqual(["manager:prod", "db:prod", "token:prod"]);
   });
 
-  test("removes the shared manager token once the last manager is gone", async () => {
+  test("reports a runtime token that was already gone as not removed by this run", async () => {
     const calls: string[] = [];
-    const result = await deprovisionSecrets(recordingDeprovisioner(calls, { managers: ["prod"] }), {
-      environment: "prod",
-      declared: DEFAULT_ENVIRONMENTS,
-    });
-    expect(calls).toEqual(["manager:prod", "db:prod", "token"]);
-    expect(result.managerTokenDeleted).toBe(true);
+    const deprovisioner = recordingDeprovisioner(calls);
+    deprovisioner.deleteRuntimeToken = vi.fn(async () => false);
+    const result = await deprovisionSecrets(deprovisioner, { environment: "prod", declared: DEFAULT_ENVIRONMENTS });
+    expect(result.runtimeTokenDeleted).toBe(false);
   });
 
   test("keeps the master key by default, and deletes it only when asked", async () => {
@@ -298,7 +316,7 @@ describe("deprovisionSecrets", () => {
       { environment: "staging", declared: DEFAULT_ENVIRONMENTS },
       options,
     );
-    expect(calls).toEqual(["manager:staging", "key:staging", "db:staging", "token"]);
+    expect(calls).toEqual(["manager:staging", "key:staging", "db:staging", "token:staging"]);
   });
 
   test("an environment whose vault holds rows refuses without a count, naming the environment and the count", async () => {
@@ -336,6 +354,6 @@ describe("deprovisionSecrets", () => {
       { environment: "prod", declared: DEFAULT_ENVIRONMENTS },
       { destroyRetained: 3 },
     );
-    expect(calls).toEqual(["manager:prod", "db:prod", "token"]);
+    expect(calls).toEqual(["manager:prod", "db:prod", "token:prod"]);
   });
 });
