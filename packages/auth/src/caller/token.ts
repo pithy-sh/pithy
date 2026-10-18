@@ -24,8 +24,9 @@ import { z } from "zod";
  * - **Short-lived.** Five minutes by default, and a ceiling of fifteen that no token and no configuration
  *   gets past. A token whose `exp` is a day after its `iat` is refused even when it is otherwise perfect,
  *   because honoring it would make it a shared secret with extra steps.
- * - **Signed with a rotatable key from `@pithy-sh/secrets`.** The `kid` names the key version, so a token
- *   minted a minute before a rotation still verifies during the overlap and stops verifying after it.
+ * - **Signed with a key the Worker reads from `@pithy-sh/secrets`.** The operator supplies it and the
+ *   backend holds the same value. The `kid` names the stored version the token was signed with, and a kid
+ *   the store does not hold is refused.
  *
  * What it is not is **sender-constrained**: a token lifted off the wire is usable by whoever lifted it, for
  * the minutes it has left. RFC 9700 says a token SHOULD be bound to its sender, and the two answers are
@@ -37,7 +38,7 @@ import { z } from "zod";
  * JWT library: the algorithm agility one brings is where the JWT vulnerabilities live.
  */
 
-/** The header a caller token travels on. Not `Authorization`, which carries the backend's own session. */
+/** The header a caller token travels on. Not `Authorization`, which carries the player's forwarded session. */
 export const CALLER_TOKEN_HEADER = "pithy-caller";
 
 /** How long a minted token lives unless the minter asks for less: five minutes. */
@@ -167,9 +168,9 @@ function assertLifetime(seconds: number, what: string): void {
 
 /** What {@link mintCallerToken} takes. */
 export interface MintCallerTokenOptions {
-  /** The current caller-token key — `getVersions(...).versions[currentVersion]`. */
+  /** The caller-token key, the same value the Worker's store holds under `auth-caller-token-key`. */
   key: string;
-  /** Its version — `getVersions(...).currentVersion`. */
+  /** The version the Worker's store holds it as. `"1"` for any value `pithy secrets create` or `update` wrote. */
   kid: string;
   /** Any URL on the Worker the token will be presented to. Reduced to its origin. */
   audience: string;

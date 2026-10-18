@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { isTrustedCertificate, readClientCertificate } from "./certificate";
+import { type CertificatePins, isTrustedCertificate, readClientCertificate } from "./certificate";
 
 /** What Cloudflare puts on `request.cf.tlsClientAuth` for a verified certificate. */
 const VERIFIED = {
@@ -113,7 +113,8 @@ describe("isTrustedCertificate", () => {
   });
 
   test("refuses another issuer, and a fingerprint it was not told about", () => {
-    expect(isTrustedCertificate(verified, { issuerDN: "CN=Somebody Else" })).toBe(false);
+    const pinned = [VERIFIED.certFingerprintSHA256];
+    expect(isTrustedCertificate(verified, { issuerDN: "CN=Somebody Else", fingerprintsSHA256: pinned })).toBe(false);
     expect(isTrustedCertificate(verified, { fingerprintsSHA256: ["00".repeat(32)] })).toBe(false);
   });
 
@@ -123,12 +124,21 @@ describe("isTrustedCertificate", () => {
       readClientCertificate(request({ ...VERIFIED, certRevoked: "1" })),
       readClientCertificate(request({ ...VERIFIED, certVerified: "FAILED:unable to get issuer certificate" })),
     ]) {
-      expect(isTrustedCertificate(cert, { issuerDN: VERIFIED.certIssuerDN }), cert.state).toBe(false);
+      const pins = { issuerDN: VERIFIED.certIssuerDN, fingerprintsSHA256: [VERIFIED.certFingerprintSHA256] };
+      expect(isTrustedCertificate(cert, pins), cert.state).toBe(false);
     }
   });
 
   test("refuses to trust on no pin at all, because any certificate the zone's CA issued would pass", () => {
-    expect(isTrustedCertificate(verified, {})).toBe(false);
+    expect(isTrustedCertificate(verified, {} as unknown as CertificatePins)).toBe(false);
     expect(isTrustedCertificate(verified, { fingerprintsSHA256: [] })).toBe(false);
+  });
+
+  test("refuses an issuer pin on its own, because on a shared CA every verified certificate names that issuer", () => {
+    // The zone rule has already refused every certificate the CA did not issue, so behind it the issuer
+    // check matches all of them. Cast, because the type already refuses this; the runtime must as well.
+    const issuerOnly = { issuerDN: VERIFIED.certIssuerDN } as unknown as CertificatePins;
+    expect(isTrustedCertificate(verified, issuerOnly)).toBe(false);
+    expect(isTrustedCertificate(verified, { issuerDN: VERIFIED.certIssuerDN, fingerprintsSHA256: [] })).toBe(false);
   });
 });

@@ -23,31 +23,37 @@ import { CALLER_TOKEN_HEADER, type CallerTokenVerdict, verifyCallerToken } from 
  * })
  * ```
  *
- * **The key is declared here and stored by the project.** Spread {@link callerTokenRegistry} into the
- * `secrets({ registry })` call so `pithy secrets` knows it, mints it, and rotates it. The name is the join
- * key, so the trusted backend — another Worker of this project — reads the same value through the same
- * entry when it mints.
+ * **The key is declared here and supplied by the operator.** Spread {@link callerTokenRegistry} into the
+ * `secrets({ registry })` call so `pithy secrets` knows it. The kit does not mint it: the backend that signs
+ * with it is the one that needs this option, a backend outside Cloudflare, and nothing in the kit hands a
+ * minted value back out. So the operator generates one value, stores it with the backend, and writes the
+ * same value here with `pithy secrets create`. A Worker that could read this store would be a Worker of
+ * this project, and that one calls over a service binding instead.
  *
  * **Read per call, not through the shared cache.** A token arrives rarely next to a session, and a key
  * read fresh is a rotation that takes effect on the next request. A request with no token reads nothing.
  */
 
-/** The secret a caller token is signed with. One per environment, rotatable, minted by the kit. */
+/** The secret a caller token is signed with. One per environment, supplied by the operator. */
 export const CALLER_TOKEN_SECRET = "auth-caller-token-key";
+
+/** Where an operator is told how to make the caller-token key, hand it to the backend, and replace it. */
+export const CALLER_TOKEN_KEY_PAGE =
+  "https://github.com/pithy-sh/pithy/blob/main/packages/auth/docs/server-authoritative.md#the-signing-key";
 
 /** The registry entry for {@link CALLER_TOKEN_SECRET}. Spread it into the project's `secrets({ registry })`. */
 export const callerTokenRegistry = defineSecretRegistry({
   [CALLER_TOKEN_SECRET]: {
     backend: "d1",
     scope: "environment",
-    // Versioned, so a token minted a moment before a rotation still verifies during the overlap.
+    // Tracked for age, so `pithy secrets ls --check` says when it is due. Replacing it is the operator's.
     rotatable: true,
     valueType: "text",
-    devValue: "random",
-    // The project is the issuer — nothing outside it verifies this signature — so the kit makes it and
-    // replaces it, exactly as it does the session secret.
-    origin: { kind: "minted", recipe: { kind: "random", bytes: 32, encoding: "base64url" } },
-    rotation: { kind: "local" },
+    // Obtained, not minted, and replaced by hand. Two parties hold this value — the Worker that verifies
+    // and the backend that signs — and the backend is outside the project. A kit-minted value would be one
+    // that backend could never learn, and a kit rotation would change it under the backend without a word.
+    origin: { kind: "obtained", issuer: "other", documentation: CALLER_TOKEN_KEY_PAGE },
+    rotation: { kind: "manual", issuer: "other", documentation: CALLER_TOKEN_KEY_PAGE },
   },
 });
 
@@ -61,7 +67,7 @@ export interface VerifyCallerRequestOptions {
 
 /**
  * Verify the caller token on this request. `absent` when there is none — read only from
- * {@link CALLER_TOKEN_HEADER}, never from `Authorization`, which carries the backend's own session.
+ * {@link CALLER_TOKEN_HEADER}, never from `Authorization`, which carries the player's forwarded session.
  */
 export async function verifyCallerRequest(
   c: Context<PithyHonoEnv>,

@@ -69,7 +69,7 @@ describe("verifyCallerRequest", () => {
     expect(touched.has("SECRETS")).toBe(false);
   });
 
-  test("refuses a token presented on Authorization, which carries the backend's session and nothing else", async () => {
+  test("refuses a token presented on Authorization, which carries the forwarded session and nothing else", async () => {
     const { ask } = probeApp();
     const token = await mintCallerToken({ key: KEY, kid: "1", audience: AUDIENCE });
     expect(await ask({ authorization: `Bearer ${token}` })).toEqual({ trusted: false, reason: "absent" });

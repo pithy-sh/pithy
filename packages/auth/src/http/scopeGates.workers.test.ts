@@ -37,6 +37,10 @@ import {
  * The same request, from the same signed-in session, is made twice — once with the token and once
  * without. That is the whole distinction the gates draw: not who the user is, but whether this write came
  * from the adopter's own backend.
+ *
+ * **The session is the player's, forwarded by the backend.** A score is filed under the session's user, so
+ * a backend that called with a session of its own would rank itself. The backend relays the player's
+ * session on `Authorization` and adds its own proof on {@link CALLER_TOKEN_HEADER} beside it.
  */
 
 const CALLER_KEY = "caller-token-key-for-the-gate-suite-0000";
@@ -118,7 +122,8 @@ async function call(
 beforeEach(async () => {
   await prepareScopedBackend(env, gatedMigrations());
   await seedSecrets(env, callerTokenRegistry, { [CALLER_TOKEN_SECRET]: CALLER_KEY });
-  session = await signInScoped(env.DB, "game-server@example.com");
+  // The player whose session the trusted backend forwards. Not the backend's own account.
+  session = await signInScoped(env.DB, "player@example.com");
 });
 
 afterEach(() => {
@@ -136,6 +141,22 @@ describe("leaderboard:submit", () => {
       status: 403,
       code: "leaderboard/submit_forbidden",
     });
+  });
+
+  test("the score is filed under the player whose session the backend forwarded", async () => {
+    // The body names no player. The board credits the session's user, which is why the backend forwards
+    // the player's session rather than holding one of its own.
+    const app = buildApp();
+    expect((await call(app, "POST", "/leaderboard/b1", { score: 10 }, await callerToken())).status).toBe(201);
+    const res = await app.request(
+      "/leaderboard/b1/top",
+      { headers: { authorization: `Bearer ${session.token}` } },
+      scopedWorkerEnv(env as unknown as Record<string, unknown>),
+    );
+    const page = await res.json<{ entries: { userId: string; score: number }[] }>();
+    expect(page.entries.map(({ userId, score }) => ({ userId, score }))).toEqual([
+      { userId: session.userId, score: 10 },
+    ]);
   });
 });
 

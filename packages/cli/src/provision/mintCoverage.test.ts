@@ -210,7 +210,9 @@ describe("the registries this file claims to read are the ones the kit ships", (
     // one, and nothing else here would notice.
     expect(Object.fromEntries(REGISTRIES.map(([name, registry]) => [name, declaredMintable(registry)]))).toEqual({
       auth: ["auth-session-secret"],
-      "auth caller token": ["auth-caller-token-key"],
+      // Obtained, not minted: the backend that signs with it lives outside the project and must hold the
+      // same value, and nothing in the kit hands a minted value back out (#560).
+      "auth caller token": [],
       email: ["email-link-signing-key"],
       media: [],
       payments: [],

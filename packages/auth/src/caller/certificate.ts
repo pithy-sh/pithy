@@ -7,8 +7,9 @@ import { z } from "zod";
  * **The client certificate a request arrived with, read off `request.cf.tlsClientAuth` (#560).**
  *
  * mTLS is the option that is sender-constrained at the edge: the zone refuses a caller without a
- * certificate **before the Worker runs**, through a WAF custom rule on `not cf.tls_client_auth.cert_verified`
- * scoped to the hostname. That rule is the gate. **This helper is not.** It is a defense-in-depth check
+ * certificate **before the Worker runs**, through a WAF custom rule scoped to the hostname that blocks on
+ * `not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked`. Both halves, because a revoked
+ * certificate whose chain verifies still reports `cert_verified`. That rule is the gate. **This helper is not.** It is a defense-in-depth check
  * inside the Worker, for the one question the zone rule cannot answer — which of the certificates your CA
  * issued is this — and on its own it blocks nothing: a Worker with no zone rule in front of it still
  * receives every request, certificate or not, and a resolver that forgot to call this would trust them all.
@@ -93,12 +94,18 @@ export function readClientCertificate(request: Request): ClientCertificate {
   };
 }
 
-/** Which certificates a resolver trusts. At least one pin is required. */
+/** Which certificates a resolver trusts. A fingerprint pin is required; the issuer is an extra check. */
 export interface CertificatePins {
-  /** The issuer the certificate must name, exactly — your CA's distinguished name. */
+  /**
+   * The issuer the certificate must also name, exactly — your CA's distinguished name. **Never enough on
+   * its own**: on the Cloudflare-managed CA every certificate the zone verifies names the same issuer.
+   */
   issuerDN?: string;
-  /** The SHA-256 fingerprints of the certificates you issued to your backend. Case and colons are ignored. */
-  fingerprintsSHA256?: readonly string[];
+  /**
+   * The SHA-256 fingerprints of the certificates you issued to your backend. Case and colons are ignored.
+   * Required, and an empty list trusts nothing.
+   */
+  fingerprintsSHA256: readonly string[];
 }
 
 /** A fingerprint in one spelling: uppercase hex, no separators. */
@@ -107,20 +114,20 @@ function normalizeFingerprint(value: string): string {
 }
 
 /**
- * Whether a certificate is one this Worker trusts: verified, not revoked, and matching every pin given.
+ * Whether a certificate is one this Worker trusts: verified, not revoked, one of the pinned fingerprints,
+ * and from the pinned issuer when one is given.
  *
- * **No pin is no trust.** Every certificate the zone's CA issued verifies, so with nothing pinned this would
- * trust a certificate minted for any other purpose under the same account. Pin the issuer, the fingerprints
- * of the certificates your backend holds, or both.
+ * **No fingerprint is no trust.** Every certificate the zone's CA issued verifies, so with nothing pinned
+ * this would trust a certificate minted for any other purpose under the same account. An issuer pin does
+ * not close that: on a shared CA, every certificate behind the zone rule already names that issuer. Pin
+ * the fingerprints of the certificates your backend holds, and add the issuer if you like.
  */
 export function isTrustedCertificate(certificate: ClientCertificate, pins: CertificatePins): boolean {
   if (certificate.state !== "verified") return false;
-  const fingerprints = pins.fingerprintsSHA256 ?? [];
-  if (pins.issuerDN === undefined && fingerprints.length === 0) return false;
+  // Read defensively: a pin object built at runtime can arrive without the field the type requires.
+  const fingerprints = Array.isArray(pins.fingerprintsSHA256) ? pins.fingerprintsSHA256 : [];
+  if (fingerprints.length === 0) return false;
   if (pins.issuerDN !== undefined && certificate.issuerDN !== pins.issuerDN) return false;
-  if (fingerprints.length > 0) {
-    const presented = normalizeFingerprint(certificate.fingerprintSHA256);
-    if (presented === "" || !fingerprints.some((pin) => normalizeFingerprint(pin) === presented)) return false;
-  }
-  return true;
+  const presented = normalizeFingerprint(certificate.fingerprintSHA256);
+  return presented !== "" && fingerprints.some((pin) => normalizeFingerprint(pin) === presented);
 }

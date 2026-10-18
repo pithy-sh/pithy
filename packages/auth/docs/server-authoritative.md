@@ -37,7 +37,9 @@ The session middleware calls it on every authenticated request, after Better Aut
 - **No default.** Without one the array is empty and nothing extra runs.
 - **Never from what the request says.** Not a header like `x-scopes`, not a body field, not a query parameter. Only from what the request proves.
 
-The trusted backend still holds a session of its own, on `Authorization`. The proof sits beside it.
+**The session is the player's, and the backend forwards it.** A gated write is still an authenticated request, and the route acts for the session's user. `POST /leaderboard/:board` files the score under that user and takes no player in its body. So the backend relays the player's own session on `Authorization` and adds its proof beside it. A backend that called with a session of its own would put every score under its own account. Rating outcomes, ledger credits and the admin routes name their target in the body or the path, so any session works for them.
+
+**The proof is not bound to that session.** A caller token, a certificate or a binding says the request came from your backend. It does not say which player the backend meant. Whichever session arrives beside a valid proof is the one the write is credited to, so the backend must forward only the session of the player the write is for.
 
 ## Three ways to prove the caller
 
@@ -63,10 +65,12 @@ A client certificate is sender-constrained: a stolen token is useless without th
 **The zone rule is the gate.** Create a WAF custom rule on the hostname, action Block:
 
 ```
-(http.host eq "api.example.com" and not cf.tls_client_auth.cert_verified)
+(http.host eq "api.example.com" and (not cf.tls_client_auth.cert_verified or cf.tls_client_auth.cert_revoked))
 ```
 
-It runs before the Worker, so a caller without a verified certificate never reaches your code. Scope it to the paths only your backend calls if devices share the hostname.
+Both halves. A revoked certificate whose chain still verifies reports `cert_verified` true, so the first half alone lets it through. This is the shape of the rule Cloudflare generates for mTLS.
+
+It runs before the Worker, so a caller without a verified, unrevoked certificate never reaches your code. Scope it to the paths only your backend calls if devices share the hostname.
 
 **The Worker helper is defense in depth, not the gate.** `readClientCertificate` reads `request.cf.tlsClientAuth`, and `isTrustedCertificate` checks it against pins. On its own it blocks nothing. A Worker with no zone rule in front of it receives every request, certificate or not.
 
@@ -79,13 +83,13 @@ resolveScopes: (c) =>
     : [],
 ```
 
-The helper answers four states: `absent`, `unverified`, `revoked` and `verified`. Only `verified` with `certVerified === "SUCCESS"` and no revocation is trusted, and only against a pin. With no pin it trusts nothing, because every certificate your zone's CA issued would pass.
+The helper answers four states: `absent`, `unverified`, `revoked` and `verified`. Only `verified` with `certVerified === "SUCCESS"` and no revocation is trusted, and only against a fingerprint pin. Without one it trusts nothing, because every certificate your zone's CA issued would pass. An issuer pin is an extra check, never a substitute: on the Cloudflare-managed CA every certificate the zone verifies names the same issuer.
 
-### 3. A short-lived token bound to this origin. Works anywhere.
+### 3. A short-lived token bound to this origin. For a backend off Cloudflare.
 
-The portable default, `workers.dev` included. A token signed with a key from `@pithy-sh/secrets`, minted for this Worker's origin, alive for minutes.
+The option for a backend that is not a Worker, on `workers.dev` or any other host. A token signed with a shared key, minted for this Worker's origin, alive for minutes. A Worker of your own project does not need it: it calls over a service binding.
 
-Declare the key in the project registry, so `pithy secrets` mints and rotates it:
+Declare the key in the project registry, so `pithy secrets` knows it:
 
 ```ts
 import { callerTokenRegistry } from "@pithy-sh/auth/src/caller/request";
@@ -93,13 +97,27 @@ import { callerTokenRegistry } from "@pithy-sh/auth/src/caller/request";
 secrets({ registry: { ...authSecretsRegistry, ...callerTokenRegistry } }),
 ```
 
-Mint on the backend, one token per call or per few minutes, and send it on the `pithy-caller` header:
+#### The signing key
+
+Two parties hold one value: this Worker, which verifies, and your backend, which signs. **You make it, not the kit.** Nothing in the kit hands a stored value back out, so a key the kit minted is one your backend could never learn. `pithy secrets provision` therefore does not create it.
+
+1. Generate 32 random bytes where your backend's secrets live: `openssl rand -base64 32`.
+2. Store it in your backend's own secret manager.
+3. Pipe the same value into each environment: `printf '%s' "$KEY" | pithy secrets create auth-caller-token-key --env prod`. In `dev`, write it into the dev secrets file with `pithy secrets edit`.
+
+**Rotation is a cutover, and it is yours.** `pithy secrets update` replaces the value, and every value it writes is version `1`, so the backend signs with `kid: "1"`. A token signed with the old key is refused from the moment the Worker holds the new one. Generate the new value and change the Worker's copy and the backend's back to back. Writes between the two are refused, so the backend retries a refused write once it holds the new key. `pithy secrets rotate` does not invent a value here; it names this page.
+
+Mint on the backend, one token per call or per few minutes, and send it on the `pithy-caller` header beside the player's session:
 
 ```ts
 import { mintCallerToken } from "@pithy-sh/auth/src/caller/token";
 
-const { currentVersion, versions } = (await secretsStore(env, callerTokenRegistry)).getVersions("auth-caller-token-key");
-const token = await mintCallerToken({ key: versions[currentVersion], kid: currentVersion, audience: API_ORIGIN });
+const token = await mintCallerToken({ key: CALLER_TOKEN_KEY, kid: "1", audience: API_ORIGIN });
+await fetch(`${API_ORIGIN}/leaderboard/weekly`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${playerSession}`, "pithy-caller": token, "content-type": "application/json" },
+  body: JSON.stringify({ score }),
+});
 ```
 
 Verify in the resolver with `verifyCallerRequest`, as in the first example. It refuses, each on its own:
@@ -109,7 +127,7 @@ Verify in the resolver with `verifyCallerRequest`, as in the first example. It r
 - a token signed by a key the store does not hold,
 - anything that is not a well-formed HS256 compact JWS.
 
-A token lives five minutes by default and fifteen at most. A token claiming longer is refused even when everything else checks out. The key rotates with an overlap, so a token minted a moment before a rotation still verifies.
+A token lives five minutes by default and fifteen at most. A token claiming longer is refused even when everything else checks out.
 
 **It is not sender-constrained.** A token lifted off the wire works for whoever lifted it, for the minutes it has left. The short lifetime is what bounds that. DPoP would bind it to the sender; the kit does not ship it yet.
 
