@@ -48,3 +48,15 @@ export {
   type VersionedSecret,
 } from "./secretsStore";
 export { DEFAULT_SECRETS_CACHE_TTL_SECONDS, sharedSecretsStore } from "./sharedSecretsStore";
+// Declared secret tables: a secret that belongs to somebody, with typed owner columns. The declaration, the
+// spec it is composed through, and the accessor's types — `secretsStore(env, registry).table(T)` reads it.
+export { secretTablesDatabase } from "./tables/database";
+export {
+  defineSecretTable,
+  type SecretTable,
+  type SecretTableOwner,
+  type SecretTableOwnerPredicate,
+  type SecretTableSecretName,
+  type SecretTableValue,
+} from "./tables/defineSecretTable";
+export type { SecretTableAccessor, SecretTableRow, TablePutOptions, TableWriteOptions } from "./tables/tableAccessor";

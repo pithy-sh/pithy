@@ -15,12 +15,15 @@ import {
 } from "./crypto/versionedValue";
 import { secretBindingName } from "./env/bindingName";
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
-import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
+import { SecretNotFoundError } from "./error/errors";
 import { keyedSecretName } from "./keyspace";
 import { type KeyedMemberWrite, type KeyedWriteMode, runKeyedRemove, runKeyedWrite } from "./keyspaceWrite";
 import type { KeyedSecretName, SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
+import { parseValue, serializeValue } from "./store/entryValue";
 import { RotationTracker } from "./store/rotationTracker";
 import { type StoredSecretValue, SystemSecretsStore, unreadableSecret } from "./store/systemSecretsStore";
+import type { AnySecretTable } from "./tables/defineSecretTable";
+import { d1TableIO, SecretTableAccessor, type SecretTableIO } from "./tables/tableAccessor";
 
 /**
  * The read seam. `secretsStore(env, registry)` resolves every declared secret locally — no RPC —
@@ -123,65 +126,6 @@ export function d1KeyedIO(env: SecretsStoreEnv): KeyedSecretIO {
     write: async (write) => runKeyedWrite(await deps(), write),
     remove: async (storedName) => runKeyedRemove(await deps(), storedName),
   };
-}
-
-/** Parse a raw stored string into the entry's value type: `text` passes through, `json` is validated. */
-function parseValue(entry: SecretRegistryEntry, name: string, raw: string): unknown {
-  if (entry.valueType === "text") return raw;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    // Never echo the payload — it is sensitive credential material.
-    throw new SecretInvalidValueError(
-      { message: `Secret '${name}' is not valid JSON.`, detail: `json secret '${name}' failed to parse` },
-      { cause },
-    );
-  }
-  const result = entry.schema.safeParse(parsed);
-  if (!result.success) {
-    // Only path + code — never `issue.message`/`received`, which can echo the secret value.
-    const summary = result.error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
-    throw new SecretInvalidValueError({
-      message: `Secret '${name}' failed validation.`,
-      detail: `json secret '${name}' failed registry validation: ${summary}`,
-    });
-  }
-  return result.data;
-}
-
-/**
- * A caller's value as the string that goes inside the envelope — the inverse of {@link parseValue},
- * and the write side of the same trust boundary.
- *
- * A `json` value is validated against the entry's own schema and re-serialized **from the parsed
- * data**, never from the object handed in: Zod strips what the schema does not declare, so a stray
- * extra property is not sealed in to come back out at a read that trusts the envelope. A `text` value
- * must actually be a string — the types say so, but the one caller this exists for is application code
- * holding a freshly minted credential, and `String(value)` on the wrong thing seals `[object Object]`
- * under a name that will be read as a key.
- *
- * The refusal carries issue paths and codes only, like the read: a Zod issue can echo the value.
- */
-function serializeValue(entry: SecretRegistryEntry, name: string, value: unknown): string {
-  if (entry.valueType === "text") {
-    if (typeof value !== "string") {
-      throw new SecretInvalidValueError({
-        message: `Secret '${name}' takes a string value.`,
-        detail: `text secret '${name}' was handed a ${typeof value}`,
-      });
-    }
-    return value;
-  }
-  const result = entry.schema.safeParse(value);
-  if (!result.success) {
-    const summary = result.error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
-    throw new SecretInvalidValueError({
-      message: `Secret '${name}' failed validation.`,
-      detail: `json secret '${name}' failed registry validation on write: ${summary}`,
-    });
-  }
-  return JSON.stringify(result.data);
 }
 
 /** Resolve a decrypted value envelope (a `d1` secret), parsing every version. */
@@ -291,22 +235,44 @@ export class SecretsAccessor<R extends SecretRegistry> {
   readonly #resolved: Record<string, Resolved>;
   readonly #keyed: KeyedSecretIO | undefined;
   readonly #failures: Record<string, Error>;
+  readonly #tables: SecretTableIO | undefined;
 
   /**
    * `failures` holds the error each unresolved secret raises when *it* is read — see the module note
    * on #170. It is last and optional because almost nothing constructs one: `secretsStore` does, and
-   * a test that hands over already-resolved values has no failures to carry.
+   * a test that hands over already-resolved values has no failures to carry. `tables` opens a declared
+   * table's store, and is absent on the same terms `keyed` is.
    */
   constructor(
     registry: R,
     resolved: Record<string, Resolved>,
     keyed?: KeyedSecretIO,
     failures: Record<string, Error> = {},
+    tables?: SecretTableIO,
   ) {
     this.#registry = registry;
     this.#resolved = resolved;
     this.#keyed = keyed;
     this.#failures = failures;
+    this.#tables = tables;
+  }
+
+  /**
+   * One declared secret table (`defineSecretTable`), typed by its declaration: only its secret names and only
+   * its key fields compile. Its rows live in the same secrets D1 as everything this accessor reads, sealed
+   * under the same master key — see `./tables/tableAccessor`.
+   *
+   * The table is not part of the registry, and does not need to be: it is declared once, with its owner, and
+   * the read and the migration both come from that one declaration.
+   */
+  table<T extends AnySecretTable>(table: T): SecretTableAccessor<T> {
+    if (!this.#tables) {
+      throw new InternalError({
+        message: `Secret table '${table.name}' cannot be reached here.`,
+        detail: `secret table '${table.name}' used through an accessor built without table I/O`,
+      });
+    }
+    return new SecretTableAccessor(table, this.#tables);
   }
 
   /** The current value of a declared secret. */
@@ -434,9 +400,13 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * `keyed` defaults to this accessor's own. The shared store passes the current invocation's
    * instead: it hands out views over an accessor cached across requests, and a keyspace read or write
    * is real I/O, which must run through the binding of the request making it — not of whichever
-   * request happened to fill the cache.
+   * request happened to fill the cache. `tables` is passed the same way, for the same reason.
    */
-  subset<R2 extends SecretRegistry>(registry: R2, keyed: KeyedSecretIO | undefined = this.#keyed): SecretsAccessor<R2> {
+  subset<R2 extends SecretRegistry>(
+    registry: R2,
+    keyed: KeyedSecretIO | undefined = this.#keyed,
+    tables: SecretTableIO | undefined = this.#tables,
+  ): SecretsAccessor<R2> {
     const resolved: Record<string, Resolved> = {};
     const failures: Record<string, Error> = {};
     for (const name of Object.keys(registry)) {
@@ -445,7 +415,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
       const failure = this.#failures[name];
       if (failure) failures[name] = failure;
     }
-    return new SecretsAccessor(registry, resolved, keyed, failures);
+    return new SecretsAccessor(registry, resolved, keyed, failures, tables);
   }
 
   /**
@@ -712,7 +682,7 @@ export async function secretsStore<R extends SecretRegistry>(
     }
   }
 
-  return new SecretsAccessor(registry, resolved, d1KeyedIO(env), failures);
+  return new SecretsAccessor(registry, resolved, d1KeyedIO(env), failures, d1TableIO(env));
 }
 
 /**

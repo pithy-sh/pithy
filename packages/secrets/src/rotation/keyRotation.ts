@@ -9,6 +9,7 @@ import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/env
 import type { SecretsTables } from "../data/tables";
 import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { SecretCryptoError } from "../error/errors";
+import { countTableRowsOnKeyVersions, reencryptTableBatch, registeredSecretTables } from "./tableRotation";
 
 type SecretsDb = Kysely<DatabaseSchema<SecretsTables>>;
 
@@ -252,11 +253,15 @@ export interface ReencryptResult {
 }
 
 /**
- * Re-encrypt one batch of `pithy_secrets_system_secrets` rows that are not on the current key
- * version: decrypt under the row's old key, re-encrypt under the current key, update in place. The
- * plaintext (the `{ currentVersion, versions }` value envelope) is opaque here — only the
- * encryption key changes. Each row is independent; a failure is counted, never thrown, so one bad row
- * cannot abort the batch — and never described, so nothing derived from it can travel.
+ * Re-encrypt one batch of rows that are not on the current key version: decrypt under the row's old key,
+ * re-encrypt under the current key, update in place. The plaintext (the `{ currentVersion, versions }` value
+ * envelope) is opaque here — only the encryption key changes. Each row is independent; a failure is counted,
+ * never thrown, so one bad row cannot abort the batch — and never described, so nothing derived from it can
+ * travel.
+ *
+ * **The batch spans every table that holds a sealed row**: `pithy_secrets_system_secrets` first, then each
+ * declared table `pithy_secrets_tables` registers, out of one `batchSize` budget (`./tableRotation`). A table
+ * the cron never visited would be a set of rows that quietly cannot be opened after the next prune.
  */
 export async function reencryptBatch(
   db: SecretsDb,
@@ -270,7 +275,6 @@ export async function reencryptBatch(
     .where("keyVersion", "!=", Number(config.currentVersion))
     .limit(batchSize)
     .execute();
-  if (rows.length === 0) return result;
 
   for (const row of rows) {
     try {
@@ -295,6 +299,15 @@ export async function reencryptBatch(
       // get wrong later rather than merely absent today.
       result.failed++;
     }
+  }
+
+  let budget = batchSize - rows.length;
+  for (const table of budget > 0 ? await registeredSecretTables(db) : []) {
+    if (budget <= 0) break;
+    const declared = await reencryptTableBatch(db, config, table, budget);
+    result.rotated += declared.rotated;
+    result.failed += declared.failed;
+    budget -= declared.rotated + declared.failed;
   }
   return result;
 }
@@ -355,5 +368,6 @@ export async function countOnKeyVersions(db: SecretsDb, versions: readonly strin
     .select((eb) => eb.fn.countAll<number>().as("count"))
     .where("keyVersion", "in", numbered)
     .executeTakeFirstOrThrow();
-  return Number(row.count);
+  // Every declared table's rows too: a key a table row is still sealed under is a key the prune must keep.
+  return Number(row.count) + (await countTableRowsOnKeyVersions(db, numbered));
 }
