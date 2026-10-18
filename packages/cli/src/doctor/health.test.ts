@@ -240,6 +240,38 @@ describe("buildProjectHealth", () => {
     expect(checkedWorker(health).entitlements).toEqual({ ok: true, gap: { state: "read", gates: [] } });
   });
 
+  test("names each Worker's scope gates and whether a resolver opens them, without failing the project (#560)", async () => {
+    const gated = {
+      name: "ledger",
+      requiredBindings: [],
+      scopeGates: [{ scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
+    };
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      workers: [api, collab],
+      composeWorker: async (worker) => ({
+        capabilities:
+          worker.name === "api"
+            ? [{ name: "auth", requiredBindings: [], providesScopes: false }, gated]
+            : [{ name: "auth", requiredBindings: [], providesScopes: true }, gated],
+      }),
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readCapabilityReach: async () => ({ ok: true, reachable: [], unreachable: [], split: [] }),
+    });
+    // Reported, never gating: a route nobody calls is not a fault anyone can clear.
+    expect(health.ok).toBe(true);
+    const [denying, resolved] = health.workers;
+    if (denying?.state !== "checked" || resolved?.state !== "checked") throw new Error("both Workers are checked");
+    expect(denying.scopes).toEqual({
+      resolver: null,
+      gates: [{ capability: "ledger", scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
+      denying: true,
+    });
+    expect(resolved.scopes).toMatchObject({ resolver: "auth", denying: false });
+  });
+
   test("shares one engine with upgrade: the default plan builder is buildReconcilePlan", () => {
     expect(defaultBuildPlan).toBe(buildReconcilePlan);
   });

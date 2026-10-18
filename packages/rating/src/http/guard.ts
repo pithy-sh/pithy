@@ -28,6 +28,11 @@ export function requireAuth(): MiddlewareHandler<PithyHonoEnv> {
 /**
  * Gate outcome recording behind the record scope when the capability is server-authoritative. A client
  * cannot report that it won; only a trusted server holding the scope may write ratings.
+ *
+ * **A scope is an attestation about the caller, not a permission granted to the user.** It says this
+ * request came from the adopter's own backend. `@pithy-sh/auth`'s `resolveScopes` makes that call on every
+ * request, from something the request proves, and with no resolver composed this gate refuses every
+ * caller (#560).
  */
 export function requireRecordScope(serverAuthoritative: boolean, scope: string): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {

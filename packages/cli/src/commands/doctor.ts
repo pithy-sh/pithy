@@ -93,6 +93,7 @@ import {
   type PortsRegistryEntry,
 } from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
+import { ScopeGateFinding, ScopeGateHealth } from "../doctor/scopeGates";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkSelfBinding, describeSelfBinding, type SelfBindingCheck } from "../doctor/selfBinding";
 import {
@@ -1754,7 +1755,8 @@ function projectHasGreenFindings(health: ProjectHealth): boolean {
   if (scope.split.length > 0 || scope.divergent.length > 0 || scope.partial) return true;
   // A deployed environment's migrations are the same kind of finding: reported, never gating (#586).
   return health.workers.some(
-    (worker) => worker.state !== "unavailable" && (hasBindingNotes(worker) || hasMigrationNotes(worker)),
+    (worker) =>
+      worker.state !== "unavailable" && (hasBindingNotes(worker) || hasMigrationNotes(worker) || hasScopeNotes(worker)),
   );
 }
 
@@ -1956,7 +1958,37 @@ function workerHealthLines(
     for (const gate of health.entitlements.gap.gates) lines.push(`${HEALTH_CONT}${gate}`);
   }
 
+  lines.push(...scopeLines(health));
+
   return lines;
+}
+
+/**
+ * The `scopes` lines (#560): this Worker's scope-gated routes against a resolver. Nothing at all for a Worker
+ * that composes no gate — the question does not arise there, and a line saying so would be noise on every
+ * project that does not run a leaderboard.
+ *
+ * A denying Worker names every gate, because each is a route answering 403 to everyone and the adopter has
+ * to find out which of them they meant to use. The last line says it is reported and not failed, so the
+ * report and the exit code cannot be read as disagreeing.
+ */
+function scopeLines(health: WorkerChecks): string[] {
+  const { gates, resolver, denying } = health.scopes;
+  if (gates.length === 0) return [];
+  if (!denying) {
+    const routes = gates.length === 1 ? "1 gated route" : `${gates.length} gated routes`;
+    return [healthLine("scopes", `${routes}, resolved by ${resolver ?? "nothing"}'s resolveScopes ✓`)];
+  }
+  return [
+    healthLine("scopes", "gated routes, no scope resolver. Each refuses every caller."),
+    ...gates.map((gate) => `${HEALTH_CONT}${gate.capability}: ${gate.route} needs ${gate.scope}`),
+    `${HEALTH_CONT}Give auth() a resolveScopes in pithy.config.ts. Reported, not failed.`,
+  ];
+}
+
+/** Whether a Worker has a scope gate nothing can open — reported on a passing Worker, never collapsed (#560). */
+function hasScopeNotes(worker: WorkerChecks): boolean {
+  return worker.scopes.denying;
 }
 
 /**
@@ -2478,7 +2510,8 @@ function healthBlock(health: ProjectHealth, productionEnvironments: readonly str
     // is the same collapse on the value rather than the absence (#499), so it holds the line open too.
     // And a Worker with an environment whose migrations are not level is never collapsed either: that
     // environment's line is the only place its state is said, and it does not fail `ok` (#586).
-    if (worker.ok && !hasBindingNotes(worker) && !hasMigrationNotes(worker)) {
+    // A gate nothing can open holds it open too: it fails nothing, and this is the only place it is said (#560).
+    if (worker.ok && !hasBindingNotes(worker) && !hasMigrationNotes(worker) && !hasScopeNotes(worker)) {
       lines.push(`  ${worker.worker}: healthy ✓`);
       continue;
     }
@@ -3641,6 +3674,9 @@ const WorkerHealthPayload = z
               .describe("Every composed capability's missing peer, each with its `fix`."),
           })
           .describe("Every composed capability's peers."),
+        scopes: ScopeGateHealth.extend({
+          gates: HealthFinding("route gated on an `AuthContext` scope", ScopeGateFinding.shape),
+        }).describe(ScopeGateHealth.description ?? ""),
       })
       .describe("A Worker whose checks ran."),
     z

@@ -32,6 +32,25 @@ describe("leaderboard()", () => {
     expect(typeof leaderboardPeer.entryStore).toBe("function");
   });
 
+  it("declares its scope gates, so `pithy doctor` can name what denies without a resolver (#560)", () => {
+    expect(leaderboard({ boards }).scopeGates).toEqual([
+      { scope: "leaderboard:admin", route: "PUT /leaderboard/:board/entries/:userId/hidden" },
+      { scope: "leaderboard:admin", route: "DELETE /leaderboard/:board/entries/:userId" },
+      { scope: "leaderboard:submit", route: "POST /leaderboard/:board" },
+    ]);
+  });
+
+  it("declares no submit gate once `serverAuthoritative` is off — the config removed it", () => {
+    const gates = leaderboard({ boards, serverAuthoritative: false }).scopeGates ?? [];
+    expect(gates.map((gate) => gate.scope)).toEqual(["leaderboard:admin", "leaderboard:admin"]);
+  });
+
+  it("names its gates under the mount it was given", () => {
+    const gates = leaderboard({ boards, basePath: "/scores" }).scopeGates ?? [];
+    expect(gates).toHaveLength(3);
+    expect(gates.every((gate) => gate.route.includes(" /scores/"))).toBe(true);
+  });
+
   it("declares no peer capabilities — auth is a seam, not a dependency", () => {
     // Depending on auth would be wrong: the routes read `c.var.auth` through core's AuthContext, so
     // without auth installed they deny rather than open. That is the right failure and needs no edge.

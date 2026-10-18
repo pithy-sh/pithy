@@ -28,6 +28,7 @@ import {
   type RemoteSkip,
   type WorkerComposition,
 } from "./environmentMigrations";
+import { type ScopeGateHealth, scopeGateHealth } from "./scopeGates";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -151,13 +152,19 @@ export interface PrerequisiteHealth {
   missing: MissingPrerequisite[];
 }
 
-/** One Worker's five checks, when the plan behind them was built. `ok` is their AND. */
+/** One Worker's five checks, when the plan behind them was built, and its scope gates. `ok` is the checks' AND. */
 export interface WorkerChecks {
   config: ConfigHealth;
   bindings: BindingHealth;
   migrations: MigrationHealth;
   entitlements: EntitlementHealth;
   prerequisites: PrerequisiteHealth;
+  /**
+   * Its scope gates against a resolver (#560) — `dev`'s composition, read for what it composes. **Not one of
+   * the five and not in `ok`**: a gate nobody can open is reported on every run and fails nothing, because a
+   * route the project never calls is not a fault anyone can clear. See `doctor/scopeGates.ts`.
+   */
+  scopes: ScopeGateHealth;
 }
 
 /**
@@ -412,6 +419,7 @@ function healthFromPlan(
   target: { name: string; dir: string },
   plan: ReconcilePlan,
   migrations: MigrationHealth,
+  scopes: ScopeGateHealth,
 ): WorkerHealth {
   const worker = target.name;
   const directory = workerDirName(target);
@@ -459,6 +467,7 @@ function healthFromPlan(
     migrations,
     entitlements,
     prerequisites,
+    scopes,
   };
 }
 
@@ -573,19 +582,23 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
     };
 
     let plan: ReconcilePlan | null;
+    // What `dev` composes, for the scope gates: the Worker as `pithy dev` runs it, like the rest of the
+    // plan's checks. Only read when `dev` composed, which is also the only case with a plan to attach it to.
+    let scopes: ScopeGateHealth = scopeGateHealth([]);
     try {
       const local = await planFor(LOCAL_ENVIRONMENT);
       const deployed = new Map<string, ReconcilePlan | null>();
       // `dev` did not compose: nothing on this Worker's checks has a composition to be answered from.
       if (local !== null) for (const env of environments.slice(1)) deployed.set(env, await planFor(env));
       plan = local === null ? null : mergeEnvironmentPlans(local, deployed);
+      if (local !== null) scopes = scopeGateHealth((await composed(target, LOCAL_ENVIRONMENT)).capabilities);
     } catch {
       plan = null;
     }
     workers.push(
       plan === null
         ? { state: "unavailable", worker: worker.name, directory: workerDirName(worker) }
-        : healthFromPlan(worker, plan, migrationHealth(answers)),
+        : healthFromPlan(worker, plan, migrationHealth(answers), scopes),
     );
     const succeeded: WorkerComposition[] = [];
     for (const env of environments) {

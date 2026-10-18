@@ -5,8 +5,8 @@ import type { PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capabilit
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { isLocale } from "@pithy-sh/core/src/i18n/locale";
-import type { MiddlewareHandler } from "hono";
-import type { AuthWiring } from "../capability";
+import type { Context, MiddlewareHandler } from "hono";
+import type { AuthWiring, ScopeResolver, ScopeResolverSession } from "../capability";
 import { getAuthInstance } from "./resolve";
 
 /**
@@ -22,6 +22,46 @@ function authenticatedDate(session: unknown): Date | null {
   return value instanceof Date ? value : null;
 }
 
+/**
+ * The scopes this request's caller resolves to — what the adopter's resolver answered, or `[]`.
+ *
+ * **Closed on every failure, and never fatal** (#560). A resolver that throws or rejects, and one that answers
+ * something other than a list of strings, both leave the request with no scopes and a warning: a gate then
+ * refuses it as it would any untrusted caller, rather than the request becoming a 500 or — worse — a
+ * malformed answer reaching a guard that would read `includes` off a string. Validated through
+ * `AuthContext`'s own field, so this and the context the middleware publishes cannot disagree on the shape.
+ *
+ * The warning names the session and never the answer: whatever the resolver handed back is the adopter's,
+ * and a log is not where to learn what a caller was trusted with.
+ */
+async function resolvedScopes(
+  c: Context<PithyHonoEnv>,
+  resolve: ScopeResolver | undefined,
+  session: ScopeResolverSession,
+): Promise<string[]> {
+  if (resolve === undefined) return [];
+  let answer: unknown;
+  try {
+    answer = await resolve(c, session);
+  } catch (error) {
+    c.var.log.child("auth").warn("resolveScopes failed; this request carries no scopes", {
+      sessionId: session.sessionId,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+  const parsed = AuthContext.shape.scopes.safeParse(answer);
+  if (!parsed.success || answer === undefined) {
+    c.var.log
+      .child("auth")
+      .warn("resolveScopes answered something that is not a list of strings; this request carries no scopes", {
+        sessionId: session.sessionId,
+      });
+    return [];
+  }
+  return parsed.data;
+}
+
 export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
@@ -31,6 +71,13 @@ export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
           const instance = await getAuthInstance(c, wiring);
           const session = await instance.api.getSession({ headers });
           if (session) {
+            // Before the context is built, so a resolver sees the request exactly as it arrived and the
+            // context is published once, whole. Per request and never cached: the answer is about this
+            // request's caller, and a cached one is a revocation that has not taken effect (#560).
+            const scopes = await resolvedScopes(c, wiring.resolveScopes, {
+              userId: session.user.id,
+              sessionId: session.session.id,
+            });
             // `locale` comes off the user row the session lookup already loaded, so publishing it
             // costs nothing — and it is the `user` link of `@pithy-sh/i18n`'s server chain, the one
             // that makes a reader's stored choice outrank their device's `Accept-Language`. Read
@@ -42,7 +89,7 @@ export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
               AuthContext.parse({
                 userId: session.user.id,
                 sessionId: session.session.id,
-                scopes: [],
+                scopes,
                 locale: typeof stored === "string" && isLocale(stored) ? stored : null,
                 // Published for the same reason `locale` is: the session lookup has already loaded the
                 // row, so a gate that needs it should not pay for a second read. The adapter hands back

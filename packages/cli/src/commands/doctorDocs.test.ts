@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { leaderboard } from "@pithy-sh/leaderboard/src/capability";
+import { ledger } from "@pithy-sh/ledger/src/capability";
 import { describe, expect, test } from "vitest";
 import type { ResolvedWorker } from "../project/workerScope";
 import { formatJsonLine } from "../terminal/output";
@@ -287,7 +289,9 @@ describe("docs/commands/doctor.md", () => {
     // Nineteen since #539 gave that same section its second finding — one capability two Workers hold at
     // two versions, which is `shared:`'s sentence about a package rather than about a resource, and the
     // first finding on this page that prints while the exit stays 0.
-    expect(WHAT_BLOCKS).toHaveLength(19);
+    // Twenty since #560 added the `scopes` fragment — a gate no resolver can open, the second finding that
+    // prints while the exit stays 0, and the last block of the section because it is the newest.
+    expect(WHAT_BLOCKS).toHaveLength(20);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
@@ -1109,6 +1113,51 @@ describe("docs/commands/doctor.md", () => {
     const fragment = FRAGMENTS[16];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The scopes fragment (#560), pinned against a Worker composing a leaderboard and a ledger whose auth has
+   * no `resolveScopes`.
+   *
+   * The gates are the real capabilities' own `scopeGates`, never a hand stub. A stub of one gate each passed
+   * this pin while the page showed two of the five routes such a Worker actually refuses, and an adopter
+   * counting 403s from the page would have missed three.
+   *
+   * The page shows it because the state it names has no other symptom than a 403: every gate fails closed,
+   * and an adopter reading their own routes sees nothing wrong with any of them.
+   */
+  const scopedWorker = (providesScopes: boolean) =>
+    harness.baseOptions({
+      resolveWorkersFor: async () =>
+        [
+          {
+            name: "api",
+            dir: "/p/apps/api",
+            capabilities: [
+              { name: "auth", requiredBindings: [], providesScopes },
+              leaderboard({ boards: [{ key: "weekly", direction: "desc" }] }),
+              ledger({ currencies: [{ code: "chips", name: "Chips" }] }),
+            ],
+          },
+        ] as unknown as ReturnType<typeof workerSet>,
+      buildPlan: planStub(cleanPlanFor("api")),
+      readCapabilityReach: async () => ({ ok: true, reachable: [], unreachable: [], split: [] }),
+    });
+
+  test("the scopes fragment is what the renderer prints for a gate no resolver can open", async () => {
+    const report = await buildDoctorReport(docOptions(scopedWorker(false)));
+    const fragment = FRAGMENTS[18];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the scopes fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  test("the resolved scopes line the page quotes is the one the same Worker prints once auth resolves", async () => {
+    const report = await buildDoctorReport(docOptions(scopedWorker(true)));
+    const worker = report.project?.health?.workers[0];
+    if (worker?.state !== "checked") throw new Error("the Worker is checked");
+    const gates = worker.scopes.gates.length;
+    const quoted = `${gates} gated routes, resolved by auth's resolveScopes ✓`;
+    expect(PAGE).toContain(`Once auth has a resolver the line reads \`${quoted}\`.`);
   });
 });
 

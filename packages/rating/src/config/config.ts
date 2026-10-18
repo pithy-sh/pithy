@@ -128,7 +128,9 @@ export const RatingConfig = z
       .string()
       .min(1)
       .default("rating:record")
-      .describe("The scope a caller must hold to record an outcome when `serverAuthoritative` is on."),
+      .describe(
+        "The scope a caller must hold to record an outcome when `serverAuthoritative` is on. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`.",
+      ),
   })
   .describe("The rating capability's configuration — its games and how outcomes are authorized.")
   .check((ctx) => {

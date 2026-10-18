@@ -15,7 +15,7 @@ import {
 import { publishedPayload } from "../contract/commandContract";
 import { buildDocsCatalog } from "../docs/catalog";
 import { formatJsonLine } from "../terminal/output";
-import { cleanPlanFor, doctorHarness, ledgerStubPer, planStub } from "../test-utils/doctorHarness";
+import { cleanPlanFor, doctorHarness, ledgerStubPer, planStub, workerSet } from "../test-utils/doctorHarness";
 import { contractAt, expectConforms } from "../test-utils/payloadContract";
 import { dirOf } from "../test-utils/workerDir";
 import { type DoctorFailure, DoctorFailures, doctorFailures } from "./failures";
@@ -839,6 +839,19 @@ describe("every finding in every block carries fix", () => {
         }),
       ),
       readLedger: ledgerStubPer({ api: { staging: { state: "read", pending: 3, undeclared: [] } } }),
+      // A gate nothing opens (#560): ledger composed beside an auth with no `resolveScopes`.
+      resolveWorkersFor: async () =>
+        workerSet("api").map((worker) =>
+          Object.assign(worker, {
+            capabilities: [
+              {
+                name: "ledger",
+                requiredBindings: [],
+                scopeGates: [{ scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
+              },
+            ],
+          }),
+        ),
       readCapabilityReach: async () => ({
         ok: false,
         reachable: [],

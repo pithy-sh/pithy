@@ -3,6 +3,7 @@
 
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { scopeGatesOf } from "@pithy-sh/core/src/http/scopeGates";
 import type { Migration } from "kysely/migration";
 import { LedgerConfig, type LedgerConfigInput } from "./config/config";
 import { ledgerTables } from "./data/tables";
@@ -73,6 +74,7 @@ export function ledger(options: LedgerOptions = { currencies: [] }): LedgerCapab
   const migrations: Record<string, Migration> = { "0001_accounts": ledger_0001_accounts };
   const requiredBindings: BindingSpecInput[] = [{ type: "d1", name: "DB" }];
 
+  const routes = registerLedgerRoutes({ config: resolved, basePath: mountPath });
   const capability = defineCapability({
     name: "ledger",
     // The package this capability ships in and the version it ships at, both stamped by
@@ -91,7 +93,10 @@ export function ledger(options: LedgerOptions = { currencies: [] }): LedgerCapab
         migrations,
       },
     },
-    routes: registerLedgerRoutes({ config: resolved, basePath: mountPath }),
+    routes,
+    // Read off the routes above rather than listed beside them, so `pithy doctor` names exactly the gates
+    // this config mounted — a gate the config switched off is not here (#560).
+    scopeGates: scopeGatesOf(routes),
     // Built from the resolved mount path, never the default: an adopter who mounts the ledger at
     // `/wallet` gets a manifest naming `/wallet/admin/accounts`, which is what a management client
     // composes its calls from.

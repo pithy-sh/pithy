@@ -329,6 +329,38 @@ describe("assertOriginsDeclared", () => {
     await worker("board", { env: {} });
     await expect(assertOriginsDeclared(dir, "feature")).resolves.toBeUndefined();
   });
+
+  /**
+   * **A Worker reachable only over a service binding (#560).** `docs/server-authoritative.md` ranks it first:
+   * the boundary is the Worker itself, so it must have no public address at all. Three explicit decisions say
+   * so — `workers_dev: false`, `preview_urls: false`, no route — and with no origin named there is nothing to
+   * declare. Refusing it would leave the option the docs rank first unshippable, and every remedy the refusal
+   * named would give it the public address it exists not to have.
+   */
+  test("lets a binding-only Worker through: workers.dev and previews closed, no route, no origin", async () => {
+    await worker("internal", { env: { prod: { workers_dev: false, preview_urls: false } } });
+    await expect(assertOriginsDeclared(dir, "prod")).resolves.toBeUndefined();
+    expect(await originDrift(dir, ["staging", "prod"])).toEqual([
+      { worker: dirOf("internal"), env: "staging", fault: "no-origin", origin: null },
+    ]);
+  });
+
+  test("the binding-only decisions may sit at the top level, where wrangler inherits them", async () => {
+    await worker("internal", { workers_dev: false, preview_urls: false, env: { staging: {}, prod: {} } });
+    expect(await originDrift(dir, ["staging", "prod"])).toEqual([]);
+  });
+
+  test("half a decision is not one: workers.dev closed with previews left to default still has no origin", async () => {
+    await worker("internal", { env: { prod: { workers_dev: false } } });
+    expect(await originDrift(dir, ["prod"])).toEqual([
+      { worker: dirOf("internal"), env: "prod", fault: "no-origin", origin: null },
+    ]);
+  });
+
+  test("a binding-only Worker that names an origin is still answering on nothing", async () => {
+    await worker("internal", { env: { prod: { workers_dev: false, preview_urls: false } } }, { prod: APP });
+    await expect(assertOriginsDeclared(dir, "prod")).rejects.toThrow(/names an origin nothing serves/);
+  });
 });
 
 describe("checkOrigins", () => {

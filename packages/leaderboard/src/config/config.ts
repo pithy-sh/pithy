@@ -207,13 +207,15 @@ export const LeaderboardConfig = z
       .min(1)
       .default("leaderboard:submit")
       .describe(
-        "The AuthContext scope a session must carry to submit a score while `serverAuthoritative` is on. Mint it for your server's own token, never for a player's.",
+        "The AuthContext scope a caller must carry to submit a score while `serverAuthoritative` is on. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`, never for a player's device.",
       ),
     adminScope: z
       .string()
       .min(1)
       .default("leaderboard:admin")
-      .describe("The AuthContext scope required to hide or remove another player's entry."),
+      .describe(
+        "The AuthContext scope required to hide or remove another player's entry. An attestation about the caller, not a permission granted to the user: resolve it for your own trusted backend through auth's `resolveScopes`.",
+      ),
     visibleByDefault: z
       .boolean()
       .default(true)

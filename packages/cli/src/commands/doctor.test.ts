@@ -1218,6 +1218,54 @@ describe("renderDoctorText", () => {
     );
   });
 
+  describe("scope gates (#560)", () => {
+    /** One Worker composing ledger's gated routes, with or without a resolver on its auth. */
+    const scoped = (providesScopes: boolean) =>
+      healthyOptions({
+        resolveWorkersFor: async () =>
+          [
+            {
+              name: "api",
+              dir: "/p/apps/api",
+              capabilities: [
+                { name: "auth", requiredBindings: [], providesScopes },
+                {
+                  name: "ledger",
+                  requiredBindings: [],
+                  scopeGates: [
+                    { scope: "ledger:admin", route: "POST /ledger/:currency/credit" },
+                    { scope: "ledger:admin", route: "POST /ledger/:currency/debit" },
+                  ],
+                },
+              ],
+            },
+          ] as unknown as Awaited<ReturnType<NonNullable<DoctorReportOptions["resolveWorkersFor"]>>>,
+        readCapabilityReach: async () => ({ ok: true, reachable: ["auth", "ledger"], unreachable: [], split: [] }),
+      });
+
+    test("names every gate that will deny when no resolver is configured, and does not fail the exit", async () => {
+      const report = await buildDoctorReport(scoped(false));
+      expect(renderDoctorText(report, "/home/u")).toContain(
+        [
+          "    scopes       gated routes, no scope resolver. Each refuses every caller.",
+          "                 ledger: POST /ledger/:currency/credit needs ledger:admin",
+          "                 ledger: POST /ledger/:currency/debit needs ledger:admin",
+          "                 Give auth() a resolveScopes in pithy.config.ts. Reported, not failed.",
+        ].join("\n"),
+      );
+      expect(doctorExitCode(report)).toBe(0);
+    });
+
+    test("says the gates are resolved once auth has a resolver, and collapses a Worker with nothing else to say", async () => {
+      const report = await buildDoctorReport(scoped(true));
+      const health = report.project?.health;
+      const worker = health?.workers[0];
+      if (worker?.state !== "checked") throw new Error("the Worker is checked");
+      expect(worker.scopes).toMatchObject({ resolver: "auth", denying: false });
+      expect(renderDoctorText(report, "/home/u")).not.toContain("no scope resolver");
+    });
+  });
+
   test("up-to-date layout is terser and omits the config/health blocks", async () => {
     const report = await buildDoctorReport(healthyOptions());
     expect(renderDoctorText(report, "/home/u")).toBe(

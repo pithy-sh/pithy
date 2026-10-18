@@ -213,6 +213,11 @@ describe("healthWithFixes", () => {
     },
     entitlements: { ok: true, gap: { state: "read", gates: [] } },
     prerequisites: { ok: false, missing: [{ capability: "auth", requires: "email" }] },
+    scopes: {
+      resolver: null,
+      gates: [{ capability: "ledger", scope: "ledger:admin", route: "POST /ledger/:currency/credit" }],
+      denying: true,
+    },
   } as WorkerHealth;
   const health: ProjectHealth = {
     ok: false,
@@ -236,6 +241,7 @@ describe("healthWithFixes", () => {
         config: { drift: Fixes };
         bindings: { missing: Fixes };
         migrations: { environments: ({ env: string } & Fixes[number])[] };
+        scopes: { gates: Fixes };
       },
       unknown,
     ];
@@ -250,6 +256,10 @@ describe("healthWithFixes", () => {
     ]);
     expect(api.config.drift.map((entry) => entry.fix)).toEqual(["pithy upgrade --worker api"]);
     expect(api.bindings.missing.map((entry) => entry.fix)).toEqual(["pithy upgrade --worker api"]);
+  });
+
+  test("a scope gate nothing opens carries no command — which caller to trust is the adopter's decision", () => {
+    expect(api.scopes.gates.map((gate) => gate.fix)).toEqual([null]);
   });
 
   test("every environment's migrations carry theirs, the deployed ones that never gate included", () => {
@@ -294,6 +304,7 @@ describe("healthWithFixes, on the findings whose remedy is an edit or a decision
       migrations: { ok: true, environments: [] },
       entitlements: { ok: true, gap: { state: "read", gates: [] } },
       prerequisites: { ok: true, missing: [] },
+      scopes: { resolver: null, gates: [], denying: false },
     }) as WorkerHealth;
   const healthOf = (workers: WorkerHealth[]): ProjectHealth => ({
     ok: false,

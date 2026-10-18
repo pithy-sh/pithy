@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import type { Capability, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
+import type { Capability, PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import { TURNSTILE_LOGIN_ACTION, type TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
+import type { Context } from "hono";
 import { z } from "zod";
 import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
@@ -149,7 +150,34 @@ export interface AuthWiring {
    * is the ordinary case and every harness that builds this shape by hand would otherwise have to say so.
    */
   onSessionRevoked?: SessionRevokedListener | undefined;
+  /**
+   * The adopter's scope resolver, or absent. See {@link AuthOptions.resolveScopes}.
+   *
+   * Optional on the wiring for the reason `onSessionRevoked` is: no resolver is the ordinary composition.
+   */
+  resolveScopes?: ScopeResolver | undefined;
 }
+
+/** The session a {@link ScopeResolver} is asked about — the one Better Auth just resolved for this request. */
+export interface ScopeResolverSession {
+  /** The signed-in user the session belongs to. */
+  userId: string;
+  /** The session this request presented. */
+  sessionId: string;
+}
+
+/**
+ * Decide what this request's caller is, and answer the scopes that attests to (#560).
+ *
+ * Called by the session middleware on every authenticated request, after Better Auth has resolved the
+ * session and before any route runs. What it returns becomes `AuthContext.scopes`. It reads the **request**,
+ * which is where the proof is — a service binding the call arrived over, `request.cf.tlsClientAuth`, a
+ * short-lived token on its own header — and never anything the request merely claims about itself.
+ */
+export type ScopeResolver = (
+  c: Context<PithyHonoEnv>,
+  session: ScopeResolverSession,
+) => readonly string[] | Promise<readonly string[]>;
 
 /**
  * Called when a session row is deleted — a sign-out, a revoke, an admin ending somebody's devices.
@@ -201,6 +229,25 @@ export type AuthOptions = AuthConfigInput & {
    * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
    */
   onSessionRevoked?: SessionRevokedListener;
+  /**
+   * Decide, per request, what this request's caller is — and so which scope gates it opens (#560).
+   *
+   * `leaderboard:submit`, `rating:record`, `leaderboard:admin` and `ledger:admin` are **attestations about
+   * the caller, not permissions granted to the user**: each says *this write came from the adopter's own
+   * trusted backend, not from a device*. This is where that is decided, and the seam does not dictate how.
+   * A backend calling over a service binding, one presenting a client certificate, and one presenting a
+   * short-lived token all answer the same question here. `verifyCallerToken` and `readClientCertificate`
+   * are the kit's helpers for the last two; `docs/server-authoritative.md` ranks the three.
+   *
+   * **Resolved per request, never cached** — a cached scope is a revocation that has not taken effect.
+   * **Failure is closed and never fatal**: a resolver that throws, or answers anything but a list of
+   * strings, leaves the request with no scopes and logs at warn, and the request goes on to whatever gate
+   * it was headed for. **No default**: without one the array is empty and nothing extra runs, so composing
+   * this changes nothing until an adopter opts in.
+   *
+   * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
+   */
+  resolveScopes?: ScopeResolver;
 };
 
 /** The auth capability, with its resolved config attached for inspection. */
@@ -256,7 +303,7 @@ export function auth(options: AuthOptions): AuthCapability {
   // Zod 4 objects strip unknown keys silently, so a `resolveGithubUserInfo` handed to `AuthConfig.parse`
   // would vanish with no error and the adopter's override would simply never run. `payments()` splits
   // its `resolveSubject` out for the same reason.
-  const { resolveGithubUserInfo, onSessionRevoked, ...config } = options;
+  const { resolveGithubUserInfo, onSessionRevoked, resolveScopes, ...config } = options;
   const resolved = AuthConfig.parse(config);
   // What may be composed, before anything is built from the list. The four the kit composes are the
   // sign-in this product promises and what the control-plane seam verifies against, so a list naming one
@@ -273,6 +320,7 @@ export function auth(options: AuthOptions): AuthCapability {
     enqueueEmail: undefined,
     turnstile: undefined,
     onSessionRevoked,
+    resolveScopes,
   };
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.
@@ -290,6 +338,9 @@ export function auth(options: AuthOptions): AuthCapability {
     package: PACKAGE_NAME,
     config: AuthConfig,
     dependsOn: ["secrets", "email"],
+    // Whether anything will ever put a string in `AuthContext.scopes` — only when the adopter supplied a
+    // resolver. `pithy doctor` reads it against every composed capability's `scopeGates` (#560).
+    providesScopes: resolveScopes !== undefined,
     secretRegistry: authSecretsRegistry,
     // And which of those four credentials this composition cannot reach (#541). A provider that is off
     // has no code path that reads its pair, so `pithy doctor` listing it as outstanding re-raised a

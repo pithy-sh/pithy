@@ -27,8 +27,10 @@
  * `headers: { authorization: "Bearer …" }` on each call.
  *
  * **Submitting is usually the game server's job, not the player's.** While `serverAuthoritative` is on,
- * which is the default, {@link submitScore} needs a token carrying the submit scope, and a player's own
- * token is refused with `leaderboard/submit_forbidden`.
+ * which is the default, {@link submitScore} is refused with `leaderboard/submit_forbidden` unless auth's
+ * `resolveScopes` answers the submit scope for the request. That is your backend's proof, never the player's:
+ * the backend forwards the player's session on `authorization` and adds its proof beside it, as
+ * `@pithy-sh/auth`'s `docs/server-authoritative.md` sets out. A player calling on their own is refused.
  */
 
 /** Where the leaderboard routes mount by default — the same default `leaderboard({ basePath })` carries. */

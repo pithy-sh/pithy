@@ -15,12 +15,24 @@ import { Locale } from "../i18n/locale";
  * stored choice outrank their device's `Accept-Language`. That link read `c.var.locale` at first,
  * which nothing ever wrote, so it silently contributed nothing and the chain degraded to
  * `param → cookie → header → default` while the docs said otherwise.
+ *
+ * **`scopes` answers one question: did this request come from the adopter's own trusted backend, or from a
+ * device?** The name reads like a grant to the user, and it is not one. Tenancy roles went to `c.var.acting`
+ * with `@pithy-sh/organization`; management access is the control plane's, with its own credential and its
+ * own scope type. What is left is an attestation about the caller, which `@pithy-sh/auth`'s `resolveScopes`
+ * makes on every request from something the request proves — a service binding, a verified client
+ * certificate, a short-lived token bound to this origin — and never from anything it merely says (#560).
  */
 export const AuthContext = z
   .object({
     userId: z.string().describe("ID of the authenticated user (populated by @pithy-sh/auth)."),
     sessionId: z.string().describe("ID of the active session this request belongs to."),
-    scopes: z.array(z.string()).default([]).describe("Permission scopes granted to this session."),
+    scopes: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "Attestations about the caller, not permissions granted to the user: what this request's caller was established to be — the adopter's own trusted backend, say — by the `resolveScopes` seam on `@pithy-sh/auth`, resolved per request and never cached. Empty when no resolver is configured. Tenancy roles are not here; they are `c.var.acting`.",
+      ),
     locale: Locale.nullish().describe(
       "The reader's own stored language, from `pithy_auth_users.locale`; null or absent when they have never chosen.",
     ),
