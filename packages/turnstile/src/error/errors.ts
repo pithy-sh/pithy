@@ -80,3 +80,43 @@ export class TurnstileConfigError extends PithyError {
     );
   }
 }
+
+/**
+ * A challenge window Cloudflare cannot answer: older than Turnstile's analytics keep, or wider than one read
+ * may ask for. The message names the cap in days, so the caller can choose a window that works.
+ */
+export class TurnstileAnalyticsWindowError extends PithyError {
+  constructor(args: TurnstileErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "turnstile/analytics_window",
+        status: 400,
+        message: args.message ?? "That window is outside what Cloudflare keeps.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
+/**
+ * Cloudflare does not serve Turnstile analytics to this account. A different fact from "nothing was
+ * challenged", and the reason this is a refusal rather than an empty answer.
+ */
+export class TurnstileAnalyticsUnavailableError extends PithyError {
+  constructor(args: TurnstileErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "turnstile/analytics_unavailable",
+        status: 409,
+        message: args.message ?? "Cloudflare does not serve Turnstile analytics to this account.",
+        action: args.action,
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

@@ -39,7 +39,6 @@ const sockets = kitSocketDocument(kitSocketGroups(composed.capabilities));
  */
 const ROUTELESS: Readonly<Record<string, string>> = {
   i18n: "A translator and locale negotiation, as middleware.",
-  turnstile: "A humanity check stacked on other capabilities' routes.",
 };
 
 describe("the kit's OpenAPI document", () => {

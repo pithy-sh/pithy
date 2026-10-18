@@ -501,6 +501,28 @@ const TurnstileConfigPublic = z
   })
   .describe("The Turnstile middleware is misconfigured (500).");
 
+const TurnstileAnalyticsWindowPublic = z
+  .object({
+    code: z
+      .literal("turnstile/analytics_window")
+      .describe(
+        "The requested challenge window reaches past what Cloudflare keeps, or is wider than one read may ask for.",
+      ),
+    status: z.literal(400).describe("Bad Request — narrow the window or move it later."),
+    ...publicFields,
+  })
+  .describe("A Turnstile-analytics window outside Cloudflare's retention or range (400).");
+
+const TurnstileAnalyticsUnavailablePublic = z
+  .object({
+    code: z
+      .literal("turnstile/analytics_unavailable")
+      .describe("Cloudflare does not serve Turnstile analytics to this account, so no outcome can be read."),
+    status: z.literal(409).describe("Conflict — the account's configuration rules the read out."),
+    ...publicFields,
+  })
+  .describe("Turnstile analytics are not served to this account (409).");
+
 // --- @pithy-sh/audit: audit-trail recorder codes ---
 
 const AuditInvalidEventPublic = z
@@ -1679,6 +1701,8 @@ export const KitPublicErrorPayload = z
     TurnstileMissingTokenPublic,
     TurnstileFailedPublic,
     TurnstileConfigPublic,
+    TurnstileAnalyticsWindowPublic,
+    TurnstileAnalyticsUnavailablePublic,
     AuditInvalidEventPublic,
     AuditWriteFailedPublic,
     MediaNotFoundPublic,
@@ -1858,6 +1882,12 @@ const TurnstileMissingToken = TurnstileMissingTokenPublic.extend(internalFields)
 );
 const TurnstileFailed = TurnstileFailedPublic.extend(internalFields).describe(TurnstileFailedPublic.description ?? "");
 const TurnstileConfig = TurnstileConfigPublic.extend(internalFields).describe(TurnstileConfigPublic.description ?? "");
+const TurnstileAnalyticsWindow = TurnstileAnalyticsWindowPublic.extend(internalFields).describe(
+  TurnstileAnalyticsWindowPublic.description ?? "",
+);
+const TurnstileAnalyticsUnavailable = TurnstileAnalyticsUnavailablePublic.extend(internalFields).describe(
+  TurnstileAnalyticsUnavailablePublic.description ?? "",
+);
 const AuditInvalidEvent = AuditInvalidEventPublic.extend(internalFields).describe(
   AuditInvalidEventPublic.description ?? "",
 );
@@ -2195,6 +2225,8 @@ export const KitErrorPayload = z
     TurnstileMissingToken,
     TurnstileFailed,
     TurnstileConfig,
+    TurnstileAnalyticsWindow,
+    TurnstileAnalyticsUnavailable,
     AuditInvalidEvent,
     AuditWriteFailed,
     MediaNotFound,

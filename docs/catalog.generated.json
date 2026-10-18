@@ -2108,6 +2108,22 @@
       "remedy": "Run the `fix` command"
     },
     {
+      "code": "turnstile/analytics_unavailable",
+      "status": 409,
+      "exitClass": "precondition",
+      "exit": 3,
+      "retryable": false,
+      "remedy": "Run the `fix` command"
+    },
+    {
+      "code": "turnstile/analytics_window",
+      "status": 400,
+      "exitClass": "usage",
+      "exit": 2,
+      "retryable": false,
+      "remedy": "Fix the call"
+    },
+    {
       "code": "turnstile/config",
       "status": 500,
       "exitClass": "failed",

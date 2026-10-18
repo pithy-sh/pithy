@@ -22,6 +22,9 @@
       "name": "auth"
     },
     {
+      "name": "turnstile"
+    },
+    {
       "name": "audit"
     },
     {
@@ -4638,6 +4641,302 @@
           "public",
           "session",
           "bearer"
+        ]
+      }
+    },
+    "/turnstile/admin/widgets": {
+      "get": {
+        "tags": [
+          "turnstile"
+        ],
+        "operationId": "getTurnstileAdminWidgets",
+        "summary": "Read which widget guards this environment, and how its challenges went.",
+        "description": "The sitekey in force and whether it is one of Cloudflare's test keys, with challenge outcomes for a real widget from Cloudflare's Turnstile analytics, filtered by its sitekey. A test key makes no query. The window defaults to the last 30 days.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The window's start, inclusive, ISO-8601. Defaults to 30 days before `until`.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "description": "The window's end, exclusive, ISO-8601. Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Which widget guards this environment, whether it is a real one or a test key, and how its challenges went.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "description": "The environment this Worker serves, from its `ENVIRONMENT` var. Null for a Worker that names none.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "since": {
+                      "type": "string",
+                      "description": "The window's start, inclusive, as ISO-8601."
+                    },
+                    "until": {
+                      "type": "string",
+                      "description": "The window's end, exclusive, as ISO-8601."
+                    },
+                    "widgets": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "const": "reported",
+                                "description": "A real widget, its outcomes read from Cloudflare's analytics."
+                              },
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "visible",
+                                  "invisible"
+                                ],
+                                "description": "The widget's mode: `visible` (a Cloudflare managed widget) or `invisible`."
+                              },
+                              "sitekey": {
+                                "type": "string",
+                                "description": "The widget's public sitekey, in force in this environment."
+                              },
+                              "testKey": {
+                                "type": "boolean",
+                                "const": false,
+                                "description": "Not one of Cloudflare's documented test keys."
+                              },
+                              "outcomes": {
+                                "type": "object",
+                                "properties": {
+                                  "issued": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Challenges Cloudflare issued to visitors."
+                                  },
+                                  "solved": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Challenges visitors solved, interactive or not."
+                                  },
+                                  "unsolved": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991,
+                                    "description": "Challenges issued and not solved: abandoned or failed. Issued less solved, never below zero."
+                                  },
+                                  "solveRate": {
+                                    "anyOf": [
+                                      {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 1
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "Solved over issued, from 0 to 1. Null when nothing was issued, which is not a rate of zero."
+                                  },
+                                  "siteverify": {
+                                    "type": "object",
+                                    "properties": {
+                                      "passed": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991,
+                                        "description": "Tokens this Worker's siteverify call accepted."
+                                      },
+                                      "refused": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991,
+                                        "description": "Tokens siteverify refused: spent twice, invalid, rate-limited, or failed otherwise."
+                                      }
+                                    },
+                                    "required": [
+                                      "passed",
+                                      "refused"
+                                    ],
+                                    "description": "What the server-side check made of the tokens visitors brought back."
+                                  },
+                                  "events": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "eventType": {
+                                          "type": "string",
+                                          "description": "The event type, as Cloudflare names it, e.g. `challenge_issued`."
+                                        },
+                                        "count": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991,
+                                          "description": "Events of this type in the window."
+                                        }
+                                      },
+                                      "required": [
+                                        "eventType",
+                                        "count"
+                                      ],
+                                      "description": "One Turnstile event type and its count."
+                                    },
+                                    "description": "Every event type Cloudflare counted, most first — a type added later is counted here too."
+                                  }
+                                },
+                                "required": [
+                                  "issued",
+                                  "solved",
+                                  "unsolved",
+                                  "solveRate",
+                                  "siteverify",
+                                  "events"
+                                ],
+                                "description": "A real widget's challenge outcomes in the window, from Cloudflare's Turnstile analytics."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "mode",
+                              "sitekey",
+                              "testKey",
+                              "outcomes"
+                            ],
+                            "description": "A real widget and how its challenges went."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "const": "test-key",
+                                "description": "A documented test key. Its outcome is fixed, so nothing is counted."
+                              },
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "visible",
+                                  "invisible"
+                                ],
+                                "description": "The widget's mode: `visible` (a Cloudflare managed widget) or `invisible`."
+                              },
+                              "sitekey": {
+                                "type": "string",
+                                "description": "The test sitekey, in force in this environment."
+                              },
+                              "testKey": {
+                                "type": "boolean",
+                                "const": true,
+                                "description": "One of Cloudflare's documented test keys."
+                              },
+                              "verdict": {
+                                "type": "string",
+                                "enum": [
+                                  "passes",
+                                  "blocks",
+                                  "challenges"
+                                ],
+                                "description": "What the test key always does: `passes` every visitor, `blocks` every visitor, or `challenges` every visitor."
+                              },
+                              "message": {
+                                "type": "string",
+                                "description": "What the key does, and that it is deliberate."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "mode",
+                              "sitekey",
+                              "testKey",
+                              "verdict",
+                              "message"
+                            ],
+                            "description": "A test key, deliberately. Never reported as broken, and never as zero challenges."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "const": "unconfigured",
+                                "description": "No sitekey is in force here, so no widget renders."
+                              },
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "visible",
+                                  "invisible"
+                                ],
+                                "description": "The widget's mode: `visible` (a Cloudflare managed widget) or `invisible`."
+                              },
+                              "message": {
+                                "type": "string",
+                                "description": "Why no widget renders in this environment."
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "mode",
+                              "message"
+                            ],
+                            "description": "A widget the config declares and this environment renders nowhere."
+                          }
+                        ],
+                        "description": "One widget this Worker's config declares, as its environment serves it."
+                      },
+                      "description": "Every widget the config declares, `visible` first."
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "since",
+                    "until",
+                    "widgets"
+                  ],
+                  "description": "Which widget guards this environment, whether it is a real one or a test key, and how its challenges went."
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "controlPlane": []
+          }
+        ],
+        "x-pithy-verification": [
+          "control-plane"
+        ],
+        "x-pithy-scopes": [
+          "turnstile:widgets:read"
         ]
       }
     },

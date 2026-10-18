@@ -131,6 +131,7 @@ const RUNTIME_LINES: Readonly<Record<string, string>> = {
   "payments/src/workflows/workerConfig.ts": "the reconcile host's refusal of its own projected config",
   "support/src/http/handlers.ts": "the support route's answer to the inbox UI",
   "support/src/store/threads.ts": "a warning in the app Worker's log",
+  "turnstile/src/analytics/source.ts": "the widget read's answer to a management client over HTTP",
   "turnstile/src/http/middleware.ts": "the humanity check's answer to a caller",
   "vector/src/error/errors.ts": "a search refusal's default, answered by the app Worker",
   "vector/src/index/drift.ts": "the app Worker's drift refusal at search time",

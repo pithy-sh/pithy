@@ -16,6 +16,7 @@ import * as secrets from "@pithy-sh/secrets/src/http/responses";
 import * as storage from "@pithy-sh/storage/src/http/responses";
 import * as support from "@pithy-sh/support/src/http/responses";
 import * as testers from "@pithy-sh/testers/src/http/responses";
+import * as turnstile from "@pithy-sh/turnstile/src/http/responses";
 import * as vector from "@pithy-sh/vector/src/http/responses";
 
 /**
@@ -71,5 +72,6 @@ export const EVERY_RESPONSE_MODULE: readonly object[] = [
   storage,
   support,
   testers,
+  turnstile,
   vector,
 ];

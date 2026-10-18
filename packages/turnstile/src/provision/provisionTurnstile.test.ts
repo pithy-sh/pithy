@@ -78,6 +78,7 @@ function fakeProvisioner(overrides: Partial<TurnstileProvisioner> = {}) {
     assertSitekeysWritable: vi.fn().mockResolvedValue(undefined),
     writeDev: vi.fn().mockResolvedValue(undefined),
     writeManagedSecret: vi.fn().mockResolvedValue(undefined),
+    writeAccount: vi.fn().mockResolvedValue(undefined),
     writeSitekeys: vi.fn().mockResolvedValue(undefined),
     removeStrandedSitekeyVars: vi.fn().mockResolvedValue([]),
     ensureProductionWidget: vi.fn(async (mode: string) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` })),
@@ -101,6 +102,7 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
       assertSitekeysWritable: async () => {},
       writeDev: async (secret) => void written.set("dev", secret),
       writeManagedSecret: async (environment, secret) => void written.set(environment, secret),
+      writeAccount: async () => {},
       writeSitekeys: async () => {},
       removeStrandedSitekeyVars: async () => [],
       ensureProductionWidget: async (mode) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` }),
@@ -147,6 +149,28 @@ describe("provisionTurnstile", () => {
     expect(p.writeSitekeys).toHaveBeenCalledTimes(1);
     expect(p.writeSitekeys).toHaveBeenCalledWith(expected);
     expect(result.sitekeys).toEqual(expected);
+  });
+
+  test("records the account the widgets live in for dev, staging and prod, on every run (#731)", async () => {
+    // The widget read cannot ask Cloudflare's analytics anything without the account, and a re-run that
+    // reuses every widget is exactly the run an existing project makes to pick it up.
+    for (const existing of [null, { sitekey: "existing" }]) {
+      const writeAccount = vi.fn(async (_environment: string) => {});
+      const p = fakeProvisioner({
+        writeAccount,
+        findProductionWidget: vi.fn(async () => existing),
+        ensureProductionWidget: vi.fn(async () =>
+          existing ? { sitekey: "existing", secret: null } : { sitekey: "real-visible", secret: "secret-visible" },
+        ),
+      });
+      await provisionTurnstile(p, {
+        modes: ["visible"],
+        productionDomain: "app.example.com",
+        worker: web,
+        caller: run,
+      });
+      expect(writeAccount.mock.calls.map(([environment]) => environment)).toEqual(["dev", "staging", "prod"]);
+    }
   });
 
   test("removes the stranded sitekey vars and reports what it removed", async () => {
@@ -209,6 +233,7 @@ describe("provisionTurnstile", () => {
     // Nothing was written — the guard runs before the first side effect, so a refusal leaves no debris.
     expect(p.writeDev).not.toHaveBeenCalled();
     expect(p.writeManagedSecret).not.toHaveBeenCalled();
+    expect(p.writeAccount).not.toHaveBeenCalled();
     expect(p.ensureProductionWidget).not.toHaveBeenCalled();
     expect(p.writeSitekeys).not.toHaveBeenCalled();
   });

@@ -79,6 +79,8 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["turnstile/missing_token", 400],
       ["turnstile/failed", 403],
       ["turnstile/config", 500],
+      ["turnstile/analytics_window", 400],
+      ["turnstile/analytics_unavailable", 409],
       ["core/upstream_failed", 502],
       ["core/upstream_timeout", 504],
       ["core/webhook_unverified", 401],
@@ -319,7 +321,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 136;
+const KIT_ERROR_CODE_COUNT = 138;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
