@@ -479,7 +479,8 @@ const reconcile = withContract(
   }),
   {
     output: "document",
-    schemaVersion: 1,
+    // 2: `plan.resources[].kind` takes `queue`, the fourth kind provisioning creates (#662).
+    schemaVersion: 2,
     payload: PaymentsReconcilePayload,
     // Repairs drift, unless `--dry-run`.
     mutates: true,

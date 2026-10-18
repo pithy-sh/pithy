@@ -7,7 +7,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import {
   CapabilityManifest,
   CONFIG_LINE_WIDTH,
@@ -201,7 +201,7 @@ describe("buildReconcilePlan — bindings", () => {
       name: "email",
       package: "@pithy-sh/email",
       requiredBindings: [
-        { type: "email", name: "SEND_EMAIL" },
+        { type: "service", name: "SENDER", service: "sender" },
         { type: "d1", name: "DB" },
       ],
     });
@@ -213,9 +213,122 @@ describe("buildReconcilePlan — bindings", () => {
       capabilities: composes("email"),
     });
     const email = plan.perCapability.find((cap) => cap.name === "email");
-    // The email binding is skipped; only the d1 binding is reported.
+    // The service binding is `pithy provision`'s to write; only the d1 binding is reported.
     expect(email?.missingBindings.every((binding) => binding.type === "d1")).toBe(true);
-    expect(email?.missingBindings.some((binding) => binding.type === "email")).toBe(false);
+    expect(email?.missingBindings.some((binding) => binding.type === "service")).toBe(false);
+  });
+
+  test("reports a missing send_email and queue producer, now that both are written (#662)", async () => {
+    await writeManifest(dir, {
+      name: "email",
+      package: "@pithy-sh/email",
+      requiredBindings: [
+        { type: "email", name: "SEND_EMAIL" },
+        { type: "queue", name: "JOBS" },
+      ],
+    });
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("email"),
+    });
+    const email = plan.perCapability.find((cap) => cap.name === "email");
+    expect([...new Set(email?.missingBindings.map((binding) => binding.type))].sort()).toEqual(["email", "queue"]);
+  });
+});
+
+/**
+ * **The Worker's own `app` capability is reconciled like any other (#662).** It is a `Capability`, it can declare
+ * `requiredBindings`, and `createBackend` enforces them at boot — but the plan iterated manifests, and an app
+ * ships none. So `pithy upgrade` never wrote the entry, `pithy doctor` never named it missing, and the Worker
+ * refused to boot. Declaring a binding on your own app was worse than not declaring it.
+ */
+describe("buildReconcilePlan — the Worker's own app (#662)", () => {
+  const app = defineCapability({
+    name: "board",
+    requiredBindings: [
+      { type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" },
+      { type: "queue", name: "JOBS" },
+      { type: "browser", name: "BROWSER" },
+    ],
+  });
+  const plan = () =>
+    buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: [app],
+      workerConfig: { capabilities: [], app },
+    });
+
+  test("reports the app's missing bindings in every environment, with no manifest to read them from", async () => {
+    const board = (await plan()).perCapability.find((cap) => cap.name === "board");
+    expect(board).toBeDefined();
+    for (const env of ["dev", "staging", "prod"]) {
+      for (const [name, type] of [
+        ["HYPERDRIVE", "hyperdrive"],
+        ["JOBS", "queue"],
+        ["BROWSER", "browser"],
+      ]) {
+        expect(board?.missingBindings).toContainEqual({ env, name, type });
+      }
+    }
+    // An app has no manifest options and owns its own entry, so it is never asked for either.
+    expect(board?.missingConfigKeys).toEqual([]);
+    expect(board?.missingEntryExports).toEqual([]);
+  });
+
+  test("pithy upgrade writes them, and the next plan has nothing to say", async () => {
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan: await plan(),
+      migrate: false,
+      env: "dev",
+      project: "acme",
+      capabilities: [app],
+      app,
+    });
+    const config = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      hyperdrive?: unknown;
+      queues?: unknown;
+      env: Record<string, { hyperdrive?: unknown; queues?: unknown; browser?: unknown }>;
+    };
+    expect(config.hyperdrive).toEqual([{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }]);
+    expect(config.queues).toEqual({ producers: [{ binding: "JOBS", queue: "acme-dev-jobs" }] });
+    expect(config.env.prod?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "acme-prod-jobs" }] });
+    expect(config.env.staging?.browser).toEqual({ binding: "BROWSER" });
+    const board = (await plan()).perCapability.find((cap) => cap.name === "board");
+    expect(board?.missingBindings).toEqual([]);
+  });
+
+  test("leaves the app's own Workflows to the writer that names them same-script", async () => {
+    // A library's Workflow binding is cross-script, into its host. The app's class lives in its own `main`, and
+    // `pithy worker sync` writes that entry from `app.workflows`, so this writer must not write a second one.
+    const withJob = defineCapability({
+      name: "board",
+      requiredBindings: [{ type: "workflow", name: "SWEEP", job: "sweep", className: "SweepWorkflow" }],
+    });
+    const result = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: [withJob],
+      workerConfig: { capabilities: [], app: withJob },
+    });
+    expect(result.perCapability.find((cap) => cap.name === "board")?.missingBindings ?? []).toEqual([]);
+  });
+
+  test("a manifest of the same name is the capability's, and the app adds nothing beside it", async () => {
+    await writeManifest(dir, { name: "board", package: "@pithy-sh/board", requiredBindings: [] });
+    const board = (await plan()).perCapability.filter((cap) => cap.name === "board");
+    expect(board).toHaveLength(1);
+    expect(board[0]?.missingBindings).toEqual([]);
   });
 });
 

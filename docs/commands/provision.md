@@ -246,12 +246,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","schemaVersion":1,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.","dryRun":false}
+{"command":"provision","schemaVersion":2,"env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-staging-board"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"`pithy secrets provision` runs against every environment, production included. That is a person's decision, not a fix.","dryRun":false}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","schemaVersion":1,"env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
+{"command":"provision","schemaVersion":2,"env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command--db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command--board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret"],"pendingSecretsRemedy":"pithy provision --feature with SECRETS_STORE_ID set","dryRun":false}
 ```
 
 | key | type | meaning |
@@ -328,10 +328,10 @@ A failure inside the command ends the stream with no document, and the `{"error"
 
 ```
 $ pithy provision --env staging --yes --json --events
-{"command":"provision","schemaVersion":1,"event":"start","what":"replay-staging-db","binding":"DB","kind":"d1"}
-{"command":"provision","schemaVersion":1,"event":"settled","line":"replay-staging-db: created.","resource":{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}}
-{"command":"provision","schemaVersion":1,"event":"start","what":"Applying 1000_app_0001_things to DB"}
-{"command":"provision","schemaVersion":1,"env":"staging","resources":[…],…}
+{"command":"provision","schemaVersion":2,"event":"start","what":"replay-staging-db","binding":"DB","kind":"d1"}
+{"command":"provision","schemaVersion":2,"event":"settled","line":"replay-staging-db: created.","resource":{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}}
+{"command":"provision","schemaVersion":2,"event":"start","what":"Applying 1000_app_0001_things to DB"}
+{"command":"provision","schemaVersion":2,"env":"staging","resources":[…],…}
 ```
 
 ## Exit codes

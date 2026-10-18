@@ -151,7 +151,7 @@ A non-`dev` reset is **audited**: a `seed/schema_reset` event is recorded at `cr
 
 ```
 $ pithy seed --env dev --dry-run --json
-{"command":"seed","schemaVersion":1,"env":"dev","dryRun":true,"workers":[{"worker":"api","sets":[{"name":"0200_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[],"shared":[]}],"devSecrets":null,"plan":{"files":[],"resources":[],"migrations":[],"secrets":[],"data":[{"worker":"api","store":"d1","target":"app.boardEntries","count":12,"action":"write"}],"notes":["A real run also seeds the project's dev secrets into each Worker's .dev.vars and the local SECRETS store."]}}
+{"command":"seed","schemaVersion":2,"env":"dev","dryRun":true,"workers":[{"worker":"api","sets":[{"name":"0200_leaderboard_demo_board","d1":[{"database":"app","table":"boardEntries","rows":12}],"kv":[],"r2":[],"media":[]}],"skippedByEnv":[],"shared":[]}],"devSecrets":null,"plan":{"files":[],"resources":[],"migrations":[],"secrets":[],"data":[{"worker":"api","store":"d1","target":"app.boardEntries","count":12,"action":"write"}],"notes":["A real run also seeds the project's dev secrets into each Worker's .dev.vars and the local SECRETS store."]}}
 ```
 
 | key | type | meaning |

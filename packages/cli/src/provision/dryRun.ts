@@ -115,6 +115,7 @@ export function plannedProvisioners(real: ResourceProvisioners): ResourceProvisi
     d1: plannedKind("d1", real.d1),
     kv: plannedKind("kv", real.kv),
     r2: plannedKind("r2", real.r2),
+    queue: plannedKind("queue", real.queue),
   };
 }
 

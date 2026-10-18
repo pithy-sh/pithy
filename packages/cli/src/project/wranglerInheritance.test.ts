@@ -4,9 +4,12 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { BindingType, seedPolicy } from "@pithy-sh/core/src/capability/bindings";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { WRANGLER_KEYS } from "./bindingEntries";
 import {
+  CARRIED_INTO_FEATURE,
   CARRIED_WHOLE,
   describeUnrepeatedKey,
   NOT_INHERITED_BY_ENVIRONMENTS,
@@ -312,6 +315,62 @@ describe("stanzaFor", () => {
 
   test("carries whole only keys an environment does not inherit — the rest need no carrying", () => {
     for (const key of CARRIED_WHOLE) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+    for (const key of CARRIED_INTO_FEATURE) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+    // And every key a binding kind lives in is one, which is why a new stanza has to be told what to start with.
+    for (const key of Object.values(WRANGLER_KEYS)) expect(NOT_INHERITED_BY_ENVIRONMENTS).toContain(key);
+  });
+
+  test("derives what it carries whole from seedPolicy, never a list of names (#662)", () => {
+    const kinds = BindingType.options.map((option) => option.value);
+    const keysWith = (...policies: string[]) =>
+      kinds.filter((kind) => policies.includes(seedPolicy(kind))).map((kind) => WRANGLER_KEYS[kind]);
+    expect([...CARRIED_WHOLE].sort()).toEqual(keysWith("carry").sort());
+    expect([...CARRIED_INTO_FEATURE].sort()).toEqual(keysWith("carry", "branch").sort());
+    expect(CARRIED_WHOLE).toContain("ratelimits");
+    expect(CARRIED_WHOLE).not.toContain("send_email");
+    expect(CARRIED_INTO_FEATURE).toContain("send_email");
+  });
+
+  /**
+   * **Every account-level kind comes down whole; every environment-owned one starts empty (#662).** Before this,
+   * what survived into a new stanza turned on wrangler's value *shape*: `browser` (an object) survived and
+   * `hyperdrive` (an array) was emptied, though neither names anything an environment owns.
+   */
+  test("carries a carry kind's entries into a new stanza, and still empties a provision kind's", () => {
+    const carried = {
+      ai: { binding: "AI" },
+      browser: { binding: "BROWSER" },
+      images: { binding: "IMAGES" },
+      hyperdrive: [{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }],
+      analytics_engine_datasets: [{ binding: "EVENTS", dataset: "acme_events" }],
+      mtls_certificates: [{ binding: "CERT", certificate_id: "efwu2n6s" }],
+      dispatch_namespaces: [{ binding: "DISPATCHER", namespace: "customers" }],
+      pipelines: [{ binding: "CLICKS", stream: "clicks" }],
+    };
+    for (const env of ["prod", "feature"]) {
+      const config = {
+        ...starter(),
+        ...structuredClone(carried),
+        queues: { producers: [{ binding: "JOBS", queue: "acme-dev-jobs" }] },
+      };
+      const stanza = stanzaFor(config, env);
+      for (const [key, value] of Object.entries(carried)) expect(stanza[key], `${env} ${key}`).toEqual(value);
+      expect(stanza.d1_databases).toEqual([]);
+      expect(stanza.queues).toEqual({ producers: [] });
+    }
+  });
+
+  /**
+   * **A feature is a branch of `dev`; a declared environment is not (#650 review, #662).** `send_email` names an
+   * address verified once at the account and carries a decision about where mail goes. A feature inherits dev's
+   * decision, the way it inherits `vars`; `prod` starts with none, so a laptop's address never reaches its users.
+   */
+  test("carries a branch kind into a feature and leaves a declared environment's empty", () => {
+    const mail = [{ name: "NOTIFY", destination_address: "dev@acme.test" }];
+    const feature = stanzaFor({ ...starter(), send_email: structuredClone(mail) }, "feature");
+    expect(feature.send_email).toEqual(mail);
+    const prod = stanzaFor({ ...starter(), send_email: structuredClone(mail) }, "prod");
+    expect(prod.send_email).toEqual([]);
   });
 
   test("leaves a stanza that is already there exactly as it is", () => {

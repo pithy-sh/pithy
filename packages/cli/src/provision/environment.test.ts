@@ -7,8 +7,9 @@ import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
-import { parse } from "comment-json";
+import { parse, stringify } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { appendBinding, WRANGLER_KEYS, type WranglerStanza } from "../project/bindingEntries";
 import { provisionEnvironment } from "./environment";
 import { featureConfigPath } from "./featureConfig";
 import type { ResourceProvisioner, ResourceProvisioners } from "./resources";
@@ -34,8 +35,18 @@ function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner
 }
 
 function fakeProvisioners() {
-  const stores = { d1: new Map<string, string>(), kv: new Map<string, string>(), r2: new Map<string, string>() };
-  const typed = { d1: fakeKind("d1", stores.d1), kv: fakeKind("kv", stores.kv), r2: fakeKind("r2", stores.r2) };
+  const stores = {
+    d1: new Map<string, string>(),
+    kv: new Map<string, string>(),
+    r2: new Map<string, string>(),
+    queue: new Map<string, string>(),
+  };
+  const typed = {
+    d1: fakeKind("d1", stores.d1),
+    kv: fakeKind("kv", stores.kv),
+    r2: fakeKind("r2", stores.r2),
+    queue: fakeKind("queue", stores.queue),
+  };
   return { stores, typed, provisioners: typed as unknown as ResourceProvisioners };
 }
 
@@ -880,6 +891,126 @@ describe("provisionEnvironment, for a declared environment", () => {
       });
       expect(saved.at(-1)?.map((resource) => resource.name)).toEqual(["replay-staging-db"]);
     });
+  });
+});
+
+/**
+ * **A binding the Worker's own app declares is a first-class declaration (#662).** The app has no manifest, so
+ * provisioning read its naming from nowhere: a `d1` binding got a resource under the default name, its
+ * `scope: "global"` or `resource:` dropped. And the kinds the kit does not provision rode into a feature or
+ * vanished according to wrangler's JSON shape. Both are the app's composed declaration now.
+ */
+describe("a binding the Worker's own app declares (#662)", () => {
+  let dir: string;
+  let workerDir: string;
+  const noBackend = { seedData: false, migrate: async () => {}, seed: async () => {}, administersItself: false };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-provision-app-"));
+    workerDir = join(dir, "apps", "board");
+    await mkdir(workerDir, { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("is created under the name its scope and resource declare, with no manifest to read them from", async () => {
+    await writeFile(join(workerDir, "wrangler.jsonc"), '{\n  "name": "replay-board"\n}\n');
+    const board = defineCapability({
+      name: "board",
+      requiredBindings: [
+        { type: "d1", name: "SHARED_DB", scope: "global" },
+        { type: "queue", name: "JOBS", resource: "work" },
+      ] satisfies BindingSpecInput[],
+    });
+    const { stores, provisioners } = fakeProvisioners();
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope: environmentScope("replay", "staging"),
+      capabilities: [board],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "replay-board", dir: workerDir, capabilities: [board], config: { capabilities: [], app: board } },
+      ],
+      ...noBackend,
+    });
+    expect(report.resources.map((resource) => [resource.kind, resource.name])).toEqual([
+      ["d1", "replay-global-shared-db"],
+      ["queue", "replay-staging-work"],
+    ]);
+    expect([...stores.queue.keys()]).toEqual(["replay-staging-work"]);
+    const tracked = parse(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")) as unknown as {
+      env: Record<string, { queues?: unknown }>;
+    };
+    expect(tracked.env.staging?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "replay-staging-work" }] });
+  });
+
+  /**
+   * **The acceptance test: a Worker whose app declares a binding of each new kind deploys to a feature with every
+   * one of them in its env.** The top level is what `pithy upgrade` writes from the app's declaration; the feature
+   * config is what `pithy deploy --env feature` hands wrangler. Before #662, every array-shaped kind here reached
+   * the feature as `[]` and read `undefined` at runtime.
+   */
+  test("reaches a feature environment, each binding present in the config the feature deploys", async () => {
+    const declared: BindingSpecInput[] = [
+      { type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" },
+      { type: "browser", name: "BROWSER" },
+      { type: "images", name: "IMAGES" },
+      { type: "analytics_engine_datasets", name: "EVENTS", target: "replay_events" },
+      { type: "pipelines", name: "CLICKS", target: "clicks" },
+      { type: "mtls_certificates", name: "CERT", target: "efwu2n6s-q69d-2kr9-184j-4913e8h391k6" },
+      { type: "dispatch_namespaces", name: "DISPATCHER", target: "customers" },
+      { type: "email", name: "MAILER" },
+      { type: "queue", name: "JOBS" },
+    ];
+    const board = defineCapability({ name: "board", requiredBindings: declared });
+    // The top level as `pithy upgrade` writes it — the same writer, so this is not a hand-written guess at it.
+    const top: WranglerStanza & { name: string } = { name: "replay-board" };
+    for (const spec of board.requiredBindings) {
+      expect(appendBinding(top, spec, { project: "replay", env: "dev", capability: "board" }).outcome).toBe("written");
+    }
+    await writeFile(join(workerDir, "wrangler.jsonc"), stringify(top, null, 2));
+
+    const identity = { project: "replay", issue: "662", slug: "bindings" };
+    const feature = featureScope(identity);
+    const { stores, provisioners } = fakeProvisioners();
+    await provisionEnvironment({
+      projectDir: dir,
+      scope: feature,
+      capabilities: [board],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "replay-board", dir: workerDir, capabilities: [board], config: { capabilities: [], app: board } },
+      ],
+      ...noBackend,
+    });
+
+    const generated = (
+      parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+        env: Record<string, Record<string, unknown>>;
+      }
+    ).env.feature as Record<string, unknown>;
+    const bound = (key: string): string[] => {
+      const value = generated[key];
+      const entries = Array.isArray(value)
+        ? value
+        : key === "queues"
+          ? ((value as { producers?: unknown[] } | undefined)?.producers ?? [])
+          : value === undefined
+            ? []
+            : [value];
+      return (entries as Record<string, unknown>[]).map((entry) => String(entry.binding ?? entry.name));
+    };
+    for (const spec of board.requiredBindings) {
+      expect(bound(WRANGLER_KEYS[spec.type]), `${spec.type} ${spec.name}`).toContain(spec.name);
+    }
+    // Carried whole, because the resource is the account's — the same id, dataset and namespace as dev's.
+    expect(generated.hyperdrive).toEqual(top.hyperdrive);
+    expect(generated.dispatch_namespaces).toEqual(top.dispatch_namespaces);
+    // And the queue is the feature's own, created for it, never dev's.
+    const queue = feature.resource("JOBS", "queue", {});
+    expect(generated.queues).toEqual({ producers: [{ binding: "JOBS", queue }] });
+    expect([...stores.queue.keys()]).toEqual([queue]);
   });
 });
 

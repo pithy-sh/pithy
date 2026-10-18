@@ -1116,12 +1116,6 @@ describe("a feature stanza's app-owned bindings", () => {
   });
 
   /**
-   * **`send_email` is carried whole (#650 review, defect 5).** A send binding names an account-level Cloudflare
-   * Email Service address: nothing in the entry belongs to an environment, which is `CARRIED_WHOLE`'s stated
-   * rule. Emptied, a hand-written one failed at runtime as `env.NOTIFY is undefined` — `email` is in neither
-   * `isWrittenBinding` nor `isProvisionedBinding`, so no command anywhere would have put it back.
-   */
-  /**
    * **A tracked `env.feature`'s entry is retargeted like any other (#650 review, defect 2).** `featureRatelimits`
    * rewrites the namespace of an entry the adopter wrote there, for the same reason: which binding and which
    * class is the adopter's choice, and which script it resolves to in this environment is this run's answer.
@@ -1229,6 +1223,11 @@ describe("a feature stanza's app-owned bindings", () => {
     expect((await generated()).triggers?.crons).toEqual(["17 * * * *"]);
   });
 
+  /**
+   * **`send_email` is carried into a feature whole (#650 review, defect 5; #662).** A send binding names an
+   * account-level Cloudflare Email Service address, and a feature is a branch of dev — `email`'s `branch` seed
+   * policy. Emptied, a hand-written one failed at runtime as `env.NOTIFY is undefined`.
+   */
   test("a send_email binding the top level declares is carried into the feature whole", async () => {
     await writeFile(
       wranglerPath,
@@ -1281,6 +1280,96 @@ describe("a feature stanza's app-owned bindings", () => {
  * the kit hosts are written after the deploy, and only for the hosts that deployed — and a re-run whose host now
  * fails takes back the entry an earlier run wrote.
  */
+describe("a feature stanza's carried bindings (#662)", () => {
+  let dir: string;
+  let wranglerPath: string;
+  const feature = featureScope({ project: "replay", issue: "662", slug: "bindings" });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envcarry-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const provision = (resources: FeatureResource[] = [], scope = feature) =>
+    applyProvisionedEnv({
+      administersItself: false,
+      workerDir: dir,
+      worker: BOARD,
+      scope,
+      resources,
+      services: [],
+      secrets: [],
+    });
+
+  const generated = async (): Promise<Record<string, unknown>> =>
+    (
+      parse(await readFile(featureConfigPath(dir), "utf8")) as unknown as {
+        env: Record<string, Record<string, unknown>>;
+      }
+    ).env.feature as Record<string, unknown>;
+
+  test("refills a carried kind a tracked env.feature does not bind, and keeps the one it does", async () => {
+    // A tracked stanza is the adopter's and is never reseeded, so an entry added to the top level after it was
+    // written reached no feature. A carried kind names nothing a feature owns, so the feature takes it.
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        hyperdrive: [
+          { binding: "HYPERDRIVE", id: "top-level-id" },
+          { binding: "REPLICA", id: "replica-id" },
+        ],
+        browser: { binding: "BROWSER" },
+        env: { feature: { hyperdrive: [{ binding: "HYPERDRIVE", id: "branch-id" }] } },
+      }),
+    );
+    await provision();
+    const stanza = await generated();
+    expect(stanza.hyperdrive).toEqual([
+      { binding: "HYPERDRIVE", id: "branch-id" },
+      { binding: "REPLICA", id: "replica-id" },
+    ]);
+    expect(stanza.browser).toEqual({ binding: "BROWSER" });
+  });
+
+  test("writes a feature's own queue into its producer entry, and never dev's", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        queues: {
+          producers: [{ binding: "JOBS", queue: "replay-dev-jobs" }],
+          consumers: [{ queue: "replay-dev-jobs" }],
+        },
+      }),
+    );
+    const name = feature.resource("JOBS", "queue", {});
+    await provision([{ kind: "queue", binding: "JOBS", name, id: "queue-id" }]);
+    expect((await generated()).queues).toEqual({ producers: [{ binding: "JOBS", queue: name }], consumers: [] });
+    expect(name).toBe("replay-f662-bindings--jobs-q");
+  });
+
+  test("writes a declared environment's queue into the tracked stanza, upserting by binding", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({
+        name: "replay-board",
+        env: { staging: { queues: { producers: [{ binding: "JOBS", queue: "stale" }] } } },
+      }),
+    );
+    const staging = environmentScope("replay", "staging");
+    await provision([{ kind: "queue", binding: "JOBS", name: "replay-staging-jobs", id: "q" }], staging);
+    await provision([{ kind: "queue", binding: "JOBS", name: "replay-staging-jobs", id: "q" }], staging);
+    const tracked = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: Record<string, { queues?: unknown }>;
+    };
+    expect(tracked.env.staging?.queues).toEqual({ producers: [{ binding: "JOBS", queue: "replay-staging-jobs" }] });
+  });
+});
+
 describe("bindFeatureHosts", () => {
   let dir: string;
   const EMAIL = {

@@ -38,7 +38,7 @@ function unreadableAction(code: string | undefined, name: string): string {
 /** One provisioned Cloudflare resource recorded for teardown. */
 export const FeatureResource = z
   .object({
-    kind: z.enum(["d1", "kv", "r2"]).describe("The Cloudflare resource type."),
+    kind: z.enum(["d1", "kv", "r2", "queue"]).describe("The Cloudflare resource type."),
     binding: z.string().describe("The Worker binding name this resource backs, e.g. DB."),
     name: z.string().describe("The full CF resource name, e.g. acme-f69-media-cli-db-d1."),
     id: z.string().describe("The CF-assigned id (D1 uuid, KV namespace id) or the bucket name for r2."),

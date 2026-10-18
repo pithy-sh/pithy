@@ -121,10 +121,15 @@ function plannedSecrets(workers: readonly ProvisionWorker[], scope: ProvisionSco
 }
 
 /** The row label for each provisionable kind — the plural of the thing, as Cloudflare names it. */
-const KIND_LABEL: Record<FeatureResourceKind, string> = { d1: "databases", kv: "namespaces", r2: "buckets" };
+const KIND_LABEL: Record<FeatureResourceKind, string> = {
+  d1: "databases",
+  kv: "namespaces",
+  r2: "buckets",
+  queue: "queues",
+};
 
 /** The order the rows read in, so two runs of one project never shuffle their plan. */
-const KIND_ORDER: readonly FeatureResourceKind[] = ["d1", "kv", "r2"];
+const KIND_ORDER: readonly FeatureResourceKind[] = ["d1", "kv", "r2", "queue"];
 
 /**
  * Render the plan: a sentence, then one row per group of things.

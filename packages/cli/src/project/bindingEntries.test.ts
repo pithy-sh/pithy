@@ -1,9 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
+import { BindingSpec, BindingType, isWrittenBinding } from "@pithy-sh/core/src/capability/bindings";
 import { describe, expect, test } from "vitest";
-import { appendBinding, generatedFieldDrift, rateLimitNamespaceId, type WranglerStanza } from "./bindingEntries";
+import {
+  appendBinding,
+  generatedFieldDrift,
+  rateLimitNamespaceId,
+  stanzaHasBinding,
+  WRANGLER_KEYS,
+  type WranglerStanza,
+} from "./bindingEntries";
 
 /**
  * The generated half of a binding entry: the value the writer derives, and the comparison that notices
@@ -161,5 +168,111 @@ describe("generatedFieldDrift", () => {
         workflow,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("the kinds an app declares and the kit writes but never provisions (#662)", () => {
+  const app = { project: "acme", env: "dev", capability: "app" };
+  const write = (input: Record<string, unknown>, scope: typeof app = app): WranglerStanza => {
+    const stanza: WranglerStanza = {};
+    expect(appendBinding(stanza, BindingSpec.parse(input), scope)).toEqual({ outcome: "written" });
+    return stanza;
+  };
+
+  test("writes each kind into the key wrangler spells it with, carrying the resource it addresses", () => {
+    expect(write({ type: "hyperdrive", name: "HYPERDRIVE", target: "a76a99bc342644deb02c38d66082262a" })).toEqual({
+      hyperdrive: [{ binding: "HYPERDRIVE", id: "a76a99bc342644deb02c38d66082262a" }],
+    });
+    expect(write({ type: "browser", name: "BROWSER" })).toEqual({ browser: { binding: "BROWSER" } });
+    expect(write({ type: "images", name: "IMAGES", remote: true })).toEqual({
+      images: { binding: "IMAGES", remote: true },
+    });
+    expect(write({ type: "analytics_engine_datasets", name: "EVENTS", target: "acme_events" })).toEqual({
+      analytics_engine_datasets: [{ binding: "EVENTS", dataset: "acme_events" }],
+    });
+    expect(write({ type: "analytics_engine_datasets", name: "EVENTS" })).toEqual({
+      analytics_engine_datasets: [{ binding: "EVENTS" }],
+    });
+    expect(write({ type: "pipelines", name: "CLICKS", target: "clicks" })).toEqual({
+      pipelines: [{ binding: "CLICKS", stream: "clicks" }],
+    });
+    expect(write({ type: "mtls_certificates", name: "CERT", target: "efwu2n6s-q69d-2kr9-184j-4913e8h391k6" })).toEqual({
+      mtls_certificates: [{ binding: "CERT", certificate_id: "efwu2n6s-q69d-2kr9-184j-4913e8h391k6" }],
+    });
+    expect(write({ type: "dispatch_namespaces", name: "DISPATCHER", target: "customers" })).toEqual({
+      dispatch_namespaces: [{ binding: "DISPATCHER", namespace: "customers" }],
+    });
+    for (const [type, key] of [
+      ["hyperdrive", "hyperdrive"],
+      ["browser", "browser"],
+      ["images", "images"],
+      ["analytics_engine_datasets", "analytics_engine_datasets"],
+      ["pipelines", "pipelines"],
+      ["mtls_certificates", "mtls_certificates"],
+      ["dispatch_namespaces", "dispatch_namespaces"],
+    ] as const) {
+      expect(WRANGLER_KEYS[type]).toBe(key);
+    }
+  });
+
+  test("writes an email's send_email entry with nothing but its name", () => {
+    // Where this environment's mail may go is the adopter's decision, stated in their stanza; the binding is ours.
+    expect(write({ type: "email", name: "MAILER" })).toEqual({ send_email: [{ name: "MAILER" }] });
+  });
+
+  test("writes a queue's producer entry under the name provisioning creates the queue with", () => {
+    expect(write({ type: "queue", name: "JOBS" })).toEqual({
+      queues: { producers: [{ binding: "JOBS", queue: "acme-dev-jobs" }] },
+    });
+    expect(write({ type: "queue", name: "JOBS" }, { ...app, env: "staging" })).toEqual({
+      queues: { producers: [{ binding: "JOBS", queue: "acme-staging-jobs" }] },
+    });
+    expect(write({ type: "queue", name: "JOBS", scope: "global", resource: "work" })).toEqual({
+      queues: { producers: [{ binding: "JOBS", queue: "acme-global-work" }] },
+    });
+  });
+
+  test("keeps a queue's consumers, and leaves a producer the adopter already wrote alone", () => {
+    const stanza: WranglerStanza = { queues: { consumers: [{ queue: "acme-dev-jobs" }] } };
+    expect(appendBinding(stanza, BindingSpec.parse({ type: "queue", name: "JOBS" }), app)).toEqual({
+      outcome: "written",
+    });
+    expect(stanza.queues).toEqual({
+      consumers: [{ queue: "acme-dev-jobs" }],
+      producers: [{ binding: "JOBS", queue: "acme-dev-jobs" }],
+    });
+    expect(appendBinding(stanza, BindingSpec.parse({ type: "queue", name: "JOBS" }), app)).toEqual({
+      outcome: "present",
+    });
+  });
+
+  test("skips a queue it cannot name, and says why, rather than writing an entry that names nothing", () => {
+    const stanza: WranglerStanza = {};
+    expect(
+      appendBinding(stanza, BindingSpec.parse({ type: "queue", name: "JOBS" }), { env: "dev", capability: "app" }),
+    ).toEqual({
+      outcome: "skipped",
+      reason: "no project name is resolved",
+    });
+    expect(stanza).toEqual({});
+  });
+
+  test("answers present-or-missing for exactly the kinds it writes", () => {
+    // `isWrittenBinding` and this writer are one rule stated twice. A kind written and never looked for would be
+    // appended again on every upgrade; a kind looked for and never written would be reported missing forever.
+    for (const option of BindingType.options) {
+      const type = option.value;
+      const spec = {
+        type,
+        name: "X",
+        optional: false,
+        target: "t",
+        className: "C",
+        classModule: "m",
+        service: "s",
+        job: "j",
+      };
+      expect(stanzaHasBinding({}, spec as BindingSpec) !== null, type).toBe(isWrittenBinding(type));
+    }
   });
 });

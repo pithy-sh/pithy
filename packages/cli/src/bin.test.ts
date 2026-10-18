@@ -227,7 +227,7 @@ describe("pithy migrate", () => {
     // `group` is the timestamp this run stamped itself with (#694) — generated, so matched by shape.
     expect(JSON.parse(stdout.trim())).toEqual({
       command: "migrate",
-      schemaVersion: 1,
+      schemaVersion: 2,
       env: "dev",
       project: "app",
       rollback: false,
@@ -240,7 +240,7 @@ describe("pithy migrate", () => {
     const rollback = await run("bun", [bin, "migrate", "--rollback", "--json"], { cwd: target });
     expect(JSON.parse(rollback.stdout.trim())).toEqual({
       command: "migrate",
-      schemaVersion: 1,
+      schemaVersion: 2,
       env: "dev",
       project: "app",
       rollback: true,

@@ -18,7 +18,7 @@ function cap(
 }
 
 describe("provisionableBindings", () => {
-  test("keeps only d1/kv/r2 bindings, mapped to their resource kind", () => {
+  test("keeps only d1/kv/r2/queue bindings, mapped to their resource kind", () => {
     const capability = cap("app", [
       { type: "d1", name: "DB" },
       { type: "kv", name: "SESSIONS" },
@@ -33,6 +33,9 @@ describe("provisionableBindings", () => {
       { binding: "DB", kind: "d1" },
       { binding: "SESSIONS", kind: "kv" },
       { binding: "ASSETS", kind: "r2" },
+      // A queue is the fourth kind Pithy creates (#662): a producer entry names one, and a deploy refuses a
+      // producer whose queue does not exist.
+      { binding: "JOBS", kind: "queue" },
     ]);
   });
 

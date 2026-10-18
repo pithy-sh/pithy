@@ -165,9 +165,9 @@ A failure inside the command ends the stream with no document, and the `{"error"
 
 ```console
 $ pithy deploy --env staging --apps --json --events
-{"command":"deploy","schemaVersion":1,"event":"start","what":"acme-api"}
-{"command":"deploy","schemaVersion":1,"event":"settled","line":"acme-api: deployed. https://acme-staging-api.example.workers.dev <version-id>","worker":{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}}
-{"command":"deploy","schemaVersion":1,"env":"staging","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}],"kit":null,"kitProblems":null,"dryRun":false}
+{"command":"deploy","schemaVersion":2,"event":"start","what":"acme-api"}
+{"command":"deploy","schemaVersion":2,"event":"settled","line":"acme-api: deployed. https://acme-staging-api.example.workers.dev <version-id>","worker":{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}}
+{"command":"deploy","schemaVersion":2,"env":"staging","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-staging-api.example.workers.dev"}],"kit":null,"kitProblems":null,"dryRun":false}
 ```
 
 ## Errors
@@ -232,7 +232,7 @@ pithy deploy --env dev
 ```
 
 ```json
-{"command":"deploy","schemaVersion":1,"env":"prod","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-prod-api.example.workers.dev","verification":"verified","verificationDetail":"https://api.example.com is serving the version just deployed."},{"name":"acme-web","ok":false,"built":false,"error":"vite build failed."}],"kit":[{"capability":"email","worker":"acme-prod-email","outcome":"unchanged","reason":"@pithy-sh/email 0.1.7 is deployed with this configuration."},{"capability":"media","worker":"acme-prod-media","outcome":"deployed","reason":"Its resolved configuration changed."}],"kitProblems":[]}
+{"command":"deploy","schemaVersion":2,"env":"prod","pendingMigrations":0,"workers":[{"name":"acme-api","ok":true,"versionId":"<version-id>","url":"https://acme-prod-api.example.workers.dev","verification":"verified","verificationDetail":"https://api.example.com is serving the version just deployed."},{"name":"acme-web","ok":false,"built":false,"error":"vite build failed."}],"kit":[{"capability":"email","worker":"acme-prod-email","outcome":"unchanged","reason":"@pithy-sh/email 0.1.7 is deployed with this configuration."},{"capability":"media","worker":"acme-prod-media","outcome":"deployed","reason":"Its resolved configuration changed."}],"kitProblems":[]}
 ```
 
 The two environment variables in the CI snippet are the names of secrets your provider holds. No value appears here, and no `pithy deploy` payload can carry one.

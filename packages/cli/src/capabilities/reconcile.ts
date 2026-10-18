@@ -511,6 +511,34 @@ export interface BuildReconcilePlanOptions {
   workerConfig?: WorkerConfig;
 }
 
+/** What a binding writer reads off a declaration: who declares the bindings, and the bindings. */
+type BindingDeclaration = Pick<CapabilityManifest, "name" | "requiredBindings">;
+
+/**
+ * **The Worker's own `app` capability, as a declaration of the bindings it needs (#662).**
+ *
+ * An app is a `Capability` — `allCapabilities` returns `[...capabilities, app]` — so it can declare
+ * `requiredBindings`, and `createBackend` enforces them at boot. It has no `pithy.manifest.json` and never will,
+ * so every loop below that walked manifests walked past it: `pithy upgrade` never wrote the entry, `pithy doctor`
+ * never named it missing, and the Worker refused to boot. The composed instance is the authority instead, as it
+ * is for the rest of the CLI.
+ *
+ * **Not a manifest.** It carries no config keys — the app's options are the adopter's own source — and its entry
+ * is the adopter's, so it is asked for neither. It has no decline path either: deleting the declaration is the
+ * decline, and `readDeclinedBindings` stays about what a capability declares.
+ *
+ * **Its Workflows are left out**, because this writer's Workflow entry is the cross-script one, into a library's
+ * host. The app's class lives in its own `main`, and `project/appWorkflows.ts` writes that same-script entry from
+ * `app.workflows`. A manifest of the same name is the capability's, and the app adds nothing beside it.
+ */
+function appDeclaration(
+  app: Capability | undefined,
+  manifests: readonly CapabilityManifest[],
+): BindingDeclaration | undefined {
+  if (app === undefined || manifests.some((manifest) => manifest.name === app.name)) return undefined;
+  return { name: app.name, requiredBindings: app.requiredBindings.filter((binding) => binding.type !== "workflow") };
+}
+
 /** Escape a capability name for use inside a `RegExp`. */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -546,7 +574,7 @@ function escapeRegExp(text: string): string {
  * silent write.
  */
 function effectiveBindings(
-  manifest: CapabilityManifest,
+  manifest: BindingDeclaration,
   composed: Capability | undefined,
   declined: ReadonlySet<string>,
 ): BindingSpec[] {
@@ -741,7 +769,7 @@ function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
  * runs must not read a reordering as a change.
  */
 function resolveGeneratedValues(
-  manifests: readonly CapabilityManifest[],
+  manifests: readonly BindingDeclaration[],
   composed: ReadonlySet<string>,
   ejected: readonly string[],
   stanzas: readonly { env: string; stanza: WranglerStanza }[],
@@ -784,7 +812,7 @@ function resolveGeneratedValues(
 
 /** Every required binding absent from an environment, across every environment. Unsupported kinds are skipped. */
 function computeMissingBindings(
-  manifest: CapabilityManifest,
+  manifest: BindingDeclaration,
   stanzas: { env: string; stanza: WranglerStanza }[],
   composed: Capability | undefined,
   declined: ReadonlySet<string>,
@@ -1188,8 +1216,13 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   const deployedAs = options.worker ?? basename(workerDir);
   // Composed for `env`, because the plan's migration count is `env`'s and a config may compose a different
   // registry for each (#595).
+  let loaded: WorkerConfig | undefined;
   const capabilities =
-    options.capabilities ?? (await composeFor(env, async (load) => allCapabilities(await load(workerDir))));
+    options.capabilities ??
+    (await composeFor(env, async (load) => {
+      loaded = await load(workerDir);
+      return allCapabilities(loaded);
+    }));
   const readLedger = options.readLedger ?? defaultReadLedger;
 
   // Both the project root and this Worker's own `node_modules` (#507). The root alone was wrong wherever
@@ -1213,6 +1246,10 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // `optional` through `effectiveBindings` and must resolve it the same way. `readDeclinedBindings`
   // reports rather than throws: a declaration that will not parse costs its own line and leaves the
   // rest of the plan standing, exactly as the ledger and entitlement contributors do (#371).
+  // The Worker's own app capability, from the config its caller loaded or the one loaded above, as the
+  // composition holds it (#662). Its generated values are compared like any capability's below.
+  const workerApp = (options.workerConfig ?? loaded)?.app;
+  const app = appDeclaration(workerApp && (byName.get(workerApp.name) ?? workerApp), manifests);
   const read = readDeclinedBindings(options.workerConfig ?? { capabilities });
   const declinedBindings: BindingDeclines =
     read.state === "invalid"
@@ -1236,10 +1273,28 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
       ? { state: "invalid", problem: pins.problem }
       : {
           state: "read",
-          ...resolveGeneratedValues(manifests, composed, ejected, stanzas, byName, honored, pins.declared),
+          ...resolveGeneratedValues(
+            app === undefined ? manifests : [...manifests, app],
+            composed,
+            ejected,
+            stanzas,
+            byName,
+            honored,
+            pins.declared,
+          ),
         };
 
   const perCapability: CapabilityReconcile[] = [];
+  // The app's bindings, from its composed instance — it has no manifest (#662). Never declined: see
+  // `appDeclaration`.
+  if (app !== undefined) {
+    perCapability.push({
+      name: app.name,
+      missingBindings: computeMissingBindings(app, stanzas, byName.get(app.name), new Set()),
+      missingConfigKeys: [],
+      missingEntryExports: [],
+    });
+  }
   for (const manifest of manifests) {
     if (ejected.includes(manifest.name)) continue; // ejected — reported below, never reconciled
     if (!composed.has(manifest.name)) continue; // installed at the root for another Worker — not this one's
@@ -1331,7 +1386,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
  */
 function appendBindings(
   stanza: WranglerStanza,
-  manifest: CapabilityManifest,
+  manifest: BindingDeclaration,
   scope: BindingScope,
   composed: Capability | undefined,
   declined: ReadonlySet<string>,
@@ -1459,6 +1514,12 @@ export interface ApplyReconcilePlanOptions {
   /** The Worker's composed capabilities (libraries + app) — passed to the migration run. */
   capabilities: Capability[];
   /**
+   * **This Worker's own app capability, off its `pithy.config.ts` (#662)** — whose `requiredBindings` the plan
+   * reported under its name with no manifest behind them. Never inferred from `capabilities`, where the app is
+   * one entry among the libraries and nothing says which. Omitted for a Worker that declares no `app`.
+   */
+  app?: Capability;
+  /**
    * The Cloudflare account this project belongs to, or `null` when it names none. Required (#234) — this
    * is the write side, and `migrate` on a non-`dev` env runs the project's migrations against a live
    * schema in whichever account the credentials belong to.
@@ -1529,6 +1590,7 @@ async function applyBindings(
   plan: ReconcilePlan,
   project: string | undefined,
   capabilities: readonly Capability[],
+  workerApp: Capability | undefined,
 ): Promise<Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>> {
   const added = new Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>();
   // The one list every writer below resolves `optional` through, taken from the plan rather than
@@ -1540,10 +1602,12 @@ async function applyBindings(
 
   // The Worker's manifests, not the root's — these write into the Worker, so resolving from the root
   // alone skipped every capability declared only where it is composed (#507).
-  const byName = new Map(
-    (await composedManifests(projectDir, workerDir)).manifests.map((manifest) => [manifest.name, manifest]),
-  );
+  const { manifests } = await composedManifests(projectDir, workerDir);
+  const byName = new Map<string, BindingDeclaration>(manifests.map((manifest) => [manifest.name, manifest]));
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
+  // The app's own declaration beside the manifests, as the plan read it (#662), and never declined.
+  const app = appDeclaration(workerApp && (composedByName.get(workerApp.name) ?? workerApp), manifests);
+  if (app !== undefined) byName.set(app.name, app);
   const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
   const stanzas = envStanzas(config);
   let touched = false;
@@ -1560,7 +1624,7 @@ async function applyBindings(
         manifest,
         { ...(project === undefined ? {} : { project }), env, capability: manifest.name },
         composedByName.get(cap.name),
-        honored,
+        manifest === app ? new Set() : honored,
       );
       written.push(...result.written);
       skipped.push(...result.skipped);
@@ -1569,7 +1633,10 @@ async function applyBindings(
     // class against the script, and one for a binding this Worker does not derive registers an actor
     // nothing can reach. A tag is applied once and never revisited, so it is not a mistake a later run
     // repairs — `capabilities/add.ts`'s `wiredBindings` states the rule for the other writer.
-    appendDurableObjectMigrations(config, effectiveBindings(manifest, composedByName.get(cap.name), honored));
+    appendDurableObjectMigrations(
+      config,
+      effectiveBindings(manifest, composedByName.get(cap.name), manifest === app ? new Set() : honored),
+    );
     added.set(cap.name, { written, skipped });
     // Only a real write dirties the file. A capability whose every binding was declined leaves
     // `wrangler.jsonc` byte-identical, and rewriting it would be a diff saying nothing happened.
@@ -1806,7 +1873,7 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   refuseUnhonorableDeclines(plan, await workerEnvironments(workerDir), options.productionEnvironments ?? []);
   refuseUnwritableConfigKeys(plan);
 
-  const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);
+  const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities, options.app);
   // After the bindings, deliberately: the export is the second half of a binding, and an entry re-exporting
   // a class nothing binds is the wrong file to leave behind if the write above throws.
   const addedEntryExports = await applyEntryExports(projectDir, workerDir, plan, capabilities);

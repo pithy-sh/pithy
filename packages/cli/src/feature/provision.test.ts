@@ -57,11 +57,17 @@ function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner
 
 /** A full fake provisioner set plus the backing stores, so a test can pre-seed or inspect them. */
 function fakeProvisioners() {
-  const stores = { d1: new Map<string, string>(), kv: new Map<string, string>(), r2: new Map<string, string>() };
+  const stores = {
+    d1: new Map<string, string>(),
+    kv: new Map<string, string>(),
+    r2: new Map<string, string>(),
+    queue: new Map<string, string>(),
+  };
   const provisioners = {
     d1: fakeKind("d1", stores.d1),
     kv: fakeKind("kv", stores.kv),
     r2: fakeKind("r2", stores.r2),
+    queue: fakeKind("queue", stores.queue),
   };
   return { stores, provisioners: provisioners as unknown as ResourceProvisioners, typed: provisioners };
 }
@@ -530,6 +536,41 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(report.deleted.map((x) => x.kind).sort()).toEqual(["d1", "kv", "r2"]);
     expect(stores.d1.size + stores.kv.size + stores.r2.size).toBe(0);
     await expect(stat(manifestPath(dir))).rejects.toThrow();
+  });
+
+  /**
+   * **A queue is the fourth kind a feature creates and reaps (#662).** A producer entry names a queue and a deploy
+   * refuses one that does not exist, so the feature creates its own — and destroying the feature deletes it, by
+   * the id it was created under or, unrecorded, by its exact recomputed name. Both directions re-run clean.
+   */
+  test("creates the feature's own queue, reaps it on destroy, and both re-run clean", async () => {
+    const { stores, provisioners, typed } = fakeProvisioners();
+    const withQueue = [defineCapability({ name: "app", requiredBindings: [{ type: "queue", name: "JOBS" }] })];
+    const provision = () =>
+      provisionFeature({ ...noBackend, projectDir: dir, capabilities: withQueue, identity, provisioners });
+    const queue = featureResourceName(identity, "JOBS", "queue");
+    expect(queue).toBe("acme-f69-demo--jobs-q");
+
+    const first = await provision();
+    expect(first.resources.map((x) => [x.kind, x.name, x.created])).toEqual([["queue", queue, true]]);
+    const again = await provision();
+    expect(again.resources.map((x) => [x.kind, x.name, x.created])).toEqual([["queue", queue, false]]);
+    expect(typed.queue.creates).toBe(1);
+
+    const destroy = () =>
+      deprovisionFeature({
+        ...noScripts,
+        projectDir: dir,
+        identity,
+        capabilities: withQueue,
+        env: "feature",
+        provisioners,
+      });
+    const id = stores.queue.get(queue);
+    expect(id).toBe("queue-1");
+    expect((await destroy()).deleted).toEqual([{ kind: "queue", name: queue, id }]);
+    expect(stores.queue.size).toBe(0);
+    expect((await destroy()).deleted).toEqual([]);
   });
 
   test("destroy reconciles an un-manifested resource by its exact expected name, sparing foreign ones", async () => {

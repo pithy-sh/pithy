@@ -22,10 +22,13 @@ function fakeClients() {
   const createNamespace = vi.fn().mockResolvedValue({ id: "ns-1" });
   const findBucketByName = vi.fn().mockResolvedValue(null);
   const createBucket = vi.fn().mockResolvedValue({ name: "acme-prod-uploads" });
+  const findQueueByName = vi.fn().mockResolvedValue(null);
+  const createQueue = vi.fn().mockResolvedValue({ id: "q-1", name: "acme-prod-jobs" });
   const clients = {
     d1Provisioner: () => ({ findDatabaseByName, createDatabase, deleteDatabase: vi.fn() }),
     kvProvisioner: () => ({ findNamespaceByTitle, createNamespace, deleteNamespace: vi.fn() }),
     r2Provisioner: () => ({ findBucketByName, createBucket, deleteBucket: vi.fn() }),
+    queueProvisioner: () => ({ findQueueByName, createQueue, deleteQueue: vi.fn() }),
   } as unknown as CloudflareClients;
   return {
     clients,
@@ -35,6 +38,8 @@ function fakeClients() {
     createNamespace,
     findBucketByName,
     createBucket,
+    findQueueByName,
+    createQueue,
   };
 }
 
@@ -48,6 +53,7 @@ describe("cloudflareProvisioners on an unconfirmed account", () => {
     await expect(provisioners.d1.find("acme-prod-db")).rejects.toThrow(REFUSAL);
     await expect(provisioners.kv.find("acme-prod-sessions")).rejects.toThrow(REFUSAL);
     await expect(provisioners.r2.find("acme-prod-uploads")).rejects.toThrow(REFUSAL);
+    await expect(provisioners.queue.find("acme-prod-jobs")).rejects.toThrow(REFUSAL);
   });
 
   test("nothing is created, and nothing is even asked", async () => {
@@ -60,8 +66,11 @@ describe("cloudflareProvisioners on an unconfirmed account", () => {
     await provisioners.d1.find("acme-prod-db").catch(() => {});
     await provisioners.kv.find("acme-prod-sessions").catch(() => {});
     await provisioners.r2.find("acme-prod-uploads").catch(() => {});
+    await provisioners.queue.find("acme-prod-jobs").catch(() => {});
 
     expect(fake.createDatabase).not.toHaveBeenCalled();
+    expect(fake.createQueue).not.toHaveBeenCalled();
+    expect(fake.findQueueByName).not.toHaveBeenCalled();
     expect(fake.createNamespace).not.toHaveBeenCalled();
     expect(fake.createBucket).not.toHaveBeenCalled();
     expect(fake.findDatabaseByName).not.toHaveBeenCalled();
@@ -78,7 +87,9 @@ describe("cloudflareProvisioners on a confirmed account", () => {
     expect(await provisioners.d1.find("acme-prod-db")).toBeNull();
     expect(await provisioners.kv.find("acme-prod-sessions")).toBeNull();
     expect(await provisioners.r2.find("acme-prod-uploads")).toBeNull();
+    expect(await provisioners.queue.find("acme-prod-jobs")).toBeNull();
     expect(fake.findDatabaseByName).toHaveBeenCalledWith("acme-prod-db");
+    expect(fake.findQueueByName).toHaveBeenCalledWith("acme-prod-jobs");
   });
 
   test("a hit comes back as the id each kind addresses", async () => {
@@ -86,11 +97,15 @@ describe("cloudflareProvisioners on a confirmed account", () => {
     fake.findDatabaseByName.mockResolvedValue({ uuid: "db-existing" });
     fake.findNamespaceByTitle.mockResolvedValue({ id: "ns-existing" });
     fake.findBucketByName.mockResolvedValue({ name: "acme-prod-uploads" });
+    fake.findQueueByName.mockResolvedValue({ id: "q-existing", name: "acme-prod-jobs" });
     const provisioners = cloudflareProvisioners(fake.clients, { accountId: "acct-ours", confirmation: "named" });
 
     expect(await provisioners.d1.find("acme-prod-db")).toEqual({ id: "db-existing" });
     expect(await provisioners.kv.find("acme-prod-sessions")).toEqual({ id: "ns-existing" });
     expect(await provisioners.r2.find("acme-prod-uploads")).toEqual({ id: "acme-prod-uploads" });
+    // A queue is deleted by its CF-assigned id, so the id is what a find hands back (#662).
+    expect(await provisioners.queue.find("acme-prod-jobs")).toEqual({ id: "q-existing" });
+    expect(await provisioners.queue.create("acme-prod-jobs")).toEqual({ id: "q-1" });
   });
 });
 

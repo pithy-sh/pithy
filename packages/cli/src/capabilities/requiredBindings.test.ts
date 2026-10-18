@@ -245,19 +245,19 @@ describe("every required binding has somewhere to come from", () => {
   });
 
   test("it bites — a planted binding of a kind nothing writes is orphaned", () => {
-    // The planted violation. `queue` is a real `BindingType` that no shipped capability declares and no
-    // writer emits, so a capability that declared one would boot into "Missing required bindings:
-    // queue:PLANTED" with no command anywhere to fix it. This is the shape `ratelimit` and `workflow`
-    // had before #258.
+    // The planted violation. `service` is a real `BindingType` that no shipped capability declares and
+    // neither set covers — `pithy provision` writes it out of the target Worker's scoped name — so a
+    // capability that required one is exactly what this sweep exists to flag. This is the shape
+    // `ratelimit` and `workflow` had before #258, and `queue` had until #662 wrote it.
     const planted = CapabilityManifest.parse({
       name: "planted",
       package: "@pithy-sh/planted",
-      requiredBindings: [{ type: "queue", name: "PLANTED" }],
+      requiredBindings: [{ type: "service", name: "PLANTED", service: "other" }],
     });
     const orphaned = required(planted).filter(
       (binding) => !isWrittenBinding(binding.type) && !isProvisionedBinding(binding.type),
     );
-    expect(orphaned.map(label)).toEqual(["queue:PLANTED"]);
+    expect(orphaned.map(label)).toEqual(["service:PLANTED"]);
   });
 
   test("every Durable Object class really is exported by the module its binding names", () => {
