@@ -101,7 +101,7 @@ That is the breaking change, and it is the point: a rollback used to step back o
 
 **`--group` composes with the narrowing.** `--rollback --group <v> --binding DB` reverses that group's portion of one database and leaves the rest of the group applied. It is also the way to reverse what *can* come down when the group reaches a database another environment binds.
 
-**Retained tables refuse.** Some tables hold rows that exist nowhere else — the secrets vault (`pithy_secrets_system_secrets`, `pithy_secrets_rotations`) and the email suppression list (`pithy_email_suppressions`). Their capability declares them retained. Before anything moves, a rollback counts every retained table in the databases the group reverses, and if one holds rows it refuses, naming each table and the total:
+**Retained tables refuse.** Some tables hold rows that exist nowhere else — the secrets vault (`pithy_secrets_system_secrets`, `pithy_secrets_rotations`, and every [declared secret table](#declared-secret-tables-it-writes-the-migration-and-stops)) and the email suppression list (`pithy_email_suppressions`). Their capability declares them retained. Before anything moves, a rollback counts every retained table in the databases the group reverses, and if one holds rows it refuses, naming each table and the total:
 
 ```
 $ pithy migrate --rollback --group 2026.10.3-1
