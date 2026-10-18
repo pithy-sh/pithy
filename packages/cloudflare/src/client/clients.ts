@@ -4,6 +4,7 @@
 import { CloudflareAIManager } from "../ai/aiManager";
 import { CloudflareVectorizeManager } from "../ai/vectorizeManager";
 import { CloudflareVectorizeProvisioner } from "../ai/vectorizeProvisioner";
+import { CloudflareAnalyticsManager } from "../analytics/analyticsManager";
 import { CloudflareD1Manager } from "../d1/d1Manager";
 import { CloudflareD1Provisioner } from "../d1/d1Provisioner";
 import { CloudflareEmailRoutingManager } from "../email/emailRoutingManager";
@@ -35,7 +36,7 @@ import type { CloudflareManagerConfig } from "./manager";
  *
  * Resource-scoped managers (KV, D1, queues, Vectorize indexes, secret stores, hostname zones, R2
  * buckets) are keyed by their resource id, so repeated calls for the same id return one shared
- * instance. Account-scoped managers (AI, Images, Stream, Workers, Builds, Turnstile) are singletons.
+ * instance. Account-scoped managers (AI, Images, Stream, Analytics, Workers, Builds, Turnstile) are singletons.
  */
 export class CloudflareClients {
   private readonly config: CloudflareManagerConfig;
@@ -61,6 +62,8 @@ export class CloudflareClients {
   private imageManager?: CloudflareImageManager;
 
   private streamManager?: CloudflareStreamManager;
+
+  private analyticsManager?: CloudflareAnalyticsManager;
 
   private workersManager?: CloudflareWorkersManager;
 
@@ -165,6 +168,12 @@ export class CloudflareClients {
   stream(): CloudflareStreamManager {
     this.streamManager ??= new CloudflareStreamManager(this.config);
     return this.streamManager;
+  }
+
+  /** The account-scoped GraphQL Analytics manager. */
+  analytics(): CloudflareAnalyticsManager {
+    this.analyticsManager ??= new CloudflareAnalyticsManager(this.config);
+    return this.analyticsManager;
   }
 
   /** The account-scoped Workers (scripts/deployments) manager. */

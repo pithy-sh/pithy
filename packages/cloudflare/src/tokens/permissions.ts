@@ -51,6 +51,20 @@ export const PERMISSION_GROUPS = {
   // domain — a proxied DNS record and a certificate — on any zone the account holds (measured, #709;
   // docs/TOKENS.md). So a token carrying the base can reach every zone's hostnames whatever this scopes.
   "routes:write": ["Workers Routes Write"],
+  // **Reading the account's analytics, and nothing else (#728).** The GraphQL Analytics API's account-level
+  // datasets — Stream minutes viewed, Images delivered — answer to this group. Cloudflare also has
+  // "Analytics Read", which is the **zone** group and reaches none of them.
+  //
+  // A second credential class for the kit: every other key here acts on resources the project owns,
+  // and this one reads the Cloudflare account. Its grain is the whole account, never one environment, so
+  // a capability reading it narrows the answer itself — media joins it to this environment's own assets.
+  "analytics:read": ["Account Analytics Read"],
+  // **Media's Cloudflare products, so the catalog can mint what an operator used to make by hand (#728).**
+  // A direct upload, a signing change and a delete on Cloudflare Images and on Stream. Both groups are
+  // account-scoped and edit only the account's Images and Stream libraries; they are carried by the one
+  // `runtime` token a deployed application holds, never by `ci-system`.
+  "images:write": ["Images Write"],
+  "stream:write": ["Stream Write"],
 } as const;
 
 /** A known permission key — one of {@link PERMISSION_GROUPS}'s keys. */
@@ -89,6 +103,9 @@ export const OAUTH_SCOPES = {
   "ai:read": ["ai.read"],
   "zone:read": ["zone.read"],
   "routes:write": ["workers-routes.write"],
+  "analytics:read": ["account-analytics.read"],
+  "images:write": ["images.write"],
+  "stream:write": ["stream.write"],
 } as const satisfies Record<PermissionKey, readonly string[]>;
 
 /**

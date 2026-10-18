@@ -40,6 +40,7 @@ describe("CloudflareClients", () => {
       expect(clients.ai()).toBe(clients.ai());
       expect(clients.images()).toBe(clients.images());
       expect(clients.stream()).toBe(clients.stream());
+      expect(clients.analytics()).toBe(clients.analytics());
       expect(clients.workers()).toBe(clients.workers());
       expect(clients.builds()).toBe(clients.builds());
       expect(clients.turnstile()).toBe(clients.turnstile());
